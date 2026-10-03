@@ -56,7 +56,7 @@ that holds the agent's conversations. A secret file is in none of these:
 - It is written into the workspace's own home directory, `~`. The captured roots are the worktree at
   `/workspace/repo` and the harness home at `/workspace/harness-home`. Neither covers `~`.
 - A path under a directory sessions do capture is refused when you add it: `.claude`, `.codex`,
-  `.pi`, `.local/share/opencode`, `.claude.json` and Mend's own `.mend`.
+  `.pi`, `.local/share/opencode`, `.local/state/opencode`, `.claude.json` and Mend's own `.mend`.
 - Before writing, the workspace checks the path is still a plain path in the home: no symlink at any
   component, and the directory's real location is where its name says. A dotfiles tree that linked
   `~/.aws` into the worktree would turn a secret file into a captured one, so such a file is not

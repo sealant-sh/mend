@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -269,7 +270,7 @@ const codexCopy = (home: string, exp: number, account = "acct-1") => {
 /** Run pi's or opencode's seed with no XDG or pi overrides, so each reads its default paths. */
 const runToolSeed = (seed: string, home: string) => {
   const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
-  for (const name of ["XDG_DATA_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
+  for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
   const result = spawnSync("sh", ["-c", seed, "sh", "sh", "-c", "echo ran"], {
     encoding: "utf8",
     env,
@@ -360,6 +361,69 @@ describe("pi and opencode seeds: the ChatGPT login from the Codex copy", () => {
     expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
     expect(fs.existsSync(path.join(home, ".pi", "agent", "auth.json"))).toBe(false);
     expect(fs.existsSync(path.join(home, ".local", "share", "opencode", "auth.json"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".local", "state", "opencode", "model.json"))).toBe(false);
+  });
+});
+
+const modelFile = (home: string) => path.join(home, ".local", "state", "opencode", "model.json");
+
+describe("opencode's seed: the model it opens on", () => {
+  const [providerID, modelID] = OPENCODE_DEFAULT_MODEL.split("/");
+
+  it("names the ChatGPT login's model as the last used one, so the git token's Copilot is not opencode's pick", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
+    expect(readJson(modelFile(home))).toEqual({ recent: [{ providerID, modelID }] });
+  });
+
+  it("fills an empty list and keeps every other key opencode wrote", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    write(
+      modelFile(home),
+      JSON.stringify({
+        recent: [],
+        favorite: [{ providerID: "openai", modelID: "gpt-5.5" }],
+        variant: { "github-copilot/claude-sonnet-4.6": "default" },
+      }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(readJson(modelFile(home))).toEqual({
+      recent: [{ providerID, modelID }],
+      favorite: [{ providerID: "openai", modelID: "gpt-5.5" }],
+      variant: { "github-copilot/claude-sonnet-4.6": "default" },
+    });
+  });
+
+  it("keeps a model picked in opencode, and a file it cannot read as an object", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    const picked = JSON.stringify({ recent: [{ providerID: "anthropic", modelID: "opus" }] });
+    write(modelFile(home), picked);
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.readFileSync(modelFile(home), "utf8")).toBe(picked);
+    write(modelFile(home), "[not an object");
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.readFileSync(modelFile(home), "utf8")).toBe("[not an object");
+  });
+
+  it("names the model over the user's own openai login too, and names none without one", () => {
+    const home = makeHome();
+    write(
+      path.join(home, ".local", "share", "opencode", "auth.json"),
+      JSON.stringify({ anthropic: { type: "api", key: "sk-ant" } }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.existsSync(modelFile(home))).toBe(false);
+    write(
+      path.join(home, ".local", "share", "opencode", "auth.json"),
+      JSON.stringify({
+        openai: { type: "oauth", access: "mine", refresh: "real", expires: 1, accountId: "x" },
+      }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(readJson(modelFile(home))).toEqual({ recent: [{ providerID, modelID }] });
   });
 });
 

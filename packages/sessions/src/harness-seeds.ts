@@ -1,3 +1,5 @@
+import { OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
+
 import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
 
 /**
@@ -107,14 +109,40 @@ const CHATGPT_LOGIN_PROGRAM = [
 ].join("");
 
 /**
+ * The model opencode opens on when nothing chose one (`OPENCODE_DEFAULT_MODEL`), written as its
+ * last used model: `model.json` in its state directory, `{recent: [{providerID, modelID}], …}`,
+ * the list opencode reads after `--model` and the `model` of its config and before falling back
+ * to the first provider it sees (opencode 1.18.34, `tui/src/context/local.tsx`). That fallback is
+ * GitHub Copilot in a workspace, from the git token, and Copilot refuses it.
+ *
+ * Written only when opencode holds an `openai` login (the one `CHATGPT_LOGIN_PROGRAM` wrote, or the
+ * user's own) and the file names no recent model: a model picked in opencode stays, and every
+ * other key in the file is kept. A file that is not a JSON object is left alone.
+ *
+ * `argv[1]` is opencode's `auth.json`, `argv[2]` its `model.json`, `argv[3]` the model.
+ */
+const OPENCODE_MODEL_PROGRAM = [
+  `const fs=require("fs"),path=require("path"),[authFile,file,model]=process.argv.slice(1);`,
+  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
+  `const auth=read(authFile);if(!auth||!auth.openai)process.exit(0);`,
+  `const state=read(file);if(state===null||(Array.isArray(state.recent)&&state.recent.length>0))process.exit(0);`,
+  `const slash=model.indexOf("/");if(slash<1)process.exit(0);`,
+  `state.recent=[{providerID:model.slice(0,slash),modelID:model.slice(slash+1)}];`,
+  `fs.mkdirSync(path.dirname(file),{recursive:true});const tmp=file+".mend-seed-"+process.pid;`,
+  `fs.writeFileSync(tmp,JSON.stringify(state));fs.renameSync(tmp,file);`,
+].join("");
+
+/**
  * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the
  * launch's environment, pi's project trust its `--approve`). Each writes the ChatGPT login it runs
  * on (`CHATGPT_LOGIN_PROGRAM`) and turns off its own update check, which a workspace's image owns:
- * Core installs each harness at build time. pi's first sets up the person's pi profile, when one
- * was delivered (`PI_PROFILE_PROGRAM`), so the login's default provider defers to theirs.
+ * Core installs each harness at build time. opencode's then names the model it opens on when
+ * nothing else does (`OPENCODE_MODEL_PROGRAM`). pi's first sets up the person's pi profile, when
+ * one was delivered (`PI_PROFILE_PROGRAM`), so the login's default provider defers to theirs.
  */
 export const OPENCODE_SEED =
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" openai "" 2>/dev/null; ` +
+  `node -e '${OPENCODE_MODEL_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" "\${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json" '${OPENCODE_DEFAULT_MODEL}' 2>/dev/null; ` +
   `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
 export const PI_SEED =
   `node -e '${PI_PROFILE_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; ` +

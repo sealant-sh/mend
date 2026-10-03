@@ -87,7 +87,7 @@ own default.
 
 Mend normally disables the harness's approval prompts because the workspace is the execution
 boundary. `--ask` restores provider prompts. `--fast` requests Codex priority processing. OpenCode
-currently ignores model, effort, permission, and speed options.
+takes `--model` and `--ask`, and ignores effort and speed.
 
 Press `Ctrl+V` with an image on your clipboard to send the image to the session and paste its path;
 Codex and Claude read it. This needs `wl-paste` on Wayland or `xclip` on X11, and nothing extra on

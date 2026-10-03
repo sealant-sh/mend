@@ -11,7 +11,9 @@ import {
   HARNESS_STATE,
   distillOpeningPrompt,
   extractTranscript,
+  hasLiveConversation,
   hasLiveHarnessState,
+  hasLiveStateFile,
   locateLiveTranscript,
   HARNESS_HOME_CREDENTIALS,
   nativeResumeArgv,
@@ -161,7 +163,36 @@ describe("transcript adapters", () => {
 
   it("leaves launches without resumable native state unchanged", () => {
     expect(nativeResumeArgv("codex", null, ["codex"])).toEqual(["codex"]);
-    expect(nativeResumeArgv("opencode", "session-id", ["opencode"])).toEqual(["opencode"]);
+  });
+
+  it("continues opencode's newest conversation, with no session id to name", () => {
+    expect(nativeResumeArgv("opencode", null, ["opencode"])).toEqual(["opencode", "--continue"]);
+    expect(nativeResumeArgv("opencode", null, ["opencode", "--model", "openai/x"])).toEqual([
+      "opencode",
+      "--continue",
+      "--model",
+      "openai/x",
+    ]);
+    // A launch that names a conversation, or brings a prompt (submitted only from opencode's home
+    // screen, which --continue skips), stays as it is; so does one wrapped in a shell.
+    for (const argv of [
+      ["opencode", "--continue"],
+      ["opencode", "-c"],
+      ["opencode", "--session", "ses_1"],
+      ["opencode", "-s", "ses_1"],
+      ["opencode", "--prompt", "fix the test"],
+      ["sh", "-c", "exec opencode", "sh"],
+    ]) {
+      expect(nativeResumeArgv("opencode", null, argv)).toEqual(argv);
+    }
+  });
+
+  it("relocates opencode's state directory beside its data, and knows its database", () => {
+    expect(HARNESS_STATE["opencode"]?.homeDirs).toEqual([
+      ".local/share/opencode",
+      ".local/state/opencode",
+    ]);
+    expect(HARNESS_STATE["opencode"]?.stateFile).toBe(".local/share/opencode/opencode.db");
   });
 });
 
@@ -422,7 +453,7 @@ describe("harness home", () => {
       ).toBe("new\n");
       expect(fs.statSync(path.join(captured, ".codex")).mode & 0o777).toBe(0o700);
       expect(fs.readFileSync(path.join(captured, ".codex/auth.json"), "utf8")).toBe("codex\n");
-      for (const dir of [".claude", ".codex", ".local/share/opencode"]) {
+      for (const dir of [".claude", ".codex", ".local/share/opencode", ".local/state/opencode"]) {
         expect(fs.realpathSync(path.join(home, dir))).toBe(path.join(captured, dir));
       }
       // A rerun over the links changes nothing.
@@ -474,5 +505,28 @@ describe("harness home", () => {
     expect(
       await Effect.runPromise(locateLiveTranscript(path.join(home, "missing"), "codex")),
     ).toBeNull();
+  });
+
+  it("reads opencode's database as its conversation: a regular file only", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harness-home-"));
+    expect(await Effect.runPromise(hasLiveStateFile(home, "opencode"))).toBe(false);
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    const data = path.join(home, ".local", "share", "opencode");
+    fs.mkdirSync(data, { recursive: true });
+    // A link where the database belongs leads anywhere; it is not the harness's state.
+    fs.symlinkSync("/etc/hostname", path.join(data, "opencode.db"));
+    expect(await Effect.runPromise(hasLiveStateFile(home, "opencode"))).toBe(false);
+    fs.rmSync(path.join(data, "opencode.db"));
+    fs.writeFileSync(path.join(data, "opencode.db"), "SQLite format 3\0");
+    expect(await Effect.runPromise(hasLiveStateFile(home, "opencode"))).toBe(true);
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(true);
+    // A harness with a transcript answers by its transcript; one with neither, false.
+    expect(await Effect.runPromise(hasLiveStateFile(home, "claude"))).toBe(false);
+    expect(await Effect.runPromise(hasLiveConversation(home, "claude"))).toBe(false);
+    const projectDir = path.join(home, ".claude", "projects", "-workspace-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "0f9a2c3d-1111-2222-3333-444455556666.jsonl"), "{}\n");
+    expect(await Effect.runPromise(hasLiveConversation(home, "claude"))).toBe(true);
+    expect(await Effect.runPromise(hasLiveConversation(home, "unknown"))).toBe(false);
   });
 });

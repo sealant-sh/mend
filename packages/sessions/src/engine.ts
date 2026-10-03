@@ -269,6 +269,8 @@ import {
   readHarnessStateManifest,
   extractTranscript,
   hasLiveHarnessState,
+  hasLiveConversation,
+  hasLiveStateFile,
   CARRIED_TRANSCRIPTS,
   harvestHarnessStateScript,
   locateLiveTranscript,
@@ -6516,7 +6518,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture === null) return null;
         const harness = agent.harness ?? session.harness;
         const shape = HARNESS_STATE[harness];
-        if (shape === undefined || shape.liveTranscript === null) return null;
+        if (shape === undefined) return null;
+        if (shape.liveTranscript === null && shape.stateFile === undefined) return null;
         const project = yield* projects.byId(session.projectId);
         const chain = yield* capture.repo.headOf(session.worktreeId);
         const head = chain?.head ?? null;
@@ -6587,6 +6590,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         const pattern = shape.liveTranscript;
+        if (pattern === null) {
+          // A harness with no transcript file (opencode): its database in the capture is the
+          // conversation. The capture itself is what a resume materialises; the manifest commits
+          // that there is one to continue, with no transcript and no session id to name.
+          const stateFile = `harness/${shape.stateFile}`;
+          if (!files.some((file) => file.entry.kind === "file" && file.path === stateFile)) {
+            return null;
+          }
+          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+          const manifestPath = path.join(stateDir, "manifest.json");
+          const stateManifest: HarnessStateManifest = {
+            harness,
+            providerSessionId: null,
+            capturedAt: new Date().toISOString(),
+          };
+          yield* io("write-manifest", manifestPath, async () => {
+            await fs.mkdir(stateDir, { recursive: true });
+            await fs.writeFile(manifestPath, JSON.stringify(stateManifest, null, 2));
+          });
+          yield* Effect.logInfo("session engine: harness state observed at capture").pipe(
+            Effect.annotateLogs({ sessionId: session.id, captureN: head.n, seq: String(head.seq) }),
+          );
+          return { stateDir, manifest: stateManifest } satisfies LocatedHarnessState;
+        }
         // Never a conversation Mend carried in from another session (docs/adr/0009, "Codex"),
         // and the newest of the rest: a resumed session's home holds several of its own.
         const carried = parseCarriedTranscripts(
@@ -6688,6 +6715,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (agent === null) return null;
         if (capture !== null) return yield* inOneReadPass(harvestFromCapture(session, agent));
         const harnessHome = harnessHomePathOf(project.storePath, session.id);
+        if (HARNESS_STATE[harness]?.liveTranscript === null) {
+          // No transcript file (opencode): the database in the durable home is the conversation,
+          // and a relaunch boots on that home. The manifest commits that there is one.
+          if (!(yield* hasLiveStateFile(harnessHome, harness))) return null;
+          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+          const manifestPath = path.join(stateDir, "manifest.json");
+          const manifest: HarnessStateManifest = {
+            harness,
+            providerSessionId: null,
+            capturedAt: new Date().toISOString(),
+          };
+          yield* Effect.tryPromise({
+            try: async () => {
+              await fs.mkdir(stateDir, { recursive: true });
+              await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+            },
+            catch: (cause) =>
+              new HarnessStateIOError({
+                sessionId: session.id,
+                operation: "write-manifest",
+                path: manifestPath,
+                message: `Could not commit saved harness state for session ${session.id}.`,
+                cause,
+              }),
+          });
+          return { stateDir, manifest } satisfies LocatedHarnessState;
+        }
         const live = yield* locateLiveTranscript(harnessHome, harness);
         if (live === null) return null;
         const native = yield* Effect.tryPromise({
@@ -7016,11 +7070,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return;
           }
           const project = yield* projects.byId(session.projectId);
-          const live = yield* locateLiveTranscript(
+          const live = yield* hasLiveConversation(
             harnessHomePathOf(project.storePath, session.id),
             harness,
           );
-          yield* sessions.setHasTranscript(session.id, live !== null);
+          yield* sessions.setHasTranscript(session.id, live);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: transcript classification failed").pipe(
@@ -13997,11 +14051,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // barrier. Checkpoint and manual flushes also register same-epoch final captures.
             continue;
           }
-          const live = yield* locateLiveTranscript(
+          const live = yield* hasLiveConversation(
             harnessHomePathOf(project.storePath, session.id),
             session.harness,
           );
-          yield* sessions.setHasTranscript(session.id, live !== null);
+          yield* sessions.setHasTranscript(session.id, live);
         }
       });
       const resume = Effect.fn("SessionEngine.resume")(function* () {

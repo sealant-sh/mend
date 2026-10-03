@@ -104,6 +104,16 @@ export const HARNESS_MODEL_SEED: Readonly<Record<string, ReadonlyArray<HarnessMo
   ],
 };
 
+/**
+ * The model opencode opens on when nothing else chose one: the Codex default above, through the
+ * ChatGPT login Mend writes into opencode (`harness-seeds.ts` in @mend/sessions). opencode's own
+ * fallback takes the first provider it can see, and in a workspace that is GitHub Copilot, from
+ * the `GITHUB_TOKEN` Mend gives for git: a token Copilot refuses ("The requested model is not
+ * available for integrator opencode", seen on the box 2026-10-04). Written as opencode's last
+ * used model, so `--model`, the user's config and a model picked in opencode still decide first.
+ */
+export const OPENCODE_DEFAULT_MODEL = "openai/gpt-6.1-sol";
+
 /** Harnesses whose composed argv actually carries an opening prompt. */
 export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set([
   "claude",

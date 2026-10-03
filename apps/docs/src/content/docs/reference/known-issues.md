@@ -92,10 +92,17 @@ survives: the platform keeps it and boots it again to save what it holds. An exe
 fails without warning can lose what was written after its last capture. Captures run 2 seconds after
 the files go quiet, and at least every 10 seconds while they keep changing.
 
-## opencode does not really work yet
+## opencode runs in the terminal only
 
-opencode sessions start, but little else about them is finished. Treat opencode as unsupported for
-now.
+opencode sessions run as terminals, as pi sessions do: attach from the CLI, the web app, the desktop
+app or VS Code. The phone and Slack cannot start or steer them. opencode keeps its conversations in
+a database rather than a file, and Mend does not read it: a stopped opencode session resumes on its
+newest conversation (`opencode --continue`), but Mend shows no transcript for it and cannot resume
+it on another harness. opencode has no shared effort scale, so `--effort` does not apply to it.
+
+When a repository has a `.opencode` directory, opencode installs its own plugin package there at
+startup, and a lockfile committed in it can change. That edit shows up in the session's change like
+any other.
 
 ## pi runs in the terminal only
 

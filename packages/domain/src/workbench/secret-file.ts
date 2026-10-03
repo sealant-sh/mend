@@ -38,6 +38,7 @@ export const SECRET_FILE_RESERVED_PATHS: ReadonlyArray<string> = [
   ".codex",
   ".pi",
   ".local/share/opencode",
+  ".local/state/opencode",
   ".mend",
 ];
 

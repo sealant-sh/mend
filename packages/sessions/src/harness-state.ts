@@ -192,6 +192,12 @@ interface HarnessStateShape {
   readonly liveTranscript: RegExp | null;
   /** Derive the provider session id from the primary transcript's path/name. */
   readonly providerSessionId: (transcriptPath: string) => string | null;
+  /**
+   * For a harness that keeps no transcript file (`liveTranscript` null): the `$HOME`-relative
+   * file whose presence says it left a conversation behind, so a harvest commits its state with
+   * no transcript and no session id, and a resume continues it (`nativeResumeArgv`).
+   */
+  readonly stateFile?: string;
 }
 
 /**
@@ -267,13 +273,16 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     providerSessionId: (file) => CODEX_ROLLOUT.exec(file)?.[1] ?? null,
   },
   // opencode keeps its sessions in a SQLite database (`opencode.db`), not files: the directory
-  // is relocated and harvested whole, and no session id is read from it yet.
+  // is relocated and harvested whole, no session id is read from it, and a resume continues the
+  // newest conversation in it (`--continue`). Its state directory holds the model it last used and
+  // the prompt history, which a resume needs as much (`OPENCODE_SEED` writes the first model).
   opencode: {
-    paths: [".local/share/opencode"],
-    homeDirs: [".local/share/opencode"],
+    paths: [".local/share/opencode", ".local/state/opencode"],
+    homeDirs: [".local/share/opencode", ".local/state/opencode"],
     latestTranscript: "true",
     liveTranscript: null,
     providerSessionId: () => null,
+    stateFile: ".local/share/opencode/opencode.db",
   },
   pi: {
     paths: [".pi/agent/sessions", ".pi/agent/settings.json"],
@@ -555,12 +564,55 @@ export const locateLiveTranscript = (
     }
   });
 
+/**
+ * Whether the session's harness home holds the state file of a harness that keeps no transcript
+ * (`HarnessStateShape.stateFile`), server-side: the opencode counterpart of `locateLiveTranscript`.
+ * A regular file only; a link, an absent file or an unreadable home reads as false.
+ */
+export const hasLiveStateFile = (
+  harnessHomePath: string,
+  harness: string,
+): Effect.Effect<boolean> =>
+  Effect.promise(async () => {
+    const stateFile = HARNESS_STATE[harness]?.stateFile;
+    if (stateFile === undefined) return false;
+    try {
+      return (await fs.lstat(path.join(harnessHomePath, stateFile))).isFile();
+    } catch {
+      return false;
+    }
+  });
+
+/** Whether the session's harness home holds a conversation: a transcript, or a state file. */
+export const hasLiveConversation = (
+  harnessHomePath: string,
+  harness: string,
+): Effect.Effect<boolean> =>
+  locateLiveTranscript(harnessHomePath, harness).pipe(
+    Effect.flatMap((live) =>
+      live !== null ? Effect.succeed(true) : hasLiveStateFile(harnessHomePath, harness),
+    ),
+  );
+
 /** Turn a normal harness launch into that harness's native session resume. */
 export const nativeResumeArgv = (
   harness: string,
   providerSessionId: string | null,
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => {
+  // opencode's conversations are rows in its database, not files Mend can name: it continues the
+  // newest one in the session's own home. A launch that brings a prompt opens on it instead, since
+  // opencode submits `--prompt` only from its home screen, which `--continue` skips.
+  if (harness === "opencode") {
+    if (
+      argv[0] !== "opencode" ||
+      ["--continue", "-c", "--session", "-s", "--prompt"].some((flag) => argv.includes(flag))
+    ) {
+      return argv;
+    }
+    const [, ...tail] = argv;
+    return ["opencode", "--continue", ...tail];
+  }
   if (providerSessionId === null) return argv;
   switch (harness) {
     case "claude": {

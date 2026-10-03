@@ -7894,6 +7894,160 @@ describe("SessionEngine capture mode", () => {
   );
 
   it(
+    "commits opencode's captured database as its saved state, so the session keeps its conversation and a pickup continues it",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      const relocation = { homePath: "", executorRoot: "", observed: [] as string[] };
+      let testRoot = "";
+      let finalCapture: Effect.Effect<void> = Effect.die("final capture not prepared");
+      let shipped = false;
+      let opens = 0;
+      const database = "SQLite format 3\0 opencode conversation";
+
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            testRoot = tmp;
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "opencode",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["opencode"]);
+            const request = created[0];
+            if (request === undefined) throw new Error("cold launch made no create request");
+            const executorRoot = relocation.executorRoot;
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            finalCapture = shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              request,
+              executorRoot,
+            ).pipe(Effect.asVoid, Effect.orDie);
+
+            const agent = [...world.processes.values()].find(
+              (process) => process.kind === "agent-pty" && process.exitedAt === null,
+            );
+            if (agent?.sealantSessionId === null || agent?.sealantSessionId === undefined) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            // No transcript file, but a conversation: the session is not a dead end.
+            yield* until(
+              () => world.sessions.get(session.id)?.hasTranscript === true,
+              "the final capture harvest",
+            );
+            const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+            expect(
+              JSON.parse(fs.readFileSync(path.join(stateDir, "manifest.json"), "utf8")),
+            ).toEqual(expect.objectContaining({ harness: "opencode", providerSessionId: null }));
+            expect(fs.existsSync(path.join(stateDir, "transcript.native"))).toBe(false);
+
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt !== null,
+              "the first process settle",
+            );
+            const resumed = yield* engine.resumeSession(session.id, null);
+            expect(resumed.status).toBe("running");
+            const resumedAgent = [...world.processes.values()].findLast(
+              (process) => process.kind === "agent-pty" && process.exitedAt === null,
+            );
+            expect(resumedAgent?.argv).toEqual(["opencode", "--continue"]);
+            expect(opens).toBe(2);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            spawned,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              relocation,
+              beforeCreate: (options) =>
+                Effect.gen(function* () {
+                  relocation.executorRoot = path.join(testRoot, `executor-${created.length}`);
+                  relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+                  fs.rmSync(relocation.executorRoot, { recursive: true, force: true });
+                  fs.mkdirSync(relocation.executorRoot, { recursive: true });
+                  const source = options.source;
+                  if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                    throw new Error("test executor requires a cold capture source");
+                  }
+                  yield* restoreConfiguredHarnessHome(
+                    testRoot,
+                    memory,
+                    WorktreeId.make(source.worktreeId),
+                    options,
+                    relocation.executorRoot,
+                  );
+                }),
+              beforeOpen: () => {
+                opens += 1;
+                const db = path.join(
+                  relocation.homePath,
+                  ".local",
+                  "share",
+                  "opencode",
+                  "opencode.db",
+                );
+                if (opens === 1) {
+                  fs.mkdirSync(path.dirname(db), { recursive: true });
+                  fs.writeFileSync(db, database);
+                  return;
+                }
+                // The pickup opens on the materialised database.
+                expect(fs.readFileSync(db, "utf8")).toBe(database);
+              },
+              flush: () =>
+                Effect.gen(function* () {
+                  if (!shipped) {
+                    yield* finalCapture;
+                    shipped = true;
+                  }
+                  return {
+                    epoch: 2,
+                    worktreeId: "",
+                    pending: 0,
+                    stagedBytes: 0,
+                    uploadedObjects: 1,
+                    uploadedBytes: 1,
+                    registered: 1,
+                    fenced: false,
+                    paused: false,
+                    refused: [],
+                  } satisfies WorkspaceCaptureStatus;
+                }),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
     "waits for a deferred final registration before stop trigger=null harvest reads the head",
     { timeout: 20_000 },
     () => verifyDeferredFinalHarvest("stop"),
