@@ -818,11 +818,13 @@ const recordingProtocolHostLayer = (
   attached: Array<{ readonly process: SessionProcess; readonly mode: string }>,
   submitted: string[],
   authors: Array<string | null> = [],
+  permissionModes: Array<"bypass" | "ask"> = [],
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
+        permissionModes.push(input.permissionMode);
       }),
     rehydrate: (input) =>
       Effect.sync(() => {
@@ -3397,6 +3399,169 @@ describe("SessionEngine", () => {
           openedOptions,
         ),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted, authors),
+      },
+    );
+  });
+
+  it("brings an ask session back asking: resume, follow-up and a relaunch that names no mode", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    const authors: Array<string | null> = [];
+    const permissionModes: Array<"bypass" | "ask"> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            {
+              mode: "protocol",
+              prompt: "inspect replay",
+              model: "gpt-test",
+              effort: "high",
+              permissionMode: "ask",
+            },
+            "user-1",
+          );
+
+          // POST /sessions/:id/resume after a stop (an idle stop included).
+          yield* engine.stop(session.id, "idle · stopped after 15 min · reply to resume");
+          yield* engine.resumeSession(session.id, null);
+          // A follow-up to the stopped session relaunches it.
+          yield* engine.stop(session.id);
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1", "user-2");
+          // POST /sessions/:id/launch with no permission mode, as the Slack runner sends it.
+          yield* engine.stop(session.id);
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", prompt: "and the other test" },
+            "user-2",
+          );
+
+          expect(attached).toHaveLength(4);
+          expect(permissionModes).toEqual(["ask", "ask", "ask", "ask"]);
+          for (const { process } of attached) {
+            expect(process.kind).toBe("agent-protocol");
+            expect(process.protocolOptions).toEqual({
+              model: "gpt-test",
+              effort: "high",
+              permissionMode: "ask",
+            });
+          }
+
+          // A relaunch that names a mode is taken as given.
+          yield* engine.stop(session.id);
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", permissionMode: "bypass" },
+            null,
+          );
+          expect(permissionModes.at(-1)).toBe("bypass");
+          expect(attached.at(-1)?.process.protocolOptions?.permissionMode).toBe("bypass");
+          // ...and is what the next resume keeps.
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, null);
+          expect(permissionModes.at(-1)).toBe("bypass");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(
+          attached,
+          submitted,
+          authors,
+          permissionModes,
+        ),
+      },
+    );
+  });
+
+  it("resumes a claude ask session without the bypass flag", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    const permissionModes: Array<"bypass" | "ask"> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", prompt: "inspect replay", permissionMode: "ask" },
+            "user-1",
+          );
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, null);
+          yield* engine.stop(session.id);
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1", "user-2");
+
+          expect(attached).toHaveLength(3);
+          expect(permissionModes).toEqual(["ask", "ask", "ask"]);
+          for (const { process } of attached) {
+            expect(process.argv).not.toContain("bypassPermissions");
+            expect(process.protocolOptions?.permissionMode).toBe("ask");
+          }
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted, [], permissionModes),
+      },
+    );
+  });
+
+  it("resumes a bypass session as bypass", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    const permissionModes: Array<"bypass" | "ask"> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // A first launch that names no mode runs on the default.
+          yield* engine.launchProtocol(session.id, { mode: "protocol", prompt: "go" }, "user-1");
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, null);
+          yield* engine.stop(session.id);
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1", "user-2");
+
+          expect(permissionModes).toEqual(["bypass", "bypass", "bypass"]);
+          expect(attached.map(({ process }) => process.protocolOptions?.permissionMode)).toEqual([
+            "bypass",
+            "bypass",
+            "bypass",
+          ]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted, [], permissionModes),
       },
     );
   });
