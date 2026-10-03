@@ -124,6 +124,7 @@ import {
   type CaptureFlushKind,
   SealantClient,
   SealantPlatformError,
+  SealantPrincipal,
   type WorkspaceByKey,
   type WorkspaceCreateFence,
   type WorkspaceStopOptions,
@@ -19894,4 +19895,304 @@ describe("SessionEngine a session and its run settle together (2026-10-03)", () 
       { logs, sealantLayer: sealantLaunchLayer(created) },
     );
   });
+});
+
+/**
+ * The platform as the dispatching client serves it on an install (`SealantClients.forPrincipal`):
+ * a workspace lookup made with no principal fails `NO_PRINCIPAL`, as every call does. The launch
+ * fake beneath answers the rest. A boot fiber that forgot to run as the session's owner reads the
+ * workspace `unknown` here, as it does on the box.
+ */
+const principalRequired = (inner: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => ({
+      ...client,
+      getWorkspace: (id) =>
+        Effect.flatMap(SealantPrincipal, (principal) =>
+          principal.kind === "none"
+            ? Effect.fail(
+                new SealantPlatformError({
+                  code: "NO_PRINCIPAL",
+                  status: null,
+                  message: "Sealant call made without a principal (docs/SEALANT-IDENTITY.md)",
+                  cause: null,
+                }),
+              )
+            : client.getWorkspace(id),
+        ),
+    })),
+  ).pipe(Layer.provide(inner));
+
+/**
+ * A capture-mode session as the owner's box had it on 2026-10-03 at 23:00: stopped and resumed
+ * seconds before a deploy, so its row reads `running` and unsettled (`resumeSession` reopens it
+ * before the relaunch), its agent process ended, its run settled, and its old executor still up
+ * and waiting to be drained when Mend was killed.
+ */
+const seedStoppedBeforeRestart = (
+  world: World,
+  tmp: string,
+  input: {
+    readonly sessionId: SessionId;
+    readonly runId: SealantRunId;
+    readonly workspaceId: SealantWorkspaceId;
+    readonly processLive: boolean;
+  },
+) => {
+  const { sessionId, runId, workspaceId } = input;
+  const projectId = ProjectId.make("proj-boot");
+  const timestamp = now();
+  world.projects.set(
+    projectId,
+    new Project({
+      id: projectId,
+      name: "boot",
+      organizationId: OrganizationId.make("org-test"),
+      visibility: "shared",
+      createdByUserId: null,
+      originUrl: RepositoryCloneUrl.make("https://example.invalid/boot.git"),
+      storePath: path.join(tmp, "store", "boot"),
+      defaultBranch: "main",
+      adoptedSha: Sha.make("0000000000000000000000000000000000000000"),
+      autoTour: "inherit",
+      autoName: "inherit",
+      autoLand: "inherit",
+      autoSuggest: "inherit",
+      backgroundSessions: "inherit",
+      gitAuthMode: "ambient",
+      workspaceImage: null,
+      applyDotfiles: true,
+      defaultShellProfile: true,
+      inheritUserSkills: true,
+      hotSessions: 0,
+      installCommand: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+  world.sessions.set(
+    sessionId,
+    new Session({
+      id: sessionId,
+      projectId,
+      worktreeId: WorktreeId.make("wt-boot"),
+      harness: "codex",
+      providerSessionId: null,
+      label: null,
+      worktree: "session-boot",
+      branch: "mend/session-boot",
+      baseSha: Sha.make("0000000000000000000000000000000000000000"),
+      baseRef: "main",
+      contextSnapshotId: null,
+      referenceMounts: [],
+      extraMounts: [],
+      sealantRunId: runId,
+      sealantWorkspaceId: workspaceId,
+      sealantSessionId: "pty-1",
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
+      workspaceImage: null,
+      dotfiles: null,
+      ownerUserId: "user-fixture",
+      hasTranscript: null,
+      status: "running",
+      summary: null,
+      lastSeenSequence: 0n,
+      recordHistoryComplete: false,
+      startedAt: timestamp,
+      settledAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+  world.processes.set(
+    "agent-boot",
+    new SessionProcess({
+      id: SessionProcessId.make("agent-boot"),
+      sessionId,
+      sealantWorkspaceId: workspaceId,
+      sealantSessionId: "pty-1",
+      sealantRunId: runId,
+      launchCorrelationId: null,
+      serviceId: null,
+      attemptOrdinal: null,
+      kind: "agent-pty",
+      harness: "codex",
+      providerSessionId: null,
+      protocolOptions: null,
+      label: "codex",
+      argv: ["codex"],
+      status: input.processLive ? "running" : "stopped",
+      exitCode: null,
+      workspacePort: null,
+      protocol: "tcp",
+      hostPort: null,
+      createdAt: timestamp,
+      exitedAt: input.processLive ? null : timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+  world.sessionRuns.set(
+    runId,
+    new SessionRun({
+      sealantRunId: runId,
+      sessionId,
+      ordinal: 1,
+      harness: "codex",
+      sealantWorkspaceId: workspaceId,
+      sealantSessionId: "pty-1",
+      status: input.processLive ? "running" : "stopped",
+      summary: null,
+      lastSeenSequence: 0n,
+      environmentRevision: null,
+      environmentVariableNames: null,
+      secretRevision: null,
+      secretNames: null,
+      clusterBindingRevision: null,
+      clusterBindingNames: null,
+      clusterServiceAccount: null,
+      startedAt: timestamp,
+      settledAt: input.processLive ? null : timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+};
+
+/** `condition` holds within `within`, polled every 20 ms; else the test fails with `what`. */
+const eventually = (what: string, within: Duration.Duration, condition: () => boolean) =>
+  Effect.suspend(() =>
+    condition() ? Effect.void : Effect.fail(new Error(`not yet: ${what}`)),
+  ).pipe(
+    Effect.retry({
+      times: Math.ceil(Duration.toMillis(within) / 20),
+      schedule: Schedule.spaced(Duration.millis(20)),
+    }),
+  );
+
+describe("SessionEngine startup never waits on an executor (2026-10-03)", () => {
+  // Observed on the owner's box: 0.36.0-preview.13 was deployed over a running preview 11 forty
+  // seconds after one session was stopped and resumed. The resume had reopened the row to
+  // `running`, settled the old run and begun draining the old executor when the deploy killed the
+  // process. The new process re-attached five live sessions, then went silent for four minutes
+  // and was restarted by the bundle's health check: `resume` had folded that session and gone on
+  // to drain its workspace inline, with no principal, so every lookup read `unknown` and the drain
+  // idled until its ten-minute stall window. Nothing listened on 3101 meanwhile.
+  const sessionId = SessionId.make("session-stopped-before-restart");
+  const runId = SealantRunId.make("run-stopped-before-restart");
+  const workspaceId = SealantWorkspaceId.make("workspace-1");
+
+  it("finishes while a folded session's executor is still to be drained: the row settles inline, the workspace is the leftover sweep's, forked and as the owner", async () => {
+    const created: Array<CreateOptions> = [];
+    const flushed: string[] = [];
+    const logs: Array<string> = [];
+    const startedAt = Date.now();
+    let bound: ReturnType<typeof setTimeout> | undefined;
+    const built = withEngine(
+      (world) =>
+        Effect.gen(function* () {
+          // The engine stands: the fold ran, and nothing waited on the executor.
+          expect(Date.now() - startedAt).toBeLessThan(5_000);
+          const settled = world.sessions.get(sessionId);
+          expect(settled?.status).toBe("stopped");
+          expect(settled?.settledAt).not.toBeNull();
+          // The workspace is drained after the boot, as the owner: the executor is asked to flush
+          // within moments, which a fiber with no principal could never do.
+          yield* eventually(
+            "the leftover sweep asked the executor to flush",
+            Duration.seconds(3),
+            () => flushed.includes(`flush:${workspaceId}`),
+          );
+          expect(logs.some((line) => line.includes("reaping leftover workspace"))).toBe(true);
+        }),
+      {
+        logs,
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world, tmp) =>
+          seedStoppedBeforeRestart(world, tmp, {
+            sessionId,
+            runId,
+            workspaceId,
+            processLive: false,
+          }),
+        sealantLayer: principalRequired(
+          sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { flushed },
+          ),
+        ),
+      },
+    );
+    const withinBound = new Promise<never>((_, reject) => {
+      bound = setTimeout(
+        () =>
+          reject(
+            new Error(
+              "the engine did not finish construction within 5 s · startup waited on a session's executor",
+            ),
+          ),
+        5_000,
+      );
+    });
+    try {
+      await Promise.race([built, withinBound]);
+    } finally {
+      clearTimeout(bound);
+    }
+  }, 10_000);
+
+  it("re-forks the watcher of a live agent process as the session's owner: its exit after the restart settles the session", async () => {
+    const created: Array<CreateOptions> = [];
+    const ptyStates = new Map<string, InteractiveSessionStatus>();
+    await withEngine(
+      (world) =>
+        Effect.gen(function* () {
+          expect(world.sessions.get(sessionId)?.settledAt).toBeNull();
+          // The agent exits after the restart; the boot watcher polls its PTY every two seconds.
+          ptyStates.set("pty-1", { status: "exited", exitCode: 0, outputHighWater: 0n });
+          yield* eventually("the session settled on its agent's exit", Duration.seconds(8), () => {
+            const session = world.sessions.get(sessionId);
+            return session !== undefined && session.settledAt !== null;
+          });
+          expect(world.processes.get("agent-boot")?.exitedAt).not.toBeNull();
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world, tmp) =>
+          seedStoppedBeforeRestart(world, tmp, {
+            sessionId,
+            runId,
+            workspaceId,
+            processLive: true,
+          }),
+        sealantLayer: principalRequired(
+          sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            [],
+          ),
+        ),
+      },
+    );
+  }, 15_000);
 });
