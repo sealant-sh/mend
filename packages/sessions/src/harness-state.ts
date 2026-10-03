@@ -334,6 +334,61 @@ const MERGE_FUNCTIONS = [
     `else kept_time "$mm_to" cp -a "$mm_from" "$mm_to" || exit 1; fi; done )`,
 ];
 
+/**
+ * `physical_root <relative path>`: where a `$HOME`-relative harness path is read from, physically.
+ * Walks the path from `$HOME`; the one link taken is the relocation's own, a component that points
+ * exactly at the same path under the mount (`~/.claude`, `~/.local/share/opencode`), after which
+ * the walk goes on under the mount and no further link is taken. Sets `R` to `$HOME` or the mount,
+ * or returns 1 at any other link.
+ */
+const physicalRootFunction = (mountPath: string) =>
+  'physical_root() { pr_rest=$1; pr_rel=""; R="$HOME"; while :; do case "$pr_rest" in ' +
+  '*/*) pr_seg=${pr_rest%%/*}; pr_rest=${pr_rest#*/};; *) pr_seg=$pr_rest; pr_rest="";; esac; ' +
+  'pr_rel="${pr_rel:+$pr_rel/}$pr_seg"; if [ -L "$R/$pr_rel" ]; then ' +
+  `{ [ "$R" = "$HOME" ] && [ "$(readlink "$R/$pr_rel")" = "${mountPath}/$pr_rel" ]; } || return 1; ` +
+  `R="${mountPath}"; fi; [ -z "$pr_rest" ] && return 0; done; }; `;
+
+/**
+ * The co-located harvest: the harness's state paths, archived from where they physically are
+ * (the mount the relocation linked `$HOME/<dir>` onto, or `$HOME` itself when it did not) and
+ * never through a link. `tar` follows no symlink: a link an agent left anywhere under the harness
+ * home, or put in place of a directory on the way, is archived as a link, so a secret file it
+ * points at (docs/adr/0010) or anything else outside the harness home never enters the archive.
+ * The relocation's own top-level links are the one indirection taken, by reading under the mount.
+ * Conversations Mend carried in from other sessions (docs/adr/0009, "Codex") stay out: restored
+ * without their list, one could read as this session's own.
+ *
+ * Exit 3 when none of the paths is present. Prints the archive, base64, on stdout. The archive and
+ * the exclude list go under `$TMPDIR`, `/tmp` by default.
+ */
+export const harvestHarnessStateScript = (
+  paths: ReadonlyArray<string>,
+  mountPath: string = HARNESS_HOME_MOUNT_PATH,
+): string => {
+  const list = paths.map((p) => `"${p}"`).join(" ");
+  return (
+    'cd "$HOME" || exit 1; O="${TMPDIR:-/tmp}/mend-harness-state"; ' +
+    physicalRootFunction(mountPath) +
+    `A=""; B=""; for p in ${list}; do [ -e "$p" ] || continue; physical_root "$p" || continue; ` +
+    `if [ "$R" = "$HOME" ]; then B="$B $p"; else A="$A $p"; fi; done; ` +
+    '[ -n "$A$B" ] || exit 3; X="$O.exclude"; : > "$X"; ' +
+    `C="${mountPath}/${CARRIED_TRANSCRIPTS}"; [ -s "$C" ] && sed 's/.*/*&*/' "$C" > "$X"; ` +
+    `set --; [ -n "$A" ] && set -- "$@" -C "${mountPath}" $A; [ -n "$B" ] && set -- "$@" -C "$HOME" $B; ` +
+    'tar -czf "$O.tgz" -X "$X" "$@" && base64 -w0 "$O.tgz"'
+  );
+};
+
+/**
+ * Read one harness file by its absolute path under `$HOME` (`$1`), never through a link: the
+ * relocation's own top-level link is the one indirection taken, and every other component on
+ * the way, the file included, must be a plain entry. Exit 4 otherwise, with the reason on stderr.
+ */
+export const readHarnessFileScript = (mountPath: string = HARNESS_HOME_MOUNT_PATH): string =>
+  'case "$1" in "$HOME"/*) ;; *) echo "not under the home directory" >&2; exit 4;; esac; ' +
+  'rel=${1#"$HOME"/}; ' +
+  physicalRootFunction(mountPath) +
+  'physical_root "$rel" || { echo "a symlink is on the way to $1" >&2; exit 4; }; cat "$R/$rel"';
+
 export const relocateHarnessHomeScript = (
   mountPath: string = HARNESS_HOME_MOUNT_PATH,
   options: { readonly keepStoreReadable?: boolean } = {},

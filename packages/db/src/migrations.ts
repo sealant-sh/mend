@@ -2812,6 +2812,23 @@ const captureLaunchAnswersMigration = Effect.gen(function* () {
 });
 
 /**
+ * 0101: each person's secret files (docs/adr/0010-secret-files.md): one row per path, the content
+ * sealed with the machine's secrets key as project secrets are. Removed with the account.
+ */
+const secretFilesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE user_secret_files (
+      id text PRIMARY KEY,
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      path text NOT NULL,
+      sealed_contents text NOT NULL,
+      bytes integer NOT NULL,
+      revision integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT user_secret_files_user_id_path_key UNIQUE (user_id, path)
+    )`;
  * The server-owned model catalog (docs/models-audit.md): one row per harness and model id, seeded
  * with what the harness adapters supported on 2026-10-03 (`HARNESS_MODEL_SEED`, written out here
  * so the migration stays what it was). `efforts` null means the harness's own; one default per
@@ -2951,5 +2968,6 @@ export const migrations = {
   "0098_agent_memory": agentMemoryMigration,
   "0099_capture_bound_indexes": captureBoundIndexesMigration,
   "0100_capture_launch_answers": captureLaunchAnswersMigration,
+  "0101_secret_files": secretFilesMigration,
   "0102_harness_models": harnessModelsMigration,
 };

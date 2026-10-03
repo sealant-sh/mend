@@ -63,6 +63,7 @@ import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { PiProfileGroupLive } from "./pi-profile.ts";
+import { SecretFilesGroupLive } from "./secret-files.ts";
 import { SkillsGroupLive } from "./skills.ts";
 import { SlackGroupLive } from "./slack.ts";
 import { UpgradeTicketExchangeGroupLive, UpgradeTicketsGroupLive } from "./upgrade-tickets.ts";
@@ -676,6 +677,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       SkillsGroupLive,
       PiProfileGroupLive,
       AgentMemoryGroupLive,
+      SecretFilesGroupLive,
       HarnessModelsGroupLive,
     ),
   ),

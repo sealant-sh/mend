@@ -69,6 +69,12 @@ import {
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
+import {
+  secretFileLines,
+  secretFilePathOf,
+  secretFileUploadOf,
+  type SecretFileDto,
+} from "./secret-files.ts";
 import { MendRequestError, noAnswerError, spoken } from "./server-request.ts";
 import { runServerProcess } from "./server-runtime.ts";
 import { nodeServerRuntime, readServerInstallationFacts, serverCommand } from "./server-setup.ts";
@@ -2479,6 +2485,65 @@ const memoryCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   }
 };
 
+// ─── secrets: the person's secret files (docs/adr/0010) ───────────────────────
+
+/** `mend secrets`: the files written into every workspace a session of yours launches in. */
+const secretsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  if (verb === "add" || verb === "rm") {
+    const given = rest.find((arg, index) => !arg.startsWith("--") && rest[index - 1] !== "--from");
+    if (given === undefined) return fail(usageOf(`secrets ${verb}`));
+    const resolved = secretFilePathOf(given, os.homedir());
+    if (resolved.issue !== null) return fail(resolved.issue);
+    if (verb === "rm") {
+      const removed = await api<{ readonly removed: boolean }>(
+        config,
+        "DELETE",
+        `/me/secret-files?path=${encodeURIComponent(resolved.path)}`,
+      );
+      return say(
+        removed.removed
+          ? `removed ~/${resolved.path} ${dim("· sessions launched from now on do not receive it")}`
+          : `~/${resolved.path}: not kept`,
+      );
+    }
+    const from = takeFlagValue(rest, "--from");
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFileSync(from ?? 0);
+    } catch (error) {
+      return fail(
+        from === null
+          ? `nothing on stdin: pass --from <file> or pipe the content in`
+          : `${from}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (bytes.byteLength === 0)
+      return fail(from === null ? "nothing on stdin" : `${from} is empty`);
+    const saved = await api<{
+      readonly file: SecretFileDto;
+      readonly action: "created" | "replaced";
+    }>(config, "PUT", "/me/secret-files", secretFileUploadOf(resolved.path, bytes));
+    say(
+      `${green(saved.action)} ~/${saved.file.path} · ${saved.file.bytes} B ${dim(
+        "· sessions launched from now on receive it",
+      )}`,
+    );
+    return;
+  }
+  if (verb !== undefined && verb !== "list") return fail(usageOf("secrets"));
+  const view = await api<{ readonly files: ReadonlyArray<SecretFileDto> }>(
+    config,
+    "GET",
+    "/me/secret-files",
+  );
+  if (view.files.length === 0) {
+    say(`no secret files ${dim("· mend secrets add <path> --from <file> keeps one")}`);
+    return;
+  }
+  for (const line of secretFileLines(view.files)) say(line);
+};
+
 // ─── connect / accounts: the user's own provider credentials ────────────────
 
 type ConnectedAccountProvider = "claude" | "codex" | "github";
@@ -4709,6 +4774,8 @@ const main = async () => {
       return skillsCommand(config, rest);
     case "memory":
       return memoryCommand(config, rest);
+    case "secrets":
+      return secretsCommand(config, rest);
     case "accounts":
       return accountsCommand(config);
     case "connect":

@@ -312,6 +312,17 @@ on macOS.
 
 Read [Dotfiles](/guides/dotfiles/) before syncing credentials or machine-specific files.
 
+## Secret file commands
+
+| Command                                   | Purpose                                                                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `mend secrets`                            | List your secret files: the path each takes in the workspace, its size, and when it last changed             |
+| `mend secrets add <path> [--from <file>]` | Keep a file at `<path>` under the workspace home, reading it from `<file>` or stdin; replaces one kept there |
+| `mend secrets rm <path>`                  | Remove a secret file                                                                                         |
+
+Every session you own receives your secret files before its agent starts. They are never captured.
+See [Secret files](/guides/secret-files/).
+
 ## Skills commands
 
 | Command                                                     | Purpose                                                                                                                                             |

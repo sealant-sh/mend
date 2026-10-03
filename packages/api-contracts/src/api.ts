@@ -25,6 +25,7 @@ import {
   projectLinksGroup,
 } from "./projects.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
+import { secretFilesGroup } from "./secret-files.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
 import { skillsGroup } from "./skills.ts";
@@ -56,6 +57,7 @@ export const MendApi = HttpApi.make("mend")
   .add(skillsGroup)
   .add(piProfileGroup)
   .add(agentMemoryGroup)
+  .add(secretFilesGroup)
   .add(harnessModelsGroup)
   .add(issuesGroup)
   .add(briefsGroup)
