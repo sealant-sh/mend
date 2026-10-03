@@ -73,7 +73,7 @@ const CODEX_UP_TO_MAX: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "x
 const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh"];
 
 /**
- * What the `harness_models` table was seeded with (migration 0101), and the words Slack recognises
+ * What the `harness_models` table was seeded with (migration 0102; opencode 0107), and the words Slack recognises
  * without a database at hand. Not a picker's list: pickers read the server's catalog
  * (`GET /harnesses/models`, `model-catalog.ts`), which an operator edits in place. The contract
  * keeps `model` free-form because harnesses accept ids no list knows yet.
@@ -101,6 +101,19 @@ export const HARNESS_MODEL_SEED: Readonly<Record<string, ReadonlyArray<HarnessMo
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", isDefault: false },
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", isDefault: false, efforts: CODEX_UP_TO_MAX },
     { id: "gpt-5.5", label: "GPT-5.5", isDefault: false, efforts: CODEX_UP_TO_XHIGH },
+  ],
+  // opencode on the ChatGPT login (migration 0107): the Codex models above as `opencode models
+  // openai` lists them (opencode 1.18.34, 2026-10-04), the same default (`OPENCODE_DEFAULT_MODEL`).
+  // opencode takes no shared effort scale (`HARNESS_EFFORTS`).
+  opencode: [
+    { id: "openai/gpt-6.1-sol", label: "GPT-6.1 Sol", isDefault: true },
+    { id: "openai/gpt-6-astra", label: "GPT-6 Astra", isDefault: false },
+    { id: "openai/gpt-6-sol", label: "GPT-6 Sol", isDefault: false },
+    { id: "openai/gpt-6-luna", label: "GPT-6 Luna", isDefault: false },
+    { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", isDefault: false },
+    { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", isDefault: false },
+    { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", isDefault: false },
+    { id: "openai/gpt-5.5", label: "GPT-5.5", isDefault: false },
   ],
 };
 

@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, SessionProcessId } from "@mend/domain";
+import { HARNESS_MODEL_SEED, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -2043,6 +2044,87 @@ describe.skipIf(!reachable)("0096 notification settings", () => {
         needs_input: true,
         failed: true,
       },
+    ]);
+  });
+});
+
+describe.skipIf(!reachable)("0107 opencode models", () => {
+  const MODELS_DB = `${SCRATCH_DB}_opencode_models`;
+  const modelsLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${MODELS_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withModelsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(modelsLayer), Effect.scoped));
+  const opencodeRows = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      readonly id: string;
+      readonly label: string;
+      readonly is_default: boolean;
+    }>`
+      SELECT id, label, is_default FROM harness_models
+      WHERE harness = 'opencode' ORDER BY position, id`;
+    return rows.map((row) => ({ ...row }));
+  });
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${MODELS_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${MODELS_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("lists the ChatGPT login's models for opencode, its default first, and keeps an operator's rows", async () => {
+    const rows = await withModelsDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0105_turn_origin");
+        // An operator added opencode rows by hand before this migration: theirs stay as they are,
+        // and their default stays the only one.
+        yield* sql`
+          INSERT INTO harness_models (harness, id, label, is_default, efforts, position) VALUES
+            ('opencode', 'anthropic/claude-opus-5', 'Opus 5 · API key', true, NULL, 0),
+            ('opencode', 'openai/gpt-5.5', 'Their label', false, NULL, 9)`;
+        yield* migrations["0107_opencode_models"];
+        return yield* opencodeRows;
+      }),
+    );
+    expect(rows.filter((row) => row.is_default).map((row) => row.id)).toEqual([
+      "anthropic/claude-opus-5",
+    ]);
+    expect(rows.find((row) => row.id === "openai/gpt-5.5")?.label).toBe("Their label");
+    expect(rows.map((row) => row.id)).toContain("openai/gpt-6.1-sol");
+
+    // A catalog with no opencode rows takes the seed as it is.
+    const fresh = await withModelsDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM harness_models WHERE harness = 'opencode'`;
+        yield* migrations["0107_opencode_models"];
+        return yield* opencodeRows;
+      }),
+    );
+    expect(fresh).toEqual(
+      (HARNESS_MODEL_SEED.opencode ?? []).map((model) => ({
+        id: model.id,
+        label: model.label,
+        is_default: model.isDefault,
+      })),
+    );
+    expect(fresh.filter((row) => row.is_default).map((row) => row.id)).toEqual([
+      OPENCODE_DEFAULT_MODEL,
     ]);
   });
 });
