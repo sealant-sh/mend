@@ -34,6 +34,7 @@ const server: ServerInstallationFacts = {
     bucket: "garage",
   },
   compose: "services:\n  mend:\n    image: ghcr.io/sealant-sh/mend:${MEND_VERSION}\n",
+  overlays: [],
   envKeys: ["MEND_VERSION", "POSTGRES_PASSWORD", "APP_URL"],
 };
 

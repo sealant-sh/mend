@@ -31,7 +31,7 @@ const fakeDocker = (args: ReadonlyArray<string>): string => {
   if (args.includes("image")) return "0.23.0";
   if (!args.includes("compose")) return "1.45 1.47";
   if (args.includes("config"))
-    return "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\n";
+    return `ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\n${args.some((arg) => arg.endsWith("/compose.edge.yaml")) ? "caddy:2.10-alpine\n" : ""}`;
   if (args.includes("exec") && args.includes("garage")) {
     const sub = args.slice(args.indexOf("/etc/garage.toml") + 1);
     if (sub[0] === "status") return "==== HEALTHY NODES ====\n0123456789abcdef  garage\n";
@@ -612,6 +612,121 @@ describe.skipIf(!composeAvailable)(
       expect(fs.readFileSync(path.join(directory, "server.env"), "utf8")).toBe(
         fs.readFileSync(path.join(configDir, "active", "server.env"), "utf8"),
       );
+    });
+
+    it("a generation with the edge and a public, multi posture renders as compose.edge.yaml intends", async () => {
+      const root = temporary();
+      const configDir = path.join(root, "server");
+      const runtime = setupRuntime(configDir);
+      // The first account must exist before the edge and before `public`: the plain install
+      // first, the edge and the posture on reruns.
+      expect(await serverCommand(["setup", "--context", "default"], runtime)).toEqual({
+        _tag: "ok",
+      });
+      expect(
+        await serverCommand(
+          ["setup", "--edge", "mend.example.test", "--tenancy", "multi"],
+          runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      expect(await serverCommand(["setup", "--exposure", "public"], runtime)).toEqual({
+        _tag: "ok",
+      });
+      const directory = fs.realpathSync(path.join(configDir, "active"));
+      expect(fs.readdirSync(directory).toSorted()).toEqual([
+        "Caddyfile",
+        "compose.edge.yaml",
+        "compose.posture.yaml",
+        "compose.yaml",
+        "identity.env",
+        "postgres-init.sh",
+        "server.env",
+        "server.json",
+      ]);
+      const rendered = await runProductionDocker(
+        serverComposeArgs(
+          {
+            directory,
+            dockerContext: "default",
+            overlays: ["compose.edge.yaml", "compose.posture.yaml"],
+          },
+          ["config", "--format", "json"],
+        ),
+        root,
+        { ...process.env, MEND_EXPOSURE: "poison", MEND_EDGE_HOST: "poison" },
+      );
+      const compose: unknown = JSON.parse(rendered);
+      expect(compose).toMatchObject({
+        name: "mend",
+        services: {
+          mend: {
+            environment: {
+              APP_URL: "https://mend.example.test",
+              MEND_EXPOSURE: "public",
+              MEND_TENANCY: "multi",
+              MEND_SOURCE_POLICY: "tenant",
+              MEND_CAPTURE_REQUIRE_SIZES: "true",
+              MEND_URL_BEARERS: "refuse",
+              MEND_TRUSTED_PROXIES: "192.168.250.0/28",
+              MEND_EXECUTOR_NETWORK: "private",
+            },
+            networks: { default: null, edge: null },
+            ports: [
+              expect.objectContaining({ host_ip: "127.0.0.1", target: 3105, published: "3105" }),
+              expect.objectContaining({ host_ip: "127.0.0.1", target: 2222, published: "2222" }),
+            ],
+          },
+          edge: {
+            image: "caddy:2.10-alpine",
+            environment: { MEND_EDGE_HOST: "mend.example.test" },
+            networks: { edge: null },
+            cap_drop: ["ALL"],
+            cap_add: ["NET_BIND_SERVICE"],
+            volumes: expect.arrayContaining([
+              expect.objectContaining({
+                type: "bind",
+                source: path.join(directory, "Caddyfile"),
+                target: "/etc/caddy/Caddyfile",
+                read_only: true,
+              }),
+            ]),
+          },
+        },
+        networks: { edge: { ipam: { config: [{ subnet: "192.168.250.0/28" }] } } },
+      });
+      if (typeof compose !== "object" || compose === null || !("services" in compose))
+        throw new Error("no services rendered");
+      const services: unknown = compose.services;
+      const edgePorts =
+        typeof services === "object" && services !== null && "edge" in services
+          ? services.edge
+          : null;
+      expect(edgePorts).toMatchObject({
+        ports: expect.arrayContaining([
+          expect.objectContaining({ host_ip: "0.0.0.0", target: 80, published: "80" }),
+          expect.objectContaining({ host_ip: "0.0.0.0", target: 443, published: "443" }),
+        ]),
+      });
+      // Only the edge is published beyond loopback; nothing else gained an interface.
+      const published = Object.entries(
+        typeof services === "object" && services !== null ? services : {},
+      ).flatMap(([name, service]) =>
+        typeof service === "object" &&
+        service !== null &&
+        "ports" in service &&
+        Array.isArray(service.ports)
+          ? service.ports.map(
+              (port: { host_ip?: string }) => `${name}:${port.host_ip ?? "0.0.0.0"}`,
+            )
+          : [],
+      );
+      expect(published.filter((entry) => !entry.endsWith(":127.0.0.1"))).toEqual([
+        "edge:0.0.0.0",
+        "edge:0.0.0.0",
+        "edge:0.0.0.0",
+      ]);
+      expect(rendered).not.toContain("poison");
+      expect(rendered).not.toContain(`MEND_URL_BEARERS": "accept`);
     });
   },
 );

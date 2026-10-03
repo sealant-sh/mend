@@ -13,7 +13,9 @@
 # It takes compose.v2.yaml and postgres-init.sh from that exact Mend commit, pulls
 # ghcr.io/sealant-sh/mend:<version>, and runs `mend server setup` when the box has no Mend server
 # or `mend server upgrade` when it has one. Options after the commit go to `mend server setup` only;
-# an upgrade keeps the installed configuration. See docs/operations/preview-builds.md.
+# an upgrade keeps the installed configuration, the edge (--edge) and the declared exposure and
+# tenancy included: the CLI carries the edge overlay and renders it into every generation, so
+# nothing beyond the two release assets is fetched here. See docs/operations/preview-builds.md.
 set -euo pipefail
 
 readonly REPOSITORY=sealant-sh/mend

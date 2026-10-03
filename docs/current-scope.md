@@ -179,8 +179,10 @@ The packaged acceptance run takes about three minutes, and the whole workflow ab
       2026-09-26 docs pass.
 - [x] What `mend` prints when the TUI is opened on Node.js 22. It says the dashboard needs Node 26
       and that every other command still works (`apps/cli/src/main.ts`).
-- [ ] `mend server setup`, `start` and `upgrade` do not know the edge overlay or `compose.aws.yaml`.
-      Alpha upgrades are by hand until they do.
+- [x] `mend server setup`, `start` and `upgrade` know the edge overlay since 2026-10-03:
+      `mend server setup --edge <host>`, `--exposure` and `--tenancy` write the edge and the posture
+      into the generation, and every start, restart and upgrade runs them. `compose.aws.yaml` stays
+      by hand, as `deploy/aws/README.md` describes.
 - [ ] Core's `format:check` fails on two generated changelogs on `main`.
 - [ ] Local leftovers: the worktrees `Sealantd-plan-remotes`, `Core-sealantd-0.18` and
       `Core-skip-build`, and the `ghcr.io/sealant-sh/mend:0.0.0-acceptance.4` image.

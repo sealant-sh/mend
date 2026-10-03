@@ -69,9 +69,10 @@ or `scripts/preview-deploy.sh <version> <sha>` from a checkout. The script takes
 `deploy/docker/compose.v2.yaml` and `deploy/docker/postgres-init.sh` from that Mend commit, pulls
 `ghcr.io/sealant-sh/mend:<version>`, and checks the image's version label. With no Mend server on
 the box it runs `mend server setup --version <version> --assets-dir <dir>`, passing on any options
-after the commit (`--url`, `--bind`, `--port` and the rest); with one, it runs
-`mend server upgrade --version <version> --assets-dir <dir>` and the installed configuration stays.
-It ends with `mend server status`.
+after the commit (`--url`, `--bind`, `--port`, `--edge`, `--exposure` and the rest); with one, it
+runs `mend server upgrade --version <version> --assets-dir <dir>` and the installed configuration
+stays, the edge and the declared exposure and tenancy included (the CLI carries the edge overlay and
+writes it into every generation). It ends with `mend server status`.
 
 ## Limits
 

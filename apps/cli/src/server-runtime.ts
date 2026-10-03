@@ -165,9 +165,18 @@ export const runServerProcess = (
   });
 };
 
-/** Build every lifecycle Compose invocation against one immutable generation and explicit context. */
+/**
+ * Build every lifecycle Compose invocation against one immutable generation and explicit context.
+ * `overlays` are the generation's own files merged after `compose.yaml`, in order: the edge and the
+ * posture, when the config declares them. The same list goes to every command, so a start, a
+ * restart and an upgrade never recreate `mend` without them.
+ */
 export const serverComposeArgs = (
-  installation: { readonly directory: string; readonly dockerContext: string },
+  installation: {
+    readonly directory: string;
+    readonly dockerContext: string;
+    readonly overlays?: ReadonlyArray<string>;
+  },
   command: ReadonlyArray<string>,
 ): ReadonlyArray<string> => [
   "--context",
@@ -181,5 +190,9 @@ export const serverComposeArgs = (
   path.join(installation.directory, "server.env"),
   "-f",
   path.join(installation.directory, "compose.yaml"),
+  ...(installation.overlays ?? []).flatMap((file) => [
+    "-f",
+    path.join(installation.directory, file),
+  ]),
   ...command,
 ];

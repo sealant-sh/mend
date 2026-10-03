@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { BundleFile, Collector } from "./doctor-bundle.ts";
+import { composeOverlays } from "./server-edge.ts";
 import { serverComposeArgs, type ServerProcessOutput } from "./server-runtime.ts";
 import type { ServerInstallationFacts } from "./server-setup.ts";
 
@@ -192,6 +193,12 @@ export const serverConfigCollector = (
         }),
       },
       { path: "server-compose.yaml", content: server.compose },
+      // The generation's own overlays, when it has them: the edge and the posture name which
+      // variables reach the container and read every value from server.env, so they carry none.
+      ...server.overlays.map((overlay) => ({
+        path: `server-${overlay.name}`,
+        content: overlay.content,
+      })),
     ];
   },
 });
@@ -211,6 +218,7 @@ export const serverLogsCollector = (
     const installation = {
       directory: server.directory,
       dockerContext: server.config.dockerContext,
+      overlays: composeOverlays(server.config),
     };
     const listed = await deps.run(
       "docker",

@@ -13,13 +13,23 @@ export type ServerStoreResult<T> =
   | { readonly _tag: "ok"; readonly value: T }
   | { readonly _tag: "error"; readonly error: ServerStoreError };
 
-/** Complete deployment files, committed together. Only postgresInit is public; identity never changes. */
+/**
+ * Complete deployment files, committed together. Only postgresInit and the Caddyfile are public;
+ * identity never changes. The three optional files exist when the config declares a posture or an
+ * edge: a generation from before them has none, and reads as it did.
+ */
 export interface ServerFiles {
   readonly identity: string;
   readonly config: string;
   readonly env: string;
   readonly compose: string;
   readonly postgresInit: string;
+  /** compose.posture.yaml: the posture variables the mend container receives. */
+  readonly posture?: string;
+  /** compose.edge.yaml: the TLS edge overlay, the repository's byte for byte. */
+  readonly edge?: string;
+  /** Caddyfile: the edge's configuration, mounted read-only into the edge container. */
+  readonly caddyfile?: string;
 }
 
 /** An immutable deployment snapshot. Use this directory, not the active symlink, for Compose. */
@@ -114,13 +124,36 @@ const writeDurable = (file: string, content: string, mode = 0o600): void => {
 };
 
 const fileKeys = ["identity", "config", "env", "compose", "postgresInit"] as const;
+/** Present only when the config asks for them; a missing file reads as undefined. */
+const optionalFileKeys = ["posture", "edge", "caddyfile"] as const;
 const fileNames = {
   identity: "identity.env",
   config: "server.json",
   env: "server.env",
   compose: "compose.yaml",
   postgresInit: "postgres-init.sh",
+  posture: "compose.posture.yaml",
+  edge: "compose.edge.yaml",
+  caddyfile: "Caddyfile",
 } as const;
+/** The bind-mounted files another UID reads: Postgres's init (UID 70) and Caddy's configuration. */
+const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[number], number>> = {
+  identity: 0o600,
+  config: 0o600,
+  env: 0o600,
+  compose: 0o600,
+  postgresInit: 0o755,
+  posture: 0o600,
+  edge: 0o600,
+  caddyfile: 0o644,
+};
+
+/** Every file a generation may hold, in a fixed order, with its content or undefined. */
+const allFiles = (
+  files: ServerFiles,
+): ReadonlyArray<
+  readonly [(typeof fileKeys | typeof optionalFileKeys)[number], string | undefined]
+> => [...fileKeys, ...optionalFileKeys].map((key) => [key, files[key]] as const);
 
 const parseLockOwner = (
   raw: unknown,
@@ -244,12 +277,20 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     );
   }
   const directory = path.join(paths.configDir, target);
+  const optional = (key: (typeof optionalFileKeys)[number]): string | undefined =>
+    readOptional(path.join(directory, fileNames[key])) ?? undefined;
+  const posture = optional("posture");
+  const edge = optional("edge");
+  const caddyfile = optional("caddyfile");
   const files: ServerFiles = {
     identity: fs.readFileSync(path.join(directory, fileNames.identity), "utf8"),
     config: fs.readFileSync(path.join(directory, fileNames.config), "utf8"),
     env: fs.readFileSync(path.join(directory, fileNames.env), "utf8"),
     compose: fs.readFileSync(path.join(directory, fileNames.compose), "utf8"),
     postgresInit: fs.readFileSync(path.join(directory, fileNames.postgresInit), "utf8"),
+    ...(posture === undefined ? {} : { posture }),
+    ...(edge === undefined ? {} : { edge }),
+    ...(caddyfile === undefined ? {} : { caddyfile }),
   };
   if (readIdentity(paths) !== files.identity) {
     throw new ServerStoreError(
@@ -272,12 +313,9 @@ const prepareGeneration = (paths: StorePaths, files: ServerFiles): ServerGenerat
   const generationName = `gen-${randomUUID()}`;
   const directory = path.join(paths.generations, generationName);
   fs.mkdirSync(directory, { mode: 0o700 });
-  for (const key of fileKeys) {
-    writeDurable(
-      path.join(directory, fileNames[key]),
-      files[key],
-      key === "postgresInit" ? 0o755 : 0o600,
-    );
+  for (const [key, content] of allFiles(files)) {
+    if (content === undefined) continue;
+    writeDurable(path.join(directory, fileNames[key]), content, fileModes[key]);
   }
   syncDirectory(directory);
   syncDirectory(paths.generations);
@@ -293,11 +331,8 @@ const activateGeneration = (paths: StorePaths, generation: ServerGeneration): vo
   ) {
     throw new ServerStoreError("Cannot activate a generation outside this installation identity.");
   }
-  for (const key of fileKeys) {
-    if (
-      fs.readFileSync(path.join(generation.directory, fileNames[key]), "utf8") !==
-      generation.files[key]
-    ) {
+  for (const [key, content] of allFiles(generation.files)) {
+    if (readOptional(path.join(generation.directory, fileNames[key])) !== (content ?? null)) {
       throw new ServerStoreError("Cannot activate an incomplete or changed server generation.");
     }
   }
@@ -315,7 +350,7 @@ const prepareFiles = (paths: StorePaths, files: ServerFiles): ServerGeneration =
   const active = readActive(paths);
   if (
     active !== null &&
-    fileKeys.every((key) => files[key] === active.files[key]) &&
+    allFiles(files).every(([key, content]) => content === active.files[key]) &&
     (fs.statSync(path.join(active.directory, fileNames.postgresInit)).mode & 0o7777) === 0o755
   )
     return active;

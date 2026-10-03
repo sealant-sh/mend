@@ -9,6 +9,7 @@ import {
   secondaryVolumesOf,
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
+import { composeOverlays } from "./server-edge.ts";
 import { serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
 import { withServerStore } from "./server-store.ts";
@@ -77,6 +78,8 @@ export interface ServerPlan {
   readonly version: string;
   readonly appUrl: string;
   readonly dockerContext: string;
+  /** The TLS edge's host when the install runs one; its container and volumes go with the rest. */
+  readonly edgeHost: string | null;
   readonly generations: number;
   readonly backups: number;
 }
@@ -153,6 +156,7 @@ export const describeUninstall = async (
             version: "(no active generation)",
             appUrl: "",
             dockerContext: "",
+            edgeHost: null,
             generations: countEntries(path.join(configDir, "generations")),
             backups: countEntries(path.join(configDir, "backups")),
           }
@@ -162,6 +166,7 @@ export const describeUninstall = async (
         version: read.value.config.serverVersion,
         appUrl: read.value.config.appUrl,
         dockerContext: read.value.config.dockerContext,
+        edgeHost: read.value.config.edgeHost ?? null,
         generations: countEntries(path.join(configDir, "generations")),
         backups: countEntries(path.join(configDir, "backups")),
       };
@@ -189,13 +194,15 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
   if (plan.server === "none") {
     lines.push(`server   none installed under ${configDir}`);
   } else if (plan.server !== null) {
-    const { version, appUrl, dockerContext, generations, backups } = plan.server;
+    const { version, appUrl, dockerContext, edgeHost, generations, backups } = plan.server;
     lines.push(
       `server   Mend ${version}${appUrl === "" ? "" : ` at ${appUrl}`}${dockerContext === "" ? "" : ` · docker context ${dockerContext}`}`,
     );
     if (dockerContext !== "") {
+      const edge = edgeHost === null ? [] : ["edge"];
+      const edgeVolumes = edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"];
       lines.push(
-        `         containers mend, postgres, garage · volumes ${[MEND_DOCKER_NAMESPACE_WITH_GARAGE.store, ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE), "mend-config", "mend-ssh", "mend-postgres"].join(", ")} · image ghcr.io/sealant-sh/mend:${version}`,
+        `         containers ${["mend", "postgres", "garage", ...edge].join(", ")} · volumes ${[MEND_DOCKER_NAMESPACE_WITH_GARAGE.store, ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE), "mend-config", "mend-ssh", "mend-postgres", ...edgeVolumes].join(", ")} · image ghcr.io/sealant-sh/mend:${version}${edgeHost === null ? "" : ` · the edge for ${edgeHost}`}`,
       );
     }
     lines.push(
@@ -257,13 +264,14 @@ const removeServer = async (
         // failure here keeps the files, so the next attempt can still find the installation.
         const down = await server.run(
           "docker",
-          serverComposeArgs({ directory: installation.directory, dockerContext: context }, [
-            "down",
-            "--volumes",
-            "--remove-orphans",
-            "--timeout",
-            "30",
-          ]),
+          serverComposeArgs(
+            {
+              directory: installation.directory,
+              dockerContext: context,
+              overlays: composeOverlays(installation.config),
+            },
+            ["down", "--volumes", "--remove-orphans", "--timeout", "30"],
+          ),
           { timeoutMs: serverProcessDeadlines.stop },
         );
         if (down.status !== 0) {

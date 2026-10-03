@@ -135,17 +135,22 @@ declaration and how many items are open.
 certificate for one host, redirects port 80, and forwards everything to Mend's web tier, which
 proxies the API, the event stream and every WebSocket on that one origin.
 
-It is a deployment shape, not yet something `mend server setup` installs. Setup refuses the pair the
-edge needs (Mend's own port on loopback with a non-local `--url`), its `server.env` is checked
-against the server config so the overlay's variables cannot go in it, and `mend server start` and
-`mend server upgrade` run `compose.yaml` alone, which would recreate `mend` without the edge's
-network and settings. So today the overlay applies to a Compose project you run yourself from
-`compose.v2.yaml` and an `.env` holding the values that file names. `compose.edge.yaml` and
-`Caddyfile` are in the repository under `deploy/docker`, at the tag of the release you run; they are
-not among the release assets. What was checked: the merged files render (`docker compose config`, in
-CI), the edge is the only service published beyond loopback and shares a network with Mend alone,
-and the Caddyfile was validated with Caddy. What was not: a certificate issued and a browser session
-through it, end to end.
+`mend server setup --edge <host>` installs it. The CLI carries a copy of `compose.edge.yaml` and the
+`Caddyfile` and writes them into the installation's generation beside `compose.yaml`, with
+`MEND_EDGE_HOST` in `server.env`; the browser origin becomes `https://<host>` and Mend's own port
+stays on loopback. `mend server start`, `restart` and `upgrade` run the generation's overlays with
+its `compose.yaml`, so an upgrade never drops the edge, and `mend server setup --no-edge` takes it
+away. `--exposure` and `--tenancy` declare the posture the same way, through a
+`compose.posture.yaml` that reads every value from `server.env`. `mend server status` reports the
+edge host, whether its container runs and whether Caddy's data holds a certificate, beside the
+declared exposure and tenancy and what the running server observes.
+
+The overlay also applies to a Compose project you run yourself from `compose.v2.yaml` and an `.env`
+holding the values that file names. `compose.edge.yaml` and `Caddyfile` are in the repository under
+`deploy/docker`, at the tag of the release you run; they are not among the release assets. What was
+checked: the merged files render (`docker compose config`, in CI), the edge is the only service
+published beyond loopback and shares a network with Mend alone, and the Caddyfile was validated with
+Caddy. What was not: a certificate issued and a browser session through it, end to end.
 
 ```sh
 # in the directory that holds compose.v2.yaml and your .env; copy Caddyfile and compose.edge.yaml there first

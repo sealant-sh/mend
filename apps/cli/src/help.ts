@@ -1063,11 +1063,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "this machine",
     summary: "install or repair the local Mend server",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
       "The default listens only on localhost at http://localhost:3105. Non-local access requires both --bind and --url. Every extra browser origin must be named with --origin; setup never guesses from the request Host header or network interfaces.",
+      "--edge <host> runs a TLS edge in front of Mend: Caddy on ports 80 and 443 of every interface, which obtains and renews a certificate for the host and proxies to Mend's web tier. Mend's own port stays on loopback and the browser origin is https://<host>. The edge's compose overlay and Caddyfile are written into the generation beside compose.yaml, so start, restart and upgrade run them every time. --no-edge takes it away again, and the edge's container with it. A fresh install cannot start with the edge: until the first account exists, registration is open to whoever reaches the origin first, so set up on localhost, create the account, then add the edge.",
+      "--exposure declares how the instance is reached, and --tenancy whether one organization or many use it. Both are written into the generation and kept across reruns and upgrades. public needs the edge and an existing first account. With multi, or with public, the multi mode gate's settings follow: MEND_SOURCE_POLICY=tenant and MEND_CAPTURE_REQUIRE_SIZES=true, and public sets MEND_URL_BEARERS=refuse. The server still decides whether it starts, and mend server status shows what it reports.",
       "Docker Desktop on Linux and macOS, and OrbStack on macOS, expose client-side proxy sockets. Containers use the daemon-side /var/run/docker.sock. --docker-socket overrides detection and is retained on reruns.",
       "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
     ],
@@ -1092,6 +1094,19 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "external workspace SSH port. Default: 2222; must differ from --port",
       },
       {
+        flag: "--edge <host>",
+        text: "run the Caddy TLS edge for this DNS name on 80 and 443; the origin becomes https://<host>, --bind stays on loopback, and the first account must already exist",
+      },
+      { flag: "--no-edge", text: "take a saved edge away; the origin returns to http://localhost" },
+      {
+        flag: "--exposure <v>",
+        text: "declare loopback, private or public; kept across reruns and upgrades. public needs --edge and an existing first account",
+      },
+      {
+        flag: "--tenancy <v>",
+        text: "declare single or multi; kept across reruns and upgrades. multi also sets the multi mode gate's variables",
+      },
+      {
         flag: "--assets-dir <dir>",
         text: "copy compose.v2.yaml and postgres-init.sh from a release directory; fresh setup requires --version",
       },
@@ -1112,18 +1127,27 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         command: "mend server setup --version 0.25.0 --assets-dir ./release-assets --offline",
         text: "install from local release assets and preloaded images",
       },
+      {
+        command: "mend server setup --edge mend.example.com",
+        text: "a TLS edge for mend.example.com; its DNS points at this machine and 80 and 443 reach it",
+      },
+      {
+        command: "mend server setup --exposure public --tenancy multi",
+        text: "on an install with an edge and a first account: declare public, many organizations",
+      },
     ],
-    see: ["server", "login", "doctor"],
+    see: ["server", "server status", "login", "doctor", "operator exposure"],
   },
   {
     name: "server status",
     section: "this machine",
-    summary: "show the saved pin, generation and container state",
+    summary: "show the pin, generation, containers, edge and posture",
     synopsis: [""],
     description: [
       "Reads the existing installation without changing its files. A running Mend must answer health with the exact pinned version. A stopped server makes no health claim. Never installs a server implicitly.",
+      "Then the posture, declared beside observed. Declared is what this install's configuration says: the edge host, MEND_EXPOSURE and MEND_TENANCY, a default named as one. Observed is what was seen: whether the edge's container runs and whether Caddy's data holds a certificate for the host, and what the running server reports in its health, the exposure it runs with and how many public exposure gate items are open, the tenancy and which multi mode gate items are open. When this machine is signed in to the install as the operator, every item of both gates follows with its detail, as mend operator gate and mend operator exposure print them. None of it is a verdict: the report says what was declared and what was observed.",
     ],
-    see: ["server logs", "server start"],
+    see: ["server logs", "server start", "operator gate", "operator exposure"],
   },
   {
     name: "server start",
@@ -1139,10 +1163,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "server stop",
     section: "this machine",
-    summary: "stop Mend, Postgres and Garage without deleting data",
+    summary: "stop Mend, Postgres, Garage and the edge without deleting data",
     synopsis: [""],
     description: [
-      "Stops only the installation's Compose services. Connections are interrupted. Workspace containers and volumes remain, but active work may lose connectivity and need reconnection. No volume deletion or Docker prune is performed.",
+      "Stops only the installation's Compose services, the edge among them when one is set. Connections are interrupted. Workspace containers and volumes remain, but active work may lose connectivity and need reconnection. No volume deletion or Docker prune is performed.",
     ],
     see: ["server start", "server status"],
   },
@@ -1175,6 +1199,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["--version <target|latest> [--assets-dir <dir>] [--offline]"],
     description: [
       "Preflights release assets and the canonical image's version label before interrupting Mend. Downgrades are refused. latest is resolved only when explicitly requested; a same-version request does nothing.",
+      "The installed configuration stays: the bind, the origin, the ports, the edge host and the declared exposure and tenancy are carried into the new generation, which renders the same overlays beside the new compose.yaml. An upgrade never drops the edge or the posture; mend server setup is where they change.",
       "Stops app writers, starts official Postgres if needed, and streams pg_dumpall into a private database backup before selecting and starting the target. Connections are interrupted. Workspace containers and data are retained, but active work can lose connectivity and need reconnection. Stop any external database writers before upgrading.",
       "Preflight or backup failure retains the old pin and attempts to recover the old app if it was running. Once target startup may have begun, Mend never automatically downgrades or restores the database. The target pin, old generation and backup remain. Inspect logs, fix the target, then use mend server start. Recovery records are under the installation's backups/upgrade-UUID directory.",
     ],

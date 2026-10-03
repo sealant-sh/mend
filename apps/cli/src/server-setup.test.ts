@@ -125,9 +125,11 @@ const makeRuntime = (
         const composeFile = args[args.indexOf("-f") + 1];
         const withGarage =
           composeFile !== undefined && fs.readFileSync(composeFile, "utf8").includes("\n  garage:");
+        // The edge overlay, when the generation has one, brings Caddy's image into the project.
+        const withEdge = args.some((arg) => arg.endsWith("/compose.edge.yaml"));
         return {
           status: 0,
-          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n${withGarage ? "dxflrs/garage:v2.4.1\n" : ""}`,
+          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n${withGarage ? "dxflrs/garage:v2.4.1\n" : ""}${withEdge ? "caddy:2.10-alpine\n" : ""}`,
           stderr: "",
         };
       }
@@ -1180,6 +1182,134 @@ describe("mend server setup", () => {
       "/custom/socket",
     );
     expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
+  });
+
+  it.each([
+    [["--edge", "10.0.0.4"], "DNS name"],
+    [["--edge", "localhost"], "DNS name"],
+    [
+      ["--edge", "mend.example.test", "--bind", "0.0.0.0", "--url", "https://mend.example.test"],
+      "stays on loopback",
+    ],
+    [
+      ["--edge", "mend.example.test", "--url", "http://mend.example.test:3105"],
+      "must be https://mend.example.test",
+    ],
+    [["--edge", "mend.example.test", "--exposure", "loopback"], "contradict"],
+    [["--edge", "mend.example.test", "--no-edge"], "contradict"],
+    [["--exposure", "public"], "needs the edge"],
+    [["--edge", "mend.example.test"], "A fresh install cannot start with the edge or as public"],
+    [["--edge", "mend.example.test", "--port", "443"], "must not be 80 or 443"],
+    [["--edge", "mend.example.test", "--ssh-port", "80"], "must not be 80 or 443"],
+    [
+      ["--exposure", "public", "--edge", "mend.example.test"],
+      "A fresh install cannot start with the edge or as public",
+    ],
+    [
+      ["--exposure", "loopback", "--bind", "0.0.0.0", "--url", "http://10.0.0.4:3105"],
+      "contradicts a non-loopback --bind",
+    ],
+    [["--exposure", "sideways"], "--exposure must be one of"],
+    [["--tenancy", "both"], "--tenancy must be one of"],
+  ])(
+    "refuses an edge or posture that cannot hold, before anything is written: %j",
+    async (flags, reason) => {
+      const control = makeRuntime();
+      expect(await serverCommand(["setup", ...flags], control.runtime)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(reason),
+      });
+      expect(
+        control.fetched.filter(
+          (url) => !url.endsWith("/compose.v2.yaml") && !url.endsWith("/postgres-init.sh"),
+        ),
+      ).toEqual([]);
+      expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+      expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
+    },
+  );
+
+  it("an edge host writes the overlay and the Caddyfile, runs them with compose.yaml, and probes Mend on loopback", async () => {
+    const control = makeRuntime();
+    // The plain install first, where the first account is created; the edge on a rerun.
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    const plainCommands = control.commands.length;
+    expect(await serverCommand(["setup", "--edge", "Mend.Example.Test."], control.runtime)).toEqual(
+      { _tag: "ok" },
+    );
+    const { configDir } = control.runtime;
+    const generation = activeDirectory(configDir);
+    expect(fs.readdirSync(generation).toSorted()).toEqual([
+      "Caddyfile",
+      "compose.edge.yaml",
+      "compose.yaml",
+      "identity.env",
+      "postgres-init.sh",
+      "server.env",
+      "server.json",
+    ]);
+    expect(modeOf(path.join(generation, "Caddyfile"))).toBe(0o644);
+    expect(modeOf(path.join(generation, "compose.edge.yaml"))).toBe(0o600);
+    expect(fs.readFileSync(path.join(generation, "compose.edge.yaml"), "utf8")).toBe(
+      fs.readFileSync(new URL("../../../deploy/docker/compose.edge.yaml", import.meta.url), "utf8"),
+    );
+    expect(fs.readFileSync(path.join(generation, "Caddyfile"), "utf8")).toBe(
+      fs.readFileSync(new URL("../../../deploy/docker/Caddyfile", import.meta.url), "utf8"),
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(generation, "server.json"), "utf8"))).toMatchObject(
+      {
+        edgeHost: "mend.example.test",
+        bind: "127.0.0.1",
+        appUrl: "https://mend.example.test",
+      },
+    );
+    const env = readEnv(path.join(generation, "server.env"));
+    expect(env.get("MEND_EDGE_HOST")).toBe("mend.example.test");
+    expect(env.get("APP_URL")).toBe("https://mend.example.test");
+    expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
+    expect(env.has("MEND_EXPOSURE")).toBe(false);
+    const up = control.commands.slice(plainCommands).find(([, args]) => args.includes("up"));
+    expect(up?.[1].slice(0, 14)).toEqual([
+      "--context",
+      "default",
+      "compose",
+      "--project-name",
+      "mend",
+      "--project-directory",
+      generation,
+      "--env-file",
+      path.join(generation, "server.env"),
+      "-f",
+      path.join(generation, "compose.yaml"),
+      "-f",
+      path.join(generation, "compose.edge.yaml"),
+      "up",
+    ]);
+    expect(up?.[1]).not.toContain("--remove-orphans");
+    // Health on Mend's own port, where this machine can reach it; the edge image checked like the rest.
+    expect(control.fetched.filter((url) => url.endsWith("/api/health"))).toEqual([
+      "http://localhost:3105/api/health",
+      "http://127.0.0.1:3105/api/health",
+    ]);
+    expect(
+      control.commands.some(
+        ([, args]) =>
+          args[2] === "image" && args[3] === "inspect" && args[4] === "caddy:2.10-alpine",
+      ),
+    ).toBe(true);
+    expect(control.lines).toContain(
+      "Mend 0.23.0 answers at http://127.0.0.1:3105 on this machine · the edge is set up for https://mend.example.test",
+    );
+    expect(
+      control.lines.some((line) =>
+        line.startsWith("The edge for mend.example.test is up on 80 and 443."),
+      ),
+    ).toBe(true);
+    for (const line of control.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
+    // A rerun keeps the edge without being told again, and writes nothing new.
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(activeDirectory(configDir)).toBe(generation);
+    expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(2);
   });
 
   it("does not report the advertised URL reachable when every health request fails", async () => {

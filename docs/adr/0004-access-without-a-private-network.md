@@ -426,6 +426,12 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
     checked against the server config, and the lifecycle commands run `compose.yaml` alone. The
     overlay applies to a Compose project run by hand, and it has not been run end to end with an
     issued certificate. That is the largest gap between this stack and a packaged public install.
+    Revisited 2026-10-03: `mend server setup --edge <host>` writes the same two files into the
+    install's generation beside `compose.yaml` (the CLI carries a copy, held to the repository's by
+    test), with `MEND_EDGE_HOST` in `server.env`; `--exposure` and `--tenancy` write a
+    `compose.posture.yaml` the same way. Every lifecycle command runs the generation's overlays with
+    its `compose.yaml`, so no bundle contract revision was needed and an upgrade keeps the edge. The
+    by-hand path stays. Still not run end to end with an issued certificate.
 16. **A `public` instance needs an operator before it starts.** `operator-present` is part of the
     tenancy gate, and the exposure gate includes every tenancy item. Until the first account exists,
     registration is open to whoever arrives first; on the Internet that is not the owner. Create the

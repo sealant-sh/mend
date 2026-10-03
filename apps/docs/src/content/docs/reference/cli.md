@@ -49,34 +49,40 @@ context.
 | Command                                                                           | Purpose                                                                                                                                                                                                                                             |
 | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mend server setup [options]`                                                     | Install or repair the local server: check the Docker context and Compose plugin, download one release's assets, claim the persistent volumes, pull and verify the pinned images, start the Mend, Postgres and Garage containers, then verify health |
-| `mend server status`                                                              | Show the saved pin, active generation, and container state without changing anything; a running Mend must answer health with the exact pinned version                                                                                               |
+| `mend server status`                                                              | Show the saved pin, active generation, container state, the edge and the posture declared beside what the server observes, without changing anything; a running Mend must answer health with the exact pinned version                               |
 | `mend server start [--offline]`                                                   | Start the selected generation from preloaded images; never downloads assets or pulls release images                                                                                                                                                 |
 | `mend server stop`                                                                | Stop Mend, Postgres and Garage without deleting volumes; workspace containers remain                                                                                                                                                                |
 | `mend server restart [--offline]`                                                 | Restart Mend on the same generation and pin; Postgres and Garage keep running                                                                                                                                                                       |
 | `mend server logs [--tail <n>]`                                                   | Print a bounded tail of each container's logs, 1 to 1000 lines per service, default 100; no follow mode                                                                                                                                             |
-| `mend server upgrade --version <target\|latest> [--assets-dir <dir>] [--offline]` | Upgrade to an explicit version after validating its assets and image label, stopping application writers, and saving a private database backup; downgrades are refused                                                                              |
+| `mend server upgrade --version <target\|latest> [--assets-dir <dir>] [--offline]` | Upgrade to an explicit version after validating its assets and image label, stopping application writers, and saving a private database backup; the edge and the posture are carried into the new generation, and downgrades are refused            |
 
 Setup options:
 
-| Option                   | Meaning                                                                                                               |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                          |
-| `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin  |
-| `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                         |
-| `--url <origin>`         | Advertised browser URL; required with a non-loopback bind                                                             |
-| `--origin <origin>`      | Additional exact browser origin; repeat for more than one                                                             |
-| `--port <n>`             | External web port; default `3105`; must differ from the SSH port                                                      |
-| `--ssh-port <n>`         | External workspace SSH port; default `2222`                                                                           |
-| `--assets-dir <dir>`     | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version` |
-| `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                  |
-| `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                 |
+| Option                   | Meaning                                                                                                                           |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                                      |
+| `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin              |
+| `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                                     |
+| `--url <origin>`         | Advertised browser URL; required with a non-loopback bind                                                                         |
+| `--origin <origin>`      | Additional exact browser origin; repeat for more than one                                                                         |
+| `--port <n>`             | External web port; default `3105`; must differ from the SSH port                                                                  |
+| `--ssh-port <n>`         | External workspace SSH port; default `2222`                                                                                       |
+| `--edge <host>`          | Run the Caddy TLS edge for this DNS name on ports 80 and 443; the origin becomes `https://<host>` and `--bind` stays on loopback  |
+| `--no-edge`              | Take a saved edge away; the origin returns to `http://localhost`                                                                  |
+| `--exposure <v>`         | Declare `loopback`, `private` or `public`; kept across reruns and upgrades. `public` needs `--edge` and an existing first account |
+| `--tenancy <v>`          | Declare `single` or `multi`; kept across reruns and upgrades. `multi`, like `public`, also sets the multi mode gate's variables   |
+| `--assets-dir <dir>`     | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`             |
+| `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                              |
+| `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                             |
 
 Setup holds an exclusive lock through startup and health checks, keeps private configuration in
 immutable generations, and never deletes Docker volumes. A changed `--version` on a rerun is
 refused; use `mend server upgrade`. Read [Install Mend](/getting-started/install/) and the
 [self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) for offline
 assets, locks, and upgrade recovery, and [Exposure and budgets](/operate/exposure/) for how the
-server is reached. Setup does not set `MEND_EXPOSURE`; a server it installs runs as `private`.
+server is reached. `--edge` runs the TLS edge and `--exposure` and `--tenancy` declare the posture;
+all three are written into the generation and kept by every rerun and upgrade. Without them a server
+it installs runs as `private` and `single`.
 
 ## Project commands
 
