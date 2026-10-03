@@ -2905,6 +2905,18 @@ const sessionRepositoriesMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX session_repositories_worktree_idx ON session_repositories (worktree_id)`;
 });
 
+/**
+ * Who opened a turn (`request` | `harness`): Claude opens a turn on its own when a background
+ * task or workflow it started ends, and Mend records it rather than dropping its output.
+ */
+const turnOriginMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_turns ADD COLUMN origin text NOT NULL DEFAULT 'request'`;
+  yield* sql`
+    ALTER TABLE agent_turns
+      ADD CONSTRAINT agent_turns_origin_check CHECK (origin IN ('request', 'harness'))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3009,4 +3021,5 @@ export const migrations = {
   "0101_secret_files": secretFilesMigration,
   "0102_harness_models": harnessModelsMigration,
   "0103_session_repositories": sessionRepositoriesMigration,
+  "0104_turn_origin": turnOriginMigration,
 };

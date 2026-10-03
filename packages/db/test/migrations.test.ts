@@ -386,6 +386,100 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
     ]);
     expect(result.secondTurnMessages).toEqual([]);
   });
+
+  it("records a turn the harness opened, and sends a claimed unsent turn back to the queue", async () => {
+    const result = await withConversation(
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        // The follow-up the previous test left queued: claimed, not yet sent.
+        const claimed = yield* conversation.claimNextTurn(processId);
+        if (claimed === null) return yield* Effect.die("nothing to claim");
+        const opened = yield* conversation.openHarnessTurn(
+          sessionId,
+          processId,
+          "harness:init-1",
+          'Dynamic workflow "tiny" completed',
+        );
+        const again = yield* conversation.openHarnessTurn(
+          sessionId,
+          processId,
+          "harness:init-1",
+          "ignored",
+        );
+        const sentBack = yield* conversation.byTurnId(claimed.id);
+        const whileHarness = yield* conversation.claimNextTurn(processId);
+        yield* conversation.completeTurn("harness:init-1", sessionId, "completed", null, null);
+        const afterHarness = yield* conversation.claimNextTurn(processId);
+        // Claimed again and refused by a busy harness: back in the queue, unsent.
+        if (afterHarness !== null) yield* conversation.requeueClaimedTurn(afterHarness.id);
+        const requeued = yield* conversation.byTurnId(claimed.id);
+        const task = (status: "in-progress" | "completed", seq: bigint, taskId = "wf1") =>
+          conversation.upsertItem({
+            sessionId,
+            processId,
+            turnId: claimed.id,
+            providerItemId: `task:${taskId}`,
+            providerTurnId: "provider-turn-repository",
+            providerOutputSeq: seq,
+            providerEventIndex: 0,
+            kind: "task",
+            status,
+            title: "Workflow tiny",
+            text: null,
+            data: { taskId, status: status === "completed" ? "completed" : "running" },
+          });
+        yield* task("in-progress", 20n);
+        const tasksRunning = yield* conversation.taskActivity(processId);
+        yield* task("completed", 21n);
+        const tasksAfter = yield* conversation.taskActivity(processId);
+        // A task the process never reported ending reads stopped once the process ends.
+        const orphan = yield* task("in-progress", 22n, "wf2");
+        yield* conversation.cancelOpenForProcess(processId);
+        const [stopped] = (yield* conversation.listItems(sessionId, orphan.seq, 10)).filter(
+          (item) => item.providerItemId === "task:wf2",
+        );
+        const tasksEnded = yield* conversation.taskActivity(processId);
+        return {
+          claimed,
+          opened,
+          again,
+          sentBack,
+          whileHarness,
+          afterHarness,
+          requeued,
+          tasksRunning,
+          tasksAfter,
+          orphan,
+          stopped,
+          tasksEnded,
+        };
+      }),
+    );
+    expect(result.opened).toMatchObject({
+      origin: "harness",
+      author: null,
+      input: 'Dynamic workflow "tiny" completed',
+      status: "running",
+      providerTurnId: "harness:init-1",
+    });
+    expect(result.opened?.ordinal).toBeGreaterThan(result.claimed.ordinal);
+    expect(result.again?.id).toBe(result.opened?.id);
+    expect(result.sentBack).toMatchObject({ status: "queued", startedAt: null });
+    expect(result.whileHarness).toBeNull();
+    expect(result.afterHarness?.id).toBe(result.claimed.id);
+    expect(result.requeued).toMatchObject({ status: "queued", startedAt: null });
+    expect(result.tasksRunning.running).toBe(1);
+    expect(result.tasksRunning.lastUpdatedAt).toBeInstanceOf(Date);
+    expect(result.tasksAfter.running).toBe(0);
+    expect(result.stopped).toMatchObject({
+      status: "completed",
+      data: { taskId: "wf2", status: "stopped" },
+    });
+    expect(result.stopped?.seq).toBeGreaterThan(result.orphan.seq);
+    expect(result.tasksEnded.running).toBe(0);
+  });
 });
 
 describe.skipIf(!reachable)("0052 project skill inheritance", () => {

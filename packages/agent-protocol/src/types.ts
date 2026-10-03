@@ -12,6 +12,15 @@ export class AgentProtocolError extends Schema.TaggedErrorClass<AgentProtocolErr
   },
 ) {}
 
+/**
+ * The agent is in a turn it started on its own (a background task ended): a turn Mend sends now
+ * would land inside it. The turn waits; that turn's end dispatches it.
+ */
+export class AgentTurnBusyError extends Schema.TaggedErrorClass<AgentTurnBusyError>()(
+  "AgentTurnBusyError",
+  { providerTurnId: Schema.String },
+) {}
+
 /** Byte transport supplied by the session engine from one Sealant pipe session. */
 export interface AgentTransport {
   readonly send: (bytes: Uint8Array) => Effect.Effect<void, AgentProtocolError>;
@@ -29,10 +38,10 @@ export interface AgentTransport {
  */
 export interface AgentRehydrateOptions {
   /**
-   * Provider turn ids of already-dispatched turns, in dispatch order. Claude
-   * turn ids are client-minted and never appear on the wire, so replay
-   * correlates results back to turns through this queue; codex carries turn
-   * ids in its notifications and ignores it.
+   * Provider turn ids of already-started turns, in the order they started — the ones Mend
+   * dispatched and the ones the harness opened itself. Claude turn ids are client-minted and
+   * never appear on the wire, so replay correlates results back to turns through this queue;
+   * codex carries turn ids in its notifications and ignores it.
    */
   readonly replayProviderTurnIds: ReadonlyArray<string>;
   /**
@@ -58,7 +67,9 @@ export interface AgentStartOptions {
 
 /** One live provider conversation over a byte transport. */
 export interface AgentSession {
-  readonly sendTurn: (input: string) => Effect.Effect<string, AgentProtocolError>;
+  readonly sendTurn: (
+    input: string,
+  ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError>;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
   readonly respond: (
     providerRequestId: string,

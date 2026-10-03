@@ -99,12 +99,14 @@ export const interruptersByTurn = (
  * of a process not (yet) known says nothing rather than guess.
  */
 export const turnAuthorLine = (
-  turn: Pick<AgentTurnDto, "author" | "processId">,
+  turn: Pick<AgentTurnDto, "author" | "processId" | "origin">,
   viewerId: string | null,
   names: ReadonlyMap<string, string>,
   processKinds: ReadonlyMap<string, SessionProcessDto["kind"]>,
 ): string | null => {
   const { author } = turn;
+  // Nobody sent it: the agent opened it to answer a background task that ended.
+  if (turn.origin === "harness") return "the agent continued";
   if (author === null) {
     switch (processKinds.get(turn.processId)) {
       case "agent-protocol":

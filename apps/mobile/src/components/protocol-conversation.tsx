@@ -1,11 +1,13 @@
 import { LegendList } from "@legendapp/list/react-native";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import {
+  agentTaskOf,
   answersComplete,
   buildAgentConversation,
   composeAnswers,
   conversationActivity,
   EMPTY_CONVERSATION,
+  isHarnessTurn,
   itemFailed,
   itemName,
   openTurnOf,
@@ -35,6 +37,7 @@ import {
 } from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
 import { ComposerDock, usePaneEdges } from "@/components/pane";
+import { TaskCard } from "@/components/task-card";
 import { MonoText, UiText } from "@/components/typography";
 import {
   useAgentConversation,
@@ -67,6 +70,23 @@ const TurnRow = memo(function TurnRow({
 }) {
   const { colors } = useEvidenceTheme();
   const { clientId } = view;
+  if (view.turn !== null && isHarnessTurn(view.turn)) {
+    // Nobody sent this one: the agent opened it to answer a background task that ended.
+    return (
+      <View
+        style={{
+          borderLeftWidth: 2,
+          borderLeftColor: colors.rule,
+          paddingLeft: 11,
+          paddingVertical: 2,
+        }}
+      >
+        <MonoText tone="faint" size={11}>
+          the agent continued · {view.text}
+        </MonoText>
+      </View>
+    );
+  }
   return (
     <View style={{ alignSelf: "flex-end", maxWidth: "85%", alignItems: "flex-end", gap: 4 }}>
       <View
@@ -116,6 +136,10 @@ const TurnRow = memo(function TurnRow({
 
 function ItemRow({ item }: { readonly item: AgentItemDto }) {
   const { colors } = useEvidenceTheme();
+  const task = agentTaskOf(item);
+  if (task !== null) {
+    return <TaskCard task={task} />;
+  }
   if (item.kind === "assistant-message" && item.text !== null) {
     return (
       <View style={{ paddingHorizontal: 2 }}>

@@ -128,6 +128,32 @@ describe("conversation activity", () => {
     ).toBeNull();
   });
 
+  it("says the agent works while a workflow runs after its turn ended", () => {
+    const ended = {
+      ...conversation,
+      requests: [],
+      turns: conversation.turns.map((turn) => ({ ...turn, status: "completed" })),
+    };
+    const workflow = {
+      id: "item-task",
+      seq: 9,
+      turnId: "turn-1",
+      kind: "task",
+      status: "in-progress",
+      title: "Workflow review",
+      text: null,
+      createdAt: "2026-08-21T10:00:03.000Z",
+      updatedAt: "2026-08-21T10:00:09.000Z",
+    };
+    expect(conversationActivity({ ...ended, items: [...ended.items, workflow] })).toBe("working");
+    expect(
+      conversationActivity({
+        ...ended,
+        items: [...ended.items, { ...workflow, status: "completed" }],
+      }),
+    ).toBeNull();
+  });
+
   it("reads on from the highest item sequence held", () => {
     expect(latestItemSeq(conversation.items)).toBe(3);
     expect(latestItemSeq([])).toBe(0);

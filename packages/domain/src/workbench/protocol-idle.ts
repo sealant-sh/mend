@@ -19,6 +19,12 @@ export interface ProtocolIdleFacts {
   /** Services holding the workspace: a live attempt or an open forward (`liveCountsForSessions`). */
   readonly liveServices: number;
   /**
+   * The background tasks the live agent reported — a workflow, a background agent or command
+   * (`task` items): how many still run, and when any last changed. Their work goes on with no
+   * turn open, so a running one holds the stop and the latest change counts as activity.
+   */
+  readonly tasks?: { readonly running: number; readonly lastUpdatedAt: Date | null };
+  /**
    * Capture mode: what the executor answered when asked just now — captures still pending (bulk
    * included on today's sealantd), and whether bulk changed since its last snapshot once sealantd
    * reports it (null until then). Absent or null outside capture mode, or when nobody answered.
@@ -32,14 +38,14 @@ export interface ProtocolIdleFacts {
 }
 
 /** What holds a live protocol agent up while it is not idle. */
-export type ProtocolIdleHold = "turn" | "request" | "services" | "shell" | "capture";
+export type ProtocolIdleHold = "turn" | "task" | "request" | "services" | "shell" | "capture";
 
 /**
  * - `not-protocol`: settled, or the session's agent is not a live protocol process; nothing here
  *   stops it.
- * - `held`: a turn is in flight, a question or approval waits, Services or a shell hold the
- *   workspace, which someone is using, or the executor still has captures to ship (a stop now would
- *   only sit draining them; the next pass looks again).
+ * - `held`: a turn is in flight, a background task runs, a question or approval waits, Services
+ *   or a shell hold the workspace, which someone is using, or the executor still has captures to
+ *   ship (a stop now would only sit draining them; the next pass looks again).
  * - `idle`: none of those, since `since` — the latest activity seen.
  */
 export type ProtocolIdleReading =
@@ -55,7 +61,8 @@ const latest = (dates: ReadonlyArray<Date | null>): Date | null =>
 
 /**
  * Whether a session's protocol agent is idle, and since when. The clock is the latest of: a turn
- * queued, started or ended; a request opened or decided; a process started, changed or ended. The
+ * queued, started or ended; a request opened or decided; a background task's last change (a
+ * workflow ending long after the turn that started it); a process started, changed or ended. The
  * session's own `updatedAt` stands in only when none of those exist.
  */
 export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReading => {
@@ -67,6 +74,7 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
   if (facts.turns.some((turn) => OPEN_AGENT_TURN_STATUSES.has(turn.status))) {
     return { kind: "held", by: "turn" };
   }
+  if ((facts.tasks?.running ?? 0) > 0) return { kind: "held", by: "task" };
   if (facts.requests.some((request) => request.status === "pending")) {
     return { kind: "held", by: "request" };
   }
@@ -86,6 +94,7 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
   const since = latest([
     ...facts.turns.flatMap((turn) => [turn.createdAt, turn.startedAt, turn.endedAt]),
     ...facts.requests.flatMap((request) => [request.createdAt, request.decidedAt]),
+    facts.tasks?.lastUpdatedAt ?? null,
     ...facts.processes.flatMap((process) => [
       process.createdAt,
       process.updatedAt,

@@ -139,6 +139,10 @@ interface WorldOptions {
   readonly turns?: ReadonlyArray<AgentTurn>;
   readonly requests?: ReadonlyArray<AgentRequest>;
   readonly liveServices?: number;
+  /** Background tasks still running (a workflow the agent started). */
+  readonly runningTasks?: number;
+  /** Minutes since a background task last changed. */
+  readonly taskChangedMinutesAgo?: number;
   readonly shells?: boolean;
   readonly agentKind?: SessionProcessKind;
   readonly stopFails?: boolean;
@@ -190,6 +194,14 @@ const world = (options: WorldOptions = {}) => {
     Layer.mock(AgentConversationRepo, {
       listTurns: () => Effect.succeed(options.turns ?? [turnRow("completed", 20)]),
       listRequests: () => Effect.succeed(options.requests ?? []),
+      taskActivity: () =>
+        Effect.succeed({
+          running: options.runningTasks ?? 0,
+          lastUpdatedAt:
+            options.taskChangedMinutesAgo === undefined
+              ? null
+              : minutesAgo(options.taskChangedMinutesAgo),
+        }),
     }),
     Layer.mock(ServicesRepo, {
       liveCountsForSessions: () =>
@@ -295,15 +307,31 @@ describe("the protocol idle stop", () => {
     expect(due.state.stops[0]?.summary).toBe("idle · stopped after 10 min · reply to resume");
   });
 
+  it("counts the minutes from when a workflow last changed, not from the turn that started it", async () => {
+    // The turn ended 20 minutes ago; the workflow it started finished 5 minutes ago.
+    const finished = world({ taskChangedMinutesAgo: 5 });
+    expect(await finished.sweep(finished.worker())).toEqual([]);
+    const long = world({ taskChangedMinutesAgo: 16 });
+    expect(await long.sweep(long.worker())).toEqual([SESSION]);
+  });
+
+  it("never stops a session while its workflow runs, however long it has been quiet", async () => {
+    const quiet = world({ runningTasks: 1, taskChangedMinutesAgo: 600 });
+    expect(await quiet.sweep(quiet.worker())).toEqual([]);
+    expect(quiet.state.stops).toEqual([]);
+    expect(quiet.state.idleStoppedAt).toBeNull();
+  });
+
   it("stops nothing at 0 minutes", async () => {
     const w = world({ minutes: "0" });
     expect(await w.sweep(w.worker())).toEqual([]);
     expect(w.state.stops).toEqual([]);
   });
 
-  it("leaves an agent alone while a turn runs, a request waits, or Services or a shell hold it", async () => {
+  it("leaves an agent alone while a turn runs, a task runs, a request waits, or Services or a shell hold it", async () => {
     const held = [
       world({ turns: [turnRow("running", null)] }),
+      world({ runningTasks: 1 }),
       world({ turns: [turnRow("queued", null)] }),
       world({ requests: [pendingRequest] }),
       world({ liveServices: 2 }),

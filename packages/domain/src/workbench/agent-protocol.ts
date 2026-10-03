@@ -36,6 +36,13 @@ export const AgentTurnUsage = Schema.Struct({
 });
 export type AgentTurnUsage = typeof AgentTurnUsage.Type;
 
+/**
+ * Who opened a turn: `request` is input Mend sent (a person's message, a follow-up), `harness` is
+ * a turn the agent started on its own, as Claude does when a background task or workflow ends.
+ */
+export const AgentTurnOrigin = Schema.Literals(["request", "harness"]);
+export type AgentTurnOrigin = typeof AgentTurnOrigin.Type;
+
 /** One submitted input and the agent work associated with it. */
 export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   id: AgentTurnId,
@@ -45,6 +52,10 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   ordinal: Schema.Int,
   /** Mend user id, or null for a system-authored follow-up. */
   author: Schema.NullOr(Schema.String),
+  /** What opened the turn. A `harness` turn's input is what the agent was answering. */
+  origin: AgentTurnOrigin.pipe(
+    Schema.withConstructorDefault(Effect.succeed<AgentTurnOrigin>("request")),
+  ),
   input: Schema.String,
   status: AgentTurnStatus,
   providerTurnId: Schema.NullOr(Schema.String),
@@ -88,6 +99,8 @@ export const AgentItemKind = Schema.Literals([
   "file-change",
   "tool-call",
   "web-search",
+  /** A background task the agent started: a workflow, a background agent or command. */
+  "task",
   "error",
   "other",
 ]);
@@ -182,6 +195,55 @@ export class AgentRequest extends Schema.Class<AgentRequest>("AgentRequest")({
   decidedAt: Schema.NullOr(Timestamp),
 }) {}
 
+/** Observed lifecycle of a background task, as its harness reported it. */
+export const AgentTaskStatus = Schema.Literals([
+  "running",
+  "completed",
+  "failed",
+  "stopped",
+  "paused",
+]);
+export type AgentTaskStatus = typeof AgentTaskStatus.Type;
+
+/** One agent inside a workflow: queued or running (`start`), `done`, or in `error`. */
+export const AgentTaskAgent = Schema.Struct({
+  index: Schema.Int,
+  label: Schema.String,
+  phaseIndex: Schema.NullOr(Schema.Int),
+  state: Schema.String,
+  model: Schema.NullOr(Schema.String),
+  tokens: Schema.NullOr(Schema.Int),
+  toolCalls: Schema.NullOr(Schema.Int),
+  durationMs: Schema.NullOr(Schema.Int),
+  lastTool: Schema.NullOr(Schema.String),
+  /** The start of the agent's result, or of its error. */
+  preview: Schema.NullOr(Schema.String),
+});
+export type AgentTaskAgent = typeof AgentTaskAgent.Type;
+
+/**
+ * The `data` of a `task` item: a background task as Mend records it, whatever the harness's
+ * own wire shape. A workflow carries its phases and agents; other tasks leave them empty.
+ */
+export const AgentTaskData = Schema.Struct({
+  taskId: Schema.String,
+  /** The harness's task type: `local_workflow`, `local_agent`, `local_bash`, … */
+  taskType: Schema.String,
+  /** The workflow's name, when the task is one. */
+  workflow: Schema.NullOr(Schema.String),
+  description: Schema.String,
+  status: AgentTaskStatus,
+  /** The harness's closing line, once the task ended. */
+  summary: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+  phases: Schema.Array(Schema.Struct({ index: Schema.Int, title: Schema.String })),
+  agents: Schema.Array(AgentTaskAgent),
+  totalTokens: Schema.NullOr(Schema.Int),
+  toolUses: Schema.NullOr(Schema.Int),
+  durationMs: Schema.NullOr(Schema.Int),
+});
+export type AgentTaskData = typeof AgentTaskData.Type;
+
 /** Adapter-side item state before the engine stamps Mend ids and sequence. */
 export const AgentEventItem = Schema.Struct({
   providerItemId: Schema.String,
@@ -213,6 +275,11 @@ export const AgentEvent = Schema.Union([
   }),
   Schema.TaggedStruct("turn.started", {
     providerTurnId: Schema.String,
+  }),
+  /** The agent started a turn nobody sent; `reason` is what it is answering, when known. */
+  Schema.TaggedStruct("harness-turn.started", {
+    providerTurnId: Schema.String,
+    reason: Schema.String,
   }),
   Schema.TaggedStruct("turn.completed", {
     providerTurnId: Schema.String,

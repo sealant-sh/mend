@@ -36,6 +36,7 @@ import {
   Project,
   Session,
   Worktree,
+  type AgentTurnOrigin,
   type AgentTurnStatus,
   type AutomationChoice,
   type RequestIntent,
@@ -144,6 +145,8 @@ const turn = (
     readonly endedAt?: Date | null;
     readonly intent?: RequestIntent | null;
     readonly intentSource?: RequestIntentReading["source"] | null;
+    readonly origin?: AgentTurnOrigin;
+    readonly startedAt?: Date;
   } = {},
 ) =>
   new AgentTurn({
@@ -152,6 +155,7 @@ const turn = (
     processId: SessionProcessId.make("process-1"),
     ordinal,
     author: overrides.author === undefined ? "alice" : overrides.author,
+    origin: overrides.origin ?? "request",
     input: overrides.input ?? "fix the flaky login test",
     status: overrides.status ?? "completed",
     providerTurnId: null,
@@ -160,7 +164,7 @@ const turn = (
     intent: overrides.intent ?? null,
     intentSource: overrides.intentSource ?? null,
     createdAt: new Date(NOW.getTime() - 60_000),
-    startedAt: new Date(NOW.getTime() - 60_000),
+    startedAt: overrides.startedAt ?? new Date(NOW.getTime() - 60_000),
     endedAt: overrides.endedAt === undefined ? new Date(NOW.getTime() - 5_000) : overrides.endedAt,
   });
 
@@ -442,6 +446,33 @@ describe("automatic landing (docs/adr/0007, When a completed turn lands)", () =>
       }),
     ]);
     expect(world.turns[0]).toMatchObject({ landing: "attempted", landingId: "landing-1" });
+  });
+
+  it("decides a turn the agent opened itself by the request that started the work", async () => {
+    // The owner asked for a change; the agent started a workflow and ended the turn. When the
+    // workflow finished, the agent opened a turn of its own to report it.
+    const harness = (intent: RequestIntent) => [
+      turn(0, { intent, intentSource: "read" }),
+      turn(1, {
+        origin: "harness",
+        author: null,
+        input: 'Dynamic workflow "fix" completed',
+        startedAt: new Date(NOW.getTime() - 30_000),
+      }),
+    ];
+    world.turns = harness("change");
+    await look();
+    expect(world.lands).toHaveLength(1);
+    expect(world.lands[0]).toMatchObject({ actorUserId: "alice", trigger: "automatic" });
+    // The request's recorded intent decides; nothing reads the agent's own turn.
+    expect(world.reads).toEqual([]);
+    expect(world.turns[1]).toMatchObject({ landing: "attempted" });
+
+    world = blankWorld();
+    world.turns = harness("question");
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toContainEqual([1, "question"]);
   });
 
   it("decides each turn once, however often it is looked at", async () => {

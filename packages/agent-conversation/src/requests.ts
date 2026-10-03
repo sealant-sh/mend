@@ -78,6 +78,8 @@ export const itemName = (item: AgentItemDto): string => {
       return "Web search";
     case "command-execution":
       return "Command";
+    case "task":
+      return "Background task";
     default:
       return "Tool";
   }

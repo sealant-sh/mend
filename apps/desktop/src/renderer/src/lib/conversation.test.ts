@@ -229,6 +229,9 @@ describe("turn facts", () => {
     expect(turnAuthorLine(by("user-2"), "user-1", names, kinds)).toBe("sent by Maya");
     expect(turnAuthorLine(by("user-3"), "user-1", names, kinds)).toBe("sent by a member");
     expect(turnAuthorLine(by(null), "user-1", names, kinds)).toBe("sent by Mend");
+    expect(turnAuthorLine({ ...by(null), origin: "harness" }, "user-1", names, kinds)).toBe(
+      "the agent continued",
+    );
   });
 
   it("does not credit Mend with the terminal history a handoff imported", () => {

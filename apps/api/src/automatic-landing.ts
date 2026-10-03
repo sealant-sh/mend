@@ -112,6 +112,27 @@ const NOT_CAPTURED: ChangeFacts = { captured: false, empty: false, newSinceLandi
 
 const ended = (turn: AgentTurn): boolean => turn.status !== "queued" && turn.status !== "running";
 
+/**
+ * The request a turn answers. A turn the agent opened on its own (a background task or workflow
+ * it started ended) carries on the request that started that work: the last one to start before
+ * it. Its sender and its intent decide the turn.
+ */
+const requestBehind = (turn: AgentTurn, turns: ReadonlyArray<AgentTurn>): AgentTurn => {
+  if (turn.origin === "request") return turn;
+  const startedAt = turn.startedAt?.getTime() ?? turn.createdAt.getTime();
+  return (
+    turns
+      .filter(
+        (other) =>
+          other.origin === "request" &&
+          other.startedAt !== null &&
+          other.startedAt.getTime() <= startedAt,
+      )
+      .toSorted((a, b) => (a.startedAt?.getTime() ?? 0) - (b.startedAt?.getTime() ?? 0))
+      .at(-1) ?? turn
+  );
+};
+
 export interface AutomaticLandingOptions {
   readonly now?: () => number;
   /** How often to ask for a flush before a change reads as not captured; 3 by default. */
@@ -331,8 +352,15 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
       const project = yield* projects.byId(session.projectId);
       // The change's owner, who lands it: never a teammate who joined the worktree.
       const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+      const asked = requestBehind(turn, turns);
       const plan = planTurn({
-        turn,
+        turn: {
+          status: turn.status,
+          ordinal: turn.ordinal,
+          author: asked.author,
+          intent: asked.intent,
+          intentSource: asked.intentSource,
+        },
         changeOwnerUserId: owner,
         sessionOwnerUserId: session.ownerUserId,
         origin: session.origin,
@@ -345,7 +373,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
       if (plan._tag === "not-landed")
         return decidedAs(heldBack(plan.reason, yield* changeOf(session)));
       if (owner === null) return skippedFor("no owner");
-      const step = afterTheIntent(yield* intentOf(session, turn, turns), plan.on);
+      const step = afterTheIntent(yield* intentOf(session, asked, turns), plan.on);
       if (step._tag === "not-landed") {
         return decidedAs(heldBack(step.reason, yield* changeOf(session)));
       }

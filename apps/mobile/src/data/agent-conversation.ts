@@ -64,9 +64,12 @@ const integer = (row: Readonly<Record<string, unknown>>, key: string, subject: s
 
 const parseTurn = (value: unknown): AgentTurnDto => {
   const row = record(value, "agent turn");
+  // Older servers send no origin: every turn they recorded was sent by Mend.
+  const origin = row["origin"];
   return {
     id: string(row, "id", "agent turn"),
     ordinal: integer(row, "ordinal", "agent turn"),
+    ...(typeof origin === "string" ? { origin } : {}),
     input: string(row, "input", "agent turn"),
     status: string(row, "status", "agent turn"),
     error: nullableString(row, "error", "agent turn"),
@@ -84,6 +87,8 @@ const parseItem = (value: unknown): AgentItemDto => {
     status: string(row, "status", "agent item"),
     title: nullableString(row, "title", "agent item"),
     text: nullableString(row, "text", "agent item"),
+    // Read where it is used (`agentTaskOf`): only some kinds carry a record worth reading.
+    data: row["data"],
     createdAt: string(row, "createdAt", "agent item"),
     updatedAt: string(row, "updatedAt", "agent item"),
   };
