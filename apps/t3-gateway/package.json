@@ -1,0 +1,28 @@
+{
+  "name": "@mend/t3-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A t3code environment in front of Mend: t3code's clients pair with it and see Mend (ADR 0012)",
+  "bin": {
+    "mend-t3-gateway": "./src/bin.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint .",
+    "start": "node src/bin.ts",
+    "test": "vitest run",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:t3",
+    "@mend/t3-contracts": "workspace:*",
+    "effect": "catalog:t3"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:t3",
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:t3"
+  }
+}
