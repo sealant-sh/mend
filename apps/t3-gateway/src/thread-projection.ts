@@ -600,6 +600,85 @@ const turnEntries = (
   return out;
 };
 
+/** A message in the gateway's queue: its user message, and why Mend refused it if it did. */
+const pendingEntries = (
+  source: ThreadSource,
+  entry: ThreadSource["pending"][number],
+  index: number,
+): TurnEntries => {
+  const threadId = threadIdOf(source.session);
+  const providerThreadId = providerThreadIdOf(source.session);
+  const runId = RunId.make(entry.runId);
+  const messageId = MessageId.make(entry.messageId);
+  const ordinalBase = (index + 1) * TURN_ORDINAL_STRIDE;
+  const requested = utc(entry.requestedAt);
+  const out: TurnEntries = { items: [], messages: [] };
+  out.messages.push({
+    createdBy: "user",
+    creationSource: "web",
+    id: messageId,
+    threadId,
+    runId,
+    nodeId: null,
+    role: "user",
+    text: entry.text,
+    attachments: [],
+    streaming: false,
+    createdAt: requested,
+    updatedAt: requested,
+  });
+  out.items.push({
+    id: userItemIdOf(runId),
+    threadId,
+    runId,
+    nodeId: null,
+    providerThreadId,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: ordinalBase,
+    status: "completed",
+    title: null,
+    startedAt: requested,
+    completedAt: requested,
+    updatedAt: requested,
+    createdBy: "user",
+    creationSource: "web",
+    type: "user_message",
+    messageId,
+    inputIntent:
+      entry.state === "queued" || entry.state === "cancelled" ? "queued_turn" : "turn_start",
+    text: entry.text,
+    attachments: [],
+  });
+  if (entry.state === "failed") {
+    out.items.push({
+      id: TurnItemId.make(`run-error:${entry.runId}`),
+      threadId,
+      runId,
+      nodeId: null,
+      providerThreadId,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: ordinalBase + 1,
+      status: "failed",
+      title: null,
+      startedAt: requested,
+      completedAt: requested,
+      updatedAt: requested,
+      type: "error",
+      failure: {
+        class: "unknown",
+        message: truncate(nonEmpty(entry.error, "Mend did not take this message."), 4_000),
+        code: null,
+        retryable: null,
+      },
+    });
+  }
+  return out;
+};
+
 const providerSessionOf = (
   source: ThreadSource,
   runs: ReadonlyArray<OrchestrationV2Run>,
@@ -718,6 +797,11 @@ export const threadProjectionOf = (
       itemsByTurn.get(turn.id) ?? [],
       requestsByTurn.get(turn.id) ?? [],
     );
+    turnItems.push(...entries.items);
+    messages.push(...entries.messages);
+  });
+  source.pending.forEach((entry, index) => {
+    const entries = pendingEntries(source, entry, source.turns.length + index);
     turnItems.push(...entries.items);
     messages.push(...entries.messages);
   });

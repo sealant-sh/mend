@@ -17,7 +17,6 @@ import {
   OrchestrationGetTurnDiffError,
   OrchestrationGetWorkflowScriptError,
   OrchestrationSearchThreadsError,
-  OrchestrationV2DispatchCommandError,
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
   OrchestrationV2ThreadLaunchError,
@@ -47,6 +46,7 @@ import * as Stream from "effect/Stream";
 import type * as Rpc from "effect/unstable/rpc/Rpc";
 import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
+import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import type { HubReadError, PersonHub } from "./hub.ts";
 import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
@@ -84,6 +84,7 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeShell,
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+  ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
 ]);
 
 /** Streams that stay open and never emit: feeds of things Mend never has. */
@@ -340,13 +341,7 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
 
     // ── Orchestration (phase 1 and later) ───────────────────────────────────
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
-      Effect.fail(
-        new OrchestrationV2DispatchCommandError({
-          commandId: command.commandId,
-          commandType: command.type,
-          message: `Mend's t3code gateway does not accept ${command.type} yet.`,
-        }),
-      ),
+      dispatchCommand(hub, session, command),
     [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
       Effect.fail(
         new OrchestrationV2ThreadLaunchError({

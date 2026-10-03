@@ -92,6 +92,29 @@ sequence the client resumes after: replay after a sequence is phase 2.
 | ordinals                                   | each turn owns a block of 100 000, its input first, then items and requests in the order Mend recorded them |
 | `GET …/threads/:id/bounded`                | the whole thread as one window: no cursor, nothing older                                                    |
 
+### Commands
+
+`orchestration.dispatchCommand` takes what Mend can back (`src/commands.ts`); every other command
+answers `OrchestrationV2DispatchCommandError` naming it.
+
+| t3code                              | What the gateway does                                                                                                                                                                                                 |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message.dispatch`                  | Checks Mend's steering rule as the sender (`GET /api/sessions/:id`), queues the message, and sends it once no turn is open: `POST /api/sessions/:id/turns`, or `POST /api/sessions/:id/launch` when the agent stopped |
+| `run.interrupt`                     | `POST /api/turns/:id/interrupt`; with `holdQueue` (t3code always sends it) the queue is held before the turn ends. A queued run is taken back instead                                                                 |
+| `queued-run.cancel`, `queue.resume` | The gateway's queue                                                                                                                                                                                                   |
+| `runtime-request.respond`           | `POST /api/requests/:id/respond`: decisions as Mend's (`acceptAlways` is `accept-for-session`), answers as lists of strings                                                                                           |
+| `thread.user-input.dismiss`         | The same, answering `cancel`                                                                                                                                                                                          |
+
+The gateway holds the queue (ADR 0012): it never sends a second turn while one is open in Mend,
+whoever opened it. A queued message is a run of the gateway's own (`t3-run:…`) until Mend opens its
+turn; from then on the turn keeps that run id and the client's message id, recorded in the state
+file's `run_ids` and `message_ids`, so a client's own message is reconciled even after a gateway
+restart. A follow-up to a stopped session (the 15-minute idle stop) is a protocol launch with the
+message as its opening turn, naming no model, effort or permission mode: Mend reuses what the
+session's last protocol agent recorded, so an `ask` session comes back asking. Steering mid-turn,
+images and holding a message for later are refused; queue edit and reorder, and a queue that
+survives a restart, are phase 2.
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:

@@ -75,6 +75,25 @@ export interface ThreadSource {
   readonly runIds: ReadonlyMap<string, string>;
   /** Mend turn id → the t3code message id its input was sent as, when a t3code client sent it. */
   readonly messageIds: ReadonlyMap<string, string>;
+  /** Messages a t3code client sent that are not a Mend turn yet: the gateway's queue. */
+  readonly pending: ReadonlyArray<PendingRun>;
+  /** An interrupt held the queue; nothing queued is sent until the client resumes it. */
+  readonly queueHeld: boolean;
+}
+
+/**
+ * One message in the gateway's queue (ADR 0012, "The gateway holds the queue"), as a run until
+ * Mend opens its turn: `queued` behind an open turn, `starting` while Mend takes it,
+ * `preparing` while a stopped session is launched again with it, `failed` when Mend refused it,
+ * `cancelled` when the client took it back.
+ */
+export interface PendingRun {
+  readonly runId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly requestedAt: string;
+  readonly state: "queued" | "starting" | "preparing" | "failed" | "cancelled";
+  readonly error: string | null;
 }
 
 /**
@@ -243,23 +262,66 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
   const pending = pendingTurnIds(source);
   const modelSelection = modelSelectionOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
-  return source.turns.toSorted(byOrdinal).map((turn, index) => ({
-    id: runIdOf(source, turn),
-    threadId: threadIdOf(source.session),
-    ordinal: index + 1,
-    providerInstanceId: modelSelection.instanceId,
-    modelSelection,
-    providerThreadId,
-    userMessageId: userMessageIdOf(source, turn),
-    rootNodeId: null,
-    activeAttemptId: null,
-    status: runStatusOf(turn, pending.has(turn.id)),
-    requestedAt: utc(turn.createdAt),
-    startedAt: turn.startedAt === null ? null : utc(turn.startedAt),
-    completedAt: turn.endedAt === null ? null : utc(turn.endedAt),
-    checkpointId: null,
-    contextHandoffId: null,
-  }));
+  const turns = source.turns.toSorted(byOrdinal).map(
+    (turn, index): OrchestrationV2Run => ({
+      id: runIdOf(source, turn),
+      threadId: threadIdOf(source.session),
+      ordinal: index + 1,
+      providerInstanceId: modelSelection.instanceId,
+      modelSelection,
+      providerThreadId,
+      userMessageId: userMessageIdOf(source, turn),
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: runStatusOf(turn, pending.has(turn.id)),
+      requestedAt: utc(turn.createdAt),
+      startedAt: turn.startedAt === null ? null : utc(turn.startedAt),
+      completedAt: turn.endedAt === null ? null : utc(turn.endedAt),
+      checkpointId: null,
+      contextHandoffId: null,
+    }),
+  );
+  let queuePosition = 0;
+  const queued = source.pending.map((entry, index): OrchestrationV2Run => {
+    const requestedAt = utc(entry.requestedAt);
+    const settled = entry.state === "failed" || entry.state === "cancelled";
+    return {
+      id: RunId.make(entry.runId),
+      threadId: threadIdOf(source.session),
+      ordinal: turns.length + index + 1,
+      providerInstanceId: modelSelection.instanceId,
+      modelSelection,
+      providerThreadId,
+      userMessageId: MessageId.make(entry.messageId),
+      rootNodeId: null,
+      activeAttemptId: null,
+      status: pendingStatusOf(entry),
+      ...(entry.state === "queued"
+        ? { queuePosition: ++queuePosition, queueHeld: source.queueHeld }
+        : {}),
+      requestedAt,
+      startedAt: null,
+      completedAt: settled ? requestedAt : null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+  });
+  return [...turns, ...queued];
+};
+
+const pendingStatusOf = (entry: PendingRun): OrchestrationV2RunStatus => {
+  switch (entry.state) {
+    case "queued":
+      return "queued";
+    case "starting":
+      return "starting";
+    case "preparing":
+      return "preparing";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+  }
 };
 
 export const byOrdinal = (left: MendTurn, right: MendTurn): number => left.ordinal - right.ordinal;

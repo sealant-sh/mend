@@ -139,6 +139,23 @@ export const MendRequest = Schema.Struct({
 });
 export type MendRequest = typeof MendRequest.Type;
 
+/** `SessionDetail` in @mend/api-contracts, from `GET /api/sessions/:id`. */
+export const MendSessionDetail = Schema.Struct({
+  session: MendSession,
+  /** What the caller may do; servers before organizations omit it. */
+  control: Schema.optional(Schema.Struct({ steer: Schema.Boolean })),
+  change: Schema.NullOr(
+    Schema.Struct({
+      id: Schema.String,
+      branch: Schema.String,
+      baseSha: Schema.String,
+      headSha: Schema.NullOr(Schema.String),
+    }),
+  ),
+  currentAgent: Schema.NullOr(MendProcess),
+});
+export type MendSessionDetail = typeof MendSessionDetail.Type;
+
 /**
  * One SSE frame of `GET /api/events` (`MendEvent` in @mend/db): a pointer, never data. The
  * gateway reads which project and session it concerns and re-reads through the API.

@@ -26,6 +26,11 @@ class GatedMendClient {
   readonly listTurns: DeviceCalls["listTurns"];
   readonly listItems: DeviceCalls["listItems"];
   readonly listRequests: DeviceCalls["listRequests"];
+  readonly sessionDetail: DeviceCalls["sessionDetail"];
+  readonly submitTurn: DeviceCalls["submitTurn"];
+  readonly launchProtocol: DeviceCalls["launchProtocol"];
+  readonly interruptTurn: DeviceCalls["interruptTurn"];
+  readonly respondRequest: DeviceCalls["respondRequest"];
   readonly events: DeviceCalls["events"];
 
   constructor(calls: DeviceCalls) {
@@ -36,6 +41,11 @@ class GatedMendClient {
     this.listTurns = calls.listTurns;
     this.listItems = calls.listItems;
     this.listRequests = calls.listRequests;
+    this.sessionDetail = calls.sessionDetail;
+    this.submitTurn = calls.submitTurn;
+    this.launchProtocol = calls.launchProtocol;
+    this.interruptTurn = calls.interruptTurn;
+    this.respondRequest = calls.respondRequest;
     this.events = calls.events;
   }
 
@@ -71,6 +81,13 @@ export const gateDeviceCalls = (
     listItems: (token, sessionId, after, limit) =>
       guard(token, mend.listItems(token, sessionId, after, limit)),
     listRequests: (token, sessionId) => guard(token, mend.listRequests(token, sessionId)),
+    sessionDetail: (token, sessionId) => guard(token, mend.sessionDetail(token, sessionId)),
+    submitTurn: (token, sessionId, input) => guard(token, mend.submitTurn(token, sessionId, input)),
+    launchProtocol: (token, sessionId, prompt) =>
+      guard(token, mend.launchProtocol(token, sessionId, prompt)),
+    interruptTurn: (token, turnId) => guard(token, mend.interruptTurn(token, turnId)),
+    respondRequest: (token, requestId, response) =>
+      guard(token, mend.respondRequest(token, requestId, response)),
     events: (token) =>
       mend
         .events(token)
