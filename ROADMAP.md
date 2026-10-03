@@ -86,9 +86,9 @@ cache, idle defaults, and the gateway on a private instance.
 2. **Shared control, paid by whoever steers.** When a member steers someone else's session, their
    turn runs on their own login: the session's credentials are passed with each turn, on the fly,
    instead of being fixed when the session starts. Today the owner's login pays for every turn (ADR
-   0008, "Whose login pays"). Open in the design: a steerer's token is readable on the owner's
-   machine while their turn runs; Codex reads a new login only after a 401 unless its external-auth
-   mode is used; terminal sessions have no turn boundaries for Mend to swap at.
+   0008, "Whose login pays"). Designed in ADR 0013: the switch sits in turn dispatch, the owner's
+   login goes back when a steerer's turn ends, Codex restarts its app-server in place after a
+   switch, and in a terminal session only the owner types.
 
 ## Not scheduled
 
