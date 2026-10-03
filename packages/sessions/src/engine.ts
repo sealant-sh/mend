@@ -2944,6 +2944,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ? ("unknown" as const)
                 : yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId));
           if (state === "dead") {
+            if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
             yield* capture.repo.release(session.worktreeId, lease.epoch);
             yield* Effect.logInfo(
               "session engine: capture mode · the previous holder ended · lease released",
@@ -3203,8 +3204,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const discards = new Set<SealantWorkspaceId>();
       /** Sessions whose forked stop tail (harvest, then the sweep) is still running here. */
       const stopTails = new Set<SessionId>();
-      /** Each running stop tail's end, for the discard that started it and must wait for it. */
-      const stopTailsDone = new Map<SessionId, Deferred.Deferred<void>>();
+      /** Each session's running stop tails' ends, for the discard that must wait for all of them. */
+      const stopTailsDone = new Map<SessionId, Set<Deferred.Deferred<void>>>();
       /**
        * Work an end puts off until its drain's final flush, by workspace (ADR 0002 decision 50):
        * the stop's checkpoint and the harvest of each agent that ended. Before 2026-10-03 each
@@ -3318,6 +3319,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * interruption of the caller (a request that gave up) leaves it running and nothing queued
        * without a consumer; the caller waits for it within the limit, then goes on.
        */
+      /**
+       * Before a lease is released under a workspace, whatever the path (a drain's end, a lapsed
+       * holder read dead at a launch or by the reaper, a create cut short): what its Stop put off
+       * runs to empty, every piece waited for, on the evidence the drain kept. No successor then
+       * registers a head under a harvest still owed (Astra reviews, 2026-10-03). Nothing owed,
+       * nothing running: at once.
+       */
+      const owedBeforeRelease = (workspaceId: SealantWorkspaceId) =>
+        Effect.suspend(() =>
+          deferredToFinal.has(workspaceId) ||
+          deferredRunning.has(workspaceId) ||
+          deferredConsumers.has(workspaceId)
+            ? runDeferred(
+                workspaceId,
+                deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
+                null,
+                true,
+              ).pipe(Effect.asVoid)
+            : Effect.void,
+        );
       const runDeferredDetached = (
         workspaceId: SealantWorkspaceId,
         reading: DrainWord,
@@ -3499,6 +3520,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (holder === null || holder.sealantWorkspaceId !== workspaceId) return;
         }
+        yield* owedBeforeRelease(workspaceId);
         const released = yield* capture.repo.release(session.worktreeId, lease.epoch);
         if (released) {
           yield* Effect.logInfo("session engine: worktree lease released").pipe(
@@ -4367,8 +4389,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* stop(sessionId, null);
           // The tail that stop forked harvests inline under a discard: waited for, so it never
           // reads under a successor once the lease below goes (Astra review, 2026-10-03).
-          const tailDone = stopTailsDone.get(sessionId);
-          if (tailDone !== undefined) yield* Deferred.await(tailDone);
+          // Every tail, those a Stop meanwhile started included, until none is left.
+          while (true) {
+            const tails = [...(stopTailsDone.get(sessionId) ?? [])];
+            if (tails.length === 0) break;
+            yield* Effect.forEach(tails, (tailDone) => Deferred.await(tailDone), { discard: true });
+          }
           const running = drains.get(workspaceId);
           if (running !== undefined) yield* Deferred.await(running);
           // What the stop put off runs before the lease goes, on the evidence the drain kept,
@@ -4549,7 +4575,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId))) ===
                 "dead");
           if (ended) {
-            if (!lease.live) yield* capture.repo.release(worktreeId, lease.epoch);
+            if (!lease.live) {
+              if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
+              yield* capture.repo.release(worktreeId, lease.epoch);
+            }
           } else {
             holds.push({ sessionId: holder.id, kind: "lease" });
           }
@@ -4655,6 +4684,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 session.sealantWorkspaceId === null ||
                 (yield* workspaceState(session.sealantWorkspaceId)) === "dead";
               if (lease !== null && lease.executorId === sessionId && previousEnded) {
+                if (session.sealantWorkspaceId !== null) {
+                  yield* owedBeforeRelease(session.sealantWorkspaceId);
+                }
                 yield* capture.repo.release(session.worktreeId, lease.epoch);
               }
               yield* Effect.logInfo(
@@ -11174,7 +11206,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             stopTails.add(sessionId);
             const tailDone = Deferred.makeUnsafe<void>();
-            stopTailsDone.set(sessionId, tailDone);
+            const tailsDone = stopTailsDone.get(sessionId) ?? new Set<Deferred.Deferred<void>>();
+            tailsDone.add(tailDone);
+            stopTailsDone.set(sessionId, tailsDone);
             const tail = (
               ended.length > 0
                 ? Effect.forEach(ended, (agent) => finishAgentProcess(agent, null, true, true), {
@@ -11201,7 +11235,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.ensuring(
                   Effect.sync(() => {
                     stopTails.delete(sessionId);
-                    stopTailsDone.delete(sessionId);
+                    tailsDone.delete(tailDone);
+                    if (tailsDone.size === 0) stopTailsDone.delete(sessionId);
                     Deferred.doneUnsafe(tailDone, Exit.succeed(undefined));
                   }),
                 ),
