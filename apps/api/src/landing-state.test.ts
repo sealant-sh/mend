@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest";
 
 import { makeProject } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
-import { describeUnlanded, unlandedWork } from "./landing-state.ts";
+import { unlandedWork } from "./landing-state.ts";
 
 /** Worktree removal against the landing record (docs/adr/0007-landing.md, "Worktree removal"). */
 
@@ -258,14 +258,5 @@ describe("unlandedWork", () => {
       landings: [refused],
     });
     expect(refusal).toContain("never landed");
-  });
-});
-
-describe("describeUnlanded", () => {
-  it("names five files and counts the rest", () => {
-    const files = Array.from({ length: 7 }, (_, index) => file(`f${index}.ts`, index, 1));
-    expect(describeUnlanded(files)).toBe(
-      "7 files · +21 −7 · f0.ts +0 −1, f1.ts +1 −1, f2.ts +2 −1, f3.ts +3 −1, f4.ts +4 −1, 2 more",
-    );
   });
 });

@@ -172,21 +172,22 @@ list does not know is passed through as given; the harness decides whether it ex
 
 ## Session commands
 
-| Command                                                        | Purpose                                                                                |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `mend` or `mend ui [--no-tunnel]`                              | Open the terminal dashboard of projects, worktrees and sessions                        |
-| `mend snake`                                                   | Open the dashboard with a game of snake over it; `Esc` or `q` closes the game          |
-| `mend worktrees [--project <name>] [--json]`                   | List worktrees and the sessions inside them                                            |
-| `mend sessions [--all] [--project <name>] [--json\|--json=v2]` | List live sessions, or include settled sessions with `--all`                           |
-| `mend status`                                                  | Alias for `mend sessions`                                                              |
-| `mend attach [session-id-prefix] [--no-tunnel]`                | Reattach to a running session; a session picked up on the phone moves to this terminal |
-| `mend stop [session-id-prefix]`                                | Stop the agent; the worktree, record and review remain                                 |
-| `mend stop --all [--project <name>]`                           | Stop every live session, or every live session in one project                          |
-| `mend stop --services [session-id-prefix]`                     | Stop the session's Services instead of its agent                                       |
-| `mend shell [session-id-prefix]`                               | Open a shell in a live session workspace                                               |
-| `mend continue [session-id]`                                   | Resume a session with its pending review follow-up                                     |
-| `mend resume [session-id] [--with <harness>]`                  | Restore provider state and resume a settled session                                    |
-| `mend rejoin [session-id] [--harness <harness>] [--no-tunnel]` | Attach when live, otherwise resume                                                     |
+| Command                                                        | Purpose                                                                                      |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `mend` or `mend ui [--no-tunnel]`                              | Open the terminal dashboard of projects, worktrees and sessions                              |
+| `mend snake`                                                   | Open the dashboard with a game of snake over it; `Esc` or `q` closes the game                |
+| `mend worktrees [--project <name>] [--json]`                   | List worktrees and the sessions inside them                                                  |
+| `mend worktrees rm <name> [--force] [--project <name>]`        | Remove a worktree, its sessions and its change, with `--force` when its change is not landed |
+| `mend sessions [--all] [--project <name>] [--json\|--json=v2]` | List live sessions, or include settled sessions with `--all`                                 |
+| `mend status`                                                  | Alias for `mend sessions`                                                                    |
+| `mend attach [session-id-prefix] [--no-tunnel]`                | Reattach to a running session; a session picked up on the phone moves to this terminal       |
+| `mend stop [session-id-prefix]`                                | Stop the agent; the worktree, record and review remain                                       |
+| `mend stop --all [--project <name>]`                           | Stop every live session, or every live session in one project                                |
+| `mend stop --services [session-id-prefix]`                     | Stop the session's Services instead of its agent                                             |
+| `mend shell [session-id-prefix]`                               | Open a shell in a live session workspace                                                     |
+| `mend continue [session-id]`                                   | Resume a session with its pending review follow-up                                           |
+| `mend resume [session-id] [--with <harness>]`                  | Restore provider state and resume a settled session                                          |
+| `mend rejoin [session-id] [--harness <harness>] [--no-tunnel]` | Attach when live, otherwise resume                                                           |
 
 With no session ID, `attach`, `stop` and `shell` take the one live session; with several, a picker
 opens. A prefix of the ID is enough. Other commands narrow candidates by the current project and
@@ -203,10 +204,12 @@ envelope (`"version": 2`); against an older server every session appears as its 
 improves.
 
 Deleting a session removes only the conversation record; the worktree, with its change and
-checkpoints, remains. Removing a worktree is its own explicit act (dashboard `Shift+D`, or the API):
-refused while any session is live, and refused while the worktree holds work that is not on origin
-(a change never landed, or one changed since its last landing) unless forced. The refusal names the
-files and line counts that are not on origin.
+checkpoints, remains. Removing a worktree is its own explicit act (`mend worktrees rm <name>`,
+dashboard `Shift+D`, the web app's worktree menu, or the API): refused while any session is live,
+and refused while the worktree holds work that is not on origin (a change never landed, or one
+changed since its last landing) unless forced. The refusal names the files and line counts that are
+not on origin, and `mend worktrees rm` prints it as the server said it, with the `--force` form that
+removes the worktree anyway. A worktree whose workspace is still saving is refused either way.
 
 ## Landing commands
 

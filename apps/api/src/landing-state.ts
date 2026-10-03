@@ -13,18 +13,19 @@ import {
   type Change,
   type ChangeLanding,
   changeOwnerOf,
+  describeUnlanded,
   type LandingFact,
   landingFacts,
   latestDecidedTurn as latestDecidedTurnOf,
   nextLandingBranch,
   type Project,
+  WORKTREE_REMOVAL_FORCE_HINT,
   type Worktree,
 } from "@mend/domain/workbench";
 import { LandingGit, LandingStepError, pullRequestBase } from "@mend/landing";
 import { WorktreeReads } from "@mend/sessions";
 import {
   AgentBridge,
-  type ChangedFile,
   MendKeys,
   type RemoteBranchState,
   resolveRemoteEnv,
@@ -232,24 +233,9 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
 
 // ─── Worktree removal ───────────────────────────────────────────────────────
 
-const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-
-/** How many files to name in a refusal before counting the rest. */
-const NAMED_FILES = 5;
-
-/** `3 files · +12 −3 · src/a.ts +10 −2, src/b.ts +2 −1, docs/c.md +0 −0` */
-export const describeUnlanded = (files: ReadonlyArray<ChangedFile>): string => {
-  const additions = files.reduce((sum, file) => sum + file.additions, 0);
-  const deletions = files.reduce((sum, file) => sum + file.deletions, 0);
-  const named = files
-    .slice(0, NAMED_FILES)
-    .map((file) => `${file.path} +${file.additions} −${file.deletions}`)
-    .join(", ");
-  const more = files.length > NAMED_FILES ? `, ${files.length - NAMED_FILES} more` : "";
-  return `${plural(files.length, "file", "files")} · +${additions} −${deletions} · ${named}${more}`;
-};
-
-const OVERRIDE = "or pass force=true to remove it anyway";
+// The words are shaped in @mend/domain/workbench (worktree-removal.ts), where the clients that
+// show them and offer "Remove anyway" read them back.
+const OVERRIDE = WORKTREE_REMOVAL_FORCE_HINT;
 
 /**
  * Why a worktree may not be removed without `force`, or null when it may
