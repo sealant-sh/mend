@@ -24,6 +24,7 @@ import {
   ServiceRecipe,
   Session,
   SessionProcess,
+  SessionRepository,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
@@ -352,12 +353,35 @@ export class SessionControlView extends Schema.Class<SessionControlView>("Sessio
   toggleSharedControl: Schema.Boolean,
 }) {}
 
+/**
+ * A repository the session holds beside its own worktree (docs/adr/0010), with what the review
+ * can say about it: the project's name, its change, and how far its own chain has moved.
+ */
+export class SessionRepositoryView extends Schema.Class<SessionRepositoryView>(
+  "SessionRepositoryView",
+)({
+  repository: SessionRepository,
+  /** The repository's project, by name; null when the project is gone. */
+  projectName: Schema.NullOr(Schema.String),
+  /** The repository's worktree's change, reviewed at `/changes/<id>`; null before it exists. */
+  change: Schema.NullOr(SessionChange),
+  /**
+   * Checkpoints of the repository's worktree beyond its start. Zero while its files travel with
+   * the main repository (`capture: nested`): the review has nothing of its own to show yet.
+   */
+  checkpointsBeyondStart: Schema.Int,
+}) {}
+
 export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")({
   session: Session,
   control: SessionControlView,
   /** The WORKTREE's chain and change, denormalized here for pre-worktree clients. */
   checkpoints: Schema.Array(Checkpoint),
   change: Schema.NullOr(SessionChange),
+  /** The repositories the session holds beside its own worktree (docs/adr/0010). Older servers omit it. */
+  repositories: Schema.Array(SessionRepositoryView).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
   /**
    * The change's landings, newest first (docs/adr/0007-landing.md): what was pushed where, and
    * the pull request as `gh` last reported it. Older servers omit it.

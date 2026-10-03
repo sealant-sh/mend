@@ -29,6 +29,7 @@ export * from "./repos/project-cluster-bindings.ts";
 export * from "./repos/project-environment.ts";
 export * from "./repos/project-mounts.ts";
 export * from "./repos/project-links.ts";
+export * from "./repos/session-repositories.ts";
 export * from "./repos/project-secrets.ts";
 export * from "./repos/project-service-recipes.ts";
 export * from "./repos/user-dotfiles.ts";

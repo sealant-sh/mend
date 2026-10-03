@@ -17,6 +17,7 @@ import {
   OrganizationsRepo,
   FoldersRepo,
   type ProjectNotFoundError,
+  SessionRepositoriesRepo,
   ProjectSecretsRepo,
   ProjectsRepo,
   ReferencesRepo,
@@ -106,7 +107,10 @@ import {
   ServiceView,
   SessionExtraMount,
   SessionReferenceMount,
+  type SessionRepository as SessionRepositoryRow,
   canUseLink,
+  isRepositoryName,
+  repositoryPath,
   type CaptureDiscardFacts,
   type CaptureDrainReason,
   type CaptureDrainStep,
@@ -312,6 +316,14 @@ import {
   mayRunIn,
 } from "./run-eligibility.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
+import {
+  type AddableProject,
+  failureReason,
+  parseRelinkReport,
+  REPOSITORY_EXISTS_EXIT,
+  repositoryCloneScript,
+  repositoryRelinkScript,
+} from "./session-repositories.ts";
 import { SessionRepository, type SessionRepositoryError } from "./session-repository.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
@@ -1108,6 +1120,25 @@ export const captureHoldWords = (holds: ReadonlyArray<CaptureHold>): string => {
   return parts.join(" · ");
 };
 
+/** Why a repository was not added; `message` is what the person reads. */
+export class RepositoryAddError extends Schema.TaggedErrorClass<RepositoryAddError>()(
+  "RepositoryAddError",
+  {
+    sessionId: SessionId,
+    reason: Schema.Literals([
+      "own-project",
+      "unknown-project",
+      "not-visible",
+      "bad-name",
+      "name-taken",
+      "worktree-taken",
+      "no-origin",
+      "not-live",
+    ]),
+    message: Schema.String,
+  },
+) {}
+
 export class SessionEngine extends Context.Service<
   SessionEngine,
   {
@@ -1232,6 +1263,41 @@ export class SessionEngine extends Context.Service<
       | ProjectNotFoundError
       | PastedImageError
       | SealantPlatformError
+    >;
+    /** The repositories the session holds beside its own worktree (docs/adr/0010). */
+    readonly listRepositories: (
+      sessionId: SessionId,
+    ) => Effect.Effect<ReadonlyArray<SessionRepositoryRow>, SessionNotFoundError>;
+    /**
+     * The projects the session may add as repositories: its organization's projects its owner can
+     * see, less its own project and the ones it already holds.
+     */
+    readonly addableProjects: (
+      sessionId: SessionId,
+    ) => Effect.Effect<ReadonlyArray<AddableProject>, SessionNotFoundError | ProjectNotFoundError>;
+    /**
+     * Add a project of the store as a repository of the session (docs/adr/0010): a worktree of
+     * that project, named after the session's own worktree unless `worktree` says, at
+     * `/workspace/repos/<name>`. The row answers at once in state `adding`; the files are brought
+     * into the live workspace in the engine's lifetime, and the row reads `ready` or `failed`
+     * with the reason once that is done. Refusals name their reason in the person's words.
+     */
+    readonly addRepository: (
+      sessionId: SessionId,
+      input: {
+        readonly project: string;
+        /** The directory name under `/workspace/repos/`; the project's name when null. */
+        readonly name: string | null;
+        /** The worktree to make in the project; the session's own worktree name when null. */
+        readonly worktree: string | null;
+      },
+    ) => Effect.Effect<
+      SessionRepositoryRow,
+      | SessionNotFoundError
+      | ProjectNotFoundError
+      | RepositoryAddError
+      | GitError
+      | WorktreeBaseConflictError
     >;
     /** Queue one authored turn on the live protocol process. */
     readonly submitTurn: (
@@ -1553,6 +1619,7 @@ type SessionEngineRequirements =
   | ReferencesRepo
   | ProjectMountsRepo
   | ProjectLinksRepo
+  | SessionRepositoriesRepo
   | OrganizationsRepo
   | FoldersRepo
   | ProjectClusterBindingsRepo
@@ -1633,6 +1700,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         restartService: (reference) => owned(sessionId)(api.restartService(reference)),
         stopSession: () => owned(sessionId)(api.stopSession()),
         land: () => owned(sessionId)(api.land()),
+        listRepositories: () => owned(sessionId)(api.listRepositories()),
+        addableProjects: () => owned(sessionId)(api.addableProjects()),
+        addRepository: (input) => owned(sessionId)(api.addRepository(input)),
         gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
         gitTransportDone: (opId, exitCode, refUpdates) =>
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
@@ -5315,6 +5385,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
       const projectLinks = yield* ProjectLinksRepo;
+      const sessionRepositories = yield* SessionRepositoriesRepo;
       const organizations = yield* OrganizationsRepo;
       const foldersRepo = yield* FoldersRepo;
       const sourcePolicy = yield* SourcePolicy;
@@ -8313,16 +8384,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
             ),
             // A linked project rides as a read-write extra mount on the record: what the agent
-            // could change, and where — the linked project's own worktree.
-            ...linkedProjects.map(
-              ({ link, linked }) =>
-                new SessionExtraMount({
-                  name: `repos/${link.name}`,
-                  hostPath: worktreePathOf(linked.storePath, link.worktreeName),
-                  mountPath: linkedProjectMountPath(link.name),
-                  readOnly: false,
-                }),
-            ),
+            // could change, and where — the linked project's own worktree. A capture executor
+            // mounts nothing, so nothing is recorded there (docs/adr/0010 "Linked projects"):
+            // the record and the agent's note name only what the workspace holds.
+            ...(captureSource !== null
+              ? []
+              : linkedProjects.map(
+                  ({ link, linked }) =>
+                    new SessionExtraMount({
+                      name: `repos/${link.name}`,
+                      hostPath: worktreePathOf(linked.storePath, link.worktreeName),
+                      mountPath: linkedProjectMountPath(link.name),
+                      readOnly: false,
+                    }),
+                )),
           ],
         };
       });
@@ -8473,7 +8548,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         worktree: string | null,
         referenceMounts: ReadonlyArray<SessionReferenceMount>,
         extraMounts: ReadonlyArray<SessionExtraMount>,
+        /** The session's repositories (docs/adr/0010), as they stand after the relink. */
+        repositories: ReadonlyArray<SessionRepositoryRow> = [],
       ) {
+        const readyRepositories = repositories.filter((row) => row.state === "ready");
+        const repositoriesSection =
+          `## Mend repositories\n\n` +
+          (readyRepositories.length === 0
+            ? ""
+            : `Repositories of other projects added to this session, each a worktree of its ` +
+              `project on a branch of its own. Commits there are that repository's own change, ` +
+              `never part of this session's change:\n\n` +
+              readyRepositories.map((row) => `- ${row.path} · branch ${row.branch}`).join("\n") +
+              `\n\n`) +
+          `Need another repository of the store beside this one? \`mend repo add <project>\` ` +
+          `puts it at /workspace/repos/<project> on its own branch. \`mend repo projects\` lists ` +
+          `what can be added and \`mend repo list\` what is here. Never clone a sibling by hand ` +
+          `outside /workspace/repo: only what Mend adds is saved with the session.\n\n`;
         const referencesSection =
           referenceMounts.length === 0
             ? ""
@@ -8546,6 +8637,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           linkedSection +
           foldersSection +
           `\n` +
+          repositoriesSection +
           servicesSection;
         const notWritten = (detail: Record<string, unknown>) =>
           Effect.logWarning("session engine: the workspace note was not written").pipe(
@@ -9232,6 +9324,260 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         return { path: target, mediaType: checked.mediaType, bytes: bytes.byteLength };
+      });
+
+      // ─── Repositories in a session (docs/adr/0010) ─────────────────────────────────────────
+
+      /** The session owner as a tenancy viewer, or null when they belong to no organization. */
+      const viewerOf = Effect.fn("SessionEngine.viewerOf")(function* (ownerUserId: string | null) {
+        if (ownerUserId === null) return null;
+        const membership = yield* organizations.membershipOf(ownerUserId);
+        if (membership === null) return null;
+        return {
+          userId: ownerUserId,
+          organizationId: membership.organization.id,
+          role: membership.role,
+        };
+      });
+
+      const listRepositories = Effect.fn("SessionEngine.listRepositories")(function* (
+        sessionId: SessionId,
+      ) {
+        yield* sessions.byId(sessionId);
+        return yield* sessionRepositories.listForSession(sessionId);
+      });
+
+      const addableProjects = Effect.fn("SessionEngine.addableProjects")(function* (
+        sessionId: SessionId,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const project = yield* projects.byId(session.projectId);
+        const viewer = yield* viewerOf(session.ownerUserId);
+        if (viewer === null) return [];
+        const held = new Set(
+          (yield* sessionRepositories.listForSession(sessionId)).map((row) => row.projectId),
+        );
+        const candidates = yield* projects.listForOrganization(project.organizationId);
+        return candidates
+          .filter(
+            (candidate) =>
+              candidate.id !== project.id &&
+              !held.has(candidate.id) &&
+              canUseLink(project, candidate, viewer),
+          )
+          .map(
+            (candidate): AddableProject => ({
+              id: candidate.id,
+              name: candidate.name,
+              defaultBranch: candidate.defaultBranch,
+              originUrl: candidate.originUrl,
+            }),
+          );
+      });
+
+      /**
+       * Bring the repository's files into the live workspace (ADR 0010 "How the worktree
+       * arrives", today): a clone of the project's origin through the workspace's own git
+       * transport, checked out on the session's branch at Mend's recorded base, nested inside the
+       * main worktree so the main worktree's captures carry it, and linked at its path. The row
+       * records what happened; a failure is its reason, never a thrown error.
+       */
+      const bringRepositoryIn = Effect.fn("SessionEngine.bringRepositoryIn")(function* (
+        session: Session,
+        workspace: Workspace,
+        row: SessionRepositoryRow,
+        originUrl: string,
+      ) {
+        const script = repositoryCloneScript({
+          originUrl,
+          name: row.name,
+          branch: row.branch,
+          baseSha: row.baseSha,
+        });
+        const result = yield* sealant
+          .exec(workspace, ["sh", "-c", script])
+          .pipe(
+            Effect.catch((error) =>
+              Effect.succeed({ exitCode: -1, stdout: "", stderr: error.message }),
+            ),
+          );
+        if (result.exitCode === 0) {
+          yield* sessionRepositories.setState(row.id, "ready", null);
+          yield* Effect.logInfo("session engine: repository added").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              repository: row.name,
+              path: row.path,
+              branch: row.branch,
+            }),
+          );
+          return;
+        }
+        const reason =
+          result.exitCode === REPOSITORY_EXISTS_EXIT
+            ? `${row.path} already holds files that are not this repository`
+            : failureReason(
+                result.stderr,
+                `the clone of ${originUrl} ended with exit ${String(result.exitCode)}`,
+              );
+        yield* sessionRepositories.setState(row.id, "failed", reason);
+        yield* Effect.logWarning("session engine: repository not added").pipe(
+          Effect.annotateLogs({ sessionId: session.id, repository: row.name, reason }),
+        );
+      });
+
+      const addRepository = Effect.fn("SessionEngine.addRepository")(function* (
+        sessionId: SessionId,
+        input: {
+          readonly project: string;
+          readonly name: string | null;
+          readonly worktree: string | null;
+        },
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const project = yield* projects.byId(session.projectId);
+        const refuse = (reason: RepositoryAddError["reason"], message: string) =>
+          new RepositoryAddError({ sessionId, reason, message });
+        const viewer = yield* viewerOf(session.ownerUserId);
+        if (viewer === null) {
+          return yield* refuse(
+            "not-visible",
+            "this session has no owner in an organization, so no project can be added",
+          );
+        }
+        const target = yield* projects.byName(project.organizationId, input.project);
+        if (target === null) {
+          return yield* refuse(
+            "unknown-project",
+            `no project named "${input.project}" · mend repo projects lists what can be added`,
+          );
+        }
+        if (target.id === project.id) {
+          return yield* refuse(
+            "own-project",
+            `${target.name} is this session's own project · it is at /workspace/repo`,
+          );
+        }
+        if (!canUseLink(project, target, viewer)) {
+          return yield* refuse(
+            "not-visible",
+            `project ${target.name} is not visible to this session's owner`,
+          );
+        }
+        const name = input.name ?? target.name;
+        if (!isRepositoryName(name)) {
+          return yield* refuse(
+            "bad-name",
+            `"${name}" is not a directory name · lowercase letters, digits, dots, underscores and dashes · name it with --as`,
+          );
+        }
+        if ((yield* sessionRepositories.byName(sessionId, name)) !== null) {
+          return yield* refuse(
+            "name-taken",
+            `this session already has a repository named ${name} · mend repo list shows it`,
+          );
+        }
+        if (target.originUrl === null) {
+          return yield* refuse("no-origin", `project ${target.name} has no origin to clone from`);
+        }
+        const sessionWorktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
+        const worktreeName = input.worktree ?? sessionWorktree.name;
+        if ((yield* worktreesRepo.byName(target.id, worktreeName)) !== null) {
+          // Joining it would clone the base over work its chain already holds (ADR 0010
+          // "Considered options"). Refused until the daemon materialises from the chain.
+          return yield* refuse(
+            "worktree-taken",
+            `project ${target.name} already has a worktree named ${worktreeName} · pick another with --worktree`,
+          );
+        }
+        // The files go into the live workspace: without one there is nowhere to put them.
+        const workspace = yield* workspaceForSupportingProcess(session).pipe(
+          Effect.mapError(() =>
+            refuse("not-live", "this session has no live workspace to add a repository to"),
+          ),
+        );
+        const worktree = yield* ensureWorktreeIn(
+          target,
+          { name: worktreeName, base: null },
+          session.ownerUserId,
+        );
+        const row = yield* sessionRepositories
+          .create({
+            sessionId,
+            projectId: target.id,
+            worktreeId: worktree.id,
+            name,
+            path: repositoryPath(name),
+            branch: worktree.branch,
+            baseSha: worktree.baseSha,
+            baseRef: worktree.baseRef,
+            capture: "nested",
+            source: "origin",
+            addedByUserId: session.ownerUserId,
+          })
+          .pipe(
+            Effect.mapError(() =>
+              refuse("name-taken", `this session already has a repository named ${name}`),
+            ),
+          );
+        yield* Effect.logInfo("session engine: repository adding").pipe(
+          Effect.annotateLogs({
+            sessionId,
+            repository: name,
+            project: target.name,
+            worktree: worktree.name,
+            origin: target.originUrl,
+          }),
+        );
+        // In the engine's lifetime, as the owner: the channel answers within its timeout, the
+        // clone takes what it takes, and the row says where it stands.
+        yield* detach(
+          bringRepositoryIn(session, workspace, row, target.originUrl).pipe(
+            asSealantUser(session.ownerUserId),
+          ),
+        );
+        return row;
+      });
+
+      /**
+       * After a restore the nested directories are back and the symlinks are not (they sit
+       * outside the captured root): relink every repository that is there and mark the ones
+       * that are not `missing`, so the record says what the workspace holds.
+       */
+      const relinkRepositories = Effect.fn("SessionEngine.relinkRepositories")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        const rows = (yield* sessionRepositories.listForSession(session.id)).filter(
+          (row) => row.state === "ready" || row.state === "missing",
+        );
+        if (rows.length === 0) return rows;
+        const result = yield* sealant.exec(workspace, [
+          "sh",
+          "-c",
+          repositoryRelinkScript(rows.map((row) => row.name)),
+        ]);
+        const report = parseRelinkReport(result.stdout);
+        for (const row of rows) {
+          const observed = report.get(row.name);
+          if (observed === "ready" && row.state !== "ready") {
+            yield* sessionRepositories.setState(row.id, "ready", null);
+          } else if (observed !== "ready" && row.state !== "missing") {
+            yield* sessionRepositories.setState(
+              row.id,
+              "missing",
+              `not found in the restored workspace at ${row.path}`,
+            );
+          }
+        }
+        yield* Effect.logInfo("session engine: repositories relinked").pipe(
+          Effect.annotateLogs({
+            sessionId: session.id,
+            ready: rows.filter((row) => report.get(row.name) === "ready").length,
+            missing: rows.filter((row) => report.get(row.name) !== "ready").length,
+          }),
+        );
+        return yield* sessionRepositories.listForSession(session.id);
       });
 
       const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
@@ -10016,6 +10362,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
+        // Repositories added in an earlier launch (docs/adr/0010): their files came back with the
+        // worktree, their links did not. A relink that cannot run costs the links, never the launch.
+        const noRepositories: ReadonlyArray<SessionRepositoryRow> = [];
+        const repositories = yield* relinkRepositories(session, workspace).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: repositories were not relinked").pipe(
+              Effect.annotateLogs({ sessionId, message: error.message }),
+              Effect.as(noRepositories),
+            ),
+          ),
+        );
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
         // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
         // is written through exec in either store, so a captured executor's agent reads the same
@@ -10026,6 +10383,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           worktree,
           provisioned.referenceMounts,
           provisioned.extraMounts,
+          repositories,
         );
 
         // Capture mode: the dependency tree for THIS executor's platform, before the harness.
@@ -12152,6 +12510,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
           // cannot be one of the engine's dependencies.
           land: () => gitHooks.landRequested(sessionId),
+          // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
+          // reaches the helper as its message.
+          listRepositories: () =>
+            listRepositories(sessionId).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
+          addableProjects: () =>
+            addableProjects(sessionId).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
+          addRepository: (input) =>
+            addRepository(sessionId, input).pipe(
+              Effect.mapError((error) => new Error(String(error.message))),
+              Effect.orDie,
+            ),
           // The credential seam (docs/GIT-ACCESS.md): session → project → auth
           // mode, resolved per request so a mode change applies to the next op
           // without touching the workspace. The op is recorded before the
@@ -13538,6 +13913,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopServices: (sessionId) => owned(sessionId)(stopServices(sessionId)),
         storePastedImage: (sessionId, bytes) =>
           owned(sessionId)(storePastedImage(sessionId, bytes)),
+        listRepositories: (sessionId) => owned(sessionId)(listRepositories(sessionId)),
+        addableProjects: (sessionId) => owned(sessionId)(addableProjects(sessionId)),
+        addRepository: (sessionId, input) => owned(sessionId)(addRepository(sessionId, input)),
         resumeSession: (sessionId, harness, fresh) =>
           detached(
             owned(sessionId)(oneLaunch(sessionId)(resumeSession(sessionId, harness, fresh))),

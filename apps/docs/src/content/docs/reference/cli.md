@@ -374,22 +374,29 @@ Every session workspace has a `mend` command of its own on the PATH. It is not t
 part of the workspace image: the server stages a small helper into the session's run directory,
 mounted read-only at `/run/mend` and linked to `/usr/local/bin/mend`, so it is always version-locked
 to the server. It talks only to its own session, over the session socket (or the authenticated
-session endpoint), and it speaks Services plus `mend stop`:
+session endpoint), and it speaks Services, repositories, `mend land` and `mend stop`:
 
-| Command                                                                                 | Purpose                                         |
-| --------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `mend service` or `mend service list`                                                   | List this session's live Services               |
-| `mend service run --port <port> [--name <n>] [--udp] [--http\|--https] -- <command...>` | Start and supervise a Service                   |
-| `mend service run <name>` or `mend service <name>`                                      | Start a recipe from `mend.toml`                 |
-| `mend service add <port> [--name <n>] [--udp] [--http\|--https]`                        | Adopt an existing workspace listener            |
-| `mend service stop <name-or-id>`                                                        | Stop a Service                                  |
-| `mend service restart <name-or-id>`                                                     | Start another attempt                           |
-| `mend stop`                                                                             | Stop this session; the record and review remain |
+| Command                                                                                 | Purpose                                                                        |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `mend service` or `mend service list`                                                   | List this session's live Services                                              |
+| `mend service run --port <port> [--name <n>] [--udp] [--http\|--https] -- <command...>` | Start and supervise a Service                                                  |
+| `mend service run <name>` or `mend service <name>`                                      | Start a recipe from `mend.toml`                                                |
+| `mend service add <port> [--name <n>] [--udp] [--http\|--https]`                        | Adopt an existing workspace listener                                           |
+| `mend service stop <name-or-id>`                                                        | Stop a Service                                                                 |
+| `mend service restart <name-or-id>`                                                     | Start another attempt                                                          |
+| `mend repo` or `mend repo list`                                                         | List the repositories added beside `/workspace/repo`, with their state         |
+| `mend repo projects`                                                                    | List the projects of the store this session may add                            |
+| `mend repo add <project> [--as <name>] [--worktree <name>]`                             | Add a project as a repository of this session at `/workspace/repos/<name>`     |
+| `mend land`                                                                             | Land the session's change as its owner: the push, the pull request, or why not |
+| `mend stop`                                                                             | Stop this session; the record and review remain                                |
 
 The helper has no `init`, no `logs`, and no `connect`: history and reaching the endpoint stay on
 your side. Its job is declaration: an agent that starts a dev server can register it as a real
 Service instead of leaving an unobserved listener, and `--http`/`--https` says it is something to
-open in a browser (refused with `--udp`).
+open in a browser (refused with `--udp`). `mend repo add` answers at once and brings the files in
+while the session goes on; read
+[Several repositories in one session](/guides/repositories-in-a-session/) for what a repository is
+and how it is saved.
 
 ## Organization commands
 

@@ -30,6 +30,7 @@ import {
   ServiceObservationsRepo,
   SessionControlEventsRepo,
   SessionGitOpsRepo,
+  SessionRepositoriesRepo,
   SettingsRepo,
   SlackDefaultsRepo,
   SlackInstallsRepo,
@@ -230,6 +231,13 @@ export const createTenancyApi = async (
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
       recording(ProjectEnvironmentRepo, "environment", {}, calls),
       recording(ProjectLinksRepo, "links", {}, calls),
+      // A session's repositories (docs/adr/0010): none in these worlds, so the detail lists none.
+      recording(
+        SessionRepositoriesRepo,
+        "sessionRepositories",
+        { listForSession: () => Effect.succeed([]) },
+        calls,
+      ),
       recording(ProjectMountsRepo, "mounts", {}, calls),
       recording(ProjectSecretsRepo, "secrets", {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),

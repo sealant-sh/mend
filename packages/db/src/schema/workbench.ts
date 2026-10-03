@@ -54,6 +54,7 @@ import type {
   SessionGitOpId,
   SessionId,
   SessionProcessId,
+  SessionRepositoryId,
   Sha,
   SkillId,
   WorktreeId,
@@ -115,6 +116,9 @@ import type {
   SessionProcessKind,
   SessionProcessStatus,
   SessionReferenceMount,
+  SessionRepositoryCapture,
+  SessionRepositorySource,
+  SessionRepositoryState,
   SessionOrigin,
   SessionStatus,
   SlackProjectSource,
@@ -1708,6 +1712,47 @@ export const worktreeChanges = pgTable("worktree_changes", {
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * The repositories a session holds beside its own worktree (docs/adr/0010): each a worktree of
+ * another project at `/workspace/repos/<name>`, with the state of its arrival and how it is saved.
+ */
+export const sessionRepositories = pgTable(
+  "session_repositories",
+  {
+    id: text().$type<SessionRepositoryId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    path: text().notNull(),
+    branch: text().notNull(),
+    baseSha: text().$type<Sha>().notNull(),
+    baseRef: text(),
+    state: text().$type<SessionRepositoryState>().notNull().default("adding"),
+    error: text(),
+    capture: text().$type<SessionRepositoryCapture>().notNull(),
+    source: text().$type<SessionRepositorySource>().notNull(),
+    addedByUserId: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    readyAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    unique("session_repositories_session_name_key").on(table.sessionId, table.name),
+    unique("session_repositories_session_worktree_key").on(table.sessionId, table.worktreeId),
+    index("session_repositories_worktree_idx").on(table.worktreeId),
+  ],
+);
 
 export const followUps = pgTable(
   "follow_ups",

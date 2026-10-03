@@ -40,6 +40,10 @@ export default defineConfig({
           items: [
             { label: "Review a change", slug: "guides/review-a-change" },
             { label: "Land a change", slug: "guides/land-a-change" },
+            {
+              label: "Several repositories in one session",
+              slug: "guides/repositories-in-a-session",
+            },
           ],
         },
         {

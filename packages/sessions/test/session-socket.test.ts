@@ -77,6 +77,9 @@ describe("SessionSocketHost", () => {
                 return {};
               }),
             land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
+            listRepositories: () => Effect.succeed([]),
+            addableProjects: () => Effect.succeed([]),
+            addRepository: () => Effect.die("unused"),
             gitTransport: () => Effect.die("unused"),
             gitTransportDone: () => Effect.void,
           };
@@ -167,6 +170,9 @@ describe("SessionSocketHost", () => {
             restartService: () => Effect.die("unused"),
             stopSession: () => Effect.die("unused"),
             land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
+            listRepositories: () => Effect.succeed([]),
+            addableProjects: () => Effect.succeed([]),
+            addRepository: () => Effect.die("unused"),
             gitTransport: (request) =>
               Effect.sync(() => {
                 requests.push(request);

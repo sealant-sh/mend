@@ -52,6 +52,7 @@ import {
   WorktreeAnnotation,
   SessionControlView,
   SessionDetail,
+  SessionRepositoryView,
   SessionServicesStopped,
   SessionNotSteerable,
   SessionNotLive,
@@ -90,6 +91,7 @@ import {
   ServiceObservationsRepo,
   ServicesRepo,
   SessionProcessesRepo,
+  SessionRepositoriesRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
   SessionsRepo,
@@ -2255,6 +2257,26 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const rows = yield* processes.listForSession(params.id);
         const viewer = yield* (yield* ProjectAccess).viewer();
         const steer = viewer !== null && canSteerSession(session, viewer.userId);
+        // The repositories the session holds beside its worktree (docs/adr/0010): each a worktree
+        // of another project with a change of its own, and how far that chain has moved.
+        const projectsRepo = yield* ProjectsRepo;
+        const repositories = yield* Effect.forEach(
+          yield* (yield* SessionRepositoriesRepo).listForSession(params.id),
+          (repository) =>
+            Effect.gen(function* () {
+              const project = yield* projectsRepo
+                .byId(repository.projectId)
+                .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+              const repositoryChange = yield* changes.byWorktree(repository.worktreeId);
+              const count = yield* checkpoints.countForWorktree(repository.worktreeId);
+              return new SessionRepositoryView({
+                repository,
+                projectName: project?.name ?? null,
+                change: repositoryChange,
+                checkpointsBeyondStart: Math.max(0, count - 1),
+              });
+            }),
+        );
         return new SessionDetail({
           session: asLaunching((yield* SessionEngine).launchUnderWay)(session),
           control: new SessionControlView({
@@ -2267,6 +2289,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           }),
           checkpoints: sessionCheckpoints,
           change,
+          repositories,
           landings: change === null ? [] : yield* landings.listForChange(change.id),
           processes: rows,
           currentAgent: currentAgentProcess(rows),

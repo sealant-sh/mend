@@ -67,6 +67,8 @@ export type ChangeStatsDto = Outputs["changes"]["stats"];
 export type RemovalReportDto = Outputs["projects"]["remove"];
 export type SessionDetailDto = Outputs["sessions"]["detail"];
 export type CheckpointDto = SessionDetailDto["checkpoints"][number];
+/** A repository the session holds beside its worktree (docs/adr/0010). */
+export type SessionRepositoryDto = SessionDetailDto["repositories"][number];
 export type SessionChangeDto = NonNullable<SessionDetailDto["change"]>;
 export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;
 

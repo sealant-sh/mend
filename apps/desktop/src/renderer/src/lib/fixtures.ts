@@ -163,6 +163,7 @@ export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDet
   control: OWNER_CONTROL,
   checkpoints: [],
   change: null,
+  repositories: [],
   landings: [],
   processes: [],
   currentAgent: null,

@@ -4,7 +4,7 @@ import type * as net from "node:net";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
-import type { ServiceBrowserScheme } from "@mend/domain/workbench";
+import type { ServiceBrowserScheme, SessionRepository } from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -21,6 +21,7 @@ import {
   handleSessionRequest,
   SessionChannelRegistry,
 } from "./session-channel.ts";
+import type { AddableProject } from "./session-repositories.ts";
 import type { WorkspaceLandOutcome } from "./workspace-git-hooks.ts";
 
 /**
@@ -84,6 +85,19 @@ export interface SessionSocketApi {
    * with the landing's lines or why it did not land.
    */
   readonly land: () => Effect.Effect<WorkspaceLandOutcome>;
+  /**
+   * `mend repo` (docs/adr/0010-repositories-in-a-session.md): the repositories this session
+   * holds beside its own worktree, the projects it may add, and adding one. `addRepository`
+   * answers the row in state `adding`; the files arrive in the engine's lifetime and the row
+   * reads `ready` or `failed` with the reason, which `listRepositories` shows.
+   */
+  readonly listRepositories: () => Effect.Effect<ReadonlyArray<SessionRepository>>;
+  readonly addableProjects: () => Effect.Effect<ReadonlyArray<AddableProject>>;
+  readonly addRepository: (input: {
+    readonly project: string;
+    readonly name: string | null;
+    readonly worktree: string | null;
+  }) => Effect.Effect<SessionRepository>;
   /**
    * Resolve a workspace git transport request (docs/GIT-ACCESS.md): the
    * engine turns session → project → auth mode into the ssh argv the host
@@ -231,8 +245,68 @@ const main = async () => {
     console.log("stopping — the record and review remain");
     return;
   }
+  if (group === "repo") {
+    // Repositories in a session: another project of the store at /workspace/repos/<name>, a
+    // worktree of that project on this session's own branch, saved with the session.
+    const printRepository = (r) =>
+      console.log(
+        r.name.padEnd(14) + "  " + r.path.padEnd(28) + "  " + r.branch.padEnd(24) + "  " + r.state +
+          (r.error ? " · " + r.error : "") +
+          (r.state === "ready" ? (r.capture === "nested" ? " · saved with the main repository" : " · saved under its own captures") : ""),
+      );
+    try {
+      switch (verb) {
+        case "list":
+        case undefined: {
+          const repositories = await request("GET", "/repositories");
+          if (repositories.length === 0) {
+            console.log("no repositories beside /workspace/repo · mend repo add <project> adds one");
+          }
+          for (const r of repositories) printRepository(r);
+          return;
+        }
+        case "projects": {
+          const projects = await request("GET", "/repositories/projects");
+          if (projects.length === 0) console.log("no other project of the store can be added here");
+          for (const p of projects) {
+            console.log(p.name.padEnd(24) + "  " + p.defaultBranch.padEnd(16) + "  " + (p.originUrl ?? "no origin"));
+          }
+          return;
+        }
+        case "add": {
+          const project = rest.find((a) => !a.startsWith("--") && rest[rest.indexOf(a) - 1] !== "--as" && rest[rest.indexOf(a) - 1] !== "--worktree");
+          const asFlag = rest.indexOf("--as");
+          const name = asFlag === -1 ? null : (rest[asFlag + 1] ?? null);
+          const worktreeFlag = rest.indexOf("--worktree");
+          const worktree = worktreeFlag === -1 ? null : (rest[worktreeFlag + 1] ?? null);
+          if (project === undefined) fail("usage: mend repo add <project> [--as <name>] [--worktree <name>]");
+          let row = await request("POST", "/repositories", { project, name, worktree });
+          console.log("adding " + row.name + " · " + row.path + " · branch " + row.branch + " · cloning");
+          // The channel answers at once; the clone takes what it takes. Poll until it settles.
+          const startedAt = Date.now();
+          while (row.state === "adding") {
+            if (Date.now() - startedAt > 30 * 60 * 1000) {
+              console.log("still adding · mend repo list shows it when done");
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const rows = await request("GET", "/repositories");
+            row = rows.find((r) => r.id === row.id) ?? row;
+          }
+          if (row.state !== "ready") fail(row.name + " · " + row.state + (row.error ? " · " + row.error : ""));
+          printRepository(row);
+          return;
+        }
+        default:
+          fail('unknown repo command "' + verb + '" · try: add, list, projects');
+      }
+    } catch (error) {
+      fail(error.message);
+    }
+    return;
+  }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend land · mend stop");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop");
   }
   try {
     switch (verb) {
