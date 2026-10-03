@@ -1,19 +1,11 @@
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
+  AuthOrchestrationReadScope,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
-  EnvironmentAuthInvalidError,
   EnvironmentHttpApi,
-  EnvironmentInternalError,
-  EnvironmentRequestInvalidError,
-  EnvironmentScopeRequiredError,
   ORCHESTRATION_PROTOCOL_HEADER,
-  type AuthEnvironmentScope,
-  type DpopFailureReason,
-  type EnvironmentAuthInvalidReason,
-  type EnvironmentInternalErrorReason,
-  type EnvironmentRequestInvalidReason,
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -26,58 +18,24 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { GatewayAuth, type GatewayCredentialInvalid } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
+import { authInvalid, internal, notFound, requestInvalid, scopeRequired } from "./http-errors.ts";
+import { EMPTY_SHELL_SNAPSHOT } from "./shell.ts";
 import { WebSocketTickets } from "./tickets.ts";
+import { WebSocketRouteLive } from "./ws.ts";
 
 /**
  * The HTTP half of a t3code environment, on t3code's own contract (`EnvironmentHttpApi` in the
  * vendored `environmentHttp.ts`), so paths, payloads, status codes and error bodies are t3code's.
  *
- * Phase 0 serves the `metadata` and `auth` groups (ADR 0012, "The surface"). `orchestration`,
- * `projects` and `pullRequests` arrive with phase 1, and `connect` (T3 Connect's relay, which the
- * gateway never offers) with them, as refusals.
+ * Phase 0 serves the `metadata` and `auth` groups and the empty orchestration shell (ADR 0012,
+ * "The surface"). `projects` and `pullRequests` arrive with phase 1, and `connect` (T3 Connect's
+ * relay, which the gateway never offers) with them, as refusals. The `/ws` RPC socket is beside
+ * these routes, in `ws.ts`.
  */
 export const GatewayHttpApi = HttpApi.make("environment")
   .add(EnvironmentHttpApi.groups.metadata)
-  .add(EnvironmentHttpApi.groups.auth);
-
-// ─── t3code's error bodies ────────────────────────────────────────────────────
-
-/** t3code stamps every refusal with the request's trace id (`t3:apps/server/src/auth/http.ts`). */
-const currentTraceId = Effect.currentParentSpan.pipe(
-  Effect.map((span) => span.traceId),
-  Effect.orElseSucceed(() => "unavailable"),
-);
-
-const authInvalid = (reason: EnvironmentAuthInvalidReason, dpopFailureReason?: DpopFailureReason) =>
-  Effect.flatMap(currentTraceId, (traceId) =>
-    Effect.fail(
-      new EnvironmentAuthInvalidError({
-        code: "auth_invalid",
-        reason,
-        ...(dpopFailureReason === undefined ? {} : { dpopFailureReason }),
-        traceId,
-      }),
-    ),
-  );
-
-const requestInvalid = (reason: EnvironmentRequestInvalidReason) =>
-  Effect.flatMap(currentTraceId, (traceId) =>
-    Effect.fail(new EnvironmentRequestInvalidError({ code: "invalid_request", reason, traceId })),
-  );
-
-const scopeRequired = (requiredScope: AuthEnvironmentScope) =>
-  Effect.flatMap(currentTraceId, (traceId) =>
-    Effect.fail(
-      new EnvironmentScopeRequiredError({ code: "insufficient_scope", requiredScope, traceId }),
-    ),
-  );
-
-const internal = (reason: EnvironmentInternalErrorReason, cause: unknown) =>
-  Effect.gen(function* () {
-    const traceId = yield* currentTraceId;
-    yield* Effect.logError("t3 gateway request failed", { reason, traceId, cause });
-    return yield* new EnvironmentInternalError({ code: "internal_error", reason, traceId });
-  });
+  .add(EnvironmentHttpApi.groups.auth)
+  .add(EnvironmentHttpApi.groups.orchestration);
 
 /** t3code challenges a refused DPoP request with `www-authenticate: DPoP`. */
 const dpopChallenge = HttpEffect.appendPreResponseHandler((_request, response) =>
@@ -199,6 +157,31 @@ export const AuthGroupLive = HttpApiBuilder.group(GatewayHttpApi, "auth", (handl
   }),
 );
 
+/**
+ * The shell over HTTP, as a client loads it before it subscribes. Empty until phase 1 projects
+ * Mend's projects and sessions into it; so every thread a client names is not here.
+ */
+export const OrchestrationGroupLive = HttpApiBuilder.group(
+  GatewayHttpApi,
+  "orchestration",
+  (handlers) =>
+    Effect.succeed(
+      handlers
+        .handle("shellSnapshot", () =>
+          Effect.gen(function* () {
+            const principal = yield* EnvironmentAuthenticatedPrincipal;
+            if (!principal.scopes.has(AuthOrchestrationReadScope)) {
+              return yield* scopeRequired(AuthOrchestrationReadScope);
+            }
+            return EMPTY_SHELL_SNAPSHOT;
+          }),
+        )
+        .handle("threadSnapshot", () => notFound("thread_not_found"))
+        .handle("threadBoundedSnapshot", () => notFound("thread_not_found"))
+        .handle("threadHistoryPage", () => notFound("thread_not_found")),
+    ),
+);
+
 // ─── Router ──────────────────────────────────────────────────────────────────
 
 /**
@@ -224,7 +207,9 @@ export const GatewayRoutesLive = Layer.mergeAll(
   HttpApiBuilder.layer(GatewayHttpApi).pipe(
     Layer.provide(MetadataGroupLive),
     Layer.provide(AuthGroupLive),
+    Layer.provide(OrchestrationGroupLive),
     Layer.provide(EnvironmentAuthenticatedAuthLive),
   ),
+  WebSocketRouteLive,
   GatewayCorsLive,
 );

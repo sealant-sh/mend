@@ -21,9 +21,35 @@ decodes only the Mend fields it reads.
 | `POST /api/auth/browser-session`  | Refused: the gateway offers bearer tokens only                                                                                                 |
 | pairing links and client sessions | Refused with `insufficient_scope`: devices are administered in Mend                                                                            |
 
+| `GET /api/orchestration/shell` | The empty shell: no projects, no threads. The thread routes
+beside it answer `thread_not_found` |
+
 Refusals carry t3code's own error bodies (`EnvironmentAuthInvalidError`,
 `EnvironmentRequestInvalidError`, `EnvironmentScopeRequiredError`, `EnvironmentInternalError`). The
-`/ws` RPC socket and the orchestration, project and pull request routes come with the next steps.
+project and pull request routes come with phase 1.
+
+## Phase 0: the RPC socket
+
+`GET /ws?wsTicket=…&orchestrationProtocol=2` upgrades to Effect RPC in JSON on `rc.115`, serving
+t3code's whole `WsRpcGroup`. Without `orchestrationProtocol=2` it answers 426 with t3code's body. A
+ticket is spent once; a socket without one may use the request's own bearer, as t3code allows. Each
+socket gets its own RPC server, holding the handlers of the person who paired.
+
+| Method                                                  | What the gateway does                                                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `subscribeServerConfig`, `server.getConfig`             | The config: the descriptor, and one provider per Mend harness from `GET /api/harnesses/models` read as the person |
+| `subscribeServerLifecycle`                              | `welcome` with `bootstrapStatus: "complete"`, then open                                                           |
+| `orchestration.subscribeShell`                          | The empty shell, the catch-up marker when asked, then open                                                        |
+| `server.probe`                                          | `{}`                                                                                                              |
+| every other command or read                             | A typed failure from the method's own contract, never a defect                                                    |
+| feeds of things Mend never has (terminals, previews, …) | Open, and never emit                                                                                              |
+
+`codex` is driver `codex` and `claude` is driver `claudeAgent`; other harnesses are left out. The
+capability flags say what Mend does: a session keeps its model (`requiresNewThreadForModelChange`),
+no rollback, no plan mode, runtime modes `full-access` (`bypass`) and `approval-required` (`ask`),
+and no provider setup through t3code. Mend unreachable answers `ServerSettingsError`, which t3code
+retries; a device revoked in Mend answers `EnvironmentAuthorizationError`, which blocks the
+connection.
 
 ## Run it
 
@@ -58,3 +84,11 @@ t3code-side ids, never Mend records.
 
 `pnpm --filter @mend/t3-gateway test` runs the gateway on an ephemeral port in front of a fake Mend
 and drives it with `HttpApiClient` over the vendored `EnvironmentHttpApi`, as a t3code client does.
+
+- `test/ws.test.ts` is the handshake end to end: descriptor, `/oauth/token`, ticket, `/ws`, then the
+  config snapshot naming the descriptor's environment, the welcome, and the empty shell. Its client
+  is built as t3code's `client-runtime` builds one; `client-runtime` itself is not used (the test
+  says why).
+- `test/rpc-surface.test.ts` checks that the registered handlers are exactly the vendored group's
+  methods, then calls every method not served over a bare socket with a payload generated from its
+  own schema: each answers a typed failure its contract decodes, or stays silent if it is a feed.

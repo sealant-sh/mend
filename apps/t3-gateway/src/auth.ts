@@ -119,6 +119,13 @@ export class GatewayAuth extends Context.Service<
       GatewayCredentialMissing | GatewayCredentialInvalid | GatewayStateError
     >;
     /**
+     * The bearer session a spent WebSocket ticket names, if it is still live: a session revoked
+     * or expired between the ticket and the upgrade does not open a socket.
+     */
+    readonly authenticateSession: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<AuthenticatedBearer, GatewayCredentialInvalid | GatewayStateError>;
+    /**
      * `GET /api/auth/session`: authenticated only while the bearer is live here and Mend still
      * accepts its device token. A device revoked in Mend ends the bearer too.
      */
@@ -205,6 +212,22 @@ export const GatewayAuthLive: Layer.Layer<
       };
     });
 
+    /** A stored session that is neither revoked nor expired. */
+    const live = (found: Option.Option<BearerSession>) =>
+      Effect.gen(function* () {
+        if (Option.isNone(found)) return yield* new GatewayCredentialInvalid({});
+        const session = found.value;
+        const now = yield* Clock.currentTimeMillis;
+        if (session.revokedAt !== null || session.expiresAt <= now) {
+          return yield* new GatewayCredentialInvalid({});
+        }
+        const bearer: AuthenticatedBearer = {
+          session,
+          expiresAt: DateTime.makeUnsafe(session.expiresAt),
+        };
+        return bearer;
+      });
+
     const authenticate = Effect.fn("GatewayAuth.authenticate")(function* (
       authorization: string | undefined,
     ) {
@@ -217,14 +240,13 @@ export const GatewayAuthLive: Layer.Layer<
       const token = authorization.slice(BEARER_PREFIX.length).trim();
       if (token.length === 0) return yield* new GatewayCredentialMissing({});
 
-      const found = yield* state.findSession(hashBearer(token));
-      if (Option.isNone(found)) return yield* new GatewayCredentialInvalid({});
-      const session = found.value;
-      const now = yield* Clock.currentTimeMillis;
-      if (session.revokedAt !== null || session.expiresAt <= now) {
-        return yield* new GatewayCredentialInvalid({});
-      }
-      return { session, expiresAt: DateTime.makeUnsafe(session.expiresAt) };
+      return yield* live(yield* state.findSession(hashBearer(token)));
+    });
+
+    const authenticateSession = Effect.fn("GatewayAuth.authenticateSession")(function* (
+      sessionId: AuthSessionId,
+    ) {
+      return yield* live(yield* state.findSessionById(sessionId));
     });
 
     const sessionState = Effect.fn("GatewayAuth.sessionState")(function* (
@@ -257,6 +279,6 @@ export const GatewayAuthLive: Layer.Layer<
       return authenticated;
     });
 
-    return { exchange, authenticate, sessionState };
+    return { exchange, authenticate, authenticateSession, sessionState };
   }),
 );

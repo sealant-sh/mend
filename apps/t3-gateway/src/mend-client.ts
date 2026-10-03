@@ -25,6 +25,28 @@ const PairClaim = Schema.Struct({
 });
 export type PairClaim = typeof PairClaim.Type;
 
+/**
+ * What the gateway reads from one entry of Mend's `GET /api/harnesses/models`
+ * (`HarnessModelCatalog` in @mend/domain): a harness's models in picker order, the efforts its CLI
+ * accepts, and whether a launch may ask for priority processing.
+ */
+const MendHarnessModel = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  isDefault: Schema.Boolean,
+  /** The efforts this model takes when fewer than its harness's; null means the harness's. */
+  efforts: Schema.NullOr(Schema.Array(Schema.String)),
+});
+const MendHarnessCatalog = Schema.Struct({
+  harness: Schema.String,
+  models: Schema.Array(MendHarnessModel),
+  defaultModel: Schema.NullOr(Schema.String),
+  efforts: Schema.Array(Schema.String),
+  fastCapable: Schema.Boolean,
+});
+export type MendHarnessCatalog = typeof MendHarnessCatalog.Type;
+const decodeHarnessCatalogs = Schema.decodeUnknownEffect(Schema.Array(MendHarnessCatalog));
+
 /** Mend refused the pairing code: unknown, already claimed or expired, or too many tries. */
 export class MendPairingRefused extends Schema.TaggedError<MendPairingRefused>()(
   "MendPairingRefused",
@@ -34,6 +56,16 @@ export class MendPairingRefused extends Schema.TaggedError<MendPairingRefused>()
 ) {
   override get message(): string {
     return `Mend refused the pairing code (${this.reason}).`;
+  }
+}
+
+/** Mend no longer accepts the device token: the device was revoked or its person deactivated. */
+export class MendDeviceRefused extends Schema.TaggedError<MendDeviceRefused>()(
+  "MendDeviceRefused",
+  { operation: Schema.String },
+) {
+  override get message(): string {
+    return `Mend refused the device token on ${this.operation}.`;
   }
 }
 
@@ -67,6 +99,10 @@ export class MendClient extends Context.Service<
     readonly checkDevice: (
       deviceToken: string,
     ) => Effect.Effect<"accepted" | "refused", MendUnavailable>;
+    /** `GET /api/harnesses/models`, as the person who paired: Mend's model catalog. */
+    readonly listHarnessModels: (
+      deviceToken: string,
+    ) => Effect.Effect<ReadonlyArray<MendHarnessCatalog>, MendDeviceRefused | MendUnavailable>;
   }
 >()("@mend/t3-gateway/MendClient") {}
 
@@ -145,6 +181,29 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         return yield* new MendUnavailable({ operation, status: response.status, cause: null });
       });
 
-      return { claimPairing, checkDevice };
+      const listHarnessModels = Effect.fn("MendClient.listHarnessModels")(function* (
+        deviceToken: string,
+      ) {
+        const operation = "GET /api/harnesses/models";
+        const response = yield* send(
+          operation,
+          HttpClientRequest.get(url("/api/harnesses/models")).pipe(
+            HttpClientRequest.acceptJson,
+            HttpClientRequest.bearerToken(deviceToken),
+          ),
+        );
+        if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+        if (response.status !== 200) {
+          return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+        }
+        const body = yield* readJson(operation, response);
+        return yield* decodeHarnessCatalogs(body).pipe(
+          Effect.mapError(
+            (cause) => new MendUnavailable({ operation, status: response.status, cause }),
+          ),
+        );
+      });
+
+      return { claimPairing, checkDevice, listHarnessModels };
     }),
   );

@@ -65,6 +65,10 @@ export class GatewayState extends Context.Service<
     readonly findSession: (
       tokenHash: string,
     ) => Effect.Effect<Option.Option<BearerSession>, GatewayStateError>;
+    /** The session a WebSocket ticket was issued for. */
+    readonly findSessionById: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<Option.Option<BearerSession>, GatewayStateError>;
     readonly revokeSession: (
       sessionId: AuthSessionId,
       at: number,
@@ -141,6 +145,27 @@ const SessionRow = Schema.Struct({
 });
 const decodeSessionRow = Schema.decodeUnknownEffect(SessionRow);
 const encodeScopes = Schema.encodeSync(Scopes);
+
+const toBearerSession = (decoded: typeof SessionRow.Type): BearerSession => ({
+  sessionId: decoded.session_id,
+  tokenHash: decoded.token_hash,
+  deviceToken: decoded.device_token,
+  mendUser: {
+    id: decoded.mend_user_id,
+    name: decoded.mend_user_name,
+    email: decoded.mend_user_email,
+  },
+  mendDeviceId: decoded.mend_device_id,
+  scopes: decoded.scopes,
+  client: {
+    label: decoded.client_label,
+    deviceType: decoded.client_device_type,
+    os: decoded.client_os,
+  },
+  issuedAt: decoded.issued_at,
+  expiresAt: decoded.expires_at,
+  revokedAt: decoded.revoked_at,
+});
 
 const migrate = (database: DatabaseSync): void => {
   const row = Schema.decodeUnknownSync(UserVersionRow)(
@@ -227,42 +252,23 @@ export const openGatewayState = (
           );
       });
 
-    const findSession = (tokenHash: string) =>
-      run("findSession", () =>
-        database.prepare("SELECT * FROM bearer_sessions WHERE token_hash = ?").get(tokenHash),
-      ).pipe(
+    const findOne = (operation: string, query: string, key: string) =>
+      run(operation, () => database.prepare(query).get(key)).pipe(
         Effect.flatMap((row) =>
           row === undefined
             ? Effect.succeed(Option.none<BearerSession>())
             : decodeSessionRow(row).pipe(
-                Effect.mapError(
-                  (cause) => new GatewayStateError({ operation: "findSession", cause }),
-                ),
-                Effect.map((decoded) =>
-                  Option.some<BearerSession>({
-                    sessionId: decoded.session_id,
-                    tokenHash: decoded.token_hash,
-                    deviceToken: decoded.device_token,
-                    mendUser: {
-                      id: decoded.mend_user_id,
-                      name: decoded.mend_user_name,
-                      email: decoded.mend_user_email,
-                    },
-                    mendDeviceId: decoded.mend_device_id,
-                    scopes: decoded.scopes,
-                    client: {
-                      label: decoded.client_label,
-                      deviceType: decoded.client_device_type,
-                      os: decoded.client_os,
-                    },
-                    issuedAt: decoded.issued_at,
-                    expiresAt: decoded.expires_at,
-                    revokedAt: decoded.revoked_at,
-                  }),
-                ),
+                Effect.mapError((cause) => new GatewayStateError({ operation, cause })),
+                Effect.map((decoded) => Option.some(toBearerSession(decoded))),
               ),
         ),
       );
+
+    const findSession = (tokenHash: string) =>
+      findOne("findSession", "SELECT * FROM bearer_sessions WHERE token_hash = ?", tokenHash);
+
+    const findSessionById = (sessionId: AuthSessionId) =>
+      findOne("findSessionById", "SELECT * FROM bearer_sessions WHERE session_id = ?", sessionId);
 
     const revokeSession = (sessionId: AuthSessionId, at: number) =>
       run("revokeSession", () => {
@@ -273,7 +279,7 @@ export const openGatewayState = (
           .run(at, sessionId);
       });
 
-    return { environmentId, insertSession, findSession, revokeSession };
+    return { environmentId, insertSession, findSession, findSessionById, revokeSession };
   });
 
 /** The state file at the configured path. */

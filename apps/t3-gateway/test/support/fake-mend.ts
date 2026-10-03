@@ -6,9 +6,9 @@ import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
 /**
- * A stand-in for Mend's API, speaking the two routes the gateway calls in phase 0 with Mend's
- * shapes: `POST /api/pair` (`pairGroup.claim` in @mend/api-contracts) and `GET /api/me/devices`
- * (`userDevicesGroup.list`).
+ * A stand-in for Mend's API, speaking the routes the gateway calls in phase 0 with Mend's shapes:
+ * `POST /api/pair` (`pairGroup.claim` in @mend/api-contracts), `GET /api/me/devices`
+ * (`userDevicesGroup.list`) and `GET /api/harnesses/models` (`harnessModelsGroup.list`).
  */
 export interface FakeMend {
   readonly url: URL;
@@ -24,7 +24,50 @@ export interface FakeMend {
   }>;
   /** Every `authorization` header `GET /api/me/devices` saw. */
   readonly deviceChecks: ReadonlyArray<string | undefined>;
+  /** Every `authorization` header `GET /api/harnesses/models` saw. */
+  readonly modelReads: ReadonlyArray<string | undefined>;
+  /** Make `GET /api/harnesses/models` answer 503 until set back. */
+  readonly setModelsDown: (down: boolean) => void;
 }
+
+/**
+ * Mend's catalog as `GET /api/harnesses/models` answers it (the shape of `HarnessModelCatalog`,
+ * values from apps/api/src/routes/harness-models.test.ts), plus a harness the gateway leaves out.
+ */
+export const MEND_MODEL_CATALOG = [
+  {
+    harness: "claude",
+    models: [
+      { id: "fable", label: "Fable", isDefault: true, efforts: null },
+      { id: "opus", label: "Opus", isDefault: false, efforts: ["low", "medium", "high"] },
+    ],
+    defaultModel: "fable",
+    efforts: ["low", "medium", "high", "xhigh", "max"],
+    fastCapable: false,
+  },
+  {
+    harness: "codex",
+    models: [
+      { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", isDefault: true, efforts: null },
+      {
+        id: "gpt-5.5",
+        label: "GPT-5.5",
+        isDefault: false,
+        efforts: ["low", "medium", "high", "xhigh"],
+      },
+    ],
+    defaultModel: "gpt-6.1-sol",
+    efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    fastCapable: true,
+  },
+  {
+    harness: "opencode",
+    models: [],
+    defaultModel: null,
+    efforts: ["low", "medium", "high"],
+    fastCapable: false,
+  },
+] as const;
 
 export interface FakeMendUser {
   readonly id: string;
@@ -53,7 +96,15 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   const tokens = new Map<string, { revoked: boolean }>();
   const claims: Array<FakeMend["claims"][number]> = [];
   const deviceChecks: Array<string | undefined> = [];
+  const modelReads: Array<string | undefined> = [];
+  let modelsDown = false;
   let devices = 0;
+
+  const accepted = (authorization: string | undefined) => {
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+    const entry = token === undefined ? undefined : tokens.get(token);
+    return entry !== undefined && !entry.revoked;
+  };
 
   const server: Server = createServer((request, response) => {
     const json = (status: number, body: unknown) => {
@@ -83,10 +134,15 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
       if (request.method === "GET" && request.url === "/api/me/devices") {
         const authorization = request.headers.authorization;
         deviceChecks.push(authorization);
-        const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
-        const entry = token === undefined ? undefined : tokens.get(token);
-        if (entry === undefined || entry.revoked) return json(401, { _tag: "Unauthorized" });
+        if (!accepted(authorization)) return json(401, { _tag: "Unauthorized" });
         return json(200, []);
+      }
+      if (request.method === "GET" && request.url === "/api/harnesses/models") {
+        const authorization = request.headers.authorization;
+        modelReads.push(authorization);
+        if (!accepted(authorization)) return json(401, { _tag: "Unauthorized" });
+        if (modelsDown) return json(503, { _tag: "ServiceUnavailable" });
+        return json(200, MEND_MODEL_CATALOG);
       }
       return json(404, { _tag: "RouteNotFound" });
     })();
@@ -116,5 +172,9 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     },
     claims,
     deviceChecks,
+    modelReads,
+    setModelsDown: (down) => {
+      modelsDown = down;
+    },
   };
 });

@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path";
+
 import {
   ORCHESTRATION_PROTOCOL_VERSION,
   type ExecutionEnvironmentDescriptor,
@@ -8,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { GatewayConfig } from "./config.ts";
+import type { GatewayPaths } from "./server-config.ts";
 import { GatewayState } from "./state.ts";
 import { SERVER_VERSION } from "./version.ts";
 
@@ -20,6 +23,8 @@ export class GatewayEnvironment extends Context.Service<
   {
     readonly descriptor: ExecutionEnvironmentDescriptor;
     readonly auth: ServerAuthDescriptor;
+    /** The gateway's own directory and the paths t3code's server config names inside it. */
+    readonly paths: GatewayPaths;
   }
 >()("@mend/t3-gateway/GatewayEnvironment") {}
 
@@ -57,6 +62,7 @@ export const makeGatewayEnvironment = (input: {
   readonly environmentId: ExecutionEnvironmentDescriptor["environmentId"];
   readonly label: string;
   readonly host: string;
+  readonly statePath: string;
 }): GatewayEnvironment["Service"] => ({
   descriptor: {
     environmentId: input.environmentId,
@@ -75,7 +81,18 @@ export const makeGatewayEnvironment = (input: {
     sessionMethods: ["bearer-access-token"],
     sessionCookieName: SESSION_COOKIE_NAME,
   },
+  paths: gatewayPaths(input.statePath),
 });
+
+/** The state file's directory, or the working directory when the state lives in memory. */
+export const gatewayPaths = (statePath: string): GatewayPaths => {
+  const directory = statePath === ":memory:" ? process.cwd() : dirname(statePath);
+  return {
+    directory,
+    keybindingsConfigPath: join(directory, "keybindings.json"),
+    logsDirectoryPath: join(directory, "logs"),
+  };
+};
 
 export const GatewayEnvironmentLive: Layer.Layer<
   GatewayEnvironment,
@@ -90,6 +107,7 @@ export const GatewayEnvironmentLive: Layer.Layer<
       environmentId: state.environmentId,
       label: config.label,
       host: config.host,
+      statePath: config.statePath,
     });
   }),
 );
