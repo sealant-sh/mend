@@ -9,6 +9,7 @@
 // data layer without a row here is a route nobody checks.
 
 import * as contracts from "@mend/api-contracts";
+import { HttpApiSchema } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
 /** Every route apps/mobile/src/data/*.ts calls, as the phone spells it. */
@@ -62,6 +63,21 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/devices"],
 ];
 
+/**
+ * The routes the data layer reads with `apiNoContent`: their contract declares no success body, so
+ * the server answers 204. `api` parses JSON, and an empty body fails it after the server already
+ * did the work — Stop read "JSON Parse error" while the turn had stopped.
+ */
+const NO_CONTENT_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
+  ["POST", "/turns/:id/interrupt"],
+];
+
+/** Reached with a raw fetch that reads the body itself, not with `api`. */
+const RAW_FETCH_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
+  ["POST", "/pair"],
+  ["POST", "/devices"],
+];
+
 /** `:name` segments compare by position, not by the name each side picked. */
 const shape = (method: string, path: string): string =>
   `${method} ${path.replace(/:[A-Za-z]+/g, ":_")}`;
@@ -73,22 +89,44 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isGroup = (value: unknown): value is { readonly endpoints: Record<string, unknown> } =>
   isRecord(value) && "endpoints" in value;
 
-const isEndpoint = (value: unknown): value is { readonly method: string; readonly path: string } =>
+const isEndpoint = (
+  value: unknown,
+): value is {
+  readonly method: string;
+  readonly path: string;
+  readonly success: ReadonlySet<{ readonly ast: Parameters<typeof HttpApiSchema.isNoContent>[0] }>;
+} =>
   isRecord(value) &&
   "method" in value &&
   "path" in value &&
+  "success" in value &&
   typeof value.method === "string" &&
-  typeof value.path === "string";
+  typeof value.path === "string" &&
+  value.success instanceof Set;
 
 const exported: ReadonlyArray<unknown> = Object.values(contracts);
 
-const contractRoutes = new Set(
-  exported
-    .filter(isGroup)
-    .flatMap((group) => Object.values(group.endpoints))
-    .filter(isEndpoint)
-    .map((endpoint) => shape(endpoint.method, endpoint.path)),
-);
+const endpoints = exported
+  .filter(isGroup)
+  .flatMap((group) => Object.values(group.endpoints))
+  .filter(isEndpoint);
+
+const contractRoutes = new Set(endpoints.map((endpoint) => shape(endpoint.method, endpoint.path)));
+
+/** Whether the route answers with no body: every success schema it declares is empty. */
+const answersNoContent = (method: string, path: string): boolean | undefined => {
+  const endpoint = endpoints.find(
+    (candidate) => shape(candidate.method, candidate.path) === shape(method, path),
+  );
+  if (endpoint === undefined) return undefined;
+  return [...endpoint.success].every((schema) => HttpApiSchema.isNoContent(schema.ast));
+};
+
+const listed = (
+  routes: ReadonlyArray<readonly [method: string, path: string]>,
+  method: string,
+  path: string,
+): boolean => routes.some(([m, p]) => shape(m, p) === shape(method, path));
 
 describe("mobile routes", () => {
   it("found the contract's groups", () => {
@@ -98,4 +136,11 @@ describe("mobile routes", () => {
   it.each(MOBILE_ROUTES)("%s %s exists in the server contract", (method, path) => {
     expect(contractRoutes).toContain(shape(method, path));
   });
+
+  it.each(MOBILE_ROUTES.filter(([method, path]) => !listed(RAW_FETCH_ROUTES, method, path)))(
+    "%s %s is read the way it answers: JSON with api, 204 with apiNoContent",
+    (method, path) => {
+      expect(answersNoContent(method, path)).toBe(listed(NO_CONTENT_ROUTES, method, path));
+    },
+  );
 });

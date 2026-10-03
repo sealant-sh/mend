@@ -14,7 +14,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useReducer, useRef } from "react";
 
-import { ApiError, api } from "@/data/live";
+import { ApiError, api, apiNoContent } from "@/data/live";
 import { pendingTurnsReducer, type LocalImage, type PendingTurn } from "@/data/pending-turns";
 import { composeTurnInput } from "@/data/turn-input";
 
@@ -212,7 +212,7 @@ export const useAgentConversationActions = (sessionId: string) => {
   // Steering: a queued turn is cancelled outright; a running one reaches the
   // harness's own interrupt. The process stays live for the next message.
   const interrupt = useMutation({
-    mutationFn: (turnId: string) => api<unknown>("POST", `/turns/${turnId}/interrupt`, {}),
+    mutationFn: (turnId: string) => apiNoContent("POST", `/turns/${turnId}/interrupt`, {}),
     onSettled: invalidate,
   });
   return { respond, interrupt };
