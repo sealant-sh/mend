@@ -3236,18 +3236,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return true;
       };
       /** Take what `workspaceId`'s end put off, at once: whoever takes it runs it, once. */
-      const takeDeferred = (workspaceId: SealantWorkspaceId) => {
-        const list = deferredToFinal.get(workspaceId) ?? [];
-        deferredToFinal.delete(workspaceId);
-        return list;
-      };
-      /** Put `rest` back at the front of `workspaceId`'s queue, in order. */
-      const putBack = (
-        workspaceId: SealantWorkspaceId,
-        rest: ReadonlyArray<(reading: DrainWord) => Effect.Effect<void>>,
-      ) => {
-        if (rest.length === 0) return;
-        deferredToFinal.set(workspaceId, [...rest, ...(deferredToFinal.get(workspaceId) ?? [])]);
+      const takeOneDeferred = (workspaceId: SealantWorkspaceId) => {
+        const list = deferredToFinal.get(workspaceId);
+        const next = list?.shift();
+        if (list !== undefined && list.length === 0) deferredToFinal.delete(workspaceId);
+        return next;
       };
       /**
        * Run what `workspaceId`'s end put off on the drain's word: first a piece a previous round
@@ -3261,6 +3254,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: SealantWorkspaceId,
         reading: DrainWord,
         limit: Duration.Duration | null = drainPolicy.deferredWorkLimit,
+        closeWhenEmpty = false,
       ): Effect.Effect<boolean> =>
         Effect.gen(function* () {
           const waitFor = (fiber: Fiber.Fiber<void>) =>
@@ -3293,7 +3287,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const mine = Deferred.makeUnsafe<void>();
           deferredConsumers.set(workspaceId, mine);
-          return yield* consume(workspaceId, reading, waitFor).pipe(
+          return yield* consume(workspaceId, reading, waitFor, closeWhenEmpty).pipe(
             Effect.ensuring(
               Effect.sync(() => {
                 deferredConsumers.delete(workspaceId);
@@ -3307,43 +3301,56 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: SealantWorkspaceId,
         reading: DrainWord,
         waitFor: (fiber: Fiber.Fiber<void>) => Effect.Effect<boolean>,
+        closeWhenEmpty: boolean,
       ): Effect.Effect<boolean> =>
         Effect.gen(function* () {
-          const left = deferredRunning.get(workspaceId);
-          if (left !== undefined) {
-            if (!(yield* waitFor(left))) return false;
-            deferredRunning.delete(workspaceId);
-          }
           while (true) {
-            const taken = takeDeferred(workspaceId);
-            if (taken.length === 0) {
-              queueHeld.delete(workspaceId);
-              deferredEvidence.delete(workspaceId);
-              return true;
+            // A piece running (left by a round that ran out of time, or by a consumer interrupted
+            // while waiting for it) is waited for first, and cleared only once it is over.
+            const running = deferredRunning.get(workspaceId);
+            if (running !== undefined) {
+              if (!(yield* waitFor(running))) return false;
+              deferredRunning.delete(workspaceId);
+              continue;
             }
-            for (const [index, work] of taken.entries()) {
-              const fiber = yield* Effect.forkIn(
-                work(reading).pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.logWarning(
-                      "session engine: work deferred to the final flush failed",
-                    ).pipe(
-                      Effect.annotateLogs({
-                        workspaceId,
-                        reading: typeof reading === "string" ? reading : "read",
-                        cause: Cause.pretty(cause),
-                      }),
+            // One piece at a time: taken, forked in the engine's scope and recorded as running in
+            // one uninterruptible step, so an interruption (a request that gave up, a shutdown)
+            // leaves it running and recorded and the rest still queued. A queue found empty is
+            // closed to admission in that same step when the round goes on to terminate: nothing
+            // is admitted between the look and the close (Astra reviews, 2026-10-03).
+            const started = yield* Effect.uninterruptible(
+              Effect.suspend(() => {
+                const next = takeOneDeferred(workspaceId);
+                if (next === undefined) {
+                  if (closeWhenEmpty) queueClosed.add(workspaceId);
+                  queueHeld.delete(workspaceId);
+                  deferredEvidence.delete(workspaceId);
+                  return Effect.succeed(false);
+                }
+                return Effect.forkIn(
+                  next(reading).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning(
+                        "session engine: work deferred to the final flush failed",
+                      ).pipe(
+                        Effect.annotateLogs({
+                          workspaceId,
+                          reading: typeof reading === "string" ? reading : "read",
+                          cause: Cause.pretty(cause),
+                        }),
+                      ),
                     ),
                   ),
-                ),
-                scope,
-              );
-              if (!(yield* waitFor(fiber))) {
-                deferredRunning.set(workspaceId, fiber);
-                putBack(workspaceId, taken.slice(index + 1));
-                return false;
-              }
-            }
+                  scope,
+                ).pipe(
+                  Effect.map((fiber) => {
+                    deferredRunning.set(workspaceId, fiber);
+                    return true;
+                  }),
+                );
+              }),
+            );
+            if (!started) return true;
           }
         });
       /**
@@ -3907,8 +3914,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               workspaceId,
               deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
               null,
+              true,
             );
-            queueClosed.add(workspaceId);
             yield* tidyAfterGone(sessionId, workspaceId);
             if (end !== null && current !== null) {
               const confirmed = yield* confirmedExecutorEnd(current, end);
@@ -3960,6 +3967,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               !(yield* runDeferred(
                 workspaceId,
                 deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
+                drainPolicy.deferredWorkLimit,
+                true,
               ))
             ) {
               yield* recordKept(
@@ -3970,8 +3979,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
               return "kept" as const;
             }
-            // The queue is finished: an end that arrives from here flushes for itself.
-            queueClosed.add(workspaceId);
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.ended) {
               yield* endDrain(sessionId);
@@ -4125,7 +4132,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // executor: the head is sealed.
             const word: DrainWord = reading ?? "sealed";
             if (harvestReadyOf(word) === true) deferredEvidence.set(workspaceId, word);
-            if (!(yield* runDeferred(workspaceId, word))) {
+            if (!(yield* runDeferred(workspaceId, word, drainPolicy.deferredWorkLimit, true))) {
               // A piece ran past its limit (a writer lock held, a store not answering): it runs
               // on, the executor stays, saved, and the next round waits for it and runs what is
               // left after its FINAL (which snaps nothing). Nothing a Stop asked for is dropped,
@@ -4138,8 +4145,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
               return "kept" as const;
             }
-            // The queue is finished: an end that arrives from here flushes for itself.
-            queueClosed.add(workspaceId);
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.retained !== null) {
               // Mend read it saved; the platform does not confirm it and keeps the executor for

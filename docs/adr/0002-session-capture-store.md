@@ -1580,7 +1580,15 @@ Mend-side details the decision record left open, decided in this ADR:
       before. That admission is refused at the append itself, never before an async look; a seal the
       store confirmed with no answer from the executor is evidence too; and one consumer runs a
       workspace's queue at a time, a second waiting for it within its limit, so no round declares
-      the queue finished while another still runs a piece.
+      the queue finished while another still runs a piece. A consumer takes one piece at a time,
+      forks it in the engine's scope and records it as running in one uninterruptible step, and
+      closes an empty queue in that same step, so an interrupted consumer leaves nothing untracked
+      and nothing is admitted between the look and the close.
+    - **Known gap.** A Mend restart in the seconds between a Stop's answer and its checkpoint's
+      write loses that user mark and the change head refresh with it: the restart interrupts the
+      piece, and the drain intent that survives carries no record of it. The change is saved and the
+      harvest is recovered by the sweep that takes the drain up again. Before this decision the mark
+      was written before the answer. Replaying the mark from the drain intent is a follow-up.
     - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
       judged (`executor not answering`, `completed`) and its executor looked at before the drain
       begins, and the tests of those judgements say so. Making every end read the drain's final is a
