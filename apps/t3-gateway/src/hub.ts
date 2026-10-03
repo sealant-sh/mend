@@ -136,6 +136,8 @@ export const refreshKeyOf = (pointer: MendEventPointer): string | null => {
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
+/** How long a failed full read waits before it is tried again. */
+const FULL_READ_RETRY = "3 seconds";
 /** A stream that lasted this long resets the backoff: it was a drop, not a refusal loop. */
 const HEALTHY_STREAM_MS = 30_000;
 
@@ -468,7 +470,19 @@ export const makePersonHub = (input: {
                 Effect.logWarning("t3 gateway could not refresh from Mend", {
                   key,
                   cause: error.message,
-                }),
+                }).pipe(
+                  // Mend coming back after a restart answers 502 for a while; the event stream
+                  // may reconnect before the full read succeeds, so that read is tried again.
+                  Effect.andThen(
+                    key === "all"
+                      ? Effect.sleep(FULL_READ_RETRY).pipe(
+                          Effect.andThen(requestRefresh("all")),
+                          Effect.forkScoped,
+                          Effect.asVoid,
+                        )
+                      : Effect.void,
+                  ),
+                ),
               ),
             );
           }),

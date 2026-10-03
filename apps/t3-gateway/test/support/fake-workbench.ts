@@ -123,6 +123,8 @@ export class FakeWorkbench {
   private readonly streams = new Set<ServerResponse>();
   private seq = 0;
   private ids = 0;
+  /** `GET /api/projects` answers 502, as Mend does while it comes back from a restart. */
+  projectsDown = false;
   /** What `POST /api/sessions/:id/launch` does after it answers: open the prompt's turn. */
   launchOpensTurn = true;
 
@@ -377,6 +379,9 @@ export class FakeWorkbench {
       this.streams.add(response);
       request.on("close", () => this.streams.delete(response));
       return true;
+    }
+    if (method === "GET" && path === "/api/projects" && this.projectsDown) {
+      return json(502, { _tag: "BadGateway" });
     }
     if (method === "GET" && path === "/api/projects") {
       return json(

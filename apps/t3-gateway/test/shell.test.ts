@@ -159,9 +159,13 @@ describe("the shell", () => {
         const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
         yield* shell.next(isKind("snapshot"));
 
-        // Mend restarts; a session is started while the gateway is not listening.
+        // Mend restarts; a session is started while the gateway is not listening, and Mend's
+        // reads fail for a while after its event stream is back.
+        workbench.projectsDown = true;
         workbench.dropStreams();
         workbench.addSession({ id: "session-missed", projectId: "project-1" });
+        yield* Effect.sleep("1500 millis");
+        workbench.projectsDown = false;
         const caught = yield* shell.next(
           (item): item is Extract<Item, { kind: "thread.updated" }> =>
             item.kind === "thread.updated" && item.thread.id === "session-missed",
