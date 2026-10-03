@@ -61,9 +61,11 @@ Three facts shape the design:
 Inside the workspace, the helper gains a family:
 
 - `mend repo add <project> [--as <name>] [--worktree <name>]` asks Mend to add the project as a
-  repository of this session. Mend answers at once with the row in state `adding` and does the work
-  in its own lifetime (the channel answers within 30 s, a clone can take minutes). The helper polls
-  `mend repo list` every two seconds and prints the row once it is `ready` or `failed`.
+  repository of this session. Mend answers with the row in state `adding` as soon as the worktree
+  row exists (its capture 0 is the project base's packs, which the store already holds; a base that
+  must be fetched from origin first takes what it takes) and does the clone in its own lifetime,
+  which can take minutes. The helper polls `mend repo list` every two seconds, each request with a
+  deadline of its own, and prints the row once it is `ready` or `failed`.
 - `mend repo list`, also `mend repo`, prints the session's repositories: name, path, branch, state,
   and how each is saved.
 - `mend repo projects` prints the projects the session may add: the organization's projects the
@@ -227,18 +229,43 @@ co-located store keeps its bind for one release, as it keeps everything else.
 4. A repository's worktree is named after the session's own worktree unless `--worktree` says; its
    branch follows the worktree (`mend/<name>`); its base is the target's default branch as held in
    `store_refs`.
-5. `POST /repositories` answers 202 with the row in `adding`; the clone runs detached in the
-   engine's lifetime as the owner; the helper polls.
+5. `POST /repositories` answers 202 with the row in `adding` once the worktree row exists; the clone
+   runs detached in the engine's lifetime as the owner; the helper polls. Making the worktree row
+   first is what keeps `worktree_id` non-null on the session's row; moving the worktree's own
+   creation behind the answer too would need that column nullable and is left for the daemon path,
+   where capture 0 is the only remote work.
 6. States: `adding`, `ready`, `failed` (with the reason), `missing` (ready once, not found after a
-   restore).
+   restore). The clone leaves a ready mark (`/workspace/repo/.mend/repos/<name>.ready`) as its last
+   step; a relink trusts only a directory with the mark, so an add the server did not see end (a
+   restart between the checkout and the row's `ready`) is settled at the next launch from what the
+   workspace holds: `ready` with the mark, `failed` without it, with the directory kept.
 7. The row records `capture: nested | own` and `source: origin | store` so every surface can say how
    the sibling is saved and where it came from.
 8. Refusals, in the channel's words: own project, unknown or invisible project, a name already used,
-   a name that is not a directory name, a worktree name already present in the target, a target with
-   no origin, a session with no live workspace.
+   a name or a worktree name that is not a directory name, a worktree name already present in the
+   target, a target with no origin, a session with no live workspace, a directory that is not Mend's
+   link at the repository's path. The worktree-taken check runs last before the worktree is made;
+   two adds racing for one name in the same instant are separated by the worktrees table's unique
+   name, which fails the second create rather than joining.
 9. Capture mode records no linked-project extra mounts on the session.
 10. The web shows repositories on the session page and names them on the review page; the phone
     follows later.
+
+11. The exclude line is written through
+    `git rev-parse --path-format=absolute --git-path info/exclude`, so it lands in the right git dir
+    whether `/workspace/repo` is a repository of its own (capture mode) or a linked worktree whose
+    `.git` is a file (the co-located store). Workspace images need git 2.31 or later for
+    `--path-format`; every image family Mend ships has it.
+12. A relink moves a row only on an explicit observation (`ready`, `missing`, `partial`,
+    `occupied`): an unreported row keeps what it said, so a relink that could not run never turns a
+    saved repository into `missing`. Nothing the relink does can fail the launch; only the launch's
+    own interruption passes through.
+13. The sealantd half is designed in sealantd ADR 0016 (sealant-sh/sealantd#134); this ADR ships
+    with sealant-sh/mend#480.
+14. A session's detail lists only the repositories whose project the caller can see: a private
+    sibling added to a session in a shared project stays private to those who may see it.
+15. Removing a worktree counts the sessions that hold it as a repository among its members: their
+    owners have a say and their liveness refuses the removal, as a conversation's would.
 
 ## Open
 

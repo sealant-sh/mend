@@ -159,10 +159,13 @@ const HELPER_SCRIPT = `#!/usr/bin/env node
 // mend — the in-workspace helper. Talks to YOUR session over /run/mend/mend.sock,
 // or over the authenticated session endpoint when this workspace has no socket.
 ${SCRIPT_TRANSPORT_PRELUDE}
-const request = (method, route, body) =>
+// timeoutMs: give up on a request the server accepted and never finished answering. Unset for
+// the verbs whose answer legitimately takes long (a landing pushes and opens a pull request).
+const request = (method, route, body, timeoutMs) =>
   new Promise((resolve, reject) => {
     const options = transportOptions(method, route, { "content-type": "application/json" });
     if (options === null) { reject(new Error(transportUnavailable())); return; }
+    let timedOut = false;
     const req = transportClient().request(options, (res) => {
       let text = "";
       res.on("data", (chunk) => (text += chunk));
@@ -176,7 +179,12 @@ const request = (method, route, body) =>
         resolve(text === "" ? null : JSON.parse(text));
       });
     });
-    req.on("error", () => reject(new Error(transportDownMessage())));
+    req.on("error", () =>
+      reject(new Error(timedOut ? "the Mend server did not answer within " + Math.round(timeoutMs / 1000) + " s" : transportDownMessage())),
+    );
+    if (timeoutMs !== undefined) {
+      req.setTimeout(timeoutMs, () => { timedOut = true; req.destroy(new Error("timeout")); });
+    }
     if (body !== undefined) req.write(JSON.stringify(body));
     req.end();
   });
@@ -280,17 +288,20 @@ const main = async () => {
           const worktreeFlag = rest.indexOf("--worktree");
           const worktree = worktreeFlag === -1 ? null : (rest[worktreeFlag + 1] ?? null);
           if (project === undefined) fail("usage: mend repo add <project> [--as <name>] [--worktree <name>]");
-          let row = await request("POST", "/repositories", { project, name, worktree });
-          console.log("adding " + row.name + " · " + row.path + " · branch " + row.branch + " · cloning");
-          // The channel answers at once; the clone takes what it takes. Poll until it settles.
+          // The whole add is bounded: the request that makes the worktree row, then the polls
+          // while the clone runs. Each request has a deadline of its own, so a server that
+          // accepted a connection and never answered cannot hold this forever.
           const startedAt = Date.now();
+          const deadline = 30 * 60 * 1000;
+          let row = await request("POST", "/repositories", { project, name, worktree }, 5 * 60 * 1000);
+          console.log("adding " + row.name + " · " + row.path + " · branch " + row.branch + " · cloning");
           while (row.state === "adding") {
-            if (Date.now() - startedAt > 30 * 60 * 1000) {
+            if (Date.now() - startedAt > deadline) {
               console.log("still adding · mend repo list shows it when done");
               return;
             }
             await new Promise((resolve) => setTimeout(resolve, 2000));
-            const rows = await request("GET", "/repositories");
+            const rows = await request("GET", "/repositories", undefined, 30 * 1000);
             row = rows.find((r) => r.id === row.id) ?? row;
           }
           if (row.state !== "ready") fail(row.name + " · " + row.state + (row.error ? " · " + row.error : ""));

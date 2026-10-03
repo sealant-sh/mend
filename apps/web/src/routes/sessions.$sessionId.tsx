@@ -509,7 +509,7 @@ function SessionPage() {
 }
 
 /** Dot and word for a repository's state (DESIGN.md §4): observed facts, never a verdict. */
-export function repositoryStateTone(
+function repositoryStateTone(
   state: SessionRepositoryDto["repository"]["state"],
 ): "green" | "red" | "amber" | "hollow" {
   switch (state) {
@@ -528,7 +528,7 @@ export function repositoryStateTone(
  * What the review can say about a repository's change (docs/adr/0010): its own change once its
  * chain has moved, else the plain fact that its files travel with the main repository.
  */
-export function repositoryReviewWords(view: SessionRepositoryDto): string {
+function repositoryReviewWords(view: SessionRepositoryDto): string {
   if (view.checkpointsBeyondStart > 0) {
     return `${view.checkpointsBeyondStart} checkpoint${view.checkpointsBeyondStart === 1 ? "" : "s"} beyond start`;
   }

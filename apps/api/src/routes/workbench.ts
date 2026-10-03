@@ -2258,10 +2258,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const viewer = yield* (yield* ProjectAccess).viewer();
         const steer = viewer !== null && canSteerSession(session, viewer.userId);
         // The repositories the session holds beside its worktree (docs/adr/0010): each a worktree
-        // of another project with a change of its own, and how far that chain has moved.
+        // of another project with a change of its own, and how far that chain has moved. Only
+        // the ones whose project the caller can see: a private sibling stays private.
         const projectsRepo = yield* ProjectsRepo;
         const repositories = yield* Effect.forEach(
-          yield* (yield* SessionRepositoriesRepo).listForSession(params.id),
+          yield* (yield* ProjectAccess).filterByProject(
+            yield* (yield* SessionRepositoriesRepo).listForSession(params.id),
+          ),
           (repository) =>
             Effect.gen(function* () {
               const project = yield* projectsRepo

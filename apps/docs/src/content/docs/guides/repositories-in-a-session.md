@@ -21,7 +21,7 @@ In the session's shell, or asked of the agent:
 mend repo add core
 ```
 
-Mend answers at once and brings the files in while you go on working:
+Mend makes the worktree, answers, and brings the files in while you go on working:
 
 ```text
 adding core · /workspace/repos/core · branch mend/fix-login · cloning
@@ -67,12 +67,12 @@ nothing is cloned again.
 
 ## States
 
-| State     | Means                                                                                      |
-| --------- | ------------------------------------------------------------------------------------------ |
-| `adding`  | Mend is bringing the files in                                                              |
-| `ready`   | the files are there, linked at `/workspace/repos/<name>`, saved with the session           |
-| `failed`  | they could not be brought in, with the reason, for example a clone the transport refused   |
-| `missing` | a repository that was ready did not come back with a restored workspace, with where it was |
+| State     | Means                                                                                                                                                     |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adding`  | Mend is bringing the files in                                                                                                                             |
+| `ready`   | the files are there, linked at `/workspace/repos/<name>`, saved with the session                                                                          |
+| `failed`  | they could not be brought in, with the reason, for example a clone the transport refused, or an add a server restart interrupted, with the directory kept |
+| `missing` | a repository that was ready did not come back with a restored workspace, with where it was                                                                |
 
 ## Refusals
 

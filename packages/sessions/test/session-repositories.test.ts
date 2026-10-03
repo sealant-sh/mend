@@ -9,6 +9,7 @@ import {
   failureReason,
   parseRelinkReport,
   REPOSITORY_EXISTS_EXIT,
+  REPOSITORY_PATH_OCCUPIED_EXIT,
   repositoryCloneScript,
   repositoryRelinkScript,
 } from "../src/session-repositories.ts";
@@ -83,6 +84,45 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
     expect(fs.readFileSync(path.join(main, ".git", "info", "exclude"), "utf8")).toContain(
       ".mend/\n",
     );
+    // The ready mark says the add ran to its end: a relink trusts only a directory that has it.
+    expect(fs.existsSync(`${nested}.ready`)).toBe(true);
+  });
+
+  it("adds the exclude on a line of its own when the exclude file ends without a newline", () => {
+    const { root, main, origin, baseSha } = makeWorkspace();
+    fs.mkdirSync(path.join(main, ".git", "info"), { recursive: true });
+    fs.writeFileSync(path.join(main, ".git", "info", "exclude"), "scratch/");
+    const result = runSh(
+      inScratch(
+        repositoryCloneScript({ originUrl: origin, name: "core", branch: "mend/x", baseSha }),
+        root,
+      ),
+    );
+    expect(result.exitCode).toBe(0);
+    expect(fs.readFileSync(path.join(main, ".git", "info", "exclude"), "utf8")).toBe(
+      "scratch/\n.mend/\n",
+    );
+    expect(git(main, ["status", "--porcelain"])).toBe("");
+    // Running it again adds nothing.
+    runSh(inScratch(repositoryRelinkScript(["core"]), root));
+    expect(fs.readFileSync(path.join(main, ".git", "info", "exclude"), "utf8")).toBe(
+      "scratch/\n.mend/\n",
+    );
+  });
+
+  it("refuses a directory that is not a link at the repository's path, and clones nothing", () => {
+    const { root, main, origin, baseSha } = makeWorkspace();
+    fs.mkdirSync(path.join(root, "workspace", "repos", "core"), { recursive: true });
+    const result = runSh(
+      inScratch(
+        repositoryCloneScript({ originUrl: origin, name: "core", branch: "mend/x", baseSha }),
+        root,
+      ),
+    );
+    expect(result.exitCode).toBe(REPOSITORY_PATH_OCCUPIED_EXIT);
+    expect(result.stderr).toContain("is not a link");
+    expect(fs.existsSync(path.join(main, ".mend", "repos", "core"))).toBe(false);
+    expect(fs.readdirSync(path.join(root, "workspace", "repos", "core"))).toEqual([]);
   });
 
   it("refuses to clone over a directory that is already there, with its own exit code", () => {
@@ -125,14 +165,37 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
     );
     // A restore brings the nested directory back and not the link outside the captured root.
     fs.rmSync(path.join(root, "workspace", "repos"), { recursive: true, force: true });
-    const result = runSh(inScratch(repositoryRelinkScript(["core", "sealantd"]), root));
+    // An add that was interrupted before its ready mark: a directory, no mark.
+    fs.mkdirSync(path.join(main, ".mend", "repos", "half", ".git"), { recursive: true });
+    // A directory that is not a link where the link should go.
+    fs.mkdirSync(path.join(root, "workspace", "repos", "taken"), { recursive: true });
+    fs.mkdirSync(path.join(main, ".mend", "repos", "taken", ".git"), { recursive: true });
+    fs.writeFileSync(path.join(main, ".mend", "repos", "taken.ready"), "");
+    const result = runSh(
+      inScratch(repositoryRelinkScript(["core", "sealantd", "half", "taken"]), root),
+    );
     expect(result.exitCode).toBe(0);
     const report = parseRelinkReport(result.stdout);
     expect(report.get("core")).toBe("ready");
     expect(report.get("sealantd")).toBe("missing");
+    expect(report.get("half")).toBe("partial");
+    expect(report.get("taken")).toBe("occupied");
     const link = path.join(root, "workspace", "repos", "core");
     expect(fs.realpathSync(link)).toBe(fs.realpathSync(path.join(main, ".mend", "repos", "core")));
     expect(fs.existsSync(path.join(root, "workspace", "repos", "sealantd"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "workspace", "repos", "half"))).toBe(false);
+    // The occupied directory is left exactly as it was: no link made inside it.
+    expect(fs.readdirSync(path.join(root, "workspace", "repos", "taken"))).toEqual([]);
+  });
+
+  it("reads only the words it knows from a relink report", () => {
+    const report = parseRelinkReport("ready core\nnoise\nmissing a b\noccupied x\n\nunlinked y\n");
+    expect([...report.entries()]).toEqual([
+      ["core", "ready"],
+      ["a b", "missing"],
+      ["x", "occupied"],
+      ["y", "unlinked"],
+    ]);
   });
 
   it("quotes every value it interpolates", () => {

@@ -177,6 +177,7 @@ export const createTenancyApi = async (
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
       readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
       readonly agentMemory?: Layer.PartialEffectful<AgentMemoryRepo["Service"]>;
+      readonly sessionRepositories?: Layer.PartialEffectful<SessionRepositoriesRepo["Service"]>;
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -235,7 +236,11 @@ export const createTenancyApi = async (
       recording(
         SessionRepositoriesRepo,
         "sessionRepositories",
-        { listForSession: () => Effect.succeed([]) },
+        {
+          listForSession: () => Effect.succeed([]),
+          listForWorktree: () => Effect.succeed([]),
+          ...options.implement?.sessionRepositories,
+        },
         calls,
       ),
       recording(ProjectMountsRepo, "mounts", {}, calls),

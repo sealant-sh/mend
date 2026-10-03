@@ -393,8 +393,8 @@ session endpoint), and it speaks Services, repositories, `mend land` and `mend s
 The helper has no `init`, no `logs`, and no `connect`: history and reaching the endpoint stay on
 your side. Its job is declaration: an agent that starts a dev server can register it as a real
 Service instead of leaving an unobserved listener, and `--http`/`--https` says it is something to
-open in a browser (refused with `--udp`). `mend repo add` answers at once and brings the files in
-while the session goes on; read
+open in a browser (refused with `--udp`). `mend repo add` makes the worktree, answers, and brings
+the files in while the session goes on; read
 [Several repositories in one session](/guides/repositories-in-a-session/) for what a repository is
 and how it is saved.
 

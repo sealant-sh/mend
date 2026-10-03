@@ -110,6 +110,7 @@ import {
   type SessionRepository as SessionRepositoryRow,
   canUseLink,
   isRepositoryName,
+  nestedRepositoryPath,
   repositoryPath,
   type CaptureDiscardFacts,
   type CaptureDrainReason,
@@ -321,6 +322,7 @@ import {
   failureReason,
   parseRelinkReport,
   REPOSITORY_EXISTS_EXIT,
+  REPOSITORY_PATH_OCCUPIED_EXIT,
   repositoryCloneScript,
   repositoryRelinkScript,
 } from "./session-repositories.ts";
@@ -9415,11 +9417,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const reason =
           result.exitCode === REPOSITORY_EXISTS_EXIT
-            ? `${row.path} already holds files that are not this repository`
-            : failureReason(
-                result.stderr,
-                `the clone of ${originUrl} ended with exit ${String(result.exitCode)}`,
-              );
+            ? `${nestedRepositoryPath(row.name)} already holds files that are not this repository`
+            : result.exitCode === REPOSITORY_PATH_OCCUPIED_EXIT
+              ? `${row.path} is a directory that is not Mend's link · nothing was cloned`
+              : failureReason(
+                  result.stderr,
+                  `the clone of ${originUrl} ended with exit ${String(result.exitCode)}`,
+                );
         yield* sessionRepositories.setState(row.id, "failed", reason);
         yield* Effect.logWarning("session engine: repository not added").pipe(
           Effect.annotateLogs({ sessionId: session.id, repository: row.name, reason }),
@@ -9482,12 +9486,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const sessionWorktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
         const worktreeName = input.worktree ?? sessionWorktree.name;
-        if ((yield* worktreesRepo.byName(target.id, worktreeName)) !== null) {
-          // Joining it would clone the base over work its chain already holds (ADR 0010
-          // "Considered options"). Refused until the daemon materialises from the chain.
+        if (!isRepositoryName(worktreeName)) {
+          // Checked before anything is made: a bad name must never leave a branch, a worktree row
+          // or a capture 0 behind it.
           return yield* refuse(
-            "worktree-taken",
-            `project ${target.name} already has a worktree named ${worktreeName} · pick another with --worktree`,
+            "bad-name",
+            `"${worktreeName}" is not a worktree name · lowercase letters, digits, dots, underscores and dashes · name it with --worktree`,
           );
         }
         // The files go into the live workspace: without one there is nowhere to put them.
@@ -9496,6 +9500,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             refuse("not-live", "this session has no live workspace to add a repository to"),
           ),
         );
+        // Last before the worktree is made, so the window in which another add could make the
+        // same worktree is the one between this read and the create, and the create's unique
+        // constraint on the name is the backstop. Joining an existing worktree would clone the
+        // base over work its chain already holds (ADR 0010 "Considered options"), so it is
+        // refused until the daemon materialises from the chain.
+        if ((yield* worktreesRepo.byName(target.id, worktreeName)) !== null) {
+          return yield* refuse(
+            "worktree-taken",
+            `project ${target.name} already has a worktree named ${worktreeName} · pick another with --worktree`,
+          );
+        }
         const worktree = yield* ensureWorktreeIn(
           target,
           { name: worktreeName, base: null },
@@ -9548,8 +9563,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         workspace: Workspace,
       ) {
+        // `adding` rows too: an add the server did not see end (a restart between the clone and
+        // the row's `ready`) is settled by what the workspace holds, never left `adding` for good.
         const rows = (yield* sessionRepositories.listForSession(session.id)).filter(
-          (row) => row.state === "ready" || row.state === "missing",
+          (row) => row.state !== "failed",
         );
         if (rows.length === 0) return rows;
         const result = yield* sealant.exec(workspace, [
@@ -9558,23 +9575,63 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           repositoryRelinkScript(rows.map((row) => row.name)),
         ]);
         const report = parseRelinkReport(result.stdout);
+        if (result.exitCode !== 0 || report.size < rows.length) {
+          yield* Effect.logWarning("session engine: repositories relink reported partly").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              exitCode: result.exitCode,
+              reported: report.size,
+              asked: rows.length,
+              stderr: result.stderr.trim().slice(0, 500),
+            }),
+          );
+        }
+        // Only an explicit observation moves a row; an unreported row keeps what it said.
         for (const row of rows) {
-          const observed = report.get(row.name);
-          if (observed === "ready" && row.state !== "ready") {
-            yield* sessionRepositories.setState(row.id, "ready", null);
-          } else if (observed !== "ready" && row.state !== "missing") {
-            yield* sessionRepositories.setState(
-              row.id,
-              "missing",
-              `not found in the restored workspace at ${row.path}`,
-            );
+          const nested = nestedRepositoryPath(row.name);
+          switch (report.get(row.name)) {
+            case "ready":
+              if (row.state !== "ready") yield* sessionRepositories.setState(row.id, "ready", null);
+              break;
+            case "missing":
+              yield* sessionRepositories.setState(
+                row.id,
+                row.state === "adding" ? "failed" : "missing",
+                row.state === "adding"
+                  ? "the add was interrupted before anything was brought in"
+                  : `not found in the restored workspace at ${nested}`,
+              );
+              break;
+            case "partial":
+              yield* sessionRepositories.setState(
+                row.id,
+                row.state === "adding" ? "failed" : "missing",
+                row.state === "adding"
+                  ? `the add was interrupted · what it brought in is kept at ${nested}`
+                  : `its files are at ${nested} without their ready mark · kept, not linked`,
+              );
+              break;
+            case "occupied":
+              yield* sessionRepositories.setState(
+                row.id,
+                "failed",
+                `${row.path} is a directory that is not Mend's link · its files are kept at ${nested}`,
+              );
+              break;
+            case "unlinked":
+              yield* Effect.logWarning("session engine: repository not linked").pipe(
+                Effect.annotateLogs({ sessionId: session.id, repository: row.name }),
+              );
+              break;
+            case undefined:
+              break;
           }
         }
         yield* Effect.logInfo("session engine: repositories relinked").pipe(
           Effect.annotateLogs({
             sessionId: session.id,
             ready: rows.filter((row) => report.get(row.name) === "ready").length,
-            missing: rows.filter((row) => report.get(row.name) !== "ready").length,
+            other: rows.filter((row) => report.get(row.name) !== "ready").length,
           }),
         );
         return yield* sessionRepositories.listForSession(session.id);
@@ -10366,11 +10423,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // worktree, their links did not. A relink that cannot run costs the links, never the launch.
         const noRepositories: ReadonlyArray<SessionRepositoryRow> = [];
         const repositories = yield* relinkRepositories(session, workspace).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: repositories were not relinked").pipe(
-              Effect.annotateLogs({ sessionId, message: error.message }),
-              Effect.as(noRepositories),
-            ),
+          // Every cause but the launch's own interruption: a platform error, a store that did not
+          // answer, a defect. None of them is the launch's to fail on.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.logWarning("session engine: repositories were not relinked").pipe(
+                  Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                  Effect.as(noRepositories),
+                ),
           ),
         );
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.

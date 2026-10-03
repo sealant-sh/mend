@@ -18,6 +18,7 @@ import {
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
+  SessionRepositoriesRepo,
   CheckpointsRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
@@ -167,7 +168,22 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           Effect.as(true),
           Effect.catchTag("NotFound", () => Effect.succeed(false)),
         );
-        const members = yield* sessions.listForWorktree(worktree.id);
+        // The conversations here, plus the sessions that hold this worktree as a repository
+        // beside their own (docs/adr/0010): their owners have a say, and their liveness holds.
+        const inhabitants = yield* sessions.listForWorktree(worktree.id);
+        const holders = yield* Effect.forEach(
+          yield* (yield* SessionRepositoriesRepo).listForWorktree(worktree.id),
+          (row) =>
+            sessions
+              .byId(row.sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))),
+        );
+        const members = [
+          ...inhabitants,
+          ...holders.filter(
+            (holder) => holder !== null && !inhabitants.some((member) => member.id === holder.id),
+          ),
+        ].flatMap((member) => (member === null ? [] : [member]));
         if (!manages && members.some((member) => member.ownerUserId !== caller.user.id)) {
           return yield* new WorktreeNotFound({ id: params.id });
         }
