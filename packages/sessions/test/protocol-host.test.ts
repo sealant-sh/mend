@@ -5,10 +5,16 @@ import {
   SessionsRepo,
   SessionStoppingError,
 } from "@mend/db";
-import { AgentTurnId, SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
-import { AgentTurn, SessionProcess } from "@mend/domain/workbench";
+import {
+  AgentItemId,
+  AgentTurnId,
+  SealantWorkspaceId,
+  SessionId,
+  SessionProcessId,
+} from "@mend/domain";
+import { AgentItem, AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import type { InteractiveSession } from "@sealant/sdk";
-import { Effect, Layer } from "effect";
+import { Deferred, Effect, Layer } from "effect";
 
 import { ProtocolHost, ProtocolHostLive } from "../src/protocol-host.ts";
 
@@ -75,10 +81,16 @@ const makeConversationWorld = () => {
    * What the repo's admission sees: `stopping` once an idle stop claimed the session (it refuses
    * the turn); `beforeAdmit` runs as the turn is admitted — what happens concurrently.
    */
-  const admission: { stopping: boolean; beforeAdmit: Effect.Effect<void> } = {
+  const admission: {
+    stopping: boolean;
+    beforeAdmit: Effect.Effect<void>;
+    beforeHarnessTurn: Effect.Effect<void>;
+  } = {
     stopping: false,
     beforeAdmit: Effect.void,
+    beforeHarnessTurn: Effect.void,
   };
+  const items = new Map<string, AgentItem>();
   const layer = Layer.succeed(AgentConversationRepo, {
     submitTurn: (_session, _process, input) =>
       admission.beforeAdmit.pipe(
@@ -108,6 +120,47 @@ const makeConversationWorld = () => {
           ? null
           : update(queued.id, { status: "running", startedAt: now() });
       }),
+    openHarnessTurn: (_session, _process, providerTurnId, reason) =>
+      admission.beforeHarnessTurn.pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const all = [...turns.values()];
+            const existing = all.find((turn) => turn.providerTurnId === providerTurnId);
+            if (existing !== undefined) return existing;
+            for (const turn of all) {
+              if (turn.status === "running" && turn.providerTurnId === null) {
+                update(turn.id, { status: "queued", startedAt: null });
+              }
+            }
+            if ([...turns.values()].some((turn) => turn.status === "running")) return null;
+            const turn = new AgentTurn({
+              id: AgentTurnId.make(`turn-${ordinal}`),
+              sessionId,
+              processId,
+              ordinal: ordinal++,
+              author: null,
+              origin: "harness",
+              input: reason,
+              status: "running",
+              providerTurnId,
+              error: null,
+              usage: null,
+              createdAt: now(),
+              startedAt: now(),
+              endedAt: null,
+            });
+            turns.set(turn.id, turn);
+            return turn;
+          }),
+        ),
+      ),
+    requeueClaimedTurn: (id) =>
+      Effect.sync(() => {
+        const turn = turns.get(id);
+        if (turn?.status === "running" && turn.providerTurnId === null) {
+          update(id, { status: "queued", startedAt: null });
+        }
+      }),
     setProviderTurnId: (id, providerTurnId) => Effect.sync(() => update(id, { providerTurnId })),
     bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: (id, error) =>
@@ -115,8 +168,33 @@ const makeConversationWorld = () => {
     setTurnIntent: () => Effect.die("not in test"),
     claimTurnLanding: () => Effect.die("not in test"),
     decideTurnLanding: () => Effect.die("not in test"),
-    completeTurn: () => Effect.succeed(null),
-    upsertItem: () => Effect.die("not in test"),
+    completeTurn: (providerTurnId, _session, status) =>
+      Effect.sync(() => {
+        const turn = [...turns.values()].find(
+          (candidate) => candidate.providerTurnId === providerTurnId,
+        );
+        return turn === undefined ? null : update(turn.id, { status, endedAt: now() });
+      }),
+    upsertItem: (input) =>
+      Effect.sync(() => {
+        const item = new AgentItem({
+          id: AgentItemId.make(input.providerItemId),
+          sessionId: input.sessionId,
+          processId: input.processId,
+          turnId: input.turnId,
+          seq: items.size,
+          providerItemId: input.providerItemId,
+          kind: input.kind,
+          status: input.status,
+          title: input.title,
+          text: input.text,
+          data: input.data,
+          createdAt: now(),
+          updatedAt: now(),
+        });
+        items.set(input.providerItemId, item);
+        return item;
+      }),
     listItems: () => Effect.succeed([]),
     turnMessages: () => Effect.succeed([]),
     turnItems: () => Effect.succeed([]),
@@ -124,6 +202,7 @@ const makeConversationWorld = () => {
     byRequestId: () => Effect.succeed(null),
     listRequests: () => Effect.succeed([]),
     hasPendingRequests: () => Effect.succeed(false),
+    taskActivity: () => Effect.succeed({ running: 0, lastUpdatedAt: null }),
     prepareRequestResponse: () => Effect.die("not in test"),
     completeRequestResponse: () => Effect.die("not in test"),
     failRequestResponse: () => Effect.void,
@@ -143,7 +222,7 @@ const makeConversationWorld = () => {
     requeueQueuedTurns: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
   });
-  return { layer, turns, seed, admission };
+  return { layer, turns, items, seed, admission };
 };
 
 const processesLayer = Layer.succeed(SessionProcessesRepo, {
@@ -326,6 +405,56 @@ const makePipe = (turnScript: Array<{ error: string } | string>) => {
   return { pipe, interrupted };
 };
 
+/** A Claude Code on the far side of a pipe: records what Mend sends, says what the test pushes. */
+const makeClaudePipe = () => {
+  const pending: Array<{ sequence: bigint; data: Uint8Array }> = [];
+  let notify: (() => void) | null = null;
+  let sequence = 0n;
+  const sent: Array<string> = [];
+  const push = (value: unknown) => {
+    pending.push({
+      sequence: sequence++,
+      data: new TextEncoder().encode(`${JSON.stringify(value)}\n`),
+    });
+    notify?.();
+  };
+  const pipe: InteractiveSession = {
+    id: "sealant-session-1",
+    workspaceId: "ws-1",
+    runId: "run-1",
+    mode: "pipe",
+    send: (input) => {
+      sent.push(typeof input === "string" ? input : new TextDecoder().decode(input));
+      return Promise.resolve();
+    },
+    output: (options) => {
+      const signal = options?.signal;
+      return (async function* () {
+        for (;;) {
+          if (signal?.aborted === true) return;
+          const next = pending.shift();
+          if (next !== undefined) {
+            yield next;
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            notify = resolve;
+            if (pending.length > 0) resolve();
+            signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          notify = null;
+        }
+      })();
+    },
+    resize: () => Promise.reject(new Error("pipe sessions have no terminal")),
+    signal: () => Promise.resolve(),
+    status: () => Promise.reject(new Error("not in test")),
+    close: () => Promise.resolve(),
+    attach: () => Promise.reject(new Error("not in test")),
+  };
+  return { pipe, push, sent };
+};
+
 const hostLayer = (conversation: Layer.Layer<AgentConversationRepo>) =>
   ProtocolHostLive.pipe(
     Layer.provide(conversation),
@@ -452,6 +581,81 @@ describe("ProtocolHost", () => {
         const detached = yield* host.submitTurn(sessionId, "and this", "user-1").pipe(Effect.flip);
         expect(detached._tag).toBe("ProtocolHostNotLiveError");
         expect([...world.turns.values()].map((turn) => turn.status)).toEqual(["cancelled"]);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.live(
+    "records a workflow after its turn ended, and the turn Claude opens when it finishes",
+    () => {
+      const world = makeConversationWorld();
+      const asked = world.seed("run the workflow");
+      const claude = makeClaudePipe();
+      const gate = Effect.runSync(Deferred.make<void>());
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* host.attach({
+          process: new SessionProcess({ ...agentProcess, harness: "claude", label: "claude" }),
+          pipe: claude.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        });
+        yield* waitUntil(() => world.turns.get(asked.id)?.providerTurnId !== null);
+        claude.push({ type: "system", subtype: "init", uuid: "init-1" });
+        claude.push({
+          type: "system",
+          subtype: "task_started",
+          task_id: "wf1",
+          task_type: "local_workflow",
+          workflow_name: "tiny",
+          description: "two tiny agents",
+        });
+        claude.push({ type: "result", subtype: "success" });
+        yield* waitUntil(() => world.turns.get(asked.id)?.status === "completed");
+
+        // The workflow ends after its turn did: the task still reports on that turn.
+        claude.push({
+          type: "system",
+          subtype: "task_notification",
+          task_id: "wf1",
+          status: "completed",
+          summary: 'Dynamic workflow "two tiny agents" completed',
+        });
+        yield* waitUntil(() => world.items.get("task:wf1")?.status === "completed");
+        expect(world.items.get("task:wf1")?.turnId).toBe(asked.id);
+
+        // Claude opens a turn of its own; a message sent in the same moment is claimed before
+        // the record holds that turn, refused by the adapter, and queued again.
+        world.admission.beforeHarnessTurn = Deferred.await(gate);
+        claude.push({ type: "system", subtype: "init", uuid: "init-2" });
+        yield* Effect.sleep("30 millis");
+        const userLines = () => claude.sent.filter((line) => line.includes('"type":"user"'));
+        const next = yield* host.submitTurn(sessionId, "and now this", "user-1");
+        // Dispatch ran inside the submission: claimed, refused, and back in the queue unsent.
+        expect(world.turns.get(next.id)).toMatchObject({ status: "queued", startedAt: null });
+        expect(userLines()).toHaveLength(1);
+        yield* Deferred.succeed(gate, undefined);
+        const harness = () =>
+          [...world.turns.values()].find((turn) => turn.providerTurnId === "harness:init-2");
+        yield* waitUntil(() => harness()?.status === "running");
+        expect(harness()).toMatchObject({
+          origin: "harness",
+          author: null,
+          input: 'Dynamic workflow "two tiny agents" completed',
+        });
+        claude.push({
+          type: "assistant",
+          message: { id: "msg_3", content: [{ type: "text", text: "Results: pelican" }] },
+        });
+        claude.push({ type: "result", subtype: "success" });
+
+        // The harness turn ended: the queued message goes out, once.
+        yield* waitUntil(() => world.turns.get(next.id)?.providerTurnId !== null);
+        expect(harness()?.status).toBe("completed");
+        expect(world.items.get("msg_3:block:0")?.turnId).toBe(harness()?.id);
+        expect(userLines()).toHaveLength(2);
+        yield* host.detach(processId);
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     },
   );

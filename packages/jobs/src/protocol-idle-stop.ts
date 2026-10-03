@@ -91,6 +91,7 @@ export const ProtocolIdleStopLive: Layer.Layer<
         turns: yield* conversations.listTurns(session.id),
         requests: yield* conversations.listRequests(session.id, false),
         liveServices,
+        tasks: yield* conversations.taskActivity(agent.id),
       };
       if (!protocolIdleStopDue(protocolIdleReading(facts), nowMs, minutes)) return false;
       // Capture mode: an executor with captures still to ship is not idle — a stop now would only

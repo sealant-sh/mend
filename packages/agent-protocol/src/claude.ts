@@ -5,11 +5,13 @@ import type {
   AgentInputAnswers,
   AgentInputQuestion,
   AgentItemKind,
+  AgentTaskData,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
 import { PubSub, Effect, Stream } from "effect";
 
 import { contentBlockKind } from "./claude-items.ts";
+import { foldTaskLine, isTaskSubtype, taskItem } from "./claude-tasks.ts";
 import type {
   ClaudeControlRequest,
   ClaudeControlResponse,
@@ -18,6 +20,7 @@ import type {
 import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
+  AgentTurnBusyError,
   type AgentAdapter,
   type AgentSession,
   type AgentStartOptions,
@@ -56,6 +59,15 @@ const integerField = (value: unknown, key: string): number | null => {
 
 const protocolError = (operation: string, message: string, cause: unknown): AgentProtocolError =>
   new AgentProtocolError({ adapter: "claude", operation, message, cause });
+
+/**
+ * Prefix of a turn the harness opened itself. The rest is the `uuid` of the `system init` line
+ * that opened it, so a replay of the same output names the same turn.
+ */
+export const CLAUDE_HARNESS_TURN_PREFIX = "harness:";
+
+/** What a turn Claude opened on its own is answering, when no task notification said. */
+const HARNESS_TURN_REASON = "Claude started a turn on its own";
 
 const encodeLine = (value: unknown): Uint8Array =>
   new TextEncoder().encode(`${JSON.stringify(value)}\n`);
@@ -166,6 +178,14 @@ export const ClaudeAdapter: AgentAdapter = {
       const assistantBlockCursors = new Map<string, number>();
       let announcedSessionId: string | null = null;
       let closed = false;
+      // Background tasks by task id, each held to the turn that started it: their lines keep
+      // coming after that turn ended. `published` is the last item sent, to skip repeats.
+      const tasks = new Map<
+        string,
+        { readonly providerTurnId: string; data: AgentTaskData; published: string }
+      >();
+      // The latest task notification, until a turn Claude opens on its own answers it.
+      let notificationReason: string | null = null;
 
       const publish = (event: AgentEvent): Effect.Effect<void> =>
         (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
@@ -326,6 +346,45 @@ export const ClaudeAdapter: AgentAdapter = {
         });
       };
 
+      /**
+       * Claude announces every turn with a `system init` line. One that arrives while no turn is
+       * open is a turn Claude started on its own — after a background task or workflow ended, it
+       * reads the notification and answers it. Its id comes from the line, so a replay of the
+       * same output opens the same turn.
+       */
+      const handleInit = (message: JsonObject): Effect.Effect<void> => {
+        if (currentTurnId !== null) return Effect.void;
+        const uuid = stringField(message, "uuid");
+        if (uuid === null) return Effect.void;
+        const providerTurnId = `${CLAUDE_HARNESS_TURN_PREFIX}${uuid}`;
+        currentTurnId = providerTurnId;
+        messageOrdinal = 0;
+        blockIds.clear();
+        const reason = notificationReason ?? HARNESS_TURN_REASON;
+        notificationReason = null;
+        return publish({ _tag: "harness-turn.started", providerTurnId, reason });
+      };
+
+      const handleTaskLine = (subtype: string, message: JsonObject): Effect.Effect<void> => {
+        const taskId = stringField(message, "task_id");
+        if (taskId === null) return Effect.void;
+        if (subtype === "task_notification") {
+          notificationReason = stringField(message, "summary") ?? notificationReason;
+        }
+        const tracked = tasks.get(taskId);
+        // A task Claude reports before any turn of Mend's (one a resumed conversation left
+        // running) has no turn to sit on; it is not recorded.
+        const providerTurnId = tracked?.providerTurnId ?? currentTurnId;
+        if (providerTurnId === null) return Effect.void;
+        const data = foldTaskLine(tracked?.data, subtype, message);
+        if (data === null) return Effect.void;
+        const item = taskItem(data, providerTurnId);
+        const published = JSON.stringify(item);
+        if (tracked !== undefined && tracked.published === published) return Effect.void;
+        tasks.set(taskId, { providerTurnId, data, published });
+        return updateItem(item);
+      };
+
       const handleResult = (message: JsonObject): Effect.Effect<void> => {
         if (currentTurnId === null) return Effect.void;
         const providerTurnId = currentTurnId;
@@ -371,15 +430,21 @@ export const ClaudeAdapter: AgentAdapter = {
                 return publish({ _tag: "session.ready", providerSessionId });
               });
         switch (type) {
-          case "system":
+          case "system": {
+            const subtype = stringField(value, "subtype");
+            if (subtype === "init") return ready.pipe(Effect.andThen(handleInit(value)));
+            if (isTaskSubtype(subtype)) {
+              return ready.pipe(Effect.andThen(handleTaskLine(subtype ?? "", value)));
+            }
             return ready.pipe(
               Effect.andThen(
                 publish({
                   _tag: "runtime.warning",
-                  message: `Claude system message: ${stringField(value, "subtype") ?? "unknown"}`,
+                  message: `Claude system message: ${subtype ?? "unknown"}`,
                 }),
               ),
             );
+          }
           case "stream_event":
             return ready.pipe(Effect.andThen(handleStreamEvent(value)));
           case "assistant":
@@ -439,6 +504,9 @@ export const ClaudeAdapter: AgentAdapter = {
       yield* publish({ _tag: "session.ready", providerSessionId: sessionId });
 
       const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
+        if (currentTurnId?.startsWith(CLAUDE_HARNESS_TURN_PREFIX) === true) {
+          return yield* new AgentTurnBusyError({ providerTurnId: currentTurnId });
+        }
         if (currentTurnId !== null) {
           return yield* protocolError(
             "sendTurn",

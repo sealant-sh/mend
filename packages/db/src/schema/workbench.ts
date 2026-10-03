@@ -80,6 +80,7 @@ import type {
   AgentItemStatus,
   AgentRequestKind,
   AgentRequestStatus,
+  AgentTurnOrigin,
   AgentTurnStatus,
   AgentTurnUsage,
   AutomationChoice,
@@ -1526,6 +1527,8 @@ export const agentTurns = pgTable(
       .references(() => sessionProcesses.id, { onDelete: "cascade" }),
     ordinal: integer().notNull(),
     author: text(),
+    /** `request` (sent by Mend) or `harness` (opened by the agent itself); 0105. */
+    origin: text().$type<AgentTurnOrigin>().notNull().default("request"),
     input: text().notNull(),
     status: text().$type<AgentTurnStatus>().notNull().default("queued"),
     providerTurnId: text(),

@@ -71,6 +71,20 @@ describe("protocolIdleReading", () => {
     expect(protocolIdleReading(idleFacts())).toEqual({ kind: "idle", since: at(2) });
   });
 
+  it("is held by a background task still running, after the turn that started it ended", () => {
+    // A workflow runs on with no turn open; the agent opens one of its own when it ends.
+    expect(protocolIdleReading(idleFacts({ tasks: { running: 1, lastUpdatedAt: at(3) } }))).toEqual(
+      { kind: "held", by: "task" },
+    );
+  });
+
+  it("clocks from a background task's last change, after its turn ended", () => {
+    // The turn ended at minute 2; the workflow it started finished at minute 40.
+    expect(
+      protocolIdleReading(idleFacts({ tasks: { running: 0, lastUpdatedAt: at(40) } })),
+    ).toEqual({ kind: "idle", since: at(40) });
+  });
+
   it("is held by a turn in flight, a pending request, live Services or a live shell", () => {
     expect(protocolIdleReading(idleFacts({ turns: [turn("running", null)] }))).toEqual({
       kind: "held",

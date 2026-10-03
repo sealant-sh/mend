@@ -6,9 +6,13 @@
  * runtime does not have all of them.
  */
 
+import { sortedCopy } from "./order.ts";
+
 export interface AgentTurnDto {
   readonly id: string;
   readonly ordinal: number;
+  /** `request` (sent by Mend) or `harness` (the agent opened it); absent from older servers. */
+  readonly origin?: string;
   readonly input: string;
   readonly status: string;
   readonly error: string | null;
@@ -24,6 +28,8 @@ export interface AgentItemDto {
   readonly status: string;
   readonly title: string | null;
   readonly text: string | null;
+  /** The item's structured record; a `task` item's is read by `agentTaskOf`. */
+  readonly data?: unknown;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -80,17 +86,6 @@ export const EMPTY_CONVERSATION: AgentConversation<never, never, never> = {
   items: [],
   requests: [],
 };
-
-const sortedCopy = <T>(
-  values: ReadonlyArray<T>,
-  compare: (left: T, right: T) => number,
-): ReadonlyArray<T> =>
-  values.reduce<ReadonlyArray<T>>((ordered, value) => {
-    const insertion = ordered.findIndex((existing) => compare(value, existing) < 0);
-    return insertion === -1
-      ? [...ordered, value]
-      : [...ordered.slice(0, insertion), value, ...ordered.slice(insertion)];
-  }, []);
 
 const lastMatching = <T>(
   values: ReadonlyArray<T>,
@@ -195,14 +190,20 @@ export const pendingRequestOf = <R extends AgentRequestDto>(
   requests: ReadonlyArray<R>,
 ): R | undefined => requests.find((request) => request.status === "pending");
 
+/** A background task (a workflow, a background agent or command) the agent reports running. */
+const isRunningTask = (item: AgentItemDto): boolean =>
+  item.kind === "task" && item.status === "in-progress";
+
 /**
- * What a live conversation is doing: waiting on a person's answer, or working on a turn. Null
- * when neither is observed. Each client words it for who is looking.
+ * What a live conversation is doing: waiting on a person's answer, or working — on a turn, or on
+ * a workflow or other background task that runs on after its turn ended. Null when none is
+ * observed. Each client words it for who is looking.
  */
 export const conversationActivity = (
   conversation: AgentConversation,
 ): "waiting" | "working" | null => {
   if (pendingRequestOf(conversation.requests) !== undefined) return "waiting";
   if (openTurnOf(conversation.turns) !== undefined) return "working";
+  if (conversation.items.some(isRunningTask)) return "working";
   return null;
 };

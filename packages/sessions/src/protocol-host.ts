@@ -163,6 +163,11 @@ export const ProtocolHostLive: Layer.Layer<
             const turn = yield* conversations.claimNextTurn(entry.process.id);
             if (turn === null) return;
             const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
+            if (sent._tag === "Failure" && sent.failure._tag === "AgentTurnBusyError") {
+              // The harness is in a turn of its own; that turn's end dispatches this one.
+              yield* conversations.requeueClaimedTurn(turn.id);
+              return;
+            }
             if (sent._tag === "Failure") {
               yield* conversations.failTurn(turn.id, String(sent.failure)).pipe(Effect.orDie);
               const failed = yield* conversations.byTurnId(turn.id);
@@ -196,6 +201,25 @@ export const ProtocolHostLive: Layer.Layer<
             event.providerTurnId,
           );
           return;
+        case "harness-turn.started": {
+          const opened = yield* conversations.openHarnessTurn(
+            entry.process.sessionId,
+            entry.process.id,
+            event.providerTurnId,
+            event.reason,
+          );
+          if (opened === null) {
+            yield* Effect.logWarning(
+              "protocol host: the harness opened a turn while a sent turn still runs",
+            ).pipe(
+              Effect.annotateLogs({
+                processId: entry.process.id,
+                providerTurnId: event.providerTurnId,
+              }),
+            );
+          }
+          return;
+        }
         case "turn.completed": {
           yield* conversations.bindRunningProviderTurn(
             entry.process.sessionId,
@@ -218,7 +242,8 @@ export const ProtocolHostLive: Layer.Layer<
         }
         case "item.updated": {
           const turn = yield* lookupTurn(entry.process.sessionId, event.item.providerTurnId);
-          if (turn === null || turn.status !== "running") return;
+          // A background task outlives the turn that started it and keeps reporting there.
+          if (turn === null || (turn.status !== "running" && event.item.kind !== "task")) return;
           yield* conversations.upsertItem({
             ...event.item,
             sessionId: entry.process.sessionId,
@@ -429,9 +454,14 @@ export const ProtocolHostLive: Layer.Layer<
         const failed = yield* conversations.byTurnId(orphan.id);
         if (failed !== null) yield* input.hooks.onTurnCompleted(failed);
       }
-      const replayProviderTurnIds = processTurns.flatMap((turn) =>
-        turn.providerTurnId === null ? [] : [turn.providerTurnId],
-      );
+      // In the order they started, not their ordinals: a turn the harness opened on its own
+      // takes the next ordinal while a turn queued before it waits behind it.
+      const replayProviderTurnIds = processTurns
+        .toSorted(
+          (a, b) =>
+            (a.startedAt?.getTime() ?? 0) - (b.startedAt?.getTime() ?? 0) || a.ordinal - b.ordinal,
+        )
+        .flatMap((turn) => (turn.providerTurnId === null ? [] : [turn.providerTurnId]));
       const requests = yield* conversations.listRequests(input.process.sessionId, false);
       const resolvedProviderRequestIds = new Set(
         requests

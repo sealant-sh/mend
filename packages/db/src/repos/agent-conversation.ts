@@ -108,6 +108,11 @@ export interface OpenAgentRequestInput extends AgentEventRequest {
 }
 
 /** The durable output position after a fully projected NDJSON line boundary. */
+export interface AgentTaskActivity {
+  readonly running: number;
+  readonly lastUpdatedAt: Date | null;
+}
+
 export interface AgentProtocolCursor {
   readonly nextSequence: bigint;
 }
@@ -146,6 +151,19 @@ export class AgentConversationRepo extends Context.Service<
     /** Every queued or running turn, oldest first. */
     readonly openTurns: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<AgentTurn>>;
     readonly claimNextTurn: (processId: SessionProcessId) => Effect.Effect<AgentTurn | null>;
+    /**
+     * Record a turn the harness opened on its own, running. A turn of Mend's the process claimed
+     * but never sent goes back to the queue: the harness holds the conversation until its turn
+     * ends. Idempotent by provider turn id; null when another sent turn still runs.
+     */
+    readonly openHarnessTurn: (
+      sessionId: SessionId,
+      processId: SessionProcessId,
+      providerTurnId: string,
+      reason: string,
+    ) => Effect.Effect<AgentTurn | null>;
+    /** Put back a claimed turn the harness would not take yet (it was busy in its own turn). */
+    readonly requeueClaimedTurn: (id: AgentTurnId) => Effect.Effect<void>;
     readonly setProviderTurnId: (
       id: AgentTurnId,
       providerTurnId: string,
@@ -203,6 +221,11 @@ export class AgentConversationRepo extends Context.Service<
       pendingOnly: boolean,
     ) => Effect.Effect<ReadonlyArray<AgentRequest>>;
     readonly hasPendingRequests: (sessionId: SessionId) => Effect.Effect<boolean>;
+    /**
+     * The background tasks one agent process reported (`task` items): how many still run, and
+     * when any last changed.
+     */
+    readonly taskActivity: (processId: SessionProcessId) => Effect.Effect<AgentTaskActivity>;
     readonly prepareRequestResponse: (
       id: AgentRequestId,
       response: ResolveAgentRequestInput,
@@ -474,6 +497,112 @@ export const AgentConversationRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
       if (claimed !== null) yield* notify(claimed.sessionId);
       return claimed;
+    });
+
+    const openHarnessTurn = Effect.fn("AgentConversationRepo.openHarnessTurn")(function* (
+      sessionId: SessionId,
+      processId: SessionProcessId,
+      providerTurnId: string,
+      reason: string,
+    ) {
+      const opened = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            // The conversation lock orders the ordinal against submitTurn; the process lock
+            // orders the running turn against claimNextTurn.
+            yield* tx.execute(
+              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
+            );
+            yield* tx.execute(
+              sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-process:${processId}`}))`,
+            );
+            const [existing] = yield* tx
+              .select()
+              .from(agentTurns)
+              .where(
+                and(
+                  eq(agentTurns.sessionId, sessionId),
+                  eq(agentTurns.providerTurnId, providerTurnId),
+                ),
+              )
+              .limit(1);
+            if (existing !== undefined) return { turn: toTurn(existing), created: false };
+            // Claimed but never sent: the adapter refuses a send while the harness's turn is open.
+            yield* tx
+              .update(agentTurns)
+              .set({ status: "queued", startedAt: null })
+              .where(
+                and(
+                  eq(agentTurns.processId, processId),
+                  eq(agentTurns.status, "running"),
+                  isNull(agentTurns.providerTurnId),
+                ),
+              );
+            const [running] = yield* tx
+              .select({ id: agentTurns.id })
+              .from(agentTurns)
+              .where(and(eq(agentTurns.processId, processId), eq(agentTurns.status, "running")))
+              .limit(1);
+            if (running !== undefined) return null;
+            const [position] = yield* tx
+              .select({ value: max(agentTurns.ordinal) })
+              .from(agentTurns)
+              .where(eq(agentTurns.sessionId, sessionId));
+            const [row] = yield* tx
+              .insert(agentTurns)
+              .values({
+                id: AgentTurnId.make(crypto.randomUUID()),
+                sessionId,
+                processId,
+                ordinal: (position?.value ?? -1) + 1,
+                author: null,
+                origin: "harness",
+                input: reason,
+                status: "running",
+                providerTurnId,
+                startedAt: new Date(),
+              })
+              .returning();
+            if (row === undefined) return yield* Effect.die("harness turn insert returned no row");
+            return { turn: toTurn(row), created: true };
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (opened === null) return null;
+      if (opened.created) yield* notify(sessionId);
+      return opened.turn;
+    });
+
+    const taskActivity = Effect.fn("AgentConversationRepo.taskActivity")(function* (
+      processId: SessionProcessId,
+    ) {
+      const [row] = yield* db
+        .select({
+          running: sql<number>`(count(*) FILTER (WHERE ${agentItems.status} = 'in-progress'))::int`,
+          lastUpdatedAt: max(agentItems.updatedAt),
+        })
+        .from(agentItems)
+        .where(and(eq(agentItems.processId, processId), eq(agentItems.kind, "task")))
+        .pipe(Effect.orDie);
+      return { running: row?.running ?? 0, lastUpdatedAt: row?.lastUpdatedAt ?? null };
+    });
+
+    const requeueClaimedTurn = Effect.fn("AgentConversationRepo.requeueClaimedTurn")(function* (
+      id: AgentTurnId,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({ status: "queued", startedAt: null })
+        .where(
+          and(
+            eq(agentTurns.id, id),
+            eq(agentTurns.status, "running"),
+            isNull(agentTurns.providerTurnId),
+          ),
+        )
+        .returning({ sessionId: agentTurns.sessionId })
+        .pipe(Effect.orDie);
+      if (row !== undefined) yield* notify(row.sessionId);
     });
 
     const setProviderTurnId = Effect.fn("AgentConversationRepo.setProviderTurnId")(function* (
@@ -934,6 +1063,68 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (first !== undefined) yield* notify(first.sessionId);
     });
 
+    /**
+     * A process that ended took its background tasks with it: any it never reported ending read
+     * `stopped`, each at a fresh cursor so readers see the change. The session id, when any did.
+     */
+    const stopTasksOf = Effect.fn("AgentConversationRepo.stopTasksOf")(function* (
+      processId: SessionProcessId,
+    ) {
+      const [first] = yield* db
+        .select({ sessionId: agentItems.sessionId })
+        .from(agentItems)
+        .where(
+          and(
+            eq(agentItems.processId, processId),
+            eq(agentItems.kind, "task"),
+            eq(agentItems.status, "in-progress"),
+          ),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (first === undefined) return null;
+      const sessionId = first.sessionId;
+      yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.execute(
+              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
+            );
+            const running = yield* tx
+              .select({ id: agentItems.id })
+              .from(agentItems)
+              .where(
+                and(
+                  eq(agentItems.processId, processId),
+                  eq(agentItems.kind, "task"),
+                  eq(agentItems.status, "in-progress"),
+                ),
+              )
+              .orderBy(asc(agentItems.seq));
+            const [position] = yield* tx
+              .select({ value: max(agentItems.seq) })
+              .from(agentItems)
+              .where(eq(agentItems.sessionId, sessionId));
+            let seq = position?.value ?? 0;
+            const now = new Date();
+            for (const task of running) {
+              seq += 1;
+              yield* tx
+                .update(agentItems)
+                .set({
+                  seq,
+                  status: "completed",
+                  data: sql`jsonb_set(${agentItems.data}, '{status}', '"stopped"')`,
+                  updatedAt: now,
+                })
+                .where(eq(agentItems.id, task.id));
+            }
+          }),
+        )
+        .pipe(Effect.orDie);
+      return sessionId;
+    });
+
     const cancelOpenForProcess = Effect.fn("AgentConversationRepo.cancelOpenForProcess")(function* (
       processId: SessionProcessId,
     ) {
@@ -959,8 +1150,9 @@ export const AgentConversationRepoLive: Layer.Layer<
           ),
         )
         .pipe(Effect.orDie);
-      const first = rows[0];
-      if (first !== undefined) yield* notify(first.sessionId);
+      const stoppedTasks = yield* stopTasksOf(processId);
+      const sessionId = rows[0]?.sessionId ?? stoppedTasks;
+      if (sessionId !== null) yield* notify(sessionId);
     });
 
     const backfillConversation = Effect.fn("AgentConversationRepo.backfillConversation")(function* (
@@ -973,7 +1165,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .transaction((tx) =>
           Effect.gen(function* () {
             yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
+              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
             );
             const existing = yield* tx
               .select({ providerTurnId: agentTurns.providerTurnId })
@@ -1121,6 +1313,9 @@ export const AgentConversationRepoLive: Layer.Layer<
       listTurns,
       openTurns,
       claimNextTurn,
+      openHarnessTurn,
+      requeueClaimedTurn,
+      taskActivity,
       setProviderTurnId,
       bindRunningProviderTurn,
       failTurn,

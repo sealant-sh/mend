@@ -223,6 +223,7 @@ export const turnFixture = (patch: Partial<AgentTurnDto> = {}): AgentTurnDto => 
   processId: "process-1",
   ordinal: 1,
   author: "user-1",
+  origin: "request",
   input: "Fix the flaky login test",
   status: "completed",
   providerTurnId: null,
