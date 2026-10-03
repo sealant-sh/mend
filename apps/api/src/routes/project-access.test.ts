@@ -116,6 +116,10 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "piProfile.get",
   "piProfile.save",
   "piProfile.remove",
+  // The caller's own secret files, likewise (secret-files.test.ts).
+  "secretFiles.list",
+  "secretFiles.save",
+  "secretFiles.remove",
   "gitKeys.show",
   "gitKeys.init",
   "gitKeys.bridgeStatus",

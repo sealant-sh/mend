@@ -20,6 +20,7 @@ import {
   renderPairingSvg,
   useSecondTick,
 } from "#/components/pairing-qr";
+import { SecretFilesPanel } from "#/components/secret-files-panel";
 import { AppShell } from "#/components/shell";
 import { SlackSettings } from "#/components/slack-settings";
 import { WorkspaceEnvironmentEditor } from "#/components/workspace-environment-editor";
@@ -58,6 +59,7 @@ export const Route = createFileRoute("/settings")({
     await Promise.all([
       queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
       queryClient.ensureQueryData(trpc.settings.dotfiles.queryOptions()),
+      queryClient.ensureQueryData(trpc.settings.secretFiles.queryOptions()),
       queryClient.ensureQueryData(trpc.git.author.queryOptions()),
       queryClient.ensureQueryData(trpc.platform.sealantIdentity.queryOptions()),
       queryClient.ensureQueryData(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })),
@@ -97,6 +99,7 @@ function SettingsPage() {
         <ThemePanel />
         <OrganizationDefaults />
         <DotfilesPanel />
+        <SecretFilesPanel />
         <GitAccessSettingsPanel />
         <GitAuthorPanel />
         <ConnectedAccountsPanel />

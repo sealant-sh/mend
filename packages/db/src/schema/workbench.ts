@@ -48,6 +48,7 @@ import type {
   RunStatus,
   SealantRunId,
   SealantWorkspaceId,
+  SecretFileId,
   ServiceForwardId,
   ServiceId,
   ServiceObservationId,
@@ -637,6 +638,29 @@ export const userDotfiles = pgTable("user_dotfiles", {
   repository: jsonbOf(DotfilesRepository),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Each person's secret files (docs/adr/0010-secret-files.md), one row per path: the content is
+ * sealed at rest with the machine's secrets key (`@mend/store` SecretCipher, as project secrets
+ * are) and never returned by any API. The launch read is `sealedForLaunch`, decrypted once per
+ * launch and written into the executor's own home.
+ */
+export const userSecretFiles = pgTable(
+  "user_secret_files",
+  {
+    id: text().$type<SecretFileId>().primaryKey(),
+    userId: text().notNull(),
+    /** Home-relative POSIX path (`validateSecretFilePath`). */
+    path: text().notNull(),
+    /** The file's bytes as base64, sealed. */
+    sealedContents: text().notNull(),
+    bytes: integer().notNull(),
+    revision: integer().notNull().default(1),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique("user_secret_files_user_id_path_key").on(table.userId, table.path)],
+);
 
 /**
  * Skill libraries — user-scoped (identity, like dotfiles) and project-scoped

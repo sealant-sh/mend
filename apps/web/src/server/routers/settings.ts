@@ -1,11 +1,22 @@
 import { DotfilesRepositoryRequest, DotfilesSnapshotRequest } from "@mend/api-contracts";
 import { MendSettings, WorkspaceImage } from "@mend/domain";
+import { SecretFileUpload } from "@mend/domain/workbench";
+import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
 import { input, procedure, router } from "./trpc.ts";
 
-/** Settings · workspace environment · dotfiles. */
+/** Settings · workspace environment · dotfiles · the account's secret files. */
 export const settingsRouter = router({
+  secretFiles: procedure.query(({ ctx }) => run(ctx, (api) => api.secretFiles.list())),
+  putSecretFile: procedure
+    .input(input(SecretFileUpload))
+    .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.secretFiles.save({ payload }))),
+  deleteSecretFile: procedure
+    .input(input(Schema.Struct({ path: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.secretFiles.remove({ query: { path: i.path } })),
+    ),
   get: procedure.query(({ ctx }) => run(ctx, (api) => api.settings.get())),
   put: procedure
     .input(input(MendSettings))

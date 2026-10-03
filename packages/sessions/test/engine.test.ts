@@ -40,6 +40,7 @@ import {
   SettingsRepo,
   AgentMemoryRepo,
   PiProfilesRepo,
+  SecretFilesRepo,
   SkillsRepo,
   UserDotfilesRepo,
   UserGitAuthorRepo,
@@ -919,6 +920,17 @@ const piProfilesLayerOf = (
 ): Layer.Layer<PiProfilesRepo> =>
   Layer.succeed(PiProfilesRepo, {
     forUser: saved,
+    save: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+  });
+
+/** The owner's secret files (docs/adr/0010); none unless a test brings some, sealed as the stub cipher seals. */
+const secretFilesLayerOf = (
+  sealedForLaunch: SecretFilesRepo["Service"]["sealedForLaunch"] = () => Effect.succeed([]),
+): Layer.Layer<SecretFilesRepo> =>
+  Layer.succeed(SecretFilesRepo, {
+    sealedForLaunch,
+    list: () => Effect.succeed([]),
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
@@ -2594,6 +2606,7 @@ const withEngine = <A, E>(
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
     readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
     readonly agentMemoryLayer?: Layer.Layer<AgentMemoryRepo>;
+    readonly secretFilesLayer?: Layer.Layer<SecretFilesRepo>;
     /** The owner's dotfiles; none configured unless a test brings its own. */
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
     /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
@@ -2765,6 +2778,7 @@ const withEngine = <A, E>(
         options.skillsLayer ?? skillsStubLayer,
         options.piProfilesLayer ?? piProfilesLayerOf(),
         options.agentMemoryLayer ?? agentMemoryLayerOf(),
+        options.secretFilesLayer ?? secretFilesLayerOf(),
       ),
     ),
   );
@@ -3472,7 +3486,7 @@ describe("SessionEngine", () => {
           // The settle-path harvest (forked) clears the manifest before its capture fails
           // against the empty exec output; wait for its pack attempt before planting state.
           const packRan = () =>
-            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state.tgz"));
+            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state"));
           for (let i = 0; i < 400 && !packRan(); i++) {
             yield* Effect.sleep(Duration.millis(10));
           }
@@ -6095,6 +6109,7 @@ describe("SessionEngine", () => {
           skillsStubLayer,
           piProfilesLayerOf(),
           agentMemoryLayerOf(),
+          secretFilesLayerOf(),
         ),
       ),
     );
