@@ -3964,16 +3964,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logInfo("session engine: capture drain · saved · terminating").pipe(
               Effect.annotateLogs({ sessionId, workspaceId, reason }),
             );
-            // What the end put off reads the final head now, while the executor goes: a
-            // checkpoint and a harvest read the store, never the workspace.
-            const [terminated] = yield* Effect.all(
-              [
-                terminateWorkspace(sessionId, lookup.workspace),
-                // Saved on the store's seal with no answer from the executor: the head is sealed.
-                runDeferred(workspaceId, reading ?? "sealed"),
-              ],
-              { concurrency: 2 },
-            );
+            // What the end put off reads the final head now, before the executor goes and its
+            // lease with it: a checkpoint and a harvest read the store, never the workspace, but
+            // a successor launched after the release could register a newer head under them
+            // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
+            // executor: the head is sealed.
+            yield* runDeferred(workspaceId, reading ?? "sealed");
+            const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.retained !== null) {
               // Mend read it saved; the platform does not confirm it and keeps the executor for
               // recovery. That is its word to keep: the drain stays, kept, and asks again.
@@ -4073,20 +4070,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 drains.delete(workspaceId);
               }),
             ),
-            // A drain that ended without a completed final flush (in use, kept, gone): what was
-            // put off for it runs on the drain's last reading, or with a flush of its own —
-            // beside the tail, not in it, so the reaper's next kept round is not held up by a
-            // harvest that asks a silent executor.
-            Effect.tap(() =>
+            // A drain that ended without a completed final flush: what was put off for it runs
+            // on the drain's last reading — beside the tail, not in it, so the reaper's next kept
+            // round is not held up by a harvest that asks a silent executor. A workspace found in
+            // use was not flushed at all: that work flushes for itself, as it did (`none`).
+            Effect.tap((outcome) =>
               Effect.suspend(() => {
                 // Taken now, before the tail goes on and takes it itself with no reading.
                 const taken = takeDeferred(workspaceId);
+                const word: DrainWord =
+                  outcome === "in-use" ? "none" : (lastReadings.get(workspaceId) ?? "refused");
                 return taken.length === 0
                   ? Effect.void
-                  : Effect.forkIn(
-                      runTaken(workspaceId, taken, lastReadings.get(workspaceId) ?? "refused"),
-                      scope,
-                    );
+                  : Effect.forkIn(runTaken(workspaceId, taken, word), scope);
               }),
             ),
             Effect.ensuring(Effect.sync(() => lastReadings.delete(workspaceId))),
