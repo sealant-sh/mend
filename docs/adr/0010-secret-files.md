@@ -56,10 +56,13 @@ base64 (`workspace-files.ts`).
 3. **Written at every launch the person owns, before the harness starts,** in both stores through
    the platform's exec, after the harness home relocation and beside skills, pi profile and memory:
    the cold launch, the claimed standby, and a run started in a retained executor, which may predate
-   a file added since. The server unseals the set once per launch and holds the bytes only for that
-   write. Each file lands 0600, its directory made 0700 when missing, staged beside the target and
-   renamed into place. Best-effort like skills: an agent without its files still starts, and the
-   session line says which were not written and why.
+   a file added since. Only into a home that is the person's: in capture mode a worktree has one
+   executor, and a session joining a worktree another person's session holds runs in that person's
+   executor, so it receives no secret files of its own there, and the log says so. The server
+   unseals the set once per launch and holds the bytes only for that write. Each file lands 0600,
+   its directory made 0700 when missing, staged beside the target and renamed into place.
+   Best-effort like skills: an agent without its files still starts, and the session line says which
+   were not written and why.
 
 4. **Never captured, by construction and by refusal.**
    - By construction: a secret file goes into the executor's own `$HOME`, which no capture root,
@@ -105,6 +108,9 @@ base64 (`workspace-files.ts`).
   memory do, and are not persisted by the platform. A logger of exec argv would see them; the SDK
   has none, and the launch-time channel is requested.
 - A file on a path dotfiles turned into a symlink is not written; the session summary names it.
+- In capture mode, the executor of a leased worktree is one person's home. A second person's session
+  joining it runs beside the holder's files and without its own; this was already true of the
+  holder's provider logins, and secret files do not widen it.
 - A lost `secrets.key` loses project secrets and secret files alike: enter them again.
 - Running sessions keep the files they have; a removed file is removed from the next launch on.
 
@@ -116,3 +122,5 @@ base64 (`workspace-files.ts`).
   table, rather than importing the sessions package into the domain.
 - 2026-10-03: a retained executor receives the set again before each run, so a replace reaches a
   long-lived session's next run without a relaunch.
+- 2026-10-03: a join into another person's executor receives no secret files there. Writing the
+  joiner's files into a home the holder's agent reads would hand them to the holder.

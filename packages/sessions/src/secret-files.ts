@@ -51,8 +51,13 @@ const TARGET_FUNCTION =
   `if [ "$st_phys" != "$D" ]; then printf 'refused %s · its directory is really %s\\n' "$st_rel" "$st_phys"; return 1; fi; ` +
   "return 0; }; ";
 
-/** Decode `$2` (base64) into the staging file beside `$T`, 0600; on failure, remove it and say so. */
+/**
+ * Decode `$2` (base64) into the staging file beside `$T`, 0600; on failure, remove it and say so.
+ * Whatever sits at the staging path first goes (a symlink planted there would otherwise be written
+ * through): `rm -f` removes a link, never what it points at.
+ */
 const START_PART =
+  `rm -f "$T${SECRET_FILE_PART_SUFFIX}"; ` +
   `printf '%s' "$2" | (umask 077; base64 -d > "$T${SECRET_FILE_PART_SUFFIX}") || ` +
   `{ rm -f "$T${SECRET_FILE_PART_SUFFIX}"; printf 'refused %s · could not write\\n' "$1"; false; }`;
 

@@ -40,7 +40,12 @@ mend secrets            # each file's path in the workspace, size, and when it l
 mend secrets rm .npmrc
 ```
 
-Sessions launched after a change receive the new set. A running session keeps what it has.
+Sessions launched after a change receive the new set. A running session keeps what it has until its
+next run in the same workspace.
+
+One exception: on the captured session store a worktree has one workspace, so a session you start in
+a worktree where someone else's session is live runs in their workspace. It receives none of your
+secret files there, and the session log says so.
 
 ## Never captured
 

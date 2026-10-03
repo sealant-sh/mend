@@ -9493,6 +9493,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logInfo("session engine: capture mode · joining the lease holder").pipe(
               Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }),
             );
+            // Whose home the join runs in (docs/adr/0010): unknown reads as another person's.
+            const holderOwner = yield* sessions.byId(SessionId.make(holder.sessionId)).pipe(
+              Effect.map((held) => held.ownerUserId),
+              Effect.orElseSucceed(() => null),
+            );
             return yield* launchInRetainedWorkspace(
               sessionId,
               argv,
@@ -9504,6 +9509,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               protocolStart,
               protocolAuthor,
               holder.workspace,
+              holderOwner,
             ).pipe(
               Effect.catchTag("SessionNotLiveError", (error) =>
                 Effect.fail(
@@ -10690,6 +10696,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolAuthor: string | null = null,
           /** Capture mode: the lease holder's workspace, where a join runs as one more process. */
           workspaceOverride: Workspace | null = null,
+          /**
+           * With `workspaceOverride`: who owns the lease holder's session, so the home it writes
+           * into is known to be theirs (docs/adr/0010): a join into another person's executor
+           * receives no secret files of its own there.
+           */
+          executorOwnerUserId: string | null = null,
         ) {
           const session = yield* sessions.byId(sessionId);
           const project = yield* projects.byId(session.projectId);
@@ -10733,14 +10745,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // The owner's secret files again (docs/adr/0010): a retained executor may predate a
           // file the owner added or replaced since its launch, and this run reads the home as it
-          // is now. A workspace is one session's, so these are always its owner's own.
-          yield* deliverSecretFiles(session, workspace).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("session engine: secret files were not written").pipe(
-                Effect.annotateLogs({ sessionId, message: error.message }),
+          // is now. Only into a home that is the owner's: the session's own executor, or a lease
+          // holder's whose session the same person owns. A join into another person's executor
+          // writes nothing, and the log says so.
+          const homeIsOwners =
+            workspaceOverride === null ||
+            (executorOwnerUserId !== null && executorOwnerUserId === session.ownerUserId);
+          if (homeIsOwners) {
+            yield* deliverSecretFiles(session, workspace).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: secret files were not written").pipe(
+                  Effect.annotateLogs({ sessionId, message: error.message }),
+                ),
               ),
-            ),
-          );
+            );
+          } else if (session.ownerUserId !== null) {
+            yield* Effect.logInfo(
+              "session engine: secret files not written · the executor is another person's",
+            ).pipe(Effect.annotateLogs({ sessionId }));
+          }
           const interactiveShell = argv[0] === "bash";
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
