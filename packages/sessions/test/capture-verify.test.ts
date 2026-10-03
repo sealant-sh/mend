@@ -4235,6 +4235,13 @@ describeSeals(
       expect(first.seal).toEqual({ state: "recorded" });
       // Before: the seal checks read every pack, and the read-back read every one again.
       for (const key of capture.bulkPacks) expect(bucketReads.whole.get(key)).toBe(1);
+      // Each git pack is copied down once, by the register's verifier, which hashes it and runs
+      // `index-pack --verify` beside its index. The read-back reads the index again and compares
+      // it, never the pack (2026-10-02: a 627 MB pack was copied down twice in one Stop).
+      for (const key of capture.built.manifest.sections.git.packs) {
+        expect(bucketReads.whole.get(key) ?? 0).toBeLessThanOrEqual(1);
+        expect(bucketReads.whole.get(`${key}.idx`)).toBeGreaterThanOrEqual(1);
+      }
       // The mark rests on the register's own reads: not before the bucket went quiet.
       const marked = world.memory.seals.get(`${at.worktreeId}:${at.epoch}`)?.reverifiedAt;
       expect(marked?.getTime()).toBeGreaterThanOrEqual(quietSince);

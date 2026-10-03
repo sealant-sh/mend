@@ -7,7 +7,13 @@ import { Effect, Layer } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
-import { type CaptureManifest, captureKeys, packIdxKeyOf, sha256Hex } from "../src/captures.ts";
+import {
+  type CaptureManifest,
+  captureKeys,
+  packIdxKeyOf,
+  sha256Hex,
+  storedCaptureProblem,
+} from "../src/captures.ts";
 import {
   GitOpsRunner,
   GitOpsRunnerLive,
@@ -245,6 +251,77 @@ describe("GitOpsRunner", () => {
     expect(result.head2).toBe(feat2);
     expect(result.diff).toBe(sh(repo, ["diff", "--find-renames", featSha, feat2]));
     expect(result.packs).toBe(2);
+  });
+
+  it("2026-10-02: a seal's read-back reuses the pack the runner installed, and reads it again when its index changed", async () => {
+    const keys = captureKeys("wt-proof", 1);
+    const packed = packRepo(repo, keys, ["refs/heads/main"]);
+    const manifest = buildManifest({
+      worktreeId: "wt-proof",
+      n: 1,
+      parent: null,
+      epoch: 1,
+      git: gitSection([packed.key], { "refs/heads/main": mainSha }, "refs/heads/main"),
+    }).manifest;
+    const manifestBytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+    const manifestKey = keys.manifest(sha256Hex(manifestBytes));
+    // Whole reads of the pack: a copy down for `index-pack --verify`.
+    const wholeReads: Array<string> = [];
+    const counting = Layer.effect(
+      BlobStore,
+      Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+        ...inner,
+        getStream: (key: string) => {
+          if (key === packed.key) wholeReads.push(key);
+          return inner.getStream(key);
+        },
+      })),
+    ).pipe(Layer.provide(BlobStoreFsLive(path.join(scratch, "blobs-proof"))));
+    const runnerLayer = GitOpsRunnerLive.pipe(
+      Layer.provide(Store.layer),
+      Layer.provideMerge(StoreConfig.layerFor(path.join(scratch, "store-proof"))),
+      Layer.provideMerge(counting),
+    );
+    const runProof = <A, E>(effect: Effect.Effect<A, E, GitOpsRunner | BlobStore>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(runnerLayer)));
+    const readBack = (sinceMs: number) =>
+      Effect.gen(function* () {
+        const proofs = { sinceMs, usedFromMs: Date.now() };
+        const problem = yield* storedCaptureProblem(manifestKey, { proofs });
+        return { problem, usedFromMs: proofs.usedFromMs };
+      });
+    const before = Date.now();
+    const result = await runProof(
+      Effect.gen(function* () {
+        yield* upload(new Map([...packed.objects, [manifestKey, manifestBytes]]));
+        const runner = yield* GitOpsRunner;
+        yield* runner.ensure({ projectId: "proj-proof", manifest, storeRefs: {} });
+        const installed = wholeReads.length;
+        // Proven since before the install: the pack is not copied down again.
+        const reused = yield* readBack(before);
+        const afterReuse = wholeReads.length;
+        // Nothing could replace it only since later than the install: copied down and verified.
+        const late = yield* readBack(Date.now() + 1);
+        const afterLate = wholeReads.length;
+        // Another index stored beside it: the pack is checked against it in full, and refused.
+        const blobs = yield* BlobStore;
+        const idx = packed.objects.get(packIdxKeyOf(packed.key)) ?? new Uint8Array();
+        const other = Buffer.from(idx);
+        other[other.length - 1] = (other[other.length - 1] ?? 0) ^ 0xff;
+        yield* blobs.put(packIdxKeyOf(packed.key), new Uint8Array(other));
+        const changed = yield* readBack(before);
+        return { installed, reused, afterReuse, late, afterLate, changed, wholeReads };
+      }),
+    );
+    expect(result.installed).toBe(1);
+    expect(result.reused.problem).toBeNull();
+    expect(result.reused.usedFromMs).toBeLessThanOrEqual(Date.now());
+    expect(result.reused.usedFromMs).toBeGreaterThanOrEqual(before);
+    expect(result.afterReuse).toBe(1);
+    expect(result.late.problem).toBeNull();
+    expect(result.afterLate).toBe(2);
+    expect(result.changed.problem).toMatch(/does not index|does not checksum|indexes another/);
+    expect(result.wholeReads.length).toBe(3);
   });
 
   it("refuses a pack whose bytes do not match its key, and one that fails index-pack", async () => {
