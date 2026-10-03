@@ -4359,6 +4359,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* stop(sessionId, null);
           const running = drains.get(workspaceId);
           if (running !== undefined) yield* Deferred.await(running);
+          // What the stop put off runs before the lease goes, on the evidence the drain kept,
+          // every piece waited for: a harvest still reading when a successor registers would
+          // read the successor's head (Astra review, 2026-10-03).
+          yield* runDeferred(
+            workspaceId,
+            deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
+            null,
+            true,
+          );
           const lookup = yield* lookupWorkspace(workspaceId);
           if (lookup.kind === "unknown") {
             // Nothing is known gone and nothing was stopped: the lease stays with the executor.
@@ -6476,6 +6485,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
               // Whatever holds it is in use: no drain is under way, nothing reads `saving`.
               if (session.captureDrain !== null && !drains.has(workspaceId)) {
+                // Not flushed at all: what the Stop put off flushes for itself (`none`), detached,
+                // before the intent goes, as in `runDrain` (Astra review, 2026-10-03).
+                yield* runDeferredDetached(workspaceId, "none");
                 yield* endDrain(sessionId);
               }
               return "in-use" as const;
@@ -11117,20 +11129,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         const workspaceId = session.sealantWorkspaceId;
         // The tail below drains the workspace: the stop's checkpoint reads that final flush's
-        // head, and this answer does not wait for a flush of its own.
-        const deferred =
-          workspaceId !== null &&
-          (yield* endsAtFinal(workspaceId)) &&
-          deferToFinal(workspaceId, (reading) =>
-            Effect.gen(function* () {
-              yield* tryCheckpoint(session, "user-mark", cursor, observedOf(reading));
-              yield* refreshChangeHead(session).pipe(Effect.ignore);
-            }),
-          );
-        if (!deferred) {
+        // head, and this answer does not wait for a flush of its own (decision 50). Not so (the
+        // workspace held by more than what ends): the mark is taken now, flush and all.
+        const atFinal = workspaceId !== null && (yield* endsAtFinal(workspaceId));
+        const markNow = Effect.gen(function* () {
           yield* tryCheckpoint(session, "user-mark", cursor);
           yield* refreshChangeHead(session).pipe(Effect.ignore);
-        }
+        });
+        if (!atFinal) yield* markNow;
         // The workspace outlives the PTY just long enough to harvest, then
         // dies (unless a lease holds it; in capture mode once it has saved);
         // forked so a stop request answers immediately. If this process dies
@@ -11140,26 +11146,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // session for good (Astra review, 2026-10-03).
         yield* Effect.uninterruptible(
           Effect.suspend(() => {
+            // The mark is put off, and the tail marked and forked, in this one step: put off
+            // but never forked, nothing would run it. Admission refused (a drain closed the
+            // queue meanwhile): the tail takes the mark itself first, flush and all.
+            const deferred =
+              atFinal &&
+              workspaceId !== null &&
+              deferToFinal(workspaceId, (reading) =>
+                Effect.gen(function* () {
+                  yield* tryCheckpoint(session, "user-mark", cursor, observedOf(reading));
+                  yield* refreshChangeHead(session).pipe(Effect.ignore);
+                }),
+              );
             stopTails.add(sessionId);
-            return Effect.forkIn(
-              (ended.length > 0
+            const tail = (
+              ended.length > 0
                 ? Effect.forEach(ended, (agent) => finishAgentProcess(agent, null, true, true), {
                     discard: true,
                   })
                 : sweepWorkspace(sessionId, true)
-              ).pipe(
-                // No drain holds it (none ran, or one ran the queue already): what is still put off
-                // runs now, as it would have before. A drain that kept the executor leaves it for the
-                // round that saves.
-                Effect.ensuring(
-                  Effect.suspend(() =>
-                    workspaceId === null || queueHeld.has(workspaceId)
-                      ? Effect.void
-                      : runDeferredDetached(workspaceId, "none").pipe(Effect.asVoid),
-                  ),
+            ).pipe(
+              // No drain holds it (none ran, or one ran the queue already): what is still put off
+              // runs now, as it would have before. A drain that kept the executor leaves it for the
+              // round that saves.
+              Effect.ensuring(
+                Effect.suspend(() =>
+                  workspaceId === null || queueHeld.has(workspaceId)
+                    ? Effect.void
+                    : runDeferredDetached(workspaceId, "none").pipe(Effect.asVoid),
                 ),
-                Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
               ),
+              Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
+            );
+            return Effect.forkIn(
+              atFinal && !deferred ? Effect.andThen(markNow, tail) : tail,
               scope,
             );
           }),
