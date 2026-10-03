@@ -49,9 +49,21 @@ export const LandedPullRequest = Schema.Struct({
   number: Schema.Int,
   url: Schema.String,
   state: PullRequestState,
+  /** Its title as `gh` last reported it; null when recorded before Mend kept it. */
+  title: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   observedAt: Timestamp,
 });
 export type LandedPullRequest = typeof LandedPullRequest.Type;
+
+/**
+ * The pull request a list row shows for a change: the newest one any landing recorded, as `gh`
+ * last reported it. `adopted` when it was opened outside Mend (by the agent, or by hand).
+ */
+export const ChangePullRequest = Schema.Struct({
+  ...LandedPullRequest.fields,
+  adopted: Schema.Boolean,
+});
+export type ChangePullRequest = typeof ChangePullRequest.Type;
 
 /**
  * One landing of a change ("What Mend records and shows"). The checkpoint is what was landed; a

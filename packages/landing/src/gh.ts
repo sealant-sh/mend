@@ -25,7 +25,7 @@ const gh = (args: ReadonlyArray<string>): ReadonlyArray<string> => [
  * repository say whether a pull request is from origin's own branch or from a fork.
  */
 export const PULL_REQUEST_FIELDS =
-  "number,url,state,title,body,headRefName,headRefOid,isCrossRepository,headRepositoryOwner";
+  "number,url,state,title,body,headRefName,headRefOid,isCrossRepository,headRepositoryOwner,createdAt";
 
 /** How many pull requests a lookup reads: enough to see past a fork's same-named branch. */
 const LIST_LIMIT = 20;
@@ -152,6 +152,7 @@ const GhPullRequest = Schema.Struct({
   headRepositoryOwner: Schema.NullOr(Schema.Struct({ login: Schema.String })).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  createdAt: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 
 /** A pull request as `gh` showed it, in Mend's words for its state. */
@@ -169,7 +170,15 @@ export interface PullRequestView {
   readonly crossRepository: boolean;
   /** Who owns the repository its head is in, when `gh` said. */
   readonly headOwner: string | null;
+  /** When it was opened, when `gh` said. */
+  readonly createdAt: Date | null;
 }
+
+const dateOf = (value: string | null): Date | null => {
+  if (value === null) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
 
 const toView = (wire: typeof GhPullRequest.Type): PullRequestView => ({
   number: wire.number,
@@ -181,6 +190,7 @@ const toView = (wire: typeof GhPullRequest.Type): PullRequestView => ({
   headRefOid: wire.headRefOid,
   crossRepository: wire.isCrossRepository,
   headOwner: wire.headRepositoryOwner?.login ?? null,
+  createdAt: dateOf(wire.createdAt),
 });
 
 const decodeView = Schema.decodeUnknownOption(Schema.fromJsonString(GhPullRequest));
@@ -214,6 +224,60 @@ export const createdUrl = (stdout: string): string | null =>
     .split("\n")
     .map((line) => line.trim())
     .findLast((line) => /^https:\/\/\S+\/pull\/\d+$/.test(line)) ?? null;
+
+// ─── What the agent ran ─────────────────────────────────────────────────────
+
+/** One thing the agent did in a turn, as much of it as the opened-pull-request scan reads. */
+export interface TurnItemText {
+  readonly kind: string;
+  readonly title: string | null;
+  readonly text: string | null;
+  readonly data: unknown;
+}
+
+const GH_PR_CREATE = /\bgh\s+pr\s+create\b/;
+const PULL_REQUEST_URL = /https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/\d+/g;
+
+const textOf = (item: TurnItemText): string =>
+  [item.title ?? "", item.text ?? "", JSON.stringify(item.data ?? null)].join("\n");
+
+/**
+ * The pull request URLs a turn mentions, when one of its commands ran `gh pr create`
+ * (docs/adr/0007-landing.md, "Pull requests opened outside Mend"); empty when none did. The URL
+ * is read from the whole turn because not every harness records a command's output: Claude's
+ * agent says the URL in its own message. Whether a URL is the change's pull request is for the
+ * look to decide, by the repository and when `gh` says it was opened.
+ */
+export const pullRequestUrlsOpenedIn = (
+  items: ReadonlyArray<TurnItemText>,
+): ReadonlyArray<string> => {
+  const ran = items.some(
+    (item) =>
+      (item.kind === "command-execution" || item.kind === "tool-call") &&
+      GH_PR_CREATE.test(textOf(item)),
+  );
+  if (!ran) return [];
+  const urls = new Set<string>();
+  for (const item of items) {
+    for (const match of textOf(item).matchAll(PULL_REQUEST_URL)) urls.add(match[0]);
+  }
+  return [...urls];
+};
+
+/** The numbers of the URLs that name a pull request of `repository`, newest first. */
+export const pullRequestNumbersIn = (
+  repository: GitHubRepository,
+  urls: ReadonlyArray<string>,
+): ReadonlyArray<number> => {
+  const prefix = `https://github.com/${repository.slug}/pull/`.toLowerCase();
+  const numbers = new Set<number>();
+  for (const url of urls) {
+    if (!url.toLowerCase().startsWith(prefix)) continue;
+    const number = Number(url.slice(prefix.length));
+    if (Number.isSafeInteger(number) && number > 0) numbers.add(number);
+  }
+  return [...numbers].toSorted((left, right) => right - left);
+};
 
 const nonEmptyLines = (text: string): ReadonlyArray<string> =>
   text

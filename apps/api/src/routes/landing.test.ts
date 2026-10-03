@@ -50,6 +50,7 @@ const PR: LandedPullRequest = {
   number: 412,
   url: "https://github.com/acme/api/pull/412",
   state: "open",
+  title: null,
   observedAt: NOW,
 };
 

@@ -31,6 +31,7 @@ import {
   type ChangeFacts,
   heldBack,
   planTurn,
+  pullRequestUrlsOpenedIn,
   recordedIntent,
   type HeldBack,
   type SkippedWhy,
@@ -38,7 +39,7 @@ import {
 } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
 import { asSealantUser } from "@mend/sealant";
-import { SessionEngine, WorktreeReads } from "@mend/sessions";
+import { SessionEngine, WorkspaceGitHooks, WorktreeReads } from "@mend/sessions";
 import { Cause, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
 
 import { OwnerLanding } from "./owner-landing.ts";
@@ -136,6 +137,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     const lander = yield* OwnerLanding;
     const network = yield* NetworkConfig;
     const engine = yield* SessionEngine;
+    const hooks = yield* WorkspaceGitHooks;
     const now = options.now ?? Date.now;
     const flushAttempts = options.flushAttempts ?? FLUSH_ATTEMPTS;
     const flushPause = options.flushPause ?? FLUSH_PAUSE;
@@ -363,6 +365,25 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
       return yield* land(session, project, owner, turn, decision.requested);
     });
 
+    /**
+     * A turn that ran `gh pr create` has the pull request looked for now, before it is decided:
+     * the session shows it as soon as the turn ends, and a landing this turn makes updates it
+     * instead of opening a second (docs/adr/0007-landing.md, "Pull requests opened outside Mend").
+     */
+    const lookForOpened = (session: Session, turn: AgentTurn) =>
+      Effect.gen(function* () {
+        // History is not looked at: its pull request, if any, was looked for long ago.
+        if (now() - (turn.endedAt ?? turn.createdAt).getTime() > TURN_FRESHNESS_MS) return;
+        const urls = pullRequestUrlsOpenedIn(yield* conversations.turnItems(turn.id));
+        if (urls.length === 0) return;
+        yield* hooks.pullRequestOpened({
+          sessionId: session.id,
+          worktreeId: session.worktreeId,
+          urls,
+          since: turn.startedAt ?? turn.createdAt,
+        });
+      });
+
     /** A change that could not be read is not landed, and says nothing. */
     const unreadable = (sessionId: SessionId, turn: AgentTurn, cause: string) =>
       Effect.logWarning("automatic landing: the change could not be read").pipe(
@@ -384,6 +405,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
       for (const candidate of open) {
         const turn = yield* conversations.claimTurnLanding(candidate.id);
         if (turn === null) continue; // another worker has it, or it moved
+        yield* lookForOpened(session, turn);
         const decision = yield* decide(session, turn, turns).pipe(
           Effect.catchTags({
             ProjectNotFoundError: () => Effect.succeed(skippedFor("the project is gone")),
@@ -440,6 +462,7 @@ export const AutomaticLandingLive: Layer.Layer<
   | SettingsRepo
   | SlackInstallsRepo
   | SlackThreadsRepo
+  | WorkspaceGitHooks
   | WorktreeChangesRepo
   | WorktreeReads
   | WorktreesRepo

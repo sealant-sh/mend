@@ -24,6 +24,7 @@ const pullRequest = (state: LandedPullRequest["state"]): LandedPullRequest => ({
   number: 412,
   url: "https://github.com/acme/api/pull/412",
   state,
+  title: null,
   observedAt: EARLIER,
 });
 

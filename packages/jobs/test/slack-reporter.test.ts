@@ -242,6 +242,7 @@ const landingOf = (
             number: options.pullRequest,
             url: `https://github.com/acme/billing-api/pull/${options.pullRequest}`,
             state: "open",
+            title: null,
             observedAt: options.createdAt ?? NOW,
           },
     outcome,

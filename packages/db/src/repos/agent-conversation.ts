@@ -194,6 +194,8 @@ export class AgentConversationRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<AgentItem>>;
     /** What the agent said in one turn: its messages and plans, in conversation order. */
     readonly turnMessages: (turnId: AgentTurnId) => Effect.Effect<ReadonlyArray<AgentItem>>;
+    /** Everything the agent said and did in one turn, in conversation order. */
+    readonly turnItems: (turnId: AgentTurnId) => Effect.Effect<ReadonlyArray<AgentItem>>;
     readonly openRequest: (input: OpenAgentRequestInput) => Effect.Effect<AgentRequest>;
     readonly byRequestId: (id: AgentRequestId) => Effect.Effect<AgentRequest | null>;
     readonly listRequests: (
@@ -714,6 +716,16 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toItem);
     });
 
+    const turnItems = Effect.fn("AgentConversationRepo.turnItems")(function* (turnId: AgentTurnId) {
+      const rows = yield* db
+        .select()
+        .from(agentItems)
+        .where(eq(agentItems.turnId, turnId))
+        .orderBy(asc(agentItems.createdAt), asc(agentItems.id))
+        .pipe(Effect.orDie);
+      return rows.map(toItem);
+    });
+
     const openRequest = Effect.fn("AgentConversationRepo.openRequest")(function* (
       input: OpenAgentRequestInput,
     ) {
@@ -1119,6 +1131,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       upsertItem,
       listItems,
       turnMessages,
+      turnItems,
       openRequest,
       byRequestId,
       listRequests,

@@ -633,6 +633,7 @@ describe("landing in the thread", () => {
               number: options.pullRequest.number,
               url: `https://github.com/acme/api/pull/${options.pullRequest.number}`,
               state: options.pullRequest.state,
+              title: null,
               observedAt: AT,
             },
       outcome,

@@ -74,6 +74,7 @@ const openPullRequest = {
   number: 412,
   url: "https://github.com/acme/app/pull/412",
   state: "open" as const,
+  title: null,
   observedAt: new Date("2026-09-24T11:58:00Z"),
 };
 

@@ -407,6 +407,7 @@ const testLayer = (world: TestWorld) => {
     upsertItem: () => Effect.die("not in test"),
     listItems: () => Effect.succeed([]),
     turnMessages: () => Effect.succeed([]),
+    turnItems: () => Effect.succeed([]),
     openRequest: () => Effect.die("not in test"),
     byRequestId: () => Effect.succeed(null),
     listRequests: () => Effect.succeed([]),

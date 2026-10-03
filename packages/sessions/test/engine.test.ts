@@ -786,6 +786,7 @@ const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
   upsertItem: () => Effect.die("not in test"),
   listItems: () => Effect.succeed([]),
   turnMessages: () => Effect.succeed([]),
+  turnItems: () => Effect.succeed([]),
   openRequest: () => Effect.die("not in test"),
   byRequestId: () => Effect.succeed(null),
   listRequests: () => Effect.succeed([]),
@@ -6403,6 +6404,7 @@ describe("SessionEngine workspace git hooks", () => {
         Effect.sync(
           () => void heard.push({ sessionId: event.sessionId, stoppedYet: stopped.length }),
         ),
+      pullRequestOpened: () => Effect.void,
       register: () => Effect.void,
       landRequested: () => Effect.succeed({ landed: false, lines: [] }),
       registerLanding: () => Effect.void,
@@ -6440,6 +6442,7 @@ describe("SessionEngine workspace git hooks: pushes", () => {
     const hooks = Layer.succeed(WorkspaceGitHooks, {
       branchesPushed: (event) => Effect.sync(() => void pushed.push(event.worktreeId)),
       agentEnded: () => Effect.void,
+      pullRequestOpened: () => Effect.void,
       register: () => Effect.void,
       landRequested: () => Effect.succeed({ landed: false, lines: [] }),
       registerLanding: () => Effect.void,

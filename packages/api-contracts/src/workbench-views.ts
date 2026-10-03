@@ -8,6 +8,7 @@ import {
 import { Timestamp } from "@mend/domain";
 import {
   AutomationChoice,
+  ChangePullRequest,
   GitAuthMode,
   GitAuthorSource,
   ProjectVisibility,
@@ -103,6 +104,13 @@ export class SessionAnnotation extends Schema.Class<SessionAnnotation>("SessionA
    * (docs/SESSION-SERVICES.md). Older servers omit it.
    */
   liveServices: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  /**
+   * The change's newest pull request, as `gh` last reported it (docs/adr/0007-landing.md): what
+   * a list links to. Read from Mend's own record, never from GitHub. Older servers omit it.
+   */
+  pullRequest: Schema.NullOr(ChangePullRequest).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 }) {}
 
 /**
@@ -121,6 +129,10 @@ export class WorktreeAnnotation extends Schema.Class<WorktreeAnnotation>("Worktr
   pendingFollowUp: Schema.Boolean,
   /** Newest live agent process across the worktree's sessions, else newest ever; null before any launch. */
   currentAgent: Schema.NullOr(SessionProcess),
+  /** As on `SessionAnnotation`: the change's newest pull request. Older servers omit it. */
+  pullRequest: Schema.NullOr(ChangePullRequest).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 }) {}
 
 /** A project and its visible workbench history. */

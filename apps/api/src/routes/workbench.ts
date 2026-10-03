@@ -617,6 +617,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               currentAgent: currentAgentProcess(
                 rows.filter((process) => memberIds.has(process.sessionId)),
               ),
+              pullRequest: facts?.pullRequest ?? null,
             });
           }),
           capabilities: new ProjectCapabilities({

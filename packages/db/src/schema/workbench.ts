@@ -1984,6 +1984,8 @@ export const changeLandings = pgTable(
     pullRequestNumber: integer(),
     pullRequestUrl: text(),
     pullRequestState: text().$type<PullRequestState>(),
+    // Its title as `gh` last reported it (0104); null on rows recorded before.
+    pullRequestTitle: text(),
     prObservedAt: timestamp({ mode: "date", withTimezone: true }),
     // The pull request's head is in another repository, and whose (0069): an adopted fork pull
     // request, which Mend never updates.
@@ -2001,6 +2003,10 @@ export const changeLandings = pgTable(
   (table) => [
     index("change_landings_change_created_idx").on(table.changeId, table.createdAt.desc()),
     index("change_landings_session_idx").on(table.sessionId, table.createdAt),
+    // A project's lists read each change's newest pull request (0104).
+    index("change_landings_project_pull_request_idx")
+      .on(table.projectId, table.changeId, table.createdAt.desc())
+      .where(sql`pull_request_number IS NOT NULL`),
   ],
 );
 
