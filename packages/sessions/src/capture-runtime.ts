@@ -93,6 +93,12 @@ export interface CaptureDrainPolicyShape {
   readonly keptRetryFirst: Duration.Duration;
   readonly keptRetryMax: Duration.Duration;
   /**
+   * How long one piece of work a Stop put off to the final flush (its checkpoint, a harvest) may
+   * run once the flush is saved: past it the piece is put back for the next round and the executor
+   * kept, so a store that does not answer never holds a saved executor (Astra review, 2026-10-03).
+   */
+  readonly deferredWorkLimit: Duration.Duration;
+  /**
    * How often the reaper reads a running executor's capture status (nothing flushed): what shows
    * a failing snap while it fails. MEND_CAPTURE_STATUS_SECONDS.
    */
@@ -134,6 +140,7 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   drainEstimateSeconds: DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS,
   keptRetryFirst: Duration.seconds(10),
   keptRetryMax: Duration.minutes(5),
+  deferredWorkLimit: Duration.minutes(2),
   statusInterval: Duration.seconds(45),
   statusMinInterval: Duration.seconds(10),
   leaseWait: Duration.minutes(30),

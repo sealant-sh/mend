@@ -1539,3 +1539,83 @@ Mend-side details the decision record left open, decided in this ADR:
       once (the proofs are in memory). The walk of the tree and the register's restorability check
       are still one thread each. An executor of an older daemon, an object over 5 GiB, and a scope
       whose worktree is gone wait as decision 48 says.
+
+50. (2026-10-03) A Stop makes one final flush, and reads it.
+    - **What waited.** A Stop asked the executor for three small flushes before the drain's final
+      one: the stop's own checkpoint (`checkpoint · user-mark`), the harvest barrier of each agent
+      it ended (`process-end harvest`), and, for a session with no agent, the settle harvest. Each
+      was a snapshot, a ship and a register: 8.6 s of a 25 s Stop on the box, and the `mend stop`
+      answer waited for the first of them.
+    - **One flush.** When a Stop will drain the workspace (capture mode, and nothing but what it
+      ends holds it), the checkpoint and the harvest are put off until the drain's final flush
+      (`deferToFinal` in the session engine) and read its head: a checkpoint reads the chain, a
+      harvest reads the head capture in the store, so neither needs the workspace. They run once the
+      final flush is saved and before the executor is terminated: its lease goes with it, and a
+      successor launched after the release could register a newer head under a harvest still reading
+      (Astra review, 2026-10-03). The drain's own reading stands for the flush each would have asked
+      for: a complete one means `flushed`, a sealed answer the store stood for `flushed` as well, a
+      refused one (the executor gone) an unflushed checkpoint and no harvest, as a refused flush
+      gave before. Nothing drained (the workspace in use after all): each runs as it did, flush and
+      all.
+    - **A kept round leaves it.** A round that keeps the executor (`not saved · workspace kept`)
+      runs none of it: the drain holds the queue from its first look (`queueHeld`), and the round
+      that saves runs it to empty, before that executor goes. Run beside a kept round it would
+      outlive the save (a landing holding the checkpoint writer) and read a successor's head after
+      the lease went (Astra review, 2026-10-03). A workspace found in use runs it inside the same
+      drain, flushing for itself as before, so a drain that follows waits for it. An executor that
+      went runs it on the drain's last reading of it, every piece waited for: a FINAL that
+      registered the head before it went leaves a readable head. A platform-kept executor runs it
+      before Core's stop, which may confirm an end and release the lease.
+    - **What runs past its time is owed, not dropped, and never interrupted.** Each piece has
+      `deferredWorkLimit` (two minutes) once the flush is saved. A piece past it (a checkpoint
+      writer held, a store not answering) runs on: a harvest's writes do not stop with its fiber,
+      and a retry beside them could lose what it wrote. The rest is put back, the round reads `kept`
+      with the executor saved, and the next round waits for that piece before anything else, then
+      runs the rest after its FINAL (which snaps nothing). Nothing a Stop asked for is dropped, no
+      piece runs twice, and no lease goes under work still owed. The reading that left a readable
+      head is kept for the harvest still owed across those rounds (`deferredEvidence`); one harvest
+      of an agent runs at a time, so a piece left running and a recovery sweep's harvest never
+      rewrite each other's manifest; and once a round has run the queue to empty and is terminating
+      the executor, an end that arrives puts nothing off (`queueClosed`) and flushes for itself, as
+      before. That admission is refused at the append itself, never before an async look; a seal the
+      store confirmed with no answer from the executor is evidence too; and one consumer runs a
+      workspace's queue at a time, a second waiting for it within its limit, so no round declares
+      the queue finished while another still runs a piece. A consumer takes one piece at a time,
+      forks it in the engine's scope and records it as running in one uninterruptible step, and
+      closes an empty queue in that same step, so an interrupted consumer leaves nothing untracked
+      and nothing is admitted between the look and the close. The consumer slot is taken and its
+      release installed in one uninterruptible step. Where no drain is owed to wait (a workspace
+      found in use, an end no drain holds) the consumer runs detached in the engine's scope,
+      unbounded, and the caller waits for it within the limit, so a request that gave up leaves
+      nothing queued without a consumer. The hold follows the durable intent, so nothing holds the
+      queue without a round owed to come back; the drain slot, the stop tail's mark and the consumer
+      slot are each taken with their release in one uninterruptible step. A Stop puts its mark off
+      in the step that marks and forks its tail, so nothing is put off that no tail will run; a
+      discard runs what was put off, every piece waited for, before it releases the lease. A discard
+      also waits for the stop tail it started (which harvests inline under a discard) before that
+      release, and the stop tail's mark is released around the whole of the tail, the inline mark
+      included. Every path that releases a lease under a workspace (a drain's end, a lapsed holder
+      read dead at a launch or by the reaper, a create cut short) first runs what was put off to
+      empty, every piece waited for (`owedBeforeRelease`): one choke point, so no successor
+      registers a head under a harvest still owed whatever the path; and a discard waits for every
+      stop tail of the session, those started meanwhile included. A Stop is in flight from its
+      entry, not from its tail's fork, and under a discard that has stopped the session itself a
+      Stop is answered and starts nothing. A launch that finds a lapsed holder dead with work still
+      owed reads it as ending rather than waiting in place, so its own cancellation and deadline
+      stand; the drain that ends the holder runs the work and releases the lease.
+    - **Known gap.** A Mend restart in the seconds between a Stop's answer and its checkpoint's
+      write loses that user mark and the change head refresh with it: the restart interrupts the
+      piece, and the drain intent that survives carries no record of it. The change is saved and the
+      harvest is recovered by the sweep that takes the drain up again. Before this decision the mark
+      was written before the answer. Replaying the mark from the drain intent is a follow-up. Two
+      races older than this decision remain, found by its review: a Stop of a sibling session in the
+      same workspace, and a Stop whose work was refused admission, each harvest inline (flush and
+      all, as every Stop did before) and can read a successor's head if the lease is released under
+      that harvest; a discard waits for the Stops of its own session only. The fix is to coalesce
+      concurrent Stops per workspace from entry through tail completion, and is a follow-up.
+    - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
+      judged (`executor not answering`, `completed`) and its executor looked at before the drain
+      begins, and the tests of those judgements say so. Making every end read the drain's final is a
+      later change, with those judgements moved after it.
+    - **One FINAL per kept round, still.** The drain's own answer no longer stands for a later
+      round's (`recentFinals`): with the harvest put off, the drain is the round's one FINAL.

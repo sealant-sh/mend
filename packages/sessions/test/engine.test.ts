@@ -1059,6 +1059,8 @@ interface World {
   readonly checkpoints: Array<Checkpoint>;
   /** What `CheckpointsRepo.create` was given as the capture each row was observed from. */
   readonly checkpointCaptureIds: Map<string, string | null>;
+  /** When set, `CheckpointsRepo.create` waits on it first: a store that does not answer. */
+  readonly checkpointHold: { current: Promise<void> | null };
   /** Inserts refused by the unique `(worktree_id, ordinal)` index — the fake counts them. */
   readonly checkpointConflicts: { count: number };
   /** Keyed by worktree id. */
@@ -1141,6 +1143,7 @@ const makeWorld = (): World => ({
   changes: new Map(),
   checkpoints: [],
   checkpointCaptureIds: new Map(),
+  checkpointHold: { current: null },
   checkpointConflicts: { count: 0 },
   worktrees: new Map(),
   members: new Map([["user-fixture", "member"]]),
@@ -2363,36 +2366,42 @@ const checkpointsLayer = (world: World) =>
     // The unique `(worktree_id, ordinal)` index, as Postgres enforces it: a taken ordinal is
     // the typed conflict carrying the row that got there first, never a second row.
     create: (input: NewCheckpoint) =>
-      Effect.suspend(() => {
-        const existing = world.checkpoints.find(
-          (c) => c.worktreeId === input.worktreeId && c.ordinal === input.ordinal,
-        );
-        if (existing !== undefined) {
-          world.checkpointConflicts.count += 1;
-          return Effect.fail(
-            new CheckpointOrdinalTakenError({
-              worktreeId: input.worktreeId,
-              ordinal: input.ordinal,
-              existing,
-            }),
+      Effect.andThen(
+        Effect.suspend(() => {
+          const hold = world.checkpointHold.current;
+          return hold === null ? Effect.void : Effect.promise(() => hold);
+        }),
+        Effect.suspend(() => {
+          const existing = world.checkpoints.find(
+            (c) => c.worktreeId === input.worktreeId && c.ordinal === input.ordinal,
           );
-        }
-        const checkpoint = new Checkpoint({
-          id: CheckpointId.make(crypto.randomUUID()),
-          worktreeId: input.worktreeId,
-          sessionId: input.sessionId,
-          ordinal: input.ordinal,
-          ref: input.ref,
-          sha: input.sha,
-          sealantRunId: input.sealantRunId,
-          seq: input.seq,
-          trigger: input.trigger,
-          createdAt: now(),
-        });
-        world.checkpoints.push(checkpoint);
-        world.checkpointCaptureIds.set(checkpoint.id, input.captureId ?? null);
-        return Effect.succeed(checkpoint);
-      }),
+          if (existing !== undefined) {
+            world.checkpointConflicts.count += 1;
+            return Effect.fail(
+              new CheckpointOrdinalTakenError({
+                worktreeId: input.worktreeId,
+                ordinal: input.ordinal,
+                existing,
+              }),
+            );
+          }
+          const checkpoint = new Checkpoint({
+            id: CheckpointId.make(crypto.randomUUID()),
+            worktreeId: input.worktreeId,
+            sessionId: input.sessionId,
+            ordinal: input.ordinal,
+            ref: input.ref,
+            sha: input.sha,
+            sealantRunId: input.sealantRunId,
+            seq: input.seq,
+            trigger: input.trigger,
+            createdAt: now(),
+          });
+          world.checkpoints.push(checkpoint);
+          world.checkpointCaptureIds.set(checkpoint.id, input.captureId ?? null);
+          return Effect.succeed(checkpoint);
+        }),
+      ),
     byId: (id) =>
       Effect.succeed(world.checkpoints.find((checkpoint) => checkpoint.id === id) ?? null),
     byOrdinal: (worktreeId, ordinal) =>
@@ -2540,6 +2549,7 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     drainEstimateSeconds: 300,
     keptRetryFirst: Duration.seconds(10),
     keptRetryMax: Duration.minutes(5),
+    deferredWorkLimit: Duration.seconds(5),
     statusInterval: Duration.seconds(45),
     statusMinInterval: Duration.seconds(10),
     // A launch waits this long for a worktree's previous executor before it is refused.
@@ -7085,7 +7095,9 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
           (process) => process.kind === "agent-pty" && process.exitedAt === null,
         );
         if (agent === undefined) throw new Error("launch recorded no agent");
-        const flushThatShips = pathKind === "handoff" ? 1 : 2;
+        // The flush that ships the final capture: the handoff's own, or the drain's final, which
+        // is a stop's first and only flush (decision 50).
+        const flushThatShips = 1;
 
         if (pathKind === "handoff") {
           const handoff = yield* engine
@@ -7213,9 +7225,8 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
           },
           flush: () => {
             flushes += 1;
-            const flushThatShips = pathKind === "handoff" ? 1 : 2;
             return Effect.gen(function* () {
-              if (flushes === flushThatShips && !shipped) {
+              if (flushes === 1 && !shipped) {
                 yield* Deferred.succeed(flushStarted, undefined);
                 yield* Deferred.await(releaseFlush);
                 yield* finalCapture;
@@ -7460,8 +7471,8 @@ describe("SessionEngine capture mode", () => {
               outputHighWater: 0n,
             });
 
-            // The checkpoint flush observes no new capture. The process-end barrier must request a
-            // second flush, then wait for that final registration before harvest reads the head.
+            // The stop's one flush is the drain's final (decision 50); the harvest waits for its
+            // registration before it reads the head.
             yield* Deferred.await(flushStarted);
             expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(true);
             yield* Deferred.succeed(releaseFlush, undefined);
@@ -7572,7 +7583,7 @@ describe("SessionEngine capture mode", () => {
               flush: () =>
                 Effect.gen(function* () {
                   flushes += 1;
-                  if (flushes > 1 && !shipped) {
+                  if (flushes >= 1 && !shipped) {
                     yield* Deferred.succeed(flushStarted, undefined);
                     yield* Deferred.await(releaseFlush);
                     yield* finalCapture;
@@ -7765,16 +7776,12 @@ describe("SessionEngine capture mode", () => {
           expect(lease?.epoch).toBe(2);
           expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
 
-          // A user stop is a planned stop: the user mark, the post-process harvest barrier, and
-          // the stop itself each flush before the workspace goes.
+          // A user stop is a planned stop: one final flush before the workspace goes. The user
+          // mark and the harvest read that flush's head (ADR 0002 decision 50); before 2026-10-03
+          // each asked for a flush of its own, three before the final one.
           yield* engine.stop(session.id);
           yield* until(() => events.includes("workspace-1"), "the workspace stop");
-          expect(events).toEqual([
-            "flush:workspace-1",
-            "flush:workspace-1",
-            "flush:workspace-1",
-            "workspace-1",
-          ]);
+          expect(events).toEqual(["flush:workspace-1", "workspace-1"]);
           expect(world.sessions.get(session.id)?.hasTranscript).toBe(false);
         }),
       {
@@ -13020,6 +13027,82 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
                 }),
             },
           }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a stop's deferred checkpoint that runs out of time keeps the saved executor for the next round, which runs it before the stop",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      /** Flushes and stops in the order the platform saw them. */
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let release: (() => void) | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["codex"]);
+            const marks = () =>
+              world.checkpoints.filter(
+                (c) => c.worktreeId === session.worktreeId && c.trigger === "user-mark",
+              ).length;
+            // The checkpoint store does not answer: the stop's user mark, put off to the final
+            // flush, waits on it past the limit. The executor is saved and kept, not stopped:
+            // its lease never goes under work still owed (Astra review, 2026-10-03).
+            world.checkpointHold.current = new Promise<void>((resolve) => {
+              release = resolve;
+            });
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            expect(events).toEqual(["flush:workspace-1"]);
+            expect(marks()).toBe(0);
+            // The store answers. The next round saves again, runs the mark it was owed, then stops
+            // the executor.
+            world.checkpointHold.current = null;
+            release?.();
+            yield* Effect.sleep(Duration.millis(350));
+            yield* engine.reapCaptureLeases();
+            yield* until(() => events.includes("workspace-1"), "the workspace stop");
+            expect(events.at(-1)).toBe("workspace-1");
+            expect(marks()).toBe(1);
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            deferredWorkLimit: Duration.millis(200),
+            keptRetryFirst: Duration.millis(300),
+            keptRetryMax: Duration.seconds(5),
+          },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            events,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { flushed: events },
+          ),
         },
       );
     },
