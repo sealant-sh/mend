@@ -67,3 +67,4 @@ export * from "./skill.ts";
 export * from "./slack.ts";
 export * from "./tour.ts";
 export * from "./worktree.ts";
+export * from "./worktree-removal.ts";

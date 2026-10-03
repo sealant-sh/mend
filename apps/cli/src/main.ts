@@ -137,6 +137,7 @@ import {
   upgradeUrl,
 } from "./upgrade-url.ts";
 import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
+import { worktreesRmCommand } from "./worktree-remove.ts";
 
 /**
  * The mend CLI (plan §7.2): the terminal-first entry into the workbench.
@@ -4535,8 +4536,21 @@ const buildWorktreesJson = async (
   return { version: 2, worktrees };
 };
 
-/** `mend worktrees [--project <p>] [--json]` — the container-first listing. */
+/** `mend worktrees [--project <p>] [--json]` — the container-first listing; `rm` removes one. */
 const worktreesCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  if (args[0] === "rm") {
+    // The raw request, not `api`: a refusal must come back as words to print beside the override.
+    return worktreesRmCommand(
+      {
+        request: (method, route, body) => request(config, method, route, body),
+        listWorktrees: async (project) => (await buildWorktreesJson(config, project)).worktrees,
+        liveStatuses: ACTIVE_STATUSES,
+        say,
+        fail,
+      },
+      args.slice(1),
+    );
+  }
   const json = args.includes("--json");
   const projectFlag = args.indexOf("--project");
   const projectName =

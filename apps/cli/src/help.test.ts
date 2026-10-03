@@ -168,6 +168,17 @@ describe("renderCommand", () => {
     expect(page).not.toMatch(/--session/);
   });
 
+  it("documents worktree removal: the live refusal, the unlanded refusal and --force", () => {
+    expect(usageOf("worktrees rm")).toBe(
+      "usage: mend worktrees rm <name> [--force] [--project <p>]",
+    );
+    const page = renderCommand(findCommand(["worktrees", "rm"])!, 120).replace(/\s+/g, " ");
+    expect(page).toContain("--force");
+    expect(page).toContain("in the server's words");
+    expect(page).toContain("--force does not change that");
+    expect(renderCommand(findCommand(["worktrees"])!, 80)).toContain("worktrees rm");
+  });
+
   it("lists a family's subcommands on the parent page", () => {
     const page = renderCommand(findCommand(["ssh"])!, 80);
     expect(page).toContain("\nsubcommands\n");

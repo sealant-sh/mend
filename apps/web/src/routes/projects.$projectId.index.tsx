@@ -11,12 +11,17 @@ import {
   type ClearSettled,
   type DetailHandlers,
 } from "#/components/project-detail/parts";
+import {
+  type RefusedRemoval,
+  RemoveWorktreeAnywayDialog,
+} from "#/components/project-detail/remove-worktree-anyway";
 import { setWorktreeView, useWorktreeView } from "#/components/project-detail/view-choice";
 import { ProjectWorktreeContent, WorktreeTree } from "#/components/project-detail/worktree-tree";
 import { removeWorktree } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/viewer";
-import { sessionMenu, worktreeMenu } from "#/lib/workbench-menus";
+import { sessionMenu, worktreeDisplayName, worktreeMenu } from "#/lib/workbench-menus";
+import { removalRefusalOf } from "#/lib/worktree-removal";
 
 /** The Worktrees tab; the project layout (`projects.$projectId.tsx`) loads the project. */
 export const Route = createFileRoute("/projects/$projectId/")({
@@ -40,6 +45,10 @@ function ProjectWorktreesPage() {
   const view = useWorktreeView();
   const [newWorktreeOpen, setNewWorktreeOpen] = useState(false);
   const [clearing, setClearing] = useState<"idle" | "armed" | "working">("idle");
+  // What a sweep left standing, said once beside its button; the next sweep replaces it.
+  const [kept, setKept] = useState<string | null>(null);
+  // A removal the store refused in words: the dialog shows them and offers the second step.
+  const [refused, setRefused] = useState<RefusedRemoval | null>(null);
   const { openMenu, menuElement } = useContextMenu();
 
   const groups = worktreeGroups(worktrees, sessions, worktreeAnnotations, annotations);
@@ -48,7 +57,20 @@ function ProjectWorktreesPage() {
     onWorktreeMenu: (event, group) =>
       openMenu(
         event,
-        worktreeMenu(group.worktree, group.members, group.annotation, navigate, launchContext),
+        worktreeMenu(
+          group.worktree,
+          group.members,
+          group.annotation,
+          navigate,
+          launchContext,
+          (refusal) =>
+            setRefused({
+              worktree: group.worktree,
+              name: worktreeDisplayName(group.worktree, group.members),
+              sessions: group.members.length,
+              refusal,
+            }),
+        ),
       ),
     onSessionMenu: (event, session) =>
       openMenu(
@@ -71,11 +93,31 @@ function ProjectWorktreesPage() {
     }
     if (clearing !== "armed") return;
     setClearing("working");
+    setKept(null);
+    // The sweep never forces: a worktree the store refuses for a change not on origin stays, and
+    // the count of those is said once. Its own menu shows the words and offers the second step.
     void settled
       .reduce(
-        (chain, group) => chain.then(() => removeWorktree(group.worktree.id).catch(() => null)),
-        Promise.resolve<unknown>(null),
+        (chain, group) =>
+          chain.then(async (unlanded) => {
+            const refusal = await removeWorktree(group.worktree.id).then(
+              () => null,
+              (cause: unknown) => removalRefusalOf(cause),
+            );
+            return refusal?.forceable === true ? unlanded + 1 : unlanded;
+          }),
+        Promise.resolve(0),
       )
+      .then((unlanded) => {
+        if (unlanded > 0) {
+          setKept(
+            unlanded === 1
+              ? "1 kept · its change is not on origin · remove it from its menu to see what it holds"
+              : `${unlanded} kept · their changes are not on origin · remove one from its menu to see what it holds`,
+          );
+        }
+        return null;
+      })
       .finally(() => {
         setClearing("idle");
         void queryClient.invalidateQueries(trpc.projects.pathFilter());
@@ -86,6 +128,7 @@ function ProjectWorktreesPage() {
   const clear: ClearSettled = {
     count: settled.length,
     state: clearing,
+    note: kept,
     onClear: clearSettled,
     onBlur: () => setClearing((current) => (current === "armed" ? "idle" : current)),
   };
@@ -144,6 +187,14 @@ function ProjectWorktreesPage() {
         project={project}
         open={newWorktreeOpen}
         onOpenChange={setNewWorktreeOpen}
+      />
+      <RemoveWorktreeAnywayDialog
+        refused={refused}
+        onKeep={() => setRefused(null)}
+        onRemoved={() => {
+          setRefused(null);
+          void queryClient.invalidateQueries(trpc.environment.pathFilter());
+        }}
       />
       {menuElement}
     </>

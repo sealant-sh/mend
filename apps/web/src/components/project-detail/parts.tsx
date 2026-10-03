@@ -14,6 +14,8 @@ export interface DetailHandlers {
 export interface ClearSettled {
   readonly count: number;
   readonly state: "idle" | "armed" | "working";
+  /** What the last sweep left standing, as a mono fact beside the button; null says nothing. */
+  readonly note?: string | null;
   readonly onClear: () => void;
   readonly onBlur: () => void;
 }
@@ -37,7 +39,12 @@ export function ReviewLink({ group }: { readonly group: WorktreeGroup }) {
 export function ClearSettledButton({ clear }: { readonly clear: ClearSettled }) {
   if (clear.count === 0) return null;
   return (
-    <div className="mt-4 flex justify-end">
+    <div className="mt-4 flex flex-wrap items-baseline justify-end gap-x-4 gap-y-1">
+      {clear.note !== undefined && clear.note !== null && (
+        <p role="status" className="font-mono text-[11.5px] text-faint">
+          {clear.note}
+        </p>
+      )}
       <button
         type="button"
         disabled={clear.state === "working"}

@@ -411,7 +411,26 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--project <p>] [--json]"],
     description: ["A worktree can hold several sessions over time; this shows them together."],
     options: [project(), { flag: "--json", text: "the v2 grouped shape" }],
-    see: ["sessions"],
+    see: ["sessions", "worktrees rm"],
+  },
+  {
+    name: "worktrees rm",
+    section: "sessions",
+    summary: "remove a worktree, its sessions and its change",
+    synopsis: ["<name> [--force] [--project <p>]"],
+    description: [
+      "Removes the worktree directory from the store, with every session in it, its change, its checkpoints and its review. Nothing on origin is touched. <name> is the worktree's name as mend worktrees lists it.",
+      "Refused while a session in it is live: the command names the sessions and the stops that free them. Refused while it holds a change that is not on origin, one never landed or one changed since its last landing: the refusal names the files and line counts, in the server's words. Land it with mend land, or pass --force to remove it anyway. A worktree whose workspace is still saving is refused until the save ends, and --force does not change that.",
+    ],
+    options: [
+      { flag: "--force", text: "remove it although its change is not on origin" },
+      project(),
+    ],
+    examples: [
+      { command: "mend worktrees rm fix-login", text: "refused when its change was never landed" },
+      { command: "mend worktrees rm fix-login --force", text: "remove it anyway" },
+    ],
+    see: ["worktrees", "land", "stop"],
   },
   {
     name: "projects",

@@ -320,6 +320,14 @@ This worktree holds a change that was never landed · 2 files · +32 −5 · src
 A worktree that changed after its last landing is refused the same way, naming the files changed
 since.
 
+The refusal is the first step, never the last. In the web app, the worktree menu's **Remove
+worktree** shows these words with the files and line counts not on origin, and offers **Remove
+anyway**, which is the same removal with `force=true`. **Clear settled** never forces: it says how
+many worktrees it kept for this reason, and each one's menu shows what it holds. From a terminal,
+`mend worktrees rm <name>` prints the refusal as the server said it, and
+`mend worktrees rm <name> --force` removes the worktree anyway. A worktree whose workspace is still
+saving is refused either way, until the save ends or its owner discards what is unsaved.
+
 A worktree is removable without force when it holds nothing past its base, or when its latest
 landing's checkpoint is what it holds and either the pull request was last reported merged or
 origin's branch still has the landed commit. A merged pull request counts even after its branch was

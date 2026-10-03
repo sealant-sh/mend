@@ -1,4 +1,4 @@
-import type { Viewer } from "@mend/domain/workbench";
+import type { Viewer, WorktreeRemovalRefusal } from "@mend/domain/workbench";
 import type { ContextMenuEntry, ContextMenuSpec } from "@mend/ui/context-menu";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
@@ -24,6 +24,7 @@ import {
   type LaunchContext,
 } from "#/lib/session-launch";
 import { canRemove, sessionActions } from "#/lib/viewer";
+import { removalRefusalOf } from "#/lib/worktree-removal";
 
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -207,13 +208,18 @@ export const worktreeDisplayName = (
       (members[0] === undefined ? worktree.name : `session ${members[0].id.slice(0, 8)}`))
     : worktree.name;
 
-/** The right-click menu for a worktree group — the container's own verbs. */
+/**
+ * The right-click menu for a worktree group — the container's own verbs. A removal the store
+ * refuses in words reaches `onRemovalRefused`, where the page shows them and, when `force=true`
+ * would lift the refusal, offers the second step; the menu itself never forces.
+ */
 export const worktreeMenu = (
   worktree: WorktreeDto,
   members: ReadonlyArray<SessionDto>,
   annotation: WorktreeAnnotationDto | undefined,
   navigate: Navigate,
   context: LaunchContext,
+  onRemovalRefused?: (refusal: WorktreeRemovalRefusal) => void,
 ): ContextMenuSpec => {
   const { queryClient, trpc } = context;
   const invalidate = () =>
@@ -271,7 +277,10 @@ export const worktreeMenu = (
       danger: true,
       onSelect: () => {
         void removeWorktree(worktree.id)
-          .catch(() => undefined)
+          .catch((cause: unknown) => {
+            const refusal = removalRefusalOf(cause);
+            if (refusal !== null) onRemovalRefused?.(refusal);
+          })
           .finally(() => invalidate());
       },
     });
