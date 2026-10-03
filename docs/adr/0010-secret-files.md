@@ -60,9 +60,11 @@ base64 (`workspace-files.ts`).
    executor, and a session joining a worktree another person's session holds runs in that person's
    executor, so it receives no secret files of its own there, and the log says so. The server
    unseals the set once per launch and holds the bytes only for that write. Each file lands 0600,
-   its directory made 0700 when missing, staged beside the target and renamed into place.
-   Best-effort like skills: an agent without its files still starts, and the session line says which
-   were not written and why.
+   its directory made 0700 when missing, staged beside the target under the delivery's own stamp and
+   renamed into place; a delivery cut short removes its staging files. What was written is recorded
+   at `~/.mend/secret-files`, and the next delivery into that home removes a recorded file the
+   person no longer keeps, never through a link. Best-effort like skills: an agent without its files
+   still starts, and the session line says which were not written and why.
 
 4. **Never captured, by construction and by refusal.**
    - By construction: a secret file goes into the executor's own `$HOME`, which no capture root,
@@ -78,8 +80,12 @@ base64 (`workspace-files.ts`).
      physical path equals its literal one. Dotfiles that linked `~/.aws` into the worktree would
      otherwise make a secret file a captured one. Such a file is not written, and the session line
      says so.
-   - The test `secret-files.test.ts` builds the executor's listing over a relocated home and shows
-     the written file in neither the capture listing nor the harvest archive.
+   - By refusal at harvest: the co-located harvest archives the harness's state paths with `tar -h`,
+     which follows links; every symlink at or below a harvested path is excluded first, and the
+     transcript read refuses a link, so a link an agent left in `.claude/projects` at
+     `~/.aws/credentials` archives nothing. sealantd captures a link as a link.
+   - The test `secret-files.test.ts` builds the executor's listing over a relocated home with such
+     links and shows the written file in neither the capture listing nor the harvest archive.
 
 5. **The exec channel carries the bytes.** Base64 on argv of the platform's authenticated exec,
    decoded inside, like every other file Mend places. A launch-time injection the caller supplies,
@@ -124,3 +130,10 @@ base64 (`workspace-files.ts`).
   long-lived session's next run without a relaunch.
 - 2026-10-03: a join into another person's executor receives no secret files there. Writing the
   joiner's files into a home the holder's agent reads would hand them to the holder.
+- 2026-10-03, after the first Astra review: each delivery stages under its own stamp and proves the
+  path again before every chunk and the rename, since a planted staging file under a symlinked
+  directory took later chunks; a delivery records what it wrote in `~/.mend/secret-files` and the
+  next one removes what the person no longer keeps, since a retained executor kept a deleted file;
+  the co-located harvest excludes every symlink at or below a harvested path and the transcript read
+  refuses a link, since `tar -h` dereferenced a link an agent left in `.claude/projects` at a secret
+  file; the repo refuses a size outside 1 byte to 256 KB.

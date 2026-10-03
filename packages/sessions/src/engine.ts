@@ -313,9 +313,15 @@ import {
   mayRunIn,
 } from "./run-eligibility.ts";
 import {
+  foldSecretFileOutcomes,
   parseSecretFileOutcomes,
+  parseSecretFilesDelivered,
   planSecretFiles,
+  secretFilesCleanupExec,
+  secretFilesDeliveredExec,
   secretFilesExecs,
+  secretFilesRecordExec,
+  secretFilesRemoveExec,
   type SecretFileOutcome,
 } from "./secret-files.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
@@ -6023,11 +6029,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // -h dereferences: the boot step turns `$HOME` state dirs into symlinks onto the
           // harness-home mount, and the capture must carry their contents, not the links.
           // Conversations Mend carried in from other sessions (docs/adr/0009, "Codex") stay out:
-          // restored without their list, one could read as this session's own.
+          // restored without their list, one could read as this session's own. So does every
+          // symlink at or below a harvested path (`find -type l`, glob characters escaped for
+          // -X): with -h, a link an agent left in `.claude/projects` pointing at `~/.aws/credentials`
+          // would archive the secret file it points at (docs/adr/0010; Astra review 2026-10-03).
           `cd "$HOME" || exit 1; L=""; for p in ${list}; do [ -e "$p" ] && L="$L $p"; done; ` +
             `[ -n "$L" ] || exit 3; X=/tmp/mend-harness-state.exclude; : > "$X"; ` +
             `C="${HARNESS_HOME_MOUNT_PATH}/${CARRIED_TRANSCRIPTS}"; ` +
             `[ -s "$C" ] && sed 's/.*/*&*/' "$C" > "$X"; ` +
+            `find $L -type l 2>/dev/null | sed 's/[][*?\\\\]/\\\\&/g' >> "$X"; ` +
             `tar -czhf /tmp/mend-harness-state.tgz -X "$X" $L && ` +
             `base64 -w0 /tmp/mend-harness-state.tgz`,
         ]);
@@ -6082,7 +6092,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               message: `Could not identify the native ${harness} session in ${transcriptFile}.`,
             });
           }
-          const native = yield* sealant.exec(workspace, ["cat", transcriptFile]);
+          // Never through a symlink: a link named like a transcript could point at anything in
+          // the home, a secret file included (docs/adr/0010).
+          const native = yield* sealant.exec(workspace, [
+            "sh",
+            "-c",
+            '[ -L "$1" ] && { echo "the transcript path is a symlink" >&2; exit 4; }; cat "$1"',
+            "mend-read",
+            transcriptFile,
+          ]);
           if (native.exitCode !== 0 || native.stdout === "") {
             return yield* new HarnessStateCommandError({
               sessionId,
@@ -9043,7 +9061,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         if (session.ownerUserId === null) return;
         const sealed = yield* secretFiles.sealedForLaunch(session.ownerUserId);
-        if (sealed.length === 0) return;
+        // What an earlier delivery wrote into this home (`~/.mend/secret-files`): a file the
+        // person no longer keeps is removed, so a retained executor's next run does not read it.
+        const before = parseSecretFilesDelivered(
+          (yield* sealant.exec(workspace, secretFilesDeliveredExec)).stdout,
+        );
+        if (sealed.length === 0 && before.length === 0) return;
         const unsealed = yield* Effect.forEach(
           sealed,
           (file) =>
@@ -9065,21 +9088,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const plan = planSecretFiles(unsealed);
         const outcomes: Array<SecretFileOutcome> = [...plan.refused];
-        for (const argv of secretFilesExecs(plan.files)) {
-          const result = yield* sealant.exec(workspace, argv);
-          outcomes.push(...parseSecretFileOutcomes(result.stdout));
-          if (result.exitCode !== 0) {
-            return yield* new WorkspaceFileError({
-              path: "~",
-              message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
-            });
+        // One delivery's own staging names, and its staging files gone whatever ends it early.
+        const stamp = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+        const paths = plan.files.map((file) => file.path);
+        yield* Effect.gen(function* () {
+          for (const argv of secretFilesExecs(plan.files, stamp)) {
+            const result = yield* sealant.exec(workspace, argv);
+            outcomes.push(...parseSecretFileOutcomes(result.stdout));
+            if (result.exitCode !== 0) {
+              return yield* new WorkspaceFileError({
+                path: "~",
+                message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
+              });
+            }
           }
+        }).pipe(
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) || paths.length === 0
+              ? Effect.void
+              : sealant.exec(workspace, secretFilesCleanupExec(paths, stamp)).pipe(Effect.ignore),
+          ),
+        );
+        // A file delivered before and no longer kept goes; one still kept but refused this time
+        // stays recorded, so a later delivery can still remove it.
+        const current = new Set(paths);
+        const stale = before.filter((p) => !current.has(p));
+        if (stale.length > 0) {
+          const removed = yield* sealant.exec(workspace, secretFilesRemoveExec(stale));
+          outcomes.push(...parseSecretFileOutcomes(removed.stdout));
         }
-        for (const outcome of outcomes) {
+        const written = new Set(
+          outcomes.filter((outcome) => outcome.outcome === "written").map((o) => o.path),
+        );
+        const record = [...new Set([...written, ...before.filter((p) => current.has(p))])];
+        yield* sealant.exec(workspace, secretFilesRecordExec(record)).pipe(Effect.ignore);
+        for (const outcome of foldSecretFileOutcomes(outcomes)) {
           yield* (
-            outcome.outcome === "written"
-              ? Effect.logInfo("session engine: secret file · written")
-              : Effect.logWarning("session engine: secret file · not written")
+            outcome.outcome === "refused"
+              ? Effect.logWarning("session engine: secret file · not written")
+              : Effect.logInfo(`session engine: secret file · ${outcome.outcome}`)
           ).pipe(
             Effect.annotateLogs({
               sessionId: session.id,
@@ -9088,7 +9135,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
           );
         }
-        const refused = outcomes.filter((outcome) => outcome.outcome === "refused");
+        const refused = foldSecretFileOutcomes(outcomes).filter(
+          (outcome) => outcome.outcome === "refused",
+        );
         if (refused.length > 0)
           yield* noteLaunchWords(session.id, secretFilesRefusedWords(refused));
       });

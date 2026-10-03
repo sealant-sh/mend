@@ -41,7 +41,8 @@ mend secrets rm .npmrc
 ```
 
 Sessions launched after a change receive the new set. A running session keeps what it has until its
-next run in the same workspace.
+next run in the same workspace, which receives the files you added or replaced and no longer has the
+ones you removed.
 
 One exception: on the captured session store a worktree has one workspace, so a session you start in
 a worktree where someone else's session is live runs in their workspace. It receives none of your
@@ -62,7 +63,8 @@ that holds the agent's conversations. A secret file is in none of these:
   written, and the session line says so.
 
 The file is also not part of the change, a checkpoint or a transcript harvest, for the same reason:
-all three read the worktree or the harness home.
+all three read the worktree or the harness home. The harvest follows no symlink below the harness
+home either, so a link an agent left there pointing at a secret file carries nothing.
 
 ## What Mend does with the content
 

@@ -1,5 +1,6 @@
 import { SecretFileId } from "@mend/domain";
 import {
+  SECRET_FILE_MAX_BYTES,
   SECRET_FILE_MAX_FILES,
   SECRET_FILES_MAX_TOTAL_BYTES,
   SecretFile,
@@ -102,6 +103,16 @@ export const SecretFilesRepoLive: Layer.Layer<SecretFilesRepo, never, MendDB> = 
     ) {
       const issue = validateSecretFilePath(input.path);
       if (issue !== null) return yield* new SecretFileInvalidError({ message: issue });
+      // The route measured the plaintext; the row's size still has to be one a file can have.
+      if (
+        !Number.isInteger(input.bytes) ||
+        input.bytes < 1 ||
+        input.bytes > SECRET_FILE_MAX_BYTES
+      ) {
+        return yield* new SecretFileInvalidError({
+          message: `a secret file is between 1 byte and ${SECRET_FILE_MAX_BYTES / 1024} KB`,
+        });
+      }
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
