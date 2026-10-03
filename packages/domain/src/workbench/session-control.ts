@@ -54,10 +54,11 @@ export const canSteerSession = (session: SteeringFacts, callerUserId: string): b
   (callerUserId === session.ownerUserId || session.sharedControlEnabledAt !== null);
 
 /**
- * Typing into a session's terminal, opening a shell in its workspace, pasting into it: the owner's
- * alone, even while control is shared (docs/adr/0013-whoever-sends-a-turn-pays.md). A terminal
- * runs on whatever login the workspace holds and has no turn to switch it at, so a steerer's keys
- * would spend the owner's. Steering a terminal session means continuing it as a conversation.
+ * Typing into a session's terminal, starting its agent in one, opening a shell or running a
+ * command in its workspace: the owner's alone, even while control is shared
+ * (docs/adr/0013-whoever-sends-a-turn-pays.md). Each runs on whatever login the workspace holds
+ * and has no turn to switch it at, so a steerer's keys would spend the owner's. Steering a
+ * terminal session means continuing it as a conversation.
  */
 export const canTypeInTerminal = (
   session: Pick<SteeringFacts, "ownerUserId">,

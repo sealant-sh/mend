@@ -352,9 +352,10 @@ export class SessionControlView extends Schema.Class<SessionControlView>("Sessio
   /** Turn shared control on (owner only) or off (owner or organization owner), as it stands. */
   toggleSharedControl: Schema.Boolean,
   /**
-   * Type in the session's terminals and open shells: the owner's alone, even while control is
-   * shared (docs/adr/0013). Everyone else who attaches reads output only. Older servers omit it
-   * and accept every steerer's keys.
+   * Type in the session's terminals, start its agent in one, open shells and run commands
+   * (Services) in its workspace: the owner's alone, even while control is shared
+   * (docs/adr/0013). Everyone else who attaches reads output only. Older servers omit it and
+   * accept every steerer's keys.
    */
   terminalInput: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
 }) {}

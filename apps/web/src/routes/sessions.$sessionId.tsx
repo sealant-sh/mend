@@ -515,6 +515,8 @@ function SessionPage() {
               sessionId={sessionId}
               sessionLive={ACTIVE.has(session.status)}
               steer={control.steer}
+              runs={control.terminalInput}
+              ownerName={ownerName}
             />
           </section>
         </div>

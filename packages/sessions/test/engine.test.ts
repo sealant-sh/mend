@@ -4519,6 +4519,15 @@ describe("SessionEngine", () => {
           expect(live).toEqual([]);
 
           const settledBeforeRetry = world.sessions.get(session.id);
+          // Someone else's follow-up never starts the terminal: only the owner types there
+          // (docs/adr/0013).
+          const teammate = yield* engine
+            .launchFollowUp(session.id, "Carol's words.", "follow-up:teammate", "user-2")
+            .pipe(Effect.flip);
+          expect(teammate).toMatchObject({
+            _tag: "SealantPlatformError",
+            code: "terminal_owner_only",
+          });
           const failure = yield* engine
             .launchFollowUp(
               session.id,

@@ -454,7 +454,7 @@ directories, symlinks, and files over 1 MiB, and counts what it skipped. See
 Only the session's owner turns shared control on; the owner or an organization owner turns it off.
 While it is on, anyone who can see the project sends turns, answers approvals and interrupts, using
 the owner's provider logins and Git access. They can attach to the terminal to read it; only the
-owner types in it or opens a shell. Every act is recorded with who did it. See
+owner types in it, opens a shell or starts a Service. Every act is recorded with who did it. See
 [Organizations](/organizations/overview/).
 
 ## Operator commands

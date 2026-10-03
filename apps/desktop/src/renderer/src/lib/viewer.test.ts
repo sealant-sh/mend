@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sessionFixture } from "#/lib/fixtures";
-import { readOnlyActions } from "#/lib/services";
+import { readOnlyActions, steererActions } from "#/lib/services";
 import { sessionActions } from "#/lib/viewer";
 
 const owned = sessionFixture({ ownerUserId: "alice" });
@@ -67,5 +67,16 @@ describe("readOnlyActions", () => {
     expect(
       readOnlyActions(["open", "copy", "logs", "restart", "stop", "remove-forward", "run-again"]),
     ).toEqual(["open", "copy", "logs"]);
+  });
+});
+
+describe("steererActions", () => {
+  it("leaves a steerer restart and stop, and running a command again to the owner", () => {
+    expect(steererActions(["open", "logs", "restart", "stop", "run-again"])).toEqual([
+      "open",
+      "logs",
+      "restart",
+      "stop",
+    ]);
   });
 });

@@ -57,6 +57,28 @@ export const sessionControlView = (
   });
 };
 
+/** What only the owner runs in a session's workspace, and the words its refusal says. */
+const OWNER_RUNS = {
+  terminal:
+    "only the session owner starts its agent in a terminal, even while control is shared; the owner can continue it as a conversation",
+  command: "only the session owner runs commands in its workspace, even while control is shared",
+} as const;
+
+/**
+ * Anything that runs in a session's workspace besides a turn spends whatever login the workspace
+ * holds, so it is the owner's alone, even while control is shared (docs/adr/0013): a terminal
+ * agent started with the caller's words, which is typing into it, and a command such as a
+ * Service. Call it after `SessionSteering.session`, so a caller who cannot steer at all hears that.
+ */
+export const requireOwnerRuns = Effect.fn("SessionSteering.requireOwnerRuns")(function* (
+  session: Session,
+  act: keyof typeof OWNER_RUNS,
+) {
+  const caller = yield* CurrentUser;
+  if (canTypeInTerminal(session, caller.user.id)) return session;
+  return yield* new SessionNotSteerable({ sessionId: session.id, message: OWNER_RUNS[act] });
+});
+
 /**
  * Resolves whether the caller may steer a session, before any steering effect
  * (docs/adr/0003-organizations-and-tenancy.md, "Sessions and shared control").

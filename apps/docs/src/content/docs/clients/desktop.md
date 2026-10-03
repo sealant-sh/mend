@@ -93,9 +93,9 @@ When a stopped agent leaves Services running, the header says what keeps the wor
 
 ### Who can do what
 
-Controls follow what the server says you may do. Only the session's owner types in its terminal or
-opens a shell. A teammate who steers it under shared control sees the live terminal read-only, with
-the line
+Controls follow what the server says you may do. Only the session's owner types in its terminal,
+opens a shell or starts a Service. A teammate who steers it under shared control sees the live
+terminal read-only, with the line
 `This session runs in a terminal. Only <owner> types here; they can continue it as a conversation.`
 Anyone else reads its record, and a line under the header says who steers. The session's owner has
 the **Shared control** switch in the header. See [Organizations](/organizations/overview/).

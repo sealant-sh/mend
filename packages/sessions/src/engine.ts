@@ -11814,6 +11814,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
+        // A terminal started with someone's words is them typing there, on whatever login the
+        // workspace holds: only the owner's follow-up starts one (docs/adr/0013).
+        if (author !== null && author !== session.ownerUserId) {
+          return yield* new SealantPlatformError({
+            code: "terminal_owner_only",
+            status: 403,
+            message:
+              "only the session owner starts its agent in a terminal, even while control is shared; the owner can continue it as a conversation",
+            cause: null,
+          });
+        }
         const argv = promptArgv(session.harness, instruction, {
           model: session.model,
           effort: session.effort,

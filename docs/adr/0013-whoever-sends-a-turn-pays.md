@@ -38,7 +38,8 @@ a usage limit is reached. That is the same switch with the same person on both s
 - **Credentials are never captured** (ADR 0002, ADR 0010): `.claude/.credentials.json` and
   `.codex/auth.json` are excluded from every capture.
 - **Terminal sessions have no turns.** `tty.ts` forwards every input frame from any steerer straight
-  to the PTY, and `openShell` admits any steerer. Both spend whatever login the workspace holds.
+  to the PTY, and `openShell` and `runService` (any `argv`) admit any steerer. All of them spend
+  whatever login the workspace holds.
 
 ## Decision
 
@@ -99,8 +100,14 @@ without a restart. So in a terminal session only the owner types, even while con
 - **Read-only terminal for everyone else.** `tty.ts` streams output to any steerer but drops their
   input frames and resizes. The session's control view carries a `terminalInput` flag, and every
   client draws the terminal read-only when it is false.
-- **Shells are the owner's.** `openShell` requires the owner. A shell runs on whatever login the
-  workspace holds, so a steerer's shell would spend the owner's.
+- **Shells and commands are the owner's.** `openShell`, `runService` and `runServiceRecipe` require
+  the owner. A shell or a command runs on whatever login the workspace holds, so a steerer's would
+  spend the owner's. A steerer still restarts and stops running Services, adopts a listening port,
+  and stores an image for a conversation's turn.
+- **Starting a terminal with someone's words is typing.** A launch other than `protocol` (a verbatim
+  `argv` included), a resume that reopens a terminal, and a review follow-up to a session whose
+  agent is not a conversation require the owner. The engine refuses a follow-up that would start a
+  terminal for anyone else as well.
 - **Steering a terminal session means a conversation.** A steerer sees: "This session runs in a
   terminal. Only \<owner\> types here; they can continue it as a conversation." The owner continues
   it with the existing handoff (`SessionEngine.handoff`), which starts the conversation in the same
@@ -154,8 +161,9 @@ Maria's `work` · observed".
 Mend, one stack:
 
 1. This ADR, the platform feedback entry and the roadmap.
-2. Terminal sessions: only the owner types or opens a shell; the control view's `terminalInput`
-   flag; clients draw the terminal read-only and say why.
+2. Terminal sessions: only the owner types, starts the agent in a terminal, opens a shell or runs a
+   command; the control view's `terminalInput` flag; clients draw the terminal read-only and say
+   why.
 3. Every turn records its payer, and the conversation shows it.
 4. After the SDK ships the endpoint: the switch in `dispatchNext`, the switch back, the Codex
    restart, the refusal at submit, and the payer filled from Core's answer.

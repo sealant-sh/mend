@@ -174,16 +174,22 @@ Deleting, renaming or handing off the session stays with its owner even while co
 
 ### Terminals stay with the owner
 
-Only the owner types in a session's terminal or opens a shell in its workspace, even while control
-is shared. A terminal runs on whatever provider login its workspace holds, and keystrokes have no
-turn boundary at which Mend could switch that login to someone else's.
+Only the owner types in a session's terminal, opens a shell or runs a command in its workspace, even
+while control is shared. A terminal runs on whatever provider login its workspace holds, and
+keystrokes have no turn boundary at which Mend could switch that login to someone else's. The same
+holds for a command, so starting a Service is the owner's too; a steerer can restart and stop the
+Services already running.
 
 Under shared control, anyone else who can see the project attaches to the terminal to read it. Mend
-streams the output to them, drops their keystrokes and resizes, and refuses their pasted images. The
-control log records their attach as `terminal-watch`, the owner's as `terminal-attach`. Every client
-draws the terminal read-only for them and says:
+streams the output to them and drops their keystrokes and resizes. The control log records their
+attach as `terminal-watch`, the owner's as `terminal-attach`. Every client draws the terminal
+read-only for them and says:
 
 `This session runs in a terminal. Only <owner> types here; they can continue it as a conversation.`
+
+Starting the agent in a terminal with someone's words is typing too. Mend refuses a launch, a resume
+or a review follow-up from anyone but the owner when it would start a terminal. In a conversation,
+the same requests are turns, and any steerer sends them.
 
 To let others steer a Claude or Codex terminal session, the owner continues it as a conversation
 (**continue as conversation** in the desktop app, or by handing it off from the phone). The

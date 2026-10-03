@@ -30,8 +30,9 @@ import {
   type ServiceFact,
   type ServiceFacts,
   servicesForSession,
+  steererActions,
 } from "#/lib/services";
-import { sessionActions, useViewer } from "#/lib/viewer";
+import { sessionActions, useOwnerName, useViewer } from "#/lib/viewer";
 import { ago, clock } from "#/lib/words";
 
 /** Whether the server URL names this machine (an empty or unparsable one: assume so). */
@@ -138,6 +139,7 @@ function ServiceRow({
   pending,
   act,
   steer,
+  runs,
 }: {
   readonly facts: ServiceFacts;
   readonly now: number;
@@ -145,7 +147,14 @@ function ServiceRow({
   readonly act: (action: ServiceAction, facts: ServiceFacts) => void;
   /** Whether the viewer steers the session: without it, a row reads and never runs. */
   readonly steer: boolean;
+  /** Whether the viewer runs commands in the workspace: the owner's alone (docs/adr/0013). */
+  readonly runs: boolean;
 }) {
+  const shown = !steer
+    ? readOnlyActions(facts.actions)
+    : runs
+      ? facts.actions
+      : steererActions(facts.actions);
   const service = facts.view.service;
   const running = facts.process?.tone === "accent";
   return (
@@ -206,7 +215,7 @@ function ServiceRow({
         </p>
       )}
       <div className="-mx-1.5 mt-2 flex flex-wrap gap-x-1 gap-y-0.5">
-        {(steer ? facts.actions : readOnlyActions(facts.actions)).map((action) => (
+        {shown.map((action) => (
           <Action
             key={action}
             tone={
@@ -247,10 +256,14 @@ export function ServicesSheet({
   readonly onOpenLogsTab: (processId: string, name: string) => void;
 }) {
   const recipes = useQuery(sessionRecipesQuery(session.id));
-  // Running, restarting and stopping Services steer the session (docs/adr/0003). An unknown
-  // viewer keeps the controls and the server decides.
+  // Running, restarting and stopping Services steer the session (docs/adr/0003); starting a
+  // command is the owner's alone (docs/adr/0013). An unknown viewer keeps the controls and the
+  // server decides.
   const viewer = useViewer();
-  const steer = viewer === null || sessionActions(session, viewer).steer;
+  const control = viewer === null ? null : sessionActions(session, viewer);
+  const steer = control === null || control.steer;
+  const runs = control === null || control.terminalInput;
+  const ownerName = useOwnerName(session);
   const eventState = useEventsState();
   const now = useNow();
   const connection = useConnection();
@@ -401,6 +414,7 @@ export function ServicesSheet({
             pending={pending}
             act={act}
             steer={steer}
+            runs={runs}
           />
         ))
       )}
@@ -422,7 +436,7 @@ export function ServicesSheet({
                   )}
                 </p>
               </div>
-              {steer && (
+              {steer && runs && (
                 <Action
                   tone="info"
                   disabled={pending !== null || recipe.shadowedBy !== null}
@@ -450,7 +464,12 @@ export function ServicesSheet({
           Only this session&apos;s owner runs Services in it, unless they share control.
         </p>
       )}
-      {steer && (
+      {steer && !runs && (
+        <p className="border-t border-rule px-4 py-3 font-sans text-[12.5px] text-ink-2">
+          Only {ownerName ?? "its owner"} starts Services in this workspace.
+        </p>
+      )}
+      {steer && runs && (
         <form
           className="border-t border-rule px-4 pt-4 pb-4"
           onSubmit={(event) => {
