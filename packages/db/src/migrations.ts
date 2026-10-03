@@ -2812,7 +2812,66 @@ const captureLaunchAnswersMigration = Effect.gen(function* () {
 });
 
 /**
- * Repositories in a session (docs/adr/0010): the sibling worktrees a session holds at
+ * 0101: each person's secret files (docs/adr/0010-secret-files.md): one row per path, the content
+ * sealed with the machine's secrets key as project secrets are. Removed with the account.
+ */
+const secretFilesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE user_secret_files (
+      id text PRIMARY KEY,
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      path text NOT NULL,
+      sealed_contents text NOT NULL,
+      bytes integer NOT NULL,
+      revision integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT user_secret_files_user_id_path_key UNIQUE (user_id, path)
+    )`;
+});
+
+/**
+ * 0102: the server-owned model catalog (docs/models-audit.md): one row per harness and model id, seeded
+ * with what the harness adapters supported on 2026-10-03 (`HARNESS_MODEL_SEED`, written out here
+ * so the migration stays what it was). `efforts` null means the harness's own; one default per
+ * harness. And the model and effort a session was started with, on the session itself.
+ */
+const harnessModelsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE harness_models (
+      harness text NOT NULL,
+      id text NOT NULL,
+      label text NOT NULL,
+      is_default boolean NOT NULL DEFAULT false,
+      efforts jsonb,
+      position integer NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (harness, id)
+    )`;
+  yield* sql`
+    CREATE UNIQUE INDEX harness_models_one_default_idx ON harness_models (harness) WHERE is_default`;
+  yield* sql`
+    INSERT INTO harness_models (harness, id, label, is_default, efforts, position) VALUES
+      ('claude', 'fable', 'Fable · latest', true, NULL, 0),
+      ('claude', 'opus', 'Opus · latest', false, NULL, 1),
+      ('claude', 'sonnet', 'Sonnet · latest', false, NULL, 2),
+      ('claude', 'haiku', 'Haiku · latest', false, NULL, 3),
+      ('codex', 'gpt-6.1-sol', 'GPT-6.1 Sol', true, NULL, 0),
+      ('codex', 'gpt-6-astra', 'GPT-6 Astra', false, NULL, 1),
+      ('codex', 'gpt-6-sol', 'GPT-6 Sol', false, NULL, 2),
+      ('codex', 'gpt-6-luna', 'GPT-6 Luna', false, '["low","medium","high","xhigh","max"]'::jsonb, 3),
+      ('codex', 'gpt-5.6-sol', 'GPT-5.6 Sol', false, NULL, 4),
+      ('codex', 'gpt-5.6-terra', 'GPT-5.6 Terra', false, NULL, 5),
+      ('codex', 'gpt-5.6-luna', 'GPT-5.6 Luna', false, '["low","medium","high","xhigh","max"]'::jsonb, 6),
+      ('codex', 'gpt-5.5', 'GPT-5.5', false, '["low","medium","high","xhigh"]'::jsonb, 7)`;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN model text`;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN effort text`;
+});
+
+/**
+ * 0103: repositories in a session (docs/adr/0010): the sibling worktrees a session holds at
  * `/workspace/repos/<name>`, with the state of their arrival and how each is saved.
  */
 const sessionRepositoriesMigration = Effect.gen(function* () {
@@ -2947,6 +3006,7 @@ export const migrations = {
   "0098_agent_memory": agentMemoryMigration,
   "0099_capture_bound_indexes": captureBoundIndexesMigration,
   "0100_capture_launch_answers": captureLaunchAnswersMigration,
-  // 0101 and 0102 are taken by branches in flight today (secret files, harness models).
+  "0101_secret_files": secretFilesMigration,
+  "0102_harness_models": harnessModelsMigration,
   "0103_session_repositories": sessionRepositoriesMigration,
 };

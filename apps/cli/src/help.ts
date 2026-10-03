@@ -177,8 +177,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       { flag: "--name <worktree>", text: "name the worktree; an existing name joins it" },
       { flag: "--worktree <existing>", text: "join an existing worktree only" },
-      { flag: "--model <id>", text: "the harness's model id" },
-      { flag: "--effort <level>", text: "low, medium, high, xhigh, or max" },
+      {
+        flag: "--model <id>",
+        text: "the harness's model id, one mend models lists. Default: the server's default for the harness",
+      },
+      {
+        flag: "--effort <level>",
+        text: "low, medium, high, xhigh, max, or ultra where the model takes it. Default: the harness's own",
+      },
       { flag: "--base <ref>", text: "the branch or sha the worktree starts from" },
       { flag: "--ask", text: "keep the harness's permission prompts" },
       { flag: "--fast", text: "priority processing where the harness offers it (codex)" },
@@ -202,7 +208,23 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "a second session in the same worktree",
       },
     ],
-    see: ["attach", "stop", "run", "sessions", "land"],
+    see: ["attach", "stop", "run", "sessions", "land", "models"],
+  },
+  {
+    name: "models",
+    section: "start",
+    summary: "the models each harness offers, as the server lists them",
+    synopsis: ["[--json]"],
+    description: [
+      "One block per harness: each model's id, the one a launch runs when --model is not given, and the efforts a model takes where they are fewer than the harness's. The list is the server's; the phone, the web app, the desktop and VS Code offer the same one, and a session records which model it was started with.",
+      "Pass an id to mend claude or mend codex with --model. An id the list does not know is passed through as given; the harness decides whether it exists.",
+    ],
+    options: [{ flag: "--json", text: "the catalog as the server answers it" }],
+    examples: [
+      { command: "mend models", text: "" },
+      { command: 'mend codex "fix the flaky test" --model gpt-6-astra --effort ultra', text: "" },
+    ],
+    see: ["codex", "sessions"],
   },
   {
     name: "pair",
@@ -757,6 +779,47 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     options: [{ flag: "--all", text: "every known config file" }],
     see: ["dotfiles", "dotfiles repo"],
+  },
+  {
+    name: "secrets",
+    section: "project setup",
+    summary: "your secret files: written into every session you launch",
+    synopsis: ["[list]"],
+    description: [
+      "A secret file is a file you keep in Mend, encrypted at rest, with its path under the home directory of the workspace: ~/.aws/credentials, a kubeconfig, an .npmrc token file. Every session you own receives your secret files before its agent starts, in every project. They are yours alone: no one else's sessions receive them, and the content never comes back out of the server. The web app's settings page shows the same list.",
+      "A secret file is never captured. It is written into the workspace's own home directory, which no capture, change, checkpoint or transcript harvest covers, and a path under a directory sessions do capture, such as .claude or .codex, is refused.",
+      "This lists your secret files: the path each takes in the workspace, its size, and when it last changed.",
+    ],
+    examples: [{ command: "mend secrets", text: "" }],
+    see: ["secrets add", "secrets rm", "env load"],
+  },
+  {
+    name: "secrets add",
+    section: "project setup",
+    summary: "keep a file as a secret file, or replace one",
+    synopsis: ["<path> [--from <file>]"],
+    description: [
+      "Reads the content from <file>, or from stdin without --from, and keeps it at <path> under the workspace home. A path on this machine under your home, such as ~/.aws/credentials, names the same place in the workspace. A file already kept at that path is replaced. Sessions launched from then on receive it; a running session keeps what it has.",
+      "A file is at most 256 KB, and you may keep up to 64. Binary files are fine.",
+    ],
+    options: [{ flag: "--from <file>", text: "read the content from this file instead of stdin" }],
+    examples: [
+      { command: "mend secrets add ~/.aws/credentials --from ~/.aws/credentials", text: "" },
+      { command: "mend secrets add .kube/config --from ~/.kube/config", text: "" },
+      { command: "mend secrets add .npmrc < ~/.npmrc", text: "" },
+    ],
+    see: ["secrets", "secrets rm"],
+  },
+  {
+    name: "secrets rm",
+    section: "project setup",
+    summary: "remove a secret file",
+    synopsis: ["<path>"],
+    description: [
+      "Removes the file kept at <path>. Sessions launched from then on do not receive it; a running session keeps what it has.",
+    ],
+    examples: [{ command: "mend secrets rm .npmrc", text: "" }],
+    see: ["secrets"],
   },
   {
     name: "git-author",

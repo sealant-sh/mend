@@ -6,6 +6,8 @@ import type { ConnectionStore, MendConnection } from "./config.js";
 import { requestMend } from "./mend-http.js";
 import {
   SESSION_STATUSES,
+  type Effort,
+  type HarnessModelCatalog,
   type LaunchStart,
   type Project,
   type ProjectDetail,
@@ -60,6 +62,8 @@ const parseSession = (value: unknown): Session => {
     // Present once the server is worktree-aware; older servers omit it.
     ...(typeof value["worktreeId"] === "string" ? { worktreeId: value["worktreeId"] } : {}),
     harness: stringField(value, "harness"),
+    // Recorded since the server owns the model catalog; older servers omit it.
+    model: typeof value["model"] === "string" ? value["model"] : null,
     label: nullableStringField(value, "label"),
     worktree: stringField(value, "worktree"),
     branch: stringField(value, "branch"),
@@ -79,6 +83,40 @@ const parseArray = <T>(
 ): ReadonlyArray<T> => {
   if (!Array.isArray(value)) throw new Error(`Mend returned invalid ${label}.`);
   return value.map(parse);
+};
+
+const EFFORTS: ReadonlyArray<Effort> = ["low", "medium", "high", "xhigh", "max", "ultra"];
+
+const parseEfforts = (value: unknown): ReadonlyArray<Effort> => {
+  if (!Array.isArray(value)) throw new Error("Mend returned invalid efforts.");
+  return value.map((item) => {
+    const effort = EFFORTS.find((candidate) => candidate === item);
+    if (effort === undefined) throw new Error("Mend returned an invalid effort.");
+    return effort;
+  });
+};
+
+const parseHarnessModelCatalog = (value: unknown): HarnessModelCatalog => {
+  if (!isRecord(value)) throw new Error("Mend returned an invalid model catalog.");
+  return {
+    harness: stringField(value, "harness"),
+    models: parseArray(
+      value["models"],
+      (item) => {
+        if (!isRecord(item)) throw new Error("Mend returned an invalid model.");
+        return {
+          id: stringField(item, "id"),
+          label: stringField(item, "label"),
+          isDefault: item["isDefault"] === true,
+          efforts: item["efforts"] === null ? null : parseEfforts(item["efforts"]),
+        };
+      },
+      "models",
+    ),
+    defaultModel: nullableStringField(value, "defaultModel"),
+    efforts: parseEfforts(value["efforts"]),
+    fastCapable: value["fastCapable"] === true,
+  };
 };
 
 const parseWorktree = (value: unknown): Worktree => {
@@ -152,6 +190,15 @@ export class MendClient {
 
   async listProjects(): Promise<ReadonlyArray<Project>> {
     return parseArray(await this.request("/projects"), parseProject, "projects");
+  }
+
+  /** The server-owned model catalog (docs/models-audit.md): what the new-session picks offer. */
+  async harnessModels(): Promise<ReadonlyArray<HarnessModelCatalog>> {
+    return parseArray(
+      await this.request("/harnesses/models"),
+      parseHarnessModelCatalog,
+      "model catalogs",
+    );
   }
 
   async projectDetail(id: string): Promise<ProjectDetail> {

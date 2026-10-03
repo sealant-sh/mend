@@ -435,8 +435,12 @@ export class LaunchRequest extends Schema.Class<LaunchRequest>("LaunchRequest")(
   argv: Schema.optional(Schema.Array(Schema.String)),
   /** The typed first message; rides the harness argv and seeds auto-naming. */
   prompt: Schema.optional(Schema.String),
-  /** Free-form harness model id; HARNESS_MODELS is advisory, for pickers. */
+  /**
+   * Free-form harness model id. Absent runs the harness's default from the server's catalog
+   * (`GET /harnesses/models`); either way the session records what runs.
+   */
   model: Schema.optional(Schema.String),
+  /** Absent is the harness's own default; a level the model does not take becomes the highest it does. */
   effort: Schema.optional(Schema.Literals(EFFORT_LEVELS)),
   permissionMode: Schema.optional(Schema.Literals(PERMISSION_MODES)),
   /** `fast` = priority processing where the harness supports it (codex). */

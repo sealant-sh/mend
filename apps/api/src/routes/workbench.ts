@@ -94,6 +94,7 @@ import {
   SessionRepositoriesRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
+  HarnessModelsRepo,
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
@@ -135,6 +136,7 @@ import {
   type GitAuthMode,
   gitAuthorIssue,
   normalizeGitAuthor,
+  resolveLaunchOptions,
   Session,
   type SessionStatus,
 } from "@mend/domain/workbench";
@@ -2964,8 +2966,19 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("handoff", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.owned(params.id);
+        const session = yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
+        // A handoff to a conversation continues the same session: a model or effort it names
+        // wins, else the ones the session was started with, else the harness's default; the engine
+        // records them once it launches (docs/models-audit.md). A handoff to a terminal resumes
+        // the harness natively, on the conversation's own model: nothing is resolved or rewritten.
+        const resolved =
+          payload.to === "protocol"
+            ? resolveLaunchOptions(yield* (yield* HarnessModelsRepo).forHarness(session.harness), {
+                model: payload.model ?? session.model,
+                effort: payload.effort ?? session.effort,
+              })
+            : null;
         return yield* engine
           .handoff(
             params.id,
@@ -2973,8 +2986,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             {
               mode: payload.to === "protocol" ? "protocol" : "pty",
               ...(payload.prompt === undefined ? {} : { prompt: payload.prompt }),
-              ...(payload.model === undefined ? {} : { model: payload.model }),
-              ...(payload.effort === undefined ? {} : { effort: payload.effort }),
+              ...(resolved === null || resolved.model === null ? {} : { model: resolved.model }),
+              ...(resolved === null || resolved.effort === null ? {} : { effort: resolved.effort }),
               ...(payload.permissionMode === undefined
                 ? {}
                 : { permissionMode: payload.permissionMode }),

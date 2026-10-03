@@ -200,4 +200,7 @@ does not replace them with another user's files.
 
 Do not sync private keys, provider tokens, `.env` files, or tool credentials as dotfiles. Use
 [provider accounts](/guides/provider-accounts/) and
-[project secrets](/guides/environment-variables/) for those values.
+[project secrets](/guides/environment-variables/) for those values, and
+[secret files](/guides/secret-files/) for a credential a tool reads from a file, such as
+`~/.aws/credentials` or a kubeconfig. Dotfiles are applied as plain files and can be captured with
+the rest of a workspace's setup; a secret file is encrypted at rest and never captured.

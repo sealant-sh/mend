@@ -1024,16 +1024,19 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       readonly pendingKey: string;
       readonly gateKey: string;
     }) => {
-      const argv = HARNESS_COMMANDS[vars.harness];
-      if (argv === undefined) throw new Error(`unknown harness "${vars.harness}"`);
+      if (HARNESS_COMMANDS[vars.harness] === undefined) {
+        throw new Error(`unknown harness "${vars.harness}"`);
+      }
       const session = await ctx.api<SessionDto>("POST", `/projects/${vars.projectId}/sessions`, {
         harness: vars.harness,
         label: null,
         name: vars.name,
         base: vars.base,
       });
+      // A bare structured start: the server composes the harness's own command, applies its
+      // default model and records it (docs/models-audit.md).
       return startedOrStarting(
-        ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv }),
+        ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, {}),
         session,
       );
     },
@@ -1248,14 +1251,15 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       readonly pendingKey: string;
       readonly gateKey: string;
     }) => {
-      const argv = HARNESS_COMMANDS[vars.harness];
-      if (argv === undefined) throw new Error(`unknown harness "${vars.harness}"`);
+      if (HARNESS_COMMANDS[vars.harness] === undefined) {
+        throw new Error(`unknown harness "${vars.harness}"`);
+      }
       const session = await ctx.api<SessionDto>("POST", `/worktrees/${vars.worktreeId}/sessions`, {
         harness: vars.harness,
         label: null,
       });
       return startedOrStarting(
-        ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv }),
+        ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, {}),
         session,
       );
     },

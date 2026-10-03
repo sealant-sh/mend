@@ -335,6 +335,9 @@ export const organizationMembers = () => call("GET", "/api/organization/members"
 
 export const listProjects = () => call("GET", "/api/projects");
 
+/** The server-owned model catalog (docs/models-audit.md): what the composer's picker lists. */
+export const listHarnessModels = () => call("GET", "/api/harnesses/models");
+
 export const projectDetail = (id: string) => call("GET", "/api/projects/:id", { params: { id } });
 
 export const sessionDetail = (id: string) => call("GET", "/api/sessions/:id", { params: { id } });

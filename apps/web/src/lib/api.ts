@@ -94,6 +94,9 @@ export type ProjectWorkspaceImageSaveResultDto = Outputs["projects"]["setWorkspa
 export type DotfilesDto = Outputs["settings"]["dotfiles"];
 export type DotfilesRepositoryDto = NonNullable<DotfilesDto["repository"]>;
 export type DotfilesSnapshotDto = NonNullable<DotfilesDto["snapshot"]>;
+export type SecretFilesDto = Outputs["settings"]["secretFiles"];
+export type SecretFileDto = SecretFilesDto["files"][number];
+export type SecretFileSavedDto = Outputs["settings"]["putSecretFile"];
 
 export type SkillDto = Outputs["skills"]["list"][number];
 export type SkillDetailDto = Outputs["skills"]["detail"];
@@ -331,6 +334,16 @@ export const setGitAccess = (mode: GitAccessModeDto) =>
 export const setGitAuthor = (name: string, email: string) =>
   orLogin(trpcClient.git.setAuthor.mutate({ name, email }));
 export const clearGitAuthor = () => orLogin(trpcClient.git.clearAuthor.mutate());
+
+// ─── Secret files (docs/adr/0010): content goes in, never comes back ────────
+
+export const putSecretFile = (upload: {
+  readonly path: string;
+  readonly encoding: "utf8" | "base64";
+  readonly contents: string;
+}) => orLogin(trpcClient.settings.putSecretFile.mutate(upload));
+export const deleteSecretFile = (path: string) =>
+  orLogin(trpcClient.settings.deleteSecretFile.mutate({ path }));
 
 // ─── Sessions · services ────────────────────────────────────────────────────
 

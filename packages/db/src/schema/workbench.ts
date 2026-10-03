@@ -48,6 +48,7 @@ import type {
   RunStatus,
   SealantRunId,
   SealantWorkspaceId,
+  SecretFileId,
   ServiceForwardId,
   ServiceId,
   ServiceObservationId,
@@ -104,6 +105,7 @@ import type {
   RequestIntent,
   RequestIntentSource,
   DiffDigest,
+  EffortLevel,
   ProtocolLaunchOptions,
   SessionControlKind,
   SessionExtraMount,
@@ -586,6 +588,30 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
  * The files ride the row as jsonb, like skills; `digest` is their tree digest, which a launch
  * compares with what the session's agent directory already holds.
  */
+/**
+ * The server-owned model catalog (docs/models-audit.md): one row per harness and model id, in the
+ * order pickers show them. `efforts` null means the harness's own; one `is_default` per harness.
+ * Seeded by migration 0101 from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
+ */
+export const harnessModels = pgTable(
+  "harness_models",
+  {
+    harness: text().notNull(),
+    id: text().notNull(),
+    label: text().notNull(),
+    isDefault: boolean().notNull().default(false),
+    efforts: jsonb().$type<ReadonlyArray<EffortLevel> | null>(),
+    position: integer().notNull(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.harness, table.id] }),
+    uniqueIndex("harness_models_one_default_idx")
+      .on(table.harness)
+      .where(sql`${table.isDefault}`),
+  ],
+);
+
 export const userPiProfiles = pgTable("user_pi_profiles", {
   userId: text().primaryKey(),
   files: jsonbArrayOf(PiProfileFile).notNull(),
@@ -641,6 +667,29 @@ export const userDotfiles = pgTable("user_dotfiles", {
   repository: jsonbOf(DotfilesRepository),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Each person's secret files (docs/adr/0010-secret-files.md), one row per path: the content is
+ * sealed at rest with the machine's secrets key (`@mend/store` SecretCipher, as project secrets
+ * are) and never returned by any API. The launch read is `sealedForLaunch`, decrypted once per
+ * launch and written into the executor's own home.
+ */
+export const userSecretFiles = pgTable(
+  "user_secret_files",
+  {
+    id: text().$type<SecretFileId>().primaryKey(),
+    userId: text().notNull(),
+    /** Home-relative POSIX path (`validateSecretFilePath`). */
+    path: text().notNull(),
+    /** The file's bytes as base64, sealed. */
+    sealedContents: text().notNull(),
+    bytes: integer().notNull(),
+    revision: integer().notNull().default(1),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique("user_secret_files_user_id_path_key").on(table.userId, table.path)],
+);
 
 /**
  * Skill libraries — user-scoped (identity, like dotfiles) and project-scoped
@@ -1207,6 +1256,9 @@ export const agentSessions = pgTable(
       .notNull()
       .references(() => worktrees.id, { onDelete: "cascade" }),
     harness: text().notNull(),
+    /** The model and effort the session was started with, as the server resolved them (0101). */
+    model: text(),
+    effort: text().$type<EffortLevel>(),
     providerSessionId: text(),
     label: text(),
     /** Mirror of the worktree row's `directory` (pre-worktree readers). */

@@ -59,6 +59,7 @@ import { type Download, landCommand, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
 import { loginCommand } from "./login.ts";
+import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
 import {
   folderCommand,
   inviteCommand,
@@ -68,6 +69,12 @@ import {
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
+import {
+  secretFileLines,
+  secretFilePathOf,
+  secretFileUploadOf,
+  type SecretFileDto,
+} from "./secret-files.ts";
 import { MendRequestError, noAnswerError, spoken } from "./server-request.ts";
 import { runServerProcess } from "./server-runtime.ts";
 import { nodeServerRuntime, readServerInstallationFacts, serverCommand } from "./server-setup.ts";
@@ -213,6 +220,12 @@ interface SessionDto extends SessionCaptureLike {
   /** Present once the server is worktree-aware. */
   readonly worktreeId?: string;
   readonly harness: string;
+  /**
+   * The model and effort the session was started with, as the server resolved them
+   * (docs/models-audit.md). Null when not recorded; absent on older servers.
+   */
+  readonly model?: string | null;
+  readonly effort?: string | null;
   readonly label: string | null;
   readonly worktree: string;
   readonly branch: string;
@@ -864,17 +877,16 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   if (harness === "run") {
     return supervisedRun(config, session, argv);
   }
-  // A structured start sends no argv: the server composes the harness flags
-  // (one shared mapping) and names the session from the prompt immediately.
-  const launchBody = structured
-    ? {
-        ...(parsed.prompt === null ? {} : { prompt: parsed.prompt }),
-        ...(parsed.model === null ? {} : { model: parsed.model }),
-        ...(parsed.effort === null ? {} : { effort: parsed.effort }),
-        ...(parsed.ask ? { permissionMode: "ask" } : {}),
-        ...(parsed.fast ? { speed: "fast" } : {}),
-      }
-    : { argv };
+  // A harness start sends no argv, flags or not: the server composes the harness's own flags
+  // (one shared mapping), applies its default model when none is named and records what runs
+  // (docs/models-audit.md), and names the session from the prompt immediately.
+  const launchBody = {
+    ...(parsed.prompt === null ? {} : { prompt: parsed.prompt }),
+    ...(parsed.model === null ? {} : { model: parsed.model }),
+    ...(parsed.effort === null ? {} : { effort: parsed.effort }),
+    ...(parsed.ask ? { permissionMode: "ask" } : {}),
+    ...(parsed.fast ? { speed: "fast" } : {}),
+  };
   await startAndFollow(
     config,
     session.id,
@@ -2471,6 +2483,65 @@ const memoryCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
       )}`,
     );
   }
+};
+
+// ─── secrets: the person's secret files (docs/adr/0010) ───────────────────────
+
+/** `mend secrets`: the files written into every workspace a session of yours launches in. */
+const secretsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  if (verb === "add" || verb === "rm") {
+    const given = rest.find((arg, index) => !arg.startsWith("--") && rest[index - 1] !== "--from");
+    if (given === undefined) return fail(usageOf(`secrets ${verb}`));
+    const resolved = secretFilePathOf(given, os.homedir());
+    if (resolved.issue !== null) return fail(resolved.issue);
+    if (verb === "rm") {
+      const removed = await api<{ readonly removed: boolean }>(
+        config,
+        "DELETE",
+        `/me/secret-files?path=${encodeURIComponent(resolved.path)}`,
+      );
+      return say(
+        removed.removed
+          ? `removed ~/${resolved.path} ${dim("· sessions launched from now on do not receive it")}`
+          : `~/${resolved.path}: not kept`,
+      );
+    }
+    const from = takeFlagValue(rest, "--from");
+    let bytes: Buffer;
+    try {
+      bytes = fs.readFileSync(from ?? 0);
+    } catch (error) {
+      return fail(
+        from === null
+          ? `nothing on stdin: pass --from <file> or pipe the content in`
+          : `${from}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (bytes.byteLength === 0)
+      return fail(from === null ? "nothing on stdin" : `${from} is empty`);
+    const saved = await api<{
+      readonly file: SecretFileDto;
+      readonly action: "created" | "replaced";
+    }>(config, "PUT", "/me/secret-files", secretFileUploadOf(resolved.path, bytes));
+    say(
+      `${green(saved.action)} ~/${saved.file.path} · ${saved.file.bytes} B ${dim(
+        "· sessions launched from now on receive it",
+      )}`,
+    );
+    return;
+  }
+  if (verb !== undefined && verb !== "list") return fail(usageOf("secrets"));
+  const view = await api<{ readonly files: ReadonlyArray<SecretFileDto> }>(
+    config,
+    "GET",
+    "/me/secret-files",
+  );
+  if (view.files.length === 0) {
+    say(`no secret files ${dim("· mend secrets add <path> --from <file> keeps one")}`);
+    return;
+  }
+  for (const line of secretFileLines(view.files)) say(line);
 };
 
 // ─── connect / accounts: the user's own provider credentials ────────────────
@@ -4206,9 +4277,25 @@ const printSessionRow = (row: SessionRow) => {
   if (annotation !== undefined && annotation.pendingFollowUp)
     facts.push(amber("follow-up pending"));
   const base = session.baseRef === null ? session.baseSha.slice(0, 12) : session.baseRef;
+  // The model the session was started with, as the server recorded it; nothing on older rows.
+  const model =
+    session.model === null || session.model === undefined
+      ? ""
+      : ` · ${session.model}${session.effort === null || session.effort === undefined ? "" : ` · ${session.effort}`}`;
   say(
-    `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(`${session.branch} · base ${base}`)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
+    `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(`${session.branch} · base ${base}${model}`)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
   );
+};
+
+/** `mend models`: what the server lists per harness, the default marked (docs/models-audit.md). */
+const modelsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const catalogs = await api<ReadonlyArray<HarnessModelCatalogDto>>(
+    config,
+    "GET",
+    "/harnesses/models",
+  );
+  if (args.includes("--json")) return say(modelCatalogJson(catalogs));
+  for (const line of modelCatalogLines(catalogs, dim)) say(line);
 };
 
 /**
@@ -4687,6 +4774,8 @@ const main = async () => {
       return skillsCommand(config, rest);
     case "memory":
       return memoryCommand(config, rest);
+    case "secrets":
+      return secretsCommand(config, rest);
     case "accounts":
       return accountsCommand(config);
     case "connect":
@@ -4741,6 +4830,8 @@ const main = async () => {
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);
+    case "models":
+      return modelsCommand(config, rest);
     case "worktrees":
       return worktreesCommand(config, rest);
     case undefined:

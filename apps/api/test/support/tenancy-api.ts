@@ -15,6 +15,8 @@ import {
   OrganizationSettingsRepo,
   PiProfilesRepo,
   AgentMemoryRepo,
+  SecretFilesRepo,
+  HarnessModelsRepo,
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectLinksRepo,
@@ -45,7 +47,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
-import type { Session } from "@mend/domain/workbench";
+import { emptyHarnessModelCatalog, type Session } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { Landing, LandingGit } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
@@ -178,6 +180,9 @@ export const createTenancyApi = async (
       readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
       readonly agentMemory?: Layer.PartialEffectful<AgentMemoryRepo["Service"]>;
       readonly sessionRepositories?: Layer.PartialEffectful<SessionRepositoriesRepo["Service"]>;
+      readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
+      readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
+      readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -309,7 +314,7 @@ export const createTenancyApi = async (
       recording(DotfilesCloner, "dotfilesCloner", options.dotfiles?.cloner ?? {}, calls),
       recording(FolderStore, "folderStore", {}, calls),
       recording(MendKeys, "keys", {}, calls),
-      recording(SecretCipher, "cipher", {}, calls),
+      recording(SecretCipher, "cipher", options.implement?.cipher ?? {}, calls),
     ),
     Layer.mergeAll(
       recording(Store, "store", {}, calls),
@@ -327,6 +332,17 @@ export const createTenancyApi = async (
       recording(HostEnvironment, "hostEnvironment", {}, calls),
       recording(PiProfilesRepo, "piProfiles", options.implement?.piProfiles ?? {}, calls),
       recording(AgentMemoryRepo, "agentMemory", options.implement?.agentMemory ?? {}, calls),
+      recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
+      recording(
+        HarnessModelsRepo,
+        "harnessModels",
+        // A launch resolves its model against the catalog; worlds that say nothing have none.
+        {
+          forHarness: (harness) => Effect.succeed(emptyHarnessModelCatalog(harness)),
+          ...options.implement?.harnessModels,
+        },
+        calls,
+      ),
       Layer.succeed(NetworkConfig, network),
       Layer.succeed(DeploymentConfig, {
         mode: "local",

@@ -53,6 +53,8 @@ export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => (
   projectId: "project-1",
   worktreeId: "worktree-1",
   harness: "claude",
+  model: null,
+  effort: null,
   providerSessionId: null,
   label: null,
   worktree: "worktree-1",

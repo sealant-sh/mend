@@ -49,7 +49,8 @@ Click **+** in the view, or run **Mend: New Session…**, and pick one of:
 - **Claude agent** or **Codex agent**: Mend starts the harness on a prompt you type, and the
   workspace opens in VS Code beside it. An empty prompt starts the harness without one.
 - **Agent with options…**: choose the harness, model, thinking level, permissions (skip permission
-  prompts, or ask before acting) and base branch.
+  prompts, or ask before acting) and base branch. The model list is the server's, the same one every
+  other client offers, with the server's default listed first.
 
 **Mend: New session in this worktree…** on a session starts a second session in the same worktree:
 the same files and branch, with a new conversation. Each session keeps its own harness state, so the

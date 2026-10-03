@@ -111,6 +111,10 @@ export type ProjectSecretId = typeof ProjectSecretId.Type;
 export const ProjectClusterBindingId = Schema.String.pipe(Schema.brand("ProjectClusterBindingId"));
 export type ProjectClusterBindingId = typeof ProjectClusterBindingId.Type;
 
+/** A person's secret file (docs/adr/0010-secret-files.md). */
+export const SecretFileId = Schema.String.pipe(Schema.brand("SecretFileId"));
+export type SecretFileId = typeof SecretFileId.Type;
+
 // ── Organizations (docs/adr/0003-organizations-and-tenancy.md) ───────────────
 
 export const OrganizationId = Schema.String.pipe(Schema.brand("OrganizationId"));

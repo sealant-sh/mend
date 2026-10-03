@@ -71,6 +71,20 @@ mend codex "Fix the failing test" --model gpt-5.5 --effort high --base main
 mend claude "Inspect the API boundary" --ask
 ```
 
+The server owns the model list. `mend models` prints it per harness, with the model a launch runs
+when `--model` is not given marked `default`, and the efforts each model takes. The phone, the web
+app, the desktop and VS Code offer the same list and preselect the same default, so a session
+started from any of them runs on the model you see. Every session records the model and effort it
+was started with; `mend sessions`, the session page and the phone's session header show them.
+
+```sh
+mend models
+```
+
+`--effort` takes `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` where the model takes it; a
+level the model does not take becomes the highest it does. Without `--effort` the harness uses its
+own default.
+
 Mend normally disables the harness's approval prompts because the workspace is the execution
 boundary. `--ask` restores provider prompts. `--fast` requests Codex priority processing. OpenCode
 currently ignores model, effort, permission, and speed options.

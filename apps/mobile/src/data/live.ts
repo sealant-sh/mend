@@ -4,7 +4,11 @@
  * is a server URL + a token stored on device — minted by pairing, or the
  * CLI bearer token typed in by hand.
  */
-import { captureStatusLine } from "@mend/domain/workbench";
+import {
+  captureStatusLine,
+  type EffortLevel,
+  type HarnessModelCatalogView,
+} from "@mend/domain/workbench";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as SecureStore from "expo-secure-store";
@@ -172,6 +176,13 @@ export interface SessionDto {
   /** Present once the server is worktree-aware. */
   readonly worktreeId?: string;
   readonly harness: string;
+  /**
+   * The model and effort the session was started with, as the server resolved them
+   * (docs/models-audit.md). Null before launch and for a harness with no catalog; absent on
+   * servers from before they were recorded.
+   */
+  readonly model?: string | null;
+  readonly effort?: EffortLevel | null;
   readonly label: string | null;
   readonly branch: string;
   readonly baseSha: string;
@@ -467,6 +478,7 @@ export const toSession = (dto: SessionDto, projectName: string) => ({
     : dto.harness === "codex"
       ? "Codex"
       : "OpenCode") as "Claude Code" | "Codex" | "OpenCode",
+  model: dto.model ?? null,
   projectId: projectName,
   title: dto.label ?? `session ${dto.id.slice(0, 8)}`,
   state: (ACTIVE.has(dto.status)
@@ -533,6 +545,24 @@ export interface ProjectBranchDto {
 }
 
 /** Branches a session can base on — what the project store holds right now. */
+/** The server-owned model catalog (docs/models-audit.md), as the wire carries it. */
+export type HarnessModelCatalogDto = HarnessModelCatalogView;
+
+/**
+ * Every harness's models, from the server: the one list the phone's picker draws. Nothing on the
+ * phone names a model of its own. Keyed by the server, so a phone that pairs with another machine
+ * never offers the first machine's list or sends its default.
+ */
+export const useHarnessModels = () => {
+  const config = useConfig();
+  return useQuery({
+    queryKey: ["harness-models", config?.url ?? ""],
+    enabled: config !== null && config.url !== "",
+    queryFn: () => api<ReadonlyArray<HarnessModelCatalogDto>>("GET", "/harnesses/models"),
+    staleTime: 60_000,
+  });
+};
+
 export const useProjectBranches = (projectId: string | null, enabled: boolean) =>
   useQuery({
     queryKey: ["project-branches", projectId],

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
@@ -36,6 +37,7 @@ import {
   SessionsRepo,
   AgentMemoryRepo,
   PiProfilesRepo,
+  SecretFilesRepo,
   SettingsRepo,
   SkillsRepo,
   UserDotfilesRepo,
@@ -89,6 +91,8 @@ import {
   type AgentRequest,
   type AgentTurn,
   EFFORT_LEVELS,
+  HARNESS_EFFORTS,
+  type EffortLevel,
   type LaunchStart,
   PERMISSION_MODES,
   SPEED_MODES,
@@ -264,9 +268,11 @@ import {
   extractTranscript,
   hasLiveHarnessState,
   CARRIED_TRANSCRIPTS,
+  harvestHarnessStateScript,
   locateLiveTranscript,
   parseCarriedTranscripts,
   nativeResumeArgv,
+  readHarnessFileScript,
   relocateHarnessHomeScript,
   type HarnessStateManifest,
   type LocatedHarnessState,
@@ -316,6 +322,20 @@ import {
   INSTALL_SESSION_LABEL,
   mayRunIn,
 } from "./run-eligibility.ts";
+import {
+  decodeSecretFilesRecord,
+  encodeSecretFilesRecord,
+  foldSecretFileOutcomes,
+  parseSecretFileOutcomes,
+  planSecretFiles,
+  secretFilesCleanupExec,
+  secretFilesDeliveredExec,
+  secretFilesExecs,
+  secretFilesRecordExec,
+  secretFilesRemoveExec,
+  type SecretFileOutcome,
+  type SecretFilesRecord,
+} from "./secret-files.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import {
   type AddableProject,
@@ -373,17 +393,38 @@ const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
  * and are decoded in the workspace. The sentinel preserves trailing newlines through POSIX command
  * substitution.
  */
-const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
+/** A word for `sh -c`, in single quotes, whatever it holds. */
+const shellWord = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+/**
+ * A harness opened on a prompt, with the model and effort the session was started with
+ * (docs/models-audit.md): the follow-up a stopped PTY session gets runs on the model the session
+ * reports, not on whatever the harness would pick today. Flags the harness does not take are left
+ * out, as `composeLaunchArgv` leaves them out.
+ */
+const promptArgv = (
+  harness: string,
+  prompt: string,
+  options: { readonly model: string | null; readonly effort: EffortLevel | null } = {
+    model: null,
+    effort: null,
+  },
+): ReadonlyArray<string> | null => {
+  const model = options.model === null ? "" : ` --model ${shellWord(options.model)}`;
+  const effort =
+    options.effort === null || !(HARNESS_EFFORTS[harness] ?? []).includes(options.effort)
+      ? null
+      : options.effort;
   const command = (() => {
     switch (harness) {
       case "claude":
-        return 'exec claude --dangerously-skip-permissions "$prompt"';
+        return `exec claude --dangerously-skip-permissions${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
       case "codex":
-        return 'exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox "$prompt"';
+        return `exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
       case "opencode":
-        return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode --prompt "$prompt"`;
+        return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode${model} --prompt "$prompt"`;
       case "pi":
-        return 'exec pi --approve "$prompt"';
+        return `exec pi --approve${model}${effort === null ? "" : ` --thinking ${effort}`} "$prompt"`;
       default:
         return null;
     }
@@ -701,6 +742,16 @@ const DEPENDENCY_INSTALL_SKIPPED_PREFIX = "dependency install skipped";
 const dependencyInstallSkippedWords = (n: number) =>
   `${DEPENDENCY_INSTALL_SKIPPED_PREFIX} · capture ${n} manifest unavailable`;
 
+/**
+ * Said once, as the launch starts, when a secret file (docs/adr/0010) was not written: the path
+ * and the reason the workspace gave, so a session that then lacks `~/.aws/credentials` says why.
+ */
+const SECRET_FILES_SUMMARY_PREFIX = "secret files";
+const secretFilesRefusedWords = (refused: ReadonlyArray<SecretFileOutcome>) =>
+  `${SECRET_FILES_SUMMARY_PREFIX} · ${refused.length} not written · ${refused
+    .map((outcome) => `~/${outcome.path} · ${outcome.reason ?? "refused"}`)
+    .join(" · ")}`;
+
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
   "stopped outside Mend",
@@ -708,6 +759,7 @@ const STALE_ON_START_PREFIXES = [
   "executor not answering",
   SETUP_SKIPPED_PREFIX,
   DEPENDENCY_INSTALL_SKIPPED_PREFIX,
+  SECRET_FILES_SUMMARY_PREFIX,
 ] as const;
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
@@ -1608,6 +1660,7 @@ type SessionEngineRequirements =
   | SkillsRepo
   | PiProfilesRepo
   | AgentMemoryRepo
+  | SecretFilesRepo
   | SessionRunsRepo
   | SessionProcessesRepo
   | ServicesRepo
@@ -5374,6 +5427,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const skillsRepo = yield* SkillsRepo;
       const piProfiles = yield* PiProfilesRepo;
       const agentMemory = yield* AgentMemoryRepo;
+      const secretFiles = yield* SecretFilesRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const services = yield* ServicesRepo;
@@ -6084,20 +6138,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
         });
 
-        const list = shape.paths.map((p) => `"${p}"`).join(" ");
+        // From where the state physically is, through the relocation's own links only and never
+        // another (`harvestHarnessStateScript`): a link an agent left under the harness home at
+        // `~/.aws/credentials` is archived as a link, not as the secret file it points at
+        // (docs/adr/0010; Astra review 2026-10-03).
         const pack = yield* sealant.exec(workspace, [
           "sh",
           "-c",
-          // -h dereferences: the boot step turns `$HOME` state dirs into symlinks onto the
-          // harness-home mount, and the capture must carry their contents, not the links.
-          // Conversations Mend carried in from other sessions (docs/adr/0009, "Codex") stay out:
-          // restored without their list, one could read as this session's own.
-          `cd "$HOME" || exit 1; L=""; for p in ${list}; do [ -e "$p" ] && L="$L $p"; done; ` +
-            `[ -n "$L" ] || exit 3; X=/tmp/mend-harness-state.exclude; : > "$X"; ` +
-            `C="${HARNESS_HOME_MOUNT_PATH}/${CARRIED_TRANSCRIPTS}"; ` +
-            `[ -s "$C" ] && sed 's/.*/*&*/' "$C" > "$X"; ` +
-            `tar -czhf /tmp/mend-harness-state.tgz -X "$X" $L && ` +
-            `base64 -w0 /tmp/mend-harness-state.tgz`,
+          harvestHarnessStateScript(shape.paths),
         ]);
         if (pack.exitCode !== 0 || pack.stdout.trim() === "") {
           return yield* new HarnessStateCommandError({
@@ -6150,7 +6198,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               message: `Could not identify the native ${harness} session in ${transcriptFile}.`,
             });
           }
-          const native = yield* sealant.exec(workspace, ["cat", transcriptFile]);
+          // Never through a symlink, the file or a directory on the way: a link named like a
+          // transcript, or a linked directory holding one, could lead to anything in the home, a
+          // secret file included (docs/adr/0010).
+          const native = yield* sealant.exec(workspace, [
+            "sh",
+            "-c",
+            readHarnessFileScript(),
+            "mend-read",
+            transcriptFile,
+          ]);
           if (native.exitCode !== 0 || native.stdout === "") {
             return yield* new HarnessStateCommandError({
               sessionId,
@@ -9118,6 +9175,137 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * The owner's secret files (docs/adr/0010-secret-files.md, `secret-files.ts`), into the
+       * workspace's own `$HOME` after the relocation and before the harness starts, in both
+       * stores through exec: the home is the executor's disk, which no capture root covers. The
+       * sealed set is read once per launch and unsealed here, the only place Mend holds the
+       * bytes; the workspace proves each path is still a plain path in the home before writing.
+       * Best-effort like skills: an agent without its files still starts, and the session line
+       * says which were not written and why.
+       */
+      const deliverSecretFiles = Effect.fn("SessionEngine.deliverSecretFiles")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        if (session.ownerUserId === null) return;
+        const sealed = yield* secretFiles.sealedForLaunch(session.ownerUserId);
+        // What an earlier delivery wrote into this home (`~/.mend/secret-files`, sealed with the
+        // machine key and bound to this workspace, each file with its digest): a file the person
+        // no longer keeps is removed, so a retained executor's next run does not read it. A record
+        // that does not unseal, or is another workspace's, is nobody's word and says nothing.
+        const recordText = (yield* sealant.exec(workspace, secretFilesDeliveredExec)).stdout.trim();
+        const record =
+          recordText === ""
+            ? null
+            : yield* secretCipher.decrypt(recordText).pipe(
+                Effect.map((json) => decodeSecretFilesRecord(json, workspace.id)),
+                Effect.orElseSucceed(() => null),
+              );
+        if (recordText !== "" && record === null) {
+          yield* Effect.logWarning(
+            "session engine: secret files · the home's record is not this workspace's, ignored",
+          ).pipe(Effect.annotateLogs({ sessionId: session.id }));
+        }
+        const before = record?.files ?? [];
+        if (sealed.length === 0 && before.length === 0) return;
+        const unsealed = yield* Effect.forEach(
+          sealed,
+          (file) =>
+            secretCipher.decrypt(file.sealedContents).pipe(
+              Effect.map((base64) => ({
+                path: file.path,
+                bytes: new Uint8Array(Buffer.from(base64, "base64")),
+              })),
+              // Named by PATH only: a broken or rotated machine key must never print a file.
+              Effect.mapError(
+                () =>
+                  new WorkspaceFileError({
+                    path: file.path,
+                    message: `~/${file.path} could not be unsealed with this machine's key`,
+                  }),
+              ),
+            ),
+          { concurrency: 1 },
+        );
+        const plan = planSecretFiles(unsealed);
+        const outcomes: Array<SecretFileOutcome> = [...plan.refused];
+        // One delivery's own staging names, and its staging files gone whatever ends it early.
+        const stamp = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+        const paths = plan.files.map((file) => file.path);
+        yield* Effect.gen(function* () {
+          for (const argv of secretFilesExecs(plan.files, stamp)) {
+            const result = yield* sealant.exec(workspace, argv);
+            outcomes.push(...parseSecretFileOutcomes(result.stdout));
+            if (result.exitCode !== 0) {
+              return yield* new WorkspaceFileError({
+                path: "~",
+                message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
+              });
+            }
+          }
+        }).pipe(
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) || paths.length === 0
+              ? Effect.void
+              : sealant.exec(workspace, secretFilesCleanupExec(paths, stamp)).pipe(Effect.ignore),
+          ),
+        );
+        // A file delivered before and no longer kept goes, when it still holds the bytes Mend
+        // wrote; one still kept but refused this time stays recorded, so a later delivery can
+        // still remove it, and so does one whose removal was refused.
+        const digests = new Map(
+          plan.files.map((file) => [
+            file.path,
+            createHash("sha256").update(file.bytes).digest("hex"),
+          ]),
+        );
+        const stale = before.filter((file) => !digests.has(file.path));
+        if (stale.length > 0) {
+          const removed = yield* sealant.exec(workspace, secretFilesRemoveExec(stale));
+          outcomes.push(...parseSecretFileOutcomes(removed.stdout));
+        }
+        const written = new Set(
+          outcomes.filter((outcome) => outcome.outcome === "written").map((o) => o.path),
+        );
+        const removalRefused = new Set(
+          outcomes.filter((outcome) => outcome.outcome === "kept").map((o) => o.path),
+        );
+        const next: SecretFilesRecord["files"] = [
+          ...plan.files.flatMap((file) =>
+            written.has(file.path)
+              ? [{ path: file.path, sha256: digests.get(file.path) ?? "" }]
+              : before.filter((old) => old.path === file.path),
+          ),
+          ...stale.filter((file) => removalRefused.has(file.path)),
+        ];
+        const nextRecord =
+          next.length === 0
+            ? null
+            : yield* secretCipher
+                .encrypt(encodeSecretFilesRecord({ workspaceId: workspace.id, files: next }))
+                .pipe(Effect.orElseSucceed(() => null));
+        yield* sealant.exec(workspace, secretFilesRecordExec(nextRecord)).pipe(Effect.ignore);
+        for (const outcome of foldSecretFileOutcomes(outcomes)) {
+          yield* (
+            outcome.outcome === "refused"
+              ? Effect.logWarning("session engine: secret file · not written")
+              : Effect.logInfo(`session engine: secret file · ${outcome.outcome}`)
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              path: `~/${outcome.path}`,
+              ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+            }),
+          );
+        }
+        const refused = foldSecretFileOutcomes(outcomes).filter(
+          (outcome) => outcome.outcome === "refused",
+        );
+        if (refused.length > 0)
+          yield* noteLaunchWords(session.id, secretFilesRefusedWords(refused));
+      });
+
+      /**
        * Codex's memory (docs/adr/0009, "Codex"): the person's own Codex conversations on the
        * project, laid into this session's home before Codex starts. In full, the few Codex would
        * summarise and has not; as stubs, the ones it has summarised, so it keeps their summaries.
@@ -9841,6 +10029,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logInfo("session engine: capture mode · joining the lease holder").pipe(
               Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }),
             );
+            // Whose home the join runs in (docs/adr/0010): unknown reads as another person's.
+            const holderOwner = yield* sessions.byId(SessionId.make(holder.sessionId)).pipe(
+              Effect.map((held) => held.ownerUserId),
+              Effect.orElseSucceed(() => null),
+            );
             return yield* launchInRetainedWorkspace(
               sessionId,
               argv,
@@ -9852,6 +10045,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               protocolStart,
               protocolAuthor,
               holder.workspace,
+              holderOwner,
             ).pipe(
               Effect.catchTag("SessionNotLiveError", (error) =>
                 Effect.fail(
@@ -10449,6 +10643,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
+        // The owner's secret files (docs/adr/0010): into the executor's own home, which no capture
+        // root covers, before the harness starts.
+        yield* deliverSecretFiles(session, workspace).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: secret files were not written").pipe(
+              Effect.annotateLogs({ sessionId, message: error.message }),
+              Effect.andThen(
+                noteLaunchWords(
+                  sessionId,
+                  `${SECRET_FILES_SUMMARY_PREFIX} · not written · ${error.message}`,
+                ),
+              ),
+            ),
+          ),
+        );
         // Repositories added in an earlier launch (docs/adr/0010): their files came back with the
         // worktree, their links did not. A relink that cannot run costs the links, never the launch.
         const noRepositories: ReadonlyArray<SessionRepositoryRow> = [];
@@ -10693,7 +10902,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const launchProtocol = Effect.fn("SessionEngine.launchProtocol")(function* (
         sessionId: SessionId,
-        start: LaunchStart,
+        requested: LaunchStart,
         author: string | null,
         launchCorrelationId: string | null = null,
         forceFreshWorkspace = false,
@@ -10713,6 +10922,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
+        // A continuation that names neither a model nor an effort (a resume, a stopped session's
+        // follow-up) runs on what the session was started with (docs/models-audit.md); a start
+        // that names either is taken as given.
+        const start: LaunchStart =
+          requested.model === undefined && requested.effort === undefined
+            ? {
+                ...requested,
+                ...(session.model === null ? {} : { model: session.model }),
+                ...(session.effort === null ? {} : { effort: session.effort }),
+              }
+            : requested;
         const previous = currentAgentProcess(rows);
         // Any prior same-harness agent resumes by provider id — a PTY-born
         // session picked up in protocol mode continues the same conversation
@@ -10725,6 +10945,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
         }
+        // Admitted and composable: the model and effort this launch runs on are the session's
+        // from here, written before the workspace builds so the row says what runs.
+        yield* sessions.setLaunchOptions(sessionId, {
+          model: start.model ?? null,
+          effort: start.effort ?? null,
+        });
         // A fresh-workspace relaunch must carry the harvested state with it: the composed
         // argv resumes by provider id, and without the restored transcript the harness
         // refuses the resume ("No conversation found"). A first launch (no prior protocol
@@ -11039,6 +11265,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolAuthor: string | null = null,
           /** Capture mode: the lease holder's workspace, where a join runs as one more process. */
           workspaceOverride: Workspace | null = null,
+          /**
+           * With `workspaceOverride`: who owns the lease holder's session, so the home it writes
+           * into is known to be theirs (docs/adr/0010): a join into another person's executor
+           * receives no secret files of its own there.
+           */
+          executorOwnerUserId: string | null = null,
         ) {
           const session = yield* sessions.byId(sessionId);
           const project = yield* projects.byId(session.projectId);
@@ -11079,6 +11311,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   .pipe(Effect.ignore),
               ),
             );
+          }
+          // The owner's secret files again (docs/adr/0010): a retained executor may predate a
+          // file the owner added or replaced since its launch, and this run reads the home as it
+          // is now. Only into a home that is the owner's: the session's own executor, or a lease
+          // holder's whose session the same person owns. A join into another person's executor
+          // writes nothing, and the log says so.
+          const homeIsOwners =
+            workspaceOverride === null ||
+            (executorOwnerUserId !== null && executorOwnerUserId === session.ownerUserId);
+          if (homeIsOwners) {
+            yield* deliverSecretFiles(session, workspace).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: secret files were not written").pipe(
+                  Effect.annotateLogs({ sessionId, message: error.message }),
+                ),
+              ),
+            );
+          } else if (session.ownerUserId !== null) {
+            yield* Effect.logInfo(
+              "session engine: secret files not written · the executor is another person's",
+            ).pipe(Effect.annotateLogs({ sessionId }));
           }
           // A retained workspace may hold a repository whose add this server did not see end
           // (docs/adr/0010): settle it from what the workspace holds, as a fresh launch would.
@@ -11345,7 +11598,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
-        const argv = promptArgv(session.harness, instruction);
+        const argv = promptArgv(session.harness, instruction, {
+          model: session.model,
+          effort: session.effort,
+        });
         if (argv === null) {
           return yield* new SealantPlatformError({
             code: "unknown_harness",
@@ -11543,7 +11799,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (retainCurrentWorkspace && manifest.harness === target) {
           argv = nativeResumeArgv(target, manifest.providerSessionId, argv);
         }
-        if (target !== session.harness) yield* sessions.setHarness(sessionId, target);
+        if (target !== session.harness) {
+          yield* sessions.setHarness(sessionId, target);
+          // The converted launch names no model: the new harness picks its own, and the row
+          // says so rather than keeping the old harness's (docs/models-audit.md).
+          yield* sessions.setLaunchOptions(sessionId, { model: null, effort: null });
+        }
         yield* sessions.reopen(sessionId, "running");
         return yield* retainCurrentWorkspace
           ? launchInRetainedWorkspace(

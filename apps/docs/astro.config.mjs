@@ -62,6 +62,7 @@ export default defineConfig({
             { label: "Workspace images", slug: "guides/workspace-images" },
             { label: "Variables and secrets", slug: "guides/environment-variables" },
             { label: "Dotfiles", slug: "guides/dotfiles" },
+            { label: "Secret files", slug: "guides/secret-files" },
             { label: "Git access", slug: "guides/git-access" },
             { label: "Development services", slug: "guides/services" },
             { label: "Skills", slug: "guides/skills" },

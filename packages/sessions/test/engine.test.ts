@@ -41,6 +41,7 @@ import {
   SettingsRepo,
   AgentMemoryRepo,
   PiProfilesRepo,
+  SecretFilesRepo,
   SkillsRepo,
   UserDotfilesRepo,
   UserGitAuthorRepo,
@@ -920,6 +921,17 @@ const piProfilesLayerOf = (
 ): Layer.Layer<PiProfilesRepo> =>
   Layer.succeed(PiProfilesRepo, {
     forUser: saved,
+    save: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+  });
+
+/** The owner's secret files (docs/adr/0010); none unless a test brings some, sealed as the stub cipher seals. */
+const secretFilesLayerOf = (
+  sealedForLaunch: SecretFilesRepo["Service"]["sealedForLaunch"] = () => Effect.succeed([]),
+): Layer.Layer<SecretFilesRepo> =>
+  Layer.succeed(SecretFilesRepo, {
+    sealedForLaunch,
+    list: () => Effect.succeed([]),
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
@@ -1987,6 +1999,7 @@ const sessionsLayer = (world: World) => {
         if (world.sessions.get(id)?.settledAt != null) update(id, { status: outcome, summary });
       }),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
+    setLaunchOptions: (id, options) => Effect.sync(() => update(id, options)),
     setLabel: (id, label) => Effect.sync(() => update(id, { label })),
     setLabelIfUnset: (id, label) =>
       Effect.sync(() => {
@@ -2661,6 +2674,7 @@ const withEngine = <A, E>(
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
     readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
     readonly agentMemoryLayer?: Layer.Layer<AgentMemoryRepo>;
+    readonly secretFilesLayer?: Layer.Layer<SecretFilesRepo>;
     /** The owner's dotfiles; none configured unless a test brings its own. */
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
     /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
@@ -2833,6 +2847,7 @@ const withEngine = <A, E>(
         options.skillsLayer ?? skillsStubLayer,
         options.piProfilesLayer ?? piProfilesLayerOf(),
         options.agentMemoryLayer ?? agentMemoryLayerOf(),
+        options.secretFilesLayer ?? secretFilesLayerOf(),
       ),
     ),
   );
@@ -3320,6 +3335,10 @@ describe("SessionEngine", () => {
           expect(attached[0]?.process.kind).toBe("agent-protocol");
           expect(attached[0]?.process.argv).toEqual(["codex", "app-server"]);
           expect(submitted).toEqual(["inspect replay"]);
+          // The session records the model and effort the admitted launch runs on
+          // (docs/models-audit.md).
+          expect(world.sessions.get(session.id)?.model).toBe("gpt-test");
+          expect(world.sessions.get(session.id)?.effort).toBe("high");
 
           const duplicate = yield* engine
             .launchProtocol(session.id, { mode: "protocol", permissionMode: "bypass" }, null)
@@ -3540,7 +3559,7 @@ describe("SessionEngine", () => {
           // The settle-path harvest (forked) clears the manifest before its capture fails
           // against the empty exec output; wait for its pack attempt before planting state.
           const packRan = () =>
-            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state.tgz"));
+            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state"));
           for (let i = 0; i < 400 && !packRan(); i++) {
             yield* Effect.sleep(Duration.millis(10));
           }
@@ -6164,6 +6183,7 @@ describe("SessionEngine", () => {
           skillsStubLayer,
           piProfilesLayerOf(),
           agentMemoryLayerOf(),
+          secretFilesLayerOf(),
         ),
       ),
     );

@@ -1,6 +1,5 @@
 import {
   EFFORT_LEVELS,
-  HARNESS_MODELS,
   PERMISSION_MODES,
   SPEED_MODES,
   type EffortLevel,
@@ -157,30 +156,21 @@ export const effectiveHarness = (
   fallback: Harness,
 ): Harness => prefs.byProject[projectId]?.harness ?? fallback;
 
-/** The catalog default model id for a harness, when it has a catalog. */
-export const defaultModel = (harness: Harness): string | null =>
-  HARNESS_MODELS[harness]?.find((option) => option.isDefault)?.id ??
-  HARNESS_MODELS[harness]?.[0]?.id ??
-  null;
+const NOTHING_CHOSEN: HarnessPrefs = {
+  model: null,
+  effort: null,
+  permission: null,
+  speed: null,
+  mode: null,
+};
 
-/** The effective (sticky ?? default) selections for one project + harness. */
-export const effectiveHarnessPrefs = (
+/**
+ * The sticky choices for one project + harness; every field null until something was chosen.
+ * `model` null, or an id the catalog no longer lists, reads as the server's default in the picker
+ * (`modelPicker` in `@mend/domain/workbench`).
+ */
+export const stickyHarnessPrefs = (
   prefs: ComposerPrefs,
   projectId: string,
   harness: Harness,
-): HarnessPrefs => {
-  const sticky = prefs.byProject[projectId]?.byHarness[harness];
-  const model = sticky?.model ?? null;
-  const catalog = HARNESS_MODELS[harness] ?? [];
-  return {
-    // A sticky id the catalog no longer lists falls back to the default.
-    model:
-      model !== null && catalog.some((option) => option.id === model)
-        ? model
-        : defaultModel(harness),
-    effort: sticky?.effort ?? null,
-    permission: sticky?.permission ?? null,
-    speed: sticky?.speed ?? null,
-    mode: sticky?.mode ?? null,
-  };
-};
+): HarnessPrefs => prefs.byProject[projectId]?.byHarness[harness] ?? NOTHING_CHOSEN;

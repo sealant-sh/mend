@@ -12,12 +12,13 @@
  * Thinking depth, one shared scale; each harness maps it to its own flag (claude `--effort`, codex
  * `model_reasoning_effort`). `ultra` is codex's own top tier ("maximum reasoning with automatic
  * task delegation"); claude stops at `max`, and so do some codex models. What a model takes is in
- * its catalog entry (`effortsFor`); a launch clamps what a harness cannot take (`effortFor`).
+ * the server's catalog (`model-catalog.ts`, `catalogEfforts`), applied before a launch is composed;
+ * the composer clamps what the harness itself cannot take (`effortFor`).
  */
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
-/** What each harness's CLI accepts at all; a model may take fewer (`HarnessModelOption`). */
+/** What each harness's CLI accepts at all; a model may take fewer (its catalog row says). */
 export const HARNESS_EFFORTS: Readonly<Record<string, ReadonlyArray<EffortLevel>>> = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -27,23 +28,13 @@ export const HARNESS_EFFORTS: Readonly<Record<string, ReadonlyArray<EffortLevel>
   opencode: [],
 };
 
-/** The efforts to offer for a harness and model: the model's own when catalogued, else the harness's. */
-export const effortsFor = (harness: string, model: string | null): ReadonlyArray<EffortLevel> => {
-  const entry = HARNESS_MODELS[harness]?.find((option) => option.id === model);
-  return entry?.efforts ?? HARNESS_EFFORTS[harness] ?? EFFORT_LEVELS;
-};
-
 /**
- * The effort a launch passes: a level the model (or its harness) does not take — a saved `ultra`
- * sent to claude, or to a codex model that stops at `max` — becomes the highest it does, so a stale
- * preference never fails a launch.
+ * The effort a launch passes: a level the harness does not take at all — a saved `ultra` sent to
+ * claude — becomes the highest it does, so a stale preference never fails a launch. What the chosen
+ * model takes was already applied by the server (`resolveLaunchOptions`).
  */
-const effortFor = (
-  harness: string,
-  model: string | null,
-  effort: EffortLevel | undefined,
-): EffortLevel | undefined => {
-  const taken = effortsFor(harness, model);
+const effortFor = (harness: string, effort: EffortLevel | undefined): EffortLevel | undefined => {
+  const taken = HARNESS_EFFORTS[harness] ?? EFFORT_LEVELS;
   if (effort === undefined || taken.includes(effort)) return effort;
   return taken.at(-1);
 };
@@ -69,8 +60,8 @@ export const FAST_CAPABLE_HARNESSES: ReadonlySet<string> = new Set(["codex"]);
 export const PERMISSION_MODES = ["bypass", "ask"] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
-/** A picker suggestion — `id` is what the harness CLI accepts verbatim. */
-export interface HarnessModelOption {
+/** One seeded catalog row; `id` is what the harness CLI accepts verbatim. */
+export interface HarnessModelSeed {
   readonly id: string;
   readonly label: string;
   readonly isDefault: boolean;
@@ -82,8 +73,10 @@ const CODEX_UP_TO_MAX: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "x
 const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh"];
 
 /**
- * Advisory catalogs for model pickers; the contract keeps `model` free-form because harnesses
- * accept ids these lists don't know yet.
+ * What the `harness_models` table was seeded with (migration 0101), and the words Slack recognises
+ * without a database at hand. Not a picker's list: pickers read the server's catalog
+ * (`GET /harnesses/models`, `model-catalog.ts`), which an operator edits in place. The contract
+ * keeps `model` free-form because harnesses accept ids no list knows yet.
  *
  * Claude is offered by family alias (`fable`, `opus`, `sonnet`, `haiku`): Claude Code resolves
  * each to the latest model of that family, so the list does not go stale when a model ships. As of
@@ -92,7 +85,7 @@ const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", 
  * Codex is `codex debug models` (codex-cli 0.159.2, 2026-10-01): the entries it lists, in its own
  * order, its default first, and each model's efforts where it takes fewer than `ultra`.
  */
-export const HARNESS_MODELS: Record<string, ReadonlyArray<HarnessModelOption>> = {
+export const HARNESS_MODEL_SEED: Readonly<Record<string, ReadonlyArray<HarnessModelSeed>>> = {
   claude: [
     { id: "fable", label: "Fable · latest", isDefault: true },
     { id: "opus", label: "Opus · latest", isDefault: false },
@@ -155,7 +148,7 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
     case "claude": {
       const argv = ["claude"];
       if (model !== null) argv.push("--model", model);
-      const effort = effortFor("claude", model, start.effort);
+      const effort = effortFor("claude", start.effort);
       if (effort !== undefined) argv.push("--effort", effort);
       if (start.permissionMode === "ask") argv.push("--permission-mode", "auto");
       if (prompt !== null) argv.push(prompt);
@@ -164,7 +157,7 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
     case "codex": {
       const argv = ["codex"];
       if (model !== null) argv.push("--model", model);
-      const effort = effortFor("codex", model, start.effort);
+      const effort = effortFor("codex", start.effort);
       if (effort !== undefined) argv.push("-c", `model_reasoning_effort=${effort}`);
       // Priority processing; codex warns and omits the tier when the model
       // doesn't advertise it, so this degrades harmlessly.
@@ -189,7 +182,7 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
       // `ask` therefore changes nothing for it.
       const argv = ["pi"];
       if (model !== null) argv.push("--model", model);
-      const effort = effortFor("pi", model, start.effort);
+      const effort = effortFor("pi", start.effort);
       if (effort !== undefined) argv.push("--thinking", effort);
       if (prompt !== null) argv.push(prompt);
       return argv;
@@ -238,7 +231,7 @@ export const composeProtocolArgv = (
       if (providerSessionId === undefined) argv.push("--session-id", crypto.randomUUID());
       else argv.push("--resume", providerSessionId);
       if (model !== null) argv.push("--model", model);
-      const effort = effortFor("claude", model, start.effort);
+      const effort = effortFor("claude", start.effort);
       if (effort !== undefined) argv.push("--effort", effort);
       if (start.permissionMode !== "ask") {
         argv.push("--permission-mode", "bypassPermissions");

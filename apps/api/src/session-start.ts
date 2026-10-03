@@ -1,11 +1,18 @@
 import { BudgetExceeded, LaunchRequest, NotFound, StoreFailure } from "@mend/api-contracts";
-import { AgentConversationRepo, ProjectsRepo, SessionsRepo, SettingsRepo } from "@mend/db";
+import {
+  AgentConversationRepo,
+  HarnessModelsRepo,
+  ProjectsRepo,
+  SessionsRepo,
+  SettingsRepo,
+} from "@mend/db";
 import type { ProjectId } from "@mend/domain";
 import {
   composeLaunchArgv,
   PROMPTABLE_HARNESSES,
   resolveAutoLand,
   resolveAutomation,
+  resolveLaunchOptions,
   withLandingGuard,
   type Session,
   type SessionOrigin,
@@ -108,6 +115,7 @@ export const makeSessionStart = Effect.gen(function* () {
   const settingsRepo = yield* SettingsRepo;
   const jobs = yield* JobRunner;
   const conversations = yield* AgentConversationRepo;
+  const harnessModels = yield* HarnessModelsRepo;
 
   /**
    * Whether the session's opening turn carries the prompt guard (docs/adr/0007-landing.md,
@@ -197,14 +205,33 @@ export const makeSessionStart = Effect.gen(function* () {
   const launchAs = Effect.fn("SessionStart.launchAs")(function* (
     userId: string,
     session: Session,
-    input: LaunchRequest,
+    request: LaunchRequest,
     answer: LaunchAnswer = {},
   ) {
-    if (input.mode === "protocol" && input.argv !== undefined) {
+    if (request.mode === "protocol" && request.argv !== undefined) {
       return yield* new StoreFailure({
         message: "Protocol launches use the supported harness adapter and cannot take argv.",
       });
     }
+    // The model and effort the session runs on (docs/models-audit.md): the request's, else what
+    // the session was started with (a Slack follow-up relaunching a settled session names none),
+    // else the harness's catalog default; the effort clamped to what that model takes. A verbatim
+    // argv is the person's own command and names its own model, so nothing is resolved for it.
+    const resolved =
+      request.argv === undefined
+        ? resolveLaunchOptions(yield* harnessModels.forHarness(session.harness), {
+            model: request.model ?? session.model,
+            effort: request.effort ?? session.effort,
+          })
+        : null;
+    const input: LaunchRequest =
+      resolved === null
+        ? request
+        : new LaunchRequest({
+            ...request,
+            ...(resolved.model === null ? { model: undefined } : { model: resolved.model }),
+            ...(resolved.effort === null ? { effort: undefined } : { effort: resolved.effort }),
+          });
     // Verbatim argv wins only for PTY mode. Protocol flags and turn settings are split by the
     // server because model and effort ride on provider turns, not the long-lived process argv.
     const argv = input.argv ?? composeLaunchArgv(session.harness, input);
@@ -256,6 +283,9 @@ export const makeSessionStart = Effect.gen(function* () {
     // take minutes — enqueue before the launch so the label lands while
     // the workspace still provisions.
     if (inlineNamePrompt !== null) yield* queueAutoName;
+    // Recorded once the launch is admitted, never for one the slot refuses. A protocol launch
+    // records inside the engine, after its own live-agent check; a PTY launch here. A verbatim
+    // argv names its own flags, which Mend did not resolve: the row says so with null.
     const launch =
       input.mode === "protocol"
         ? engine.launchProtocol(
@@ -263,7 +293,9 @@ export const makeSessionStart = Effect.gen(function* () {
             guarded ? { ...input, prompt: withLandingGuard(prompt) } : input,
             userId,
           )
-        : engine.launch(session.id, argv);
+        : sessions
+            .setLaunchOptions(session.id, resolved ?? { model: null, effort: null })
+            .pipe(Effect.andThen(engine.launch(session.id, argv)));
     // A launch holds a platform workspace build for minutes. One account starts a bounded
     // number at once; a launch already under way is never touched. The slot is held for the
     // launch's whole course, in the background too: it is taken and given back inside the
@@ -346,6 +378,7 @@ export const SessionStartLive: Layer.Layer<
   never,
   | AgentConversationRepo
   | Budgets
+  | HarnessModelsRepo
   | JobRunner
   | ProjectAccess
   | ProjectsRepo

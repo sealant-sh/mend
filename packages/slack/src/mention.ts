@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS, HARNESS_MODELS, type EffortLevel } from "@mend/domain/workbench";
+import { EFFORT_LEVELS, HARNESS_MODEL_SEED, type EffortLevel } from "@mend/domain/workbench";
 
 import { slackToPlain, userMentionPattern, type SlackUserNames } from "./markup.ts";
 import { parseRepositoryUrl, projectsNamedBy, type RepositoryProject } from "./repository.ts";
@@ -84,13 +84,13 @@ export const DEFAULT_MENTION_VOCABULARY: MentionVocabulary = {
   models: {
     claude: [
       ...new Set([
-        ...(HARNESS_MODELS.claude ?? []).map((model) => model.id),
+        ...(HARNESS_MODEL_SEED.claude ?? []).map((model) => model.id),
         "opus",
         "sonnet",
         "haiku",
       ]),
     ],
-    codex: (HARNESS_MODELS.codex ?? []).map((model) => model.id),
+    codex: (HARNESS_MODEL_SEED.codex ?? []).map((model) => model.id),
   },
   projects: [],
 };

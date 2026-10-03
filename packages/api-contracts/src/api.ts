@@ -6,6 +6,7 @@ import { sessionChangesGroup } from "./changes.ts";
 import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { foldersGroup } from "./folders.ts";
 import { githubGroup } from "./github.ts";
+import { harnessModelsGroup } from "./harness-models.ts";
 import { landingsGroup } from "./landing.ts";
 import { operatorGroup } from "./operator.ts";
 import { invitationsGroup, organizationGroup } from "./organization.ts";
@@ -24,6 +25,7 @@ import {
   projectLinksGroup,
 } from "./projects.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
+import { secretFilesGroup } from "./secret-files.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
 import { skillsGroup } from "./skills.ts";
@@ -55,6 +57,8 @@ export const MendApi = HttpApi.make("mend")
   .add(skillsGroup)
   .add(piProfileGroup)
   .add(agentMemoryGroup)
+  .add(secretFilesGroup)
+  .add(harnessModelsGroup)
   .add(issuesGroup)
   .add(briefsGroup)
   .add(runsGroup)

@@ -12,6 +12,7 @@ import {
 import { WorkspaceImage } from "../settings.ts";
 import { SequenceNumber, Timestamp } from "../timestamp.ts";
 import { CaptureDrainReason } from "./capture-drain.ts";
+import { EFFORT_LEVELS } from "./harness-launch.ts";
 import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 
@@ -105,6 +106,21 @@ export class Session extends Schema.Class<Session>("Session")({
   worktreeId: WorktreeId,
   /** The adapter that launched it: `codex` · `claude` · `opencode` · `custom`. */
   harness: Schema.String,
+  /**
+   * The model the session was started with, as the server resolved it (docs/models-audit.md): the
+   * one the request named, else the harness's catalog default. Null for a harness with no catalog,
+   * before launch, and on rows from before the column. A resume keeps it: the harness continues
+   * the conversation on its own model.
+   */
+  model: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /** The effort the session was started with; null is the harness's own default. */
+  effort: Schema.NullOr(Schema.Literals(EFFORT_LEVELS)).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   /** Provider-native session/thread id when the adapter can extract one. */
   providerSessionId: Schema.NullOr(Schema.String),
   /** Optional human label ("reaper retry storm"); sessions have no issue titles. */

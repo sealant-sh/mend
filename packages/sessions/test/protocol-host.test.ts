@@ -205,6 +205,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   setLabelIfUnset: () => Effect.succeed(false),
   remove: () => Effect.die("not in test"),
   setHarness: () => Effect.void,
+  setLaunchOptions: () => Effect.void,
   recordCaptureObservation: () => Effect.void,
   beginCaptureDrain: () => Effect.void,
   planRelaunch: () => Effect.void,

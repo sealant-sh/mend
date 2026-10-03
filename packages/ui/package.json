@@ -10,6 +10,7 @@
     "./sheet": "./src/components/sheet.tsx",
     "./modal": "./src/components/modal.tsx",
     "./context-menu": "./src/components/context-menu.tsx",
+    "./model-picker": "./src/components/model-picker.tsx",
     "./components/ui/*": "./src/components/ui/*.tsx",
     "./lib/utils": "./src/lib/utils.ts",
     "./hooks/*": "./src/hooks/*.ts"

@@ -42,6 +42,8 @@ const session = (
   projectId,
   worktreeId: WorktreeId.make(worktreeName),
   harness: "claude",
+  model: null,
+  effort: null,
   providerSessionId: null,
   label: null,
   worktree: `/store/worktrees/${worktreeName}`,

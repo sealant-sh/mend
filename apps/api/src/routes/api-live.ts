@@ -57,11 +57,13 @@ import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
+import { HarnessModelsGroupLive } from "./harness-models.ts";
 import { LandingsGroupLive } from "./landing.ts";
 import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { PiProfileGroupLive } from "./pi-profile.ts";
+import { SecretFilesGroupLive } from "./secret-files.ts";
 import { SkillsGroupLive } from "./skills.ts";
 import { SlackGroupLive } from "./slack.ts";
 import { UpgradeTicketExchangeGroupLive, UpgradeTicketsGroupLive } from "./upgrade-tickets.ts";
@@ -670,7 +672,14 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   ),
   Layer.provide(SettingsGroupLive),
   Layer.provide(
-    Layer.mergeAll(DotfilesGroupLive, SkillsGroupLive, PiProfileGroupLive, AgentMemoryGroupLive),
+    Layer.mergeAll(
+      DotfilesGroupLive,
+      SkillsGroupLive,
+      PiProfileGroupLive,
+      AgentMemoryGroupLive,
+      SecretFilesGroupLive,
+      HarnessModelsGroupLive,
+    ),
   ),
   Layer.provide(IssuesGroupLive),
   Layer.provide(BriefsGroupLive),
