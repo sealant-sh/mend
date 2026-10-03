@@ -9,4 +9,4 @@ what can be added. Each repository is a worktree of its project, so it keeps its
 capture-mode server the files are saved with the main repository's captures and come back on a
 resume; the session page lists each repository with its state and how it is saved. The review of a
 repository's own change follows once the capture daemon carries repository roots
-(docs/adr/0010-repositories-in-a-session.md).
+(docs/adr/0011-repositories-in-a-session.md).

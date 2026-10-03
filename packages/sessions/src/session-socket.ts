@@ -86,7 +86,7 @@ export interface SessionSocketApi {
    */
   readonly land: () => Effect.Effect<WorkspaceLandOutcome>;
   /**
-   * `mend repo` (docs/adr/0010-repositories-in-a-session.md): the repositories this session
+   * `mend repo` (docs/adr/0011-repositories-in-a-session.md): the repositories this session
    * holds beside its own worktree, the projects it may add, and adding one. `addRepository`
    * answers the row in state `adding`; the files arrive in the engine's lifetime and the row
    * reads `ready` or `failed` with the reason, which `listRepositories` shows.

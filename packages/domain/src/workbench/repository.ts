@@ -4,7 +4,7 @@ import { ProjectId, SessionId, SessionRepositoryId, Sha, WorktreeId } from "../i
 import { Timestamp } from "../timestamp.ts";
 
 /**
- * A repository in a session (docs/adr/0010-repositories-in-a-session.md): another project of the
+ * A repository in a session (docs/adr/0011-repositories-in-a-session.md): another project of the
  * store, present in the session's workspace at `/workspace/repos/<name>` as a worktree of that
  * project, on a branch of its own for this session. The worktree is the durable container, so the
  * repository owns its change, its checkpoints and its landing exactly as the main worktree does;
@@ -21,7 +21,7 @@ export const isRepositoryName = (name: string): boolean => REPOSITORY_NAME.test(
 export const repositoryPath = (name: string): string => `/workspace/repos/${name}`;
 
 /**
- * Where its files live while sealantd captures one root (ADR 0010 "How it is saved", today): a
+ * Where its files live while sealantd captures one root (ADR 0011 "How it is saved", today): a
  * nested repository inside the main worktree, carried by the main worktree's captures and restored
  * with them. `repositoryPath` is a symlink to it, recreated at every launch.
  */

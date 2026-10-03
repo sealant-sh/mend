@@ -18,7 +18,7 @@ export interface AddableProject {
 
 /**
  * The shell that brings a repository into a session's workspace and keeps it there
- * (docs/adr/0010-repositories-in-a-session.md, "How the worktree arrives" and "How it is saved",
+ * (docs/adr/0011-repositories-in-a-session.md, "How the worktree arrives" and "How it is saved",
  * the shipped interim): the files live at `/workspace/repo/.mend/repos/<name>`, a nested
  * repository the main worktree's captures carry, and `/workspace/repos/<name>` is a symlink to
  * it. Pure builders, so the exact commands are testable without a workspace.
