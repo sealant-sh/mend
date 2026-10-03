@@ -64,7 +64,7 @@ phone names a model.
 
 ## After: decisions
 
-1. **The server owns the catalog.** A `harness_models` table (migration `0101_harness_models`,
+1. **The server owns the catalog.** A `harness_models` table (migration `0102_harness_models`,
    `packages/db/src/migrations.ts`), one row per harness and model id: label, whether it is the
    harness's default, the efforts it takes when fewer than the harness's, and its position. Seeded
    from what the harness adapters supported on 2026-10-03, the former `HARNESS_MODELS`. One default

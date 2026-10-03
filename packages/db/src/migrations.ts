@@ -2951,5 +2951,5 @@ export const migrations = {
   "0098_agent_memory": agentMemoryMigration,
   "0099_capture_bound_indexes": captureBoundIndexesMigration,
   "0100_capture_launch_answers": captureLaunchAnswersMigration,
-  "0101_harness_models": harnessModelsMigration,
+  "0102_harness_models": harnessModelsMigration,
 };
