@@ -3181,11 +3181,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const deferredRunning = new Map<SealantWorkspaceId, Fiber.Fiber<void>>();
       /**
+       * The one consumer of each workspace's queue (`runDeferred`) while it runs: a second asks
+       * waits for it, bounded by its limit, so no round declares the queue finished while another
+       * consumer still runs a piece of it.
+       */
+      const deferredConsumers = new Map<SealantWorkspaceId, Deferred.Deferred<void>>();
+      /**
        * The last reading of each held executor that left a readable head (a FINAL that registered
        * it), kept across kept rounds for the harvest still owed: a later round that cannot read
        * the executor (gone, platform-kept) still knows the head is there to read.
        */
-      const deferredEvidence = new Map<SealantWorkspaceId, CaptureReading>();
+      const deferredEvidence = new Map<SealantWorkspaceId, DrainWord>();
       /**
        * Workspaces whose drain ran the queue to empty and is terminating the executor: an end
        * that arrives now puts nothing off (`endsAtFinal`) and flushes for itself, as before, so
@@ -3219,10 +3225,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const deferToFinal = (
         workspaceId: SealantWorkspaceId,
         work: (reading: DrainWord) => Effect.Effect<void>,
-      ) => {
+      ): boolean => {
+        // Checked here, at the append, not before an async look: a drain that ran the queue to
+        // empty and is terminating admits nothing more (`queueClosed`); the end that asked runs
+        // its work itself, flush and all, as before (Astra review, 2026-10-03).
+        if (queueClosed.has(workspaceId)) return false;
         const list = deferredToFinal.get(workspaceId);
         if (list === undefined) deferredToFinal.set(workspaceId, [work]);
         else list.push(work);
+        return true;
       };
       /** Take what `workspaceId`'s end put off, at once: whoever takes it runs it, once. */
       const takeDeferred = (workspaceId: SealantWorkspaceId) => {
@@ -3268,6 +3279,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       ),
                   }),
                 );
+          while (true) {
+            const busy = deferredConsumers.get(workspaceId);
+            if (busy === undefined) break;
+            const over =
+              limit === null
+                ? yield* Deferred.await(busy).pipe(Effect.as(true))
+                : yield* Deferred.await(busy).pipe(
+                    Effect.as(true),
+                    Effect.timeoutOrElse({ duration: limit, orElse: () => Effect.succeed(false) }),
+                  );
+            if (!over) return false;
+          }
+          const mine = Deferred.makeUnsafe<void>();
+          deferredConsumers.set(workspaceId, mine);
+          return yield* consume(workspaceId, reading, waitFor).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                deferredConsumers.delete(workspaceId);
+                Deferred.doneUnsafe(mine, Exit.succeed(undefined));
+              }),
+            ),
+          );
+        });
+      /** `runDeferred`'s body, under its consumer slot. */
+      const consume = (
+        workspaceId: SealantWorkspaceId,
+        reading: DrainWord,
+        waitFor: (fiber: Fiber.Fiber<void>) => Effect.Effect<boolean>,
+      ): Effect.Effect<boolean> =>
+        Effect.gen(function* () {
           const left = deferredRunning.get(workspaceId);
           if (left !== undefined) {
             if (!(yield* waitFor(left))) return false;
@@ -3867,6 +3908,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
               null,
             );
+            queueClosed.add(workspaceId);
             yield* tidyAfterGone(sessionId, workspaceId);
             if (end !== null && current !== null) {
               const confirmed = yield* confirmedExecutorEnd(current, end);
@@ -4081,7 +4123,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // a successor launched after the release could register a newer head under them
             // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
             // executor: the head is sealed.
-            if (!(yield* runDeferred(workspaceId, reading ?? "sealed"))) {
+            const word: DrainWord = reading ?? "sealed";
+            if (harvestReadyOf(word) === true) deferredEvidence.set(workspaceId, word);
+            if (!(yield* runDeferred(workspaceId, word))) {
               // A piece ran past its limit (a writer lock held, a store not answering): it runs
               // on, the executor stays, saved, and the next round waits for it and runs what is
               // left after its FINAL (which snaps nothing). Nothing a Stop asked for is dropped,
@@ -6620,7 +6664,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           const workspaceId = session.sealantWorkspaceId;
-          if (atFinal && workspaceId !== null && (yield* endsAtFinal(workspaceId))) {
+          if (
+            atFinal &&
+            workspaceId !== null &&
+            (yield* endsAtFinal(workspaceId)) &&
             // A stop: the sweep below drains the workspace, and the harvest reads that final
             // flush's head (decision 50).
             deferToFinal(workspaceId, (reading) =>
@@ -6630,7 +6677,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   (yield* flushBeforeHarvest(session, workspaceId, "settle harvest"));
                 if (captureReady) yield* harvestLatestIfMissing(sessionId);
               }),
-            );
+            )
+          ) {
             yield* stopWorkspaceQuietly(sessionId);
             if (!queueHeld.has(workspaceId)) yield* runDeferred(workspaceId, "none");
             return;
@@ -7135,8 +7183,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // of their own (decision 50). An agent that ended on its own keeps its own flushes: its
           // end is judged, and its executor looked at, before any drain.
           const atFinal =
-            stopping && sweep && workspaceId !== null && (yield* endsAtFinal(workspaceId));
-          if (atFinal && workspaceId !== null) {
+            stopping &&
+            sweep &&
+            workspaceId !== null &&
+            (yield* endsAtFinal(workspaceId)) &&
             deferToFinal(workspaceId, (reading) =>
               Effect.gen(function* () {
                 if (trigger !== null) {
@@ -7149,7 +7199,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 if (captureReady) yield* tryHarvest(agentProcess);
               }),
             );
-          } else {
+          if (!atFinal) {
             if (trigger !== null) {
               // Capture checkpoints synchronously flush and register before deriving their
               // snapshot. Harvest must follow that barrier or it can read the previous chain
@@ -11032,16 +11082,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           sequence: activeRun?.lastSeenSequence ?? 0n,
         };
         const workspaceId = session.sealantWorkspaceId;
-        if (workspaceId !== null && (yield* endsAtFinal(workspaceId))) {
-          // The tail below drains the workspace: the stop's checkpoint reads that final flush's
-          // head, and this answer does not wait for a flush of its own.
+        // The tail below drains the workspace: the stop's checkpoint reads that final flush's
+        // head, and this answer does not wait for a flush of its own.
+        const deferred =
+          workspaceId !== null &&
+          (yield* endsAtFinal(workspaceId)) &&
           deferToFinal(workspaceId, (reading) =>
             Effect.gen(function* () {
               yield* tryCheckpoint(session, "user-mark", cursor, observedOf(reading));
               yield* refreshChangeHead(session).pipe(Effect.ignore);
             }),
           );
-        } else {
+        if (!deferred) {
           yield* tryCheckpoint(session, "user-mark", cursor);
           yield* refreshChangeHead(session).pipe(Effect.ignore);
         }

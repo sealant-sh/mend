@@ -1577,7 +1577,10 @@ Mend-side details the decision record left open, decided in this ADR:
       of an agent runs at a time, so a piece left running and a recovery sweep's harvest never
       rewrite each other's manifest; and once a round has run the queue to empty and is terminating
       the executor, an end that arrives puts nothing off (`queueClosed`) and flushes for itself, as
-      before.
+      before. That admission is refused at the append itself, never before an async look; a seal the
+      store confirmed with no answer from the executor is evidence too; and one consumer runs a
+      workspace's queue at a time, a second waiting for it within its limit, so no round declares
+      the queue finished while another still runs a piece.
     - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
       judged (`executor not answering`, `completed`) and its executor looked at before the drain
       begins, and the tests of those judgements say so. Making every end read the drain's final is a
