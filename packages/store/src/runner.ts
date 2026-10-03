@@ -435,7 +435,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
             // The pack hashed to its key and passed `index-pack --verify` beside this index: a
             // seal's read-back need not copy it down again (`storedCaptureProblem`).
             rememberContentVerified(blobs, key, readAtMs);
-            rememberGitPackVerified(blobs, key, sha256Hex(idx), readAtMs);
+            rememberGitPackVerified(blobs, key, sha256Hex(idx), format, readAtMs);
             yield* cacheIo(projectId, () => {
               fs.mkdirSync(packDir, { recursive: true });
               fs.renameSync(stagedIdx, finalIdx);

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Result } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
@@ -310,7 +310,37 @@ describe("GitOpsRunner", () => {
         other[other.length - 1] = (other[other.length - 1] ?? 0) ^ 0xff;
         yield* blobs.put(packIdxKeyOf(packed.key), new Uint8Array(other));
         const changed = yield* readBack(before);
-        return { installed, reused, afterReuse, late, afterLate, changed, wholeReads };
+        const afterChanged = wholeReads.length;
+        // A SHA-256 manifest over the same pack and the index as installed: the proof says what
+        // SHA-1 `index-pack --verify` said, which is nothing about this pair (Astra review).
+        yield* blobs.put(packIdxKeyOf(packed.key), idx);
+        const sha256Manifest = buildManifest({
+          worktreeId: "wt-proof",
+          n: 2,
+          parent: null,
+          epoch: 1,
+          git: {
+            ...gitSection([packed.key], { "refs/heads/main": mainSha }, "refs/heads/main"),
+            object_format: "sha256",
+          },
+        }).manifest;
+        const sha256Bytes = new Uint8Array(Buffer.from(JSON.stringify(sha256Manifest)));
+        const sha256Key = keys.manifest(sha256Hex(sha256Bytes));
+        yield* blobs.put(sha256Key, sha256Bytes);
+        const otherFormat = yield* storedCaptureProblem(sha256Key, {
+          proofs: { sinceMs: before, usedFromMs: Date.now() },
+        }).pipe(Effect.result);
+        return {
+          installed,
+          reused,
+          afterReuse,
+          late,
+          afterLate,
+          changed,
+          afterChanged,
+          otherFormat,
+          wholeReads,
+        };
       }),
     );
     expect(result.installed).toBe(1);
@@ -321,7 +351,10 @@ describe("GitOpsRunner", () => {
     expect(result.late.problem).toBeNull();
     expect(result.afterLate).toBe(2);
     expect(result.changed.problem).toMatch(/does not index|does not checksum|indexes another/);
-    expect(result.wholeReads.length).toBe(3);
+    expect(result.afterChanged).toBe(3);
+    // Not reused: the pack was copied down and checked as SHA-256, which git refuses.
+    expect(Result.isFailure(result.otherFormat) || result.otherFormat.success !== null).toBe(true);
+    expect(result.wholeReads.length).toBe(4);
   });
 
   it("refuses a pack whose bytes do not match its key, and one that fails index-pack", async () => {

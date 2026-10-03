@@ -848,23 +848,29 @@ export const rememberContentVerified = (
 /**
  * Git packs this process copied down whole from a store, hashed to their key and passed
  * `git index-pack --verify` beside the index stored with them (`runner.ts` `installPack`), by
- * store and key: the SHA-256 of that index, and when the read began. A seal's read-back asked to
- * reuse proofs (`storedCaptureProblem`) compares the index stored now with that digest instead of
- * copying the pack down and verifying it again (2026-10-02: a 627 MB pack was verified twice in
- * one Stop, 6 s at register and 7.9 s at the seal). Bounded, the oldest dropped first.
+ * store and key: the SHA-256 of that index, the object format `index-pack` ran in (a pair sound
+ * as SHA-1 says nothing about it as SHA-256; Astra review, 2026-10-03), and when the read began.
+ * A seal's read-back asked to reuse proofs (`storedCaptureProblem`) compares the index stored now
+ * with that digest instead of copying the pack down and verifying it again (2026-10-02: a 627 MB
+ * pack was verified twice in one Stop, 6 s at register and 7.9 s at the seal). Bounded, the oldest
+ * dropped first.
  */
 const GIT_PACKS_VERIFIED_KEPT = 20_000;
-const gitPackVerified = new Map<string, { readonly idxSha256: string; readonly atMs: number }>();
+const gitPackVerified = new Map<
+  string,
+  { readonly idxSha256: string; readonly format: GitObjectFormat; readonly atMs: number }
+>();
 
 export const rememberGitPackVerified = (
   store: typeof BlobStore.Service,
   key: string,
   idxSha256: string,
+  format: GitObjectFormat,
   atMs: number,
 ) => {
   const cacheKey = proofKey(store, key);
   gitPackVerified.delete(cacheKey);
-  gitPackVerified.set(cacheKey, { idxSha256, atMs });
+  gitPackVerified.set(cacheKey, { idxSha256, format, atMs });
   for (const oldest of gitPackVerified.keys()) {
     if (gitPackVerified.size <= GIT_PACKS_VERIFIED_KEPT) break;
     gitPackVerified.delete(oldest);
@@ -3735,7 +3741,8 @@ export const storedCaptureProblem = (
           content !== undefined &&
           content >= proofs.sinceMs &&
           verified !== undefined &&
-          verified.atMs >= proofs.sinceMs
+          verified.atMs >= proofs.sinceMs &&
+          verified.format === (format ?? "sha1")
         ) {
           if ((yield* store.head(key)) === null) return `${key} is not stored`;
           const idxKey = packIdxKeyOf(key);
