@@ -67,6 +67,22 @@ if (
   process.exit(0);
 }
 
+// The edge container by its Compose labels: what the CLI lists and removes when a generation
+// without an edge finds one still running. Answered from this daemon's state, not the protocol's.
+const edgeLabelFilter = "label=com.docker.compose.service=edge";
+if (args[2] === "container" && args[3] === "ls" && args.includes(edgeLabelFilter)) {
+  out(state.edgeRunning ? "mend-edge-1" : "");
+  process.exit(0);
+}
+if (args[2] === "container" && args[3] === "rm" && args.includes("mend-edge-1")) {
+  if (!state.edgeRunning) fail();
+  state.edgeRunning = false;
+  state.removedEdge = (state.removedEdge ?? 0) + 1;
+  save();
+  out("mend-edge-1");
+  process.exit(0);
+}
+
 // Persist the same named-volume and separate local/remote image protocol used by setup tests.
 const protocolFile = path.join(root, "docker-protocol.json");
 const saved = fs.existsSync(protocolFile) ? JSON.parse(fs.readFileSync(protocolFile, "utf8")) : {};
@@ -125,14 +141,15 @@ else if (args.includes("image")) {
         state.appRunning ? "mend" : "",
         state.postgresRunning ? "postgres" : "",
         withGarage && state.postgresRunning ? "garage" : "",
-        withEdge && state.edgeRunning ? "edge" : "",
+        // A running edge shows whether or not the active generation still declares it.
+        state.edgeRunning ? "edge" : "",
       ]
         .filter(Boolean)
         .join("\n"),
     );
   else
     out(
-      `mend ${state.appRunning ? "running" : "exited"}\npostgres ${state.postgresRunning ? "running" : "exited"}${withGarage ? `\ngarage ${state.postgresRunning ? "running" : "exited"}` : ""}${withEdge ? `\nedge ${state.edgeRunning ? "running" : "exited"}` : ""}`,
+      `mend ${state.appRunning ? "running" : "exited"}\npostgres ${state.postgresRunning ? "running" : "exited"}${withGarage ? `\ngarage ${state.postgresRunning ? "running" : "exited"}` : ""}${withEdge || state.edgeRunning ? `\nedge ${state.edgeRunning ? "running" : "exited"}` : ""}`,
     );
 } else if (command[0] === "exec" && command.includes("edge")) {
   // `mend server status` asks Caddy's data for the host's certificate: a path when it holds one.
@@ -159,11 +176,13 @@ else if (command[0] === "down") {
 } else if (command[0] === "up") {
   state.postgresRunning = true;
   if (command.at(-1) !== "postgres") {
+    // An `up` without the edge overlay that fails before it did anything, leaving the active
+    // generation edge-less while whatever ran keeps running.
+    if (state.fail === "no-edge-up" && !withEdge) fail();
     state.appRunning = true;
-    // The edge runs when its overlay is among the files; an `up` without it, with
-    // --remove-orphans, takes a running edge away like Compose does.
+    // The edge runs when its overlay is among the files. Without it, Compose does not know the
+    // service and leaves a running edge alone; the CLI removes that container itself, by label.
     if (withEdge) state.edgeRunning = true;
-    else if (command.includes("--remove-orphans")) state.edgeRunning = false;
     state.version = config.serverVersion;
     state.upFiles = composeFiles.map((file) => path.basename(file));
     save();

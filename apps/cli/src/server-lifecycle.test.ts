@@ -19,6 +19,8 @@ interface DaemonState {
   readonly edgeRunning?: boolean;
   /** The certificate path Caddy's data holds for the edge host; absent, none yet. */
   readonly certificate?: string;
+  /** How many times the CLI removed a stray edge container by its labels. */
+  readonly removedEdge?: number;
   readonly version: string;
   readonly images: Readonly<Record<string, string>>;
   readonly fail: string;
@@ -1129,11 +1131,10 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     });
   });
 
-  it("--no-edge takes the edge away, removes its container as an orphan and returns to the localhost origin", async () => {
+  it("--no-edge takes the edge away, removes its container by label and returns to the localhost origin", async () => {
     const f = await fixture();
     expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
     expect(f.state().edgeRunning).toBe(true);
-    const ups = f.calls().filter((call) => call.command[0] === "up").length;
     // Without --url the origin would return to http://localhost; the fixture's health answers on
     // 127.0.0.1, so the loopback origin is stated.
     expect(
@@ -1145,23 +1146,64 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(JSON.parse(files["server.json"] ?? "{}")).not.toHaveProperty("edgeHost");
     expect(files["server.env"]).toContain(`APP_URL=http://127.0.0.1:${f.port}\n`);
     expect(files["server.env"]).not.toContain("MEND_EDGE_HOST");
-    const up = f.calls().filter((call) => call.command[0] === "up")[ups];
-    expect(up?.command).toContain("--remove-orphans");
     expect(f.state().upFiles).toEqual(["compose.yaml"]);
+    // The edge's container went by its labels, before the edge-less `up`; nothing else was removed.
+    const removal = f.runCalls.findIndex(
+      (call) => call.args[2] === "container" && call.args[3] === "rm",
+    );
+    expect(f.runCalls[removal]?.args.slice(2)).toEqual([
+      "container",
+      "rm",
+      "--force",
+      "mend-edge-1",
+    ]);
+    expect(removal).toBeLessThan(
+      f.runCalls.findIndex((call, index) => index > removal && call.args.includes("up")),
+    );
     expect(f.state().edgeRunning).toBe(false);
+    expect(f.state().removedEdge).toBe(1);
+    expect(f.lines).toContain(
+      "Removed the edge container mend-edge-1: this generation runs no edge, so nothing listens on 80 and 443.",
+    );
     expect(
       f.lines.some((line) =>
         line.startsWith(`The edge for ${host} is gone. Its certificate volumes stay`),
       ),
     ).toBe(true);
-    // An ordinary rerun never passes --remove-orphans.
+    // Without a stray edge, a start lists and removes nothing; nothing ever passes --remove-orphans.
     expect(await serverCommand(["setup"], f.runtime)).toEqual({ _tag: "ok" });
-    expect(
-      f
-        .calls()
-        .filter((call) => call.command[0] === "up")
-        .at(-1)?.command,
-    ).not.toContain("--remove-orphans");
+    expect(await serverCommand(["restart"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.state().removedEdge).toBe(1);
+    expect(f.runCalls.some((call) => call.args.includes("--remove-orphans"))).toBe(false);
+  });
+
+  it("an edge left behind by a failed edge-less start goes on the next start", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
+    // The `up` that drops the edge fails before Compose did anything. The new generation is
+    // active and declares no edge; the edge's container went by label just before the `up`.
+    f.update({ fail: "no-edge-up" });
+    const result = await serverCommand(
+      ["setup", "--no-edge", "--url", `http://127.0.0.1:${f.port}`],
+      f.runtime,
+    );
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Mend containers did not start"),
+    });
+    expect(JSON.parse(f.files()["server.json"] ?? "{}")).not.toHaveProperty("edgeHost");
+    expect(f.state().removedEdge).toBe(1);
+    // A crash between that removal and the `up`, or a Caddy someone started again by hand, leaves
+    // an edge listening on 80 and 443 under a config that declares none. The next start of the
+    // edge-less generation finds it by its labels and removes it, then starts.
+    f.update({ edgeRunning: true, fail: "" });
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.state().removedEdge).toBe(2);
+    expect(f.state().edgeRunning).toBe(false);
+    expect(f.state().appRunning).toBe(true);
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines.some((line) => line.startsWith("edge ·"))).toBe(false);
   });
 
   it("uninstall takes the edge down with the overlays it was started with", async () => {

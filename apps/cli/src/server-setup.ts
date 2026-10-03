@@ -1605,11 +1605,60 @@ const startingNotice = (runtime: ServerSetupRuntime, version: string): void =>
     `Starting Mend ${version} containers; Docker waits up to ${serverProcessDeadlines.composeWaitSeconds}s for them to report healthy`,
   );
 
+/**
+ * An edge container this project still has while its config declares no edge. The `up` that drops
+ * the edge does not know the service any more, so Compose leaves its container running, and Caddy
+ * keeps 80 and 443 until something removes it. Every start of an edge-less generation looks for
+ * one, by this project's and this service's labels and nothing wider, and removes it, so a start
+ * that failed part-way is set right by the next one. An install with an edge, or without a stray
+ * container, changes nothing here.
+ */
+const removeStrayEdge = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+): Promise<void> => {
+  if (installation.config.edgeHost !== undefined) return;
+  const context = installation.config.dockerContext;
+  const listed = await runtime.run("docker", [
+    "--context",
+    context,
+    "container",
+    "ls",
+    "--all",
+    "--filter",
+    "label=com.docker.compose.project=mend",
+    "--filter",
+    "label=com.docker.compose.service=edge",
+    "--format",
+    "{{.Names}}",
+  ]);
+  if (listed.status !== 0 || listed.error !== undefined)
+    throw commandFailure("Could not list this project's containers", listed);
+  const names = listed.stdout
+    .trim()
+    .split(/\s+/)
+    .filter((name) => name !== "");
+  if (names.length === 0) return;
+  const removed = await runtime.run("docker", [
+    "--context",
+    context,
+    "container",
+    "rm",
+    "--force",
+    ...names,
+  ]);
+  if (removed.status !== 0 || removed.error !== undefined)
+    throw commandFailure(`Could not remove the edge container ${names.join(", ")}`, removed);
+  runtime.writeLine(
+    `Removed the edge container ${names.join(", ")}: this generation runs no edge, so nothing listens on 80 and 443.`,
+  );
+};
+
 const startCompose = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
-  options: { readonly removeOrphans: boolean },
 ): Promise<void> => {
+  await removeStrayEdge(runtime, installation);
   startingNotice(runtime, installation.config.serverVersion);
   const compose = await runtime.run(
     "docker",
@@ -1622,9 +1671,6 @@ const startCompose = async (
       "--pull",
       "never",
       "--no-build",
-      // Only when the edge was taken away: its container is no longer in the project, and
-      // Compose removes a container of this project alone. Never on an ordinary start.
-      ...(options.removeOrphans ? ["--remove-orphans"] : []),
     ]),
     { timeoutMs: serverProcessDeadlines.startup },
   );
@@ -1735,9 +1781,7 @@ const setupServer = async (
     `ghcr.io/sealant-sh/mend:${config.serverVersion}`,
   );
   storeValue(store.activate(generation));
-  await startCompose(runtime, installation, {
-    removeOrphans: existing?.config.edgeHost !== undefined && config.edgeHost === undefined,
-  });
+  await startCompose(runtime, installation);
   await initGarage(runtime, installation, secrets);
   await probeHealth(runtime, healthOrigin(config), config.serverVersion);
   runtime.writeLine(reachableLine(config));
@@ -1835,6 +1879,7 @@ const startInstallation = async (
   installation: ServerInstallation,
   secrets: ServerSecrets,
 ): Promise<void> => {
+  await removeStrayEdge(runtime, installation);
   startingNotice(runtime, installation.config.serverVersion);
   await composeCommand(runtime, installation, [
     "up",

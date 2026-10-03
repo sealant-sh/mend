@@ -66,26 +66,39 @@ export class DockerProtocol {
             : undefined;
     if (collection !== undefined) {
       if (operation === "ls") {
-        const filter = args.indexOf("--filter");
-        const value = filter < 0 ? undefined : args[filter + 1];
-        const project = value?.startsWith("label=com.docker.compose.project=")
-          ? value.replace("label=com.docker.compose.project=", "")
-          : undefined;
-        const namePattern = value?.startsWith("name=")
-          ? new RegExp(value.replace("name=", ""))
-          : undefined;
+        // Every --filter narrows, as Docker's do: label=key=value matches exactly, name= is a pattern.
+        const filters = args.flatMap((arg, index) => {
+          const next = args[index + 1];
+          return arg === "--filter" && next !== undefined ? [next] : [];
+        });
+        const labels = filters.flatMap((value) => {
+          if (!value.startsWith("label=")) return [];
+          const pair = value.slice("label=".length);
+          const separator = pair.indexOf("=");
+          return separator < 0 ? [] : [[pair.slice(0, separator), pair.slice(separator + 1)]];
+        });
+        const namePatterns = filters
+          .filter((value) => value.startsWith("name="))
+          .map((value) => new RegExp(value.replace("name=", "")));
         const bare =
           args.indexOf("--format") >= 0 && args[args.indexOf("--format") + 1] === "{{.Names}}";
         return ok(
           [...collection]
             .filter(
-              ([name, labels]) =>
-                (project === undefined || labels?.["com.docker.compose.project"] === project) &&
-                (namePattern === undefined || namePattern.test(name)),
+              ([name, resourceLabels]) =>
+                labels.every(([key, value]) => resourceLabels?.[key ?? ""] === value) &&
+                namePatterns.every((pattern) => pattern.test(name)),
             )
             .map(([name]) => (bare ? name : JSON.stringify(name)))
             .join("\n"),
         );
+      }
+      if (kind === "container" && operation === "rm") {
+        const names = args.slice(4).filter((arg) => !arg.startsWith("--"));
+        const missing = names.filter((name) => !collection.has(name));
+        if (missing.length > 0) return failed(`No such container: ${missing.join(", ")}`);
+        for (const name of names) collection.delete(name);
+        return ok(names.join("\n"));
       }
       if (kind === "volume" && operation === "rm") {
         const names = args.slice(4);
