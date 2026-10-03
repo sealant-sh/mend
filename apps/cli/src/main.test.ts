@@ -1246,7 +1246,7 @@ describe("mend connect claude", () => {
         claudeAiOauth: {
           accessToken: "sk-ant-oat01-access",
           refreshToken: "sk-ant-ort01-refresh",
-          expiresAt: 1_789_000_000_000,
+          expiresAt: 1_890_000_000_000,
           refreshTokenExpiresAt: 1_791_000_000_000,
           subscriptionType: "max",
         },
@@ -1323,7 +1323,7 @@ describe("mend connect claude, a grant of Mend's own", () => {
 case "$2" in
   login)
     mkdir -p "$CLAUDE_CONFIG_DIR"
-    printf '%s' '{"claudeAiOauth":{"refreshToken":"sk-ant-ort01-mends","expiresAt":1789000000000,"refreshTokenExpiresAt":1791000000000},"mcpOAuth":{"figma":{"refreshToken":"figma-refresh"}}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+    printf '%s' '{"claudeAiOauth":{"refreshToken":"sk-ant-ort01-mends","expiresAt":1890000000000,"refreshTokenExpiresAt":1892000000000},"mcpOAuth":{"figma":{"refreshToken":"figma-refresh"}}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"
     ;;
   status)
     if [ -f "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then
