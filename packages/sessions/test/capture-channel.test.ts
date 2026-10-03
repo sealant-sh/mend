@@ -1537,7 +1537,7 @@ describe("capture channel routes", () => {
     const epoch = Number(claimed.json["epoch"]);
     // Directories only, with names that do not compress: the dir pack is the whole cost.
     const tree = path.join(scratch, "v2-quota");
-    for (let at = 0; at < 120; at += 1) {
+    for (let at = 0; at < 240; at += 1) {
       fs.mkdirSync(path.join(tree, crypto.randomBytes(24).toString("hex"), "d"), {
         recursive: true,
       });
