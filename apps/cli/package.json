@@ -57,6 +57,7 @@
     "@types/node": "catalog:",
     "@types/qrcode": "catalog:",
     "@types/react": "catalog:",
+    "effect": "catalog:",
     "esbuild": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

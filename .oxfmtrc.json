@@ -15,7 +15,11 @@
     ".direnv/**",
     "deploy/helm/**/templates/**",
     // Shipped into workspaces byte for byte (the default shell profile).
-    "packages/sessions/src/shell-profile/**"
+    "packages/sessions/src/shell-profile/**",
+    // t3code's contracts and their pin, written byte for byte by the copy script (ADR 0012).
+    "packages/t3-contracts/src/**",
+    "packages/t3-contracts/shared/**",
+    "packages/t3-contracts/t3code.pin.json"
   ],
   "sortImports": {
     "ignoreCase": true,
