@@ -110,7 +110,7 @@ vendored group.
 
 | t3code                                                                                                                                                                                   | Phase | From Mend                                                                                                                |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------ |
-| descriptor, `/oauth/token`, WS ticket, `/api/auth/session`                                                                                                                               | 0     | constants; claim via `POST /api/pair`; a gateway-local single-use 30 s ticket; `GET /api/me`                             |
+| descriptor, `/oauth/token`, WS ticket, `/api/auth/session`                                                                                                                               | 0     | constants; claim via `POST /api/pair`; a gateway-local single-use 30 s ticket; `GET /api/me/devices`                     |
 | `subscribeServerConfig`, `server.getConfig`, `subscribeServerLifecycle`                                                                                                                  | 0     | config built from `GET /api/harnesses/models`; lifecycle `welcome` (`bootstrapStatus: "complete"`)                       |
 | `orchestration.subscribeShell`, `GET /api/orchestration/shell`                                                                                                                           | 1     | projects and sessions, kept live from Mend's SSE                                                                         |
 | `orchestration.subscribeThread`, thread snapshots                                                                                                                                        | 1     | the session, its turns, items (paged by `after=`) and requests                                                           |
@@ -130,8 +130,9 @@ vendored group.
   t3code asks, and edit, reorder and resume come for free. Queued messages are visible only in
   t3code until submitted. In phase 1 the queue lives in memory; phase 2 persists it.
 - **Follow-up to a stopped session relaunches, never resumes.** The gateway calls `/launch`, as the
-  Slack runner does (`apps/api/src/slack-runner.ts:1552`), and carries the session's recorded
-  `protocolOptions`, so an `ask` session stays `ask`.
+  Slack runner does (`apps/api/src/slack-runner.ts:1553`), and names no permission mode. Mend reuses
+  the mode its last protocol agent recorded (the resume fix below), so an `ask` session stays `ask`.
+  Neither the Slack runner nor the gateway carries the mode itself.
 - **State.** Thread and message id maps, the persisted queue and archive flags live in a
   `node:sqlite` file the gateway owns. No Mend migration.
 - **Projection.** One Mend SSE stream per paired person feeds an entity builder. The gateway diffs
@@ -228,3 +229,7 @@ its own pull request.
 - 2026-10-03: gateway state in its own `node:sqlite` file.
 - 2026-10-03: origin `"mend"`; others' sessions read-only; PTY sessions hidden; `root` refused;
   pairing printed by `mend t3 pair`.
+- 2026-10-03: Mend has no `GET /api/me`. `/api/auth/session` checks the device token with
+  `GET /api/me/devices` and takes the person from the `POST /api/pair` answer; no new Mend route.
+- 2026-10-03: the Slack runner never carried the recorded permission mode. The resume fix makes any
+  relaunch that names no mode reuse the last protocol agent's, which covers Slack and the gateway.
