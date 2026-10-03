@@ -115,20 +115,25 @@ export default function ProjectScreen() {
             <MonoText tone="faint">no sessions yet — start one above</MonoText>
           </PanelRow>
         ) : (
-          sessions.map((session, index) => (
-            <SessionRow
-              key={session.id}
-              session={toSession(session, project.name)}
-              detail={annotationDetail(
-                detail.data?.annotations.find((row) => row.sessionId === session.id),
-                session.summary,
-              )}
-              first={index === 0}
-              onPress={() => router.push({ pathname: "/session/[id]", params: { id: session.id } })}
-              onRename={() => setRenaming({ sessionId: session.id, label: session.label })}
-              {...(ACTIVE.has(session.status) ? {} : { onDelete: () => remove.mutate(session.id) })}
-            />
-          ))
+          sessions.map((session, index) => {
+            const annotation = detail.data?.annotations.find((row) => row.sessionId === session.id);
+            return (
+              <SessionRow
+                key={session.id}
+                session={toSession(session, project.name)}
+                detail={annotationDetail(annotation, session.summary)}
+                pullRequest={annotation?.pullRequest ?? null}
+                first={index === 0}
+                onPress={() =>
+                  router.push({ pathname: "/session/[id]", params: { id: session.id } })
+                }
+                onRename={() => setRenaming({ sessionId: session.id, label: session.label })}
+                {...(ACTIVE.has(session.status)
+                  ? {}
+                  : { onDelete: () => remove.mutate(session.id) })}
+              />
+            );
+          })
         )}
       </Panel>
       <RenameSessionModal target={renaming} onClose={() => setRenaming(null)} />

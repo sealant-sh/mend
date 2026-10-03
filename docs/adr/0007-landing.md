@@ -285,7 +285,7 @@ A `change_landings` row for each landing records:
 - the change and the checkpoint that was landed;
 - the commit Mend wrote, or none;
 - the remote branch and the sha that was pushed;
-- the pull request's number, URL and state as `gh` last reported it;
+- the pull request's number, URL, state and title as `gh` last reported it;
 - the change owner, the time and the outcome.
 
 It is audited like any other action with the owner's credentials.
@@ -309,6 +309,14 @@ A pull request's state is refreshed each time Mend runs step 4, and when the cha
 it from the review page. Refreshing needs a workspace for the same reason step 4 does. Mend does not
 poll GitHub.
 
+Where the person already is, the change's pull request is a way to GitHub (amended 2026-10-03). A
+session's conversation shows a card for each pull request where Mend first recorded it: its number
+and title, its state as a dot and a word, its branch, who opened it, when it was observed, and
+`changed since landing · 3 files` when the worktree moved on. The review shows the newest one as a
+line, and every list row that has one ends with `#412 · open`, which opens it on GitHub. Lists read
+it from the newest landing row that names a pull request, so they cost one indexed read and never
+ask GitHub; the state is as old as its `observed` says.
+
 "Check origin" fetches origin's branch as the person who asked, into a ref Mend deletes afterwards,
 so nothing lands under `refs/remotes`. Anyone who can see the change may ask, and each account's
 checks are bounded by a request budget like other calls to a remote.
@@ -321,12 +329,16 @@ hand. Mend adopts such a pull request instead of opening a second one beside it 
 closing open question 4).
 
 An adoption is a `change_landings` row with trigger and outcome `adopted`: the pull request's
-number, URL and state as `gh` reported them, its head branch, whether its head is in another
+number, URL, state and title as `gh` reported them, its head branch, whether its head is in another
 repository (a fork) and whose, and no pushed sha. So the commit planning above (`L`, `H`, `T`) never
 builds on it, and it pushed nothing.
 
 Mend looks with `gh`, as the change's owner:
 
+- first, when the look comes from a turn that ran `gh pr create`, the pull requests of the project's
+  repository that the turn named (in a command's output, or in the agent's own message: Claude's
+  harness does not record a command's output), newest first, keeping the first that `gh` says was
+  opened since the turn started. One the turn only mentioned was opened before it;
 - the worktree's branch and every `refs/heads/*` the agent pushed through the transport
   (`session_git_ops.ref_updates`, newest first), keeping only pull requests whose head is on origin.
   A fork's branch of the same name is someone else's, and `gh pr list --head` matches it too, so the
@@ -334,12 +346,17 @@ Mend looks with `gh`, as the change's owner:
 - then any pull request into the repository that holds the agent's head commit, a fork's included.
   This finds a pull request whose branch Mend never saw, pushed over HTTPS to a fork.
 
-It looks 45 seconds after a push through the transport that moved a branch, when an agent ends while
-its workspace is still up (the last moment `gh` can run there), and when the owner presses "Check
-GitHub" in the Land panel (`mend land <session> --check`), even when nothing has landed. The first
-two only ever use a live workspace of the owner's and ask nothing when the agent neither committed
-nor pushed. The owner's check may use a short-lived workspace, as step 4 does. A pull request
-already recorded has its state refreshed instead of a second row.
+It looks 45 seconds after a push through the transport that moved a branch, when a protocol turn
+that ran `gh pr create` ends (amended 2026-10-03: `gh pr create` can push over HTTPS itself, which
+the transport never sees, and a protocol agent stays up between turns, so until then the pull
+request showed only when the agent ended), when an agent ends while its workspace is still up (the
+last moment `gh` can run there), and when the owner presses "Check GitHub" in the Land panel
+(`mend land <session> --check`), even when nothing has landed. The first three only ever use a live
+workspace of the owner's and ask nothing when the agent neither committed, pushed nor named a pull
+request. The look at a turn's end runs before automatic landing decides the turn, so a landing that
+turn makes updates the agent's pull request instead of opening a second. The owner's check may use a
+short-lived workspace, as step 4 does. A pull request already recorded has its state refreshed
+instead of a second row.
 
 The next landing then chooses its branch in this order: the one the owner names, the one the
 change's last landing pushed, the one the agent last pushed itself, an adopted pull request's head

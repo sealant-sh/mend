@@ -20,6 +20,7 @@ import {
   type PublishInput,
   PullRequests,
   PullRequestStepError,
+  type OpenedInTurn,
   type PullRequestWorkspaceTarget,
 } from "../src/pull-requests.ts";
 import { BASE_SHA, checkpointOf, makeWorld, OWNER, type WorldOptions } from "./world.ts";
@@ -66,6 +67,7 @@ const PR: LandedPullRequest = {
   number: 412,
   url: "https://github.com/acme/api/pull/412",
   state: "open",
+  title: null,
   observedAt: new Date("2026-09-24T10:05:00Z"),
 };
 
@@ -91,6 +93,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     readonly target: PullRequestWorkspaceTarget;
     readonly branches: ReadonlyArray<string>;
     readonly commit: string | null;
+    readonly opened?: OpenedInTurn;
   }> = [];
   const bundles: Array<{ readonly base: string; readonly tip: string; readonly branch: string }> =
     [];
@@ -216,7 +219,12 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     find: (find) =>
       Effect.sync(() => {
         calls.push("find");
-        finds.push({ target: find.target, branches: find.branches, commit: find.commit });
+        finds.push({
+          target: find.target,
+          branches: find.branches,
+          commit: find.commit,
+          ...(find.opened === null ? {} : { opened: find.opened }),
+        });
         return script.found ?? null;
       }),
     observe: (observe) =>
@@ -678,6 +686,7 @@ describe("Landing.refreshPullRequest", () => {
     const merged = {
       ...PR,
       state: "merged" as const,
+      title: null,
       observedAt: new Date("2026-09-24T12:00:00Z"),
     };
     const h = harness({ observed: merged });
@@ -824,6 +833,7 @@ describe("Landing.adoptPullRequest (docs/adr/0007, pull requests opened outside 
     headRefOid: AGENT_HEAD,
     crossRepository: false,
     headOwner: "acme",
+    createdAt: null,
     ...overrides,
   });
 
@@ -838,6 +848,32 @@ describe("Landing.adoptPullRequest (docs/adr/0007, pull requests opened outside 
       expect(h.finds).toEqual([]);
     }).pipe(Effect.provide(h.layer));
   });
+
+  it.effect(
+    "looks by the pull request a turn named, though nothing of the agent's reached Mend",
+    () => {
+      const h = harness({ found: found({ title: "Fix login" }) }, { live: true });
+      const since = new Date("2026-10-03T09:00:00Z");
+      return Effect.gen(function* () {
+        const adoption = yield* (yield* Landing).adoptPullRequest({
+          changeId: h.world.change.id,
+          background: true,
+          openedInTurn: {
+            urls: [
+              "https://github.com/someone/else/pull/9",
+              "https://github.com/acme/api/pull/368",
+            ],
+            since,
+          },
+        });
+        expect(adoption._tag).toBe("adopted");
+        expect(h.finds[0]).toMatchObject({ opened: { numbers: [368], since } });
+        if (adoption._tag === "adopted") {
+          expect(adoption.landing.pullRequest).toMatchObject({ number: 368, title: "Fix login" });
+        }
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
 
   it.effect("never starts a workspace for a background look", () => {
     const h = harness({ found: found() }, { agentPushes: [pushedBump] });

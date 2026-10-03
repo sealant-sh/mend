@@ -108,6 +108,7 @@ describe("the landing facts (docs/adr/0007, What Mend records and shows)", () =>
         number: 412,
         url: "https://github.com/acme/api/pull/412",
         state: "open",
+        title: null,
         observedAt: new Date(NOW.getTime() - 2 * 60_000),
       },
     });
@@ -136,6 +137,7 @@ describe("the landing facts (docs/adr/0007, What Mend records and shows)", () =>
         number: 7,
         url: "https://github.com/acme/api/pull/7",
         state: "merged",
+        title: null,
         observedAt: new Date(NOW.getTime() - 3 * 3600_000),
       },
     });
@@ -494,6 +496,7 @@ describe("pull requests opened outside Mend (docs/adr/0007, open question 4)", (
     number: 367,
     url: "https://github.com/sealant-sh/mend/pull/367",
     state,
+    title: null,
     observedAt: new Date(NOW.getTime() - 120_000),
   });
   const adopted = (fork: string | null, state: "open" | "merged" = "open") =>

@@ -17,6 +17,7 @@ import { Platform } from "react-native";
 
 import type { StatusTone } from "@/components/status";
 import type { LaunchOptions } from "@/data/harness-options";
+import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
 import type { CheckpointDto } from "@/data/review-state";
 
 // ─── config ─────────────────────────────────────────────────────────────────
@@ -291,12 +292,10 @@ const failureMessage = (method: string, route: string, status: number, body: unk
   return `${method} ${route} → ${status}${typeof tag === "string" ? ` · ${tag}` : ""}`;
 };
 
-/** Shared by the review data module — one transport, one error shape. */
-export const api = async <T>(
-  method: "GET" | "POST" | "PUT" | "DELETE",
-  route: string,
-  body?: unknown,
-): Promise<T> => {
+type Method = "GET" | "POST" | "PUT" | "DELETE";
+
+/** One transport, one error shape: a response that is not ok never comes back. */
+const send = async (method: Method, route: string, body?: unknown): Promise<Response> => {
   const config = await loadConfig();
   if (config.url === "") throw new ApiError("Set the server URL in Settings first.", 0);
   const response = await fetch(`${config.url}/api${route}`, {
@@ -316,7 +315,23 @@ export const api = async <T>(
     }
     throw new ApiError(failureMessage(method, route, response.status, parsed), response.status);
   }
-  return (await response.json()) as T;
+  return response;
+};
+
+/** Shared by the review data module — a route that answers with a JSON body. */
+export const api = async <T>(method: Method, route: string, body?: unknown): Promise<T> =>
+  (await (await send(method, route, body)).json()) as T;
+
+/**
+ * A route whose contract declares no success body: the server answers 204 and there is nothing
+ * to parse. Reading it with `api` throws "JSON Parse error" after the server already did the work.
+ */
+export const apiNoContent = async (
+  method: Method,
+  route: string,
+  body?: unknown,
+): Promise<void> => {
+  await send(method, route, body);
 };
 
 // ─── queries ────────────────────────────────────────────────────────────────
@@ -511,6 +526,8 @@ export interface SessionAnnotationDto {
   readonly openComments: number;
   readonly totalComments: number;
   readonly pendingFollowUp: boolean;
+  /** The change's newest pull request; older servers omit it. */
+  readonly pullRequest?: ChangePullRequestDto | null;
 }
 
 interface ProjectDetailDto {
@@ -611,6 +628,8 @@ export const useSession = (id: string | null) =>
         /** The worktree's whole chain, every conversation's checkpoints in it. */
         readonly checkpoints: ReadonlyArray<CheckpointDto>;
         readonly change: SessionChangeDto | null;
+        /** The change's landings, newest first; older servers omit it. */
+        readonly landings?: ReadonlyArray<ChangeLandingDto>;
         readonly processes: ReadonlyArray<SessionProcessDto>;
         readonly currentAgent: SessionProcessDto | null;
         /** What this account may do (docs/adr/0003); absent from servers before organizations. */

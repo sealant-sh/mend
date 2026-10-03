@@ -39,6 +39,7 @@ const adoptedLanding = new ChangeLanding({
     number: 368,
     url: "https://github.com/acme/api/pull/368",
     state: "open",
+    title: null,
     observedAt: NOW,
   },
   outcome: "adopted",

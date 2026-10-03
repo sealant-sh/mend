@@ -27,6 +27,7 @@ import {
   type NewChangeLanding,
 } from "../src/repos/change-landings.ts";
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repos/projects.ts";
+import { WorktreeChangesRepo, WorktreeChangesRepoLive } from "../src/repos/worktree-changes.ts";
 
 /**
  * docs/adr/0007-landing.md against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway
@@ -48,6 +49,7 @@ const reposLayer = Layer.mergeAll(
   SessionsRepoLive,
   ProjectsRepoLive,
   AgentConversationRepoLive,
+  WorktreeChangesRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))));
 
 type Repos =
@@ -55,6 +57,7 @@ type Repos =
   | SessionsRepo
   | ProjectsRepo
   | AgentConversationRepo
+  | WorktreeChangesRepo
   | SqlClient.SqlClient;
 
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
@@ -77,6 +80,8 @@ const PROJECT = ProjectId.make("p-api");
 const WORKTREE = WorktreeId.make("wt-1");
 const SESSION = SessionId.make("s-1");
 const CHANGE = ChangeId.make("c-1");
+/** A minute past nine on the day the pull request tests run. */
+const at = (minute: number) => new Date(`2026-10-03T09:${String(minute).padStart(2, "0")}:00Z`);
 const CHECKPOINT = CheckpointId.make("cp-1");
 const PROCESS = SessionProcessId.make("proc-1");
 const sha = (c: string) => Sha.make(c.repeat(40));
@@ -286,6 +291,7 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
               number: 412,
               url: "https://github.com/acme/api/pull/412",
               state: "open",
+              title: null,
               observedAt: opened,
             },
           }),
@@ -303,7 +309,7 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
           outcome: "pull-request",
           message: null,
           userId: "alice",
-          pullRequest: { number: 412, state: "open", observedAt: opened },
+          pullRequest: { number: 412, state: "open", title: null, observedAt: opened },
         });
 
         yield* sql`SELECT pg_sleep(0.01)`;
@@ -329,12 +335,14 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
           number: 412,
           url: "https://github.com/acme/api/pull/412",
           state: "merged",
+          title: null,
           observedAt: merged,
         });
         expect(refreshed?.pullRequest).toEqual({
           number: 412,
           url: "https://github.com/acme/api/pull/412",
           state: "merged",
+          title: null,
           observedAt: merged,
         });
         expect((yield* landings.byId(first.id))?.pullRequest?.state).toBe("merged");
@@ -343,6 +351,7 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
             number: 1,
             url: "https://github.com/acme/api/pull/1",
             state: "open",
+            title: null,
             observedAt: merged,
           }),
         ).toBeNull();
@@ -404,6 +413,7 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
               number: 367,
               url: "https://github.com/acme/api/pull/367",
               state: "open",
+              title: "Fix the login loop",
               observedAt,
             },
             crossRepository: true,
@@ -418,19 +428,21 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
           remoteBranch: "fix-login",
           pullRequestCrossRepository: true,
           pullRequestHeadOwner: "anna",
-          pullRequest: { number: 367, state: "open", observedAt },
+          pullRequest: { number: 367, state: "open", title: "Fix the login loop", observedAt },
         });
         // Refreshing its state keeps whose fork it is.
         const merged = yield* landings.observePullRequest(adopted.id, {
           number: 367,
           url: "https://github.com/acme/api/pull/367",
           state: "merged",
+          title: "Fix the login loop, retitled",
           observedAt,
         });
-        expect([merged?.pullRequest?.state, merged?.pullRequestHeadOwner]).toEqual([
-          "merged",
-          "anna",
-        ]);
+        expect([
+          merged?.pullRequest?.state,
+          merged?.pullRequest?.title,
+          merged?.pullRequestHeadOwner,
+        ]).toEqual(["merged", "Fix the login loop, retitled", "anna"]);
         // An adoption names its pull request and pushes nothing, whatever a writer says.
         const pushedAdoption = yield* sql`
           UPDATE change_landings SET pushed_sha = ${sha("e")} WHERE id = ${adopted.id}`.pipe(
@@ -444,6 +456,98 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
         expect(String(Reflect.get(Object(landedAsAdoption.reason), "cause"))).toContain(
           "change_landings_outcome_facts_check",
         );
+      }),
+    );
+  });
+
+  it("gives a list each change's newest pull request, and whether it was opened outside Mend", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const landings = yield* ChangeLandingsRepo;
+        const sessions = yield* SessionsRepo;
+        const worktree = WorktreeId.make("wt-pr");
+        const session = SessionId.make("s-pr");
+        const change = ChangeId.make("c-pr");
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES (${worktree}, ${PROJECT}, 'bump', 'bump', 'mend/bump', 'abc')`;
+        yield* sessions.create({
+          id: session,
+          projectId: PROJECT,
+          worktreeId: worktree,
+          harness: "claude",
+          label: null,
+          worktree: "bump",
+          branch: "mend/bump",
+          baseSha: Sha.make("abc"),
+          baseRef: "main",
+          contextSnapshotId: null,
+          ownerUserId: "alice",
+          origin: "mend",
+        });
+        const changes = yield* WorktreeChangesRepo;
+        const annotation = () =>
+          Effect.map(changes.annotationsForProject(PROJECT), (rows) =>
+            rows.find((row) => row.sessionId === session),
+          );
+        // No change row yet, and then a change with no landing: no pull request.
+        expect((yield* annotation())?.pullRequest).toBeNull();
+
+        yield* sql`
+          INSERT INTO worktree_changes (id, project_id, worktree_id, session_id, branch, base_sha)
+          VALUES (${change}, ${PROJECT}, ${worktree}, ${session}, 'mend/bump', 'abc')`;
+        expect((yield* annotation())?.pullRequest).toBeNull();
+
+        const landingOf = (result: NewChangeLanding["result"]): NewChangeLanding => ({
+          changeId: change,
+          sessionId: session,
+          projectId: PROJECT,
+          checkpoint: null,
+          commitSha: null,
+          remoteBranch: "mend/bump",
+          trigger: result.outcome === "adopted" ? "adopted" : "manual",
+          userId: "alice",
+          result,
+        });
+        yield* landings.record(
+          landingOf({
+            outcome: "pull-request",
+            pushedSha: sha("e"),
+            pullRequest: {
+              number: 500,
+              url: "https://github.com/acme/api/pull/500",
+              state: "merged",
+              title: "Bump deps",
+              observedAt: at(1),
+            },
+          }),
+        );
+        yield* landings.record(
+          landingOf({
+            outcome: "adopted",
+            pullRequest: {
+              number: 501,
+              url: "https://github.com/acme/api/pull/501",
+              state: "open",
+              title: "Bump deps again",
+              observedAt: at(2),
+            },
+            crossRepository: false,
+            headOwner: "acme",
+          }),
+        );
+        // A later landing with no pull request leaves the newest one that has one.
+        yield* landings.record(landingOf({ outcome: "refused", message: "rejected" }));
+
+        expect((yield* annotation())?.pullRequest).toEqual({
+          number: 501,
+          url: "https://github.com/acme/api/pull/501",
+          state: "open",
+          title: "Bump deps again",
+          observedAt: at(2),
+          adopted: true,
+        });
       }),
     );
   });

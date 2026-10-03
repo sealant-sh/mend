@@ -32,6 +32,7 @@ const PULL_REQUEST: PullRequestDto = {
   number: 412,
   url: "https://github.com/acme/app/pull/412",
   state: "open",
+  title: null,
   observedAt: OBSERVED,
 };
 
@@ -193,7 +194,7 @@ describe("the next landing", () => {
   it("updates the pull request while GitHub last said it was open", () => {
     expect(pullRequestToUpdate([landingFixture()])?.number).toBe(412);
     const merged = landingFixture({
-      pullRequest: { number: 412, url: "u", state: "merged", observedAt: OBSERVED },
+      pullRequest: { number: 412, url: "u", state: "merged", title: null, observedAt: OBSERVED },
     });
     expect(pullRequestToUpdate([merged])).toBeNull();
     expect(pullRequestToUpdate([])).toBeNull();

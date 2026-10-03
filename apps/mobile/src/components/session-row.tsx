@@ -2,16 +2,19 @@
 // project), the instruction in human language, a dot+word status. Takes a
 // plain view struct — the live adapter (`toSession`) produces it. When the
 // caller wires actions, sliding the row left reveals rename and (for a
-// settled session) delete; delete asks twice, in place.
+// settled session) delete; delete asks twice, in place. A change with a pull request shows it
+// last, in cobalt because it is a way out: tapping it opens GitHub, not the session.
 
-import { Pencil, Trash2 } from "lucide-react-native";
+import { GitPullRequest, Pencil, Trash2 } from "lucide-react-native";
 import { useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import Swipeable, { type SwipeableMethods } from "react-native-gesture-handler/ReanimatedSwipeable";
 
+import { openPullRequest } from "@/components/pull-request-card";
 import type { StatusTone } from "@/components/status";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
+import { pullRequestFact, type ChangePullRequestDto } from "@/data/pull-requests";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 export interface SessionRowView {
@@ -69,6 +72,7 @@ export function SessionRow({
   onPress,
   onRename,
   onDelete,
+  pullRequest = null,
 }: {
   readonly session: SessionRowView;
   /** Optional mono second line: change stats, last progress, settle summary. */
@@ -81,6 +85,8 @@ export function SessionRow({
   readonly onRename?: () => void;
   /** Reveal a delete action on slide-left — pass only for settled sessions. */
   readonly onDelete?: () => void;
+  /** The change's newest pull request, from the list's annotation. */
+  readonly pullRequest?: ChangePullRequestDto | null;
 }) {
   const { colors } = useEvidenceTheme();
   const swipeable = useRef<SwipeableMethods | null>(null);
@@ -123,6 +129,33 @@ export function SessionRow({
         <MonoText tone="muted" size={11.5}>
           {detail}
         </MonoText>
+      )}
+      {pullRequest === null ? null : (
+        <Pressable
+          accessibilityRole="link"
+          accessibilityLabel={`Open pull request ${pullRequest.number} on GitHub`}
+          hitSlop={8}
+          onPress={() => openPullRequest(pullRequest.url)}
+          style={({ pressed }) => ({
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            alignSelf: "flex-start",
+            maxWidth: "100%",
+            paddingTop: 2,
+            opacity: pressed ? 0.6 : 1,
+          })}
+        >
+          <GitPullRequest size={12} color={colors.accent} strokeWidth={1.8} />
+          <MonoText tone="accent" size={11.5}>
+            {pullRequestFact(pullRequest)}
+          </MonoText>
+          {(pullRequest.title ?? null) === null ? null : (
+            <MonoText tone="faint" size={11.5} numberOfLines={1} style={{ flexShrink: 1 }}>
+              {pullRequest.title}
+            </MonoText>
+          )}
+        </Pressable>
       )}
     </Pressable>
   );

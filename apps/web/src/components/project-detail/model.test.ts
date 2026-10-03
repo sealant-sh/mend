@@ -175,6 +175,7 @@ describe("Project detail worktree groups", () => {
         pendingFollowUp: false,
         currentAgent: stoppedAgent,
         liveServices: 3,
+        pullRequest: null,
       },
     ];
     const groups = worktreeGroups([older, newer, live], sessions, annotations, facts);

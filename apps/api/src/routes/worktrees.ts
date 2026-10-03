@@ -102,6 +102,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
               currentAgent: currentAgentProcess(
                 processRows.filter((process) => memberIds.has(process.sessionId)),
               ),
+              pullRequest: facts?.pullRequest ?? null,
             });
           }),
         });

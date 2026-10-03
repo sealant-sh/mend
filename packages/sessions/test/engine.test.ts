@@ -36,6 +36,7 @@ import {
   SessionGitOpsRepo,
   SessionNotFoundError,
   SessionProcessesRepo,
+  SessionRunActiveError,
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
@@ -787,6 +788,7 @@ const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
   upsertItem: () => Effect.die("not in test"),
   listItems: () => Effect.succeed([]),
   turnMessages: () => Effect.succeed([]),
+  turnItems: () => Effect.succeed([]),
   openRequest: () => Effect.die("not in test"),
   byRequestId: () => Effect.succeed(null),
   listRequests: () => Effect.succeed([]),
@@ -820,11 +822,13 @@ const recordingProtocolHostLayer = (
   attached: Array<{ readonly process: SessionProcess; readonly mode: string }>,
   submitted: string[],
   authors: Array<string | null> = [],
+  permissionModes: Array<"bypass" | "ask"> = [],
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
+        permissionModes.push(input.permissionMode);
       }),
     rehydrate: (input) =>
       Effect.sync(() => {
@@ -2350,8 +2354,22 @@ const sessionRunsLayer = (world: World) => {
     }
   };
   return Layer.succeed(SessionRunsRepo, {
+    // The one-active-run index, as Postgres enforces it: a run of the session still open is the
+    // typed refusal naming it, never a second open row. The primary key is not enforced here: the
+    // stand-in platform numbers its runs per layer, so a fixture world that outlives an engine
+    // restart sees a run id again, which real Sealant never issues twice.
     create: (input: NewSessionRun) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        const activeRun = listForSession(input.sessionId).findLast((run) => run.settledAt === null);
+        if (activeRun !== undefined && activeRun.sealantRunId !== input.sealantRunId) {
+          return Effect.fail(
+            new SessionRunActiveError({
+              sessionId: input.sessionId,
+              sealantRunId: input.sealantRunId,
+              activeRun,
+            }),
+          );
+        }
         const run = new SessionRun({
           ...input,
           ordinal: listForSession(input.sessionId).length,
@@ -2371,7 +2389,7 @@ const sessionRunsLayer = (world: World) => {
           updatedAt: now(),
         });
         world.sessionRuns.set(run.sealantRunId, run);
-        return run;
+        return Effect.succeed(run);
       }),
     bySealantRunId: (id) => Effect.succeed(world.sessionRuns.get(id) ?? null),
     listForSession: (sessionId) => Effect.succeed(listForSession(sessionId)),
@@ -2382,8 +2400,17 @@ const sessionRunsLayer = (world: World) => {
       Effect.succeed([...world.sessionRuns.values()].filter((run) => run.settledAt === null)),
     saveLastSeenSequence: (id, sequence) =>
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
+    // First settle wins, as in Postgres: a run already settled keeps its words.
     settle: (id, status, summary) =>
-      Effect.sync(() => update(id, { status, summary, settledAt: now() })),
+      Effect.sync(() => {
+        if (world.sessionRuns.get(id)?.settledAt === null) {
+          update(id, { status, summary, settledAt: now() });
+        }
+      }),
+    restate: (id, status, summary) =>
+      Effect.sync(() => {
+        if (world.sessionRuns.get(id)?.settledAt != null) update(id, { status, summary });
+      }),
   });
 };
 
@@ -3376,6 +3403,169 @@ describe("SessionEngine", () => {
           openedOptions,
         ),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted, authors),
+      },
+    );
+  });
+
+  it("brings an ask session back asking: resume, follow-up and a relaunch that names no mode", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    const authors: Array<string | null> = [];
+    const permissionModes: Array<"bypass" | "ask"> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            {
+              mode: "protocol",
+              prompt: "inspect replay",
+              model: "gpt-test",
+              effort: "high",
+              permissionMode: "ask",
+            },
+            "user-1",
+          );
+
+          // POST /sessions/:id/resume after a stop (an idle stop included).
+          yield* engine.stop(session.id, "idle · stopped after 15 min · reply to resume");
+          yield* engine.resumeSession(session.id, null);
+          // A follow-up to the stopped session relaunches it.
+          yield* engine.stop(session.id);
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1", "user-2");
+          // POST /sessions/:id/launch with no permission mode, as the Slack runner sends it.
+          yield* engine.stop(session.id);
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", prompt: "and the other test" },
+            "user-2",
+          );
+
+          expect(attached).toHaveLength(4);
+          expect(permissionModes).toEqual(["ask", "ask", "ask", "ask"]);
+          for (const { process } of attached) {
+            expect(process.kind).toBe("agent-protocol");
+            expect(process.protocolOptions).toEqual({
+              model: "gpt-test",
+              effort: "high",
+              permissionMode: "ask",
+            });
+          }
+
+          // A relaunch that names a mode is taken as given.
+          yield* engine.stop(session.id);
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", permissionMode: "bypass" },
+            null,
+          );
+          expect(permissionModes.at(-1)).toBe("bypass");
+          expect(attached.at(-1)?.process.protocolOptions?.permissionMode).toBe("bypass");
+          // ...and is what the next resume keeps.
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, null);
+          expect(permissionModes.at(-1)).toBe("bypass");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(
+          attached,
+          submitted,
+          authors,
+          permissionModes,
+        ),
+      },
+    );
+  });
+
+  it("resumes a claude ask session without the bypass flag", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    const permissionModes: Array<"bypass" | "ask"> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", prompt: "inspect replay", permissionMode: "ask" },
+            "user-1",
+          );
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, null);
+          yield* engine.stop(session.id);
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1", "user-2");
+
+          expect(attached).toHaveLength(3);
+          expect(permissionModes).toEqual(["ask", "ask", "ask"]);
+          for (const { process } of attached) {
+            expect(process.argv).not.toContain("bypassPermissions");
+            expect(process.protocolOptions?.permissionMode).toBe("ask");
+          }
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted, [], permissionModes),
+      },
+    );
+  });
+
+  it("resumes a bypass session as bypass", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    const permissionModes: Array<"bypass" | "ask"> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // A first launch that names no mode runs on the default.
+          yield* engine.launchProtocol(session.id, { mode: "protocol", prompt: "go" }, "user-1");
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, null);
+          yield* engine.stop(session.id);
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1", "user-2");
+
+          expect(permissionModes).toEqual(["bypass", "bypass", "bypass"]);
+          expect(attached.map(({ process }) => process.protocolOptions?.permissionMode)).toEqual([
+            "bypass",
+            "bypass",
+            "bypass",
+          ]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted, [], permissionModes),
       },
     );
   });
@@ -6217,6 +6407,7 @@ describe("SessionEngine workspace git hooks", () => {
         Effect.sync(
           () => void heard.push({ sessionId: event.sessionId, stoppedYet: stopped.length }),
         ),
+      pullRequestOpened: () => Effect.void,
       register: () => Effect.void,
       landRequested: () => Effect.succeed({ landed: false, lines: [] }),
       registerLanding: () => Effect.void,
@@ -6254,6 +6445,7 @@ describe("SessionEngine workspace git hooks: pushes", () => {
     const hooks = Layer.succeed(WorkspaceGitHooks, {
       branchesPushed: (event) => Effect.sync(() => void pushed.push(event.worktreeId)),
       agentEnded: () => Effect.void,
+      pullRequestOpened: () => Effect.void,
       register: () => Effect.void,
       landRequested: () => Effect.succeed({ landed: false, lines: [] }),
       registerLanding: () => Effect.void,
@@ -19378,6 +19570,328 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
           ptyStates,
         ),
       },
+    );
+  });
+});
+
+/** The session's agent process, ended in the world as if its end was never recorded. */
+const endAgentInWorld = (world: World, sessionId: SessionId, exitCode: number | null) => {
+  const agent = [...world.processes.values()].find(
+    (process) => process.sessionId === sessionId && process.kind === "agent-pty",
+  );
+  if (agent === undefined) throw new Error("no agent process");
+  world.processes.set(
+    agent.id,
+    new SessionProcess({
+      ...agent,
+      status: "exited",
+      exitCode,
+      exitedAt: now(),
+      updatedAt: now(),
+    }),
+  );
+};
+
+/** A session's runs, in launch order. */
+const runsOf = (world: World, sessionId: SessionId) =>
+  [...world.sessionRuns.values()]
+    .filter((run) => run.sessionId === sessionId)
+    .toSorted((left, right) => left.ordinal - right.ordinal);
+
+/** How many times the engine said it settled a run left open under a settled session. */
+const staleRunsSaid = (logs: ReadonlyArray<string>) =>
+  logs.filter((line) => line.includes("a run left open under a settled session")).length;
+
+/**
+ * A settled session with one run still `running`, as the owner's box had it. `runCreatedAt` after
+ * `settledAt` is the next launch's run, recorded before its reopen was written.
+ */
+const seedSettledWithOpenRun = (
+  world: World,
+  input: {
+    readonly sessionId: SessionId;
+    readonly runId: SealantRunId;
+    readonly summary: string;
+    readonly settledAt: Date;
+    readonly runCreatedAt: Date;
+  },
+) => {
+  const { sessionId, runId } = input;
+  world.sessions.set(
+    sessionId,
+    new Session({
+      id: sessionId,
+      projectId: ProjectId.make("project-run-left-open"),
+      worktreeId: WorktreeId.make(`wt-${sessionId}`),
+      harness: "claude",
+      providerSessionId: null,
+      label: null,
+      worktree: `session-${sessionId}`,
+      branch: `mend/session-${sessionId}`,
+      baseSha: Sha.make("0000000000000000000000000000000000000000"),
+      baseRef: "main",
+      contextSnapshotId: null,
+      referenceMounts: [],
+      extraMounts: [],
+      sealantRunId: runId,
+      sealantWorkspaceId: null,
+      sealantSessionId: null,
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
+      workspaceImage: null,
+      dotfiles: null,
+      ownerUserId: "user-fixture",
+      hasTranscript: true,
+      status: "failed",
+      summary: input.summary,
+      lastSeenSequence: 0n,
+      recordHistoryComplete: false,
+      startedAt: input.settledAt,
+      settledAt: input.settledAt,
+      createdAt: input.settledAt,
+      updatedAt: input.settledAt,
+    }),
+  );
+  world.sessionRuns.set(
+    runId,
+    new SessionRun({
+      sealantRunId: runId,
+      sessionId,
+      ordinal: 1,
+      harness: "claude",
+      sealantWorkspaceId: SealantWorkspaceId.make(`workspace-${runId}`),
+      sealantSessionId: `pty-${runId}`,
+      status: "running",
+      summary: null,
+      lastSeenSequence: 0n,
+      environmentRevision: null,
+      environmentVariableNames: null,
+      secretRevision: null,
+      secretNames: null,
+      clusterBindingRevision: null,
+      clusterBindingNames: null,
+      clusterServiceAccount: null,
+      startedAt: input.runCreatedAt,
+      settledAt: null,
+      createdAt: input.runCreatedAt,
+      updatedAt: input.runCreatedAt,
+    }),
+  );
+};
+
+describe("SessionEngine a session and its run settle together (2026-10-03)", () => {
+  // Observed on the owner's box: a replacement launch that never reached its control socket was
+  // settled by the leftover sweep (`failed · launch failed · the harness never started · saved at
+  // 15:04:33 UTC · capture 36`) while its `session_runs` row stayed `running`, and every resume
+  // after that met the one-active-run index as an unhandled 500.
+  const LAUNCH_NEVER_RAN = "launch failed · the harness never started";
+
+  it("a launch that fails settles the session and the run an earlier launch left open, with the same words", async () => {
+    const created: Array<CreateOptions> = [];
+    let loseCreate = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const [first] = runsOf(world, session.id);
+          expect(first?.status).toBe("running");
+          // The agent ended and nothing recorded its end: the run stays open under a live row.
+          endAgentInWorld(world, session.id, null);
+          loseCreate = true;
+          const error = yield* engine.resumeSession(session.id, "shell").pipe(Effect.flip);
+          expect(error._tag).toBe("SealantPlatformError");
+          const settled = world.sessions.get(session.id);
+          expect(settled?.status).toBe("failed");
+          expect(settled?.settledAt).not.toBeNull();
+          expect(settled?.summary).toMatch(/^launch failed: /);
+          const runs = runsOf(world, session.id);
+          expect(runs).toHaveLength(1);
+          expect(runs[0]?.status).toBe("failed");
+          expect(runs[0]?.summary).toBe(settled?.summary);
+          expect(runs[0]?.settledAt).not.toBeNull();
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { loseCreateAnswer: () => loseCreate },
+        ),
+      },
+    );
+  });
+
+  it("startup and the reaper settle a run left `running` under a settled session with the session's words, once each; a run recorded after the settle is the next launch's and stays open", async () => {
+    const summary = `${LAUNCH_NEVER_RAN} · saved at 15:04:33 UTC · capture 36`;
+    const stale = {
+      sessionId: SessionId.make(crypto.randomUUID()),
+      runId: SealantRunId.make("run-stale"),
+    };
+    const next = {
+      sessionId: SessionId.make(crypto.randomUUID()),
+      runId: SealantRunId.make("run-next-launch"),
+    };
+    const later = {
+      sessionId: SessionId.make(crypto.randomUUID()),
+      runId: SealantRunId.make("run-stale-later"),
+    };
+    const logs: Array<string> = [];
+    await withEngine(
+      (world) =>
+        Effect.gen(function* () {
+          // Startup: the stale run reads as its session does.
+          const staleRun = world.sessionRuns.get(stale.runId);
+          expect(staleRun?.status).toBe("failed");
+          expect(staleRun?.summary).toBe(summary);
+          expect(staleRun?.settledAt).not.toBeNull();
+          // The session itself is as it was: settled once, its words untouched.
+          expect(world.sessions.get(stale.sessionId)?.status).toBe("failed");
+          expect(world.sessions.get(stale.sessionId)?.summary).toBe(summary);
+          // The run recorded after its session settled is a launch under way: left open.
+          expect(world.sessionRuns.get(next.runId)?.status).toBe("running");
+          expect(world.sessionRuns.get(next.runId)?.settledAt).toBeNull();
+          expect(staleRunsSaid(logs)).toBe(1);
+
+          // The reaper: a pair that became inconsistent since boot is settled on its tick, said
+          // once, and the next tick has nothing left to say.
+          const engine = yield* SessionEngine;
+          const settledAt = new Date();
+          seedSettledWithOpenRun(world, {
+            ...later,
+            summary: "executor lost · lease expired",
+            settledAt,
+            runCreatedAt: new Date(settledAt.getTime() - 60_000),
+          });
+          yield* engine.reapCaptureLeases();
+          expect(world.sessionRuns.get(later.runId)?.status).toBe("failed");
+          expect(world.sessionRuns.get(later.runId)?.summary).toBe("executor lost · lease expired");
+          expect(staleRunsSaid(logs)).toBe(2);
+          yield* engine.reapCaptureLeases();
+          expect(staleRunsSaid(logs)).toBe(2);
+          expect(world.sessionRuns.get(next.runId)?.status).toBe("running");
+        }),
+      {
+        logs,
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => {
+          const settledAt = now();
+          seedSettledWithOpenRun(world, {
+            ...stale,
+            summary,
+            settledAt,
+            runCreatedAt: new Date(settledAt.getTime() - 60_000),
+          });
+          seedSettledWithOpenRun(world, {
+            ...next,
+            summary,
+            settledAt,
+            runCreatedAt: new Date(settledAt.getTime() + 1_000),
+          });
+        },
+      },
+    );
+  });
+
+  it("an attached run with no process row is live work: a second attach is refused in the log, and the first run is never settled", async () => {
+    const created: Array<CreateOptions> = [];
+    const logs: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          const first = SealantRunId.make("attached-run-1");
+          const second = SealantRunId.make("attached-run-2");
+          yield* engine.attachRun(session.id, first, SealantWorkspaceId.make("workspace-1"));
+          yield* engine.attachRun(session.id, second, SealantWorkspaceId.make("workspace-1"));
+          const runs = runsOf(world, session.id);
+          expect(runs.map((run) => [run.sealantRunId, run.status])).toEqual([[first, "running"]]);
+          expect(world.sessions.get(session.id)?.sealantRunId).toBe(first);
+          expect(logs.some((line) => line.includes("attached run not recorded"))).toBe(true);
+        }),
+      { logs, sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("a resume after a launch failure that left the run open succeeds: the stale run takes the session's words first", async () => {
+    const created: Array<CreateOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const [first] = runsOf(world, session.id);
+          if (first === undefined) throw new Error("no run");
+          // The owner's box: the session settled through a path that never reached its run.
+          endAgentInWorld(world, session.id, null);
+          const current = world.sessions.get(session.id);
+          if (current === undefined) throw new Error("no session");
+          world.sessions.set(
+            session.id,
+            new Session({
+              ...current,
+              status: "failed",
+              summary: LAUNCH_NEVER_RAN,
+              settledAt: now(),
+            }),
+          );
+          expect(world.sessionRuns.get(first.sealantRunId)?.status).toBe("running");
+
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(2);
+          const runs = runsOf(world, session.id);
+          expect(runs.map((run) => run.status)).toEqual(["failed", "running"]);
+          expect(runs[0]?.summary).toBe(LAUNCH_NEVER_RAN);
+          expect(runs[0]?.settledAt).not.toBeNull();
+          expect(runs[1]?.settledAt).toBeNull();
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("a run insert the one-active index refuses settles the stale run from its process and asks once more; nothing live is settled", async () => {
+    const created: Array<CreateOptions> = [];
+    const logs: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const [first] = runsOf(world, session.id);
+          if (first === undefined) throw new Error("no run");
+          // The agent exited 1 and nothing recorded it: the session still reads `running`, so
+          // the resume's own look at the settled session finds nothing to settle, and the index
+          // refuses the new run.
+          endAgentInWorld(world, session.id, 1);
+
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          const runs = runsOf(world, session.id);
+          expect(runs.map((run) => run.status)).toEqual(["failed", "running"]);
+          expect(runs[0]?.summary).toBe("exited with code 1");
+          expect(runs[0]?.settledAt).not.toBeNull();
+          expect(
+            logs.some((line) =>
+              line.includes("a run left open settled before the next run of its session"),
+            ),
+          ).toBe(true);
+          // The shell that just started is live and its run is open: a stop ends it as ever.
+          yield* engine.stop(session.id);
+          const afterStop = runsOf(world, session.id);
+          expect(afterStop[1]?.status).toBe("stopped");
+        }),
+      { logs, sealantLayer: sealantLaunchLayer(created) },
     );
   });
 });

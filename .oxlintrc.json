@@ -11,7 +11,10 @@
     "**/build/**",
     "**/coverage/**",
     ".turbo/**",
-    ".direnv/**"
+    ".direnv/**",
+    // t3code's contracts, copied verbatim at a pinned tag and never edited (ADR 0012).
+    "packages/t3-contracts/src/**",
+    "packages/t3-contracts/shared/**"
   ],
   "rules": {
     "import/no-cycle": "error",

@@ -6,6 +6,7 @@ import { HiddenEndedSessionsNotice } from "#/components/project-detail/hidden-en
 import { baseLabel, type WorktreeGroup } from "#/components/project-detail/model";
 import { NewWorktreeSession } from "#/components/project-detail/new-worktree-session";
 import { ReviewLink, type DetailHandlers } from "#/components/project-detail/parts";
+import { PullRequestLink } from "#/components/pull-request-link";
 import { SessionStatusDot, StatusDot } from "#/components/status";
 import type { SessionDto } from "#/lib/api";
 import { worktreeDisplayName } from "#/lib/workbench-menus";
@@ -199,6 +200,9 @@ function WorktreeNode({
         </div>
         <div className="flex min-w-0 flex-wrap items-center gap-3 pt-0.5">
           <SessionCount total={group.members.length} live={group.live} />
+          {group.annotation === undefined || group.annotation.pullRequest === null ? null : (
+            <PullRequestLink pullRequest={group.annotation.pullRequest} className="max-w-[16rem]" />
+          )}
           <ReviewLink group={group} />
           <NewWorktreeSession worktreeId={group.worktree.id} worktreeName={name} />
         </div>

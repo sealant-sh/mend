@@ -139,6 +139,7 @@ describe("the Land panel", () => {
               number: 367,
               url: "https://github.com/acme/app/pull/367",
               state: "open",
+              title: null,
               observedAt: "2026-08-20T00:00:00.000Z",
             },
             pullRequestCrossRepository: true,

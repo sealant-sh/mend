@@ -1,0 +1,31 @@
+{
+  "name": "@mend/t3-contracts",
+  "version": "0.0.0",
+  "private": true,
+  "description": "t3code's contracts at a pinned tag, copied verbatim (MIT, T3 Tools Inc.), for the t3code gateway",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./keybindings": "./shared/keybindings.ts",
+    "./pin": "./t3code.pin.json",
+    "./relay": "./src/relay.ts",
+    "./settings": "./src/settings.ts"
+  },
+  "scripts": {
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "sync": "node scripts/sync.ts",
+    "test": "vitest run",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@t3tools/contracts": "link:.",
+    "effect": "catalog:t3"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:t3",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:t3"
+  }
+}

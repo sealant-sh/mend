@@ -11,8 +11,10 @@ import { EvButton } from "@/components/button";
 import { ComposerField, ComposerTextInput } from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
 import { ComposerDock, usePaneEdges } from "@/components/pane";
+import { SessionPullRequest } from "@/components/pull-request-card";
 import { MonoText, UiText } from "@/components/typography";
-import { loadConfig, useTranscript, type TranscriptEventDto } from "@/data/live";
+import { loadConfig, useSession, useTranscript, type TranscriptEventDto } from "@/data/live";
+import { newestPullRequest } from "@/data/pull-requests";
 import { useTtySocket, type TtyTarget } from "@/data/tty-socket";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
@@ -114,6 +116,7 @@ export function PtyConversation({
   const { colors } = useEvidenceTheme();
   const pane = usePaneEdges();
   const transcript = useTranscript(sessionId, active);
+  const pullRequest = newestPullRequest(useSession(sessionId).data?.landings ?? []);
   const [draft, setDraft] = useState("");
   const [pendingSends, setPendingSends] = useState<
     ReadonlyArray<{ readonly id: number; readonly text: string }>
@@ -252,11 +255,17 @@ export function PtyConversation({
           gap: 10,
         }}
         ListFooterComponent={
-          working && active ? (
-            <MonoText tone="faint" size={11.5} style={{ paddingHorizontal: 2, paddingTop: 4 }}>
-              working…
-            </MonoText>
-          ) : null
+          <>
+            {/* A terminal transcript carries no times: the newest pull request closes it. */}
+            {pullRequest === undefined ? null : (
+              <SessionPullRequest sessionId={sessionId} card={pullRequest} />
+            )}
+            {working && active ? (
+              <MonoText tone="faint" size={11.5} style={{ paddingHorizontal: 2, paddingTop: 4 }}>
+                working…
+              </MonoText>
+            ) : null}
+          </>
         }
         ListEmptyComponent={<MonoText tone="faint">{emptyMessage}</MonoText>}
       />

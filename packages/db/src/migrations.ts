@@ -2906,6 +2906,17 @@ const sessionRepositoriesMigration = Effect.gen(function* () {
 });
 
 /**
+ * 0104: the pull request's title as `gh` reports it, so a session's conversation and every list
+ * can name it (docs/adr/0007-landing.md, "What Mend records and shows"), and the index those lists
+ * read each change's newest pull request through.
+ */
+const landingPullRequestTitleMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE change_landings ADD COLUMN pull_request_title text`;
+  yield* sql`
+    CREATE INDEX change_landings_project_pull_request_idx
+    ON change_landings (project_id, change_id, created_at DESC)
+    WHERE pull_request_number IS NOT NULL`;
  * Who opened a turn (`request` | `harness`): Claude opens a turn on its own when a background
  * task or workflow it started ends, and Mend records it rather than dropping its output.
  */
@@ -3021,5 +3032,6 @@ export const migrations = {
   "0101_secret_files": secretFilesMigration,
   "0102_harness_models": harnessModelsMigration,
   "0103_session_repositories": sessionRepositoriesMigration,
+  "0104_landing_pull_request_title": landingPullRequestTitleMigration,
   "0105_turn_origin": turnOriginMigration,
 };

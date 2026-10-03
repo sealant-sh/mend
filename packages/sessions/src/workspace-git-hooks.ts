@@ -8,10 +8,19 @@ export interface WorkspaceGitEvent {
   readonly worktreeId: WorktreeId;
 }
 
+/**
+ * A turn ended that ran `gh pr create`: the pull request URLs the turn named, and when it started.
+ */
+export interface PullRequestOpenedEvent extends WorkspaceGitEvent {
+  readonly urls: ReadonlyArray<string>;
+  readonly since: Date;
+}
+
 /** What runs when the engine reports an event; the worker registers them. */
 export interface WorkspaceGitHandlers {
   readonly branchesPushed: (event: WorkspaceGitEvent) => Effect.Effect<void>;
   readonly agentEnded: (event: WorkspaceGitEvent) => Effect.Effect<void>;
+  readonly pullRequestOpened: (event: PullRequestOpenedEvent) => Effect.Effect<void>;
 }
 
 /**
@@ -34,8 +43,8 @@ const NO_LANDING: WorkspaceLandOutcome = {
 /**
  * Moments in a workspace's git life that other parts of Mend act on without the engine knowing
  * them (docs/adr/0007-landing.md, "Pull requests opened outside Mend"): the agent pushed branches
- * through the transport, and an agent ended while its workspace is still up, the last moment `gh`
- * can run in it. The engine reports; whoever registered handlers acts (the landing worker, which
+ * through the transport, an agent ended while its workspace is still up, the last moment `gh`
+ * can run in it, and a turn ended that ran `gh pr create`. The engine reports; whoever registered handlers acts (the landing worker, which
  * depends on the engine and so cannot be one of its dependencies). With nothing registered, a
  * report does nothing.
  */
@@ -44,6 +53,7 @@ export class WorkspaceGitHooks extends Context.Service<
   {
     readonly branchesPushed: (event: WorkspaceGitEvent) => Effect.Effect<void>;
     readonly agentEnded: (event: WorkspaceGitEvent) => Effect.Effect<void>;
+    readonly pullRequestOpened: (event: PullRequestOpenedEvent) => Effect.Effect<void>;
     /** Replaces whatever was registered before. */
     readonly register: (handlers: WorkspaceGitHandlers) => Effect.Effect<void>;
     /**
@@ -70,6 +80,10 @@ export const WorkspaceGitHooksLive: Layer.Layer<WorkspaceGitHooks> = Layer.effec
       agentEnded: (event) =>
         Effect.flatMap(Ref.get(registered), (handlers) =>
           handlers === null ? Effect.void : handlers.agentEnded(event),
+        ),
+      pullRequestOpened: (event) =>
+        Effect.flatMap(Ref.get(registered), (handlers) =>
+          handlers === null ? Effect.void : handlers.pullRequestOpened(event),
         ),
       register: (handlers) => Ref.set(registered, handlers),
       landRequested: (sessionId) =>
