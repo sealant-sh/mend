@@ -24,6 +24,7 @@ class GatedMendClient {
   readonly listProjects: DeviceCalls["listProjects"];
   readonly projectDetail: DeviceCalls["projectDetail"];
   readonly listTurns: DeviceCalls["listTurns"];
+  readonly listItems: DeviceCalls["listItems"];
   readonly listRequests: DeviceCalls["listRequests"];
   readonly events: DeviceCalls["events"];
 
@@ -33,6 +34,7 @@ class GatedMendClient {
     this.listProjects = calls.listProjects;
     this.projectDetail = calls.projectDetail;
     this.listTurns = calls.listTurns;
+    this.listItems = calls.listItems;
     this.listRequests = calls.listRequests;
     this.events = calls.events;
   }
@@ -66,6 +68,8 @@ export const gateDeviceCalls = (
     listProjects: (token) => guard(token, mend.listProjects(token)),
     projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),
     listTurns: (token, sessionId) => guard(token, mend.listTurns(token, sessionId)),
+    listItems: (token, sessionId, after, limit) =>
+      guard(token, mend.listItems(token, sessionId, after, limit)),
     listRequests: (token, sessionId) => guard(token, mend.listRequests(token, sessionId)),
     events: (token) =>
       mend

@@ -82,6 +82,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
   ORCHESTRATION_V2_WS_METHODS.subscribeShell,
+  ORCHESTRATION_V2_WS_METHODS.subscribeThread,
+  ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
 ]);
 
 /** Streams that stay open and never emit: feeds of things Mend never has. */
@@ -162,7 +164,7 @@ const acpRegistry = (method: WsRpcMethod) =>
     }),
   );
 
-/** Phase 0 shows no threads, so every thread a client names is not in this environment. */
+/** A thread the person has no protocol session for. */
 const unknownThread = (threadId: ThreadId) =>
   new OrchestrationV2GetThreadProjectionError({
     threadId,
@@ -201,6 +203,19 @@ const shellReadFailure = (error: HubReadError) =>
         requiredScope: READ,
       })
     : new OrchestrationV2GetShellSnapshotError({ message: error.message, cause: error });
+
+/** As `shellReadFailure`, for one thread. */
+const threadReadFailure = (threadId: ThreadId) => (error: HubReadError) =>
+  error._tag === "MendDeviceRefused"
+    ? new EnvironmentAuthorizationError({
+        message: "Mend no longer accepts this device. Pair again from Mend.",
+        requiredScope: READ,
+      })
+    : new OrchestrationV2GetThreadProjectionError({
+        threadId,
+        message: error.message,
+        cause: error,
+      });
 
 export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpcInput) => {
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
@@ -341,9 +356,39 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
         }),
       ),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input) =>
-      Effect.fail(unknownThread(input.threadId)),
+      Effect.gen(function* () {
+        yield* authorize(session, READ);
+        const snapshot = yield* hub
+          .threadSnapshot(input.threadId)
+          .pipe(Effect.mapError(threadReadFailure(input.threadId)));
+        if (snapshot === null) return yield* unknownThread(input.threadId);
+        return snapshot.projection;
+      }),
+    // As the shell: a full snapshot whatever the client resumes after (the replay after a
+    // sequence is phase 2), the marker when asked, then the thread's changes.
     [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input) =>
-      Stream.fail(unknownThread(input.threadId)),
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* authorize(session, READ);
+          const subscribed = yield* hub
+            .subscribeThread(input.threadId)
+            .pipe(Effect.mapError(threadReadFailure(input.threadId)));
+          if (subscribed === null) return yield* unknownThread(input.threadId);
+          const { snapshot, changes } = subscribed;
+          return Stream.make({
+            kind: "snapshot" as const,
+            snapshotSequence: snapshot.snapshotSequence,
+            projection: snapshot.projection,
+          }).pipe(
+            Stream.concat(
+              input.requestCompletionMarker === true
+                ? Stream.make({ kind: "synchronized" as const })
+                : Stream.empty,
+            ),
+            Stream.concat(changes),
+          );
+        }),
+      ),
     [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: () =>
       Effect.fail(
         new OrchestrationGetTurnDiffError({

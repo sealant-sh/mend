@@ -20,6 +20,7 @@ import { GatewayAuth, type GatewayCredentialInvalid } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal, notFound, requestInvalid, scopeRequired } from "./http-errors.ts";
 import { Projections } from "./hub.ts";
+import { latestLocalTurnOrdinalOf } from "./thread-projection.ts";
 import { WebSocketTickets } from "./tickets.ts";
 import { WebSocketRouteLive } from "./ws.ts";
 
@@ -184,21 +185,78 @@ export const OrchestrationGroupLive = HttpApiBuilder.group(
         return yield* projections.hub(bearer.session);
       });
 
-      return handlers
-        .handle("shellSnapshot", () =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const hub = yield* callerHub;
-              // Mend unreachable, or every device of the person refused: t3code retries either.
-              return yield* hub.shellSnapshot.pipe(
-                Effect.catch((error) => internal("orchestration_snapshot_failed", error)),
-              );
-            }),
-          ),
-        )
-        .handle("threadSnapshot", () => notFound("thread_not_found"))
-        .handle("threadBoundedSnapshot", () => notFound("thread_not_found"))
-        .handle("threadHistoryPage", () => notFound("thread_not_found"));
+      return (
+        handlers
+          .handle("shellSnapshot", () =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                // Mend unreachable, or every device of the person refused: t3code retries either.
+                return yield* hub.shellSnapshot.pipe(
+                  Effect.catch((error) => internal("orchestration_snapshot_failed", error)),
+                );
+              }),
+            ),
+          )
+          .handle("threadSnapshot", ({ params }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                const snapshot = yield* hub
+                  .threadSnapshot(params.threadId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      internal("orchestration_thread_snapshot_failed", error),
+                    ),
+                  );
+                if (snapshot === null) return yield* notFound("thread_not_found");
+                return snapshot;
+              }),
+            ),
+          )
+          // The whole thread, as one window with nothing older: Mend's threads are read in full.
+          .handle("threadBoundedSnapshot", ({ params }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                const snapshot = yield* hub
+                  .threadSnapshot(params.threadId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      internal("orchestration_thread_bounded_snapshot_failed", error),
+                    ),
+                  );
+                if (snapshot === null) return yield* notFound("thread_not_found");
+                return {
+                  ...snapshot,
+                  historyCursor: null,
+                  hasMoreHistory: false,
+                  latestLocalTurnOrdinal: latestLocalTurnOrdinalOf(snapshot.projection),
+                };
+              }),
+            ),
+          )
+          // No cursor is ever handed out, so there is never an older page.
+          .handle("threadHistoryPage", ({ params }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                const snapshot = yield* hub
+                  .threadSnapshot(params.threadId)
+                  .pipe(
+                    Effect.catch((error) => internal("orchestration_thread_history_failed", error)),
+                  );
+                if (snapshot === null) return yield* notFound("thread_not_found");
+                return {
+                  snapshotSequence: snapshot.snapshotSequence,
+                  items: [],
+                  nextCursor: null,
+                  hasMoreHistory: false,
+                };
+              }),
+            ),
+          )
+      );
     }),
 );
 

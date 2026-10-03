@@ -21,6 +21,7 @@ const revokedMend: DeviceCalls = {
   listProjects: () => refused("projects"),
   projectDetail: () => refused("project"),
   listTurns: () => refused("turns"),
+  listItems: () => refused("items"),
   listRequests: () => refused("requests"),
   events: () => Stream.fail(new MendDeviceRefused({ operation: "events" })),
 };
@@ -56,6 +57,7 @@ describe("the device gate", () => {
         listProjects: gated.listProjects("t-listProjects"),
         projectDetail: gated.projectDetail("t-projectDetail", "p"),
         listTurns: gated.listTurns("t-listTurns", "s"),
+        listItems: gated.listItems("t-listItems", "s", 0, 500),
         listRequests: gated.listRequests("t-listRequests", "s"),
         events: Stream.runDrain(gated.events("t-events")),
       };

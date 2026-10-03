@@ -95,6 +95,7 @@ export interface FakeRequest {
 export interface FakeCall {
   readonly method: string;
   readonly path: string;
+  readonly query: string;
   readonly body: unknown;
   readonly authorization: string | undefined;
 }
@@ -366,13 +367,14 @@ export class FakeWorkbench {
       this.calls.push({
         method,
         path,
+        query: url.search,
         body: value,
         authorization: request.headers.authorization,
       });
     };
 
+    if (method === "GET") record(undefined);
     if (method === "GET" && path === "/api/events") {
-      record(undefined);
       response.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",

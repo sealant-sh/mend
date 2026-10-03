@@ -94,6 +94,23 @@ export const MendTurn = Schema.Struct({
 });
 export type MendTurn = typeof MendTurn.Type;
 
+/** `AgentItem` in @mend/domain/workbench, from `GET /api/sessions/:id/items`. */
+export const MendItem = Schema.Struct({
+  id: Schema.String,
+  turnId: Schema.String,
+  /** The session's change-feed cursor: bumps on every update, so `after=` re-delivers changes. */
+  seq: Schema.Number,
+  kind: Schema.String,
+  status: Schema.String,
+  title: Schema.NullOr(Schema.String),
+  text: Schema.NullOr(Schema.String),
+  /** The harness's own item, as its adapter recorded it. */
+  data: Schema.Unknown,
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+});
+export type MendItem = typeof MendItem.Type;
+
 /** `AgentInputQuestion` in @mend/domain/workbench. */
 export const MendInputQuestion = Schema.Struct({
   id: Schema.String,
