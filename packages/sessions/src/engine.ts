@@ -3962,24 +3962,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* removeIfRequested(sessionId);
             return "gone" as const;
           }
-          // From here the drain holds what the Stop put off: a round that saves runs it before
-          // the executor goes; a kept round leaves it for the next (`runDeferred`).
-          queueHeld.add(workspaceId);
           if (!begun) {
             begun = true;
             // Durable first, then the in-use look: a join reads the intent and stays out
             // (`leaseHolderWorkspace`), and whatever started before it is seen here.
-            yield* sessions.beginCaptureDrain(sessionId, reason, new Date(progressAtMs)).pipe(
-              // Failed before the durable intent: nothing retries this drain, so the hold goes
-              // and the end that put the work off runs it itself.
-              Effect.onError(() => Effect.sync(() => queueHeld.delete(workspaceId))),
-            );
+            yield* sessions.beginCaptureDrain(sessionId, reason, new Date(progressAtMs));
+            // With the intent durable, a next round is owed: from here the drain holds what the
+            // Stop put off (a round that saves runs it before the executor goes; a kept round
+            // leaves it for the next), and nothing holds it without an intent to come back.
+            queueHeld.add(workspaceId);
             // An executor already sent a final flush ended whatever ran in it and admits nothing
             // new: whatever reads live there is stale, and the drain goes on.
             const ending = yield* workspaceFinalFlushed(session.worktreeId, workspaceId);
             if (!force && !ending && lookup.kind === "found") {
               const inUse = yield* workspaceInUse(workspaceId);
               if (inUse > 0) {
+                // Not flushed at all: what the Stop put off flushes for itself, as it did
+                // (`none`), detached, and before the intent goes, so a request that gives up here
+                // leaves nothing queued without a consumer (Astra reviews, 2026-10-03).
+                yield* runDeferredDetached(workspaceId, "none");
                 yield* endDrain(sessionId);
                 yield* Effect.logInfo(
                   "session engine: capture drain · the workspace is in use · nothing stopped",
@@ -4250,46 +4251,54 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         reason: CaptureDrainReason,
         force: boolean,
       ): Effect.Effect<DrainOutcome> =>
-        Effect.suspend(() => {
-          const running = drains.get(workspaceId);
-          if (running !== undefined) return Deferred.await(running);
-          const done = Deferred.makeUnsafe<DrainOutcome>();
-          drains.set(workspaceId, done);
-          return runDrain(sessionId, workspaceId, reason, force).pipe(
-            Effect.catchCause((cause) =>
-              // A shutdown is not an outcome: whoever waits on this drain (a relaunch) is
-              // interrupted with it, and its durable intent stays for the next start.
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.interrupt
-                : Effect.logWarning("session engine: capture drain failed · workspace kept").pipe(
-                    Effect.annotateLogs({ sessionId, workspaceId, reason, cause: String(cause) }),
-                    Effect.as("kept" as const),
-                  ),
-            ),
-            Effect.tap((outcome) =>
-              outcome === "kept"
-                ? Effect.andThen(
-                    Effect.sync(() => queueClosed.delete(workspaceId)),
-                    noteKeptDrain(sessionId),
-                  )
-                : Effect.sync(() => keptDrains.delete(sessionId)),
-            ),
-            // A workspace found in use was not flushed at all: what the Stop put off flushes for
-            // itself, as it did (`none`), inside this drain (a drain that follows waits for it,
-            // and nothing it reads goes under a successor). A kept round leaves it where it is:
-            // the round that saves runs it, before the executor goes (Astra reviews, 2026-10-03).
-            Effect.tap((outcome) =>
-              outcome === "in-use" ? runDeferredDetached(workspaceId, "none") : Effect.void,
-            ),
-            Effect.onExit((exit) =>
-              Effect.sync(() => {
-                Deferred.doneUnsafe(done, exit);
-                drains.delete(workspaceId);
-              }),
-            ),
-            Effect.ensuring(Effect.sync(() => lastReadings.delete(workspaceId))),
-          );
-        });
+        // The slot is taken and its release installed in one uninterruptible step (a request
+        // that gives up between them would leave the slot taken forever); the drain itself runs
+        // interruptible again.
+        Effect.uninterruptibleMask((restore) =>
+          Effect.suspend(() => {
+            const running = drains.get(workspaceId);
+            if (running !== undefined) return restore(Deferred.await(running));
+            const done = Deferred.makeUnsafe<DrainOutcome>();
+            drains.set(workspaceId, done);
+            return restore(
+              runDrain(sessionId, workspaceId, reason, force).pipe(
+                Effect.catchCause((cause) =>
+                  // A shutdown is not an outcome: whoever waits on this drain (a relaunch) is
+                  // interrupted with it, and its durable intent stays for the next start.
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.logWarning(
+                        "session engine: capture drain failed · workspace kept",
+                      ).pipe(
+                        Effect.annotateLogs({
+                          sessionId,
+                          workspaceId,
+                          reason,
+                          cause: String(cause),
+                        }),
+                        Effect.as("kept" as const),
+                      ),
+                ),
+                Effect.tap((outcome) =>
+                  outcome === "kept"
+                    ? Effect.andThen(
+                        Effect.sync(() => queueClosed.delete(workspaceId)),
+                        noteKeptDrain(sessionId),
+                      )
+                    : Effect.sync(() => keptDrains.delete(sessionId)),
+                ),
+              ),
+            ).pipe(
+              Effect.onExit((exit) =>
+                Effect.sync(() => {
+                  Deferred.doneUnsafe(done, exit);
+                  drains.delete(workspaceId);
+                }),
+              ),
+              Effect.ensuring(Effect.sync(() => lastReadings.delete(workspaceId))),
+            );
+          }),
+        );
 
       /**
        * "Discard unsaved and stop" (the owner's, confirmed and audited by the caller): the one
@@ -11127,27 +11136,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // forked so a stop request answers immediately. If this process dies
         // first, the next boot's leftover sweep (and the capture reaper) finish
         // the job.
-        stopTails.add(sessionId);
-        yield* Effect.forkIn(
-          (ended.length > 0
-            ? Effect.forEach(ended, (agent) => finishAgentProcess(agent, null, true, true), {
-                discard: true,
-              })
-            : sweepWorkspace(sessionId, true)
-          ).pipe(
-            // No drain holds it (none ran, or one ran the queue already): what is still put off
-            // runs now, as it would have before. A drain that kept the executor leaves it for the
-            // round that saves.
-            Effect.ensuring(
-              Effect.suspend(() =>
-                workspaceId === null || queueHeld.has(workspaceId)
-                  ? Effect.void
-                  : runDeferredDetached(workspaceId, "none").pipe(Effect.asVoid),
+        // Marked and forked in one step: marked but never forked, the reaper would skip this
+        // session for good (Astra review, 2026-10-03).
+        yield* Effect.uninterruptible(
+          Effect.suspend(() => {
+            stopTails.add(sessionId);
+            return Effect.forkIn(
+              (ended.length > 0
+                ? Effect.forEach(ended, (agent) => finishAgentProcess(agent, null, true, true), {
+                    discard: true,
+                  })
+                : sweepWorkspace(sessionId, true)
+              ).pipe(
+                // No drain holds it (none ran, or one ran the queue already): what is still put off
+                // runs now, as it would have before. A drain that kept the executor leaves it for the
+                // round that saves.
+                Effect.ensuring(
+                  Effect.suspend(() =>
+                    workspaceId === null || queueHeld.has(workspaceId)
+                      ? Effect.void
+                      : runDeferredDetached(workspaceId, "none").pipe(Effect.asVoid),
+                  ),
+                ),
+                Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
               ),
-            ),
-            Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
-          ),
-          scope,
+              scope,
+            );
+          }),
         );
       });
 

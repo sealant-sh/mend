@@ -1587,7 +1587,9 @@ Mend-side details the decision record left open, decided in this ADR:
       release installed in one uninterruptible step. Where no drain is owed to wait (a workspace
       found in use, an end no drain holds) the consumer runs detached in the engine's scope,
       unbounded, and the caller waits for it within the limit, so a request that gave up leaves
-      nothing queued without a consumer.
+      nothing queued without a consumer. The hold follows the durable intent, so nothing holds the
+      queue without a round owed to come back; the drain slot, the stop tail's mark and the consumer
+      slot are each taken with their release in one uninterruptible step.
     - **Known gap.** A Mend restart in the seconds between a Stop's answer and its checkpoint's
       write loses that user mark and the change head refresh with it: the restart interrupts the
       piece, and the drain intent that survives carries no record of it. The change is saved and the
