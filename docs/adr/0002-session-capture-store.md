@@ -1550,14 +1550,21 @@ Mend-side details the decision record left open, decided in this ADR:
       gave before. Nothing drained (the workspace in use after all): each runs as it did, flush and
       all.
     - **A kept round leaves it.** A round that keeps the executor (`not saved · workspace kept`)
-      runs none of it: the work waits for the round that saves, and runs before that executor goes.
-      Run beside a kept round it would outlive the save (a landing holding the checkpoint writer)
-      and read a successor's head after the lease went (Astra review, 2026-10-03).
-    - **What runs out of time is owed, not dropped.** Each piece has `deferredWorkLimit` (two
-      minutes) once the flush is saved; a piece past it (a checkpoint writer held, a store not
-      answering) is interrupted, it and the rest are put back, and the round reads `kept` with the
-      executor saved: the next round's FINAL snaps nothing, and the work runs then. Nothing a Stop
-      asked for is dropped, and no lease goes under work still owed.
+      runs none of it: the drain holds the queue from its first look (`queueHeld`), and the round
+      that saves runs it to empty, before that executor goes. Run beside a kept round it would
+      outlive the save (a landing holding the checkpoint writer) and read a successor's head after
+      the lease went (Astra review, 2026-10-03). A workspace found in use runs it inside the same
+      drain, flushing for itself as before, so a drain that follows waits for it. An executor that
+      went runs it on the drain's last reading of it, every piece waited for: a FINAL that
+      registered the head before it went leaves a readable head. A platform-kept executor runs it
+      before Core's stop, which may confirm an end and release the lease.
+    - **What runs past its time is owed, not dropped, and never interrupted.** Each piece has
+      `deferredWorkLimit` (two minutes) once the flush is saved. A piece past it (a checkpoint
+      writer held, a store not answering) runs on: a harvest's writes do not stop with its fiber,
+      and a retry beside them could lose what it wrote. The rest is put back, the round reads `kept`
+      with the executor saved, and the next round waits for that piece before anything else, then
+      runs the rest after its FINAL (which snaps nothing). Nothing a Stop asked for is dropped, no
+      piece runs twice, and no lease goes under work still owed.
     - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
       judged (`executor not answering`, `completed`) and its executor looked at before the drain
       begins, and the tests of those judgements say so. Making every end read the drain's final is a
