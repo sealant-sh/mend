@@ -52,6 +52,7 @@ import {
   WorktreeAnnotation,
   SessionControlView,
   SessionDetail,
+  SessionRepositoryView,
   SessionServicesStopped,
   SessionNotSteerable,
   SessionNotLive,
@@ -90,6 +91,7 @@ import {
   ServiceObservationsRepo,
   ServicesRepo,
   SessionProcessesRepo,
+  SessionRepositoriesRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
   HarnessModelsRepo,
@@ -667,6 +669,22 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           return yield* new StoreFailure({
             message: "The project still has live Service forwards. Stop them before removal.",
           });
+        }
+        // A session of another project may hold one of this project's worktrees as a repository
+        // (docs/adr/0010): while it runs or saves, the project stays.
+        for (const row of yield* (yield* SessionRepositoriesRepo).listForProject(params.id)) {
+          const holder = yield* sessions
+            .byId(row.sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (
+            holder !== null &&
+            holder.projectId !== params.id &&
+            (LIVE_STATES.has(holder.status) || holder.status === "stopping")
+          ) {
+            return yield* new StoreFailure({
+              message: `not removed · a session of another project holds ${project.name} as a repository at ${row.path} and is ${holder.status} · stop it first`,
+            });
+          }
         }
         yield* Effect.forEach(
           projectSessions.filter((session) => LIVE_STATES.has(session.status)),
@@ -2257,6 +2275,29 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const rows = yield* processes.listForSession(params.id);
         const viewer = yield* (yield* ProjectAccess).viewer();
         const steer = viewer !== null && canSteerSession(session, viewer.userId);
+        // The repositories the session holds beside its worktree (docs/adr/0010): each a worktree
+        // of another project with a change of its own, and how far that chain has moved. Only
+        // the ones whose project the caller can see: a private sibling stays private.
+        const projectsRepo = yield* ProjectsRepo;
+        const repositories = yield* Effect.forEach(
+          yield* (yield* ProjectAccess).filterByProject(
+            yield* (yield* SessionRepositoriesRepo).listForSession(params.id),
+          ),
+          (repository) =>
+            Effect.gen(function* () {
+              const project = yield* projectsRepo
+                .byId(repository.projectId)
+                .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+              const repositoryChange = yield* changes.byWorktree(repository.worktreeId);
+              const count = yield* checkpoints.countForWorktree(repository.worktreeId);
+              return new SessionRepositoryView({
+                repository,
+                projectName: project?.name ?? null,
+                change: repositoryChange,
+                checkpointsBeyondStart: Math.max(0, count - 1),
+              });
+            }),
+        );
         return new SessionDetail({
           session: asLaunching((yield* SessionEngine).launchUnderWay)(session),
           control: new SessionControlView({
@@ -2269,6 +2310,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           }),
           checkpoints: sessionCheckpoints,
           change,
+          repositories,
           landings: change === null ? [] : yield* landings.listForChange(change.id),
           processes: rows,
           currentAgent: currentAgentProcess(rows),

@@ -4,7 +4,7 @@ import type * as net from "node:net";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
-import type { ServiceBrowserScheme } from "@mend/domain/workbench";
+import type { ServiceBrowserScheme, SessionRepository } from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -21,6 +21,7 @@ import {
   handleSessionRequest,
   SessionChannelRegistry,
 } from "./session-channel.ts";
+import type { AddableProject } from "./session-repositories.ts";
 import type { WorkspaceLandOutcome } from "./workspace-git-hooks.ts";
 
 /**
@@ -85,6 +86,19 @@ export interface SessionSocketApi {
    */
   readonly land: () => Effect.Effect<WorkspaceLandOutcome>;
   /**
+   * `mend repo` (docs/adr/0010-repositories-in-a-session.md): the repositories this session
+   * holds beside its own worktree, the projects it may add, and adding one. `addRepository`
+   * answers the row in state `adding`; the files arrive in the engine's lifetime and the row
+   * reads `ready` or `failed` with the reason, which `listRepositories` shows.
+   */
+  readonly listRepositories: () => Effect.Effect<ReadonlyArray<SessionRepository>>;
+  readonly addableProjects: () => Effect.Effect<ReadonlyArray<AddableProject>>;
+  readonly addRepository: (input: {
+    readonly project: string;
+    readonly name: string | null;
+    readonly worktree: string | null;
+  }) => Effect.Effect<SessionRepository>;
+  /**
    * Resolve a workspace git transport request (docs/GIT-ACCESS.md): the
    * engine turns session → project → auth mode into the ssh argv the host
    * spawns, and records the op. Refusal (not a git command, unknown session)
@@ -145,10 +159,19 @@ const HELPER_SCRIPT = `#!/usr/bin/env node
 // mend — the in-workspace helper. Talks to YOUR session over /run/mend/mend.sock,
 // or over the authenticated session endpoint when this workspace has no socket.
 ${SCRIPT_TRANSPORT_PRELUDE}
-const request = (method, route, body) =>
+// timeoutMs: give up on a request the server accepted and never finished answering. Unset for
+// the verbs whose answer legitimately takes long (a landing pushes and opens a pull request).
+const request = (method, route, body, timeoutMs) =>
   new Promise((resolve, reject) => {
     const options = transportOptions(method, route, { "content-type": "application/json" });
     if (options === null) { reject(new Error(transportUnavailable())); return; }
+    // One wall-clock timer for the whole request, connect and response alike: a socket idle
+    // timeout would restart on every byte and never fire on a connect that hangs.
+    let timedOut = false;
+    let timer = null;
+    const settle = (finish) => (value) => { if (timer !== null) clearTimeout(timer); finish(value); };
+    const done = settle(resolve);
+    const failWith = settle(reject);
     const req = transportClient().request(options, (res) => {
       let text = "";
       res.on("data", (chunk) => (text += chunk));
@@ -156,13 +179,19 @@ const request = (method, route, body) =>
         if (res.statusCode >= 400) {
           let message = text;
           try { message = JSON.parse(text).message ?? text; } catch {}
-          reject(new Error(message));
+          failWith(new Error(message));
           return;
         }
-        resolve(text === "" ? null : JSON.parse(text));
+        done(text === "" ? null : JSON.parse(text));
       });
+      res.on("error", () => failWith(new Error(transportDownMessage())));
     });
-    req.on("error", () => reject(new Error(transportDownMessage())));
+    req.on("error", () =>
+      failWith(new Error(timedOut ? "the Mend server did not answer within " + Math.round(timeoutMs / 1000) + " s" : transportDownMessage())),
+    );
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => { timedOut = true; req.destroy(new Error("timeout")); }, timeoutMs);
+    }
     if (body !== undefined) req.write(JSON.stringify(body));
     req.end();
   });
@@ -231,8 +260,72 @@ const main = async () => {
     console.log("stopping — the record and review remain");
     return;
   }
+  if (group === "repo") {
+    // Repositories in a session: another project of the store at /workspace/repos/<name>, a
+    // worktree of that project on this session's own branch, saved with the session.
+    const printRepository = (r) =>
+      console.log(
+        r.name.padEnd(14) + "  " + r.path.padEnd(28) + "  " + r.branch.padEnd(24) + "  " + r.state +
+          (r.error ? " · " + r.error : "") +
+          (r.state === "ready" ? (r.capture === "nested" ? " · saved with the main repository" : " · saved under its own captures") : ""),
+      );
+    try {
+      switch (verb) {
+        case "list":
+        case undefined: {
+          const repositories = await request("GET", "/repositories");
+          if (repositories.length === 0) {
+            console.log("no repositories beside /workspace/repo · mend repo add <project> adds one");
+          }
+          for (const r of repositories) printRepository(r);
+          return;
+        }
+        case "projects": {
+          const projects = await request("GET", "/repositories/projects");
+          if (projects.length === 0) console.log("no other project of the store can be added here");
+          for (const p of projects) {
+            console.log(p.name.padEnd(24) + "  " + p.defaultBranch.padEnd(16) + "  " + (p.originUrl ?? "no origin"));
+          }
+          return;
+        }
+        case "add": {
+          const project = rest.find((a) => !a.startsWith("--") && rest[rest.indexOf(a) - 1] !== "--as" && rest[rest.indexOf(a) - 1] !== "--worktree");
+          const asFlag = rest.indexOf("--as");
+          const name = asFlag === -1 ? null : (rest[asFlag + 1] ?? null);
+          const worktreeFlag = rest.indexOf("--worktree");
+          const worktree = worktreeFlag === -1 ? null : (rest[worktreeFlag + 1] ?? null);
+          if (project === undefined) fail("usage: mend repo add <project> [--as <name>] [--worktree <name>]");
+          // The whole add is bounded: the request that makes the worktree row, then the polls
+          // while the clone runs. Each request has a deadline of its own, so a server that
+          // accepted a connection and never answered cannot hold this forever.
+          const startedAt = Date.now();
+          const deadline = 30 * 60 * 1000;
+          let row = await request("POST", "/repositories", { project, name, worktree }, 5 * 60 * 1000);
+          console.log("adding " + row.name + " · " + row.path + " · branch " + row.branch + " · cloning");
+          while (row.state === "adding") {
+            if (Date.now() - startedAt > deadline) {
+              console.log("still adding · mend repo list shows it when done");
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const remaining = deadline - (Date.now() - startedAt);
+            const rows = await request("GET", "/repositories", undefined, Math.max(1000, Math.min(30 * 1000, remaining)));
+            row = rows.find((r) => r.id === row.id) ?? row;
+          }
+          if (row.state !== "ready") fail(row.name + " · " + row.state + (row.error ? " · " + row.error : ""));
+          printRepository(row);
+          return;
+        }
+        default:
+          fail('unknown repo command "' + verb + '" · try: add, list, projects');
+      }
+    } catch (error) {
+      fail(error.message);
+    }
+    return;
+  }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend land · mend stop");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend repo <add|list|projects> · mend land · mend stop");
   }
   try {
     switch (verb) {

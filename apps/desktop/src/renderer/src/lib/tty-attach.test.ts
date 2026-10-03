@@ -54,6 +54,7 @@ const detail = (
   control: OWNER_CONTROL,
   checkpoints: [],
   change: null,
+  repositories: [],
   landings: [],
   processes: agent === null ? [] : [agent],
   currentAgent: agent,

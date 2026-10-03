@@ -22,6 +22,7 @@ import {
   OrganizationsRepo,
   FoldersRepo,
   ProjectLinkNotFoundError,
+  SessionRepositoriesRepoMemory,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
   ProjectsRepo,
@@ -1749,7 +1750,10 @@ const projectsLayer = (world: World) =>
   Layer.succeed(ProjectsRepo, {
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
-    listForOrganization: () => Effect.die("not in test"),
+    listForOrganization: (organizationId) =>
+      Effect.sync(() =>
+        [...world.projects.values()].filter((project) => project.organizationId === organizationId),
+      ),
     setVisibility: () => Effect.die("not in test"),
     setCreatedBy: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
@@ -1764,7 +1768,13 @@ const projectsLayer = (world: World) =>
         ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
         : Effect.succeed(found);
     },
-    byName: () => Effect.succeed(null),
+    byName: (organizationId, name) =>
+      Effect.sync(
+        () =>
+          [...world.projects.values()].find(
+            (project) => project.organizationId === organizationId && project.name === name,
+          ) ?? null,
+      ),
     listAll: () => Effect.succeed([...world.projects.values()]),
     setAutomation: () => Effect.die("not in test"),
     setAutoLand: () => Effect.die("not in test"),
@@ -2550,6 +2560,63 @@ const setup = (tmp: string, world: World) => {
   });
 };
 
+/**
+ * A second project of the same organization, adopted from its own origin beside the fixture's
+ * (served by the same git daemon, which exports everything under `tmp`): what `mend repo add`
+ * brings into a session (docs/adr/0010).
+ */
+const setupSibling = (tmp: string, world: World, name: string, fixtureOrigin: string) => {
+  const origin = path.join(tmp, `${name}-origin`);
+  const run = (...args: ReadonlyArray<string>) =>
+    execFileSync("git", [...args], {
+      cwd: origin,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "origin",
+        GIT_AUTHOR_EMAIL: "origin@localhost",
+        GIT_COMMITTER_NAME: "origin",
+        GIT_COMMITTER_EMAIL: "origin@localhost",
+      },
+    });
+  fs.mkdirSync(origin, { recursive: true });
+  run("init", "-b", "main");
+  fs.writeFileSync(path.join(origin, "lib.rs"), "fn main() {}\n");
+  run("add", "-A");
+  run("commit", "-m", "core base");
+  return Effect.gen(function* () {
+    const source = RepositoryCloneUrl.make(fixtureOrigin.replace(/\/origin$/, `/${name}-origin`));
+    const store = yield* Store;
+    const adopted = yield* store.adopt(name, source, { GIT_TERMINAL_PROMPT: "0" });
+    const project = new Project({
+      id: ProjectId.make(`proj-${name}`),
+      name,
+      organizationId: OrganizationId.make("org-test"),
+      visibility: "shared",
+      createdByUserId: null,
+      originUrl: source,
+      storePath: adopted.storePath,
+      defaultBranch: adopted.defaultBranch,
+      adoptedSha: Sha.make(adopted.headSha),
+      autoTour: "inherit",
+      autoName: "inherit",
+      autoLand: "inherit",
+      autoSuggest: "inherit",
+      backgroundSessions: "inherit",
+      gitAuthMode: "ambient",
+      workspaceImage: null,
+      applyDotfiles: true,
+      defaultShellProfile: true,
+      inheritUserSkills: true,
+      hotSessions: 0,
+      installCommand: null,
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    world.projects.set(project.id, project);
+    return project;
+  });
+};
+
 /** Drains in tests: polls every few milliseconds, a stall only when a test shortens the window. */
 const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
   Layer.succeed(CaptureDrainPolicy, {
@@ -2757,6 +2824,7 @@ const withEngine = <A, E>(
         referencesEmptyLayer,
         projectMountsEmptyLayer,
         projectLinksEmptyLayer,
+        SessionRepositoriesRepoMemory,
         organizationsLayer(world),
         sourcePolicyLayer,
         foldersEmptyLayer,
@@ -6092,6 +6160,7 @@ describe("SessionEngine", () => {
           referencesEmptyLayer,
           projectMountsEmptyLayer,
           projectLinksEmptyLayer,
+          SessionRepositoriesRepoMemory,
           organizationsLayer(world),
           sourcePolicyLayer,
           foldersEmptyLayer,
@@ -7819,6 +7888,138 @@ describe("SessionEngine capture mode", () => {
           undefined,
           binds,
           { flushed: events },
+        ),
+      },
+    );
+  });
+
+  it("adds a repository of another project to a live session: a worktree of that project, a nested clone of its origin linked at /workspace/repos/<name>, and the refusals in the person's words (docs/adr/0010)", async () => {
+    const created: Array<CreateOptions> = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const core = yield* setupSibling(tmp, world, "core", project.originUrl ?? "");
+          const engine = yield* SessionEngine;
+          const worktrees = yield* WorktreesRepo;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "fix-login",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // Nothing to add into before the workspace is live.
+          const early = yield* engine
+            .addRepository(session.id, { project: "core", name: null, worktree: null })
+            .pipe(Effect.flip);
+          expect(early._tag === "RepositoryAddError" ? early.message : early._tag).toContain(
+            "no live workspace",
+          );
+
+          yield* engine.launch(session.id, ["codex"]);
+          expect(created).toHaveLength(1);
+
+          // What may be added: the sibling, never the session's own project.
+          const addable = yield* engine.addableProjects(session.id);
+          expect(addable.map((candidate) => candidate.name)).toEqual(["core"]);
+
+          const row = yield* engine.addRepository(session.id, {
+            project: "core",
+            name: null,
+            worktree: null,
+          });
+          expect(row.state).toBe("adding");
+          expect(row.name).toBe("core");
+          expect(row.path).toBe("/workspace/repos/core");
+          expect(row.capture).toBe("nested");
+          expect(row.source).toBe("origin");
+          // The worktree of the sibling project, named after the session's own worktree.
+          const siblingWorktree = yield* worktrees.byName(core.id, "fix-login");
+          expect(siblingWorktree?.id).toBe(row.worktreeId);
+          expect(siblingWorktree?.branch).toBe("mend/fix-login");
+          expect(row.branch).toBe("mend/fix-login");
+          expect(row.baseSha).toBe(core.adoptedSha);
+          // Its chain starts at capture 0, like any worktree's.
+          expect(memory.chains.get(row.worktreeId)?.headN).toBe(0);
+
+          yield* until(
+            () =>
+              execCalls.some((argv) => argv.join("\n").includes("git clone --quiet --no-checkout")),
+            "the clone in the workspace",
+          );
+          const clone = execCalls.find((argv) => argv.join("\n").includes("git clone"));
+          const script = clone?.join("\n") ?? "";
+          expect(script).toContain(
+            `git clone --quiet --no-checkout -- '${core.originUrl}' '/workspace/repo/.mend/repos/core'`,
+          );
+          expect(script).toContain(`checkout --quiet -B 'mend/fix-login' '${core.adoptedSha}'`);
+          expect(script).toContain(
+            `ln -sfn '/workspace/repo/.mend/repos/core' '/workspace/repos/core'`,
+          );
+          expect(script).toContain("info/exclude");
+
+          // The row settles once the clone answered; the stand-in executor answers at once.
+          let listed = yield* engine.listRepositories(session.id);
+          for (let i = 0; i < 500 && listed[0]?.state === "adding"; i++) {
+            yield* Effect.sleep(Duration.millis(10));
+            listed = yield* engine.listRepositories(session.id);
+          }
+          expect(listed.map((entry) => [entry.name, entry.state, entry.error])).toEqual([
+            ["core", "ready", null],
+          ]);
+          expect(yield* engine.addableProjects(session.id)).toEqual([]);
+
+          // Refusals, each in the person's words.
+          const refusal = (input: {
+            readonly project: string;
+            readonly name: string | null;
+            readonly worktree: string | null;
+          }) =>
+            engine
+              .addRepository(session.id, input)
+              .pipe(Effect.flip)
+              .pipe(
+                Effect.map((error) =>
+                  error._tag === "RepositoryAddError"
+                    ? [error.reason, error.message]
+                    : [error._tag, String(error)],
+                ),
+              );
+          expect(yield* refusal({ project: "fixture", name: null, worktree: null })).toEqual([
+            "own-project",
+            "fixture is this session's own project · it is at /workspace/repo",
+          ]);
+          expect((yield* refusal({ project: "nope", name: null, worktree: null }))[0]).toBe(
+            "unknown-project",
+          );
+          expect(
+            (yield* refusal({ project: "core", name: "Bad Name", worktree: "other" }))[0],
+          ).toBe("bad-name");
+          expect((yield* refusal({ project: "core", name: null, worktree: "other" }))[0]).toBe(
+            "name-taken",
+          );
+          // The sibling worktree exists now: adding under another name would join it.
+          expect((yield* refusal({ project: "core", name: "core-2", worktree: null }))[0]).toBe(
+            "worktree-taken",
+          );
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
         ),
       },
     );

@@ -66,6 +66,10 @@ export type ProjectMountId = typeof ProjectMountId.Type;
 export const ProjectLinkId = Schema.String.pipe(Schema.brand("ProjectLinkId"));
 export type ProjectLinkId = typeof ProjectLinkId.Type;
 
+/** A repository a session holds beside its own worktree (docs/adr/0010). */
+export const SessionRepositoryId = Schema.String.pipe(Schema.brand("SessionRepositoryId"));
+export type SessionRepositoryId = typeof SessionRepositoryId.Type;
+
 export const SkillId = Schema.String.pipe(Schema.brand("SkillId"));
 export type SkillId = typeof SkillId.Type;
 

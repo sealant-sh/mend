@@ -152,8 +152,10 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   // The session budgets count before anything is created; a count is a read, not an effect.
   "sessions.countUnsettledForOrganization",
   "sessions.listUnsettledForOwner",
-  // Worktree removal by a non-manager needs every member session's owner.
+  // Worktree removal by a non-manager needs every member session's owner: the conversations in
+  // it, and the sessions holding it as a repository beside their own (docs/adr/0010).
   "sessions.listForWorktree",
+  "sessionRepositories.listForWorktree",
   "worktrees.byId",
   "changes.byId",
   // A landing's change decides who may see it, so a refresh reads the landing first.

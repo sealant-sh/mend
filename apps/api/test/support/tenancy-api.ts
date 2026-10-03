@@ -32,6 +32,7 @@ import {
   ServiceObservationsRepo,
   SessionControlEventsRepo,
   SessionGitOpsRepo,
+  SessionRepositoriesRepo,
   SettingsRepo,
   SlackDefaultsRepo,
   SlackInstallsRepo,
@@ -178,6 +179,7 @@ export const createTenancyApi = async (
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
       readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
       readonly agentMemory?: Layer.PartialEffectful<AgentMemoryRepo["Service"]>;
+      readonly sessionRepositories?: Layer.PartialEffectful<SessionRepositoriesRepo["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
@@ -235,6 +237,18 @@ export const createTenancyApi = async (
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
       recording(ProjectEnvironmentRepo, "environment", {}, calls),
       recording(ProjectLinksRepo, "links", {}, calls),
+      // A session's repositories (docs/adr/0010): none in these worlds, so the detail lists none.
+      recording(
+        SessionRepositoriesRepo,
+        "sessionRepositories",
+        {
+          listForSession: () => Effect.succeed([]),
+          listForWorktree: () => Effect.succeed([]),
+          listForProject: () => Effect.succeed([]),
+          ...options.implement?.sessionRepositories,
+        },
+        calls,
+      ),
       recording(ProjectMountsRepo, "mounts", {}, calls),
       recording(ProjectSecretsRepo, "secrets", {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),

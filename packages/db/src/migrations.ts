@@ -2870,6 +2870,41 @@ const harnessModelsMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_sessions ADD COLUMN effort text`;
 });
 
+/**
+ * 0103: repositories in a session (docs/adr/0010): the sibling worktrees a session holds at
+ * `/workspace/repos/<name>`, with the state of their arrival and how each is saved.
+ */
+const sessionRepositoriesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE session_repositories (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      name text NOT NULL,
+      path text NOT NULL,
+      branch text NOT NULL,
+      base_sha text NOT NULL,
+      base_ref text,
+      state text NOT NULL DEFAULT 'adding',
+      error text,
+      capture text NOT NULL,
+      source text NOT NULL,
+      added_by_user_id text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      ready_at timestamptz,
+      CONSTRAINT session_repositories_session_name_key UNIQUE (session_id, name),
+      CONSTRAINT session_repositories_session_worktree_key UNIQUE (session_id, worktree_id),
+      CONSTRAINT session_repositories_state_check
+        CHECK (state IN ('adding', 'ready', 'failed', 'missing')),
+      CONSTRAINT session_repositories_capture_check CHECK (capture IN ('nested', 'own')),
+      CONSTRAINT session_repositories_source_check CHECK (source IN ('origin', 'store'))
+    )`;
+  yield* sql`CREATE INDEX session_repositories_worktree_idx ON session_repositories (worktree_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2973,4 +3008,5 @@ export const migrations = {
   "0100_capture_launch_answers": captureLaunchAnswersMigration,
   "0101_secret_files": secretFilesMigration,
   "0102_harness_models": harnessModelsMigration,
+  "0103_session_repositories": sessionRepositoriesMigration,
 };

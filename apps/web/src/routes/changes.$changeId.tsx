@@ -272,6 +272,33 @@ function ChangeReview({
             {review.outsideGit.label}
           </p>
         )}
+        {sessionDetail === undefined || sessionDetail.repositories.length === 0 ? null : (
+          // The session's other repositories (docs/adr/0010): one change each, named here so the
+          // reviewer knows this change is one of several. A link only where there is a diff to see.
+          <p className="mt-1 font-mono text-xs text-faint">
+            repositories ·{" "}
+            {sessionDetail.repositories.map((view, index) => (
+              <span key={view.repository.id}>
+                {index === 0 ? "" : " · "}
+                {view.change !== null && view.checkpointsBeyondStart > 0 ? (
+                  <Link
+                    to="/changes/$changeId"
+                    params={{ changeId: view.change.id }}
+                    className="text-info no-underline"
+                  >
+                    {view.repository.path}
+                  </Link>
+                ) : (
+                  view.repository.path
+                )}{" "}
+                {view.repository.state}
+                {view.repository.state === "ready" && view.checkpointsBeyondStart === 0
+                  ? " · nothing of its own to review yet"
+                  : ""}
+              </span>
+            ))}
+          </p>
+        )}
         {sessionDetail?.control.steer === false ? (
           <p className="mt-2 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
             Comments stay here; only the session&apos;s owner can send them to the session, unless

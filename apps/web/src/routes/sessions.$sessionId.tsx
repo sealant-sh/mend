@@ -18,6 +18,7 @@ import {
   resumeSession,
   sessionCaptureLine,
   sessionServicesHold,
+  type SessionRepositoryDto,
   setSessionLabel,
   setSharedControl,
   stopSession,
@@ -107,8 +108,16 @@ function SessionPage() {
   const { sessionId } = Route.useParams();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { session, checkpoints, change, currentAgent, processes, control, liveServices } =
-    useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
+  const {
+    session,
+    checkpoints,
+    change,
+    repositories,
+    currentAgent,
+    processes,
+    control,
+    liveServices,
+  } = useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
   // Steering is the owner's unless they share control (docs/adr/0003); the API says what this
   // viewer may do, and the roster names whose credentials the session runs on.
   const viewer = useViewer();
@@ -491,6 +500,7 @@ function SessionPage() {
                 ))
               )}
             </div>
+            <RepositoriesCard repositories={repositories} />
             <ServicesCard
               sessionId={sessionId}
               sessionLive={ACTIVE.has(session.status)}
@@ -500,6 +510,93 @@ function SessionPage() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+/** Dot and word for a repository's state (DESIGN.md §4): observed facts, never a verdict. */
+function repositoryStateTone(
+  state: SessionRepositoryDto["repository"]["state"],
+): "green" | "red" | "amber" | "hollow" {
+  switch (state) {
+    case "ready":
+      return "green";
+    case "failed":
+      return "red";
+    case "missing":
+      return "amber";
+    case "adding":
+      return "hollow";
+  }
+}
+
+/**
+ * What the review can say about a repository's change (docs/adr/0010): its own change once its
+ * chain has moved, else the plain fact that its files travel with the main repository.
+ */
+function repositoryReviewWords(view: SessionRepositoryDto): string {
+  if (view.checkpointsBeyondStart > 0) {
+    return `${view.checkpointsBeyondStart} checkpoint${view.checkpointsBeyondStart === 1 ? "" : "s"} beyond start`;
+  }
+  return view.repository.capture === "nested"
+    ? "no checkpoints beyond start · saved with the main repository"
+    : "no checkpoints beyond start";
+}
+
+/**
+ * The repositories a session holds beside its worktree (docs/adr/0010), each a worktree of
+ * another project on a branch of its own. Added from inside the workspace with `mend repo add`.
+ */
+function RepositoriesCard({
+  repositories,
+}: {
+  readonly repositories: ReadonlyArray<SessionRepositoryDto>;
+}) {
+  return (
+    <>
+      <p className="mt-6 text-xs font-medium text-label">Repositories</p>
+      <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+        {repositories.length === 0 ? (
+          <p className="p-4 font-mono text-xs text-faint">
+            none beside /workspace/repo · mend repo add &lt;project&gt; in the session adds one
+          </p>
+        ) : (
+          repositories.map((view, index) => (
+            <div
+              key={view.repository.id}
+              className={`px-4 py-3 ${index === 0 ? "" : "border-t border-rule-faint"}`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-mono text-xs text-ink-2">
+                  {view.repository.path} · {view.repository.branch}
+                </p>
+                <StatusDot
+                  tone={repositoryStateTone(view.repository.state)}
+                  word={view.repository.state}
+                  pulse={view.repository.state === "adding"}
+                />
+              </div>
+              <p className="mt-1 font-mono text-[11px] text-faint">
+                {view.projectName ?? "project removed"} · base{" "}
+                {view.repository.baseRef ?? view.repository.baseSha.slice(0, 12)} ·{" "}
+                {view.repository.error ?? repositoryReviewWords(view)}
+                {view.change !== null && view.checkpointsBeyondStart > 0 ? (
+                  <>
+                    {" · "}
+                    <Link
+                      to="/changes/$changeId"
+                      params={{ changeId: view.change.id }}
+                      className="text-info no-underline"
+                    >
+                      review
+                    </Link>
+                  </>
+                ) : null}
+              </p>
+            </div>
+          ))
+        )}
+      </div>
+    </>
   );
 }
 

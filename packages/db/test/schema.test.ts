@@ -44,6 +44,7 @@ import {
   slackThreadPosts,
   slackThreads,
   slackUserDefaults,
+  sessionRepositories,
   worktreeChanges,
   worktrees,
 } from "../src/schema/workbench.ts";
@@ -683,6 +684,41 @@ describe("Mend Drizzle schema", () => {
       "set null",
     ]);
     expect(config.indexes[0]?.config.name).toBe("review_comments_change_idx");
+  });
+
+  it("maps a session's repositories: a worktree of another project each, unique per session by name and worktree, gone with the session (docs/adr/0010)", () => {
+    const config = getTableConfig(sessionRepositories);
+    expect(config.name).toBe("session_repositories");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "session_id",
+      "project_id",
+      "worktree_id",
+      "name",
+      "path",
+      "branch",
+      "base_sha",
+      "base_ref",
+      "state",
+      "error",
+      "capture",
+      "source",
+      "added_by_user_id",
+      "created_at",
+      "updated_at",
+      "ready_at",
+    ]);
+    expect(config.foreignKeys.map((foreignKey) => foreignKey.onDelete)).toEqual([
+      "cascade",
+      "cascade",
+      "cascade",
+    ]);
+    expect(config.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
+      "session_repositories_session_name_key",
+      "session_repositories_session_worktree_key",
+    ]);
+    expect(config.indexes[0]?.config.name).toBe("session_repositories_worktree_idx");
+    expect(sessionRepositories.state.default).toBe("adding");
   });
 
   it("maps immutable Review slices and idempotency", () => {
