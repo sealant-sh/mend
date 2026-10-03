@@ -80,6 +80,28 @@ else
   if [[ $# -gt 0 ]]; then
     say "a Mend server is installed, so these setup options are ignored: $*"
   fi
+  # Sessions live on this box lose their executor's connection in an upgrade (an incident on
+  # 2026-10-03 lost a phone session's evidence this way): refuse unless told otherwise. The count
+  # is read from the bundled Postgres; a box without it is told and goes on.
+  live=$(docker exec mend-postgres-1 psql -U mend -d mend -At \
+    -c "select count(*) from agent_sessions where settled_at is null" 2>/dev/null || printf '?')
+  if [[ $live =~ ^[0-9]+$ ]]; then
+    if [[ $live -gt 0 && ${PREVIEW_DEPLOY_EVEN_IF_LIVE:-} != 1 ]]; then
+      die "$live session(s) are live on this box · nothing deployed · set PREVIEW_DEPLOY_EVEN_IF_LIVE=1 to upgrade anyway"
+    fi
+    say "$live session(s) live"
+  else
+    say "could not count live sessions (no bundled Postgres answered) · going on"
+  fi
+  # The previous container's log would go with the container: kept, the last twenty.
+  logs="${MEND_CONFIG_DIR:-/root/.config/mend}/logs"
+  mkdir -p "$logs"
+  if docker inspect mend-mend-1 >/dev/null 2>&1; then
+    previous=$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' mend-mend-1 2>/dev/null || printf unknown)
+    docker logs mend-mend-1 > "$logs/mend-$(date -u +%Y%m%dT%H%M%SZ)-${previous:-unknown}.log" 2>&1 || true
+    ls -1t "$logs"/mend-*.log 2>/dev/null | tail -n +21 | xargs -r rm -f
+    say "kept the previous server's log in $logs"
+  fi
   say "upgrading the installed Mend server: mend server upgrade --version $version"
   mend server upgrade --version "$version" --assets-dir "$assets"
 fi

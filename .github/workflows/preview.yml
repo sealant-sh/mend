@@ -30,6 +30,17 @@ on:
           - linux/amd64
           - linux/arm64
           - linux/amd64,linux/arm64
+      deploy:
+        description: "Deploy this preview on the box once it is built (the mend-box runner)"
+        required: false
+        type: boolean
+        default: false
+      even_if_live:
+        description:
+          "Deploy even while sessions are live on the box (they lose their executor's connection)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -423,3 +434,21 @@ jobs:
               echo "The box's Docker pulls \`ghcr.io/$OWNER/mend-preview-sealantd\` when it builds a workspace image: that package must be public (docs/operations/preview-builds.md)."
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # The box updates itself: a self-hosted runner on the Mend VM (label `mend-box`, a root service)
+  # runs the same deploy script an operator runs by hand. Only a dispatch that asked for it deploys.
+  deploy:
+    needs: [plan, mend]
+    if: ${{ !cancelled() && needs.mend.result == 'success' && inputs.deploy }}
+    runs-on: [self-hosted, mend-box]
+    timeout-minutes: 30
+    steps:
+      - name: Deploy the preview on this box
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          PREVIEW_DEPLOY_EVEN_IF_LIVE: ${{ inputs.even_if_live && '1' || '' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/sealant-sh/mend/$COMMIT/scripts/preview-deploy.sh" \
+            | bash -s -- "$VERSION" "$COMMIT"

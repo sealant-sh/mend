@@ -1,0 +1,44 @@
+name: Deploy on the box
+
+# Deploys a preview that is already built (ghcr.io/sealant-sh/mend:<version>) on the Mend VM, through
+# the self-hosted runner there (label `mend-box`). `preview.yml` deploys on its own when dispatched
+# with `deploy: true`; this is for deploying a version again, or one built earlier.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description:
+          "The preview version to deploy, as the preview workflow printed it (0.36.0-preview.N)"
+        required: true
+        type: string
+      commit:
+        description: "The full mend commit sha that preview was built from"
+        required: true
+        type: string
+      even_if_live:
+        description:
+          "Deploy even while sessions are live on the box (they lose their executor's connection)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.repository == 'sealant-sh/mend'
+    runs-on: [self-hosted, mend-box]
+    timeout-minutes: 30
+    steps:
+      - name: Deploy the preview on this box
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          PREVIEW_DEPLOY_EVEN_IF_LIVE: ${{ inputs.even_if_live && '1' || '' }}
+        run: |
+          set -euo pipefail
+          [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be the full 40-character sha"; exit 1; }
+          curl -fsSL --retry 3 "https://raw.githubusercontent.com/sealant-sh/mend/$COMMIT/scripts/preview-deploy.sh" \
+            | bash -s -- "$VERSION" "$COMMIT"
