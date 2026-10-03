@@ -1583,7 +1583,11 @@ Mend-side details the decision record left open, decided in this ADR:
       the queue finished while another still runs a piece. A consumer takes one piece at a time,
       forks it in the engine's scope and records it as running in one uninterruptible step, and
       closes an empty queue in that same step, so an interrupted consumer leaves nothing untracked
-      and nothing is admitted between the look and the close.
+      and nothing is admitted between the look and the close. The consumer slot is taken and its
+      release installed in one uninterruptible step. Where no drain is owed to wait (a workspace
+      found in use, an end no drain holds) the consumer runs detached in the engine's scope,
+      unbounded, and the caller waits for it within the limit, so a request that gave up leaves
+      nothing queued without a consumer.
     - **Known gap.** A Mend restart in the seconds between a Stop's answer and its checkpoint's
       write loses that user mark and the change head refresh with it: the restart interrupts the
       piece, and the drain intent that survives carries no record of it. The change is saved and the

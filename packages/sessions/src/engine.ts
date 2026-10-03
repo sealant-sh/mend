@@ -3275,27 +3275,59 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 );
           while (true) {
             const busy = deferredConsumers.get(workspaceId);
-            if (busy === undefined) break;
-            const over =
-              limit === null
-                ? yield* Deferred.await(busy).pipe(Effect.as(true))
-                : yield* Deferred.await(busy).pipe(
-                    Effect.as(true),
-                    Effect.timeoutOrElse({ duration: limit, orElse: () => Effect.succeed(false) }),
-                  );
-            if (!over) return false;
+            if (busy !== undefined) {
+              const over =
+                limit === null
+                  ? yield* Deferred.await(busy).pipe(Effect.as(true))
+                  : yield* Deferred.await(busy).pipe(
+                      Effect.as(true),
+                      Effect.timeoutOrElse({
+                        duration: limit,
+                        orElse: () => Effect.succeed(false),
+                      }),
+                    );
+              if (!over) return false;
+              continue;
+            }
+            // The slot is taken, re-checked, and its release installed in one uninterruptible
+            // step: an interruption between them would leave it taken forever (Astra review,
+            // 2026-10-03). The consumer itself runs interruptible again.
+            const outcome = yield* Effect.uninterruptibleMask((restore) =>
+              Effect.suspend(() => {
+                if (deferredConsumers.has(workspaceId)) return Effect.succeed(null);
+                const mine = Deferred.makeUnsafe<void>();
+                deferredConsumers.set(workspaceId, mine);
+                return restore(consume(workspaceId, reading, waitFor, closeWhenEmpty)).pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      deferredConsumers.delete(workspaceId);
+                      Deferred.doneUnsafe(mine, Exit.succeed(undefined));
+                    }),
+                  ),
+                );
+              }),
+            );
+            if (outcome !== null) return outcome;
           }
-          const mine = Deferred.makeUnsafe<void>();
-          deferredConsumers.set(workspaceId, mine);
-          return yield* consume(workspaceId, reading, waitFor, closeWhenEmpty).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                deferredConsumers.delete(workspaceId);
-                Deferred.doneUnsafe(mine, Exit.succeed(undefined));
+        });
+      /**
+       * Run what was put off where no drain is owed to wait for it (a workspace found in use, an
+       * end no drain holds): the consumer runs in the engine's scope, unbounded, so an
+       * interruption of the caller (a request that gave up) leaves it running and nothing queued
+       * without a consumer; the caller waits for it within the limit, then goes on.
+       */
+      const runDeferredDetached = (workspaceId: SealantWorkspaceId, reading: DrainWord) =>
+        Effect.uninterruptible(Effect.forkIn(runDeferred(workspaceId, reading, null), scope)).pipe(
+          Effect.flatMap((fiber) =>
+            Fiber.join(fiber).pipe(
+              Effect.asVoid,
+              Effect.timeoutOrElse({
+                duration: drainPolicy.deferredWorkLimit,
+                orElse: () => Effect.void,
               }),
             ),
-          );
-        });
+          ),
+        );
       /** `runDeferred`'s body, under its consumer slot. */
       const consume = (
         workspaceId: SealantWorkspaceId,
@@ -4247,19 +4279,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // and nothing it reads goes under a successor). A kept round leaves it where it is:
             // the round that saves runs it, before the executor goes (Astra reviews, 2026-10-03).
             Effect.tap((outcome) =>
-              outcome === "in-use"
-                ? runDeferred(workspaceId, "none").pipe(
-                    Effect.flatMap((finished) =>
-                      finished
-                        ? Effect.void
-                        : // A piece past its limit, and no drain owed here to wait for it: a
-                          // continuation does, runs the rest and releases the hold.
-                          Effect.forkIn(runDeferred(workspaceId, "none", null), scope).pipe(
-                            Effect.asVoid,
-                          ),
-                    ),
-                  )
-                : Effect.void,
+              outcome === "in-use" ? runDeferredDetached(workspaceId, "none") : Effect.void,
             ),
             Effect.onExit((exit) =>
               Effect.sync(() => {
@@ -6685,7 +6705,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             )
           ) {
             yield* stopWorkspaceQuietly(sessionId);
-            if (!queueHeld.has(workspaceId)) yield* runDeferred(workspaceId, "none");
+            if (!queueHeld.has(workspaceId)) yield* runDeferredDetached(workspaceId, "none");
             return;
           }
           const captureReady = yield* flushBeforeHarvest(session, workspaceId, "settle harvest");
@@ -7227,7 +7247,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .pipe(Effect.timeout("20 seconds"), Effect.ignore);
           yield* reconcileSession(agentProcess.sessionId, { sweep });
           if (workspaceId !== null && !queueHeld.has(workspaceId)) {
-            yield* runDeferred(workspaceId, "none");
+            yield* runDeferredDetached(workspaceId, "none");
           }
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
@@ -11122,7 +11142,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.suspend(() =>
                 workspaceId === null || queueHeld.has(workspaceId)
                   ? Effect.void
-                  : runDeferred(workspaceId, "none").pipe(Effect.asVoid),
+                  : runDeferredDetached(workspaceId, "none").pipe(Effect.asVoid),
               ),
             ),
             Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
