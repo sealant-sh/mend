@@ -435,20 +435,29 @@ jobs:
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # The box updates itself: a self-hosted runner on the Mend VM (label `mend-box`, a root service)
-  # runs the same deploy script an operator runs by hand. Only a dispatch that asked for it deploys.
+  # The box updates itself: a hosted runner holds the deploy key (a repository secret, never given
+  # to a fork's workflow) and asks the VM's `deploy` user, whose forced command runs the same
+  # deploy script an operator runs by hand. Only a dispatch that asked for it deploys.
   deploy:
     needs: [plan, mend]
     if: ${{ !cancelled() && needs.mend.result == 'success' && inputs.deploy }}
-    runs-on: [self-hosted, mend-box]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
-      - name: Deploy the preview on this box
+      - name: Deploy the preview on the box
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           COMMIT: ${{ github.sha }}
-          PREVIEW_DEPLOY_EVEN_IF_LIVE: ${{ inputs.even_if_live && '1' || '' }}
+          EVEN_IF_LIVE: ${{ inputs.even_if_live && 'even-if-live' || '' }}
+          DEPLOY_KEY: ${{ secrets.MEND_BOX_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 3 "https://raw.githubusercontent.com/sealant-sh/mend/$COMMIT/scripts/preview-deploy.sh" \
-            | bash -s -- "$VERSION" "$COMMIT"
+          [[ -n $DEPLOY_KEY ]] || { echo "::error::MEND_BOX_DEPLOY_KEY is not set"; exit 1; }
+          umask 077
+          printf '%s\n' "$DEPLOY_KEY" > deploy_key
+          # The VM's sshd host key, pinned: a changed key fails the deploy rather than asking.
+          printf '%s\n' "[49.12.133.97]:2223 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH+2Sqq9ar1sq1Yz2aoyHcJfHT7vHHQ30bEbNh7zqgl/" > known_hosts
+          # The `deploy` user's forced command accepts exactly this and nothing else.
+          ssh -p 2223 -i deploy_key -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=yes \
+            -o BatchMode=yes -o ConnectTimeout=20 deploy@49.12.133.97 \
+            deploy "$VERSION" "$COMMIT" $EVEN_IF_LIVE
