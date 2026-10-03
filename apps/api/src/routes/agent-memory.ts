@@ -1,4 +1,4 @@
-import { CurrentUser, MendApi, NotFound } from "@mend/api-contracts";
+import { AgentMemoryImportInvalid, CurrentUser, MendApi, NotFound } from "@mend/api-contracts";
 import { AgentMemoryRepo } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
 import {
@@ -29,6 +29,19 @@ const caller = (projectId: ProjectId) =>
 const importFiles = (projectId: ProjectId, payload: AgentMemoryImport, dryRun: boolean) =>
   Effect.gen(function* () {
     const userId = yield* caller(projectId);
+    // Each file is planned against the store as it was; a path named twice would be planned twice.
+    const seen = new Set<string>();
+    const repeated = new Set<string>();
+    for (const file of payload.files) {
+      if (seen.has(file.path)) repeated.add(file.path);
+      seen.add(file.path);
+    }
+    if (repeated.size > 0) {
+      return yield* new AgentMemoryImportInvalid({
+        message: "an import names each file once",
+        paths: [...repeated],
+      });
+    }
     const report = yield* (yield* AgentMemoryRepo).importFiles({
       userId,
       projectId,

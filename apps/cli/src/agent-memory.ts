@@ -98,7 +98,7 @@ export const scanClaudeMemory = (dir: string): ClaudeMemoryScan => {
  * it. A machine without the file gets a new id, and its next import merges with no shared version,
  * which keeps both sides' lines all the same.
  */
-export const machineIdFor = (configDir: string): string => {
+export const machineIdFor = (configDir: string, create: boolean): string | null => {
   const file = path.join(configDir, "machine-id");
   try {
     const existing = fs.readFileSync(file, "utf8").trim();
@@ -106,21 +106,32 @@ export const machineIdFor = (configDir: string): string => {
   } catch {
     // None yet.
   }
+  if (!create) return null;
   const id = randomUUID();
   fs.mkdirSync(configDir, { recursive: true });
   fs.writeFileSync(file, `${id}\n`, { mode: 0o600 });
   return id;
 };
 
-/** Where an import comes from: this checkout on this machine, named by the host. */
+/**
+ * Where an import comes from: this checkout on this machine, named by the host. Without `create`
+ * (a dry run) a machine that has no id yet gets none and null: a new id would have no earlier
+ * import to merge against either, so the plan is the same.
+ */
 export const importSourceFor = (
   configDir: string,
   repoRoot: string,
-  hostname: string = os.hostname(),
-): { readonly id: string; readonly label: string } => ({
-  id: `${machineIdFor(configDir)}:${repoRoot}`.slice(0, 1024),
-  label: hostname.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 64) || "this machine",
-});
+  options: { readonly create: boolean; readonly hostname?: string },
+): { readonly id: string; readonly label: string } | null => {
+  const machine = machineIdFor(configDir, options.create);
+  if (machine === null) return null;
+  return {
+    id: `${machine}:${repoRoot}`.slice(0, 1024),
+    label:
+      (options.hostname ?? os.hostname()).replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 64) ||
+      "this machine",
+  };
+};
 
 /** What an import did, or would do, as the server reports it; an older server sends less. */
 export interface ImportReport {
@@ -130,6 +141,7 @@ export interface ImportReport {
   readonly merged?: ReadonlyArray<{
     readonly path: string;
     readonly against: "last-import" | "no-shared-version" | "summaries";
+    readonly missingLines?: number;
   }>;
   readonly keptStored?: ReadonlyArray<string>;
   readonly removedInMend?: ReadonlyArray<string>;
@@ -165,14 +177,17 @@ export const importReportLines = (report: ImportReport): ReadonlyArray<string> =
     row("updated", p, "unchanged in Mend since this machine's last import");
   }
   for (const merge of report.merged ?? []) {
+    const missing = merge.missingLines ?? 0;
     row(
       "merged",
       merge.path,
-      merge.against === "last-import"
-        ? "both changed since this machine's last import, both sides' lines kept"
-        : merge.against === "summaries"
-          ? "both sides' summaries kept, the newer one per conversation"
-          : "both sides' lines kept, no earlier import to compare against",
+      missing > 0
+        ? `${missing} of this machine's line${missing === 1 ? " is" : "s are"} not in the result: its copy kept as a version`
+        : merge.against === "last-import"
+          ? "both changed since this machine's last import, both sides' lines kept"
+          : merge.against === "summaries"
+            ? "both sides' summaries kept, the newer one per conversation"
+            : "both sides' lines kept, no earlier import to compare against",
     );
   }
   for (const p of report.keptStored ?? []) {

@@ -118,6 +118,38 @@ const binary = (path: string, bytes: string) => {
 const note = (description: string, body: string) =>
   `---\nname: Build\ndescription: ${description}\ntype: project\n---\n${body}`;
 
+/** A MEMORY.md with frontmatter and two fenced blocks around one entry. */
+const fencedIndex = (entry: string) =>
+  [
+    "---",
+    "name: index",
+    "---",
+    "# Memory",
+    "```sh",
+    "pnpm test",
+    "```",
+    entry,
+    "```sh",
+    "pnpm lint",
+    "```",
+    "",
+  ].join("\n");
+
+/** A note whose description is a block scalar. */
+const blockNote = (extra: string) =>
+  `---\nname: Build\ndescription: |\n  pnpm${extra}\n---\nbody\n`;
+
+/** A note with CRLF line endings. */
+const crlfNote = (description: string) =>
+  `---\r\nname: Build\r\ndescription: ${description}\r\n---\r\nbody\r\n`;
+
+/** 2,001 distinct lines: two of these are past the alignment limit. */
+const distinctLines = (side: string, pad: number) =>
+  `${Array.from({ length: 2001 }, (_, i) => `${side} ${"x".repeat(pad)} ${i}`).join("\n")}\n`;
+
+/** A merge that keeps only Mend's side: stands in for any merge that loses a line. */
+const keepsOurs: MergeText = ({ ours }) => Effect.succeed(ours);
+
 describe("importing memory from a machine", () => {
   const mend = text("MEMORY.md", "- [a](a.md)\n- [mend](mend.md)\n");
   const laptop = text("MEMORY.md", "- [a](a.md)\n- [laptop](laptop.md)\n");
@@ -189,7 +221,13 @@ describe("importing memory from a machine", () => {
     expect(kinds).toEqual(["mergeDatabase", "conflict"]);
   });
 
-  const merge = (input: { ours: string; theirs: string; base: string | null; path?: string }) =>
+  const outcome = (input: {
+    ours: string;
+    theirs: string;
+    base: string | null;
+    path?: string;
+    with?: MergeText;
+  }) =>
     Effect.runPromise(
       mergeAgentMemoryText({
         path: input.path ?? `${ROOT}/build.md`,
@@ -197,9 +235,21 @@ describe("importing memory from a machine", () => {
         theirs: input.theirs,
         base: input.base,
         note: "from laptop, 2026-10-04",
-        merge: gitUnion,
+        merge: input.with ?? gitUnion,
       }),
     );
+  /** The merged contents, for a merge that kept every line of `theirs`. */
+  const merge = async (input: {
+    ours: string;
+    theirs: string;
+    base: string | null;
+    path?: string;
+  }) => {
+    const result = await outcome(input);
+    if (result.kind !== "merged") throw new Error("merges");
+    expect(result.missing).toEqual([]);
+    return result.contents;
+  };
 
   it("merges a note's frontmatter key by key and its body by line, with no shared version", async () => {
     expect(
@@ -244,6 +294,79 @@ describe("importing memory from a machine", () => {
         base: null,
       }),
     ).toBe("- [a](a.md)\n- [b](b.md)\n- [c](c.md)\n");
+  });
+
+  // Review round 1, finding 1 (reproduced): the index dedupe ran over the whole document and took
+  // the closing `---` and the second fenced block's fences.
+  it("keeps a merged index's frontmatter delimiters and every fence", async () => {
+    const merged = await merge({
+      path: `${ROOT}/MEMORY.md`,
+      ours: fencedIndex("- [mend](mend.md)"),
+      theirs: fencedIndex("- [laptop](laptop.md)"),
+      base: null,
+    });
+    expect(merged.split("\n").filter((line) => line === "---")).toHaveLength(2);
+    expect(merged.split("\n").filter((line) => line === "```sh")).toHaveLength(2);
+    expect(merged.split("\n").filter((line) => line === "```")).toHaveLength(2);
+    expect(merged).toContain("- [mend](mend.md)\n- [laptop](laptop.md)\n");
+  });
+
+  // Review round 1, finding 2 (reproduced): `name: Build` against `name: Build` plus a comment
+  // gave only `name: Build`.
+  it("keeps a comment the machine added to the frontmatter", async () => {
+    expect(
+      await merge({
+        ours: "---\nname: Build\n---\nbody\n",
+        theirs: "---\nname: Build\n# Production requires --offline\n---\nbody\n",
+        base: null,
+      }),
+    ).toBe("---\nname: Build\n# Production requires --offline\n---\nbody\n");
+  });
+
+  // Review round 1, findings 2 and 5 (reproduced): a block scalar's `  # New heading` and a quoted
+  // key are outside the subset merged by key; the two are not merged at all.
+  it("does not merge a note whose differing frontmatter is outside the simple subset", async () => {
+    expect(
+      await outcome({ ours: blockNote(""), theirs: blockNote("\n  # New heading"), base: null }),
+    ).toEqual({
+      kind: "unmergeable",
+    });
+    expect(
+      await outcome({
+        ours: "---\nname: Build\n---\nbody\n",
+        theirs: '---\n"name": Compile\n---\nbody\n',
+        base: null,
+      }),
+    ).toEqual({ kind: "unmergeable" });
+  });
+
+  // Review round 1, finding 4 (reproduced): CRLF frontmatter skipped the key merge and wrote
+  // `description:` twice.
+  it("merges CRLF frontmatter by key and keeps CRLF", async () => {
+    const merged = await merge({ ours: crlfNote("a"), theirs: crlfNote("b"), base: null });
+    expect(merged).toBe(
+      "---\r\nname: Build\r\ndescription: a\r\n# from laptop, 2026-10-04: description: b\r\n---\r\nbody\r\n",
+    );
+  });
+
+  // Review round 1, finding 3 (reproduced): two files of 2,001 distinct lines (about 19 and 23 KB)
+  // were "merged" by set membership, dropping repeated lines.
+  it("does not merge files too different to align with no shared version", async () => {
+    const ours = distinctLines("mend", 1);
+    const theirs = distinctLines("laptop", 3);
+    expect(ours.length).toBeGreaterThan(18_000);
+    expect(theirs.length).toBeGreaterThan(22_000);
+    expect(await outcome({ ours, theirs, base: null })).toEqual({ kind: "unmergeable" });
+  });
+
+  it("says which of the machine's lines a merge did not keep", async () => {
+    const result = await outcome({
+      ours: "a\n",
+      theirs: "a\nb\n",
+      base: "a\n",
+      with: keepsOurs,
+    });
+    expect(result).toEqual({ kind: "merged", contents: "a\n", missing: ["b"] });
   });
 });
 
@@ -326,6 +449,7 @@ const importing = (
   options: {
     readonly dryRun?: boolean;
     readonly source?: { readonly id: string; readonly label: string } | null;
+    readonly merge?: MergeText;
   } = {},
 ) => ({
   userId: "anna",
@@ -334,7 +458,7 @@ const importing = (
   source:
     options.source === undefined ? { id: "machine-1:/code/repo", label: "laptop" } : options.source,
   dryRun: options.dryRun ?? false,
-  merge: gitUnion,
+  merge: options.merge ?? gitUnion,
   mergeDatabase: () => Effect.succeed(null),
 });
 
@@ -492,7 +616,7 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         const planned = yield* repo.importFiles(importing([laptop], { dryRun: true }));
         expect(planned).toEqual({
           ...nothing,
-          merged: [{ path: laptop.path, against: "no-shared-version" }],
+          merged: [{ path: laptop.path, against: "no-shared-version", missingLines: 0 }],
         });
         expect(yield* sql`SELECT 1 FROM agent_memory_import_bases`).toEqual([]);
         expect(yield* repo.importFiles(importing([laptop]))).toEqual(planned);
@@ -524,7 +648,9 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
           "# Memory\n- [laptop](laptop.md) — from the laptop\n- [new](new.md) — new\n",
         );
         const second = yield* repo.importFiles(importing([laptop2]));
-        expect(second.merged).toEqual([{ path: laptop.path, against: "last-import" }]);
+        expect(second.merged).toEqual([
+          { path: laptop.path, against: "last-import", missingLines: 0 },
+        ]);
         // Three-way against the last import: what each side added since stays.
         expect(lastMergeBase).toBe(laptop.contents);
         const merged = (yield* repo.read("anna", project, laptop.path))?.file.contents ?? "";
@@ -538,7 +664,9 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
             source: { id: "machine-2:/code/repo", label: "desk" },
           }),
         );
-        expect(other.merged).toEqual([{ path: laptop.path, against: "no-shared-version" }]);
+        expect(other.merged).toEqual([
+          { path: laptop.path, against: "no-shared-version", missingLines: 0 },
+        ]);
       }),
     );
   });
@@ -601,6 +729,112 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         const versions = yield* sql<{ contents: string }>`
           SELECT contents FROM agent_memory_versions WHERE path = ${laptop.path}`;
         expect(versions.map((row) => row.contents)).toEqual([laptop.contents]);
+      }),
+    );
+  });
+
+  // Review round 1, finding 2: when a merge equalled the store, the machine's file was not kept
+  // and the base still moved, so later imports kept ignoring what was lost.
+  it("keeps the machine's file and holds the base when a merge does not keep all its lines", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const v1 = text("lossy.md", "a\n");
+        yield* repo.importFiles(importing([v1]));
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-lossy",
+          delivered: {},
+          session: [text("lossy.md", "a\nmend\n")],
+          merge: unionMerge,
+        });
+        const laptop = text("lossy.md", "a\nlaptop\n");
+        for (let round = 0; round < 2; round += 1) {
+          const report = yield* repo.importFiles(importing([laptop], { merge: keepsOurs }));
+          expect(report.merged).toEqual([
+            { path: laptop.path, against: "last-import", missingLines: 1 },
+          ]);
+        }
+        const versions = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_versions WHERE path = ${laptop.path}`;
+        expect(versions.map((row) => row.contents)).toContain(laptop.contents);
+        const [base] = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_import_bases WHERE path = ${laptop.path}`;
+        expect(base?.contents).toBe(v1.contents);
+      }),
+    );
+  });
+
+  it("keeps a session's file whole when its read-back merge does not keep all its lines", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const v1 = text("readback.md", "a\n");
+        yield* repo.importFiles(importing([v1]));
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-other",
+          delivered: {},
+          session: [text("readback.md", "a\nother\n")],
+          merge: unionMerge,
+        });
+        const session = text("readback.md", "a\nmine\n");
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-mine",
+          delivered: { [v1.path]: agentMemoryDigest(v1) },
+          session: [session],
+          merge: keepsOurs,
+        });
+        const versions = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_versions WHERE path = ${session.path}`;
+        expect(versions.map((row) => row.contents)).toContain(session.contents);
+      }),
+    );
+  });
+
+  // Review round 1, finding 3, through the store: the oversized merge is a conflict.
+  it("keeps Mend's file when an import is too different to align, and says so", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-big",
+          delivered: {},
+          session: [text("big.md", distinctLines("mend", 0))],
+          merge: unionMerge,
+        });
+        const laptop = text("big.md", distinctLines("laptop", 0));
+        const report = yield* repo.importFiles(importing([laptop], { source: null }));
+        expect(report.conflicting).toEqual([laptop.path]);
+        expect((yield* repo.read("anna", project, laptop.path))?.file.contents).toBe(
+          distinctLines("mend", 0),
+        );
+      }),
+    );
+  });
+
+  // Review round 1, finding 6: the API refuses a path named twice; the store never plans one.
+  it("refuses an import that names a path twice", async () => {
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        return yield* repo.importFiles(importing([text("twice.md", "a"), text("twice.md", "b")]));
+      }).pipe(Effect.provide(repoLayer), Effect.scoped),
+    );
+    expect(exit._tag).toBe("Failure");
+    await run(
+      Effect.gen(function* () {
+        expect(
+          yield* (yield* AgentMemoryRepo).read("anna", project, `${ROOT}/twice.md`),
+        ).toBeNull();
       }),
     );
   });

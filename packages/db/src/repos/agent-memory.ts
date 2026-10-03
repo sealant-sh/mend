@@ -15,9 +15,10 @@ import {
   mergeFrontmatterLines,
   piProfileFileBytes,
   splitFrontmatter,
+  missingLines,
   unionLines,
   validateAgentMemoryPath,
-  withoutRepeatedLines,
+  withoutRepeatedEntries,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
@@ -206,6 +207,7 @@ export interface AgentMemoryImportReport {
   readonly merged: ReadonlyArray<{
     readonly path: string;
     readonly against: AgentMemoryImportMerge["against"];
+    readonly missingLines: number;
   }>;
   readonly keptStored: ReadonlyArray<string>;
   readonly removedInMend: ReadonlyArray<string>;
@@ -233,10 +235,25 @@ export type MergeDatabase = (input: {
 }) => Effect.Effect<Uint8Array | null>;
 
 /**
+ * What merging two versions of a memory file gave:
+ * - `merged`: the contents, and the lines of `theirs` they do not hold (`missingLines`); when there
+ *   are any, the caller keeps `theirs` whole as a version and says so;
+ * - `unmergeable`: frontmatter outside the subset merged by key that differs, or files too
+ *   different to align with no shared version. The caller keeps both whole.
+ */
+export type AgentMemoryTextMerge =
+  | { readonly kind: "merged"; readonly contents: string; readonly missing: ReadonlyArray<string> }
+  | { readonly kind: "unmergeable" };
+
+/** Text with LF line endings: how a merge compares lines. */
+const lf = (text: string) => text.replaceAll("\r\n", "\n");
+
+/**
  * Two versions of a memory file merged keeping both sides' lines (docs/adr/0009): three-way with
  * `merge` against `base`, else `unionLines`. Frontmatter on both sides is merged key by key, so a
  * union never writes a key twice; a key both set differently keeps `ours` and notes `theirs` as a
- * comment (`note`). An index (`MEMORY.md`) keeps each line once.
+ * comment (`note`). An index (`MEMORY.md`) keeps each entry once. Line endings are compared as
+ * LF; the result keeps `ours`' (CRLF when `ours` has any).
  */
 export const mergeAgentMemoryText = (input: {
   readonly path: string;
@@ -246,28 +263,48 @@ export const mergeAgentMemoryText = (input: {
   readonly base: string | null;
   readonly note: string;
   readonly merge: MergeText;
-}): Effect.Effect<string> =>
+}): Effect.Effect<AgentMemoryTextMerge> =>
   Effect.gen(function* () {
+    const crlf = input.ours.includes("\r\n");
+    const oursText = lf(input.ours);
+    const theirsText = lf(input.theirs);
+    const baseText = input.base === null || input.base === "" ? null : lf(input.base);
     const lines = (ours: string, theirs: string, base: string | null) =>
       base === null || base === ""
         ? Effect.succeed(unionLines(ours, theirs))
         : input.merge({ base, ours, theirs });
-    const ours = splitFrontmatter(input.ours);
-    const theirs = splitFrontmatter(input.theirs);
-    const base = input.base === null ? null : splitFrontmatter(input.base);
-    const merged =
-      ours !== null && theirs !== null
-        ? joinFrontmatter({
-            lines: mergeFrontmatterLines({
-              ours: ours.lines,
-              theirs: theirs.lines,
-              base: base?.lines ?? null,
-              note: input.note,
-            }),
-            body: yield* lines(ours.body, theirs.body, base?.body ?? input.base),
-          })
-        : yield* lines(input.ours, input.theirs, input.base);
-    return isAgentMemoryIndex(input.path) ? withoutRepeatedLines(merged) : merged;
+    const index = (text: string) =>
+      isAgentMemoryIndex(input.path) ? withoutRepeatedEntries(text) : text;
+    const ours = splitFrontmatter(oursText);
+    const theirs = splitFrontmatter(theirsText);
+    const base = baseText === null ? null : splitFrontmatter(baseText);
+    let merged: string | null;
+    if (ours !== null && theirs !== null) {
+      const front = mergeFrontmatterLines({
+        ours: ours.lines,
+        theirs: theirs.lines,
+        base: base?.lines ?? null,
+        note: input.note,
+      });
+      const body =
+        front === null ? null : yield* lines(ours.body, theirs.body, base?.body ?? baseText);
+      merged =
+        front === null || body === null
+          ? null
+          : joinFrontmatter({ lines: front, body: index(body) });
+    } else {
+      const whole = yield* lines(oursText, theirsText, baseText);
+      merged = whole === null ? null : index(whole);
+    }
+    if (merged === null) return { kind: "unmergeable" };
+    const missing = missingLines({
+      path: input.path,
+      merged,
+      theirs: theirsText,
+      ours: oursText,
+      base: baseText,
+    });
+    return { kind: "merged", contents: crlf ? merged.replaceAll("\n", "\r\n") : merged, missing };
   });
 
 /** `from <who>, <yyyy-mm-dd>`: who the second side of a merge came from, as its notes say. */
@@ -573,7 +610,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                       .pipe(Effect.orDie);
               // A file the session made itself, or whose delivered version is no longer kept, has
               // no shared version: both sides' lines, each shared one once.
-              const contents = yield* mergeAgentMemoryText({
+              const outcome = yield* mergeAgentMemoryText({
                 path: step.file.path,
                 ours: step.stored.contents,
                 theirs: step.file.contents,
@@ -582,11 +619,25 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                 merge: input.merge,
               });
               yield* keepVersion(tx, userId, projectId, step.stored);
+              if (outcome.kind === "unmergeable") {
+                // As for a file that is not text: the session's, with the stored one kept.
+                yield* write(tx, userId, projectId, step.file, sessionId);
+                saved.push(step.file.path);
+                continue;
+              }
+              if (outcome.missing.length > 0) {
+                // The merge does not hold every line the session wrote: its file is kept whole.
+                yield* keepVersion(tx, userId, projectId, {
+                  ...step.file,
+                  digest: agentMemoryDigest(step.file),
+                  updatedBySession: sessionId,
+                });
+              }
               yield* write(
                 tx,
                 userId,
                 projectId,
-                { path: step.file.path, encoding: "utf8", contents },
+                { path: step.file.path, encoding: "utf8", contents: outcome.contents },
                 sessionId,
               );
               merged.push(step.file.path);
@@ -607,6 +658,11 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       readonly mergeDatabase: MergeDatabase;
     }) {
       const { userId, projectId, source, dryRun } = input;
+      // The API refuses these (AgentMemoryImportInvalid); every file is planned against one
+      // snapshot of the store, so a path named twice would be written twice.
+      if (new Set(input.files.map((file) => file.path)).size !== input.files.length) {
+        return yield* Effect.die(new Error("an agent memory import names a path twice"));
+      }
       const kept = withinLimits(input.files);
       const keptPaths = new Set(kept.map((file) => file.path));
       const files = kept.map((file) => ({ ...file, digest: agentMemoryDigest(file) }));
@@ -749,7 +805,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                   break;
                 }
                 case "merge": {
-                  const contents = yield* mergeAgentMemoryText({
+                  const outcome = yield* mergeAgentMemoryText({
                     path: file.path,
                     ours: step.stored.contents,
                     theirs: file.contents,
@@ -757,17 +813,28 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                     note,
                     merge: input.merge,
                   });
-                  const merged = { path: file.path, encoding: "utf8" as const, contents };
-                  if (!storable(merged)) {
+                  const merged =
+                    outcome.kind === "merged"
+                      ? { path: file.path, encoding: "utf8" as const, contents: outcome.contents }
+                      : null;
+                  if (outcome.kind === "unmergeable" || merged === null || !storable(merged)) {
                     yield* conflict(file);
                     break;
                   }
-                  if (contents !== step.stored.contents) yield* replaceMerged(step, merged);
-                  yield* recordBase(file);
+                  if (merged.contents !== step.stored.contents) yield* replaceMerged(step, merged);
+                  else if (outcome.missing.length > 0) {
+                    yield* apply(
+                      keepVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
+                    );
+                  }
+                  // A merge that does not hold every line this machine sent keeps its file as a
+                  // version and does not move the base: the next import merges and says so again.
+                  if (outcome.missing.length === 0) yield* recordBase(file);
                   report.merged.push({
                     path: file.path,
                     against:
                       step.base === null || step.base === "" ? "no-shared-version" : "last-import",
+                    missingLines: outcome.missing.length,
                   });
                   break;
                 }
@@ -790,7 +857,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                   }
                   yield* replaceMerged(step, merged);
                   yield* recordBase(file);
-                  report.merged.push({ path: file.path, against: "summaries" });
+                  report.merged.push({ path: file.path, against: "summaries", missingLines: 0 });
                   break;
                 }
                 case "conflict": {

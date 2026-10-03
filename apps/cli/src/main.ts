@@ -2414,14 +2414,15 @@ const memoryImport = async (config: CliConfig, args: ReadonlyArray<string>) => {
   // nothing. This checkout on this machine is named, so the next import from here merges against
   // what this one sent.
   const dryRun = args.includes("--dry-run");
-  const source = importSourceFor(mendCliHome(), repoRoot);
+  // A dry run writes nothing here either: no machine id is made for it.
+  const source = importSourceFor(mendCliHome(), repoRoot, { create: !dryRun });
   const report = await withSpinner(
     dryRun ? "planning" : "importing",
     api<ImportReport>(
       config,
       "POST",
       `/projects/${project.id}/memory/import${dryRun ? "/plan" : ""}`,
-      { files, source },
+      source === null ? { files } : { files, source },
     ),
   );
   say(

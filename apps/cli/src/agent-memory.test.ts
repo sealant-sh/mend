@@ -155,11 +155,27 @@ describe("where an import comes from", () => {
   it("names this checkout on this machine, with an id kept across imports", () => {
     const config = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-config-"));
     dirs.push(config);
-    const first = importSourceFor(config, "/home/you/code/app", "Yiannis's MacBook Pro");
-    expect(first.label).toBe("Yiannis-s-MacBook-Pro");
-    expect(first.id).toMatch(/^[0-9a-f-]{36}:\/home\/you\/code\/app$/);
-    expect(importSourceFor(config, "/home/you/code/app", "renamed").id).toBe(first.id);
-    expect(importSourceFor(config, "/home/you/code/other").id).not.toBe(first.id);
+    const first = importSourceFor(config, "/home/you/code/app", {
+      create: true,
+      hostname: "Yiannis's MacBook Pro",
+    });
+    expect(first?.label).toBe("Yiannis-s-MacBook-Pro");
+    expect(first?.id).toMatch(/^[0-9a-f-]{36}:\/home\/you\/code\/app$/);
+    const again = importSourceFor(config, "/home/you/code/app", { create: true, hostname: "x" });
+    expect(again?.id).toBe(first?.id);
+    // A dry run reads the id once there is one.
+    expect(importSourceFor(config, "/home/you/code/app", { create: false })?.id).toBe(first?.id);
+    expect(importSourceFor(config, "/home/you/code/other", { create: true })?.id).not.toBe(
+      first?.id,
+    );
+  });
+
+  // Review round 1, finding 7: `--dry-run` made `machine-id` and then said "nothing written".
+  it("makes no machine id for a dry run", () => {
+    const config = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-config-")), "mend");
+    dirs.push(path.dirname(config));
+    expect(importSourceFor(config, "/home/you/code/app", { create: false })).toBeNull();
+    expect(fs.existsSync(config)).toBe(false);
   });
 });
 
@@ -190,6 +206,19 @@ describe("what an import reports", () => {
       "  kept      kept.md · changed in Mend since this machine's last import, not here",
       "  not added gone.md · removed in Mend since this machine's last import",
       "  conflict  diagram.png · both changed, not mergeable: Mend's kept, this machine's kept as a version",
+    ]);
+  });
+
+  it("says when a merge did not keep every line this machine sent", () => {
+    expect(
+      importReportLines({
+        added: [],
+        unchanged: [],
+        merged: [{ path: `${root}/notes.md`, against: "last-import", missingLines: 2 }],
+        conflicting: [],
+      }),
+    ).toEqual([
+      "  merged    notes.md · 2 of this machine's lines are not in the result: its copy kept as a version",
     ]);
   });
 

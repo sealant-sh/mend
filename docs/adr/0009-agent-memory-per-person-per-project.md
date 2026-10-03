@@ -93,21 +93,36 @@ much smaller: the memory.
    - A file both changed since then, or any file that differs with no last import, is merged:
      - Text keeps both sides' lines, three-way (`git merge-file --union`) against the last import
        when there is one. With none, each line the two share is kept once, in place, and between two
-       shared lines the store's own lines come first, then the machine's.
+       shared lines the store's own lines come first, then the machine's. Two files too different to
+       align that way (over four million comparisons once a shared start and end are set aside) are
+       not merged: no line is ever dropped to make a merge fit.
      - When both versions open with YAML frontmatter, the frontmatter is merged key by key and only
        the body by line. A key both set differently keeps the store's value and the machine's under
-       it as a YAML comment (`# from <host>, <date>: description: …`).
-     - An index (`MEMORY.md`) keeps each line once.
+       it as a YAML comment (`# from <host>, <date>: description: …`). Only a simple subset is
+       merged by key: `key: value` lines with a plain key and a one-line value, and whole-line
+       comments, which belong to the key above them and are content like it. Frontmatter outside
+       that subset (a quoted key, a block scalar, a nested map, a key written twice) that differs is
+       not merged. Line endings are compared as LF; the result keeps the store's.
+     - An index (`MEMORY.md`) keeps each index entry (`- [Title](file.md) …`) once. Every other
+       line, and anything inside a code fence, stays however often it repeats.
      - Codex's summary database keeps every conversation's newer summary from either side.
-     - Anything else, or a merge over the size limit, keeps the store's file. The machine's is kept
-       as a version, and the next import reports it again.
+     - A merge that does not hold every line the machine sent (a line the store removed since the
+       last import aside) keeps the machine's file whole as a version, says how many lines, and
+       leaves the base where it was, so the next import merges it and says so again.
+     - Anything else (not text, frontmatter not merged, too different to align), or a merge over the
+       size limit, keeps the store's file. The machine's is kept as a version, and the next import
+       reports it again.
    - A file the store has and the machine no longer sends stays in the store.
+   - An import that names a path twice is refused whole (400).
    - Every version an import replaces is kept, the machine's own copy of a merged file too, as for a
-     read-back. `--dry-run` asks the server for the same plan and writes nothing.
+     read-back. `--dry-run` asks the server for the same plan and writes nothing, on the machine
+     either: it makes no machine id.
 
-   The same frontmatter rule applies to a read-back merge, and a read-back merge with no shared
-   version (a file the session made itself, or a delivered version no longer kept) keeps each shared
-   line once instead of repeating the whole file.
+   The same rules apply to a read-back merge. A read-back merge with no shared version (a file the
+   session made itself, or a delivered version no longer kept) keeps each shared line once instead
+   of repeating the whole file. One that cannot be merged takes the session's, as for a file that is
+   not text, and one that does not hold every line the session wrote keeps the session's file as a
+   version.
 
 5. **People can see and remove it.** `mend memory` lists the files for the current project,
    `mend memory show <file>` prints one, `mend memory rm <file>` removes it. The API serves the same
@@ -240,3 +255,8 @@ to build it.
   differ by added lines, which a line merge keeps in place. Frontmatter is merged by key because a
   line union writes a key twice. A conflicting value is kept as a YAML comment, which no parser
   reads, so the frontmatter stays valid. The agent still sees the comment and can fold it in.
+- 2026-10-04, after review: the merge never drops a line to succeed. The index keeps each entry
+  once, never a delimiter, fence or line inside one; frontmatter is merged by key only within a
+  simple subset (no YAML parser is in the tree, and guessing at the rest wrote keys twice or lost a
+  block scalar's lines); files too different to align are a conflict rather than a lossy union; and
+  any merge that still misses a line keeps the incoming file as a version and holds the base.

@@ -116,6 +116,12 @@ export class AgentMemoryImportMerge extends Schema.Class<AgentMemoryImportMerge>
    * - `summaries`: Codex's summary database, each conversation's newer summary from either.
    */
   against: Schema.Literals(["last-import", "no-shared-version", "summaries"]),
+  /**
+   * How many of this machine's lines the result does not hold (a line Mend removed since the last
+   * import is not counted). When any, this machine's file is kept whole as a version, and the next
+   * import from there merges it again.
+   */
+  missingLines: Schema.Int,
 }) {}
 
 /** What an import did, or would do, path by path. */
@@ -133,8 +139,9 @@ export class AgentMemoryImported extends Schema.Class<AgentMemoryImported>("Agen
   /** Removed in Mend since this machine's last import, unchanged here: not added again. */
   removedInMend: Schema.Array(Schema.String),
   /**
-   * Changed on both sides and not mergeable (not text, or merged over the size limit): Mend's
-   * stays, this machine's is kept as a version, and the next import reports it again.
+   * Changed on both sides and not mergeable: not text, frontmatter that differs outside the subset
+   * merged by key, too different to align with no earlier import, or merged over the size limit.
+   * Mend's stays, this machine's is kept as a version, and the next import reports it again.
    */
   conflicting: Schema.Array(Schema.String),
   /** Outside the limits (path, size or count): not stored. */

@@ -5,12 +5,13 @@
  *
  * - `unionLines`: both sides' lines, each shared line once, in place. Between two shared lines the
  *   first side's own lines come first, then the second side's: the order `git merge-file --union`
- *   gives a conflict, so a merge with and without a shared version reads the same.
+ *   gives a conflict, so a merge with and without a shared version reads the same. Files too
+ *   different to align are not merged at all (null): the caller keeps both whole.
  * - Frontmatter (`---` … `---` at the top of a Claude topic file) is merged key by key, never by
- *   line: a line union would write a key twice. When both sides set a key to different values, the
- *   first side's stays and the second's is kept under it as a YAML comment, which no parser reads
- *   and the agent does.
- * - An index (`MEMORY.md`, one line per memory) keeps each line once.
+ *   line: a line union would write a key twice. Only a simple subset is merged by key (`key: value`
+ *   lines and whole-line comments); any other YAML that differs is not merged (null).
+ * - An index (`MEMORY.md`) keeps each index entry (`- [Title](file.md) …`) once.
+ * - `missingLines` says whether a merge kept every line of the incoming side.
  */
 
 interface Lines {
@@ -81,29 +82,25 @@ const commonLines = (
 
 /**
  * Both versions' lines with no shared version to diff against: each line the two share once, in
- * place, and between two shared lines `ours`' own lines, then `theirs`'. A file too large to align
- * keeps `ours` whole, then each non-blank line of `theirs` that `ours` lacks.
+ * place, and between two shared lines `ours`' own lines, then `theirs`'. Null when the parts that
+ * differ are too large to align (over `ALIGN_MAX_CELLS`): no line is ever dropped to merge them.
  */
-export const unionLines = (ours: string, theirs: string): string => {
+export const unionLines = (ours: string, theirs: string): string | null => {
   const o = linesOf(ours);
   const t = linesOf(theirs);
   if (t.lines.length === 0) return ours;
   if (o.lines.length === 0) return theirs;
   const pairs = commonLines(o.lines, t.lines);
+  if (pairs === null) return null;
   const out: Array<string> = [];
-  if (pairs === null) {
-    const have = new Set(o.lines);
-    out.push(...o.lines, ...t.lines.filter((line) => line.trim() !== "" && !have.has(line)));
-  } else {
-    let i = 0;
-    let j = 0;
-    for (const [pi, pj] of [...pairs, [o.lines.length, t.lines.length] as const]) {
-      out.push(...o.lines.slice(i, pi), ...t.lines.slice(j, pj));
-      const shared = o.lines[pi];
-      if (shared !== undefined) out.push(shared);
-      i = pi + 1;
-      j = pj + 1;
-    }
+  let i = 0;
+  let j = 0;
+  for (const [pi, pj] of [...pairs, [o.lines.length, t.lines.length] as const]) {
+    out.push(...o.lines.slice(i, pi), ...t.lines.slice(j, pj));
+    const shared = o.lines[pi];
+    if (shared !== undefined) out.push(shared);
+    i = pi + 1;
+    j = pj + 1;
   }
   return textOf(out, o.trailingNewline || t.trailingNewline);
 };
@@ -112,12 +109,26 @@ export const unionLines = (ours: string, theirs: string): string => {
 export const isAgentMemoryIndex = (filePath: string): boolean =>
   filePath === "MEMORY.md" || filePath.endsWith("/MEMORY.md");
 
-/** Each non-blank line once, at its first place: what an index merge leaves. */
-export const withoutRepeatedLines = (text: string): string => {
+/** One index entry: a list item that opens with a link, `- [Title](file.md) — hook`. */
+const INDEX_ENTRY = /^\s*[-*+]\s+\[[^\]]*\]\([^)\s]+\)/;
+/** A Markdown code fence: everything between two of them is code, never an entry. */
+const FENCE = /^\s*(```|~~~)/;
+
+/**
+ * Each index entry once, at its first place: what an index merge leaves. Only entry lines outside
+ * code fences are compared; every other line (headings, blank lines, fences, delimiters, prose)
+ * stays as it is, however often it repeats.
+ */
+export const withoutRepeatedEntries = (text: string): string => {
   const { lines, trailingNewline } = linesOf(text);
   const seen = new Set<string>();
+  let fenced = false;
   const kept = lines.filter((line) => {
-    if (line.trim() === "") return true;
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      return true;
+    }
+    if (fenced || !INDEX_ENTRY.test(line)) return true;
     if (seen.has(line)) return false;
     seen.add(line);
     return true;
@@ -132,7 +143,7 @@ export interface Frontmatter {
   readonly body: string;
 }
 
-/** A file's YAML frontmatter and body, or null when it does not open with `---`. */
+/** A file's YAML frontmatter and body, or null when it does not open with `---`. LF only. */
 export const splitFrontmatter = (text: string): Frontmatter | null => {
   if (!text.startsWith("---\n")) return null;
   const close = text.indexOf("\n---\n", 3);
@@ -145,40 +156,52 @@ export const splitFrontmatter = (text: string): Frontmatter | null => {
 export const joinFrontmatter = (frontmatter: Frontmatter): string =>
   `---\n${frontmatter.lines.map((line) => `${line}\n`).join("")}---\n${frontmatter.body}`;
 
-const KEY = /^([A-Za-z0-9_][A-Za-z0-9_.-]*)\s*:/;
+/**
+ * A `key: value` line the key merge understands: a plain key and a one-line value. A quoted key,
+ * an empty value (a nested map or list follows) and a block scalar (`|`, `>`) are outside it.
+ */
+const SIMPLE_ENTRY =
+  /^([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*:(?:[ \t]+(?![|>][-+0-9]*[ \t]*(?:#.*)?$)\S.*)$/;
+const COMMENT = /^#/;
 
 /**
- * Frontmatter as keyed entries: a `key:` line and the lines under it (indented values, list items,
- * comments). Lines before the first key are one entry keyed "". A key written twice keeps both,
- * as `key`, `key#2`.
+ * Frontmatter as keyed entries, when it lies in the subset the key merge understands: each line a
+ * `key: value` (`SIMPLE_ENTRY`), a whole-line comment, or blank; no key twice. A comment or blank
+ * line belongs to the entry above it and is part of its content; lines before the first key are an
+ * entry keyed "". Null for anything else, which is not merged by key.
  */
-const entriesOf = (lines: ReadonlyArray<string>): ReadonlyMap<string, ReadonlyArray<string>> => {
-  const entries: Array<{ key: string; lines: Array<string> }> = [];
+const entriesOf = (
+  lines: ReadonlyArray<string>,
+): ReadonlyMap<string, ReadonlyArray<string>> | null => {
+  const entries = new Map<string, Array<string>>();
+  let current: Array<string> | undefined;
   for (const line of lines) {
-    const key = KEY.exec(line)?.[1];
-    const last = entries.at(-1);
-    if (key === undefined && last !== undefined) last.lines.push(line);
-    else entries.push({ key: key ?? "", lines: [line] });
+    const key = SIMPLE_ENTRY.exec(line)?.[1];
+    if (key !== undefined) {
+      if (entries.has(key)) return null;
+      current = [line];
+      entries.set(key, current);
+    } else if (COMMENT.test(line) || line.trim() === "") {
+      if (current === undefined) {
+        current = [];
+        entries.set("", current);
+      }
+      current.push(line);
+    } else return null;
   }
-  const keyed = new Map<string, ReadonlyArray<string>>();
-  for (const entry of entries) {
-    let key = entry.key;
-    for (let n = 2; keyed.has(key); n += 1) key = `${entry.key}#${n}`;
-    keyed.set(key, entry.lines);
-  }
-  return keyed;
+  return entries;
 };
 
-const isComment = (line: string) => line.trimStart().startsWith("#");
-/** An entry's value: its lines that are not comments. */
-const valueOf = (entry: ReadonlyArray<string> | undefined): string | undefined =>
-  entry?.filter((line) => !isComment(line)).join("\n");
+const same = (a: ReadonlyArray<string> | undefined, b: ReadonlyArray<string> | undefined) =>
+  a === b || (a !== undefined && b !== undefined && a.join("\n") === b.join("\n"));
 
 /**
- * Two frontmatters merged key by key, against `base` when there is one. A key one side changed
- * since `base` takes that side's value; a key both set differently keeps `ours` and adds `theirs`
- * under it as comments (`# <note>: key: value`). Keys keep `ours`' order, then `theirs`' new ones.
- * Comments already in an entry stay with it.
+ * Two frontmatters merged key by key, against `base` when there is one; null when any of them lies
+ * outside the subset `entriesOf` understands and they differ. An entry is its key line with the
+ * comments under it, all compared as content. An entry one side changed since `base` takes that
+ * side's; one both set differently keeps `ours` and adds each line of `theirs` it lacks, a key
+ * line as a comment (`# <note>: key: value`), a comment as it is. Keys keep `ours`' order, then
+ * `theirs`' new ones.
  */
 export const mergeFrontmatterLines = (input: {
   readonly ours: ReadonlyArray<string>;
@@ -186,42 +209,86 @@ export const mergeFrontmatterLines = (input: {
   readonly base: ReadonlyArray<string> | null;
   /** Who `theirs` came from, for the comment: `from laptop, 2026-10-04`. */
   readonly note: string;
-}): ReadonlyArray<string> => {
+}): ReadonlyArray<string> | null => {
+  if (same(input.ours, input.theirs)) return input.ours;
+  if (input.base !== null && same(input.theirs, input.base)) return input.ours;
+  if (input.base !== null && same(input.ours, input.base)) return input.theirs;
   const ours = entriesOf(input.ours);
   const theirs = entriesOf(input.theirs);
   const base = input.base === null ? null : entriesOf(input.base);
+  if (ours === null || theirs === null || (input.base !== null && base === null)) return null;
   const keys = [...ours.keys(), ...[...theirs.keys()].filter((key) => !ours.has(key))];
   const out: Array<string> = [];
   for (const key of keys) {
     const s = ours.get(key);
     const t = theirs.get(key);
-    const sv = valueOf(s);
-    const tv = valueOf(t);
-    const bv = base === null ? undefined : valueOf(base.get(key));
-    const unchangedSince = (value: string | undefined) => base !== null && value === bv;
+    const b = base?.get(key);
+    const unchangedSince = (entry: ReadonlyArray<string> | undefined) =>
+      base !== null && same(entry, b);
     if (t === undefined) {
       // Theirs lacks it: removed there when ours still holds it as it was, else ours stands.
-      if (s !== undefined && !unchangedSince(sv)) out.push(...s);
+      if (s !== undefined && !unchangedSince(s)) out.push(...s);
       continue;
     }
     if (s === undefined) {
-      if (!unchangedSince(tv)) out.push(...t);
+      if (!unchangedSince(t)) out.push(...t);
       continue;
     }
-    if (sv === tv || unchangedSince(tv)) {
+    if (same(s, t) || unchangedSince(t)) {
       out.push(...s);
       continue;
     }
-    if (unchangedSince(sv)) {
-      // Theirs is the change: its value, with any comments ours kept.
-      out.push(...t, ...s.filter(isComment).filter((line) => !t.includes(line)));
+    if (unchangedSince(s)) {
+      out.push(...t);
       continue;
     }
-    const comments = t
-      .filter((line) => !isComment(line))
-      .map((line) => `# ${input.note}: ${line}`)
+    const added = t
+      .filter((line) => line.trim() !== "" && !s.includes(line))
+      .map((line) => (COMMENT.test(line) ? line : `# ${input.note}: ${line}`))
       .filter((line) => !s.includes(line));
-    out.push(...s, ...comments);
+    out.push(...s, ...added);
   }
   return out;
+};
+
+/** A line a merge noted rather than kept: `# from <who>, <yyyy-mm-dd>: <line>`. */
+const NOTED = /^# from .+?, \d{4}-\d{2}-\d{2}: (.*)$/;
+
+const counts = (lines: ReadonlyArray<string>): Map<string, number> => {
+  const out = new Map<string, number>();
+  for (const line of lines) out.set(line, (out.get(line) ?? 0) + 1);
+  return out;
+};
+
+/**
+ * The non-blank lines of `theirs` that `merged` does not hold, counted: as they are, or noted by a
+ * frontmatter merge. With a `base`, a line `ours` removed since it is not missing: a three-way
+ * merge drops it on purpose. In an index, an entry only has to be there once.
+ */
+export const missingLines = (input: {
+  readonly path: string;
+  readonly merged: string;
+  readonly theirs: string;
+  readonly ours: string;
+  readonly base: string | null;
+}): ReadonlyArray<string> => {
+  const mergedLines = linesOf(input.merged).lines;
+  const have = counts([
+    ...mergedLines,
+    ...mergedLines.flatMap((line) => {
+      const noted = NOTED.exec(line)?.[1];
+      return noted === undefined ? [] : [noted];
+    }),
+  ]);
+  const ours = counts(linesOf(input.ours).lines);
+  const base = input.base === null ? new Map<string, number>() : counts(linesOf(input.base).lines);
+  const index = isAgentMemoryIndex(input.path);
+  const missing: Array<string> = [];
+  for (const [line, count] of counts(linesOf(input.theirs).lines)) {
+    if (line.trim() === "") continue;
+    const removedByOurs = Math.max(0, (base.get(line) ?? 0) - (ours.get(line) ?? 0));
+    const needed = Math.max(0, (index && INDEX_ENTRY.test(line) ? 1 : count) - removedByOurs);
+    if ((have.get(line) ?? 0) < needed) missing.push(line);
+  }
+  return missing;
 };
