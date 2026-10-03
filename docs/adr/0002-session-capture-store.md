@@ -1541,11 +1541,13 @@ Mend-side details the decision record left open, decided in this ADR:
     - **One flush.** When a Stop will drain the workspace (capture mode, and nothing but what it
       ends holds it), the checkpoint and the harvest are put off until the drain's final flush
       (`deferToFinal` in the session engine) and read its head: a checkpoint reads the chain, a
-      harvest reads the head capture in the store, so neither needs the workspace. They run beside
-      the executor's termination, not before it. The drain's own reading stands for the flush each
-      would have asked for: a complete one means `flushed`, an incomplete one `incomplete` and no
-      harvest, a refused one an unflushed checkpoint and no harvest, as a refused flush gave before.
-      Nothing drained (the workspace in use after all): each runs as it did, flush and all.
+      harvest reads the head capture in the store, so neither needs the workspace. They run once the
+      final flush is saved and before the executor is terminated: its lease goes with it, and a
+      successor launched after the release could register a newer head under a harvest still reading
+      (Astra review, 2026-10-03). The drain's own reading stands for the flush each would have asked
+      for: a complete one means `flushed`, an incomplete one `incomplete` and no harvest, a refused
+      one an unflushed checkpoint and no harvest, as a refused flush gave before. Nothing drained
+      (the workspace in use after all): each runs as it did, flush and all.
     - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
       judged (`executor not answering`, `completed`) and its executor looked at before the drain
       begins, and the tests of those judgements say so. Making every end read the drain's final is a
