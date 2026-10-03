@@ -162,6 +162,7 @@ import {
   processStatePathOf,
   readCaptureFile,
   readCaptureFileBytes,
+  withCaptureReadPass,
   sessionStatePathOf,
   resolveRemoteEnv,
   sshTransportArgs,
@@ -5745,7 +5746,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // The `exec tar | base64` archive path is retired in capture mode: the harness home is
           // the workspace class of the head capture, and it is read there, streamed.
-          const located = yield* harvestFromCapture(session, agentProcess);
+          const located = yield* inOneReadPass(harvestFromCapture(session, agentProcess));
           if (located === null) {
             return yield* new HarnessStateCommandError({
               sessionId,
@@ -5943,6 +5944,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * streamed into the process's state dir — a 76 MB codex rollout is never buffered — and
        * the manifest commits it exactly as the co-located harvest does.
        */
+      /**
+       * Every read of the head capture `self` makes shares one pass (`withCaptureReadPass`): the
+       * section's dir packs, pack indexes and packs are fetched once, not once per file. A Codex
+       * memory read-back of 33 small files fetched the same 64 MiB pack 33 times without it: 28 s
+       * of a Stop on the box (2026-10-03).
+       */
+      const inOneReadPass = <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+        capture === null
+          ? self
+          : withCaptureReadPass(self).pipe(Effect.provideService(BlobStore, capture.blobs));
+
       const harvestFromCapture = Effect.fn("SessionEngine.harvestFromCapture")(function* (
         session: Session,
         agent: SessionProcess,
@@ -6120,7 +6132,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const agents = agentProcessesOf(yield* processes.listForSession(session.id));
         const agent = agents.findLast((candidate) => candidate.harness === harness) ?? null;
         if (agent === null) return null;
-        if (capture !== null) return yield* harvestFromCapture(session, agent);
+        if (capture !== null) return yield* inOneReadPass(harvestFromCapture(session, agent));
         const harnessHome = harnessHomePathOf(project.storePath, session.id);
         const live = yield* locateLiveTranscript(harnessHome, harness);
         if (live === null) return null;
@@ -8932,7 +8944,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const read =
           capture === null
             ? yield* readAgentMemoryFromHome(harnessHomePathOf(project.storePath, session.id))
-            : yield* agentMemoryFromCapture(session);
+            : yield* inOneReadPass(agentMemoryFromCapture(session));
         if (read === null) return;
         if (read.files.length === 0 && Object.keys(read.delivered).length === 0) return;
         const report = yield* agentMemory.readBack({

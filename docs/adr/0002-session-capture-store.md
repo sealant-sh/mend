@@ -1527,6 +1527,14 @@ Mend-side details the decision record left open, decided in this ADR:
     - **sealantd** (its changeset of the same day): a final flush is not throttled, reads small
       files on reader threads, hashes and compresses a large file's parts on them, hashes each pack
       on its own thread, takes SHA-256 from `ring`, and uploads large objects four at a time.
+    - **A git pack is copied down once.** The register's verifier copies each new git pack to the
+      runner's cache, hashes it to its key and runs `index-pack --verify` beside its index
+      (`runner.ts` `installPack`). That is the read-back's check, so it is kept as a proof
+      (`rememberGitPackVerified`: the index's SHA-256, when the read began), and the read-back,
+      given `proofs`, reads the index stored now and compares it instead of copying the pack down
+      again. A pack it must copy down is hashed in the same pass, not streamed twice. Measured on
+      the box with a 627 MB pack: 6 s at register and 7.9 s at the seal became 6 s and the time to
+      read a 1 KB index (2026-10-03).
     - **What remains.** After a restart, the first seal of each worktree reads every object it names
       once (the proofs are in memory). The walk of the tree and the register's restorability check
       are still one thread each. An executor of an older daemon, an object over 5 GiB, and a scope
