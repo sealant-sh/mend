@@ -3486,7 +3486,7 @@ describe("SessionEngine", () => {
           // The settle-path harvest (forked) clears the manifest before its capture fails
           // against the empty exec output; wait for its pack attempt before planting state.
           const packRan = () =>
-            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state.tgz"));
+            execCalls.some((argv) => argv.join(" ").includes("mend-harness-state"));
           for (let i = 0; i < 400 && !packRan(); i++) {
             yield* Effect.sleep(Duration.millis(10));
           }
