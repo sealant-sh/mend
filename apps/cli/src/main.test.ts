@@ -246,6 +246,39 @@ describe("Mend CLI session selection", () => {
     }
   });
 
+  it("resume takes the session id it is given, first on the line, with no --with", async () => {
+    const settled = { ...session, status: "stopped" };
+    const second = { ...settled, id: "session-5678", worktree: "session-5678" };
+    // A clone of the project's origin, the directory the CLI runs in.
+    const clone = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-resume-"));
+    git(clone, ["init", "-q", "-b", "main"]);
+    git(clone, ["remote", "add", "origin", "https://github.com/acme/fixture.git"]);
+    const adopted = { ...project, originUrl: "https://github.com/acme/fixture.git" };
+    const resumed: Array<string> = [];
+    const fake = await startFakeMend((request, response) => {
+      const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+      if (route === "GET /api/projects") json(response, [adopted]);
+      else if (route === `GET /api/projects/${project.id}`) {
+        // The newest settled session first: the one a resume without an id picks.
+        json(response, { project: adopted, sessions: [settled, second], annotations: [] });
+      } else if (request.method === "POST" && request.url?.endsWith("/resume") === true) {
+        resumed.push(request.url);
+        response.writeHead(409, { "content-type": "application/json" });
+        response.end(JSON.stringify({ message: "stop here" }));
+      } else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["resume", "session-56"], {}, clone);
+
+    try {
+      await cli.exited;
+      expect(resumed, cli.stderr()).toEqual([`/api/sessions/${second.id}/resume`]);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+      fs.rmSync(clone, { recursive: true, force: true });
+    }
+  });
+
   it("names the command it could not disambiguate when no terminal can pick", async () => {
     const second = { ...session, id: "session-5678", worktree: "session-5678" };
     const fake = await startFakeMend((request, response) => {
