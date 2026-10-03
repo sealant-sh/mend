@@ -124,6 +124,21 @@ The panel also has:
 Mend does not poll GitHub. A pull request's state is as fresh as the last landing, refresh, or
 check.
 
+## Where the pull request shows
+
+Wherever you are, the change's pull request is a way to GitHub:
+
+- in the session's conversation, on the phone, a card where Mend first recorded it: its number and
+  title, its state, its branch, whether it was opened outside Mend, when it was observed, and
+  `changed since landing · 3 files` when the worktree moved on. `Open on GitHub` opens it, and the
+  owner's `Refresh` asks GitHub for its state now. A terminal session shows the newest one at the
+  end of its transcript;
+- on the phone's review, as a line above the change;
+- on every list row whose change has one, on the web's Now and project pages and the phone's Now,
+  Projects and project screens, as `#412 · open` and its title, which opens it on GitHub.
+
+Lists never ask GitHub, so `merged` shows there only after a landing, a refresh, or a check saw it.
+
 ## Land from the CLI
 
 ```sh
@@ -292,11 +307,13 @@ pull request that holds the agent's head commit, including one from a fork.
 
 Mend looks:
 
+- when a turn that ran `gh pr create` ends, at the pull request the turn named, if GitHub says it
+  was opened during that turn;
 - 45 seconds after the agent pushes a branch through the workspace's git transport;
 - when an agent ends while its workspace is still up;
 - when the owner presses `Check GitHub` or runs `mend land <session> --check`.
 
-The first two use only a live workspace of the owner's. An adopted pull request reads
+The first three use only a live workspace of the owner's. An adopted pull request reads
 `pull request #368 · open · observed 2 min ago · opened outside Mend`, and the next landing pushes
 to its branch and updates it.
 
