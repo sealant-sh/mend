@@ -1,5 +1,152 @@
 # @sealant/mend
 
+## 0.36.0
+
+### Minor Changes
+
+- 4d85059: What Claude Code learns about a repository now outlives the session. Mend keeps each
+  person's agent memory per project: every session you start on it receives your memory, and what
+  the agent learned is saved back when it ends, keeping both sides' lines when two of your sessions
+  changed the same file. `mend memory import` brings the memory Claude Code already keeps for the
+  checkout on your machine; `mend memory`, `mend memory show` and `mend memory rm` show and remove
+  it. Your memory never reaches anyone else's sessions. Transcripts, logins and settings are never
+  read.
+- 974f020: Codex memory is carried per person per project, like Claude's. Mend turns Codex's memory
+  on in every Codex session it starts, keeps Codex's memory folder and summary database with your
+  other memory, and carries your earlier Codex conversations on the project into each new session,
+  so Codex has something to learn from. `mend memory import` also brings the summaries Codex made on
+  your machine of conversations held in the repository. `mend memory show codex:MEMORY.md` shows
+  Codex's files.
+- fa75714: A Stop on Garage, the bucket `mend server setup` installs, no longer waits about 10
+  minutes for its upload links to expire before its final save seals. With a sealantd that sends the
+  bytes' SHA-256, every upload link is bound to the bytes it was minted for: Garage refuses any
+  others through it, so the link can replace nothing, and the seal stands once the save is read
+  back. An executor whose sealantd predates this, a Stop that uploaded an object of 16 MB or more,
+  and the first 20 minutes after Mend starts still wait.
+- e720140: One model picker, the same on every client, and the server owns the list. The models each
+  harness offers now live in a table on the server, seeded with what Claude and Codex take today and
+  editable in place, and `GET /api/harnesses/models` hands every client the same list with the
+  default and the efforts each model takes. The phone's session composer picks from it with the
+  default preselected, as the web and desktop composers and the VS Code picks do; `mend models`
+  prints it, and `--effort` takes `ultra` where the model does. A launch that names no model runs
+  the harness's default from that list, and every session records the model and effort it was
+  started with: the session page, the phone's session header, the desktop's tab bar and
+  `mend sessions` show them.
+- 4f26ac6: pi and opencode run as Mend sessions beside Claude Code and Codex: `mend pi`,
+  `mend opencode`, and the web, desktop and VS Code launchers. Both run in the unified image
+  (Sealant 0.39 bakes them in) without permission prompts: opencode through its own permission
+  setting at launch, never by writing your opencode config; pi asks none, and Mend answers its
+  project-trust question with `--approve`. pi takes a model, a thinking level and an opening prompt,
+  keeps its home (`~/.pi`: settings, sessions, extensions and packages) with the session, resumes
+  with `--session`, and gets Mend's workspace note and skills in its own folder. opencode opens its
+  TUI on the prompt, keeps its data directory with the session, and reads Mend's note and skills
+  from Claude Code's. Neither tool's login file is ever kept with the session.
+- 36e7fd3: `mend connect pi` sends your pi setup to Mend, and every pi session you start receives
+  it: your extensions, themes, prompt templates, settings, `mcp.json` and keybindings. A setup Home
+  Manager links in is read through its links, and a package named by local path is copied in. Before
+  pi starts, the session installs what your extensions import and the packages your settings
+  declare. A package that fails to install, such as one that needs a compiler the image lacks, is
+  left out of that session and the terminal says why, instead of stopping pi. Settings changed
+  inside a session keep their values. `--dry-run` shows what would be sent and what stays on your
+  machine: your login, sessions and installed packages never leave it.
+- 00504e1: Any project of the store can be added to a running session from inside its workspace:
+  `mend repo add <project>` puts a worktree of that project at `/workspace/repos/<name>`, on a
+  branch of its own for the session, and `mend repo list` and `mend repo projects` show what is
+  there and what can be added. Each repository is a worktree of its project, so it keeps its own
+  change. On a capture-mode server the files are saved with the main repository's captures and come
+  back on a resume; the session page lists each repository with its state and how it is saved. The
+  review of a repository's own change follows once the capture daemon carries repository roots
+  (docs/adr/0011-repositories-in-a-session.md).
+- d58ace9: Secret files: a file you keep in Mend, encrypted at rest, written into every session you
+  own before its agent starts, such as `~/.aws/credentials`, a kubeconfig or an `.npmrc` token file.
+  `mend secrets add <path> --from <file>` keeps one (or reads stdin), `mend secrets` lists them by
+  path and size, `mend secrets rm <path>` removes one; the web app's settings page has the same list
+  with add and remove, and the phone shows it. They are yours alone, the content never comes back
+  out of the server, and a secret file is never captured: it goes into the workspace's own home
+  directory, a path under a captured directory such as `.claude` is refused, and the workspace
+  refuses to write through a symlink.
+- 2dda87f: The packaged server knows its edge and its posture. `mend server setup --edge <host>`
+  runs the Caddy TLS edge in front of Mend: the repository's `compose.edge.yaml` and `Caddyfile` are
+  written into the install's generation beside `compose.yaml`, `MEND_EDGE_HOST` goes into
+  `server.env`, the browser origin becomes `https://<host>` and Mend's own port stays on loopback.
+  `--exposure` and `--tenancy` declare the posture the same way, and with `multi` or `public` the
+  multi mode gate's settings follow (`MEND_SOURCE_POLICY=tenant`, `MEND_CAPTURE_REQUIRE_SIZES=true`,
+  and for `public` `MEND_URL_BEARERS=refuse`) through a `compose.posture.yaml` that reads every
+  value from `server.env`. Every `start`, `restart` and `upgrade` runs the generation's overlays
+  with its `compose.yaml`, so an upgrade never drops the edge or the posture; `--no-edge` takes the
+  edge away. `mend server status` reports the edge host, whether its container runs and whether
+  Caddy's data holds a certificate, the exposure and tenancy declared beside what the running server
+  observes, and, when this machine is signed in as the operator, every item of both gates.
+
+### Patch Changes
+
+- a1dbe42: A pack index that lands in the bucket while a request for its upload link is under way is
+  answered as already uploaded, and gets no link bound to other bytes: a seal over it can never be
+  replaced.
+- 6c83bf1: On Garage, a Stop no longer waits 10 minutes after uploading large files: an object up to
+  256 MB goes up as one upload bound to its bytes instead of in parts, so nothing holds the save
+  open.
+- 42e1426: Reading an agent's memory and transcript back from a save fetches each pack once. A Codex
+  memory read-back of 33 small files fetched the same 64 MB pack 33 times, 28 s of a Stop on the
+  box.
+- 3e79bd5: The model lists are current. Claude is offered by family alias (`fable`, `opus`,
+  `sonnet`, `haiku`), which Claude Code resolves to the latest model of each family, so the list no
+  longer goes stale; a Claude session with no model chosen now runs the latest Fable instead of
+  Fable 5. Codex lists what `codex debug models` offers today, GPT-6.1 Sol first, and gains its
+  `ultra` effort. Every picker offers only the efforts the chosen model takes, and a launch turns an
+  effort the model cannot take into the highest it can. A saved model that is no longer listed reads
+  as the default.
+- fdf9e20: The dashboard says what each session is doing:
+  - A starting session names its launch phase, such as `booting`, `preparing the workspace` or
+    `waiting for the previous save`, instead of a bare age.
+  - A live session reads `up 4m` from its agent's own start, and a settled one `ended 5m ago`.
+  - A worktree reads `starting` or `stopping` where it read `running` or `settled`.
+  - A save with nothing queued reads `saving · no uploads pending`, not `saving · 0 B left`.
+  - A stopping session with no save to report reads `workspace end not confirmed`. It is never
+    hidden, and ⇧K no longer offers to stop Services it does not have.
+  - Footer messages use `·` between facts, not em dashes.
+
+- e32509e: Picking a session up on the phone, or taking it back in a terminal, starts the other mode
+  in the workspace the session already runs in. It used to save and stop that workspace, then boot a
+  new one and restore the save: 2 minutes 14 seconds for a pickup on a self-hosted box.
+- 867466a: On a Docker host that refuses unprivileged user namespaces (Ubuntu 23.10 and later, by
+  default), no session can start. `mend server setup` now says so as its last line and `mend doctor`
+  reports it on a `workspaces` line, each with the command that allows them.
+- b70e131: The phone's "Stop session" asks before it stops anything, and lives in the session
+  header's "more" menu instead of beside the Shell button: one bump on it ended a session while its
+  owner was using the shell.
+- 6f403f5: pi and opencode run on your ChatGPT subscription through the Codex login you connected.
+  At each launch Mend writes that login into the tool's own `auth.json` (pi's `openai-codex`,
+  opencode's `openai`), as a copy that cannot refresh; a login made inside the session is never
+  replaced, and pi defaults to it only when you chose no provider.
+- 651ceb8: A worktree whose change was never landed can now be removed from the web app and the CLI,
+  in two steps. The web app's worktree menu shows the store's refusal in its own words, with the
+  files and line counts not on origin, and offers "Remove anyway", which is the same removal with
+  `force=true`. Clear settled says how many worktrees it kept for that reason.
+  `mend worktrees rm <name>` removes a worktree from a terminal, prints a refusal as the server said
+  it, and `--force` removes it anyway. A worktree whose workspace is still saving is refused either
+  way.
+- efcba11: A Stop whose session committed a large file no longer verifies the git pack twice. The
+  register copies it down and verifies it once; the seal compares the stored index with the one
+  verified and reads the pack again only if that changed. A 627 MB pack cost 7.9 s less on the box.
+- a1fa541: A Stop on a self-hosted (Garage) bucket no longer waits on Mend:
+  - A restart of Mend holds no Stop. Before, every Stop in the 20 minutes after a start waited them
+    out. The first start after this upgrade still does, once.
+  - After a restart Mend still knows what a running session's executor can do. Before, it fell back
+    to plain upload links for it, and that session's Stop waited 10.5 minutes.
+  - Mend reads a save back once. Before, it read every pack to check it and then read every pack
+    again to accept the seal.
+  - Packs are checked on worker threads, up to eight at a time, starting when they arrive instead of
+    when the session stops.
+  - One upload bound to its bytes now carries an object up to 5 GB.
+
+- 63e5d8b: A Stop asks its executor for one final save instead of three small ones first. The stop's
+  checkpoint and the agent's harvest read that save. On the box this was 8.6 s of a 25 s Stop, and
+  `mend stop` answered only after the first of those saves.
+- d24f789: `mend stop <id>`, `mend rejoin <id>` and `mend service logs <name>` take the id or name
+  they are given. Without `--project`, `--harness` or `--from` on the line they skipped it, so
+  `mend stop <id>` answered "several live sessions".
+
 ## 0.35.1
 
 ### Patch Changes
