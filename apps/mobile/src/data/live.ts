@@ -6,7 +6,6 @@
  */
 import {
   captureStatusLine,
-  emptyHarnessModelCatalog,
   type EffortLevel,
   type HarnessModelCatalogView,
 } from "@mend/domain/workbench";
@@ -551,21 +550,18 @@ export type HarnessModelCatalogDto = HarnessModelCatalogView;
 
 /**
  * Every harness's models, from the server: the one list the phone's picker draws. Nothing on the
- * phone names a model of its own.
+ * phone names a model of its own. Keyed by the server, so a phone that pairs with another machine
+ * never offers the first machine's list or sends its default.
  */
-export const useHarnessModels = () =>
-  useQuery({
-    queryKey: ["harness-models"],
+export const useHarnessModels = () => {
+  const config = useConfig();
+  return useQuery({
+    queryKey: ["harness-models", config?.url ?? ""],
+    enabled: config !== null && config.url !== "",
     queryFn: () => api<ReadonlyArray<HarnessModelCatalogDto>>("GET", "/harnesses/models"),
     staleTime: 60_000,
   });
-
-/** One harness's catalog out of the list; empty while it loads or when the server lists none. */
-export const catalogOf = (
-  catalogs: ReadonlyArray<HarnessModelCatalogDto> | undefined,
-  harness: string,
-): HarnessModelCatalogDto =>
-  catalogs?.find((catalog) => catalog.harness === harness) ?? emptyHarnessModelCatalog(harness);
+};
 
 export const useProjectBranches = (projectId: string | null, enabled: boolean) =>
   useQuery({

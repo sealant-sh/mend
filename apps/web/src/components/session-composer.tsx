@@ -1,4 +1,4 @@
-import { modelPicker, pickerLaunchFields, type PermissionMode } from "@mend/domain/workbench";
+import { modelPickerFor, pickerLaunchFields, type PermissionMode } from "@mend/domain/workbench";
 import { cn } from "@mend/ui/lib/utils";
 import { EffortMenu, MenuRadioGroup, ModelMenu } from "@mend/ui/model-picker";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,7 +17,7 @@ import {
   stickyHarnessPrefs,
   useComposerPrefs,
 } from "#/lib/composer-prefs";
-import { catalogFor, useHarnessCatalogs } from "#/lib/harness-models";
+import { useHarnessCatalogs } from "#/lib/harness-models";
 import { autoLandItems } from "#/lib/landing";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
 import { useTRPC } from "#/lib/trpc";
@@ -73,7 +73,7 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   const harnessPrefs = stickyHarnessPrefs(prefs, projectId, harness);
   // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default
   // preselected. What it says is what the launch sends and what the session records.
-  const picker = modelPicker(catalogFor(catalogs, harness), harnessPrefs);
+  const picker = modelPickerFor(catalogs, harness, harnessPrefs);
 
   const openMenu = (kind: MenuKind) => (event: React.MouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();

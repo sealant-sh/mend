@@ -5,7 +5,7 @@
 // harness, and what it shows is what the launch sends and the session records.
 // Choices persist per harness on device.
 
-import { modelPicker, type HarnessModelCatalogView } from "@mend/domain/workbench";
+import { modelPickerFor, type HarnessModelCatalogView } from "@mend/domain/workbench";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
 import { Pressable, TextInput, View } from "react-native";
@@ -14,7 +14,7 @@ import { EvButton } from "@/components/button";
 import { PanelRow } from "@/components/panel";
 import { MonoText, UiText } from "@/components/typography";
 import { setLaunchOptions, useLaunchOptions, type LaunchOptions } from "@/data/harness-options";
-import { catalogOf, PROTOCOL_HARNESSES, useHarnessModels, useProjectBranches } from "@/data/live";
+import { PROTOCOL_HARNESSES, useHarnessModels, useProjectBranches } from "@/data/live";
 import { fontFamilies, radius, useEvidenceTheme } from "@/theme/evidence";
 
 function Chip({
@@ -76,26 +76,26 @@ function OptionGroup({
 
 /** The row's one-line summary: the model the launch will run, then the effort and speed chosen. */
 const summaryOf = (
-  picker: ReturnType<typeof modelPicker>,
-  catalog: HarnessModelCatalogView,
+  picker: ReturnType<typeof modelPickerFor>,
   speed: LaunchOptions["speed"],
 ): string => {
-  const parts = [picker.hasModels ? picker.modelLabel : "harness default"];
+  const parts = [picker.hasModels || picker.model !== null ? picker.modelLabel : "harness default"];
   if (picker.effort !== null) parts.push(picker.effort);
-  if (catalog.fastCapable && speed === "fast") parts.push("fast");
+  if (picker.fastCapable && speed === "fast") parts.push("fast");
   return parts.join(" · ");
 };
 
 function HarnessRow({
   harness,
-  catalog,
+  catalogs,
   first,
   pending,
   projectId,
   onStart,
 }: {
   readonly harness: string;
-  readonly catalog: HarnessModelCatalogView;
+  /** The server's answer; undefined until it arrives. */
+  readonly catalogs: ReadonlyArray<HarnessModelCatalogView> | undefined;
   readonly first: boolean;
   readonly pending: boolean;
   readonly projectId: string;
@@ -105,7 +105,8 @@ function HarnessRow({
   const options = useLaunchOptions(harness);
   // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default
   // preselected. Built once in the domain; the phone only draws chips from it.
-  const picker = modelPicker(catalog, options);
+  // While the catalog loads it passes the sticky choice through; nothing chosen is dropped.
+  const picker = modelPickerFor(catalogs, harness, options);
   const [open, setOpen] = useState(false);
   // Per-launch, not persisted: "which branch" is a decision about THIS session.
   const [base, setBase] = useState<string | null>(null);
@@ -117,7 +118,7 @@ function HarnessRow({
   const launchOptions: LaunchOptions = {
     model: picker.model,
     effort: picker.effort,
-    speed: catalog.fastCapable ? options.speed : null,
+    speed: picker.fastCapable ? options.speed : null,
   };
 
   return (
@@ -134,7 +135,7 @@ function HarnessRow({
                 {harness}
               </UiText>
               <MonoText tone="faint" size={10.5}>
-                {summaryOf(picker, catalog, options.speed)}
+                {summaryOf(picker, options.speed)}
               </MonoText>
             </View>
           </Pressable>
@@ -189,7 +190,7 @@ function HarnessRow({
                   ))}
               </OptionGroup>
             )}
-            {catalog.fastCapable && (
+            {picker.fastCapable && (
               <OptionGroup label="priority">
                 <Chip
                   label="standard"
@@ -258,7 +259,7 @@ export function StartSessionRows({
         <HarnessRow
           key={harness}
           harness={harness}
-          catalog={catalogOf(catalogs.data, harness)}
+          catalogs={catalogs.data}
           first={false}
           pending={pending}
           projectId={projectId}

@@ -7,6 +7,7 @@ import {
   HarnessModel,
   harnessModelCatalog,
   modelPicker,
+  modelPickerFor,
   pickerLaunchFields,
   resolveLaunchOptions,
   sessionModelLine,
@@ -145,6 +146,38 @@ describe("modelPicker", () => {
     expect(picker.modelLabel).toBe("model");
     expect(picker.efforts).toEqual([{ effort: null, label: "default", selected: true }]);
     expect(pickerLaunchFields(picker)).toEqual({});
+  });
+});
+
+describe("modelPickerFor", () => {
+  it("passes the sticky choice through while the server has not answered", () => {
+    const picker = modelPickerFor(undefined, "codex", { model: "gpt-5.5", effort: "high" });
+    expect(picker.hasModels).toBe(false);
+    expect(picker.models).toEqual([]);
+    expect(picker.model).toBe("gpt-5.5");
+    expect(picker.effort).toBe("high");
+    expect(picker.modelLabel).toBe("gpt-5.5");
+    expect(picker.fastCapable).toBe(true);
+    // The harness's own scale, since no model row can narrow it yet.
+    expect(picker.efforts.map((row) => row.effort).at(-1)).toBe("ultra");
+    expect(pickerLaunchFields(picker)).toEqual({ model: "gpt-5.5", effort: "high" });
+  });
+
+  it("sends nothing while loading when nothing was chosen, so the server applies its default", () => {
+    const picker = modelPickerFor(undefined, "claude", { model: null, effort: null });
+    expect(pickerLaunchFields(picker)).toEqual({});
+    expect(picker.modelLabel).toBe("model");
+  });
+
+  it("picks the harness's catalog out of the server's list once it has answered", () => {
+    const catalogs = [seeded("claude"), seeded("codex")];
+    expect(modelPickerFor(catalogs, "codex", { model: null, effort: null }).model).toBe(
+      "gpt-6.1-sol",
+    );
+    const unlisted = modelPickerFor(catalogs, "opencode", { model: "x", effort: "high" });
+    expect(unlisted.hasModels).toBe(false);
+    expect(unlisted.model).toBeNull();
+    expect(unlisted.effort).toBeNull();
   });
 });
 

@@ -3253,6 +3253,10 @@ describe("SessionEngine", () => {
           expect(attached[0]?.process.kind).toBe("agent-protocol");
           expect(attached[0]?.process.argv).toEqual(["codex", "app-server"]);
           expect(submitted).toEqual(["inspect replay"]);
+          // The session records the model and effort the admitted launch runs on
+          // (docs/models-audit.md).
+          expect(world.sessions.get(session.id)?.model).toBe("gpt-test");
+          expect(world.sessions.get(session.id)?.effort).toBe("high");
 
           const duplicate = yield* engine
             .launchProtocol(session.id, { mode: "protocol", permissionMode: "bypass" }, null)

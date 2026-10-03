@@ -198,6 +198,50 @@ export const modelPicker = (
   };
 };
 
+/**
+ * The picker before the catalog has answered, or when the server has none to give (an older
+ * server, a request that failed): nothing to list, the sticky choice passes through as it is, and
+ * the server resolves the default and the clamp. Nothing a person chose is dropped while a request
+ * is in flight.
+ */
+export const pendingModelPicker = (harness: string, choice: ModelPickerChoice): ModelPicker => {
+  const catalog = emptyHarnessModelCatalog(harness);
+  const effort = clampEffort(catalog, null, choice.effort);
+  return {
+    model: choice.model,
+    effort,
+    modelLabel: choice.model ?? "model",
+    models: [],
+    efforts: [
+      { effort: null, label: "default", selected: effort === null },
+      ...catalog.efforts.map((level) => ({
+        effort: level,
+        label: level,
+        selected: effort === level,
+      })),
+    ],
+    hasModels: false,
+    fastCapable: catalog.fastCapable,
+  };
+};
+
+/**
+ * The picker for one harness out of the server's answer: `undefined` is an answer not yet in
+ * (`pendingModelPicker`), a list without the harness is a harness nobody listed models for.
+ */
+export const modelPickerFor = (
+  catalogs: ReadonlyArray<HarnessModelCatalogView> | undefined,
+  harness: string,
+  choice: ModelPickerChoice,
+): ModelPicker =>
+  catalogs === undefined
+    ? pendingModelPicker(harness, choice)
+    : modelPicker(
+        catalogs.find((catalog) => catalog.harness === harness) ??
+          emptyHarnessModelCatalog(harness),
+        choice,
+      );
+
 /** The model and effort fields a launch request carries for this picker state; absent means unset. */
 export const pickerLaunchFields = (
   picker: Pick<ModelPicker, "model" | "effort">,

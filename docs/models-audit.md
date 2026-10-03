@@ -76,18 +76,28 @@ phone names a model.
    `HARNESS_MODELS` and `effortsFor` exports are gone, so a client that still hardcoded a list fails
    to compile.
 3. **A launch resolves the model on the server and records it.** `apps/api/src/session-start.ts`
-   reads the harness's catalog, applies the default when the request named no model, clamps the
-   effort to what that model takes, writes both to the session (`agent_sessions.model`,
-   `agent_sessions.effort`), and only then composes the argv. The same resolution runs for a mode
-   handoff. The composed argv therefore always names the model for a harness that has a catalog, and
-   `Session.model` says which. A harness without a catalog (opencode, a custom command, a shell)
-   records `null`: the harness's own choice.
+   reads the harness's catalog and resolves the request's model, else the one the session was
+   started with (a Slack follow-up that relaunches a settled session names none), else the default,
+   with the effort clamped to what that model takes; then it composes the argv. The record
+   (`agent_sessions.model`, `agent_sessions.effort`) is written once the launch is admitted, never
+   for one the account's launch slot refuses: a PTY launch writes it in `session-start.ts` right
+   before the engine starts, a protocol launch inside `SessionEngine.launchProtocol` after its own
+   live-agent check, so every protocol path (a handoff to a conversation, a crash relaunch, Slack)
+   records the same way. The composed argv always names the model for a harness that has a catalog,
+   and `Session.model` says which. A harness without a catalog (opencode, a custom command, a shell)
+   records `null`: the harness's own choice. A verbatim `argv` (`mend run -- …`) names its own
+   command and records nothing; the CLI and the dashboard send a structured start for every harness,
+   bare or not.
 4. **Effort stays optional.** `null` means the harness's own default and is reported as such. The
    catalog carries which efforts a model takes, not a default effort: the harnesses pick their own
    default and Mend does not second-guess it.
 5. **A resume keeps the recorded model.** A native resume passes no model flag by design, so the
    harness continues the conversation on its own model, which is the one recorded at start. The
-   session's `model` is not rewritten on resume.
+   session's `model` is not rewritten on resume, and a handoff to a terminal (a native resume) takes
+   no model override. A resume on another harness clears the record: the converted launch names no
+   model, so the row says `null` rather than the old harness's id. A follow-up delivered to a
+   stopped PTY session opens the harness with the recorded model and effort (`promptArgv`), so the
+   next process runs what the row reports.
 6. **No backfill.** Sessions from before the migration report `model: null`. Their process rows
    still hold the fact (`protocolOptions`, `argv`) for anyone who needs it.
 7. **One picker, built once.** The headless picker is in the domain
@@ -95,7 +105,11 @@ phone names a model.
    choice, it says which models to list, which is selected, which efforts the selected model takes,
    and what to put on the wire. The phone renders it as chips, the web and desktop as the shared
    radio menu in `@mend/ui/model-picker`, the CLI as `mend models` and `--model`. Every client
-   preselects the server's default and shows the model by its label with the id beside it.
+   preselects the server's default and shows the model by its label with the id beside it. Until the
+   server's list has arrived (or from a server without the route) the picker lists nothing and
+   passes the sticky choice through as it is; the server resolves the default and the clamp, and a
+   saved permission or speed is never dropped by a request in flight. The phone keys its copy of the
+   list by server, so pairing with another machine never sends the first machine's default.
 8. **Every client shows the running model** beside the harness: the web session page and lists, the
    phone's session header and rows, the desktop sidebar, `mend sessions`.
 9. **The CLI gains `mend models`** so a terminal can see the list the server offers without

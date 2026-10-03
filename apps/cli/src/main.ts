@@ -871,17 +871,16 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   if (harness === "run") {
     return supervisedRun(config, session, argv);
   }
-  // A structured start sends no argv: the server composes the harness flags
-  // (one shared mapping) and names the session from the prompt immediately.
-  const launchBody = structured
-    ? {
-        ...(parsed.prompt === null ? {} : { prompt: parsed.prompt }),
-        ...(parsed.model === null ? {} : { model: parsed.model }),
-        ...(parsed.effort === null ? {} : { effort: parsed.effort }),
-        ...(parsed.ask ? { permissionMode: "ask" } : {}),
-        ...(parsed.fast ? { speed: "fast" } : {}),
-      }
-    : { argv };
+  // A harness start sends no argv, flags or not: the server composes the harness's own flags
+  // (one shared mapping), applies its default model when none is named and records what runs
+  // (docs/models-audit.md), and names the session from the prompt immediately.
+  const launchBody = {
+    ...(parsed.prompt === null ? {} : { prompt: parsed.prompt }),
+    ...(parsed.model === null ? {} : { model: parsed.model }),
+    ...(parsed.effort === null ? {} : { effort: parsed.effort }),
+    ...(parsed.ask ? { permissionMode: "ask" } : {}),
+    ...(parsed.fast ? { speed: "fast" } : {}),
+  };
   await startAndFollow(
     config,
     session.id,

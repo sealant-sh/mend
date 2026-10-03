@@ -1,9 +1,4 @@
-import {
-  emptyHarnessModelCatalog,
-  modelPicker,
-  pickerLaunchFields,
-  type PermissionMode,
-} from "@mend/domain/workbench";
+import { modelPickerFor, pickerLaunchFields, type PermissionMode } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { EffortMenu, MenuRadioGroup, ModelMenu } from "@mend/ui/model-picker";
 import { useQuery } from "@tanstack/react-query";
@@ -133,14 +128,9 @@ export function SessionComposer({
   const harness = effectiveHarness(prefs, project.id, defaultHarness);
   const harnessPrefs = stickyHarnessPrefs(prefs, project.id, harness);
   // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default
-  // preselected. What it says is what the launch sends and what the session records.
-  const picker = modelPicker(
-    (catalogs.data ?? []).find((catalog) => catalog.harness === harness) ??
-      emptyHarnessModelCatalog(harness),
-    harnessPrefs,
-  );
-  /** Harnesses the server lists models for take model/thinking/permission flags; the rest only a prompt. */
-  const tunable = picker.hasModels;
+  // preselected. What it says is what the launch sends and what the session records. While the
+  // catalog loads it passes the sticky choice through; nothing chosen is dropped.
+  const picker = modelPickerFor(catalogs.data, harness, harnessPrefs);
   /** claude and codex also run as a conversation (protocol mode) instead of a terminal. */
   const conversable = CONVERSATION_HARNESSES.has(harness);
   const runsAs = conversable ? harnessPrefs.mode : null;
@@ -226,11 +216,9 @@ export function SessionComposer({
       harness,
       {
         ...(body === "" ? {} : { prompt: body }),
-        ...(tunable ? pickerLaunchFields(picker) : {}),
-        ...(tunable && harnessPrefs.permission !== null
-          ? { permissionMode: harnessPrefs.permission }
-          : {}),
-        ...(tunable && harnessPrefs.speed !== null ? { speed: harnessPrefs.speed } : {}),
+        ...pickerLaunchFields(picker),
+        ...(harnessPrefs.permission !== null ? { permissionMode: harnessPrefs.permission } : {}),
+        ...(picker.fastCapable && harnessPrefs.speed !== null ? { speed: harnessPrefs.speed } : {}),
       },
       runsAs,
     );
@@ -241,9 +229,9 @@ export function SessionComposer({
 
   const settingsSummary = [
     runsAs === "protocol" ? "conversation" : null,
-    tunable ? picker.effort : null,
-    tunable && harnessPrefs.speed === "fast" ? "fast" : null,
-    tunable && harnessPrefs.permission === "ask" ? "ask" : null,
+    picker.effort,
+    picker.fastCapable && harnessPrefs.speed === "fast" ? "fast" : null,
+    harnessPrefs.permission === "ask" ? "ask" : null,
     runsAs === "protocol" ? (landing?.summary ?? null) : null,
     base.trim() === "" ? null : base.trim(),
   ].filter((part): part is string => part !== null);
@@ -304,7 +292,7 @@ export function SessionComposer({
           >
             <span className="font-mono text-[12px]">{harness}</span>
           </ComposerPill>
-          {tunable && (
+          {picker.hasModels && (
             <ComposerPill
               disabled={busy !== null}
               onClick={openMenu("model")}
@@ -405,13 +393,13 @@ export function SessionComposer({
                   ]}
                 />
               )}
-              {tunable && (
+              {picker.efforts.length > 1 && (
                 <EffortMenu
                   efforts={picker.efforts}
                   onPick={(effort) => setComposerHarnessPrefs(project.id, harness, { effort })}
                 />
               )}
-              {tunable && picker.fastCapable && (
+              {picker.fastCapable && (
                 <MenuRadioGroup
                   label="Speed"
                   items={[
@@ -437,25 +425,23 @@ export function SessionComposer({
                   ]}
                 />
               )}
-              {tunable && (
-                <MenuRadioGroup
-                  label="Permissions"
-                  items={(
-                    [
-                      ["bypass", "Skip permission prompts"],
-                      ["ask", "Ask before acting"],
-                    ] as ReadonlyArray<readonly [PermissionMode, string]>
-                  ).map(([mode, label]) => ({
-                    key: mode,
-                    label,
-                    selected: (harnessPrefs.permission ?? "bypass") === mode,
-                    onSelect: () =>
-                      setComposerHarnessPrefs(project.id, harness, {
-                        permission: mode === "bypass" ? null : mode,
-                      }),
-                  }))}
-                />
-              )}
+              <MenuRadioGroup
+                label="Permissions"
+                items={(
+                  [
+                    ["bypass", "Skip permission prompts"],
+                    ["ask", "Ask before acting"],
+                  ] as ReadonlyArray<readonly [PermissionMode, string]>
+                ).map(([mode, label]) => ({
+                  key: mode,
+                  label,
+                  selected: (harnessPrefs.permission ?? "bypass") === mode,
+                  onSelect: () =>
+                    setComposerHarnessPrefs(project.id, harness, {
+                      permission: mode === "bypass" ? null : mode,
+                    }),
+                }))}
+              />
               {landing !== null &&
                 (runsAs === "protocol" ? (
                   <MenuRadioGroup
@@ -478,13 +464,7 @@ export function SessionComposer({
                     </p>
                   </div>
                 ))}
-              <div
-                className={
-                  tunable || landing !== null
-                    ? "mt-1 border-t border-rule-faint px-3.5 pb-1.5 pt-2"
-                    : "px-3.5 pb-1.5 pt-1"
-                }
-              >
+              <div className="mt-1 border-t border-rule-faint px-3.5 pb-1.5 pt-2">
                 <p className="text-xs font-medium text-label">Base</p>
                 <input
                   value={base}

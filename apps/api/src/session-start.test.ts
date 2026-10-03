@@ -57,6 +57,10 @@ const provisioned = (
   ownerUserId: string | null,
   origin: SessionOrigin = "mend",
   autoLand: boolean | null = null,
+  started: { readonly model: string | null; readonly effort: "high" | null } = {
+    model: null,
+    effort: null,
+  },
 ) =>
   new Session({
     ...makeSession(SESSION, PROJECT, WorktreeId.make("worktree-new"), ownerUserId),
@@ -64,6 +68,8 @@ const provisioned = (
     label: null,
     origin,
     autoLand,
+    model: started.model,
+    effort: started.effort,
   });
 
 const earlierTurn = new AgentTurn({
@@ -253,16 +259,19 @@ describe("SessionStart.startAs", () => {
       "sessions.listUnsettledForOwner:alice",
       `sessions.countUnsettledForOrganization:${ACME}`,
       `engine.provision:${PROJECT}:alice:slack`,
-      // The model the session runs on is the harness's default, recorded before anything starts.
+      // The model the session runs on is the harness's default; the engine records it once the
+      // protocol launch is admitted.
       "harnessModels.forHarness:claude",
-      `sessions.setLaunchOptions:${SESSION}:fable:null`,
       // A composed start knows its first prompt: the namer is queued before the launch.
       "jobs.enqueue:name-session:0",
       `engine.launchProtocol:${SESSION}:alice:fable:-: fix the flaky test `,
     ]);
+    expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
+      false,
+    );
   });
 
-  it("records the model a launch names and clamps its effort to what that model takes", async () => {
+  it("passes the model a launch names, with its effort clamped to what that model takes", async () => {
     const world = startWorld();
     const result = await startAs(
       world,
@@ -271,17 +280,63 @@ describe("SessionStart.startAs", () => {
     );
 
     expect(result._tag).toBe("Success");
-    expect(world.effects).toContain(`sessions.setLaunchOptions:${SESSION}:sonnet:max`);
     expect(launched(world)).toEqual([`engine.launchProtocol:${SESSION}:alice:sonnet:max:hello`]);
   });
 
-  it("composes the default model into a PTY launch's argv, and records it", async () => {
+  it("relaunches a session on the model it was started with when the request names none", async () => {
+    // A Slack follow-up on a settled session sends only the prompt (slack-runner.ts).
+    const world = startWorld();
+    const session = provisioned("alice", "mend", null, { model: "sonnet", effort: "high" });
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        return yield* start.launchAs(
+          "alice",
+          session,
+          new LaunchRequest({ mode: "protocol", prompt: "and the other test" }),
+        );
+      }).pipe(Effect.provide(world.layer), Effect.result),
+    );
+
+    expect(result._tag).toBe("Success");
+    expect(launched(world)).toEqual([
+      `engine.launchProtocol:${SESSION}:alice:sonnet:high:and the other test`,
+    ]);
+  });
+
+  it("composes the default model into a PTY launch's argv, and records it once admitted", async () => {
     const world = startWorld();
     const result = await startAs(world, "alice", request({ effort: "high" }));
 
     expect(result._tag).toBe("Success");
-    expect(world.effects).toContain(`sessions.setLaunchOptions:${SESSION}:fable:high`);
-    expect(world.effects).toContain(`engine.launch:${SESSION}:claude --model fable --effort high`);
+    const recorded = world.effects.indexOf(`sessions.setLaunchOptions:${SESSION}:fable:high`);
+    const launchedAt = world.effects.indexOf(
+      `engine.launch:${SESSION}:claude --model fable --effort high`,
+    );
+    expect(recorded).toBeGreaterThan(-1);
+    expect(launchedAt).toBe(recorded + 1);
+  });
+
+  it("records nothing when the account's launch slots refuse the launch", async () => {
+    const gate = Effect.runSync(Deferred.make<void>());
+    const world = startWorld({ limits: { accountLaunchesInFlight: 1 }, launchGate: gate });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        const first = yield* Effect.forkChild(
+          start.startAs("alice", request({ mode: "protocol", prompt: "first" })),
+        );
+        while (!world.effects.some((entry) => entry.includes(":first"))) {
+          yield* Effect.yieldNow;
+        }
+        yield* start.startAs("alice", request({ effort: "high" })).pipe(Effect.result);
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(first);
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
+      false,
+    );
   });
 
   it("records nothing for a verbatim argv: the command names its own model", async () => {

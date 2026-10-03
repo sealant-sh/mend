@@ -277,10 +277,11 @@ export function TerminalPane({
               pulse={session.status === "running"}
             />
             <span className="truncate font-mono text-[12px] text-label">{session.branch}</span>
-            {session.model !== null && (
+            {(session.model ?? null) !== null && (
+              // Nullish, not null: an older server's answer omits both fields.
               <span className="truncate font-mono text-[11.5px] text-faint">
                 {session.model}
-                {session.effort === null ? "" : ` · ${session.effort}`}
+                {(session.effort ?? null) === null ? "" : ` · ${session.effort}`}
               </span>
             )}
             {servicesHold !== null && (

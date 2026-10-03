@@ -213,13 +213,16 @@ export const makeSessionStart = Effect.gen(function* () {
         message: "Protocol launches use the supported harness adapter and cannot take argv.",
       });
     }
-    // The model and effort the session runs on, resolved here and recorded before anything
-    // starts (docs/models-audit.md): the request's model, else the harness's catalog default; the
-    // effort clamped to what that model takes. A verbatim argv is the person's own command and
-    // names its own model, so nothing is resolved or recorded for it.
+    // The model and effort the session runs on (docs/models-audit.md): the request's, else what
+    // the session was started with (a Slack follow-up relaunching a settled session names none),
+    // else the harness's catalog default; the effort clamped to what that model takes. A verbatim
+    // argv is the person's own command and names its own model, so nothing is resolved for it.
     const resolved =
       request.argv === undefined
-        ? resolveLaunchOptions(yield* harnessModels.forHarness(session.harness), request)
+        ? resolveLaunchOptions(yield* harnessModels.forHarness(session.harness), {
+            model: request.model ?? session.model,
+            effort: request.effort ?? session.effort,
+          })
         : null;
     const input: LaunchRequest =
       resolved === null
@@ -229,7 +232,6 @@ export const makeSessionStart = Effect.gen(function* () {
             ...(resolved.model === null ? { model: undefined } : { model: resolved.model }),
             ...(resolved.effort === null ? { effort: undefined } : { effort: resolved.effort }),
           });
-    if (resolved !== null) yield* sessions.setLaunchOptions(session.id, resolved);
     // Verbatim argv wins only for PTY mode. Protocol flags and turn settings are split by the
     // server because model and effort ride on provider turns, not the long-lived process argv.
     const argv = input.argv ?? composeLaunchArgv(session.harness, input);
@@ -281,6 +283,8 @@ export const makeSessionStart = Effect.gen(function* () {
     // take minutes — enqueue before the launch so the label lands while
     // the workspace still provisions.
     if (inlineNamePrompt !== null) yield* queueAutoName;
+    // Recorded once the launch is admitted, never for one the slot refuses. A protocol launch
+    // records inside the engine, after its own live-agent check; a PTY launch here.
     const launch =
       input.mode === "protocol"
         ? engine.launchProtocol(
@@ -288,7 +292,9 @@ export const makeSessionStart = Effect.gen(function* () {
             guarded ? { ...input, prompt: withLandingGuard(prompt) } : input,
             userId,
           )
-        : engine.launch(session.id, argv);
+        : (resolved === null ? Effect.void : sessions.setLaunchOptions(session.id, resolved)).pipe(
+            Effect.andThen(engine.launch(session.id, argv)),
+          );
     // A launch holds a platform workspace build for minutes. One account starts a bounded
     // number at once; a launch already under way is never touched. The slot is held for the
     // launch's whole course, in the background too: it is taken and given back inside the
