@@ -71,6 +71,7 @@ export default function NowScreen() {
     dto: session,
     view: toSession(session, project.name),
     detail: annotationDetail(annotation, session.summary),
+    pullRequest: annotation?.pullRequest ?? null,
   }));
 
   const settled = rows.filter(({ dto }) => !ACTIVE.has(dto.status));
@@ -188,11 +189,12 @@ export default function NowScreen() {
                 ) : undefined
               }
             />
-            {items.map(({ dto, view, detail }) => (
+            {items.map(({ dto, view, detail, pullRequest }) => (
               <SessionRow
                 key={view.id}
                 session={view}
                 detail={detail}
+                pullRequest={pullRequest}
                 selected={view.id === selectedId}
                 onPress={() => openSession(view.id)}
                 onRename={() => setRenaming({ sessionId: dto.id, label: dto.label })}

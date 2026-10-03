@@ -4,7 +4,13 @@
 // typecheck` instead: each contract's wire shape must fit the DTO the phone
 // reads it as. routes.test.ts pins the paths; this pins the payloads.
 
-import type { OpenReviewResult, ReviewDiffView, SessionDetail } from "@mend/api-contracts";
+import type {
+  ChangeLandingsView,
+  OpenReviewResult,
+  ReviewDiffView,
+  SessionAnnotation,
+  SessionDetail,
+} from "@mend/api-contracts";
 import type {
   HarnessModelCatalog,
   NotificationSettings,
@@ -12,8 +18,9 @@ import type {
 } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
-import type { HarnessModelCatalogDto, SessionDto } from "./live";
+import type { HarnessModelCatalogDto, SessionAnnotationDto, SessionDto } from "./live";
 import type { NotificationSettingsDto } from "./notification-settings";
+import type { ChangeLandingDto, SessionLandingsDto } from "./pull-requests";
 import type { OpenReviewDto, ReviewCommentDto, ReviewDiffDto } from "./review";
 import type { CheckpointDto } from "./review-state";
 
@@ -48,6 +55,13 @@ const pins: {
     Pick<Wire<typeof SessionDetail.Encoded>["session"], "model" | "effort">,
     Pick<SessionDto, "model" | "effort">
   >;
+  /** The conversation's pull request cards, the review's line, and every list row's link. */
+  readonly sessionLandings: Fits<
+    NonNullable<Wire<typeof SessionDetail.Encoded>["landings"]>[number],
+    ChangeLandingDto
+  >;
+  readonly landingFacts: Fits<Wire<typeof ChangeLandingsView.Encoded>, SessionLandingsDto>;
+  readonly annotation: Fits<Wire<typeof SessionAnnotation.Encoded>, SessionAnnotationDto>;
 } = {
   open: true,
   diff: true,
@@ -56,6 +70,9 @@ const pins: {
   notificationSettings: true,
   harnessModels: true,
   sessionModel: true,
+  sessionLandings: true,
+  landingFacts: true,
+  annotation: true,
 };
 
 describe("review and settings payloads", () => {

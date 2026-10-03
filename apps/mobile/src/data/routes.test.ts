@@ -54,6 +54,9 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/changes/:id/reviews/:sliceId/comments"],
   ["GET", "/sessions/:id/follow-up"],
   ["POST", "/sessions/:id/follow-up/deliver"],
+  // pull-requests.ts — the change's pull request on GitHub
+  ["GET", "/sessions/:id/landings"],
+  ["POST", "/landings/:id/refresh"],
   // notification-settings.ts — what this account hears about on its phones
   ["GET", "/me/notifications"],
   ["PUT", "/me/notifications"],

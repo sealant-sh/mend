@@ -118,6 +118,7 @@ export default function ProjectsScreen() {
                 key={session.id}
                 session={toSession(session, project.name)}
                 detail={annotationDetail(annotation, session.summary)}
+                pullRequest={annotation?.pullRequest ?? null}
                 onPress={() =>
                   router.push({ pathname: "/session/[id]", params: { id: session.id } })
                 }

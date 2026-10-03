@@ -25,6 +25,7 @@ import { EvButton } from "@/components/button";
 import { BodyPanel, SliceStatus } from "@/components/change-body";
 import { BASE_LINE_H, CodeChunk, parseFiles, TOTAL_BUDGET, type DiffRow } from "@/components/diff";
 import { Panel, PanelRow } from "@/components/panel";
+import { ReviewPullRequest } from "@/components/pull-request-card";
 import { ResizableSplit } from "@/components/resizable-split";
 import { CommentCard } from "@/components/review-comment";
 import { ScreenHeader, SectionLabel } from "@/components/screen";
@@ -737,6 +738,7 @@ export default function ReviewScreen() {
         failure={failure}
         onRetry={retry}
       />
+      {sessionId === null ? null : <ReviewPullRequest sessionId={sessionId} />}
     </>
   );
   const actionsBlock = (
