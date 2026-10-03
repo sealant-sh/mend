@@ -277,6 +277,12 @@ export function TerminalPane({
               pulse={session.status === "running"}
             />
             <span className="truncate font-mono text-[12px] text-label">{session.branch}</span>
+            {session.model !== null && (
+              <span className="truncate font-mono text-[11.5px] text-faint">
+                {session.model}
+                {session.effort === null ? "" : ` · ${session.effort}`}
+              </span>
+            )}
             {servicesHold !== null && (
               <span className="truncate font-mono text-[11.5px] text-ink-2">{servicesHold}</span>
             )}

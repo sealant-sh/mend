@@ -38,6 +38,7 @@ export * from "./hot-workspace.ts";
 export * from "./landing.ts";
 export * from "./launch-phase.ts";
 export * from "./landing-description.ts";
+export * from "./model-catalog.ts";
 export * from "./mount.ts";
 export * from "./notifications.ts";
 export * from "./host-user-namespaces.ts";

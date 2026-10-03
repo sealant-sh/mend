@@ -14,6 +14,7 @@ import {
   type CaptureDrainReason,
   captureAnswerReplaces,
   type CapturePosition,
+  type EffortLevel,
   Session,
   SessionDotfiles,
   type NativeIngestCursor,
@@ -571,6 +572,14 @@ export class SessionsRepo extends Context.Service<
     /** Sessions whose removal waits on their workspace. */
     readonly listRemovalRequested: () => Effect.Effect<ReadonlyArray<Session>>;
     readonly setHarness: (id: SessionId, harness: string) => Effect.Effect<void>;
+    /**
+     * The model and effort a launch resolved for the session (docs/models-audit.md): written
+     * before the harness starts, so the row says what runs even while the workspace builds.
+     */
+    readonly setLaunchOptions: (
+      id: SessionId,
+      options: { readonly model: string | null; readonly effort: EffortLevel | null },
+    ) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionsRepo") {}
 
@@ -1179,6 +1188,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* db
           .update(agentSessions)
           .set({ harness, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const setLaunchOptions = Effect.fn("SessionsRepo.setLaunchOptions")(function* (
+        id: SessionId,
+        options: { readonly model: string | null; readonly effort: EffortLevel | null },
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ model: options.model, effort: options.effort, updatedAt: new Date() })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -1960,6 +1981,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         setLabelIfUnset,
         remove,
         setHarness,
+        setLaunchOptions,
         recordCaptureObservation,
         beginCaptureDrain,
         planRelaunch,

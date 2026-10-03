@@ -1977,6 +1977,7 @@ const sessionsLayer = (world: World) => {
         if (world.sessions.get(id)?.settledAt != null) update(id, { status: outcome, summary });
       }),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
+    setLaunchOptions: (id, options) => Effect.sync(() => update(id, options)),
     setLabel: (id, label) => Effect.sync(() => update(id, { label })),
     setLabelIfUnset: (id, label) =>
       Effect.sync(() => {

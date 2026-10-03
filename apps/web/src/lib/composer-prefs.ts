@@ -1,6 +1,5 @@
 import {
   EFFORT_LEVELS,
-  HARNESS_MODELS,
   PERMISSION_MODES,
   SPEED_MODES,
   type EffortLevel,
@@ -19,7 +18,12 @@ import { HARNESSES, type Harness } from "#/lib/session-launch";
  * the composer's handlers.
  */
 
-/** `effort`/`permission`/`speed` absent = harness default (no flag composed). */
+/**
+ * What the person last chose for a harness. `model` null means they chose nothing yet; the
+ * picker (`modelPicker` in `@mend/domain/workbench`) then preselects the server's default, and
+ * reads a saved id the catalog no longer lists the same way. `effort`/`permission`/`speed` null =
+ * the harness's own default (no flag composed).
+ */
 export interface HarnessPrefs {
   readonly model: string | null;
   readonly effort: EffortLevel | null;
@@ -159,29 +163,11 @@ export const useComposerPrefs = (): ComposerPrefs =>
     () => EMPTY,
   );
 
-/** The catalog default model id for a harness, when it has a catalog. */
-export const defaultModel = (harness: Harness): string | null =>
-  HARNESS_MODELS[harness]?.find((option) => option.isDefault)?.id ??
-  HARNESS_MODELS[harness]?.[0]?.id ??
-  null;
+const NOTHING_CHOSEN: HarnessPrefs = { model: null, effort: null, permission: null, speed: null };
 
-/** The effective (sticky ?? default) selections for one project + harness. */
-export const effectiveHarnessPrefs = (
+/** The sticky choices for one project + harness; every field null until something was chosen. */
+export const stickyHarnessPrefs = (
   prefs: ComposerPrefs,
   projectId: string,
   harness: Harness,
-): HarnessPrefs => {
-  const sticky = prefs.byProject[projectId]?.byHarness[harness];
-  const model = sticky?.model ?? null;
-  const catalog = HARNESS_MODELS[harness] ?? [];
-  return {
-    // A sticky id the catalog no longer lists falls back to the default.
-    model:
-      model !== null && catalog.some((option) => option.id === model)
-        ? model
-        : defaultModel(harness),
-    effort: sticky?.effort ?? null,
-    permission: sticky?.permission ?? null,
-    speed: sticky?.speed ?? null,
-  };
-};
+): HarnessPrefs => prefs.byProject[projectId]?.byHarness[harness] ?? NOTHING_CHOSEN;

@@ -35,6 +35,8 @@ export interface Session {
   /** Present once the server is worktree-aware. */
   readonly worktreeId?: string;
   readonly harness: string;
+  /** The model the session was started with (docs/models-audit.md); null when not recorded. */
+  readonly model: string | null;
   readonly label: string | null;
   readonly worktree: string;
   readonly branch: string;
@@ -68,10 +70,26 @@ export type ProjectResolution =
     }
   | { readonly status: "not-found" };
 
+/** One harness's model list, as `GET /harnesses/models` answers it (docs/models-audit.md). */
+export interface HarnessModelCatalog {
+  readonly harness: string;
+  readonly models: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly isDefault: boolean;
+    readonly efforts: ReadonlyArray<Effort> | null;
+  }>;
+  readonly defaultModel: string | null;
+  readonly efforts: ReadonlyArray<Effort>;
+  readonly fastCapable: boolean;
+}
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+
 export interface LaunchStart {
   readonly prompt?: string | undefined;
   readonly model?: string | undefined;
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | undefined;
+  readonly effort?: Effort | undefined;
   readonly permissionMode?: "ask" | undefined;
   readonly speed?: "fast" | undefined;
 }

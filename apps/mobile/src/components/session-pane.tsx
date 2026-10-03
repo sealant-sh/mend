@@ -275,7 +275,7 @@ export function SessionPane({
             <View style={{ flexDirection: "row", alignItems: "center", overflow: "hidden" }}>
               <StatusWord
                 tone={toneOf(session.status)}
-                word={`${session.harness} · ${statusLineOf(session)}`}
+                word={`${session.harness}${session.model === null || session.model === undefined ? "" : ` · ${session.model}`} · ${statusLineOf(session)}`}
                 size={10.5}
               />
               <MonoText tone="faint" size={10.5} numberOfLines={1} style={{ flexShrink: 1 }}>

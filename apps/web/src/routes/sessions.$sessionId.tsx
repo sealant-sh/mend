@@ -1,4 +1,4 @@
-import { agentStartingFacts } from "@mend/domain/workbench";
+import { agentStartingFacts, sessionModelLine } from "@mend/domain/workbench";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -197,6 +197,10 @@ function SessionPage() {
       .finally(() => setPending(null));
   };
 
+  // The model and effort the session was started with (docs/models-audit.md); null before the
+  // launch resolved them, and for sessions from before they were recorded.
+  const modelLine = sessionModelLine(null, session);
+
   return (
     <AppShell projectId={session.projectId}>
       <div className="min-w-0">
@@ -258,6 +262,7 @@ function SessionPage() {
           </div>
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
+          {modelLine === null ? "" : `${modelLine} · `}
           {session.branch} · worktree {session.worktree} · base{" "}
           {session.baseRef === null
             ? session.baseSha.slice(0, 12)

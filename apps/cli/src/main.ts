@@ -59,6 +59,7 @@ import { type Download, landCommand, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
 import { loginCommand } from "./login.ts";
+import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
 import {
   folderCommand,
   inviteCommand,
@@ -213,6 +214,12 @@ interface SessionDto extends SessionCaptureLike {
   /** Present once the server is worktree-aware. */
   readonly worktreeId?: string;
   readonly harness: string;
+  /**
+   * The model and effort the session was started with, as the server resolved them
+   * (docs/models-audit.md). Null when not recorded; absent on older servers.
+   */
+  readonly model?: string | null;
+  readonly effort?: string | null;
   readonly label: string | null;
   readonly worktree: string;
   readonly branch: string;
@@ -4206,9 +4213,25 @@ const printSessionRow = (row: SessionRow) => {
   if (annotation !== undefined && annotation.pendingFollowUp)
     facts.push(amber("follow-up pending"));
   const base = session.baseRef === null ? session.baseSha.slice(0, 12) : session.baseRef;
+  // The model the session was started with, as the server recorded it; nothing on older rows.
+  const model =
+    session.model === null || session.model === undefined
+      ? ""
+      : ` · ${session.model}${session.effort === null || session.effort === undefined ? "" : ` · ${session.effort}`}`;
   say(
-    `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(`${session.branch} · base ${base}`)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
+    `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(`${session.branch} · base ${base}${model}`)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
   );
+};
+
+/** `mend models`: what the server lists per harness, the default marked (docs/models-audit.md). */
+const modelsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const catalogs = await api<ReadonlyArray<HarnessModelCatalogDto>>(
+    config,
+    "GET",
+    "/harnesses/models",
+  );
+  if (args.includes("--json")) return say(modelCatalogJson(catalogs));
+  for (const line of modelCatalogLines(catalogs, dim)) say(line);
 };
 
 /**
@@ -4741,6 +4764,8 @@ const main = async () => {
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);
+    case "models":
+      return modelsCommand(config, rest);
     case "worktrees":
       return worktreesCommand(config, rest);
     case undefined:

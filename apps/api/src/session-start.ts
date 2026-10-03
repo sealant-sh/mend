@@ -1,11 +1,18 @@
 import { BudgetExceeded, LaunchRequest, NotFound, StoreFailure } from "@mend/api-contracts";
-import { AgentConversationRepo, ProjectsRepo, SessionsRepo, SettingsRepo } from "@mend/db";
+import {
+  AgentConversationRepo,
+  HarnessModelsRepo,
+  ProjectsRepo,
+  SessionsRepo,
+  SettingsRepo,
+} from "@mend/db";
 import type { ProjectId } from "@mend/domain";
 import {
   composeLaunchArgv,
   PROMPTABLE_HARNESSES,
   resolveAutoLand,
   resolveAutomation,
+  resolveLaunchOptions,
   withLandingGuard,
   type Session,
   type SessionOrigin,
@@ -108,6 +115,7 @@ export const makeSessionStart = Effect.gen(function* () {
   const settingsRepo = yield* SettingsRepo;
   const jobs = yield* JobRunner;
   const conversations = yield* AgentConversationRepo;
+  const harnessModels = yield* HarnessModelsRepo;
 
   /**
    * Whether the session's opening turn carries the prompt guard (docs/adr/0007-landing.md,
@@ -197,14 +205,31 @@ export const makeSessionStart = Effect.gen(function* () {
   const launchAs = Effect.fn("SessionStart.launchAs")(function* (
     userId: string,
     session: Session,
-    input: LaunchRequest,
+    request: LaunchRequest,
     answer: LaunchAnswer = {},
   ) {
-    if (input.mode === "protocol" && input.argv !== undefined) {
+    if (request.mode === "protocol" && request.argv !== undefined) {
       return yield* new StoreFailure({
         message: "Protocol launches use the supported harness adapter and cannot take argv.",
       });
     }
+    // The model and effort the session runs on, resolved here and recorded before anything
+    // starts (docs/models-audit.md): the request's model, else the harness's catalog default; the
+    // effort clamped to what that model takes. A verbatim argv is the person's own command and
+    // names its own model, so nothing is resolved or recorded for it.
+    const resolved =
+      request.argv === undefined
+        ? resolveLaunchOptions(yield* harnessModels.forHarness(session.harness), request)
+        : null;
+    const input: LaunchRequest =
+      resolved === null
+        ? request
+        : new LaunchRequest({
+            ...request,
+            ...(resolved.model === null ? { model: undefined } : { model: resolved.model }),
+            ...(resolved.effort === null ? { effort: undefined } : { effort: resolved.effort }),
+          });
+    if (resolved !== null) yield* sessions.setLaunchOptions(session.id, resolved);
     // Verbatim argv wins only for PTY mode. Protocol flags and turn settings are split by the
     // server because model and effort ride on provider turns, not the long-lived process argv.
     const argv = input.argv ?? composeLaunchArgv(session.harness, input);
@@ -346,6 +371,7 @@ export const SessionStartLive: Layer.Layer<
   never,
   | AgentConversationRepo
   | Budgets
+  | HarnessModelsRepo
   | JobRunner
   | ProjectAccess
   | ProjectsRepo

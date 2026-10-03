@@ -107,20 +107,20 @@ mend run -- <command...>
 
 Agent options:
 
-| Option                                   | Meaning                                                              |
-| ---------------------------------------- | -------------------------------------------------------------------- |
-| `--model <id>`                           | Pass a model selection to a supported harness                        |
-| `--effort low\|medium\|high\|xhigh\|max` | Pass the reasoning effort                                            |
-| `--base <ref>`                           | Create the worktree from another Git base                            |
-| `--name <worktree>`                      | Name the worktree; an existing name joins it as a new session        |
-| `--worktree <name>`                      | Join an existing worktree only; fails naming candidates when absent  |
-| `--ask`                                  | Restore the harness's permission prompts                             |
-| `--fast`                                 | Request the Codex priority service tier                              |
-| `--detach`, `-d`                         | Launch without attaching; reattach anywhere with `mend attach`       |
-| `--foreground`                           | Stop the session when this CLI exits (the detach key still detaches) |
-| `--no-tunnel`                            | Do not tunnel the session's browser Services to this machine         |
-| `--land`, `--no-land`                    | Land, or do not land, when a turn completes, for this session only   |
-| `--project <name>`                       | Select an adopted project instead of matching the current directory  |
+| Option                | Meaning                                                                                                  |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--model <id>`        | The harness's model id, one `mend models` lists. Default: the server's default for the harness           |
+| `--effort <level>`    | `low`, `medium`, `high`, `xhigh`, `max`, or `ultra` where the model takes it. Default: the harness's own |
+| `--base <ref>`        | Create the worktree from another Git base                                                                |
+| `--name <worktree>`   | Name the worktree; an existing name joins it as a new session                                            |
+| `--worktree <name>`   | Join an existing worktree only; fails naming candidates when absent                                      |
+| `--ask`               | Restore the harness's permission prompts                                                                 |
+| `--fast`              | Request the Codex priority service tier                                                                  |
+| `--detach`, `-d`      | Launch without attaching; reattach anywhere with `mend attach`                                           |
+| `--foreground`        | Stop the session when this CLI exits (the detach key still detaches)                                     |
+| `--no-tunnel`         | Do not tunnel the session's browser Services to this machine                                             |
+| `--land`, `--no-land` | Land, or do not land, when a turn completes, for this session only                                       |
+| `--project <name>`    | Select an adopted project instead of matching the current directory                                      |
 
 A quoted prompt becomes the first message and supplies the initial session name. Interactive
 launches ask for the worktree's name first (enter accepts an automatic one); `--name` answers it up
@@ -150,6 +150,19 @@ session is picked up on the phone. From the terminal, land it with `mend land`.
 
 Codex uses model, effort, permission, and speed options. Claude uses model, effort, and permission
 options. OpenCode currently uses only the prompt; the other harness flags are accepted but ignored.
+
+### Models
+
+```text
+mend models [--json]
+```
+
+The server owns the model list, one per harness. `mend models` prints each harness's models with
+their ids, the one a launch runs when `--model` is not given marked `default`, and the efforts a
+model takes where they are fewer than the harness's. Every client offers the same list and
+preselects the same default. A launch that names no model runs that default, and the session records
+the model and effort it was started with, which `mend sessions` shows after the branch. An id the
+list does not know is passed through as given; the harness decides whether it exists.
 
 ## Session commands
 

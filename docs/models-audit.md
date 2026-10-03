@@ -1,0 +1,111 @@
+# Models audit
+
+Roadmap item 5 of `ROADMAP.md` (0.36): what each client offered for a session's model before this
+change, where the list came from, and the decisions the one picker is built on. Facts first, dated
+2026-10-03, at main `63e5d8b80`.
+
+## Before
+
+### Where the list lived
+
+- `packages/domain/src/workbench/harness-launch.ts` held `HARNESS_MODELS`, a hardcoded per-harness
+  catalog (claude: `fable`, `opus`, `sonnet`, `haiku`, default `fable`; codex: eight entries from
+  `codex debug models`, default `gpt-6.1-sol`, three with fewer efforts), plus `HARNESS_EFFORTS`
+  (what each harness CLI accepts: claude up to `max`, codex up to `ultra`, pi up to `max`, opencode
+  none) and `effortsFor(harness, model)`. The contract kept `model` free-form
+  (`packages/api-contracts/src/project-environment.ts`, `LaunchRequest.model`), so the catalog was
+  advisory: a picker list only.
+- The phone kept a second copy. `apps/mobile/src/data/harness-options.ts` transcribed
+  `HARNESS_MODELS`, `HARNESS_EFFORTS` and `effortsFor` by hand, with a comment that pulling the
+  domain package would drag Effect into the bundle. The same app already imported
+  `@mend/domain/workbench` in `apps/mobile/src/data/live.ts` and `apps/mobile/src/app/adopt.tsx`, so
+  the reason had lapsed; the copy had not.
+- Slack read the same constant: `packages/slack/src/mention.ts` built
+  `DEFAULT_MENTION_VOCABULARY.models` from `HARNESS_MODELS`, and `apps/api/src/slack-runner.ts` used
+  it for `model=` parsing and the thread reader.
+- The server never stored a model list, and no API endpoint listed models.
+
+### What each client offered
+
+| Client  | Picker                                                                                                                                                                                                                                              | Default preselected                                                                             | Effort                                                                                              | Sticky                                        | Shows the running model                                 |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------------- |
+| Phone   | `apps/mobile/src/components/start-session.tsx`: chips under each harness row, `default` chip plus the local copy of the catalog                                                                                                                     | No. `default` chip meant "send nothing", and the summary said `default model`                   | Chips from the local `effortsFor`, `default` first                                                  | Per harness on device (`mend-launch-options`) | No. Header and rows showed harness and status           |
+| Web     | `apps/web/src/components/session-composer.tsx`: a model pill with a radio menu from `HARNESS_MODELS[harness]`                                                                                                                                       | Yes, `apps/web/src/lib/composer-prefs.ts` `defaultModel` picked the catalog's `isDefault` entry | Thinking radio in the settings menu from `effortsFor`, `default` first                              | Per project and harness in localStorage       | No. `routes/sessions.$sessionId.tsx` showed the harness |
+| Desktop | `apps/desktop/src/renderer/src/components/launcher.tsx`: same pill and menu as the web, its own copy of `MenuRadioGroup`                                                                                                                            | Yes, same `defaultModel` logic in `lib/composer-prefs.ts`                                       | Same as the web                                                                                     | Per project and harness in localStorage       | No                                                      |
+| CLI     | `mend claude\|codex\|opencode\|pi --model <id> --effort <level>` (`apps/cli/src/shared.ts`, `apps/cli/src/help.ts`). Free text, no list. The help said effort was `low, medium, high, xhigh, or max`, missing `ultra`; `shared.ts` accepted `ultra` | None sent, the harness chose                                                                    | Validated against a local copy of the six levels; the server clamps a level the model does not take | None                                          | No. `mend sessions` printed harness and status          |
+| VS Code | `apps/vscode/src/extension.ts`: quick picks from `HARNESS_MODELS` and `effortsFor`                                                                                                                                                                  | "Default model" entry meant "send nothing"                                                      | Quick pick from `effortsFor`                                                                        | None                                          | No                                                      |
+| Slack   | `model=` and `with <model>` parsed against the constant                                                                                                                                                                                             | None sent                                                                                       | `effort=`                                                                                           | n/a                                           | No                                                      |
+
+So the web and desktop preselected the catalog default and sent it; the phone, the CLI, VS Code and
+Slack sent nothing and let the harness decide. The same harness, started from two clients, could run
+on different models with nothing recorded about it.
+
+### What a session recorded
+
+- `agent_sessions` had no model or effort column (`packages/db/src/schema/workbench.ts`).
+- A protocol process row kept `protocolOptions` (`model`, `effort`, `permissionMode`) so a restart
+  reopens the pipe with the same options (`session_processes.protocol_options`, migration 0044).
+- A PTY process carried the model only inside its `argv` (`claude --model fable …`).
+- A native resume runs `claude --resume <id>` or `codex resume <id>` with no model flag
+  (`packages/sessions/src/native-convert.ts`): the harness keeps the conversation's own model.
+- The `Session` the API returned (`packages/domain/src/workbench/session.ts`) said `harness` and
+  nothing about the model, so no client could show it.
+
+### t3code, for comparison
+
+`~/Developer/refs/t3code`: the server owns the list. `ServerConfig.providers[].models[]` carries
+`slug`, `name`, `isDefault`, `isLegacy`, `capabilities.optionDescriptors` (effort and fast mode as
+typed option descriptors) per provider instance; drivers discover models (`refreshModels`) and the
+contracts pin preferred defaults (`PREFERRED_DEFAULT_CODEX_MODELS`, `DEFAULT_MODEL_BY_PROVIDER`).
+The phone builds its picker from that config (`apps/mobile/src/lib/modelOptions.ts`,
+`buildModelOptions`, `resolveNewTaskModelSelection`: draft, then project default, then sticky, then
+the server's default) and refreshes it with a pull (`provider-catalog-refresh.ts`). Nothing in the
+phone names a model.
+
+## After: decisions
+
+1. **The server owns the catalog.** A `harness_models` table (migration `0101_harness_models`,
+   `packages/db/src/migrations.ts`), one row per harness and model id: label, whether it is the
+   harness's default, the efforts it takes when fewer than the harness's, and its position. Seeded
+   from what the harness adapters supported on 2026-10-03, the former `HARNESS_MODELS`. One default
+   per harness is a partial unique index. Editable by SQL today; no write endpoint yet.
+2. **One endpoint.** `GET /api/harnesses/models` returns every harness's catalog: its models, the
+   default model id, the efforts the harness accepts, and whether it offers priority processing
+   (`packages/api-contracts/src/harness-models.ts`). Clients read this and nothing else. The domain
+   keeps only `HARNESS_MODEL_SEED` for the migration and Slack's offline vocabulary; the
+   `HARNESS_MODELS` and `effortsFor` exports are gone, so a client that still hardcoded a list fails
+   to compile.
+3. **A launch resolves the model on the server and records it.** `apps/api/src/session-start.ts`
+   reads the harness's catalog, applies the default when the request named no model, clamps the
+   effort to what that model takes, writes both to the session (`agent_sessions.model`,
+   `agent_sessions.effort`), and only then composes the argv. The same resolution runs for a mode
+   handoff. The composed argv therefore always names the model for a harness that has a catalog, and
+   `Session.model` says which. A harness without a catalog (opencode, a custom command, a shell)
+   records `null`: the harness's own choice.
+4. **Effort stays optional.** `null` means the harness's own default and is reported as such. The
+   catalog carries which efforts a model takes, not a default effort: the harnesses pick their own
+   default and Mend does not second-guess it.
+5. **A resume keeps the recorded model.** A native resume passes no model flag by design, so the
+   harness continues the conversation on its own model, which is the one recorded at start. The
+   session's `model` is not rewritten on resume.
+6. **No backfill.** Sessions from before the migration report `model: null`. Their process rows
+   still hold the fact (`protocolOptions`, `argv`) for anyone who needs it.
+7. **One picker, built once.** The headless picker is in the domain
+   (`packages/domain/src/workbench/model-catalog.ts`): given a catalog and the person's sticky
+   choice, it says which models to list, which is selected, which efforts the selected model takes,
+   and what to put on the wire. The phone renders it as chips, the web and desktop as the shared
+   radio menu in `@mend/ui/model-picker`, the CLI as `mend models` and `--model`. Every client
+   preselects the server's default and shows the model by its label with the id beside it.
+8. **Every client shows the running model** beside the harness: the web session page and lists, the
+   phone's session header and rows, the desktop sidebar, `mend sessions`.
+9. **The CLI gains `mend models`** so a terminal can see the list the server offers without
+   hardcoding one. `--model` and `--effort` keep their names; they match the API fields.
+10. **Slack** keeps reading the seed for the words it recognises offline; a model the seed does not
+    know is still passed through as text, as before. Reading the live catalog there is a follow-up.
+
+## Not done
+
+- No write endpoint or settings page for the catalog; an operator edits the table.
+- Slack's vocabulary reads the seed, not the table.
+- The catalog is not discovered from the harness binaries (t3code's `refreshModels`); it is a table
+  an operator edits.

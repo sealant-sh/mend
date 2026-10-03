@@ -5,9 +5,14 @@
 // reads it as. routes.test.ts pins the paths; this pins the payloads.
 
 import type { OpenReviewResult, ReviewDiffView, SessionDetail } from "@mend/api-contracts";
-import type { NotificationSettings, ReviewComment } from "@mend/domain/workbench";
+import type {
+  HarnessModelCatalog,
+  NotificationSettings,
+  ReviewComment,
+} from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
+import type { HarnessModelCatalogDto, SessionDto } from "./live";
 import type { NotificationSettingsDto } from "./notification-settings";
 import type { OpenReviewDto, ReviewCommentDto, ReviewDiffDto } from "./review";
 import type { CheckpointDto } from "./review-state";
@@ -37,7 +42,21 @@ const pins: {
     Wire<typeof NotificationSettings.Encoded>,
     NotificationSettingsDto
   >;
-} = { open: true, diff: true, comment: true, checkpoint: true, notificationSettings: true };
+  /** The picker's list, and the model a session reports: the phone hardcodes neither. */
+  readonly harnessModels: Fits<Wire<typeof HarnessModelCatalog.Encoded>, HarnessModelCatalogDto>;
+  readonly sessionModel: Fits<
+    Pick<Wire<typeof SessionDetail.Encoded>["session"], "model" | "effort">,
+    Pick<SessionDto, "model" | "effort">
+  >;
+} = {
+  open: true,
+  diff: true,
+  comment: true,
+  checkpoint: true,
+  notificationSettings: true,
+  harnessModels: true,
+  sessionModel: true,
+};
 
 describe("review and settings payloads", () => {
   it("fit the DTOs the phone reads them as (checked by typecheck)", () => {

@@ -1,8 +1,11 @@
 // Start a session with its launch tunables: model, thinking effort, and
 // priority (codex only — claude's fast mode is an in-session toggle the
-// platform doesn't expose at launch). Options persist per harness on device
-// and ride the launch request; "default" leaves the harness's own choice.
+// platform doesn't expose at launch). The lists come from the server's catalog
+// (docs/models-audit.md); the picker preselects the server's default for the
+// harness, and what it shows is what the launch sends and the session records.
+// Choices persist per harness on device.
 
+import { modelPicker, type HarnessModelCatalogView } from "@mend/domain/workbench";
 import { ChevronDown, ChevronRight } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
 import { Pressable, TextInput, View } from "react-native";
@@ -10,23 +13,19 @@ import { Pressable, TextInput, View } from "react-native";
 import { EvButton } from "@/components/button";
 import { PanelRow } from "@/components/panel";
 import { MonoText, UiText } from "@/components/typography";
-import {
-  effortsFor,
-  FAST_CAPABLE_HARNESSES,
-  HARNESS_MODELS,
-  setLaunchOptions,
-  useLaunchOptions,
-  type LaunchOptions,
-} from "@/data/harness-options";
-import { PROTOCOL_HARNESSES, useProjectBranches } from "@/data/live";
+import { setLaunchOptions, useLaunchOptions, type LaunchOptions } from "@/data/harness-options";
+import { catalogOf, PROTOCOL_HARNESSES, useHarnessModels, useProjectBranches } from "@/data/live";
 import { fontFamilies, radius, useEvidenceTheme } from "@/theme/evidence";
 
 function Chip({
   label,
+  detail,
   chosen,
   onPress,
 }: {
   readonly label: string;
+  /** A quiet mono note after the label (`default`). */
+  readonly detail?: string | undefined;
   readonly chosen: boolean;
   readonly onPress: () => void;
 }) {
@@ -35,6 +34,9 @@ function Chip({
     <Pressable
       onPress={onPress}
       style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
         borderWidth: 1,
         borderColor: chosen ? colors.accent : colors.rule,
         backgroundColor: chosen ? colors.wash : colors.panel,
@@ -46,6 +48,11 @@ function Chip({
       <UiText tone={chosen ? "accent" : "ink2"} size={12}>
         {label}
       </UiText>
+      {detail === undefined ? null : (
+        <MonoText tone="faint" size={10.5}>
+          {detail}
+        </MonoText>
+      )}
     </Pressable>
   );
 }
@@ -67,25 +74,28 @@ function OptionGroup({
   );
 }
 
-const summaryOf = (harness: string, options: LaunchOptions): string => {
-  const model =
-    HARNESS_MODELS[harness]?.find((candidate) => candidate.id === options.model)?.label ??
-    options.model ??
-    "default model";
-  const parts = [model];
-  if (options.effort !== null) parts.push(options.effort);
-  if (options.speed === "fast") parts.push("fast");
+/** The row's one-line summary: the model the launch will run, then the effort and speed chosen. */
+const summaryOf = (
+  picker: ReturnType<typeof modelPicker>,
+  catalog: HarnessModelCatalogView,
+  speed: LaunchOptions["speed"],
+): string => {
+  const parts = [picker.hasModels ? picker.modelLabel : "harness default"];
+  if (picker.effort !== null) parts.push(picker.effort);
+  if (catalog.fastCapable && speed === "fast") parts.push("fast");
   return parts.join(" · ");
 };
 
 function HarnessRow({
   harness,
+  catalog,
   first,
   pending,
   projectId,
   onStart,
 }: {
   readonly harness: string;
+  readonly catalog: HarnessModelCatalogView;
   readonly first: boolean;
   readonly pending: boolean;
   readonly projectId: string;
@@ -93,6 +103,9 @@ function HarnessRow({
 }) {
   const { colors } = useEvidenceTheme();
   const options = useLaunchOptions(harness);
+  // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default
+  // preselected. Built once in the domain; the phone only draws chips from it.
+  const picker = modelPicker(catalog, options);
   const [open, setOpen] = useState(false);
   // Per-launch, not persisted: "which branch" is a decision about THIS session.
   const [base, setBase] = useState<string | null>(null);
@@ -100,6 +113,12 @@ function HarnessRow({
   const set = (patch: Partial<LaunchOptions>) =>
     setLaunchOptions(harness, { ...options, ...patch });
   const Chevron = open ? ChevronDown : ChevronRight;
+  // What the launch sends: the picker's effective model and effort, never a raw sticky value.
+  const launchOptions: LaunchOptions = {
+    model: picker.model,
+    effort: picker.effort,
+    speed: catalog.fastCapable ? options.speed : null,
+  };
 
   return (
     <PanelRow first={first}>
@@ -115,7 +134,7 @@ function HarnessRow({
                 {harness}
               </UiText>
               <MonoText tone="faint" size={10.5}>
-                {summaryOf(harness, options)}
+                {summaryOf(picker, catalog, options.speed)}
               </MonoText>
             </View>
           </Pressable>
@@ -124,41 +143,36 @@ function HarnessRow({
             variant="outline"
             label={pending ? "…" : "Start"}
             disabled={pending}
-            onPress={() => onStart(harness, options, base)}
+            onPress={() => onStart(harness, launchOptions, base)}
           />
         </View>
         {open && (
           <View style={{ gap: 10 }}>
-            <OptionGroup label="model">
-              <Chip
-                label="default"
-                chosen={options.model === null}
-                onPress={() => set({ model: null })}
-              />
-              {(HARNESS_MODELS[harness] ?? []).map((model) => (
-                <Chip
-                  key={model.id}
-                  label={model.label}
-                  chosen={options.model === model.id}
-                  onPress={() => set({ model: model.id })}
-                />
-              ))}
-            </OptionGroup>
-            <OptionGroup label="thinking">
-              <Chip
-                label="default"
-                chosen={options.effort === null}
-                onPress={() => set({ effort: null })}
-              />
-              {effortsFor(harness, options.model).map((effort) => (
-                <Chip
-                  key={effort}
-                  label={effort}
-                  chosen={options.effort === effort}
-                  onPress={() => set({ effort })}
-                />
-              ))}
-            </OptionGroup>
+            {picker.hasModels && (
+              <OptionGroup label="model">
+                {picker.models.map((model) => (
+                  <Chip
+                    key={model.id}
+                    label={model.label}
+                    detail={model.isDefault ? "default" : undefined}
+                    chosen={model.selected}
+                    onPress={() => set({ model: model.id })}
+                  />
+                ))}
+              </OptionGroup>
+            )}
+            {picker.efforts.length > 1 && (
+              <OptionGroup label="thinking">
+                {picker.efforts.map((row) => (
+                  <Chip
+                    key={row.effort ?? "default"}
+                    label={row.label}
+                    chosen={row.selected}
+                    onPress={() => set({ effort: row.effort })}
+                  />
+                ))}
+              </OptionGroup>
+            )}
             {(branches.data ?? []).length > 0 && (
               <OptionGroup label="base">
                 <Chip label="default" chosen={base === null} onPress={() => setBase(null)} />
@@ -175,7 +189,7 @@ function HarnessRow({
                   ))}
               </OptionGroup>
             )}
-            {FAST_CAPABLE_HARNESSES.has(harness) && (
+            {catalog.fastCapable && (
               <OptionGroup label="priority">
                 <Chip
                   label="standard"
@@ -215,6 +229,7 @@ export function StartSessionRows({
   readonly first?: boolean;
 }) {
   const { colors } = useEvidenceTheme();
+  const catalogs = useHarnessModels();
   // The worktree's name comes first — it is the identity being created.
   const [name, setName] = useState("");
   const cleaned = name
@@ -243,6 +258,7 @@ export function StartSessionRows({
         <HarnessRow
           key={harness}
           harness={harness}
+          catalog={catalogOf(catalogs.data, harness)}
           first={false}
           pending={pending}
           projectId={projectId}

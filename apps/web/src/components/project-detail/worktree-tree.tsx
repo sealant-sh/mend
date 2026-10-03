@@ -132,7 +132,10 @@ function SessionLine({
         >
           <Terminal className="size-3.5 shrink-0 text-faint" aria-hidden="true" />
           <span className="truncate font-sans text-[13px] text-ink-2">{name}</span>
-          <span className="shrink-0 font-mono text-[11.5px] text-faint">{session.harness}</span>
+          <span className="shrink-0 font-mono text-[11.5px] text-faint">
+            {session.harness}
+            {session.model === null ? "" : ` · ${session.model}`}
+          </span>
         </Link>
         {hold === null ? (
           <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />

@@ -1,14 +1,9 @@
-import {
-  effortsFor,
-  FAST_CAPABLE_HARNESSES,
-  HARNESS_MODELS,
-  type EffortLevel,
-  type PermissionMode,
-} from "@mend/domain/workbench";
+import { modelPicker, pickerLaunchFields, type PermissionMode } from "@mend/domain/workbench";
 import { cn } from "@mend/ui/lib/utils";
+import { EffortMenu, MenuRadioGroup, ModelMenu } from "@mend/ui/model-picker";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Check, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -16,12 +11,13 @@ import { ComposerTargetPicker } from "#/components/composer-target-picker";
 import { NewWorktreeDialog } from "#/components/project-detail/new-worktree-dialog";
 import type { ProjectDto, WorktreeDto } from "#/lib/api";
 import {
-  effectiveHarnessPrefs,
   setComposerHarness,
   setComposerHarnessPrefs,
   setComposerProject,
+  stickyHarnessPrefs,
   useComposerPrefs,
 } from "#/lib/composer-prefs";
+import { catalogFor, useHarnessCatalogs } from "#/lib/harness-models";
 import { autoLandItems } from "#/lib/landing";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
 import { useTRPC } from "#/lib/trpc";
@@ -54,6 +50,7 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   // push speaks as you on GitHub, so each session starts from the project's stance.
   const [autoLand, setAutoLand] = useState<boolean | null>(null);
   const inherited = useInheritedSettings();
+  const catalogs = useHarnessCatalogs();
 
   const preferredProjectId = pickedProjectId ?? prefs.lastProjectId;
   const project = projects.find((row) => row.id === preferredProjectId) ?? projects[0];
@@ -73,7 +70,10 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   // A sticky "shell" from before shell left the composer degrades to claude.
   const stickyHarness = prefs.byProject[projectId]?.harness ?? "claude";
   const harness: Harness = stickyHarness === "shell" ? "claude" : stickyHarness;
-  const harnessPrefs = effectiveHarnessPrefs(prefs, projectId, harness);
+  const harnessPrefs = stickyHarnessPrefs(prefs, projectId, harness);
+  // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default
+  // preselected. What it says is what the launch sends and what the session records.
+  const picker = modelPicker(catalogFor(catalogs, harness), harnessPrefs);
 
   const openMenu = (kind: MenuKind) => (event: React.MouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -95,8 +95,7 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
     void startComposedSessionInWorktree(navigate, { queryClient, trpc }, worktree.id, {
       harness,
       prompt: body,
-      ...(harnessPrefs.model === null ? {} : { model: harnessPrefs.model }),
-      ...(harnessPrefs.effort === null ? {} : { effort: harnessPrefs.effort }),
+      ...pickerLaunchFields(picker),
       ...(harnessPrefs.permission === null ? {} : { permissionMode: harnessPrefs.permission }),
       ...(harnessPrefs.speed === null ? {} : { speed: harnessPrefs.speed }),
       autoLand: project.autoLand === "off" ? null : autoLand,
@@ -112,7 +111,7 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
     settings: inherited?.autoLand ?? null,
   });
   const settingsSummary = [
-    harnessPrefs.effort,
+    picker.effort,
     harnessPrefs.speed === "fast" ? "fast" : null,
     harnessPrefs.permission === "ask" ? "ask" : null,
     landing.summary,
@@ -216,18 +215,13 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
             <ComposerPill onClick={openMenu("harness")} open={menu?.kind === "harness"}>
               <span className="font-mono text-[12px]">{harness}</span>
             </ComposerPill>
-            {HARNESS_MODELS[harness] !== undefined && (
+            {picker.hasModels && (
               <ComposerPill
                 className="hidden @md:inline-flex"
                 onClick={openMenu("model")}
                 open={menu?.kind === "model"}
               >
-                <span className="truncate text-xs">
-                  {HARNESS_MODELS[harness]?.find((option) => option.id === harnessPrefs.model)
-                    ?.label ??
-                    harnessPrefs.model ??
-                    "Model"}
-                </span>
+                <span className="truncate text-xs">{picker.modelLabel}</span>
               </ComposerPill>
             )}
             <ComposerPill
@@ -272,43 +266,23 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
                 }))}
               />
             )}
-            {(menu.kind === "model" || menu.kind === "options") && (
-              <MenuRadioGroup
+            {(menu.kind === "model" || menu.kind === "options") && picker.hasModels && (
+              <ModelMenu
                 label={menu.kind === "options" ? "Model" : undefined}
-                items={(HARNESS_MODELS[harness] ?? []).map((option) => ({
-                  key: option.id,
-                  label: option.label,
-                  detail: option.id,
-                  selected: option.id === harnessPrefs.model,
-                  onSelect: () => {
-                    setComposerHarnessPrefs(projectId, harness, { model: option.id });
-                    if (menu.kind === "model") setMenu(null);
-                  },
-                }))}
+                models={picker.models}
+                onPick={(model) => {
+                  setComposerHarnessPrefs(projectId, harness, { model });
+                  if (menu.kind === "model") setMenu(null);
+                }}
               />
             )}
             {(menu.kind === "settings" || menu.kind === "options") && (
               <>
-                <MenuRadioGroup
-                  label="Thinking"
-                  mono
-                  items={[
-                    {
-                      key: "default",
-                      label: "default",
-                      selected: harnessPrefs.effort === null,
-                      onSelect: () => setComposerHarnessPrefs(projectId, harness, { effort: null }),
-                    },
-                    ...effortsFor(harness, harnessPrefs.model).map((level: EffortLevel) => ({
-                      key: level,
-                      label: level,
-                      selected: harnessPrefs.effort === level,
-                      onSelect: () =>
-                        setComposerHarnessPrefs(projectId, harness, { effort: level }),
-                    })),
-                  ]}
+                <EffortMenu
+                  efforts={picker.efforts}
+                  onPick={(effort) => setComposerHarnessPrefs(projectId, harness, { effort })}
                 />
-                {FAST_CAPABLE_HARNESSES.has(harness) && (
+                {picker.fastCapable && (
                   <MenuRadioGroup
                     label="Speed"
                     items={[
@@ -460,52 +434,5 @@ function ComposerMenu({
       </div>
     </div>,
     document.body,
-  );
-}
-
-interface MenuRadioItem {
-  readonly key: string;
-  readonly label: string;
-  /** Quiet mono id beside the label (e.g. a model id). */
-  readonly detail?: string;
-  readonly selected: boolean;
-  readonly onSelect: () => void;
-}
-
-function MenuRadioGroup({
-  label,
-  mono = false,
-  items,
-}: {
-  readonly label?: string | undefined;
-  readonly mono?: boolean;
-  readonly items: ReadonlyArray<MenuRadioItem>;
-}) {
-  return (
-    <div className="not-first:mt-1 not-first:border-t not-first:border-rule-faint not-first:pt-1">
-      {label !== undefined && (
-        <p className="px-3.5 pb-1 pt-1.5 text-xs font-medium text-label">{label}</p>
-      )}
-      {items.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          role="menuitemradio"
-          aria-checked={item.selected}
-          onClick={item.onSelect}
-          className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left transition-colors hover:bg-secondary"
-        >
-          <Check className={`size-3.5 shrink-0 ${item.selected ? "text-primary" : "invisible"}`} />
-          <span
-            className={`min-w-0 flex-1 truncate ${mono ? "font-mono text-[12px]" : "font-sans text-[13px]"} text-foreground`}
-          >
-            {item.label}
-          </span>
-          {item.detail !== undefined && (
-            <span className="shrink-0 font-mono text-[11px] text-faint">{item.detail}</span>
-          )}
-        </button>
-      ))}
-    </div>
   );
 }

@@ -92,6 +92,7 @@ import {
   SessionProcessesRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
+  HarnessModelsRepo,
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
@@ -133,6 +134,7 @@ import {
   type GitAuthMode,
   gitAuthorIssue,
   normalizeGitAuthor,
+  resolveLaunchOptions,
   Session,
   type SessionStatus,
 } from "@mend/domain/workbench";
@@ -2922,8 +2924,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("handoff", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.owned(params.id);
+        const session = yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
+        // The handoff continues the same session: a model or effort it names wins, else the ones
+        // the session was started with, else the harness's default. Recorded the same way a
+        // launch records them (docs/models-audit.md).
+        const catalog = yield* (yield* HarnessModelsRepo).forHarness(session.harness);
+        const resolved = resolveLaunchOptions(catalog, {
+          model: payload.model ?? session.model,
+          effort: payload.effort ?? session.effort,
+        });
+        yield* (yield* SessionsRepo).setLaunchOptions(session.id, resolved);
         return yield* engine
           .handoff(
             params.id,
@@ -2931,8 +2942,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             {
               mode: payload.to === "protocol" ? "protocol" : "pty",
               ...(payload.prompt === undefined ? {} : { prompt: payload.prompt }),
-              ...(payload.model === undefined ? {} : { model: payload.model }),
-              ...(payload.effort === undefined ? {} : { effort: payload.effort }),
+              ...(resolved.model === null ? {} : { model: resolved.model }),
+              ...(resolved.effort === null ? {} : { effort: resolved.effort }),
               ...(payload.permissionMode === undefined
                 ? {}
                 : { permissionMode: payload.permissionMode }),

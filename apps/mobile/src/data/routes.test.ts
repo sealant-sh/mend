@@ -19,6 +19,7 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/projects"],
   ["GET", "/projects/:id"],
   ["GET", "/projects/:id/branches"],
+  ["GET", "/harnesses/models"],
   ["POST", "/projects/:id/sessions"],
   ["GET", "/sessions/:id"],
   ["DELETE", "/sessions/:id"],

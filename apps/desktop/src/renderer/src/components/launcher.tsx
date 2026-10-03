@@ -1,13 +1,13 @@
 import {
-  effortsFor,
-  FAST_CAPABLE_HARNESSES,
-  HARNESS_MODELS,
-  type EffortLevel,
+  emptyHarnessModelCatalog,
+  modelPicker,
+  pickerLaunchFields,
   type PermissionMode,
 } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
+import { EffortMenu, MenuRadioGroup, ModelMenu } from "@mend/ui/model-picker";
 import { useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -21,14 +21,14 @@ import {
 import { HARNESSES, useAppSettings } from "#/lib/app-settings";
 import {
   effectiveHarness,
-  effectiveHarnessPrefs,
   setComposerHarness,
   setComposerHarnessPrefs,
+  stickyHarnessPrefs,
   useComposerPrefs,
 } from "#/lib/composer-prefs";
 import { CONVERSATION_HARNESSES, rememberLaunchMode } from "#/lib/conversation";
 import { autoLandItems, autoLandToSend, projectAutoLand, settingsAutoLand } from "#/lib/landing";
-import { queryClient, settingsQuery } from "#/lib/queries";
+import { harnessModelsQuery, queryClient, settingsQuery } from "#/lib/queries";
 
 /**
  * The launcher (BRIEF.md) as a composer, the same one the web app starts
@@ -122,6 +122,7 @@ export function SessionComposer({
   // session starts from the project's stance.
   const [autoLand, setAutoLand] = useState<boolean | null>(null);
   const settings = useQuery(settingsQuery);
+  const catalogs = useQuery(harnessModelsQuery);
   // Null from a server that predates landing: it would ignore an override, so none is offered.
   const landingStance = projectAutoLand(project);
   const setBusy = (next: Pending) => {
@@ -130,9 +131,16 @@ export function SessionComposer({
   };
 
   const harness = effectiveHarness(prefs, project.id, defaultHarness);
-  const harnessPrefs = effectiveHarnessPrefs(prefs, project.id, harness);
-  /** Harnesses with a catalog take model/thinking/permission flags; the rest only a prompt. */
-  const tunable = HARNESS_MODELS[harness] !== undefined;
+  const harnessPrefs = stickyHarnessPrefs(prefs, project.id, harness);
+  // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default
+  // preselected. What it says is what the launch sends and what the session records.
+  const picker = modelPicker(
+    (catalogs.data ?? []).find((catalog) => catalog.harness === harness) ??
+      emptyHarnessModelCatalog(harness),
+    harnessPrefs,
+  );
+  /** Harnesses the server lists models for take model/thinking/permission flags; the rest only a prompt. */
+  const tunable = picker.hasModels;
   /** claude and codex also run as a conversation (protocol mode) instead of a terminal. */
   const conversable = CONVERSATION_HARNESSES.has(harness);
   const runsAs = conversable ? harnessPrefs.mode : null;
@@ -218,8 +226,7 @@ export function SessionComposer({
       harness,
       {
         ...(body === "" ? {} : { prompt: body }),
-        ...(tunable && harnessPrefs.model !== null ? { model: harnessPrefs.model } : {}),
-        ...(tunable && harnessPrefs.effort !== null ? { effort: harnessPrefs.effort } : {}),
+        ...(tunable ? pickerLaunchFields(picker) : {}),
         ...(tunable && harnessPrefs.permission !== null
           ? { permissionMode: harnessPrefs.permission }
           : {}),
@@ -234,7 +241,7 @@ export function SessionComposer({
 
   const settingsSummary = [
     runsAs === "protocol" ? "conversation" : null,
-    tunable ? harnessPrefs.effort : null,
+    tunable ? picker.effort : null,
     tunable && harnessPrefs.speed === "fast" ? "fast" : null,
     tunable && harnessPrefs.permission === "ask" ? "ask" : null,
     runsAs === "protocol" ? (landing?.summary ?? null) : null,
@@ -303,7 +310,7 @@ export function SessionComposer({
               onClick={openMenu("model")}
               open={menu?.kind === "model"}
             >
-              <span className="font-mono text-[12px]">{harnessPrefs.model ?? "model"}</span>
+              <span className="truncate text-xs">{picker.modelLabel}</span>
             </ComposerPill>
           )}
           <ComposerPill
@@ -366,19 +373,12 @@ export function SessionComposer({
             />
           )}
           {menu.kind === "model" && (
-            <MenuRadioGroup
-              items={(HARNESS_MODELS[harness] ?? []).map((option) => ({
-                key: option.id,
-                label: option.label,
-                detail: option.id,
-                selected: option.id === harnessPrefs.model,
-                onSelect: () => {
-                  setComposerHarnessPrefs(project.id, harness, {
-                    model: option.id,
-                  });
-                  setMenu(null);
-                },
-              }))}
+            <ModelMenu
+              models={picker.models}
+              onPick={(model) => {
+                setComposerHarnessPrefs(project.id, harness, { model });
+                setMenu(null);
+              }}
             />
           )}
           {menu.kind === "settings" && (
@@ -406,32 +406,12 @@ export function SessionComposer({
                 />
               )}
               {tunable && (
-                <MenuRadioGroup
-                  label="Thinking"
-                  mono
-                  items={[
-                    {
-                      key: "default",
-                      label: "default",
-                      selected: harnessPrefs.effort === null,
-                      onSelect: () =>
-                        setComposerHarnessPrefs(project.id, harness, {
-                          effort: null,
-                        }),
-                    },
-                    ...effortsFor(harness, harnessPrefs.model).map((level: EffortLevel) => ({
-                      key: level,
-                      label: level,
-                      selected: harnessPrefs.effort === level,
-                      onSelect: () =>
-                        setComposerHarnessPrefs(project.id, harness, {
-                          effort: level,
-                        }),
-                    })),
-                  ]}
+                <EffortMenu
+                  efforts={picker.efforts}
+                  onPick={(effort) => setComposerHarnessPrefs(project.id, harness, { effort })}
                 />
               )}
-              {tunable && FAST_CAPABLE_HARNESSES.has(harness) && (
+              {tunable && picker.fastCapable && (
                 <MenuRadioGroup
                   label="Speed"
                   items={[
@@ -616,53 +596,6 @@ export function ComposerMenu({
       </div>
     </div>,
     document.body,
-  );
-}
-
-export interface MenuRadioItem {
-  readonly key: string;
-  readonly label: string;
-  /** Quiet mono note beside the label (a model id, "default"). */
-  readonly detail?: string | undefined;
-  readonly selected: boolean;
-  readonly onSelect: () => void;
-}
-
-export function MenuRadioGroup({
-  label,
-  mono = false,
-  items,
-}: {
-  readonly label?: string | undefined;
-  readonly mono?: boolean;
-  readonly items: ReadonlyArray<MenuRadioItem>;
-}) {
-  return (
-    <div className="not-first:mt-1 not-first:border-t not-first:border-rule-faint not-first:pt-1">
-      {label !== undefined && (
-        <p className="px-3.5 pb-1 pt-1.5 text-xs font-medium text-label">{label}</p>
-      )}
-      {items.map((item) => (
-        <button
-          key={item.key}
-          type="button"
-          role="menuitemradio"
-          aria-checked={item.selected}
-          onClick={item.onSelect}
-          className="flex w-full items-center gap-2 px-3.5 py-1.5 text-left transition-colors hover:bg-secondary"
-        >
-          <Check className={`size-3.5 shrink-0 ${item.selected ? "text-primary" : "invisible"}`} />
-          <span
-            className={`min-w-0 flex-1 truncate ${mono ? "font-mono text-[12px]" : "font-sans text-[13px]"} text-foreground`}
-          >
-            {item.label}
-          </span>
-          {item.detail !== undefined && (
-            <span className="shrink-0 font-mono text-[11px] text-faint">{item.detail}</span>
-          )}
-        </button>
-      ))}
-    </div>
   );
 }
 
