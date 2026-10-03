@@ -3214,8 +3214,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * that must wait for all of them before it releases the lease.
        */
       const stopTailsDone = new Map<SessionId, Set<Deferred.Deferred<void>>>();
-      /** Sessions a discard has stopped itself: a Stop arriving now is answered, and starts nothing. */
-      const discardSealed = new Set<SessionId>();
+      /**
+       * Sessions a discard has stopped itself, counted per discard under way: a Stop arriving now
+       * is answered and starts nothing, and one discard's end never unseals another's.
+       */
+      const discardSealed = new Map<SessionId, number>();
       /**
        * Work an end puts off until its drain's final flush, by workspace (ADR 0002 decision 50):
        * the stop's checkpoint and the harvest of each agent that ended. Before 2026-10-03 each
@@ -4386,6 +4389,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         let discardedAt = requestedAt;
         discards.add(workspaceId);
+        let sealed = false;
         // What is logged follows what happened (cross-repo decision 28, review 2026-09-28 (9)
         // #10): the request now; `discarded` only once the platform confirmed the end.
         const annotations = {
@@ -4401,7 +4405,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* stop(sessionId, null);
           // From here a Stop is answered and starts nothing: the Stops in flight are waited for
           // below, and none may join them.
-          discardSealed.add(sessionId);
+          discardSealed.set(sessionId, (discardSealed.get(sessionId) ?? 0) + 1);
+          sealed = true;
           // The tail that stop forked harvests inline under a discard: waited for, so it never
           // reads under a successor once the lease below goes (Astra review, 2026-10-03).
           // Every tail, those a Stop meanwhile started included, until none is left.
@@ -4472,7 +4477,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.ensuring(
             Effect.sync(() => {
               discards.delete(workspaceId);
-              discardSealed.delete(sessionId);
+              if (sealed) {
+                const left = (discardSealed.get(sessionId) ?? 1) - 1;
+                if (left <= 0) discardSealed.delete(sessionId);
+                else discardSealed.set(sessionId, left);
+              }
             }),
           ),
         );
@@ -11099,7 +11108,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ): Effect.Effect<void, SessionNotFoundError> =>
         Effect.uninterruptibleMask((restore) =>
           Effect.suspend(() => {
-            if (discardSealed.has(sessionId)) return Effect.void;
+            if ((discardSealed.get(sessionId) ?? 0) > 0) return Effect.void;
             const inFlight = { done: Deferred.makeUnsafe<void>(), tail: false };
             const set = stopTailsDone.get(sessionId) ?? new Set<Deferred.Deferred<void>>();
             set.add(inFlight.done);

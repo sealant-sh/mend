@@ -1607,7 +1607,12 @@ Mend-side details the decision record left open, decided in this ADR:
       write loses that user mark and the change head refresh with it: the restart interrupts the
       piece, and the drain intent that survives carries no record of it. The change is saved and the
       harvest is recovered by the sweep that takes the drain up again. Before this decision the mark
-      was written before the answer. Replaying the mark from the drain intent is a follow-up.
+      was written before the answer. Replaying the mark from the drain intent is a follow-up. Two
+      races older than this decision remain, found by its review: a Stop of a sibling session in the
+      same workspace, and a Stop whose work was refused admission, each harvest inline (flush and
+      all, as every Stop did before) and can read a successor's head if the lease is released under
+      that harvest; a discard waits for the Stops of its own session only. The fix is to coalesce
+      concurrent Stops per workspace from entry through tail completion, and is a follow-up.
     - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
       judged (`executor not answering`, `completed`) and its executor looked at before the drain
       begins, and the tests of those judgements say so. Making every end read the drain's final is a
