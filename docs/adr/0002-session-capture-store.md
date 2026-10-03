@@ -1591,7 +1591,10 @@ Mend-side details the decision record left open, decided in this ADR:
       queue without a round owed to come back; the drain slot, the stop tail's mark and the consumer
       slot are each taken with their release in one uninterruptible step. A Stop puts its mark off
       in the step that marks and forks its tail, so nothing is put off that no tail will run; a
-      discard runs what was put off, every piece waited for, before it releases the lease.
+      discard runs what was put off, every piece waited for, before it releases the lease. A discard
+      also waits for the stop tail it started (which harvests inline under a discard) before that
+      release, and the stop tail's mark is released around the whole of the tail, the inline mark
+      included.
     - **Known gap.** A Mend restart in the seconds between a Stop's answer and its checkpoint's
       write loses that user mark and the change head refresh with it: the restart interrupts the
       piece, and the drain intent that survives carries no record of it. The change is saved and the

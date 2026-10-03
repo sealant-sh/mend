@@ -3203,6 +3203,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const discards = new Set<SealantWorkspaceId>();
       /** Sessions whose forked stop tail (harvest, then the sweep) is still running here. */
       const stopTails = new Set<SessionId>();
+      /** Each running stop tail's end, for the discard that started it and must wait for it. */
+      const stopTailsDone = new Map<SessionId, Deferred.Deferred<void>>();
       /**
        * Work an end puts off until its drain's final flush, by workspace (ADR 0002 decision 50):
        * the stop's checkpoint and the harvest of each agent that ended. Before 2026-10-03 each
@@ -3316,16 +3318,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * interruption of the caller (a request that gave up) leaves it running and nothing queued
        * without a consumer; the caller waits for it within the limit, then goes on.
        */
-      const runDeferredDetached = (workspaceId: SealantWorkspaceId, reading: DrainWord) =>
+      const runDeferredDetached = (
+        workspaceId: SealantWorkspaceId,
+        reading: DrainWord,
+        wait = true,
+      ) =>
         Effect.uninterruptible(Effect.forkIn(runDeferred(workspaceId, reading, null), scope)).pipe(
           Effect.flatMap((fiber) =>
-            Fiber.join(fiber).pipe(
-              Effect.asVoid,
-              Effect.timeoutOrElse({
-                duration: drainPolicy.deferredWorkLimit,
-                orElse: () => Effect.void,
-              }),
-            ),
+            wait
+              ? Fiber.join(fiber).pipe(
+                  Effect.asVoid,
+                  Effect.timeoutOrElse({
+                    duration: drainPolicy.deferredWorkLimit,
+                    orElse: () => Effect.void,
+                  }),
+                )
+              : Effect.void,
           ),
         );
       /** `runDeferred`'s body, under its consumer slot. */
@@ -4357,6 +4365,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "session engine: discard of unsaved captures requested by the owner · stopping",
           ).pipe(Effect.annotateLogs(annotations));
           yield* stop(sessionId, null);
+          // The tail that stop forked harvests inline under a discard: waited for, so it never
+          // reads under a successor once the lease below goes (Astra review, 2026-10-03).
+          const tailDone = stopTailsDone.get(sessionId);
+          if (tailDone !== undefined) yield* Deferred.await(tailDone);
           const running = drains.get(workspaceId);
           if (running !== undefined) yield* Deferred.await(running);
           // What the stop put off runs before the lease goes, on the evidence the drain kept,
@@ -6486,8 +6498,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               // Whatever holds it is in use: no drain is under way, nothing reads `saving`.
               if (session.captureDrain !== null && !drains.has(workspaceId)) {
                 // Not flushed at all: what the Stop put off flushes for itself (`none`), detached,
-                // before the intent goes, as in `runDrain` (Astra review, 2026-10-03).
-                yield* runDeferredDetached(workspaceId, "none");
+                // before the intent goes, as in `runDrain`, and not waited for here: this look owns no
+                // drain slot, and holding it open would widen the window in which its `endDrain`
+                // below clears a newer drain's intent (Astra review, 2026-10-03).
+                yield* runDeferredDetached(workspaceId, "none", false);
                 yield* endDrain(sessionId);
               }
               return "in-use" as const;
@@ -11159,6 +11173,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
               );
             stopTails.add(sessionId);
+            const tailDone = Deferred.makeUnsafe<void>();
+            stopTailsDone.set(sessionId, tailDone);
             const tail = (
               ended.length > 0
                 ? Effect.forEach(ended, (agent) => finishAgentProcess(agent, null, true, true), {
@@ -11179,7 +11195,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
             );
             return Effect.forkIn(
-              atFinal && !deferred ? Effect.andThen(markNow, tail) : tail,
+              (atFinal && !deferred ? Effect.andThen(markNow, tail) : tail).pipe(
+                // Around the whole of it, the inline mark included: a mark that dies must not
+                // leave the session marked as tailing for good (Astra review, 2026-10-03).
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    stopTails.delete(sessionId);
+                    stopTailsDone.delete(sessionId);
+                    Deferred.doneUnsafe(tailDone, Exit.succeed(undefined));
+                  }),
+                ),
+              ),
               scope,
             );
           }),
