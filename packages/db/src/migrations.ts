@@ -3021,5 +3021,5 @@ export const migrations = {
   "0101_secret_files": secretFilesMigration,
   "0102_harness_models": harnessModelsMigration,
   "0103_session_repositories": sessionRepositoriesMigration,
-  "0104_turn_origin": turnOriginMigration,
+  "0105_turn_origin": turnOriginMigration,
 };
