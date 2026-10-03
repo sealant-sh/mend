@@ -90,6 +90,8 @@ import {
   type AgentRequest,
   type AgentTurn,
   EFFORT_LEVELS,
+  HARNESS_EFFORTS,
+  type EffortLevel,
   type LaunchStart,
   PERMISSION_MODES,
   SPEED_MODES,
@@ -376,17 +378,38 @@ const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
  * and are decoded in the workspace. The sentinel preserves trailing newlines through POSIX command
  * substitution.
  */
-const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | null => {
+/** A word for `sh -c`, in single quotes, whatever it holds. */
+const shellWord = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+/**
+ * A harness opened on a prompt, with the model and effort the session was started with
+ * (docs/models-audit.md): the follow-up a stopped PTY session gets runs on the model the session
+ * reports, not on whatever the harness would pick today. Flags the harness does not take are left
+ * out, as `composeLaunchArgv` leaves them out.
+ */
+const promptArgv = (
+  harness: string,
+  prompt: string,
+  options: { readonly model: string | null; readonly effort: EffortLevel | null } = {
+    model: null,
+    effort: null,
+  },
+): ReadonlyArray<string> | null => {
+  const model = options.model === null ? "" : ` --model ${shellWord(options.model)}`;
+  const effort =
+    options.effort === null || !(HARNESS_EFFORTS[harness] ?? []).includes(options.effort)
+      ? null
+      : options.effort;
   const command = (() => {
     switch (harness) {
       case "claude":
-        return 'exec claude --dangerously-skip-permissions "$prompt"';
+        return `exec claude --dangerously-skip-permissions${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
       case "codex":
-        return 'exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox "$prompt"';
+        return `exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
       case "opencode":
-        return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode --prompt "$prompt"`;
+        return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode${model} --prompt "$prompt"`;
       case "pi":
-        return 'exec pi --approve "$prompt"';
+        return `exec pi --approve${model}${effort === null ? "" : ` --thinking ${effort}`} "$prompt"`;
       default:
         return null;
     }
@@ -10430,7 +10453,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const launchProtocol = Effect.fn("SessionEngine.launchProtocol")(function* (
         sessionId: SessionId,
-        start: LaunchStart,
+        requested: LaunchStart,
         author: string | null,
         launchCorrelationId: string | null = null,
         forceFreshWorkspace = false,
@@ -10450,6 +10473,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
+        // A continuation that names neither a model nor an effort (a resume, a stopped session's
+        // follow-up) runs on what the session was started with (docs/models-audit.md); a start
+        // that names either is taken as given.
+        const start: LaunchStart =
+          requested.model === undefined && requested.effort === undefined
+            ? {
+                ...requested,
+                ...(session.model === null ? {} : { model: session.model }),
+                ...(session.effort === null ? {} : { effort: session.effort }),
+              }
+            : requested;
         const previous = currentAgentProcess(rows);
         // Any prior same-harness agent resumes by provider id — a PTY-born
         // session picked up in protocol mode continues the same conversation
@@ -10462,6 +10496,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
         }
+        // Admitted and composable: the model and effort this launch runs on are the session's
+        // from here, written before the workspace builds so the row says what runs.
+        yield* sessions.setLaunchOptions(sessionId, {
+          model: start.model ?? null,
+          effort: start.effort ?? null,
+        });
         // A fresh-workspace relaunch must carry the harvested state with it: the composed
         // argv resumes by provider id, and without the restored transcript the harness
         // refuses the resume ("No conversation found"). A first launch (no prior protocol
@@ -11097,7 +11137,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
-        const argv = promptArgv(session.harness, instruction);
+        const argv = promptArgv(session.harness, instruction, {
+          model: session.model,
+          effort: session.effort,
+        });
         if (argv === null) {
           return yield* new SealantPlatformError({
             code: "unknown_harness",
@@ -11295,7 +11338,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (retainCurrentWorkspace && manifest.harness === target) {
           argv = nativeResumeArgv(target, manifest.providerSessionId, argv);
         }
-        if (target !== session.harness) yield* sessions.setHarness(sessionId, target);
+        if (target !== session.harness) {
+          yield* sessions.setHarness(sessionId, target);
+          // The converted launch names no model: the new harness picks its own, and the row
+          // says so rather than keeping the old harness's (docs/models-audit.md).
+          yield* sessions.setLaunchOptions(sessionId, { model: null, effort: null });
+        }
         yield* sessions.reopen(sessionId, "running");
         return yield* retainCurrentWorkspace
           ? launchInRetainedWorkspace(

@@ -1,6 +1,10 @@
 import * as path from "node:path";
 
-import { effortsFor, HARNESS_MODELS, repositoryCloneUrlIssue } from "@mend/domain/workbench";
+import {
+  emptyHarnessModelCatalog,
+  modelPicker,
+  repositoryCloneUrlIssue,
+} from "@mend/domain/workbench";
 import { parseWorkspaceSshTarget } from "@mend/workspace-ssh";
 import * as vscode from "vscode";
 
@@ -24,6 +28,7 @@ import {
   type SessionNode,
 } from "./tree.js";
 import type {
+  Effort,
   LaunchStart,
   Project,
   ProjectDetail,
@@ -213,8 +218,6 @@ interface HarnessPick extends vscode.QuickPickItem {
 interface ModelPick extends vscode.QuickPickItem {
   readonly model: string | null;
 }
-
-type Effort = NonNullable<LaunchStart["effort"]>;
 
 interface EffortPick extends vscode.QuickPickItem {
   readonly effort: Effort | null;
@@ -687,30 +690,42 @@ class MendCommands {
       { title: newSessionTitle(project, join), placeHolder: "Harness", ignoreFocusOut: true },
     );
     if (harness === undefined) return;
-    const modelOptions = HARNESS_MODELS[harness.id] ?? [];
-    const model = await vscode.window.showQuickPick<ModelPick>(
-      [
-        { label: "Default model", model: null },
-        ...modelOptions.map((option) => ({
-          label: option.label,
-          description: option.id,
-          model: option.id,
-        })),
-      ],
-      { title: `New ${harness.description} session`, placeHolder: "Model", ignoreFocusOut: true },
-    );
+    // The server's catalog for the harness (docs/models-audit.md): the default first, so a plain
+    // Enter runs what every other client runs. A harness it lists nothing for asks no model.
+    const catalog =
+      (await this.client.harnessModels().catch(() => [])).find(
+        (candidate) => candidate.harness === harness.id,
+      ) ?? emptyHarnessModelCatalog(harness.id);
+    const offered = modelPicker(catalog, { model: null, effort: null });
+    const model = offered.hasModels
+      ? await vscode.window.showQuickPick<ModelPick>(
+          offered.models
+            .toSorted((left, right) => Number(right.isDefault) - Number(left.isDefault))
+            .map((option) => ({
+              label: option.label,
+              description: option.isDefault ? `${option.id} · default` : option.id,
+              model: option.id,
+            })),
+          {
+            title: `New ${harness.description} session`,
+            placeHolder: "Model",
+            ignoreFocusOut: true,
+          },
+        )
+      : { label: "", model: null };
     if (model === undefined) return;
-    const effort = await vscode.window.showQuickPick<EffortPick>(
-      [
-        { label: "default", effort: null },
-        ...effortsFor(harness.id, model.model).map((level) => ({ label: level, effort: level })),
-      ],
-      {
-        title: `New ${harness.description} session`,
-        placeHolder: "Thinking",
-        ignoreFocusOut: true,
-      },
-    );
+    const picked = modelPicker(catalog, { model: model.model, effort: null });
+    const effort =
+      picked.efforts.length > 1
+        ? await vscode.window.showQuickPick<EffortPick>(
+            picked.efforts.map((row) => ({ label: row.label, effort: row.effort })),
+            {
+              title: `New ${harness.description} session`,
+              placeHolder: "Thinking",
+              ignoreFocusOut: true,
+            },
+          )
+        : { label: "", effort: null };
     if (effort === undefined) return;
     const permissions = await vscode.window.showQuickPick<PermissionPick>(
       [

@@ -485,6 +485,7 @@ const testLayer = (world: TestWorld) => {
     setLabelIfUnset: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
     setHarness: () => Effect.die("not in test"),
+    setLaunchOptions: () => Effect.die("not in test"),
     recordCaptureObservation: () => Effect.die("not in test"),
     beginCaptureDrain: () => Effect.die("not in test"),
     planRelaunch: () => Effect.die("not in test"),

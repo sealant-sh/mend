@@ -32,6 +32,12 @@ export interface SessionDto extends SessionCaptureLike {
   /** Present once the server is worktree-aware; absent on older servers. */
   readonly worktreeId?: string;
   readonly harness: string;
+  /**
+   * The model and effort the session was started with, as the server resolved them
+   * (docs/models-audit.md). Null when not recorded; absent on older servers.
+   */
+  readonly model?: string | null;
+  readonly effort?: string | null;
   readonly label: string | null;
   readonly branch: string;
   readonly baseSha: string;

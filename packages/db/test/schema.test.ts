@@ -157,6 +157,8 @@ describe("Mend Drizzle schema", () => {
       "project_id",
       "worktree_id",
       "harness",
+      "model",
+      "effort",
       "provider_session_id",
       "label",
       "worktree",

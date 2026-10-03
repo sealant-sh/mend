@@ -5,6 +5,7 @@ import {
   getSealantIdentity,
   getSettings,
   isUnauthorized,
+  listHarnessModels,
   listProjects,
   listServices,
   listSessionProcesses,
@@ -41,6 +42,12 @@ export const sealantIdentityQuery = queryOptions({
 export const projectsQuery = queryOptions({
   queryKey: ["projects"],
   queryFn: listProjects,
+});
+
+export const harnessModelsQuery = queryOptions({
+  queryKey: ["harness-models"],
+  queryFn: listHarnessModels,
+  staleTime: 60_000,
 });
 
 export const projectDetailQuery = (id: string) =>

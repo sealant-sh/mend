@@ -17,6 +17,8 @@ import { useEvidenceTheme } from "@/theme/evidence";
 export interface SessionRowView {
   readonly id: string;
   readonly harness: string;
+  /** The model the session was started with; null when not recorded. */
+  readonly model: string | null;
   /** Display label — the project's name, not its id. */
   readonly projectId: string;
   readonly title: string;
@@ -109,7 +111,8 @@ export function SessionRow({
         }}
       >
         <MonoText tone="faint" size={11}>
-          {session.harness} · {session.projectId}
+          {session.harness}
+          {session.model === null ? "" : ` · ${session.model}`} · {session.projectId}
         </MonoText>
         <StatusWord tone={session.statusTone} word={session.statusWord} size={11} />
       </View>

@@ -40,8 +40,10 @@ tab, switching tabs, quitting the app or losing the network detaches without sto
 
 The launcher is the same composer the web app uses. Type the first message, pick the harness
 (`claude`, `codex` or `opencode`), the model, and settings such as thinking, permissions and the
-base branch, then start. Choices are remembered per project and harness. The default harness a
-project starts on is set in **Settings → Workbench**.
+base branch, then start. The model list is the server's (`mend models` prints it), the same one the
+phone, the web app and VS Code offer, with the server's default preselected. Choices are remembered
+per project and harness. The default harness a project starts on is set in **Settings → Workbench**.
+A session's tab bar shows the model it was started with beside its branch.
 
 For `claude` and `codex`, the composer's settings menu has **Runs as**: **Terminal** (the default)
 or **Conversation**. A conversation session runs the agent in protocol mode (codex app-server,

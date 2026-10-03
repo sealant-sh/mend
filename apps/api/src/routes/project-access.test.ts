@@ -120,6 +120,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "secretFiles.list",
   "secretFiles.save",
   "secretFiles.remove",
+  // The machine's model catalog: the same list for every account (harness-models.test.ts).
+  "harnessModels.list",
   "gitKeys.show",
   "gitKeys.init",
   "gitKeys.bridgeStatus",

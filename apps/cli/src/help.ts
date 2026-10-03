@@ -177,8 +177,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       { flag: "--name <worktree>", text: "name the worktree; an existing name joins it" },
       { flag: "--worktree <existing>", text: "join an existing worktree only" },
-      { flag: "--model <id>", text: "the harness's model id" },
-      { flag: "--effort <level>", text: "low, medium, high, xhigh, or max" },
+      {
+        flag: "--model <id>",
+        text: "the harness's model id, one mend models lists. Default: the server's default for the harness",
+      },
+      {
+        flag: "--effort <level>",
+        text: "low, medium, high, xhigh, max, or ultra where the model takes it. Default: the harness's own",
+      },
       { flag: "--base <ref>", text: "the branch or sha the worktree starts from" },
       { flag: "--ask", text: "keep the harness's permission prompts" },
       { flag: "--fast", text: "priority processing where the harness offers it (codex)" },
@@ -202,7 +208,23 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "a second session in the same worktree",
       },
     ],
-    see: ["attach", "stop", "run", "sessions", "land"],
+    see: ["attach", "stop", "run", "sessions", "land", "models"],
+  },
+  {
+    name: "models",
+    section: "start",
+    summary: "the models each harness offers, as the server lists them",
+    synopsis: ["[--json]"],
+    description: [
+      "One block per harness: each model's id, the one a launch runs when --model is not given, and the efforts a model takes where they are fewer than the harness's. The list is the server's; the phone, the web app, the desktop and VS Code offer the same one, and a session records which model it was started with.",
+      "Pass an id to mend claude or mend codex with --model. An id the list does not know is passed through as given; the harness decides whether it exists.",
+    ],
+    options: [{ flag: "--json", text: "the catalog as the server answers it" }],
+    examples: [
+      { command: "mend models", text: "" },
+      { command: 'mend codex "fix the flaky test" --model gpt-6-astra --effort ultra', text: "" },
+    ],
+    see: ["codex", "sessions"],
   },
   {
     name: "pair",

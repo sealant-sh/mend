@@ -2,10 +2,11 @@ import { Button } from "@mend/ui/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
 import { useContextMenu, type ContextMenuEntry, type ContextMenuSpec } from "@mend/ui/context-menu";
 import { cn } from "@mend/ui/lib/utils";
+import { MenuRadioGroup } from "@mend/ui/model-picker";
 import { AlarmClock, AlarmClockOff } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { ComposerMenu, ComposerPill, MenuRadioGroup, type MenuState } from "#/components/launcher";
+import { ComposerMenu, ComposerPill, type MenuState } from "#/components/launcher";
 import { FilesPane, PullRequestsPane, ServicesPane } from "#/components/project-panes";
 import { StatusDot, toneText } from "#/components/status-dot";
 import {

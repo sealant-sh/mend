@@ -104,6 +104,7 @@ import type {
   RequestIntent,
   RequestIntentSource,
   DiffDigest,
+  EffortLevel,
   ProtocolLaunchOptions,
   SessionControlKind,
   SessionExtraMount,
@@ -583,6 +584,30 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
  * The files ride the row as jsonb, like skills; `digest` is their tree digest, which a launch
  * compares with what the session's agent directory already holds.
  */
+/**
+ * The server-owned model catalog (docs/models-audit.md): one row per harness and model id, in the
+ * order pickers show them. `efforts` null means the harness's own; one `is_default` per harness.
+ * Seeded by migration 0101 from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
+ */
+export const harnessModels = pgTable(
+  "harness_models",
+  {
+    harness: text().notNull(),
+    id: text().notNull(),
+    label: text().notNull(),
+    isDefault: boolean().notNull().default(false),
+    efforts: jsonb().$type<ReadonlyArray<EffortLevel> | null>(),
+    position: integer().notNull(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.harness, table.id] }),
+    uniqueIndex("harness_models_one_default_idx")
+      .on(table.harness)
+      .where(sql`${table.isDefault}`),
+  ],
+);
+
 export const userPiProfiles = pgTable("user_pi_profiles", {
   userId: text().primaryKey(),
   files: jsonbArrayOf(PiProfileFile).notNull(),
@@ -1227,6 +1252,9 @@ export const agentSessions = pgTable(
       .notNull()
       .references(() => worktrees.id, { onDelete: "cascade" }),
     harness: text().notNull(),
+    /** The model and effort the session was started with, as the server resolved them (0101). */
+    model: text(),
+    effort: text().$type<EffortLevel>(),
     providerSessionId: text(),
     label: text(),
     /** Mirror of the worktree row's `directory` (pre-worktree readers). */
