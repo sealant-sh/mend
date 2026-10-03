@@ -31,7 +31,7 @@ on:
           - linux/arm64
           - linux/amd64,linux/arm64
       deploy:
-        description: "Deploy this preview on the box once it is built (the mend-box runner)"
+        description: "Deploy this preview on the box once it is built, over SSH"
         required: false
         type: boolean
         default: false
