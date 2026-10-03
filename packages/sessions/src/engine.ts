@@ -33,6 +33,7 @@ import {
   type SessionOutcome,
   ProjectServiceRecipesRepo,
   SessionProcessesRepo,
+  type NewSessionRun,
   SessionRunsRepo,
   SessionsRepo,
   AgentMemoryRepo,
@@ -70,6 +71,7 @@ import type {
   SessionOrigin,
   SessionProcess,
   SessionRun,
+  SessionStatus,
   Worktree,
 } from "@mend/domain/workbench";
 import {
@@ -718,6 +720,22 @@ const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
 const PLANNED_LAUNCH_ATTEMPTS = 3;
 /** A launch whose executor was created but never reached its harness, with no words of its own. */
 const LAUNCH_NEVER_RAN_SUMMARY = "launch failed · the harness never started";
+/**
+ * What a run left open under a session that moved on reads once the next run of the session
+ * starts: its end was never recorded, and nothing of it is live (`createSessionRun`).
+ */
+const RUN_SUPERSEDED_SUMMARY = "end not recorded · superseded by the next run";
+/** A settled session's status is one of the three outcomes; anything else is not settled. */
+const settledOutcomeOfStatus = (status: SessionStatus): SessionOutcome | null =>
+  status === "completed" || status === "failed" || status === "stopped" ? status : null;
+/** A run insert refused over a run of the session that is still live (`createSessionRun`). */
+const runActiveRefusal = (activeRun: SessionRun) =>
+  new SealantPlatformError({
+    code: "run_active",
+    status: 409,
+    message: `a run of this session is still open · ${activeRun.sealantRunId} · nothing started`,
+    cause: null,
+  });
 /** Every summary a launch that did not start leaves begins with this. */
 const LAUNCH_SUMMARY_PREFIX = "launch ";
 /**
@@ -3966,6 +3984,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (summary === null || summary === session.summary) return;
         const launchFailed = session.summary?.startsWith("launch failed") === true;
         yield* sessions.restate(sessionId, launchFailed ? "failed" : latest.outcome, summary);
+        // A run of it still open reads the restated words with it.
+        yield* settleRunsOfSettled(sessionId);
         yield* Effect.logInfo("session engine: capture mode · settled session restated").pipe(
           Effect.annotateLogs({ sessionId, before: session.summary, after: summary }),
         );
@@ -4857,7 +4877,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 session.sealantWorkspaceId === null &&
                 session.settledAt === null
               ) {
-                yield* sessions.settle(sessionId, "stopped", LAUNCH_CANCELLED_SUMMARY);
+                yield* settleSession(sessionId, "stopped", LAUNCH_CANCELLED_SUMMARY);
               }
               return "cancelled" as const;
             } else {
@@ -4943,7 +4963,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(Effect.annotateLogs({ sessionId, workspaceId, outcome }));
             return;
           }
-          yield* sessions.settle(sessionId, "stopped", LAUNCH_INTERRUPTED_SUMMARY);
+          yield* settleSession(sessionId, "stopped", LAUNCH_INTERRUPTED_SUMMARY);
           yield* Effect.logInfo(
             "session engine: capture mode · executor create · its answer was lost · its executor ended · stopped",
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId, outcome }));
@@ -5232,6 +5252,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const captureReaper = Effect.fn("SessionEngine.captureReaper")(function* () {
         if (capture === null) return;
+        yield* reconcileStaleRuns();
         yield* resolveExecutorCreates();
         const unanswered = new Set(
           (yield* sessions.listExecutorCreates()).map((pending) => pending.sessionId),
@@ -5430,6 +5451,144 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const secretFiles = yield* SecretFilesRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
+
+      // ── A session and its run never disagree ─────────────────────────────────
+      // `session_runs` is Mend's index over the records a session ran as: one open run per
+      // session (`session_runs_one_active_idx`). A session settled while its run stayed `running`
+      // (2026-10-03: a replacement launch that never reached its control socket, settled by the
+      // leftover sweep) met that index at every later resume, as an unhandled 500. So every
+      // settle of a session goes through `settleSession`, which settles the run with it; what was
+      // left inconsistent before is reconciled by `reconcileStaleRuns` at startup and on every
+      // reaper tick; and a run insert the index refuses is answered in words (`createSessionRun`).
+
+      /**
+       * A settled session's open run, if any, settles with the session's own outcome and
+       * summary. Only over a session that reads settled: one a stop drain holds reads `stopping`,
+       * unsettled, and keeps its run until the drain ends and the session settles for real. Never
+       * a run a live process row of the session still names: that is live work, and a session
+       * settled over it is the fold's to reopen, not this path's to end. Answers the run it
+       * settled, or null.
+       */
+      const settleRunsOfSettled = Effect.fn("SessionEngine.settleRunsOfSettled")(function* (
+        sessionId: SessionId,
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null || session.settledAt === null) return null;
+        const outcome = settledOutcomeOfStatus(session.status);
+        if (outcome === null) return null;
+        const activeRun = yield* sessionRuns.activeForSession(sessionId);
+        if (activeRun === null) return null;
+        const rows = yield* processes.listForSession(sessionId);
+        if (
+          rows.some(
+            (process) => isLiveProcess(process) && process.sealantRunId === activeRun.sealantRunId,
+          )
+        ) {
+          yield* Effect.logWarning(
+            "session engine: a settled session's run is carried by a live process · left open",
+          ).pipe(Effect.annotateLogs({ sessionId, sealantRunId: activeRun.sealantRunId }));
+          return null;
+        }
+        yield* sessionRuns.settle(activeRun.sealantRunId, outcome, session.summary);
+        return activeRun;
+      });
+
+      /**
+       * The one place a session settles (`SessionsRepo.settle`, first settle wins): its open run
+       * settles with it, with the words that stood. A path that settled the run first with words
+       * of its own (a stop, a lost executor, a run's own end) finds no open run here and keeps
+       * them.
+       */
+      const settleSession = Effect.fn("SessionEngine.settleSession")(function* (
+        sessionId: SessionId,
+        outcome: SessionOutcome,
+        summary: string | null,
+      ) {
+        yield* sessions.settle(sessionId, outcome, summary);
+        yield* settleRunsOfSettled(sessionId);
+      });
+
+      /**
+       * Runs left `running` under sessions that settled, each settled with its session's outcome
+       * and summary and said once. Startup runs it and the lease reaper every tick. A run whose
+       * session is not settled is live work, or the fold's to settle: left alone.
+       */
+      const reconcileStaleRuns = Effect.fn("SessionEngine.reconcileStaleRuns")(function* () {
+        for (const run of yield* sessionRuns.listActive()) {
+          const session = yield* sessions
+            .byId(run.sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (session === null || session.settledAt === null) continue;
+          const settled = yield* settleRunsOfSettled(session.id);
+          if (settled === null) continue;
+          yield* Effect.logInfo(
+            "session engine: a run left open under a settled session · settled with it",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              sealantRunId: settled.sealantRunId,
+              outcome: session.status,
+              summary: session.summary,
+            }),
+          );
+        }
+      });
+
+      /**
+       * Record a new run of a session (`SessionRunsRepo.create`). A run of the session still
+       * open refuses the insert; one nothing live carries (no live process row of the session
+       * names it) is stale, and settles first: with its session's words when the session reads
+       * settled, else from the process that ran it, else `failed · end not recorded`. The insert
+       * is then asked once more. A run a live process still carries is live work: the insert is
+       * refused in words, `run_active`, and nothing is settled.
+       */
+      const createSessionRun = Effect.fn("SessionEngine.createSessionRun")(function* (
+        input: NewSessionRun,
+      ) {
+        return yield* sessionRuns.create(input).pipe(
+          Effect.catchTag("SessionRunActiveError", (error) =>
+            Effect.gen(function* () {
+              const stale = error.activeRun;
+              const rows = yield* processes.listForSession(input.sessionId);
+              const carriers = rows.filter(
+                (process) => process.sealantRunId === stale.sealantRunId,
+              );
+              if (carriers.some(isLiveProcess)) return yield* runActiveRefusal(stale);
+              const settledWithSession = yield* settleRunsOfSettled(input.sessionId);
+              if (settledWithSession === null) {
+                const carrier = currentAgentProcess(carriers);
+                const outcome = carrier === null ? null : agentProcessOutcome(carrier);
+                yield* sessionRuns.settle(
+                  stale.sealantRunId,
+                  outcome ?? "failed",
+                  carrier !== null && carrier.exitCode !== null
+                    ? `exited with code ${carrier.exitCode}`
+                    : RUN_SUPERSEDED_SUMMARY,
+                );
+              }
+              yield* Effect.logWarning(
+                "session engine: a run left open settled before the next run of its session",
+              ).pipe(
+                Effect.annotateLogs({
+                  sessionId: input.sessionId,
+                  staleRunId: stale.sealantRunId,
+                  sealantRunId: input.sealantRunId,
+                }),
+              );
+              return yield* sessionRuns
+                .create(input)
+                .pipe(
+                  Effect.catchTag("SessionRunActiveError", (again) =>
+                    runActiveRefusal(again.activeRun),
+                  ),
+                );
+            }),
+          ),
+        );
+      });
+
       const services = yield* ServicesRepo;
       const serviceForwards = yield* ServiceForwardsRepo;
       const serviceObservations = yield* ServiceObservationsRepo;
@@ -5808,7 +5967,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (current.settledAt !== null) return;
           const sessionRun = yield* sessionRuns.bySealantRunId(sealantRunId);
           if (sessionRun === null) {
-            yield* sessions.settle(
+            yield* settleSession(
               sessionId,
               "failed",
               `run ${sealantRunId} is missing from the session record index`,
@@ -6048,13 +6207,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const session = yield* sessions.byId(sessionId);
         const existing = yield* sessionRuns.bySealantRunId(sealantRunId);
         if (existing === null) {
-          yield* sessionRuns.create({
+          // A run of the session still open and still live refuses this one: the session keeps
+          // the run it has, and the attach changes nothing. Said in the log, never raised.
+          const recorded = yield* createSessionRun({
             sessionId,
             harness: session.harness,
             sealantRunId,
             sealantWorkspaceId: workspaceId,
             sealantSessionId: null,
-          });
+          }).pipe(
+            Effect.as(true),
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.logWarning("session engine: attached run not recorded").pipe(
+                Effect.annotateLogs({ sessionId, sealantRunId, message: error.message }),
+                Effect.as(false),
+              ),
+            ),
+          );
+          if (!recorded) return;
         }
         yield* sessions.setSealantIds(sessionId, sealantRunId, workspaceId);
         yield* sessions.setStatus(sessionId, "running");
@@ -7066,7 +7236,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const { outcome, summary } = (yield* launchNeverRan(session, rows))
             ? { outcome: "failed" as const, summary: session.summary ?? LAUNCH_NEVER_RAN_SUMMARY }
             : yield* settledOutcomeOf(sessionId, rows);
-          yield* sessions.settle(sessionId, outcome, summary);
+          yield* settleSession(sessionId, outcome, summary);
         }
         if (options.sweep) yield* stopWorkspaceIfUnleased(sessionId);
         return liveness;
@@ -9889,7 +10059,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     : `executor create unresolved · the platform ${resolved === "unsupported" ? "cannot say" : "did not say"} whether this session's last create made an executor · nothing started · it may hold work not yet saved`,
                 cause: null,
               });
-              yield* sessions.settle(sessionId, "failed", error.message).pipe(Effect.ignore);
+              yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
               return yield* error;
             }
           }
@@ -9898,6 +10068,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
+        // A launch over a settled row (a failed first attempt retried) records a new run: one
+        // the settle left open takes the session's words first.
+        yield* settleRunsOfSettled(sessionId);
         const project = yield* projects.byId(session.projectId);
         const worktree = worktreePathOf(project.storePath, session.worktree);
         // A bash launch (shell session, shell resume) is an open workbench:
@@ -9965,7 +10138,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 message: `${captureStatusLine(drained) ?? "not saved · workspace kept"} · the previous workspace holds captures not yet saved · resume again once it saves, or discard unsaved and stop`,
                 cause: null,
               });
-              yield* sessions.settle(sessionId, "stopped", error.message).pipe(Effect.ignore);
+              yield* settleSession(sessionId, "stopped", error.message).pipe(Effect.ignore);
               return yield* error;
             }
             // The owner stopped the session while its old executor saved: nothing relaunches.
@@ -9988,9 +10161,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
           effect.pipe(
             Effect.tapError((error) =>
-              sessions
-                .settle(sessionId, "failed", `launch failed: ${error.message}`)
-                .pipe(Effect.ignore),
+              settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
+                Effect.ignore,
+              ),
             ),
           );
         // Everything runs as the OWNER: the account stamped at provision. A session with no owner
@@ -10073,7 +10246,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               message: waitedMinutes >= 1 ? `${message} · waited ${waitedMinutes} min` : message,
               cause: null,
             });
-            yield* sessions.settle(sessionId, "failed", error.message).pipe(Effect.ignore);
+            yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
             return yield* error;
           }
         }
@@ -10240,7 +10413,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             shape,
             ownerUserId,
             onFailure: (message) =>
-              sessions.settle(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
+              settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
             onCreated: (workspace) => acceptExecutor(workspace, key),
             abandon: abandonExecutor,
             launchId: key,
@@ -10329,7 +10502,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 message: `${captureStatusLine(drained) ?? "not saved · workspace kept"} · the claimed standby may hold work not yet saved · start again once it saves, or discard unsaved and stop`,
                 cause: null,
               });
-              yield* sessions.settle(sessionId, "failed", error.message).pipe(Effect.ignore);
+              yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
               return yield* error;
             }
             // Only an end the platform confirmed lets another executor start: then its lease is
@@ -10345,7 +10518,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   "the claimed standby's end is not observed yet · it may hold work not yet saved · nothing else started · start again once it has ended",
                 cause: null,
               });
-              yield* sessions.settle(sessionId, "failed", error.message).pipe(Effect.ignore);
+              yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
               return yield* error;
             }
             executorCreated = false;
@@ -10377,9 +10550,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               captured: true,
               restoredFrom: replanned.restoredFrom,
               onFailure: (message) =>
-                sessions
-                  .settle(sessionId, "failed", `launch failed: ${message}`)
-                  .pipe(Effect.ignore),
+                settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
               abandon: abandonExecutor,
               warmHarness: session.harness,
             });
@@ -10401,13 +10572,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .bindWorkspace(workspace, { subpath: session.worktree })
             .pipe(
               Effect.tapError((error) =>
-                sessions
-                  .settle(
-                    sessionId,
-                    "failed",
-                    `launch failed: could not bind the worktree — ${error.message}`,
-                  )
-                  .pipe(Effect.ignore),
+                settleSession(
+                  sessionId,
+                  "failed",
+                  `launch failed: could not bind the worktree — ${error.message}`,
+                ).pipe(Effect.ignore),
               ),
             );
           yield* bindLinkedProjects(workspace, project, ownerUserId);
@@ -10496,9 +10665,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (manifest.harness === session.harness) {
               yield* restore.pipe(
                 Effect.tapError((error) =>
-                  sessions
-                    .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                    .pipe(Effect.andThen(abandonExecutor(workspace, error.message)), Effect.ignore),
+                  settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
+                    Effect.andThen(abandonExecutor(workspace, error.message)),
+                    Effect.ignore,
+                  ),
                 ),
               );
             } else {
@@ -10539,9 +10709,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ".mend-native-import",
           ).pipe(
             Effect.tapError((error) =>
-              sessions
-                .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                .pipe(Effect.andThen(abandonExecutor(workspace, error.message)), Effect.ignore),
+              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
+                Effect.andThen(abandonExecutor(workspace, error.message)),
+                Effect.ignore,
+              ),
             ),
           );
         }
@@ -10723,14 +10894,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           settleOnFailure,
         );
         const sealantRunId = SealantRunId.make(pty.runId);
-        yield* sessionRuns.create({
+        // Refused in words only over a run of the session still live, which the gates above
+        // rule out: the PTY just opened closes, and its executor goes as after any failed launch.
+        yield* createSessionRun({
           sessionId,
           harness: session.harness,
           sealantRunId,
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
           ...environmentManifest,
-        });
+        }).pipe(
+          Effect.tapError((error) =>
+            closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id).pipe(
+              Effect.andThen(abandonExecutor(workspace, error.message)),
+            ),
+          ),
+        );
         yield* sessions.setSealantIds(
           sessionId,
           sealantRunId,
@@ -11273,6 +11452,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           executorOwnerUserId: string | null = null,
         ) {
           const session = yield* sessions.byId(sessionId);
+          // As at a cold launch: a run the session's settle left open takes its words first.
+          yield* settleRunsOfSettled(sessionId);
           const project = yield* projects.byId(session.projectId);
           const worktree = worktreePathOf(project.storePath, session.worktree);
           const workspace =
@@ -11306,9 +11487,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // every join or resume rather than start another process with an ephemeral HOME.
             yield* relocation.pipe(
               Effect.tapError((error) =>
-                sessions
-                  .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                  .pipe(Effect.ignore),
+                settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
+                  Effect.ignore,
+                ),
               ),
             );
           }
@@ -11362,14 +11543,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
             Effect.tapError((error) =>
-              sessions
-                .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                .pipe(Effect.ignore),
+              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
+                Effect.ignore,
+              ),
             ),
           );
           const sealantRunId = SealantRunId.make(pty.runId);
           const previousRun = yield* sessionRuns.latestForSession(sessionId);
-          yield* sessionRuns.create({
+          // Refused in words only over a run of the session still live: the PTY just opened in
+          // the retained workspace closes, and the workspace stays with what holds it.
+          yield* createSessionRun({
             sessionId,
             harness: session.harness,
             sealantRunId,
@@ -11383,7 +11566,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   secretRevision: previousRun.secretRevision,
                   secretNames: previousRun.secretNames,
                 }),
-          });
+          }).pipe(
+            Effect.tapError(() => closeProcessPty(SealantWorkspaceId.make(workspace.id), pty.id)),
+          );
           yield* sessions.setSealantIds(
             sessionId,
             sealantRunId,
@@ -11630,6 +11815,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
+        // A settled session resumes with no run of it open: one left `running` when it settled
+        // takes the session's words now, before the launch below records the next one.
+        yield* settleRunsOfSettled(sessionId);
         if (yield* agentIsLive(session)) {
           // Capture mode: "already live" holds only while the worktree lease does. An expired
           // lease with a dead executor is a PICKUP, never `session_active` — confirm the
@@ -11931,7 +12119,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const after = liveShells.length > 0 ? yield* processes.listForSession(sessionId) : rows;
           if (foldSessionLiveness(after) === "settled") {
-            yield* sessions.settle(sessionId, "stopped", summary);
+            yield* settleSession(sessionId, "stopped", summary);
           }
         }
         // A row that already carries settled_at but still reads active (rows
@@ -13801,6 +13989,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
+        // A run left open under a session that settled is settled with the session's words
+        // before anything re-attaches to it: it is not live work, and the next resume of its
+        // session would otherwise meet the one-active-run index.
+        yield* reconcileStaleRuns();
         const activeRuns = yield* sessionRuns.listActive();
         const reattached = new Set<string>();
         for (const sessionRun of activeRuns) {
@@ -13854,7 +14046,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* reconcileSession(session.id, { sweep: true }).pipe(Effect.ignore);
             continue;
           }
-          yield* sessions.settle(
+          yield* settleSession(
             session.id,
             "failed",
             "process restarted before the harness started",

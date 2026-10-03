@@ -1,11 +1,31 @@
 import { type SealantRunId, type SealantWorkspaceId, type SessionId } from "@mend/domain";
 import { SessionRun } from "@mend/domain/workbench";
 import { and, asc, desc, eq, isNull, lt, max } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { sessionRuns } from "../schema/workbench.ts";
+import { isUniqueViolation } from "./unique-violation.ts";
+
+/**
+ * The one-active-run index (`session_runs_one_active_idx`) refused the insert: a run of the
+ * session is still open. It is the one named here, as it stood when the insert was refused.
+ */
+export class SessionRunActiveError extends Schema.TaggedErrorClass<SessionRunActiveError>()(
+  "SessionRunActiveError",
+  {
+    sessionId: Schema.String,
+    /** The run the insert was for. */
+    sealantRunId: Schema.String,
+    /** The run that holds the index. */
+    activeRun: SessionRun,
+  },
+) {
+  override get message(): string {
+    return `a run of session ${this.sessionId} is still open (${this.activeRun.sealantRunId}); ${this.sealantRunId} was not recorded`;
+  }
+}
 
 export interface NewSessionRun {
   readonly sessionId: SessionId;
@@ -41,7 +61,11 @@ export type SessionRunOutcome = "completed" | "failed" | "stopped";
 export class SessionRunsRepo extends Context.Service<
   SessionRunsRepo,
   {
-    readonly create: (input: NewSessionRun) => Effect.Effect<SessionRun>;
+    /**
+     * One open run per session (`session_runs_one_active_idx`): an insert while another run of
+     * the session is unsettled answers `SessionRunActiveError` naming it, never a defect.
+     */
+    readonly create: (input: NewSessionRun) => Effect.Effect<SessionRun, SessionRunActiveError>;
     readonly bySealantRunId: (id: SealantRunId) => Effect.Effect<SessionRun | null>;
     readonly listForSession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<SessionRun>>;
     readonly latestForSession: (sessionId: SessionId) => Effect.Effect<SessionRun | null>;
@@ -62,6 +86,19 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
   SessionRunsRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
+
+    const activeForSession = Effect.fn("SessionRunsRepo.activeForSession")(function* (
+      sessionId: SessionId,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(sessionRuns)
+        .where(and(eq(sessionRuns.sessionId, sessionId), isNull(sessionRuns.settledAt)))
+        .orderBy(desc(sessionRuns.ordinal))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toSessionRun(row);
+    });
 
     const create = Effect.fn("SessionRunsRepo.create")((input: NewSessionRun) =>
       db
@@ -84,7 +121,24 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
             return toSessionRun(created);
           }),
         )
-        .pipe(Effect.orDie),
+        .pipe(
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              if (!isUniqueViolation(error)) return yield* Effect.die(error);
+              // Which unique key: the one-active index names the open run; the primary key or
+              // the ordinal collided otherwise, and that is a defect as before.
+              const activeRun = yield* activeForSession(input.sessionId);
+              if (activeRun === null || activeRun.sealantRunId === input.sealantRunId) {
+                return yield* Effect.die(error);
+              }
+              return yield* new SessionRunActiveError({
+                sessionId: input.sessionId,
+                sealantRunId: input.sealantRunId,
+                activeRun,
+              });
+            }),
+          ),
+        ),
     );
 
     const bySealantRunId = Effect.fn("SessionRunsRepo.bySealantRunId")(function* (
@@ -118,19 +172,6 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
         .select()
         .from(sessionRuns)
         .where(eq(sessionRuns.sessionId, sessionId))
-        .orderBy(desc(sessionRuns.ordinal))
-        .limit(1)
-        .pipe(Effect.orDie);
-      return row === undefined ? null : toSessionRun(row);
-    });
-
-    const activeForSession = Effect.fn("SessionRunsRepo.activeForSession")(function* (
-      sessionId: SessionId,
-    ) {
-      const [row] = yield* db
-        .select()
-        .from(sessionRuns)
-        .where(and(eq(sessionRuns.sessionId, sessionId), isNull(sessionRuns.settledAt)))
         .orderBy(desc(sessionRuns.ordinal))
         .limit(1)
         .pipe(Effect.orDie);
