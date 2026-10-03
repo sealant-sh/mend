@@ -663,6 +663,29 @@ export const agentMemoryVersions = pgTable(
   (table) => [primaryKey({ columns: [table.userId, table.projectId, table.path, table.digest] })],
 );
 
+/**
+ * What `mend memory import` last imported from one checkout on one machine (`source`), per file:
+ * the shared version the next import from there merges against. Contents for text, null for a
+ * binary file, whose digest is all a comparison needs.
+ */
+export const agentMemoryImportBases = pgTable(
+  "agent_memory_import_bases",
+  {
+    userId: text().notNull(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    source: text().notNull(),
+    path: text().notNull(),
+    digest: text().notNull(),
+    encoding: text().$type<"utf8" | "base64">().notNull(),
+    contents: text(),
+    importedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.projectId, table.source, table.path] })],
+);
+
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),

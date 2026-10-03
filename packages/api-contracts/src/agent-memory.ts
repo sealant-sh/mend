@@ -48,4 +48,13 @@ export const agentMemoryGroup = HttpApiGroup.make("agentMemory")
       error: NotFound,
     }),
   )
+  .add(
+    // What `import` would do with the same files, written nowhere: `mend memory import --dry-run`.
+    HttpApiEndpoint.post("importPlan", "/projects/:id/memory/import/plan", {
+      params: { id: ProjectId },
+      payload: AgentMemoryImport,
+      success: AgentMemoryImported,
+      error: NotFound,
+    }),
+  )
   .middleware(AuthMiddleware);

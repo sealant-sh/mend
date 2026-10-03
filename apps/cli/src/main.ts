@@ -18,7 +18,15 @@ import {
   validatePiProfile,
 } from "@mend/domain/workbench";
 
-import { claudeMemoryDirFor, scanClaudeMemory, scanCodexMemory } from "./agent-memory.ts";
+import {
+  claudeMemoryDirFor,
+  importReportCounts,
+  importReportLines,
+  type ImportReport,
+  importSourceFor,
+  scanClaudeMemory,
+  scanCodexMemory,
+} from "./agent-memory.ts";
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
@@ -2402,30 +2410,31 @@ const memoryImport = async (config: CliConfig, args: ReadonlyArray<string>) => {
       `codex memory · ${codex.home} · ${codex.summaries} conversation summar${codex.summaries === 1 ? "y" : "ies"} of this repository`,
     );
   }
-  if (args.includes("--dry-run")) {
-    for (const file of files) say(`  ${file.path.split("/memory/").at(-1) ?? file.path}`);
-    say(dim("  --dry-run: nothing sent"));
-    return;
-  }
+  // The same plan either way: a dry run asks the server what the import would do, and writes
+  // nothing. This checkout on this machine is named, so the next import from here merges against
+  // what this one sent.
+  const dryRun = args.includes("--dry-run");
+  const source = importSourceFor(mendCliHome(), repoRoot);
   const report = await withSpinner(
-    "importing",
-    api<{
-      readonly added: ReadonlyArray<string>;
-      readonly unchanged: ReadonlyArray<string>;
-      readonly conflicting: ReadonlyArray<string>;
-    }>(config, "POST", `/projects/${project.id}/memory/import`, { files }),
+    dryRun ? "planning" : "importing",
+    api<ImportReport>(
+      config,
+      "POST",
+      `/projects/${project.id}/memory/import${dryRun ? "/plan" : ""}`,
+      { files, source },
+    ),
   );
   say(
-    `${green("imported")} into ${project.name} · ${report.added.length} added · ${report.unchanged.length} unchanged${
-      report.conflicting.length === 0
-        ? ""
-        : ` · ${report.conflicting.length} already there with other contents, left as they are`
-    }`,
+    `${dryRun ? "would import" : green("imported")} into ${project.name} · ${importReportCounts(report)}`,
   );
-  for (const conflicting of report.conflicting) {
-    say(dim(`  kept Mend's ${conflicting.split("/memory/").at(-1) ?? conflicting}`));
-  }
-  say(dim("sessions in the project receive it from the next launch"));
+  for (const line of importReportLines(report)) say(dim(line));
+  say(
+    dim(
+      dryRun
+        ? "--dry-run: nothing written"
+        : "every version replaced is kept · sessions in the project receive it from the next launch",
+    ),
+  );
 };
 
 /** `mend memory`: what the agents remember about a project, for you. */

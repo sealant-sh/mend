@@ -6,7 +6,14 @@ import * as zlib from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { claudeMemoryDirFor, scanClaudeMemory, scanCodexMemory } from "./agent-memory.ts";
+import {
+  claudeMemoryDirFor,
+  importReportCounts,
+  importReportLines,
+  importSourceFor,
+  scanClaudeMemory,
+  scanCodexMemory,
+} from "./agent-memory.ts";
 
 const dirs: Array<string> = [];
 afterEach(() => {
@@ -141,5 +148,56 @@ describe("reading this machine's Codex memory for a repository", () => {
       ".codex/memories_1.sqlite",
       ".mend/codex-threads/in-repo.jsonl",
     ]);
+  });
+});
+
+describe("where an import comes from", () => {
+  it("names this checkout on this machine, with an id kept across imports", () => {
+    const config = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-config-"));
+    dirs.push(config);
+    const first = importSourceFor(config, "/home/you/code/app", "Yiannis's MacBook Pro");
+    expect(first.label).toBe("Yiannis-s-MacBook-Pro");
+    expect(first.id).toMatch(/^[0-9a-f-]{36}:\/home\/you\/code\/app$/);
+    expect(importSourceFor(config, "/home/you/code/app", "renamed").id).toBe(first.id);
+    expect(importSourceFor(config, "/home/you/code/other").id).not.toBe(first.id);
+  });
+});
+
+describe("what an import reports", () => {
+  const root = ".claude/projects/-workspace-repo/memory";
+  it("names every file that did not stay as it was, with why, and counts the rest", () => {
+    const report = {
+      added: [`${root}/new.md`],
+      unchanged: [`${root}/same.md`, `${root}/same-2.md`],
+      updated: [`${root}/build.md`],
+      merged: [
+        { path: `${root}/MEMORY.md`, against: "no-shared-version" as const },
+        { path: ".codex/memories_1.sqlite", against: "summaries" as const },
+      ],
+      keptStored: [`${root}/kept.md`],
+      removedInMend: [`${root}/gone.md`],
+      conflicting: [`${root}/diagram.png`],
+      skipped: [],
+    };
+    expect(importReportCounts(report)).toBe(
+      "1 added · 2 unchanged · 1 updated · 2 merged · 1 kept as Mend has it · 1 not added again · 1 conflict",
+    );
+    expect(importReportLines(report)).toEqual([
+      "  added     new.md",
+      "  updated   build.md · unchanged in Mend since this machine's last import",
+      "  merged    MEMORY.md · both sides' lines kept, no earlier import to compare against",
+      "  merged    codex:memories_1.sqlite · both sides' summaries kept, the newer one per conversation",
+      "  kept      kept.md · changed in Mend since this machine's last import, not here",
+      "  not added gone.md · removed in Mend since this machine's last import",
+      "  conflict  diagram.png · both changed, not mergeable: Mend's kept, this machine's kept as a version",
+    ]);
+  });
+
+  it("reads an older server's report, which has fewer lists", () => {
+    const report = { added: [], unchanged: [`${root}/a.md`], conflicting: [`${root}/b.md`] };
+    expect(importReportCounts(report)).toBe("1 unchanged · 1 conflict");
+    expect(importReportCounts({ added: [], unchanged: [], conflicting: [] })).toBe(
+      "nothing to import",
+    );
   });
 });

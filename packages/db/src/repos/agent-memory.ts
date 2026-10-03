@@ -6,16 +6,29 @@ import {
   agentMemoryMaxFileBytes,
   AGENT_MEMORY_MAX_FILES,
   AgentMemoryEntry,
+  type AgentMemoryImportMerge,
+  type AgentMemoryImportSource,
   agentMemoryNameOf,
+  CODEX_MEMORY_DATABASE,
+  isAgentMemoryIndex,
+  joinFrontmatter,
+  mergeFrontmatterLines,
   piProfileFileBytes,
+  splitFrontmatter,
+  unionLines,
   validateAgentMemoryPath,
+  withoutRepeatedLines,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
-import { agentMemoryFiles, agentMemoryVersions } from "../schema/workbench.ts";
+import {
+  agentMemoryFiles,
+  agentMemoryImportBases,
+  agentMemoryVersions,
+} from "../schema/workbench.ts";
 
 /**
  * Each person's agent memory per project (docs/adr/0009-agent-memory-per-person-per-project.md):
@@ -117,11 +130,91 @@ export interface AgentMemoryReadBack {
   readonly skipped: ReadonlyArray<string>;
 }
 
+/** What `mend memory import` last imported from one checkout on one machine, for one file. */
+export interface AgentMemoryImportBase {
+  readonly path: string;
+  readonly digest: string;
+  /** A text file's contents; null for a binary one. */
+  readonly contents: string | null;
+}
+
+/** One thing an import does to the store (docs/adr/0009, decision 4). */
+export type ImportStep =
+  | { readonly kind: "add"; readonly file: DigestedFile }
+  | { readonly kind: "unchanged"; readonly file: DigestedFile }
+  | { readonly kind: "update"; readonly file: DigestedFile; readonly replacing: StoredMemoryFile }
+  | { readonly kind: "keepStored"; readonly file: DigestedFile }
+  | { readonly kind: "removedInMend"; readonly file: DigestedFile }
+  | {
+      readonly kind: "merge";
+      readonly file: DigestedFile;
+      readonly stored: StoredMemoryFile;
+      /** What this machine sent last time, when it was text; null for no shared version. */
+      readonly base: string | null;
+    }
+  | {
+      readonly kind: "mergeDatabase";
+      readonly file: DigestedFile;
+      readonly stored: StoredMemoryFile;
+    }
+  | { readonly kind: "conflict"; readonly file: DigestedFile; readonly stored: StoredMemoryFile };
+
+type DigestedFile = MemoryFile & { readonly digest: string };
+
+/**
+ * What files from a person's machine do to the store (docs/adr/0009, decision 4). `bases` is what
+ * Mend last imported from the same checkout on the same machine; empty the first time, or from a
+ * CLI that does not say where it runs. Nothing either side wrote is dropped:
+ *
+ * - A file Mend does not have is added, unless Mend removed it since the last import and this
+ *   machine has not changed it since: then it is not added again.
+ * - A file one side changed since the last import takes that side's.
+ * - A file both changed, or any differing file with no last import, is merged: text keeping both
+ *   sides' lines (three-way against the last import when there is one), Codex's summary database
+ *   by conversation. Anything else is a conflict: Mend's stays.
+ *
+ * A file Mend has and this machine no longer sends is left in Mend.
+ */
+export const planAgentMemoryImport = (input: {
+  readonly files: ReadonlyArray<DigestedFile>;
+  readonly stored: ReadonlyMap<string, StoredMemoryFile>;
+  readonly bases: ReadonlyMap<string, AgentMemoryImportBase>;
+}): ReadonlyArray<ImportStep> =>
+  input.files.map((file): ImportStep => {
+    const stored = input.stored.get(file.path);
+    const base = input.bases.get(file.path);
+    if (stored === undefined) {
+      return base?.digest === file.digest ? { kind: "removedInMend", file } : { kind: "add", file };
+    }
+    if (stored.digest === file.digest) return { kind: "unchanged", file };
+    if (base?.digest === file.digest) return { kind: "keepStored", file };
+    if (base?.digest === stored.digest) return { kind: "update", file, replacing: stored };
+    if (file.encoding === "utf8" && stored.encoding === "utf8") {
+      return { kind: "merge", file, stored, base: base?.contents ?? null };
+    }
+    if (file.path === CODEX_MEMORY_DATABASE && file.encoding === stored.encoding) {
+      return { kind: "mergeDatabase", file, stored };
+    }
+    return { kind: "conflict", file, stored };
+  });
+
+/** What an import did, or would do (`AgentMemoryImported` on the wire). */
 export interface AgentMemoryImportReport {
   readonly added: ReadonlyArray<string>;
   readonly unchanged: ReadonlyArray<string>;
+  readonly updated: ReadonlyArray<string>;
+  readonly merged: ReadonlyArray<{
+    readonly path: string;
+    readonly against: AgentMemoryImportMerge["against"];
+  }>;
+  readonly keptStored: ReadonlyArray<string>;
+  readonly removedInMend: ReadonlyArray<string>;
   readonly conflicting: ReadonlyArray<string>;
+  readonly skipped: ReadonlyArray<string>;
 }
+
+/** A report's list, as an import fills it in. */
+type Mutable<K extends keyof AgentMemoryImportReport> = Array<AgentMemoryImportReport[K][number]>;
 
 /** Merges three versions of a text file; the session engine supplies it (`git merge-file`). */
 export type MergeText = (input: {
@@ -129,6 +222,56 @@ export type MergeText = (input: {
   readonly ours: string;
   readonly theirs: string;
 }) => Effect.Effect<string>;
+
+/**
+ * Merges two of Codex's summary databases, each conversation's newer summary from either; the
+ * server supplies it (SQLite). Null when the two cannot be merged (another schema, not a database).
+ */
+export type MergeDatabase = (input: {
+  readonly ours: Uint8Array;
+  readonly theirs: Uint8Array;
+}) => Effect.Effect<Uint8Array | null>;
+
+/**
+ * Two versions of a memory file merged keeping both sides' lines (docs/adr/0009): three-way with
+ * `merge` against `base`, else `unionLines`. Frontmatter on both sides is merged key by key, so a
+ * union never writes a key twice; a key both set differently keeps `ours` and notes `theirs` as a
+ * comment (`note`). An index (`MEMORY.md`) keeps each line once.
+ */
+export const mergeAgentMemoryText = (input: {
+  readonly path: string;
+  readonly ours: string;
+  readonly theirs: string;
+  /** The shared version; null (or empty) for none. */
+  readonly base: string | null;
+  readonly note: string;
+  readonly merge: MergeText;
+}): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const lines = (ours: string, theirs: string, base: string | null) =>
+      base === null || base === ""
+        ? Effect.succeed(unionLines(ours, theirs))
+        : input.merge({ base, ours, theirs });
+    const ours = splitFrontmatter(input.ours);
+    const theirs = splitFrontmatter(input.theirs);
+    const base = input.base === null ? null : splitFrontmatter(input.base);
+    const merged =
+      ours !== null && theirs !== null
+        ? joinFrontmatter({
+            lines: mergeFrontmatterLines({
+              ours: ours.lines,
+              theirs: theirs.lines,
+              base: base?.lines ?? null,
+              note: input.note,
+            }),
+            body: yield* lines(ours.body, theirs.body, base?.body ?? input.base),
+          })
+        : yield* lines(input.ours, input.theirs, input.base);
+    return isAgentMemoryIndex(input.path) ? withoutRepeatedLines(merged) : merged;
+  });
+
+/** `from <who>, <yyyy-mm-dd>`: who the second side of a merge came from, as its notes say. */
+const mergeNote = (who: string, at: Date) => `from ${who}, ${at.toISOString().slice(0, 10)}`;
 
 export class AgentMemoryRepo extends Context.Service<
   AgentMemoryRepo,
@@ -158,12 +301,20 @@ export class AgentMemoryRepo extends Context.Service<
       readonly session: ReadonlyArray<MemoryFile>;
       readonly merge: MergeText;
     }) => Effect.Effect<AgentMemoryReadBack>;
-    /** Files from the person's own machine: added where absent, never replacing a stored file. */
-    readonly importFiles: (
-      userId: string,
-      projectId: ProjectId,
-      files: ReadonlyArray<MemoryFile>,
-    ) => Effect.Effect<AgentMemoryImportReport>;
+    /**
+     * Files from the person's own machine (`planAgentMemoryImport`). With a `source`, what was
+     * imported is recorded as the next import's shared version. A dry run plans, merges and
+     * writes nothing.
+     */
+    readonly importFiles: (input: {
+      readonly userId: string;
+      readonly projectId: ProjectId;
+      readonly files: ReadonlyArray<MemoryFile>;
+      readonly source: Pick<AgentMemoryImportSource, "id" | "label"> | null;
+      readonly dryRun: boolean;
+      readonly merge: MergeText;
+      readonly mergeDatabase: MergeDatabase;
+    }) => Effect.Effect<AgentMemoryImportReport>;
   }
 >()("@mend/db/AgentMemoryRepo") {}
 
@@ -420,10 +571,15 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                         ),
                       )
                       .pipe(Effect.orDie);
-              const contents = yield* input.merge({
-                base: base?.contents ?? "",
+              // A file the session made itself, or whose delivered version is no longer kept, has
+              // no shared version: both sides' lines, each shared one once.
+              const contents = yield* mergeAgentMemoryText({
+                path: step.file.path,
                 ours: step.stored.contents,
                 theirs: step.file.contents,
+                base: base?.contents ?? null,
+                note: mergeNote(`session ${sessionId.slice(0, 8)}`, new Date()),
+                merge: input.merge,
               });
               yield* keepVersion(tx, userId, projectId, step.stored);
               yield* write(
@@ -441,11 +597,20 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    const importFiles = Effect.fn("AgentMemoryRepo.importFiles")(function* (
-      userId: string,
-      projectId: ProjectId,
-      files: ReadonlyArray<MemoryFile>,
-    ) {
+    const importFiles = Effect.fn("AgentMemoryRepo.importFiles")(function* (input: {
+      readonly userId: string;
+      readonly projectId: ProjectId;
+      readonly files: ReadonlyArray<MemoryFile>;
+      readonly source: Pick<AgentMemoryImportSource, "id" | "label"> | null;
+      readonly dryRun: boolean;
+      readonly merge: MergeText;
+      readonly mergeDatabase: MergeDatabase;
+    }) {
+      const { userId, projectId, source, dryRun } = input;
+      const kept = withinLimits(input.files);
+      const keptPaths = new Set(kept.map((file) => file.path));
+      const files = kept.map((file) => ({ ...file, digest: agentMemoryDigest(file) }));
+      const note = mergeNote(source?.label ?? "an import", new Date());
       return yield* db
         .transaction((tx) =>
           Effect.gen(function* () {
@@ -455,20 +620,186 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
               .from(agentMemoryFiles)
               .where(of(userId, projectId))
               .pipe(Effect.orDie);
-            const stored = new Map(rows.map((row) => [row.path, row.digest] as const));
-            const added: Array<string> = [];
-            const unchanged: Array<string> = [];
-            const conflicting: Array<string> = [];
-            for (const file of withinLimits(files)) {
-              const digest = stored.get(file.path);
-              if (digest === undefined) {
-                if (stored.size + added.length >= AGENT_MEMORY_MAX_FILES) break;
-                yield* write(tx, userId, projectId, file, null);
-                added.push(file.path);
-              } else if (digest === agentMemoryDigest(file)) unchanged.push(file.path);
-              else conflicting.push(file.path);
+            const stored = new Map(rows.map((row) => [row.path, toStored(row)] as const));
+            const baseRows =
+              source === null
+                ? []
+                : yield* tx
+                    .select()
+                    .from(agentMemoryImportBases)
+                    .where(
+                      and(
+                        eq(agentMemoryImportBases.userId, userId),
+                        eq(agentMemoryImportBases.projectId, projectId),
+                        eq(agentMemoryImportBases.source, source.id),
+                      ),
+                    )
+                    .pipe(Effect.orDie);
+            const bases = new Map(
+              baseRows.map((row) => [
+                row.path,
+                {
+                  path: row.path,
+                  digest: row.digest,
+                  contents: row.encoding === "utf8" ? row.contents : null,
+                },
+              ]),
+            );
+            const steps = planAgentMemoryImport({ files, stored, bases });
+            const report: { readonly [K in keyof AgentMemoryImportReport]: Mutable<K> } = {
+              added: [],
+              unchanged: [],
+              updated: [],
+              merged: [],
+              keptStored: [],
+              removedInMend: [],
+              conflicting: [],
+              skipped: input.files.map((file) => file.path).filter((p) => !keptPaths.has(p)),
+            };
+            /** Writes, skipped on a dry run. */
+            const apply = <A>(effect: Effect.Effect<A>) => (dryRun ? Effect.void : effect);
+            /** This file is now what the store holds from this machine: the next import's base. */
+            const recordBase = (file: DigestedFile) =>
+              source === null || bases.get(file.path)?.digest === file.digest
+                ? Effect.void
+                : apply(
+                    tx
+                      .insert(agentMemoryImportBases)
+                      .values({
+                        userId,
+                        projectId,
+                        source: source.id,
+                        path: file.path,
+                        digest: file.digest,
+                        encoding: file.encoding,
+                        contents: file.encoding === "utf8" ? file.contents : null,
+                      })
+                      .onConflictDoUpdate({
+                        target: [
+                          agentMemoryImportBases.userId,
+                          agentMemoryImportBases.projectId,
+                          agentMemoryImportBases.source,
+                          agentMemoryImportBases.path,
+                        ],
+                        set: {
+                          digest: file.digest,
+                          encoding: file.encoding,
+                          contents: file.encoding === "utf8" ? file.contents : null,
+                          importedAt: new Date(),
+                        },
+                      })
+                      .pipe(Effect.orDie),
+                  );
+            /** Mend's stays; this machine's is kept as a version, and its base is not moved. */
+            const conflict = (file: DigestedFile) =>
+              Effect.gen(function* () {
+                yield* apply(
+                  keepVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
+                );
+                report.conflicting.push(file.path);
+              });
+            /** Both sides' contents become `merged`; each is kept as a version. */
+            const replaceMerged = (
+              step: { file: DigestedFile; stored: StoredMemoryFile },
+              merged: MemoryFile,
+            ) =>
+              apply(
+                Effect.gen(function* () {
+                  yield* keepVersion(tx, userId, projectId, step.stored);
+                  yield* keepVersion(tx, userId, projectId, {
+                    ...step.file,
+                    updatedBySession: null,
+                  });
+                  yield* write(tx, userId, projectId, merged, null);
+                }),
+              );
+            let count = stored.size;
+            for (const step of steps) {
+              const { file } = step;
+              switch (step.kind) {
+                case "add": {
+                  if (count >= AGENT_MEMORY_MAX_FILES) {
+                    report.skipped.push(file.path);
+                    break;
+                  }
+                  count += 1;
+                  yield* apply(write(tx, userId, projectId, file, null));
+                  yield* recordBase(file);
+                  report.added.push(file.path);
+                  break;
+                }
+                case "unchanged": {
+                  yield* recordBase(file);
+                  report.unchanged.push(file.path);
+                  break;
+                }
+                case "update": {
+                  yield* apply(keepVersion(tx, userId, projectId, step.replacing));
+                  yield* apply(write(tx, userId, projectId, file, null));
+                  yield* recordBase(file);
+                  report.updated.push(file.path);
+                  break;
+                }
+                case "keepStored": {
+                  report.keptStored.push(file.path);
+                  break;
+                }
+                case "removedInMend": {
+                  report.removedInMend.push(file.path);
+                  break;
+                }
+                case "merge": {
+                  const contents = yield* mergeAgentMemoryText({
+                    path: file.path,
+                    ours: step.stored.contents,
+                    theirs: file.contents,
+                    base: step.base,
+                    note,
+                    merge: input.merge,
+                  });
+                  const merged = { path: file.path, encoding: "utf8" as const, contents };
+                  if (!storable(merged)) {
+                    yield* conflict(file);
+                    break;
+                  }
+                  if (contents !== step.stored.contents) yield* replaceMerged(step, merged);
+                  yield* recordBase(file);
+                  report.merged.push({
+                    path: file.path,
+                    against:
+                      step.base === null || step.base === "" ? "no-shared-version" : "last-import",
+                  });
+                  break;
+                }
+                case "mergeDatabase": {
+                  const bytes = yield* input.mergeDatabase({
+                    ours: piProfileFileBytes(step.stored) ?? new Uint8Array(),
+                    theirs: piProfileFileBytes(file) ?? new Uint8Array(),
+                  });
+                  const merged =
+                    bytes === null
+                      ? null
+                      : {
+                          path: file.path,
+                          encoding: "base64" as const,
+                          contents: Buffer.from(bytes).toString("base64"),
+                        };
+                  if (merged === null || !storable(merged)) {
+                    yield* conflict(file);
+                    break;
+                  }
+                  yield* replaceMerged(step, merged);
+                  yield* recordBase(file);
+                  report.merged.push({ path: file.path, against: "summaries" });
+                  break;
+                }
+                case "conflict": {
+                  yield* conflict(file);
+                  break;
+                }
+              }
             }
-            return { added, unchanged, conflicting };
+            return report;
           }),
         )
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));

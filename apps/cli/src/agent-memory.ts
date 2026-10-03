@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,6 +9,7 @@ import {
   AGENT_MEMORY_MAX_DATABASE_BYTES,
   AGENT_MEMORY_MAX_FILE_BYTES,
   AGENT_MEMORY_ROOTS,
+  agentMemoryNameOf,
   CODEX_MEMORY_DATABASE,
 } from "@mend/domain/workbench";
 
@@ -89,6 +91,122 @@ export const scanClaudeMemory = (dir: string): ClaudeMemoryScan => {
   walk(dir, "");
   return { dir, files, notes };
 };
+
+/**
+ * This machine's id for imports, made once and kept beside the CLI's config: Mend records what it
+ * last imported from each checkout on each machine and merges the next import from there against
+ * it. A machine without the file gets a new id, and its next import merges with no shared version,
+ * which keeps both sides' lines all the same.
+ */
+export const machineIdFor = (configDir: string): string => {
+  const file = path.join(configDir, "machine-id");
+  try {
+    const existing = fs.readFileSync(file, "utf8").trim();
+    if (existing !== "") return existing;
+  } catch {
+    // None yet.
+  }
+  const id = randomUUID();
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(file, `${id}\n`, { mode: 0o600 });
+  return id;
+};
+
+/** Where an import comes from: this checkout on this machine, named by the host. */
+export const importSourceFor = (
+  configDir: string,
+  repoRoot: string,
+  hostname: string = os.hostname(),
+): { readonly id: string; readonly label: string } => ({
+  id: `${machineIdFor(configDir)}:${repoRoot}`.slice(0, 1024),
+  label: hostname.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 64) || "this machine",
+});
+
+/** What an import did, or would do, as the server reports it; an older server sends less. */
+export interface ImportReport {
+  readonly added: ReadonlyArray<string>;
+  readonly unchanged: ReadonlyArray<string>;
+  readonly updated?: ReadonlyArray<string>;
+  readonly merged?: ReadonlyArray<{
+    readonly path: string;
+    readonly against: "last-import" | "no-shared-version" | "summaries";
+  }>;
+  readonly keptStored?: ReadonlyArray<string>;
+  readonly removedInMend?: ReadonlyArray<string>;
+  readonly conflicting: ReadonlyArray<string>;
+  readonly skipped?: ReadonlyArray<string>;
+}
+
+/** A memory path as `mend memory` names it: Claude's by name, another harness's as `codex:name`. */
+export const memoryDisplayName = (filePath: string): string => {
+  const named = agentMemoryNameOf(filePath);
+  if (named === null) return filePath;
+  return named.harness === "claude" ? named.name : `${named.harness}:${named.name}`;
+};
+
+/** At most this many added files are named one by one. */
+const ADDED_NAMED = 20;
+
+/**
+ * The lines `mend memory import` prints for a report, after its summary line: one per file that
+ * did not stay as it was, with what happened and why. A dry run prints the same.
+ */
+export const importReportLines = (report: ImportReport): ReadonlyArray<string> => {
+  const lines: Array<string> = [];
+  const row = (word: string, filePath: string, why?: string) =>
+    lines.push(
+      `  ${word.padEnd(9)} ${memoryDisplayName(filePath)}${why === undefined ? "" : ` · ${why}`}`,
+    );
+  report.added.slice(0, ADDED_NAMED).forEach((p) => row("added", p));
+  if (report.added.length > ADDED_NAMED) {
+    lines.push(`  ${"added".padEnd(9)} and ${report.added.length - ADDED_NAMED} more`);
+  }
+  for (const p of report.updated ?? []) {
+    row("updated", p, "unchanged in Mend since this machine's last import");
+  }
+  for (const merge of report.merged ?? []) {
+    row(
+      "merged",
+      merge.path,
+      merge.against === "last-import"
+        ? "both changed since this machine's last import, both sides' lines kept"
+        : merge.against === "summaries"
+          ? "both sides' summaries kept, the newer one per conversation"
+          : "both sides' lines kept, no earlier import to compare against",
+    );
+  }
+  for (const p of report.keptStored ?? []) {
+    row("kept", p, "changed in Mend since this machine's last import, not here");
+  }
+  for (const p of report.removedInMend ?? []) {
+    row("not added", p, "removed in Mend since this machine's last import");
+  }
+  for (const p of report.conflicting) {
+    row(
+      "conflict",
+      p,
+      "both changed, not mergeable: Mend's kept, this machine's kept as a version",
+    );
+  }
+  for (const p of report.skipped ?? []) row("skipped", p, "outside the memory limits");
+  return lines;
+};
+
+/** The summary line's counts: only those that are not zero. */
+export const importReportCounts = (report: ImportReport): string =>
+  [
+    [report.added.length, "added"],
+    [report.unchanged.length, "unchanged"],
+    [report.updated?.length ?? 0, "updated"],
+    [report.merged?.length ?? 0, "merged"],
+    [report.keptStored?.length ?? 0, "kept as Mend has it"],
+    [report.removedInMend?.length ?? 0, "not added again"],
+    [report.conflicting.length, report.conflicting.length === 1 ? "conflict" : "conflicts"],
+    [report.skipped?.length ?? 0, "skipped"],
+  ]
+    .filter(([count]) => count !== 0)
+    .map(([count, word]) => `${count} ${word}`)
+    .join(" · ") || "nothing to import";
 
 /** Where `mend memory import` keeps each imported summary's conversation line (docs/adr/0009). */
 const CODEX_THREADS_ROOT =

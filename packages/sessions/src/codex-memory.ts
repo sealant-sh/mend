@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
 
+import type { MergeDatabase } from "@mend/db";
 import { CODEX_MEMORY_DATABASE } from "@mend/domain/workbench";
 import { Effect } from "effect";
 
@@ -241,6 +242,60 @@ export const consolidateCodexDatabase = (
       try {
         const verdict = check.prepare("pragma integrity_check").get();
         if (verdict?.["integrity_check"] !== "ok") return null;
+      } finally {
+        check.close();
+      }
+      return new Uint8Array(await fs.readFile(out));
+    } catch {
+      return null;
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+/**
+ * Two of Codex's summary databases as one (docs/adr/0009, decision 4): `ours` with every summary
+ * `theirs` holds of a conversation `ours` has not summarised, or has summarised at an older
+ * revision. Everything else (Codex's jobs, its consolidation state) stays `ours`'. Null when the
+ * two do not open as databases or their `stage1_outputs` columns differ (another Codex version):
+ * the caller keeps `ours` then.
+ */
+export const mergeCodexDatabases: MergeDatabase = ({ ours, theirs }) =>
+  Effect.promise(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mend-codex-merge-"));
+    try {
+      const mine = path.join(dir, "ours.sqlite");
+      const other = path.join(dir, "theirs.sqlite");
+      const out = path.join(dir, "merged.sqlite");
+      await fs.writeFile(mine, ours);
+      await fs.writeFile(other, theirs);
+      const db = new DatabaseSync(mine);
+      try {
+        db.exec(`attach database '${other.replaceAll("'", "''")}' as theirs`);
+        const columns = (schema: string) =>
+          db
+            .prepare("select name from pragma_table_info('stage1_outputs', ?) order by cid")
+            .all(schema)
+            .map((row) => String(row["name"]))
+            .join(",");
+        const own = columns("main");
+        if (own === "" || own !== columns("theirs") || !own.split(",").includes("thread_id")) {
+          return null;
+        }
+        db.exec(`delete from main.stage1_outputs where thread_id in (
+          select t.thread_id from theirs.stage1_outputs t
+          join main.stage1_outputs m on m.thread_id = t.thread_id
+          where t.source_updated_at > m.source_updated_at)`);
+        db.exec("insert or ignore into main.stage1_outputs select * from theirs.stage1_outputs");
+        db.exec("detach database theirs");
+        db.exec(`vacuum into '${out.replaceAll("'", "''")}'`);
+      } finally {
+        db.close();
+      }
+      const check = new DatabaseSync(out, { readOnly: true });
+      try {
+        if (check.prepare("pragma integrity_check").get()?.["integrity_check"] !== "ok")
+          return null;
       } finally {
         check.close();
       }

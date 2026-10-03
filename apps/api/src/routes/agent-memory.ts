@@ -3,10 +3,13 @@ import { AgentMemoryRepo } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
 import {
   AgentMemoryFileView,
+  type AgentMemoryImport,
   AgentMemoryImported,
+  AgentMemoryImportMerge,
   AgentMemoryRemoved,
   AgentMemoryView,
 } from "@mend/domain/workbench";
+import { mergeCodexDatabases, mergeTextUnion } from "@mend/sessions";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -20,6 +23,25 @@ const caller = (projectId: ProjectId) =>
   Effect.gen(function* () {
     yield* (yield* ProjectAccess).project(projectId);
     return (yield* CurrentUser).user.id;
+  });
+
+/** An import, or its plan: merged as Mend merges a session's read-back (docs/adr/0009). */
+const importFiles = (projectId: ProjectId, payload: AgentMemoryImport, dryRun: boolean) =>
+  Effect.gen(function* () {
+    const userId = yield* caller(projectId);
+    const report = yield* (yield* AgentMemoryRepo).importFiles({
+      userId,
+      projectId,
+      files: payload.files,
+      source: payload.source ?? null,
+      dryRun,
+      merge: mergeTextUnion,
+      mergeDatabase: mergeCodexDatabases,
+    });
+    return new AgentMemoryImported({
+      ...report,
+      merged: report.merged.map((merge) => new AgentMemoryImportMerge(merge)),
+    });
   });
 
 export const AgentMemoryGroupLive = HttpApiBuilder.group(MendApi, "agentMemory", (handlers) =>
@@ -51,12 +73,6 @@ export const AgentMemoryGroupLive = HttpApiBuilder.group(MendApi, "agentMemory",
         return new AgentMemoryRemoved({ removed });
       }),
     )
-    .handle("import", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const userId = yield* caller(params.id);
-        return new AgentMemoryImported(
-          yield* (yield* AgentMemoryRepo).importFiles(userId, params.id, payload.files),
-        );
-      }),
-    ),
+    .handle("import", ({ params, payload }) => importFiles(params.id, payload, false))
+    .handle("importPlan", ({ params, payload }) => importFiles(params.id, payload, true)),
 );

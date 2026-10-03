@@ -14,6 +14,7 @@ import {
   codexWouldSummarise,
   consolidateCodexDatabase,
   materializeCarriedConversations,
+  mergeCodexDatabases,
   parseCarryOutcomes,
   planCodexCarry,
   prepareCarriedConversations,
@@ -186,6 +187,54 @@ describe("Codex's summary database", () => {
     db.close();
     const read = await Effect.runPromise(summarisedThreads(fs.readFileSync(file)));
     expect([...read.keys()]).toEqual([id(2), id(3), id(1)]);
+  });
+
+  it("merges an imported database by conversation: the newer summary of each, from either", async () => {
+    const database = (rows: ReadonlyArray<readonly [string, number, string]>, extra = "") => {
+      const file = path.join(scratch(), "memories_1.sqlite");
+      const db = new DatabaseSync(file);
+      db.exec(
+        `create table stage1_outputs (thread_id text primary key, source_updated_at integer not null, raw_memory text not null${extra})`,
+      );
+      const insert = db.prepare(
+        `insert into stage1_outputs values (?, ?, ?${extra === "" ? "" : ", null"})`,
+      );
+      for (const row of rows) insert.run(...row);
+      db.close();
+      return new Uint8Array(fs.readFileSync(file));
+    };
+    const ours = database([
+      [id(1), 100, "mend's only"],
+      [id(2), 300, "mend's newer"],
+      [id(3), 100, "mend's older"],
+    ]);
+    const theirs = database([
+      [id(2), 200, "laptop's older"],
+      [id(3), 200, "laptop's newer"],
+      [id(4), 100, "laptop's only"],
+    ]);
+    const merged = await Effect.runPromise(mergeCodexDatabases({ ours, theirs }));
+    if (merged === null) throw new Error("the two merge");
+    const file = path.join(scratch(), "merged.sqlite");
+    fs.writeFileSync(file, merged);
+    const db = new DatabaseSync(file, { readOnly: true });
+    const rows = db
+      .prepare("select thread_id, raw_memory from stage1_outputs order by thread_id")
+      .all()
+      .map((row) => [row["thread_id"], row["raw_memory"]]);
+    db.close();
+    expect(rows).toEqual([
+      [id(1), "mend's only"],
+      [id(2), "mend's newer"],
+      [id(3), "laptop's newer"],
+      [id(4), "laptop's only"],
+    ]);
+    // Another Codex's columns, or bytes that are not a database: not merged.
+    const other = database([[id(5), 1, "x"]], ", usage_count integer");
+    expect(await Effect.runPromise(mergeCodexDatabases({ ours, theirs: other }))).toBeNull();
+    expect(
+      await Effect.runPromise(mergeCodexDatabases({ ours, theirs: Buffer.from("torn") })),
+    ).toBeNull();
   });
 
   it("stores nothing for bytes that are not a database, and reads them as nothing summarised", async () => {

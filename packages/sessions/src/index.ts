@@ -23,3 +23,5 @@ export * from "./session-socket.ts";
 export * from "./session-channel.ts";
 export { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
 export * from "./run-eligibility.ts";
+export { mergeTextUnion } from "./agent-memory.ts";
+export { mergeCodexDatabases } from "./codex-memory.ts";

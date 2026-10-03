@@ -2931,6 +2931,27 @@ const turnOriginMigration = Effect.gen(function* () {
       ADD CONSTRAINT agent_turns_origin_check CHECK (origin IN ('request', 'harness'))`;
 });
 
+/**
+ * 0106: what `mend memory import` last imported from each checkout on each machine
+ * (docs/adr/0009, decision 4), so the next import from there merges three-way against it instead
+ * of with no shared version. A text file's contents are kept; a binary one's digest is enough.
+ */
+const agentMemoryImportBasesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE agent_memory_import_bases (
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      source text NOT NULL,
+      path text NOT NULL,
+      digest text NOT NULL,
+      encoding text NOT NULL,
+      contents text,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, project_id, source, path)
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3037,4 +3058,5 @@ export const migrations = {
   "0103_session_repositories": sessionRepositoriesMigration,
   "0104_landing_pull_request_title": landingPullRequestTitleMigration,
   "0105_turn_origin": turnOriginMigration,
+  "0106_agent_memory_import_bases": agentMemoryImportBasesMigration,
 };

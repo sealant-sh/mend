@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { PgClient } from "@effect/sql-pg";
 import type { ProjectId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
@@ -11,6 +16,8 @@ import {
   AgentMemoryRepoLive,
   agentMemoryDigest,
   type MergeText,
+  mergeAgentMemoryText,
+  planAgentMemoryImport,
   planAgentMemoryReadBack,
   type StoredMemoryFile,
 } from "../src/repos/agent-memory.ts";
@@ -92,6 +99,154 @@ describe("reading a session's memory back", () => {
   });
 });
 
+/** What the last import from this machine sent: `file`. */
+const baseOf = (file: ReturnType<typeof text>) =>
+  new Map([
+    [file.path, { path: file.path, digest: agentMemoryDigest(file), contents: file.contents }],
+  ]);
+
+const binary = (path: string, bytes: string) => {
+  const file = {
+    path,
+    encoding: "base64" as const,
+    contents: Buffer.from(bytes).toString("base64"),
+  };
+  return { ...file, digest: agentMemoryDigest(file) };
+};
+
+/** A Claude topic note with frontmatter. */
+const note = (description: string, body: string) =>
+  `---\nname: Build\ndescription: ${description}\ntype: project\n---\n${body}`;
+
+describe("importing memory from a machine", () => {
+  const mend = text("MEMORY.md", "- [a](a.md)\n- [mend](mend.md)\n");
+  const laptop = text("MEMORY.md", "- [a](a.md)\n- [laptop](laptop.md)\n");
+  const before = text("MEMORY.md", "- [a](a.md)\n");
+  const plan = (
+    files: ReadonlyArray<ReturnType<typeof text>>,
+    storedFiles: ReadonlyArray<StoredMemoryFile>,
+    bases: ReturnType<typeof baseOf> = new Map(),
+  ) =>
+    planAgentMemoryImport({
+      files: files.map(withDigest),
+      stored: new Map(storedFiles.map((file) => [file.path, file])),
+      bases,
+    }).map((step) => step.kind);
+
+  it("leaves a file the same on both sides", () => {
+    expect(plan([mend], [stored(mend)])).toEqual(["unchanged"]);
+  });
+
+  it("adds a file only this machine has, and leaves one only Mend has", () => {
+    const only = text("notes.md", "pnpm\n");
+    expect(plan([only], [stored(mend)])).toEqual(["add"]);
+    expect(plan([], [stored(mend)])).toEqual([]);
+  });
+
+  it("merges a file both changed with no earlier import, with no shared version", () => {
+    const steps = planAgentMemoryImport({
+      files: [withDigest(laptop)],
+      stored: new Map([[mend.path, stored(mend, "s1")]]),
+      bases: new Map(),
+    });
+    expect(steps).toEqual([
+      { kind: "merge", file: withDigest(laptop), stored: stored(mend, "s1"), base: null },
+    ]);
+  });
+
+  it("merges a file both changed since the last import against it", () => {
+    const steps = planAgentMemoryImport({
+      files: [withDigest(laptop)],
+      stored: new Map([[mend.path, stored(mend)]]),
+      bases: baseOf(before),
+    });
+    expect(steps).toEqual([
+      { kind: "merge", file: withDigest(laptop), stored: stored(mend), base: before.contents },
+    ]);
+  });
+
+  it("takes whichever side alone changed since the last import", () => {
+    expect(plan([laptop], [stored(before)], baseOf(before))).toEqual(["update"]);
+    expect(plan([laptop], [stored(mend)], baseOf(laptop))).toEqual(["keepStored"]);
+  });
+
+  it("does not add again what Mend removed since, unless this machine changed it", () => {
+    expect(plan([laptop], [], baseOf(laptop))).toEqual(["removedInMend"]);
+    expect(plan([laptop], [], baseOf(before))).toEqual(["add"]);
+  });
+
+  it("merges Codex's summary database by conversation, and nothing else that is not text", () => {
+    const kinds = planAgentMemoryImport({
+      files: [binary(".codex/memories_1.sqlite", "laptop"), binary(`${ROOT}/a.png`, "laptop")],
+      stored: new Map(
+        [binary(".codex/memories_1.sqlite", "mend"), binary(`${ROOT}/a.png`, "mend")].map((f) => [
+          f.path,
+          { ...f, updatedBySession: null },
+        ]),
+      ),
+      bases: new Map(),
+    }).map((step) => step.kind);
+    expect(kinds).toEqual(["mergeDatabase", "conflict"]);
+  });
+
+  const merge = (input: { ours: string; theirs: string; base: string | null; path?: string }) =>
+    Effect.runPromise(
+      mergeAgentMemoryText({
+        path: input.path ?? `${ROOT}/build.md`,
+        ours: input.ours,
+        theirs: input.theirs,
+        base: input.base,
+        note: "from laptop, 2026-10-04",
+        merge: gitUnion,
+      }),
+    );
+
+  it("merges a note's frontmatter key by key and its body by line, with no shared version", async () => {
+    expect(
+      await merge({
+        ours: note("pnpm, not npm", "- pnpm install\n- mend: pnpm test\n"),
+        theirs: note("pnpm 11, not npm", "- pnpm install\n- laptop: pnpm lint\n"),
+        base: null,
+      }),
+    ).toBe(
+      [
+        "---",
+        "name: Build",
+        "description: pnpm, not npm",
+        "# from laptop, 2026-10-04: description: pnpm 11, not npm",
+        "type: project",
+        "---",
+        "- pnpm install",
+        "- mend: pnpm test",
+        "- laptop: pnpm lint",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("merges a note against the last import: one side's frontmatter change wins, bodies three-way", async () => {
+    const base = note("old", "- one\n- two\n- three\n");
+    expect(
+      await merge({
+        ours: note("old", "- one\n- two\n- three\n- mend\n"),
+        theirs: note("new", "- zero\n- one\n- two\n- three\n"),
+        base,
+      }),
+    ).toBe(note("new", "- zero\n- one\n- two\n- three\n- mend\n"));
+  });
+
+  it("keeps each line of a merged index once", async () => {
+    expect(
+      await merge({
+        path: `${ROOT}/MEMORY.md`,
+        ours: "- [a](a.md)\n- [b](b.md)\n",
+        theirs: "- [b](b.md)\n- [a](a.md)\n- [c](c.md)\n",
+        base: null,
+      }),
+    ).toBe("- [a](a.md)\n- [b](b.md)\n- [c](c.md)\n");
+  });
+});
+
 /**
  * Against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database. Without one
  * reachable these skip rather than pretend; set MEND_TEST_DATABASE_URL elsewhere.
@@ -129,7 +284,59 @@ const reachable = await withAdmin(
 const unionMerge: MergeText = ({ ours, theirs }) =>
   Effect.succeed([...new Set([...ours.split("\n"), ...theirs.split("\n")])].join("\n"));
 
+/** The server's three-way merge (`git merge-file --union`), recording the base it was given. */
+let lastMergeBase: string | null = null;
+const gitUnion: MergeText = ({ base, ours, theirs }) =>
+  Effect.sync(() => {
+    lastMergeBase = base;
+    const dir = mkdtempSync(join(tmpdir(), "mend-memory-test-"));
+    try {
+      writeFileSync(join(dir, "ours"), ours);
+      writeFileSync(join(dir, "base"), base);
+      writeFileSync(join(dir, "theirs"), theirs);
+      return spawnSync("git", ["merge-file", "-p", "--union", "ours", "base", "theirs"], {
+        cwd: dir,
+        encoding: "utf8",
+      }).stdout;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
 const project = "project-1" as ProjectId;
+
+const nothing = {
+  added: [],
+  unchanged: [],
+  updated: [],
+  merged: [],
+  keptStored: [],
+  removedInMend: [],
+  conflicting: [],
+  skipped: [],
+};
+
+/** An import as `mend memory import` on the laptop sends it. */
+const importing = (
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly encoding: "utf8" | "base64";
+    readonly contents: string;
+  }>,
+  options: {
+    readonly dryRun?: boolean;
+    readonly source?: { readonly id: string; readonly label: string } | null;
+  } = {},
+) => ({
+  userId: "anna",
+  projectId: project,
+  files,
+  source:
+    options.source === undefined ? { id: "machine-1:/code/repo", label: "laptop" } : options.source,
+  dryRun: options.dryRun ?? false,
+  merge: gitUnion,
+  mergeDatabase: () => Effect.succeed(null),
+});
 
 describe.skipIf(!reachable)("agent memory, in Postgres", () => {
   beforeAll(async () => {
@@ -169,10 +376,9 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         const repo = yield* AgentMemoryRepo;
         const sql = yield* SqlClient.SqlClient;
         const v1 = text("MEMORY.md", "- one");
-        expect(yield* repo.importFiles("anna", project, [v1])).toEqual({
+        expect(yield* repo.importFiles(importing([v1], { source: null }))).toEqual({
+          ...nothing,
           added: [v1.path],
-          unchanged: [],
-          conflicting: [],
         });
         // Two sessions receive v1; each adds a line.
         const delivered = { [v1.path]: agentMemoryDigest(v1) };
@@ -264,18 +470,151 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
     );
   });
 
-  it("imports only what is absent, and goes with the account", async () => {
+  it("merges a drifted MEMORY.md, then merges the next import against this one", async () => {
     await run(
       Effect.gen(function* () {
         const repo = yield* AgentMemoryRepo;
         const sql = yield* SqlClient.SqlClient;
-        yield* repo.importFiles("anna", project, [text("a.md", "a")]);
-        expect(
-          yield* repo.importFiles("anna", project, [text("a.md", "a"), text("a.md", "changed")]),
-        ).toEqual({ added: [], unchanged: [`${ROOT}/a.md`], conflicting: [`${ROOT}/a.md`] });
+        const index = (contents: string) => text("MEMORY.md", contents);
+        // Mend's copy, as its sessions left it.
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-mend",
+          delivered: {},
+          session: [index("# Memory\n- [a](a.md) — a\n- [mend](mend.md) — from Mend\n")],
+          merge: unionMerge,
+        });
+        const laptop = index(
+          "# Memory\n- [a](a.md) — a\n- [laptop](laptop.md) — from the laptop\n",
+        );
+        // A dry run plans the same and writes nothing.
+        const planned = yield* repo.importFiles(importing([laptop], { dryRun: true }));
+        expect(planned).toEqual({
+          ...nothing,
+          merged: [{ path: laptop.path, against: "no-shared-version" }],
+        });
+        expect(yield* sql`SELECT 1 FROM agent_memory_import_bases`).toEqual([]);
+        expect(yield* repo.importFiles(importing([laptop]))).toEqual(planned);
+        const first =
+          "# Memory\n- [a](a.md) — a\n- [mend](mend.md) — from Mend\n- [laptop](laptop.md) — from the laptop\n";
+        expect((yield* repo.read("anna", project, laptop.path))?.file.contents).toBe(first);
+        // Both sides' copies are kept as versions.
+        const kept = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_versions WHERE path = ${laptop.path}`;
+        expect(kept.map((row) => row.contents)).toContain(laptop.contents);
+
+        // The same laptop again, unchanged: Mend's stays.
+        expect(yield* repo.importFiles(importing([laptop]))).toEqual({
+          ...nothing,
+          unchanged: [],
+          keptStored: [laptop.path],
+        });
+
+        // The laptop removes a line and adds one; a Mend session adds another meanwhile.
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-mend-2",
+          delivered: {},
+          session: [index(`${first}- [later](later.md) — Mend, later\n`)],
+          merge: unionMerge,
+        });
+        const laptop2 = index(
+          "# Memory\n- [laptop](laptop.md) — from the laptop\n- [new](new.md) — new\n",
+        );
+        const second = yield* repo.importFiles(importing([laptop2]));
+        expect(second.merged).toEqual([{ path: laptop.path, against: "last-import" }]);
+        // Three-way against the last import: what each side added since stays.
+        expect(lastMergeBase).toBe(laptop.contents);
+        const merged = (yield* repo.read("anna", project, laptop.path))?.file.contents ?? "";
+        for (const line of ["- [mend](mend.md)", "- [later](later.md)", "- [new](new.md)"]) {
+          expect(merged).toContain(line);
+        }
+
+        // Another machine, never imported from: no shared version.
+        const other = yield* repo.importFiles(
+          importing([index("# Memory\n- [desk](desk.md) — desk\n")], {
+            source: { id: "machine-2:/code/repo", label: "desk" },
+          }),
+        );
+        expect(other.merged).toEqual([{ path: laptop.path, against: "no-shared-version" }]);
+      }),
+    );
+  });
+
+  it("takes the side that changed, and does not bring back what Mend removed", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const build = text("build.md", "pnpm\n");
+        const gone = text("gone.md", "old\n");
+        yield* repo.importFiles(importing([build, gone]));
+        // Unchanged in Mend since: the laptop's change replaces it.
+        const changed = text("build.md", "pnpm 11\n");
+        expect(yield* repo.importFiles(importing([changed, gone]))).toEqual({
+          ...nothing,
+          updated: [changed.path],
+          unchanged: [gone.path],
+        });
+        expect((yield* repo.read("anna", project, changed.path))?.file.contents).toBe("pnpm 11\n");
+        // Removed in Mend, unchanged on the laptop: not added again; changed there: added.
+        yield* repo.remove("anna", project, gone.path);
+        expect((yield* repo.importFiles(importing([gone]))).removedInMend).toEqual([gone.path]);
+        const revived = text("gone.md", "old\nand new\n");
+        expect((yield* repo.importFiles(importing([revived]))).added).toEqual([gone.path]);
+        // A file Mend has that this import does not send stays.
+        expect((yield* repo.importFiles(importing([]))).added).toEqual([]);
+        expect((yield* repo.read("anna", project, changed.path))?.file.contents).toBe("pnpm 11\n");
+      }),
+    );
+  });
+
+  it("keeps Mend's binary file in a conflict, keeps this machine's as a version, and says so again", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const image = (bytes: string) => ({
+          path: `${ROOT}/diagram.png`,
+          encoding: "base64" as const,
+          contents: Buffer.from(bytes).toString("base64"),
+        });
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-png",
+          delivered: {},
+          session: [image("mend\0")],
+          merge: unionMerge,
+        });
+        const laptop = image("laptop\0");
+        for (let round = 0; round < 2; round += 1) {
+          expect(yield* repo.importFiles(importing([laptop]))).toEqual({
+            ...nothing,
+            conflicting: [laptop.path],
+          });
+        }
+        expect((yield* repo.read("anna", project, laptop.path))?.file.contents).toBe(
+          image("mend\0").contents,
+        );
+        const versions = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_versions WHERE path = ${laptop.path}`;
+        expect(versions.map((row) => row.contents)).toEqual([laptop.contents]);
+      }),
+    );
+  });
+
+  it("goes with the account", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        yield* repo.importFiles(importing([text("a.md", "a")]));
         yield* sql`DELETE FROM "user" WHERE id = 'anna'`;
         expect(yield* sql`SELECT 1 FROM agent_memory_files`).toEqual([]);
         expect(yield* sql`SELECT 1 FROM agent_memory_versions`).toEqual([]);
+        expect(yield* sql`SELECT 1 FROM agent_memory_import_bases`).toEqual([]);
       }),
     );
   });

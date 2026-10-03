@@ -79,10 +79,35 @@ much smaller: the memory.
    wrote is lost to another session's save.
 
 4. **Import from the person's machine is the CLI's,** run from inside the repository:
-   `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/` and adds each file
-   the store does not have; a file it has with other contents is reported and left. Transcripts
+   `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/`. Transcripts
    ("bring your previous sessions") are a later step: a transcript needs its paths rewritten for
-   `/workspace/repo` to resume. Logins, goals, logs and caches are never read.
+   `/workspace/repo` to resume. Logins, goals, logs and caches are never read. Amended 2026-10-04:
+   an import merges what both sides have, as a read-back does.
+   - **Mend records what it last imported from each checkout on each machine** (the import's source:
+     the CLI's machine id, kept in its config directory, and the checkout's path), file by file: a
+     text file's contents, a binary file's digest. That is the shared version the next import from
+     there merges against.
+   - A file the store does not have is added, unless the store removed it since the last import from
+     there and the machine still has it as it was then: that file is not added again.
+   - A file one side changed since the last import takes that side's.
+   - A file both changed since then, or any file that differs with no last import, is merged:
+     - Text keeps both sides' lines, three-way (`git merge-file --union`) against the last import
+       when there is one. With none, each line the two share is kept once, in place, and between two
+       shared lines the store's own lines come first, then the machine's.
+     - When both versions open with YAML frontmatter, the frontmatter is merged key by key and only
+       the body by line. A key both set differently keeps the store's value and the machine's under
+       it as a YAML comment (`# from <host>, <date>: description: …`).
+     - An index (`MEMORY.md`) keeps each line once.
+     - Codex's summary database keeps every conversation's newer summary from either side.
+     - Anything else, or a merge over the size limit, keeps the store's file. The machine's is kept
+       as a version, and the next import reports it again.
+   - A file the store has and the machine no longer sends stays in the store.
+   - Every version an import replaces is kept, the machine's own copy of a merged file too, as for a
+     read-back. `--dry-run` asks the server for the same plan and writes nothing.
+
+   The same frontmatter rule applies to a read-back merge, and a read-back merge with no shared
+   version (a file the session made itself, or a delivered version no longer kept) keeps each shared
+   line once instead of repeating the whole file.
 
 5. **People can see and remove it.** `mend memory` lists the files for the current project,
    `mend memory show <file>` prints one, `mend memory rm <file>` removes it. The API serves the same
@@ -207,3 +232,11 @@ to build it.
   would not bring, and the owner does not use it.
 - 2026-10-02: Codex memory carried. The owner chose to carry the memory folder and the conversations
   Codex builds it from over carrying the folder only, which would never fill, or waiting a release.
+- 2026-10-04: an import merges (decision 4). Leaving a file both sides have meant a second machine,
+  or a second import after both sides changed, never combined anything, and `MEMORY.md` is the file
+  most certain to differ. A note is merged into one file rather than kept beside under a second
+  name: Claude finds a note through one index line, a second copy would need a synthesized index
+  line and its own merges on every later import, and two drifted versions of the same note mostly
+  differ by added lines, which a line merge keeps in place. Frontmatter is merged by key because a
+  line union writes a key twice. A conflicting value is kept as a YAML comment, which no parser
+  reads, so the frontmatter stays valid. The agent still sees the comment and can fold it in.
