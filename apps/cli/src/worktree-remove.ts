@@ -45,7 +45,11 @@ export const parseWorktreesRmArgs = (
   return { args: { name, force, project } };
 };
 
-/** The rows `mend worktrees --json` lists, the parts a removal needs. */
+/**
+ * The rows `mend worktrees --json` lists, the parts a removal needs. The listing leaves out ended
+ * sessions without a transcript, so `sessions` is enough to find a live one and never a count of
+ * what the removal takes.
+ */
 export interface RemovableWorktree {
   /** Null against a server from before worktrees, where a session was the container. */
   readonly id: string | null;
@@ -108,12 +112,8 @@ export const refusalLines = (
       ]
     : [words];
 
-export const removedLine = (name: string, sessions: number): string =>
-  `removed · ${name} · ${
-    sessions === 0
-      ? "the change and its checkpoints went with it"
-      : `${plural(sessions, "session", "sessions")}, the change and its review went with it`
-  }`;
+export const removedLine = (name: string): string =>
+  `removed · ${name} · its sessions, change, checkpoints and review went with it`;
 
 interface RemovalReportDto {
   readonly removed: boolean;
@@ -157,6 +157,6 @@ export const worktreesRmCommand = async (
       `not removed · ${args.name}${report.leftover === null ? "" : ` · ${report.leftover}`}`,
     );
   }
-  deps.say(removedLine(args.name, worktree.sessions.length));
+  deps.say(removedLine(args.name));
   if (report.leftover !== null) deps.say(`left behind · ${report.leftover}`);
 };

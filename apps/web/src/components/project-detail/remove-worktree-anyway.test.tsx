@@ -25,10 +25,9 @@ const NEVER_LANDED =
 const SAVING =
   "not removed · 1 capture saving · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved";
 
-const refused = (words: string, sessions = 2): RefusedRemoval => ({
+const refused = (words: string): RefusedRemoval => ({
   worktree,
   name: "fix-login",
-  sessions,
   refusal: worktreeRemovalRefusalOf(words),
 });
 
@@ -50,7 +49,9 @@ describe("RemoveWorktreeAnywayBody", () => {
     for (const path of ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"]) expect(markup).toContain(path);
     expect(markup).toContain("5 more files");
     expect(markup).toContain("Remove anyway");
-    expect(markup).toContain("2 sessions, the change and its review go with it.");
+    expect(markup).toContain(
+      "Every session in the worktree, its checkpoints and its review go with it.",
+    );
     expect(markup).toContain("Keep worktree");
   });
 

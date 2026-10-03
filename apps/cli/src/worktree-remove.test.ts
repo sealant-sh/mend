@@ -111,12 +111,9 @@ describe("the request and its words", () => {
     expect(refusalLines(SAVING, { name: "fix-login", project: null })).toEqual([SAVING]);
   });
 
-  it("says what went with the worktree", () => {
-    expect(removedLine("fix-login", 0)).toBe(
-      "removed · fix-login · the change and its checkpoints went with it",
-    );
-    expect(removedLine("fix-login", 3)).toBe(
-      "removed · fix-login · 3 sessions, the change and its review went with it",
+  it("says what went with the worktree, without a count the listing cannot vouch for", () => {
+    expect(removedLine("fix-login")).toBe(
+      "removed · fix-login · its sessions, change, checkpoints and review went with it",
     );
   });
 });
@@ -129,12 +126,16 @@ describe("worktreesRmCommand", () => {
     const said: string[] = [];
     const failed: string[] = [];
     const routes: string[] = [];
+    const listed: Array<string | null> = [];
     const deps: WorktreesRmDeps = {
       request: async <T>(_method: string, route: string): Promise<T> => {
         routes.push(route);
         return (await answer(route)) as T;
       },
-      listWorktrees: async () => worktrees,
+      listWorktrees: async (project) => {
+        listed.push(project);
+        return worktrees;
+      },
       liveStatuses: LIVE,
       say: (line) => void said.push(line),
       fail: (message) => {
@@ -142,17 +143,50 @@ describe("worktreesRmCommand", () => {
         throw new Error(`exit: ${message}`);
       },
     };
-    return { deps, said, failed, routes };
+    return { deps, said, failed, routes, listed };
   };
 
   it("removes without force and says what went", async () => {
     const h = harness(async () => ({ removed: true, leftover: null }));
     await worktreesRmCommand(h.deps, ["fix-login"]);
     expect(h.routes).toEqual(["/worktrees/wt-1"]);
+    expect(h.listed).toEqual([null]);
     expect(h.said).toEqual([
-      "removed · fix-login · 1 session, the change and its review went with it",
+      "removed · fix-login · its sessions, change, checkpoints and review went with it",
     ]);
     expect(h.failed).toEqual([]);
+  });
+
+  it("scopes the listing to --project and says what was left behind", async () => {
+    const h = harness(async () => ({ removed: true, leftover: "/store/worktrees/fix-login/.git" }));
+    await worktreesRmCommand(h.deps, ["--project", "web", "fix-login"]);
+    expect(h.listed).toEqual(["web"]);
+    expect(h.said).toEqual([
+      "removed · fix-login · its sessions, change, checkpoints and review went with it",
+      "left behind · /store/worktrees/fix-login/.git",
+    ]);
+  });
+
+  it("a refusal force does not lift stays a refusal with --force, without the --force line", async () => {
+    const h = harness(async () => {
+      throw new MendRequestError("http", SAVING, 422);
+    });
+    await expect(worktreesRmCommand(h.deps, ["fix-login", "--force"])).rejects.toThrow("exit:");
+    expect(h.routes).toEqual(["/worktrees/wt-1?force=true"]);
+    expect(h.failed).toEqual([SAVING]);
+  });
+
+  it("prints a transport failure and a report that says not removed as they are", async () => {
+    const down = harness(async () => {
+      throw new MendRequestError("unreachable", "cannot reach http://localhost:3105", null);
+    });
+    await expect(worktreesRmCommand(down.deps, ["fix-login"])).rejects.toThrow("exit:");
+    expect(down.failed).toEqual(["cannot reach http://localhost:3105"]);
+
+    const kept = harness(async () => ({ removed: false, leftover: "a workspace still saving" }));
+    await expect(worktreesRmCommand(kept.deps, ["fix-login"])).rejects.toThrow("exit:");
+    expect(kept.failed).toEqual(["not removed · fix-login · a workspace still saving"]);
+    expect(kept.said).toEqual([]);
   });
 
   it("prints the refusal in the server's words with the --force line, and exits 1", async () => {
@@ -174,7 +208,7 @@ describe("worktreesRmCommand", () => {
     await worktreesRmCommand(h.deps, ["fix-login", "--force"]);
     expect(h.routes).toEqual(["/worktrees/wt-1?force=true"]);
     expect(h.said).toEqual([
-      "removed · fix-login · 1 session, the change and its review went with it",
+      "removed · fix-login · its sessions, change, checkpoints and review went with it",
     ]);
   });
 

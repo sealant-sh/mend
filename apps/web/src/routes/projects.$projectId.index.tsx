@@ -21,7 +21,7 @@ import { removeWorktree } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/viewer";
 import { sessionMenu, worktreeDisplayName, worktreeMenu } from "#/lib/workbench-menus";
-import { removalRefusalOf } from "#/lib/worktree-removal";
+import { keptNote, removalRefusalOf } from "#/lib/worktree-removal";
 
 /** The Worktrees tab; the project layout (`projects.$projectId.tsx`) loads the project. */
 export const Route = createFileRoute("/projects/$projectId/")({
@@ -67,7 +67,6 @@ function ProjectWorktreesPage() {
             setRefused({
               worktree: group.worktree,
               name: worktreeDisplayName(group.worktree, group.members),
-              sessions: group.members.length,
               refusal,
             }),
         ),
@@ -94,28 +93,22 @@ function ProjectWorktreesPage() {
     if (clearing !== "armed") return;
     setClearing("working");
     setKept(null);
-    // The sweep never forces: a worktree the store refuses for a change not on origin stays, and
-    // the count of those is said once. Its own menu shows the words and offers the second step.
+    // The sweep never forces: a worktree the store refuses in words stays, and how many is said
+    // once. Each one's own menu shows the words and, when force lifts them, the second step.
     void settled
       .reduce(
         (chain, group) =>
-          chain.then(async (unlanded) => {
+          chain.then(async (refusals) => {
             const refusal = await removeWorktree(group.worktree.id).then(
               () => null,
               (cause: unknown) => removalRefusalOf(cause),
             );
-            return refusal?.forceable === true ? unlanded + 1 : unlanded;
+            return refusal === null ? refusals : refusals + 1;
           }),
         Promise.resolve(0),
       )
-      .then((unlanded) => {
-        if (unlanded > 0) {
-          setKept(
-            unlanded === 1
-              ? "1 kept · its change is not on origin · remove it from its menu to see what it holds"
-              : `${unlanded} kept · their changes are not on origin · remove one from its menu to see what it holds`,
-          );
-        }
+      .then((refusals) => {
+        setKept(keptNote(refusals));
         return null;
       })
       .finally(() => {
@@ -191,8 +184,9 @@ function ProjectWorktreesPage() {
       <RemoveWorktreeAnywayDialog
         refused={refused}
         onKeep={() => setRefused(null)}
-        onRemoved={() => {
-          setRefused(null);
+        onRemoved={(worktreeId) => {
+          // Only the refusal of the worktree that went; a later one of another stays on screen.
+          setRefused((current) => (current?.worktree.id === worktreeId ? null : current));
           void queryClient.invalidateQueries(trpc.environment.pathFilter());
         }}
       />

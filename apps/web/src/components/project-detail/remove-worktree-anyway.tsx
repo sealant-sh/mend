@@ -12,7 +12,7 @@ import { useState } from "react";
 
 import { removeWorktree, type WorktreeDto } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
-import { removalRefusalOf } from "#/lib/worktree-removal";
+import { forcedRemovalFailureOf } from "#/lib/worktree-removal";
 
 /**
  * The second step after the store refused a worktree removal (docs/adr/0007-landing.md,
@@ -27,7 +27,6 @@ export interface RefusedRemoval {
   readonly worktree: WorktreeDto;
   /** What the page calls the worktree. */
   readonly name: string;
-  readonly sessions: number;
   readonly refusal: WorktreeRemovalRefusal;
 }
 
@@ -38,12 +37,6 @@ export interface RemoveWorktreeAnywayBodyProps {
   readonly onRemoveAnyway: () => void;
 }
 
-/** What goes with the worktree, in the menu's own words. */
-const goesWithIt = (sessions: number): string =>
-  sessions === 0
-    ? "The change and its checkpoints go with it."
-    : `${sessions} session${sessions === 1 ? "" : "s"}, the change and its review go with it.`;
-
 /** The server's words, what they name, and the one consequential action. Pure: the page owns state. */
 export function RemoveWorktreeAnywayBody({
   refused,
@@ -51,7 +44,7 @@ export function RemoveWorktreeAnywayBody({
   onKeep,
   onRemoveAnyway,
 }: RemoveWorktreeAnywayBodyProps) {
-  const { refusal, sessions } = refused;
+  const { refusal } = refused;
   const facts = refusal.unlanded;
   return (
     <div className="flex min-w-0 flex-col gap-4">
@@ -97,7 +90,8 @@ export function RemoveWorktreeAnywayBody({
       )}
       {refusal.forceable && (
         <p className="text-[13px] leading-relaxed text-muted-foreground">
-          Remove anyway discards this change. {goesWithIt(sessions)}
+          Remove anyway discards this change. Every session in the worktree, its checkpoints and its
+          review go with it.
         </p>
       )}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -120,9 +114,17 @@ export function RemoveWorktreeAnywayBody({
   );
 }
 
+const without = <V,>(map: ReadonlyMap<string, V>, key: string): ReadonlyMap<string, V> => {
+  const next = new Map(map);
+  next.delete(key);
+  return next;
+};
+
 /**
  * The dialog around the body. Open while `refused` is set; the page clears it on keep, and
- * `onRemoved` once the forced removal went through. A second refusal replaces the first.
+ * `onRemoved(id)` once that worktree's forced removal went through. Every force is keyed by its
+ * worktree: two refusals that overlap never share a pending state, and a later failure of the
+ * forced removal stands in for the page's refusal of the same worktree only.
  */
 export function RemoveWorktreeAnywayDialog({
   refused,
@@ -131,59 +133,56 @@ export function RemoveWorktreeAnywayDialog({
 }: {
   readonly refused: RefusedRemoval | null;
   readonly onKeep: () => void;
-  readonly onRemoved: () => void;
+  readonly onRemoved: (worktreeId: WorktreeDto["id"]) => void;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const [pending, setPending] = useState(false);
-  const [again, setAgain] = useState<RefusedRemoval | null>(null);
-  // A later refusal of the same worktree stands in for the page's; another worktree resets it.
-  const shown =
-    refused === null ? null : again?.worktree.id === refused.worktree.id ? again : refused;
+  /** Worktrees whose forced removal is in flight. */
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  /** What a forced removal answered, per worktree, until kept or removed. */
+  const [again, setAgain] = useState<ReadonlyMap<string, RefusedRemoval>>(() => new Map());
+  const shown = refused === null ? null : (again.get(refused.worktree.id) ?? refused);
+  const shownPending = shown !== null && pending.has(shown.worktree.id);
 
   const keep = () => {
-    if (pending) return;
-    setAgain(null);
+    if (shown === null || shownPending) return;
+    setAgain((current) => without(current, shown.worktree.id));
     onKeep();
   };
 
   const removeAnyway = () => {
-    if (shown === null || pending || !shown.refusal.forceable) return;
-    setPending(true);
-    void removeWorktree(shown.worktree.id, true)
+    if (shown === null || shownPending || !shown.refusal.forceable) return;
+    const id = shown.worktree.id;
+    setPending((current) => new Set(current).add(id));
+    void removeWorktree(id, true)
       .then(async () => {
         await Promise.all([
           queryClient.invalidateQueries(trpc.projects.pathFilter()),
           queryClient.invalidateQueries(trpc.worktrees.pathFilter()),
           queryClient.invalidateQueries(trpc.sessions.pathFilter()),
         ]);
-        setPending(false);
-        setAgain(null);
-        onRemoved();
+        setAgain((current) => without(current, id));
+        onRemoved(id);
         return null;
       })
       .catch((cause: unknown) => {
-        setPending(false);
-        const refusal = removalRefusalOf(cause);
-        setAgain(
-          refusal === null
-            ? {
-                ...shown,
-                refusal: {
-                  words: "The worktree was not removed. Try again.",
-                  forceable: true,
-                  unlanded: shown.refusal.unlanded,
-                },
-              }
-            : { ...shown, refusal },
+        setAgain((current) =>
+          new Map(current).set(id, { ...shown, refusal: forcedRemovalFailureOf(cause) }),
         );
+      })
+      .finally(() => {
+        setPending((current) => {
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
       });
   };
 
   return (
     <Dialog
       open={shown !== null}
-      disablePointerDismissal={pending}
+      disablePointerDismissal={shownPending}
       onOpenChange={(next) => {
         if (!next) keep();
       }}
@@ -198,7 +197,7 @@ export function RemoveWorktreeAnywayDialog({
           </DialogHeader>
           <RemoveWorktreeAnywayBody
             refused={shown}
-            pending={pending}
+            pending={shownPending}
             onKeep={keep}
             onRemoveAnyway={removeAnyway}
           />

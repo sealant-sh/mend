@@ -47,41 +47,52 @@ export interface UnlandedFacts {
   readonly more: number;
 }
 
-const FACTS = /(\d+) files? · \+(\d+) −(\d+) · (.+?)(?:\. [A-Z]|$)/;
+/** The list runs up to the sentence the server always closes it with: `. Land it …`. */
+const FACTS = /(\d+) files? · \+(\d+) −(\d+) · (.+?)(?:\. Land it\b|$)/;
 const NAMED = /^(.+) \+(\d+) −(\d+)$/;
 const MORE = /^(\d+) more$/;
 
-/** The facts `describeUnlanded` wrote into a refusal, or null when the words carry none. */
+/**
+ * The facts `describeUnlanded` wrote into a refusal, or null when the words carry none. The words
+ * are plain text, so a path holding `, ` or `. Land it`, or one that reads like `2 more`, can make
+ * them ambiguous: this reading is exact or absent, never a guess. Every count the words carry
+ * must agree before anything is returned, and the words themselves stay the authority.
+ */
 export const unlandedFactsOf = (words: string): UnlandedFacts | null => {
   const match = FACTS.exec(words);
   if (match === null) return null;
-  const [, files, additions, deletions, list] = match;
+  const [, filesText, additionsText, deletionsText, list] = match;
   if (
-    files === undefined ||
-    additions === undefined ||
-    deletions === undefined ||
+    filesText === undefined ||
+    additionsText === undefined ||
+    deletionsText === undefined ||
     list === undefined
   )
     return null;
+  const files = Number(filesText);
+  const additions = Number(additionsText);
+  const deletions = Number(deletionsText);
+  const items = list.split(", ");
+  const last = items.at(-1);
+  const counted = last === undefined ? null : MORE.exec(last);
+  const more = counted?.[1] === undefined ? 0 : Number(counted[1]);
   const named: Array<UnlandedFile> = [];
-  let more = 0;
-  for (const item of list.split(", ")) {
-    const counted = MORE.exec(item);
-    if (counted?.[1] !== undefined) {
-      more = Number(counted[1]);
-      continue;
-    }
+  for (const item of more > 0 ? items.slice(0, -1) : items) {
     const file = NAMED.exec(item);
     if (file?.[1] === undefined || file[2] === undefined || file[3] === undefined) return null;
     named.push({ path: file[1], additions: Number(file[2]), deletions: Number(file[3]) });
   }
-  return {
-    files: Number(files),
-    additions: Number(additions),
-    deletions: Number(deletions),
-    named,
-    more,
-  };
+  // What the server wrote always satisfies these; a reading that does not misread the words.
+  if (named.length === 0 || named.length > UNLANDED_NAMED_FILES) return null;
+  if (named.length + more !== files) return null;
+  if (more > 0 !== files > UNLANDED_NAMED_FILES) return null;
+  if (
+    more === 0 &&
+    (named.reduce((sum, file) => sum + file.additions, 0) !== additions ||
+      named.reduce((sum, file) => sum + file.deletions, 0) !== deletions)
+  )
+    return null;
+  return { files, additions, deletions, named, more };
 };
 
 /** A refused removal, read from the server's words. */

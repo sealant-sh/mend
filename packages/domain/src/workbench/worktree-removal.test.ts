@@ -13,6 +13,12 @@ const file = (path: string, additions: number, deletions: number) => ({
   deletions,
 });
 
+/** The server's never-landed refusal around what `describeUnlanded` writes for `files`. */
+const neverLanded = (
+  files: ReadonlyArray<{ path: string; additions: number; deletions: number }>,
+): string =>
+  `This worktree holds a change that was never landed · ${describeUnlanded(files)}. Land it or discard it before removal, ${WORKTREE_REMOVAL_FORCE_HINT}.`;
+
 const NEVER_LANDED =
   "This worktree holds a change that was never landed · 2 files · +13 −3 · src/login.ts +12 −3, notes.md +1 −0. Land it or discard it before removal, or pass force=true to remove it anyway.";
 
@@ -56,6 +62,51 @@ describe("unlandedFactsOf", () => {
         "This worktree holds a change that was never landed · 2 files · +1 −1 · docs/v1.2 notes.md +1 −0, src/a b.ts +0 −1. Land it or discard it before removal, or pass force=true to remove it anyway.",
       )?.named,
     ).toEqual([file("docs/v1.2 notes.md", 1, 0), file("src/a b.ts", 0, 1)]);
+  });
+
+  it("keeps a path that holds the closing sentence's first words whole", () => {
+    expect(
+      unlandedFactsOf(
+        `This worktree holds a change that was never landed · ${describeUnlanded([file("notes. Draft.md", 1, 0)])}. Land it or discard it before removal, ${WORKTREE_REMOVAL_FORCE_HINT}.`,
+      )?.named,
+    ).toEqual([file("notes. Draft.md", 1, 0)]);
+  });
+
+  it("reads nothing rather than guessing when the words are ambiguous", () => {
+    // A comma and space inside a path reads as two items.
+    expect(unlandedFactsOf(neverLanded([file("src/a, b.ts", 1, 0)]))).toBeNull();
+    // A path that reads like the count of the rest.
+    expect(unlandedFactsOf(neverLanded([file("2 more, report.md", 1, 0)]))).toBeNull();
+    // Only the last item is the count of the rest: a file named like it is still a file.
+    expect(
+      unlandedFactsOf(neverLanded([file("2 more", 1, 0), file("report.md", 1, 0)]))?.named,
+    ).toEqual([file("2 more", 1, 0), file("report.md", 1, 0)]);
+    // Counts that do not agree with the list.
+    expect(
+      unlandedFactsOf(
+        "This worktree holds a change that was never landed · 3 files · +1 −0 · a.ts +1 −0. Land it or discard it before removal, or pass force=true to remove it anyway.",
+      ),
+    ).toBeNull();
+    expect(
+      unlandedFactsOf(
+        "This worktree holds a change that was never landed · 1 file · +5 −0 · a.ts +1 −0. Land it or discard it before removal, or pass force=true to remove it anyway.",
+      ),
+    ).toBeNull();
+    expect(unlandedFactsOf("")).toBeNull();
+  });
+
+  it("reads back every shape describeUnlanded writes for ordinary paths", () => {
+    for (const count of [1, 2, 5, 6, 12]) {
+      const files = Array.from({ length: count }, (_, index) =>
+        file(`src/dir-${index}/file.v${index}.test.ts`, index * 3, index),
+      );
+      const facts = unlandedFactsOf(
+        `This worktree changed since its last landing (mend/x · 3f2a1c0) · ${describeUnlanded(files)}. Land it again or discard it before removal, ${WORKTREE_REMOVAL_FORCE_HINT}.`,
+      );
+      expect(facts?.files).toBe(count);
+      expect(facts?.named).toEqual(files.slice(0, 5));
+      expect(facts?.more).toBe(Math.max(0, count - 5));
+    }
   });
 
   it("finds no facts in a refusal that names none", () => {
