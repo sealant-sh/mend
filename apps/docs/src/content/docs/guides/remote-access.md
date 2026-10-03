@@ -48,13 +48,13 @@ A private network is one way to run Mend, not a requirement. Mend authenticates 
 request itself, so a tailnet or a VPN in front of it is an extra gate you may add. Tell Mend how it
 is reached with `MEND_EXPOSURE`: `loopback`, `private` (the default: a network you control admission
 to) or `public`. A server cannot observe what is published in front of it, so this is your
-statement, and `mend doctor` reports what Mend observes beside it. `mend server setup` cannot set
-`MEND_EXPOSURE`, so a setup install runs as `private`.
+statement, and `mend doctor` reports what Mend observes beside it. `mend server setup --exposure`
+declares it on the Docker install; without the flag a setup install runs as `private`.
 
 Plain HTTP on a LAN does not protect credentials from that network. Beyond the machine, put a TLS
-edge in front of Mend. The repository has an opt-in Caddy overlay
-(`deploy/docker/compose.edge.yaml`) that `mend server setup` does not install, and the Kubernetes
-chart can render an Ingress to the web tier. Test a terminal through the edge before relying on it.
+edge in front of Mend. `mend server setup --edge <host>` runs the repository's Caddy overlay
+(`deploy/docker/compose.edge.yaml`) and keeps it across upgrades, and the Kubernetes chart can
+render an Ingress to the web tier. Test a terminal through the edge before relying on it.
 
 `public` refuses to start while an item of the public exposure gate that Mend can observe is open.
 `mend operator exposure` lists them. Two items, `core-private` and `edge-tls`, no build can observe;

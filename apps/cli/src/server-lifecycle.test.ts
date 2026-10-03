@@ -10,15 +10,24 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { serverProcessDeadlines, type ServerProcessOptions } from "./server-runtime.ts";
 import { nodeServerRuntime, serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
-import { describeUninstall, executeUninstall } from "./uninstall.ts";
+import { describeUninstall, executeUninstall, planLines } from "./uninstall.ts";
 
 interface DaemonState {
   readonly appRunning: boolean;
   readonly postgresRunning: boolean;
+  /** The edge's container, when a generation runs one (lifecycle-docker.mjs sets it on `up`). */
+  readonly edgeRunning?: boolean;
+  /** The certificate path Caddy's data holds for the edge host; absent, none yet. */
+  readonly certificate?: string;
   readonly version: string;
   readonly images: Readonly<Record<string, string>>;
   readonly fail: string;
   readonly healthVersion: string | null;
+  /** Fields the health body carries beside status and version: tenancy, its gate, exposure. */
+  readonly health?: Readonly<Record<string, unknown>>;
+  /** The compose files the last `up` and `down` ran with, by name. */
+  readonly upFiles?: ReadonlyArray<string>;
+  readonly downFiles?: ReadonlyArray<string>;
 }
 interface Call {
   readonly args: ReadonlyArray<string>;
@@ -61,11 +70,55 @@ const fixture = async () => {
     new URL("../test-fixtures/docker-protocol.ts", import.meta.url),
     path.join(root, "docker-protocol.ts"),
   );
-  const server = http.createServer((_request, response) => {
+  const requests: Array<{ readonly url: string; readonly authorization: string | undefined }> = [];
+  const server = http.createServer((request, response) => {
     const current = state();
+    requests.push({ url: request.url ?? "", authorization: request.headers.authorization });
+    // The operator's reports, for a bearer; `/api/health` for everyone.
+    if (request.url === "/api/operator/gate" || request.url === "/api/operator/exposure") {
+      if (request.headers.authorization !== "Bearer operator-token") {
+        response.writeHead(404);
+        response.end("{}");
+        return;
+      }
+      response.writeHead(200);
+      response.end(
+        JSON.stringify(
+          request.url === "/api/operator/gate"
+            ? [
+                { id: "source-policy", ok: false, detail: "operator policy", fix: "set it" },
+                { id: "operator-present", ok: true, detail: "1 operator account(s)", fix: null },
+              ]
+            : {
+                declared: "private",
+                items: [
+                  {
+                    id: "https-origin",
+                    established: "observed",
+                    detail: "every browser origin is https (1)",
+                    fix: null,
+                    blocksStart: true,
+                  },
+                  {
+                    id: "edge-tls",
+                    established: "open",
+                    detail: "this process cannot observe the edge's certificate",
+                    fix: "what would verify it: mend doctor from another network",
+                    blocksStart: false,
+                  },
+                ],
+              },
+        ),
+      );
+      return;
+    }
     response.writeHead(current.appRunning ? 200 : 503);
     response.end(
-      JSON.stringify({ status: "ok", version: current.healthVersion ?? current.version }),
+      JSON.stringify({
+        status: "ok",
+        version: current.healthVersion ?? current.version,
+        ...current.health,
+      }),
     );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -89,8 +142,18 @@ const fixture = async () => {
   process.env["MEND_VERSION"] = "poison";
   process.env["COMPOSE_PROJECT_NAME"] = "poison";
   process.env["DOCKER_HOST"] = "tcp://poison:1";
+  // This machine's own sign-in never reaches the fixture: status reads cli.json under configDir.
+  delete process.env["MEND_URL"];
+  delete process.env["MEND_TOKEN"];
   const base = nodeServerRuntime();
-  for (const key of ["PATH", "MEND_VERSION", "COMPOSE_PROJECT_NAME", "DOCKER_HOST"]) {
+  for (const key of [
+    "PATH",
+    "MEND_VERSION",
+    "COMPOSE_PROJECT_NAME",
+    "DOCKER_HOST",
+    "MEND_URL",
+    "MEND_TOKEN",
+  ]) {
     if (environment[key] === undefined) delete process.env[key];
     else process.env[key] = environment[key];
   }
@@ -112,10 +175,10 @@ const fixture = async () => {
     writeLine: (line) => {
       lines.push(line);
     },
-    fetchText: async (request, timeout) => {
+    fetchText: async (request, timeout, headers) => {
       fetched.push(request);
       if (!request.startsWith(url)) throw new Error("Unexpected network request");
-      return base.fetchText(request, timeout);
+      return base.fetchText(request, timeout, headers);
     },
   };
   const assets = path.join(root, "release assets");
@@ -163,12 +226,33 @@ const fixture = async () => {
     );
   const upgrade = (version = "0.24.0") =>
     serverCommand(["upgrade", "--version", version, "--assets-dir", assets, "--offline"], runtime);
+  /** Setup behind the edge: Mend's port stays on loopback, where the fixture's health answers. */
+  const setupEdge = (host: string, ...more: ReadonlyArray<string>) =>
+    serverCommand(
+      [
+        "setup",
+        "--context",
+        "saved-local",
+        "--version",
+        "0.23.0",
+        "--port",
+        String(address.port),
+        "--assets-dir",
+        assets,
+        "--offline",
+        "--edge",
+        host,
+        ...more,
+      ],
+      runtime,
+    );
   return {
     root,
     configDir,
     runtime,
     lines,
     fetched,
+    requests,
     state,
     update,
     calls,
@@ -176,9 +260,11 @@ const fixture = async () => {
     volumes,
     files,
     setup,
+    setupEdge,
     upgrade,
     assets,
     runCalls,
+    port: address.port,
   };
 };
 
@@ -830,6 +916,276 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
   });
 });
 
+/** A file of deploy/docker, the source the CLI's embedded edge files are held to. */
+const repositoryFile = (name: string): string =>
+  fs.readFileSync(new URL(`../../../deploy/docker/${name}`, import.meta.url), "utf8");
+
+describe("the edge and the posture", { timeout: 120_000 }, () => {
+  const host = "mend.example.test";
+
+  it("an edge host and the posture travel with every generation: setup, upgrade, start and restart run the overlays", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host, "--exposure", "private", "--tenancy", "single")).toEqual({
+      _tag: "ok",
+    });
+    const before = f.files();
+    // The generation holds the repository's edge files byte for byte, and names the posture.
+    expect(before["compose.edge.yaml"]).toBe(repositoryFile("compose.edge.yaml"));
+    expect(before["Caddyfile"]).toBe(repositoryFile("Caddyfile"));
+    expect(fs.statSync(path.join(f.active(), "Caddyfile")).mode & 0o777).toBe(0o644);
+    expect(before["compose.posture.yaml"]).toContain(
+      "      MEND_EXPOSURE: ${MEND_EXPOSURE:?set MEND_EXPOSURE in server.env}",
+    );
+    expect(before["compose.posture.yaml"]).toContain("      MEND_TENANCY: ${MEND_TENANCY:?");
+    expect(before["compose.posture.yaml"]).not.toContain("MEND_SOURCE_POLICY");
+    expect(JSON.parse(before["server.json"] ?? "{}")).toMatchObject({
+      edgeHost: host,
+      exposure: "private",
+      tenancy: "single",
+      bind: "127.0.0.1",
+      appUrl: `https://${host}`,
+    });
+    const env = before["server.env"] ?? "";
+    expect(env).toContain(`MEND_EDGE_HOST=${host}\n`);
+    expect(env).toContain("MEND_EXPOSURE=private\n");
+    expect(env).toContain("MEND_TENANCY=single\n");
+    expect(env).toContain(`APP_URL=https://${host}\n`);
+    expect(env).toContain("MEND_BIND_HOST=127.0.0.1\n");
+    expect(env).toContain(`SEALANT_SSH_HOST=${host}\n`);
+    expect(env).not.toContain("MEND_SOURCE_POLICY");
+    // Compose ran the base file and both overlays, in that order, and the edge came up.
+    expect(f.state().upFiles).toEqual([
+      "compose.yaml",
+      "compose.edge.yaml",
+      "compose.posture.yaml",
+    ]);
+    expect(f.state().edgeRunning).toBe(true);
+    // Health was read on Mend's own loopback port, never through the edge's public name.
+    expect(f.fetched.every((request) => request === `http://127.0.0.1:${f.port}/api/health`)).toBe(
+      true,
+    );
+    expect(f.lines).toContain(
+      `Mend 0.23.0 answers at http://127.0.0.1:${f.port} on this machine · the edge is set up for https://${host}`,
+    );
+    expect(
+      f.lines.some((line) => line.startsWith(`The edge for ${host} is up on 80 and 443.`)),
+    ).toBe(true);
+    // The edge image is checked beside the bundle's, from the generation's own overlay.
+    expect(f.runCalls.some((call) => call.args.includes("caddy:2.10-alpine"))).toBe(true);
+
+    // An upgrade carries all of it: same overlays, same values, the new version.
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    const after = f.files();
+    expect(after["compose.edge.yaml"]).toBe(before["compose.edge.yaml"]);
+    expect(after["Caddyfile"]).toBe(before["Caddyfile"]);
+    expect(after["compose.posture.yaml"]).toBe(before["compose.posture.yaml"]);
+    expect(after["server.env"]).toBe(env.replace("MEND_VERSION=0.23.0", "MEND_VERSION=0.24.0"));
+    expect(JSON.parse(after["server.json"] ?? "{}")).toMatchObject({
+      serverVersion: "0.24.0",
+      edgeHost: host,
+      exposure: "private",
+      tenancy: "single",
+    });
+    expect(f.state().upFiles).toEqual([
+      "compose.yaml",
+      "compose.edge.yaml",
+      "compose.posture.yaml",
+    ]);
+    for (const command of [["restart"], ["stop"], ["start", "--offline"]]) {
+      expect(await serverCommand(command, f.runtime)).toEqual({ _tag: "ok" });
+      expect(f.state().upFiles).toEqual([
+        "compose.yaml",
+        "compose.edge.yaml",
+        "compose.posture.yaml",
+      ]);
+    }
+    expect(f.lines).toContain(
+      "Mend, Postgres, Garage and the edge stopped. Volumes, configuration and workspace containers are retained.",
+    );
+    expect(f.state().edgeRunning).toBe(true);
+  });
+
+  it("status says what was declared beside what was observed, and never a verdict", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host, "--exposure", "private")).toEqual({ _tag: "ok" });
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      `edge · ${host} · caddy:2.10-alpine on 80 and 443 · Mend's own port on loopback`,
+    );
+    expect(f.lines).toContain("exposure · declared private");
+    expect(f.lines).toContain("tenancy · declared single · the default, not set on this install");
+    expect(f.lines).toContain(
+      `edge · ${host} · container running · no certificate in Caddy's data yet · mend server logs shows what Caddy tried`,
+    );
+    // A health body from before the gates reports neither; status says so instead of guessing.
+    expect(f.lines).toContain(
+      "exposure · observed · this server reports no exposure · it predates the gate",
+    );
+    expect(
+      f.lines.some((line) =>
+        line.startsWith("gate items · every item with its detail needs the operator's sign-in"),
+      ),
+    ).toBe(true);
+
+    const certificate = `/data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/${host}/${host}.crt`;
+    f.update({
+      certificate,
+      health: {
+        tenancy: "single",
+        tenancyGate: { passed: false, failing: ["source-policy", "upload-length-binding"] },
+        exposure: { declared: "private", open: 5, unobservable: 3 },
+      },
+    });
+    fs.writeFileSync(
+      path.join(f.configDir, "cli.json"),
+      JSON.stringify({ url: `https://${host}`, token: "operator-token" }),
+    );
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      `edge · ${host} · container running · certificate observed in Caddy's data · ${certificate}`,
+    );
+    for (const line of f.lines) expect(line).not.toMatch(/[—–]/);
+    expect(f.lines).toContain(
+      "exposure · observed private · public exposure gate · 5 items open · 2 this build can observe · 3 no build can · mend operator exposure lists them",
+    );
+    expect(f.lines).toContain(
+      "tenancy · observed single · multi mode gate · open: source-policy, upload-length-binding · mend operator gate lists every item",
+    );
+    // The operator's reports came through the saved sign-in, as a bearer, on the loopback port.
+    expect(f.lines).toContain("multi mode gate, as the server reports each item:");
+    expect(f.lines).toContain("public exposure gate, as the server reports each item:");
+    expect(
+      f.lines.some((line) => line.includes("source-policy") && line.includes("operator policy")),
+    ).toBe(true);
+    expect(f.lines.some((line) => line.includes("edge-tls") && line.includes("open"))).toBe(true);
+    expect(
+      f.requests
+        .filter((request) => request.url.startsWith("/api/operator/"))
+        .map((r) => r.authorization),
+    ).toEqual(["Bearer operator-token", "Bearer operator-token"]);
+    for (const line of f.lines) {
+      expect(line).not.toMatch(/\bsafe\b|gate passed|ready to expose|fit to expose/i);
+    }
+
+    // Signed in elsewhere: the reports are not read, and status says where the sign-in points.
+    fs.writeFileSync(
+      path.join(f.configDir, "cli.json"),
+      JSON.stringify({ url: "https://other.example.test", token: "operator-token" }),
+    );
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      `gate items · this machine is signed in to https://other.example.test, not https://${host} · not read`,
+    );
+  });
+
+  it("a public, multi install renders the gate's environment, after the first account exists", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host, "--exposure", "public")).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("A fresh install cannot start as public"),
+    });
+    expect(fs.existsSync(path.join(f.configDir, "active"))).toBe(false);
+    expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
+    const plain = f.files();
+    expect(plain["compose.posture.yaml"]).toBeUndefined();
+    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.edge.yaml"]);
+    expect(
+      await serverCommand(["setup", "--exposure", "public", "--tenancy", "multi"], f.runtime),
+    ).toEqual({ _tag: "ok" });
+    const env = f.files()["server.env"] ?? "";
+    for (const line of [
+      `MEND_EDGE_HOST=${host}`,
+      "MEND_EXPOSURE=public",
+      "MEND_TENANCY=multi",
+      "MEND_SOURCE_POLICY=tenant",
+      "MEND_CAPTURE_REQUIRE_SIZES=true",
+      "MEND_URL_BEARERS=refuse",
+    ]) {
+      expect(env).toContain(`${line}\n`);
+    }
+    expect(env).not.toContain("MEND_GIT_TRANSPORT_BIND_ORIGIN");
+    expect(env).not.toContain("MEND_SERVICE_HOSTS");
+    const posture = f.files()["compose.posture.yaml"] ?? "";
+    for (const key of [
+      "MEND_EXPOSURE",
+      "MEND_TENANCY",
+      "MEND_SOURCE_POLICY",
+      "MEND_CAPTURE_REQUIRE_SIZES",
+      "MEND_URL_BEARERS",
+    ]) {
+      expect(posture).toContain(`      ${key}: \${${key}:?set ${key} in server.env}`);
+    }
+    expect(posture).not.toContain("=public");
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    expect(f.files()["server.env"]).toBe(env.replace("MEND_VERSION=0.23.0", "MEND_VERSION=0.24.0"));
+    expect(f.files()["compose.posture.yaml"]).toBe(posture);
+    expect(JSON.parse(f.files()["server.json"] ?? "{}")).toMatchObject({
+      exposure: "public",
+      tenancy: "multi",
+      edgeHost: host,
+    });
+  });
+
+  it("--no-edge takes the edge away, removes its container as an orphan and returns to the localhost origin", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
+    expect(f.state().edgeRunning).toBe(true);
+    const ups = f.calls().filter((call) => call.command[0] === "up").length;
+    // Without --url the origin would return to http://localhost; the fixture's health answers on
+    // 127.0.0.1, so the loopback origin is stated.
+    expect(
+      await serverCommand(["setup", "--no-edge", "--url", `http://127.0.0.1:${f.port}`], f.runtime),
+    ).toEqual({ _tag: "ok" });
+    const files = f.files();
+    expect(files["compose.edge.yaml"]).toBeUndefined();
+    expect(files["Caddyfile"]).toBeUndefined();
+    expect(JSON.parse(files["server.json"] ?? "{}")).not.toHaveProperty("edgeHost");
+    expect(files["server.env"]).toContain(`APP_URL=http://127.0.0.1:${f.port}\n`);
+    expect(files["server.env"]).not.toContain("MEND_EDGE_HOST");
+    const up = f.calls().filter((call) => call.command[0] === "up")[ups];
+    expect(up?.command).toContain("--remove-orphans");
+    expect(f.state().upFiles).toEqual(["compose.yaml"]);
+    expect(f.state().edgeRunning).toBe(false);
+    expect(
+      f.lines.some((line) =>
+        line.startsWith(`The edge for ${host} is gone. Its certificate volumes stay`),
+      ),
+    ).toBe(true);
+    // An ordinary rerun never passes --remove-orphans.
+    expect(await serverCommand(["setup"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(
+      f
+        .calls()
+        .filter((call) => call.command[0] === "up")
+        .at(-1)?.command,
+    ).not.toContain("--remove-orphans");
+  });
+
+  it("uninstall takes the edge down with the overlays it was started with", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
+    const runtime = {
+      server: f.runtime,
+      cliHome: path.join(f.root, "home", "mend"),
+      sshConfigFile: path.join(f.root, "home", "ssh-config"),
+      signedIn: null,
+      revokeDevice: async () => null,
+    };
+    const plan = await describeUninstall(runtime, "server");
+    expect(plan.server).toMatchObject({ edgeHost: host });
+    expect(planLines(plan, f.configDir).join("\n")).toContain(
+      `containers mend, postgres, garage, edge · volumes mend-store, mend-control, mend-garage, mend-config, mend-ssh, mend-postgres, mend-edge-data, mend-edge-config · image ghcr.io/sealant-sh/mend:0.23.0 · the edge for ${host}`,
+    );
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    expect(f.state().downFiles).toEqual(["compose.yaml", "compose.edge.yaml"]);
+    expect(f.state().edgeRunning).toBe(false);
+  });
+});
+
 describe("server uninstall", { timeout: 60_000 }, () => {
   it("takes the installation down, removes its volumes, image and files, and releases the lock", async () => {
     const f = await fixture();
@@ -852,6 +1208,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       version: "0.23.0",
       appUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
       dockerContext: "saved-local",
+      edgeHost: null,
       generations: 1,
       backups: 0,
     });

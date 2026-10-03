@@ -31,10 +31,11 @@ Where you set it:
 
 - On Kubernetes, `exposure.mode` in the chart's values (`loopback`, `private` or `public`; the chart
   refuses to render anything else). See [the Helm values](#kubernetes-ingress) below.
-- On the Docker install made by `mend server setup`, you cannot set it yet. Setup writes
-  `server.env` itself and checks it against the saved server configuration, so every such install
-  runs the default, `private`. To declare anything else, run the Compose project yourself (see
-  [the Caddy edge](#a-caddy-edge-for-a-compose-install-you-run-yourself)).
+- On the Docker install made by `mend server setup`, with `--exposure`:
+  `mend server setup --exposure private` writes it into the installation's generation and every
+  rerun and upgrade keeps it. Without the flag the install runs the default, `private`. `public`
+  needs [the edge](#the-caddy-edge) and an existing first account, and with it setup also sets the
+  multi mode gate's variables and `MEND_URL_BEARERS=refuse`.
 
 ## What Mend reports
 
@@ -158,7 +159,10 @@ arrives first.
 - Keep Sealant, Postgres and the bucket off any public address. Sealant is a control plane behind
   Mend and is never offered to the Internet.
 
-Every variable named here is described in [Server environment](/reference/server-environment/).
+On the Docker install, `mend server setup --exposure public` does the second and third for you,
+through a `compose.posture.yaml` the generation carries, and `--tenancy multi` does the second. The
+bucket is Garage, which is S3-compatible. Every variable named here is described in
+[Server environment](/reference/server-environment/).
 
 ## The edge
 
@@ -177,21 +181,31 @@ Mend is told the truth about the edge through three settings:
   by.
 - Session cookies are `Secure`, `HttpOnly` and `SameSite=Lax` whenever `APP_URL` is `https:`.
 
-### A Caddy edge for a Compose install you run yourself
+### The Caddy edge
 
 `deploy/docker/compose.edge.yaml` and `deploy/docker/Caddyfile` add a Caddy edge in front of the
 Docker bundle. Caddy obtains and renews a certificate for one host, redirects port 80, and forwards
 everything to Mend's web tier.
 
-`mend server setup` cannot install this overlay. Setup refuses Mend's port on loopback with a
-non-local `--url`, `server.env` is checked against the server configuration so the overlay's
-variables cannot go in it, and `mend server start` and `mend server upgrade` run the saved
-`compose.yaml` alone, which would recreate `mend` without the edge's network and settings. The two
-files are in the repository at the tag of the release you run. They are not among the release
-assets.
+On the Docker install, `mend server setup` installs it:
 
-So the overlay applies to a Compose project you run by hand, from `compose.v2.yaml` and an `.env`
-holding the values that file names (`deploy/docker/bundle.env.example` lists them):
+```sh
+mend server setup --edge mend.example.com
+```
+
+The CLI carries a copy of the two files and writes them into the installation's generation beside
+`compose.yaml`, with `MEND_EDGE_HOST` in `server.env`. The browser origin becomes
+`https://mend.example.com`, Mend's own port stays on loopback, and every `mend server start`,
+`restart` and `upgrade` runs the overlay with `compose.yaml`, so an upgrade never drops it.
+`mend server setup --no-edge` takes it away again. Setup refuses `--bind` on anything but loopback
+with an edge, and a `--url` that is not exactly `https://<host>`.
+
+For a certificate to be issued, the name's DNS must point at the machine and ports 80 and 443 must
+reach it from the Internet. `mend server status` says whether the edge's container runs and whether
+Caddy's data holds a certificate for the host, and `mend server logs` shows what Caddy tried.
+
+For a Compose project you run by hand, from `compose.v2.yaml` and an `.env` holding the values that
+file names (`deploy/docker/bundle.env.example` lists them), the same two files apply as an overlay:
 
 ```sh
 # in the directory that holds compose.v2.yaml and your .env,
@@ -216,12 +230,14 @@ What the overlay does, and what it states on your behalf:
 - `MEND_EXECUTOR_NETWORK=private`: workspaces reach the session channel and Garage over plain HTTP
   on the Compose network, which never leaves the host. Mend reports this as declared.
 - `MEND_EXPOSURE` (default `private`), `MEND_URL_BEARERS` (default `accept`),
-  `MEND_EXPOSURE_REASSESSED` and `MEND_EXPOSURE_DECLARED` pass through from your `.env`.
+  `MEND_EXPOSURE_REASSESSED` and `MEND_EXPOSURE_DECLARED` pass through from your `.env`. On the
+  Docker install, `--exposure` writes the first two.
 - The edge's access log replaces the value of `ticket`, `token` and `code` in every URL and drops
   the `Referer` header. Caddy already redacts `Authorization`, `Cookie` and `Set-Cookie`.
 
 What was checked: the merged files render, and the Caddyfile validates with Caddy. What was not: a
-certificate issued and a browser session through it, end to end.
+certificate issued and a browser session through it, end to end. Workspace SSH on port 2222 stays on
+the loopback bind with the edge, since Caddy proxies HTTP alone.
 
 ### Kubernetes Ingress
 

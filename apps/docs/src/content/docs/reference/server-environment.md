@@ -171,9 +171,12 @@ itself, from its flags and the secrets it generates, and every later command che
 against the saved configuration: a hand edit makes the next command refuse with
 `Server secrets are corrupt: server.env does not match the persisted server config and identity.`
 The compose file also names each variable the Mend container receives, so a new line in `.env`
-reaches nothing on its own.
+reaches nothing on its own. The edge and the posture are the flags' business: `--edge <host>` writes
+the edge overlay and its Caddyfile into the generation, and `--exposure` and `--tenancy` write a
+`compose.posture.yaml` that hands their variables to the container, reading each value from
+`server.env`.
 
-What `server.env` holds, all read by the compose file:
+What `server.env` holds, all read by the compose files:
 
 | Variable                                                                                                                                                                         | Set from                                                         |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
@@ -181,6 +184,10 @@ What `server.env` holds, all read by the compose file:
 | `APP_URL`, `MEND_ALLOWED_ORIGINS`                                                                                                                                                | `--url`, `--origin`                                              |
 | `MEND_BIND_HOST`, `MEND_PORT`, `MEND_SSH_PORT`                                                                                                                                   | `--bind` (`127.0.0.1`), `--port` (`3105`), `--ssh-port` (`2222`) |
 | `SEALANT_SSH_HOST`                                                                                                                                                               | the host name in `--url`                                         |
+| `MEND_EDGE_HOST`                                                                                                                                                                 | `--edge`; read by `compose.edge.yaml`, absent without an edge    |
+| `MEND_EXPOSURE`, `MEND_TENANCY`                                                                                                                                                  | `--exposure`, `--tenancy`; absent when never declared            |
+| `MEND_SOURCE_POLICY=tenant`, `MEND_CAPTURE_REQUIRE_SIZES=true`                                                                                                                   | set with `--tenancy multi` or `--exposure public`                |
+| `MEND_URL_BEARERS=refuse`                                                                                                                                                        | set with `--exposure public`                                     |
 | `DOCKER_SOCKET_PATH`                                                                                                                                                             | detected, or `--docker-socket`                                   |
 | `MEND_POSTGRES_ADMIN_PASSWORD`, `MEND_DB_PASSWORD`, `SEALANT_DB_PASSWORD`, `BETTER_AUTH_SECRET`, `SEALANT_CREDENTIALS_KEY`, `SEALANT_SERVICE_KEY`, `WORKSPACE_SSH_GATEWAY_TOKEN` | generated once, kept in the installation's identity              |
 | `MEND_GARAGE_RPC_SECRET`, `MEND_GARAGE_ADMIN_TOKEN`, `MEND_GARAGE_KEY_ID`, `MEND_GARAGE_KEY_SECRET`                                                                              | derived from the identity                                        |
@@ -194,10 +201,9 @@ network never leaves the host), `SEALANT_BASE_URL=http://127.0.0.1:4000`, and `D
 other variable the container receives passes through to the API.
 
 So on the Docker install made by `mend server setup`, every other variable on this page keeps its
-default, `MEND_EXPOSURE=private` included. To set one, run the Compose project yourself from the
-release's `compose.v2.yaml` and an `.env` holding the values it names
-(`deploy/docker/bundle.env.example` lists them), and add the variable to the `mend` service in an
-override file:
+default. To set one, run the Compose project yourself from the release's `compose.v2.yaml` and an
+`.env` holding the values it names (`deploy/docker/bundle.env.example` lists them), and add the
+variable to the `mend` service in an override file:
 
 ```yaml
 # compose.override.yaml
@@ -213,9 +219,9 @@ docker compose -f compose.v2.yaml -f compose.override.yaml up -d
 ```
 
 A project you run this way is yours to operate: `mend server start`, `restart` and `upgrade` run the
-installation's saved `compose.yaml` alone. The
-[Caddy edge](/operate/exposure/#a-caddy-edge-for-a-compose-install-you-run-yourself) overlay is the
-same kind of override.
+installation's saved `compose.yaml` and the overlays setup wrote beside it, nothing else. The
+[Caddy edge](/operate/exposure/#the-caddy-edge) overlay is the same kind of override, and the one
+setup writes for you.
 
 ## Set them on Kubernetes
 

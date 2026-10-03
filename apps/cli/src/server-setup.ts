@@ -1,4 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
+import * as fs from "node:fs";
 import { readFile } from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -16,6 +17,7 @@ import {
   hostDockerDaemonFacts,
   readShutdownTimeout,
 } from "./docker-shutdown.ts";
+import { renderExposure, renderGate } from "./organization.ts";
 import {
   claimServerDockerVolumes,
   MEND_DOCKER_NAMESPACE,
@@ -23,6 +25,24 @@ import {
   type ServerDockerNamespace,
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
+import {
+  composeOverlays,
+  declaredPostureLines,
+  EDGE_CADDYFILE,
+  EDGE_COMPOSE_OVERLAY,
+  EXPOSURES,
+  type Exposure,
+  healthPosture,
+  isExposure,
+  isTenancy,
+  observedEdgeLine,
+  observedPostureLines,
+  parseEdgeHost,
+  postureEnvLines,
+  renderPostureOverlay,
+  type Tenancy,
+  TENANCIES,
+} from "./server-edge.ts";
 import {
   runServerProcess,
   serverComposeArgs,
@@ -32,6 +52,7 @@ import {
 import {
   withServerStore,
   ServerStoreError,
+  type ServerFiles,
   type ServerStore,
   type ServerStoreResult,
   type ServerGeneration,
@@ -83,14 +104,26 @@ export interface ServerSetupRuntime {
     args: ReadonlyArray<string>,
     options?: ServerProcessOptions,
   ): Promise<CommandOutput>;
-  /** Fetch text with a bounded request timeout. */
-  fetchText(url: string, timeoutMs: number): Promise<FetchOutput>;
+  /** Fetch text with a bounded request timeout, and the headers given, when any. */
+  fetchText(
+    url: string,
+    timeoutMs: number,
+    headers?: Readonly<Record<string, string>>,
+  ): Promise<FetchOutput>;
   /** Generate installation credentials once. */
   randomBytes(size: number): Buffer;
   /** Wait between advertised health probes. */
   sleep(milliseconds: number): Promise<void>;
   /** Print one progress or result line. */
   writeLine(line: string): void;
+  /**
+   * This machine's saved sign-in (`cli.json` under the config directory given, or `MEND_URL` and
+   * `MEND_TOKEN`), when there is one: `mend server status` reads the operator's gate reports with
+   * it. Absent: status reads health alone.
+   */
+  readonly readLogin?: (
+    configDir: string,
+  ) => { readonly url: string; readonly token: string } | null;
   /**
    * This host's Docker daemon facts beside `docker info`'s JSON (null when it did not answer):
    * its dockerd argv and daemon.json (`docker-shutdown.ts`). Absent: setup does not read them.
@@ -114,6 +147,13 @@ interface SetupOptions {
   readonly dockerSocket: string | undefined;
   readonly assetsDir: string | undefined;
   readonly offline: boolean;
+  /** `--edge <host>`: run the TLS edge for this name. Omitted keeps the saved one. */
+  readonly edge: string | undefined;
+  /** `--no-edge`: take a saved edge away. */
+  readonly noEdge: boolean;
+  /** `--exposure`, `--tenancy`: the posture declared; omitted keeps the saved one. */
+  readonly exposure: Exposure | undefined;
+  readonly tenancy: Tenancy | undefined;
 }
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
@@ -139,6 +179,16 @@ export interface ServerConfig {
    * no Garage values and owns no Garage volume.
    */
   readonly bucket?: "garage";
+  /**
+   * The TLS edge's host (docs/adr/0004): Caddy terminates TLS for this name on 80 and 443 and
+   * proxies to Mend's web tier, whose own port stays on loopback. `APP_URL` is then exactly
+   * `https://<edgeHost>`. Absent, no edge runs and nothing is published beyond `bind`.
+   */
+  readonly edgeHost?: string;
+  /** `MEND_EXPOSURE` as declared on this install; absent, the server's default (`private`). */
+  readonly exposure?: Exposure;
+  /** `MEND_TENANCY` as declared on this install; absent, the server's default (`single`). */
+  readonly tenancy?: Tenancy;
 }
 
 /** The Garage image the bundle pins; `checkLocalImages` preloads it like Postgres's. */
@@ -248,7 +298,33 @@ const SETUP_FLAGS = new Set([
   "--docker-socket",
   "--assets-dir",
   "--offline",
+  "--edge",
+  "--no-edge",
+  "--exposure",
+  "--tenancy",
 ]);
+
+const parseExposure = (value: string): Exposure => {
+  if (!isExposure(value))
+    throw setupError(`--exposure must be one of ${EXPOSURES.join(", ")}, not "${value}".`);
+  return value;
+};
+
+const parseTenancy = (value: string): Tenancy => {
+  if (!isTenancy(value))
+    throw setupError(`--tenancy must be one of ${TENANCIES.join(", ")}, not "${value}".`);
+  return value;
+};
+
+const parseEdge = (value: string): string => {
+  const host = parseEdgeHost(value);
+  if (host === null) {
+    throw setupError(
+      `--edge must be a DNS name a certificate can be issued for, such as mend.example.com, not "${value}". An IP address or a single label cannot carry a public certificate.`,
+    );
+  }
+  return host;
+};
 
 const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const values = new Map<string, Array<string>>();
@@ -257,8 +333,8 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     if (flag === undefined) continue;
     if (!flag.startsWith("--")) throw setupError(`Unexpected server setup argument "${flag}".`);
     if (!SETUP_FLAGS.has(flag)) throw setupError(`Unknown server setup option "${flag}".`);
-    if (flag === "--offline") {
-      if (values.has(flag)) throw setupError("--offline may be supplied only once.");
+    if (flag === "--offline" || flag === "--no-edge") {
+      if (values.has(flag)) throw setupError(`${flag} may be supplied only once.`);
       values.set(flag, ["true"]);
       continue;
     }
@@ -276,6 +352,11 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const appPort = flagValue("--port");
   const sshPort = flagValue("--ssh-port");
   const origins = values.get("--origin");
+  const edge = flagValue("--edge");
+  const exposure = flagValue("--exposure");
+  const tenancy = flagValue("--tenancy");
+  if (edge !== undefined && values.has("--no-edge"))
+    throw setupError("--edge and --no-edge contradict each other.");
   return {
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
@@ -287,6 +368,10 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     dockerSocket: flagValue("--docker-socket"),
     assetsDir: flagValue("--assets-dir"),
     offline: values.has("--offline"),
+    edge: edge === undefined ? undefined : parseEdge(edge),
+    noEdge: values.has("--no-edge"),
+    exposure: exposure === undefined ? undefined : parseExposure(exposure),
+    tenancy: tenancy === undefined ? undefined : parseTenancy(tenancy),
   };
 };
 
@@ -331,12 +416,26 @@ const resolveAppUrl = (
   existing: ServerConfig | null,
   options: SetupOptions,
   appPort: number,
+  edgeHost: string | undefined,
 ): string => {
+  if (edgeHost !== undefined) {
+    // The edge serves exactly one origin (compose.edge.yaml: APP_URL is https://<MEND_EDGE_HOST>).
+    const origin = parseHttpOrigin(options.url ?? `https://${edgeHost}`, "--url");
+    if (origin !== `https://${edgeHost}`) {
+      throw setupError(
+        `With --edge ${edgeHost}, --url must be https://${edgeHost}, the origin the edge serves.`,
+      );
+    }
+    return origin;
+  }
   const oldLocalUrl = existing === null ? null : `http://localhost:${existing.appPort}`;
   const portChangedOnLocalhost = options.appPort !== undefined && existing?.appUrl === oldLocalUrl;
-  const fallback = portChangedOnLocalhost
-    ? `http://localhost:${appPort}`
-    : (existing?.appUrl ?? `http://localhost:${appPort}`);
+  // An edge taken away leaves its https origin behind; the localhost default returns unless
+  // --url says otherwise.
+  const fallback =
+    portChangedOnLocalhost || existing?.edgeHost !== undefined
+      ? `http://localhost:${appPort}`
+      : (existing?.appUrl ?? `http://localhost:${appPort}`);
   return parseHttpOrigin(options.url ?? fallback, "--url");
 };
 
@@ -353,10 +452,45 @@ const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boo
   }
 };
 
+/**
+ * The posture the edge and the declarations must agree on. The server would refuse some of these
+ * at start; said here instead, before a generation is written. None is a verdict about the install:
+ * each names two settings that cannot both hold.
+ */
+const checkPosture = (
+  bind: string,
+  edgeHost: string | undefined,
+  exposure: Exposure | undefined,
+): void => {
+  if (edgeHost !== undefined && !isLoopbackBind(bind)) {
+    throw setupError(
+      `With an edge, --bind stays on loopback, ${DEFAULT_BIND}: the edge publishes 80 and 443, and Mend's own port is reached through it alone.`,
+    );
+  }
+  if (edgeHost !== undefined && exposure === "loopback") {
+    throw setupError(
+      "--exposure loopback and an edge contradict each other: the edge publishes 80 and 443 on every interface.",
+    );
+  }
+  if (exposure === "loopback" && !isLoopbackBind(bind)) {
+    throw setupError(
+      "--exposure loopback contradicts a non-loopback --bind: the port is published beyond this machine.",
+    );
+  }
+  if (exposure === "public" && edgeHost === undefined) {
+    throw setupError(
+      "--exposure public needs the edge: add --edge <host>. Without it nothing sets MEND_TRUSTED_PROXIES or an https origin, and the server refuses to start as public.",
+    );
+  }
+};
+
 const validateExposure = (
   existing: ServerConfig | null,
   options: SetupOptions,
-): Pick<ServerConfig, "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort"> => {
+): Pick<
+  ServerConfig,
+  "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort" | "edgeHost" | "exposure" | "tenancy"
+> => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
   if (appPort === sshPort) {
@@ -369,15 +503,31 @@ const validateExposure = (
       "--bind must be a literal IPv4 or IPv6 address, such as 127.0.0.1 or 0.0.0.0.",
     );
   }
-  const appUrl = resolveAppUrl(existing, options, appPort);
-  checkExposurePair(bind, appUrl, options.url === undefined && existing === null);
+  // The edge and the posture are kept across reruns and upgrades; only a flag changes them.
+  const edgeHost = options.noEdge ? undefined : (options.edge ?? existing?.edgeHost);
+  const exposure = options.exposure ?? existing?.exposure;
+  const tenancy = options.tenancy ?? existing?.tenancy;
+  checkPosture(bind, edgeHost, exposure);
+  const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
+  // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
+  if (edgeHost === undefined)
+    checkExposurePair(bind, appUrl, options.url === undefined && existing === null);
 
   const requestedOrigins = options.origins?.map((origin) => parseHttpOrigin(origin, "--origin"));
   const inheritedOrigins = existing?.allowedOrigins ?? [];
   const allowedOrigins = [
     ...new Set((requestedOrigins ?? inheritedOrigins).filter((origin) => origin !== appUrl)),
   ];
-  return { bind, appUrl, allowedOrigins, appPort, sshPort };
+  return {
+    bind,
+    appUrl,
+    allowedOrigins,
+    appPort,
+    sshPort,
+    ...(edgeHost === undefined ? {} : { edgeHost }),
+    ...(exposure === undefined ? {} : { exposure }),
+    ...(tenancy === undefined ? {} : { tenancy }),
+  };
 };
 
 const parseServerConfig = (raw: string): ServerConfig => {
@@ -404,6 +554,18 @@ const parseServerConfig = (raw: string): ServerConfig => {
   if (dockerSocketSource !== "detected" && dockerSocketSource !== "override") {
     throw setupError("Server config is corrupt: dockerSocketSource must be detected or override.");
   }
+  const edgeHost = fields.has("edgeHost") ? requiredString(fields, "edgeHost") : undefined;
+  if (edgeHost !== undefined && parseEdgeHost(edgeHost) !== edgeHost) {
+    throw setupError("Server config is corrupt: edgeHost must be a lowercase DNS name.");
+  }
+  const exposure = fields.has("exposure") ? requiredString(fields, "exposure") : undefined;
+  if (exposure !== undefined && !isExposure(exposure)) {
+    throw setupError(`Server config is corrupt: exposure must be one of ${EXPOSURES.join(", ")}.`);
+  }
+  const tenancy = fields.has("tenancy") ? requiredString(fields, "tenancy") : undefined;
+  if (tenancy !== undefined && !isTenancy(tenancy)) {
+    throw setupError(`Server config is corrupt: tenancy must be one of ${TENANCIES.join(", ")}.`);
+  }
   const config: ServerConfig = {
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
@@ -423,6 +585,9 @@ const parseServerConfig = (raw: string): ServerConfig => {
       ? { registryPort: requiredInteger(fields, "registryPort") }
       : {}),
     ...(fields.has("bucket") ? { bucket: requiredBucket(fields) } : {}),
+    ...(edgeHost === undefined ? {} : { edgeHost }),
+    ...(exposure === undefined ? {} : { exposure }),
+    ...(tenancy === undefined ? {} : { tenancy }),
   };
   if (
     config.schemaVersion !== CONFIG_SCHEMA_VERSION ||
@@ -447,6 +612,10 @@ const parseServerConfig = (raw: string): ServerConfig => {
     dockerSocket: undefined,
     assetsDir: undefined,
     offline: false,
+    edge: config.edgeHost,
+    noEdge: false,
+    exposure: config.exposure,
+    tenancy: config.tenancy,
   });
   return config;
 };
@@ -903,6 +1072,9 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     `MEND_SSH_PORT=${config.sshPort}`,
     ...(config.registryPort === undefined ? [] : [`MEND_REGISTRY_PORT=${config.registryPort}`]),
     `SEALANT_SSH_HOST=${sshHost}`,
+    // The edge's host and the posture (server-edge.ts): compose.edge.yaml and
+    // compose.posture.yaml read them from here, and only from here.
+    ...postureEnvLines(config),
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
     ...renderGarage(secrets, config),
@@ -920,7 +1092,84 @@ const storeValue = <T>(result: ServerStoreResult<T>): T => {
 export interface ServerInstallation {
   readonly config: ServerConfig;
   readonly directory: string;
+  /**
+   * The edge image this generation's overlay pins, when it has one. Read from the generation, not
+   * from this CLI: a newer CLI starting an older generation checks the image that generation runs.
+   */
+  readonly edgeImage?: string;
 }
+
+/** The generation's Compose target: its directory, context and the overlays its config declares. */
+const composeTarget = (
+  installation: ServerInstallation,
+): {
+  readonly directory: string;
+  readonly dockerContext: string;
+  readonly overlays: ReadonlyArray<string>;
+} => ({
+  directory: installation.directory,
+  dockerContext: installation.config.dockerContext,
+  overlays: composeOverlays(installation.config),
+});
+
+/** The image the edge overlay pins; the overlay is not an edge overlay without one. */
+const edgeImageOf = (overlay: string): string => {
+  const image = /^ {4}image:[ \t]*(caddy:[^\s#]+)[ \t]*$/m.exec(overlay)?.[1];
+  if (image === undefined)
+    throw setupError("Server generation is corrupt: compose.edge.yaml pins no Caddy image.");
+  return image;
+};
+
+/**
+ * The generation's overlays agree with its config: an edge host has the edge overlay and its
+ * Caddyfile, a posture has an overlay naming each of its variables, and neither is there otherwise.
+ * Content is the generation's own snapshot (an upgrade writes the CLI's current copy), so this reads
+ * shape, not bytes, like the compose asset.
+ */
+const validateOverlays = (
+  config: ServerConfig,
+  files: ServerGeneration["files"],
+): string | undefined => {
+  const posture = renderPostureOverlay(config);
+  if ((posture === undefined) !== (files.posture === undefined)) {
+    throw setupError(
+      "Server generation is corrupt: compose.posture.yaml does not match the persisted server config.",
+    );
+  }
+  for (const line of postureEnvLines(config)) {
+    const key = line.slice(0, line.indexOf("="));
+    if (key !== "MEND_EDGE_HOST" && !(files.posture ?? "").includes(`      ${key}: \${${key}`)) {
+      throw setupError(
+        `Server generation is corrupt: compose.posture.yaml does not hand ${key} to Mend.`,
+      );
+    }
+  }
+  if (
+    (config.edgeHost === undefined) !== (files.edge === undefined) ||
+    (config.edgeHost === undefined) !== (files.caddyfile === undefined)
+  ) {
+    throw setupError(
+      "Server generation is corrupt: compose.edge.yaml and Caddyfile do not match the persisted server config.",
+    );
+  }
+  if (files.edge === undefined || files.caddyfile === undefined) return undefined;
+  if (
+    !files.edge.includes("\n  edge:") ||
+    !files.edge.includes("MEND_EDGE_HOST") ||
+    !files.edge.includes("./Caddyfile:/etc/caddy/Caddyfile")
+  ) {
+    throw setupError("Server generation is corrupt: compose.edge.yaml is not the edge overlay.");
+  }
+  if (
+    !files.caddyfile.includes("{$MEND_EDGE_HOST}") ||
+    !files.caddyfile.includes("reverse_proxy mend:3105")
+  ) {
+    throw setupError(
+      "Server generation is corrupt: the Caddyfile does not route the edge host to Mend.",
+    );
+  }
+  return edgeImageOf(files.edge);
+};
 
 /** Read and validate a complete active generation while holding the lifecycle lock. */
 export const readServerInstallation = (
@@ -941,7 +1190,15 @@ export const readServerInstallation = (
     }
     validateComposeAsset(generation.files.compose);
     validatePostgresAsset(generation.files.postgresInit);
-    return { _tag: "ok", value: { config, directory: generation.directory } };
+    const edgeImage = validateOverlays(config, generation.files);
+    return {
+      _tag: "ok",
+      value: {
+        config,
+        directory: generation.directory,
+        ...(edgeImage === undefined ? {} : { edgeImage }),
+      },
+    };
   } catch (cause) {
     return {
       _tag: "error",
@@ -957,6 +1214,8 @@ export interface ServerInstallationFacts {
   readonly directory: string;
   readonly config: ServerConfig;
   readonly compose: string;
+  /** The generation's overlays beside compose.yaml, by file name; none carries a value. */
+  readonly overlays: ReadonlyArray<{ readonly name: string; readonly content: string }>;
   readonly envKeys: ReadonlyArray<string>;
 }
 
@@ -986,6 +1245,17 @@ export const readServerInstallationFacts = async (
         directory: installation.directory,
         config: installation.config,
         compose: generation.files.compose,
+        overlays: [
+          ...(generation.files.edge === undefined
+            ? []
+            : [{ name: "compose.edge.yaml", content: generation.files.edge }]),
+          ...(generation.files.caddyfile === undefined
+            ? []
+            : [{ name: "Caddyfile", content: generation.files.caddyfile }]),
+          ...(generation.files.posture === undefined
+            ? []
+            : [{ name: "compose.posture.yaml", content: generation.files.posture }]),
+        ],
         envKeys: envKeyNames(generation.files.env),
       };
     },
@@ -995,20 +1265,53 @@ export const readServerInstallationFacts = async (
   return result.value;
 };
 
+/**
+ * Every file of a generation, from one config: the release assets, `server.env`, and the overlays
+ * the config declares. Setup and upgrade both render through here, so whatever a config carries
+ * (the edge, the posture) reaches every generation written from it.
+ */
+const generationFiles = (
+  config: ServerConfig,
+  secrets: ServerSecrets,
+  assets: { readonly compose: string; readonly postgresInit: string },
+  identity: string = renderIdentity(secrets),
+): ServerFiles => {
+  const posture = renderPostureOverlay(config);
+  return {
+    identity,
+    config: `${JSON.stringify(config, null, 2)}\n`,
+    env: renderSecrets(secrets, config),
+    ...assets,
+    ...(posture === undefined ? {} : { posture }),
+    ...(config.edgeHost === undefined
+      ? {}
+      : { edge: EDGE_COMPOSE_OVERLAY, caddyfile: EDGE_CADDYFILE }),
+  };
+};
+
 const persistSetup = (
   store: ServerStore,
   config: ServerConfig,
   secrets: ServerSecrets,
   assets: { readonly compose: string; readonly postgresInit: string },
-): ServerGeneration =>
-  storeValue(
-    store.prepare({
-      identity: renderIdentity(secrets),
-      config: `${JSON.stringify(config, null, 2)}\n`,
-      env: renderSecrets(secrets, config),
-      ...assets,
-    }),
-  );
+): ServerGeneration => storeValue(store.prepare(generationFiles(config, secrets, assets)));
+
+/**
+ * Where this machine reads Mend's health: the advertised origin, or, behind the edge, Mend's own
+ * port on loopback. The edge's name resolves to a public address that may not route back to this
+ * host, and what the probe asks is whether the Mend container answers with the pinned version.
+ */
+const healthOrigin = (config: ServerConfig): string => {
+  if (config.edgeHost === undefined) return config.appUrl;
+  const host = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
+  return `http://${host}:${config.appPort}`;
+};
+
+/** What setup and start say once health answered: where it answered, and the edge's origin. */
+const reachableLine = (config: ServerConfig): string =>
+  config.edgeHost === undefined
+    ? `Mend ${config.serverVersion} is reachable at ${config.appUrl}`
+    : `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · the edge is set up for ${config.appUrl}`;
 
 const probeHealth = async (
   runtime: ServerSetupRuntime,
@@ -1169,9 +1472,10 @@ const inspectImage = async (
 
 const checkLocalImages = async (
   runtime: ServerSetupRuntime,
-  config: ServerConfig,
+  installation: Pick<ServerInstallation, "config" | "edgeImage">,
   policy: "local" | "pull-missing" = "local",
 ): Promise<void> => {
+  const { config } = installation;
   const image = `ghcr.io/sealant-sh/mend:${config.serverVersion}`;
   const mend = await inspectImage(
     runtime,
@@ -1206,6 +1510,17 @@ const checkLocalImages = async (
     if (garage.status !== 0)
       throw commandFailure(`Preload ${GARAGE_IMAGE} before continuing`, garage);
   }
+  if (installation.edgeImage !== undefined) {
+    const edge = await inspectImage(
+      runtime,
+      config.dockerContext,
+      installation.edgeImage,
+      "{{.Id}}",
+      policy,
+    );
+    if (edge.status !== 0)
+      throw commandFailure(`Preload ${installation.edgeImage} before continuing`, edge);
+  }
 };
 
 const checkComposeImages = async (
@@ -1214,10 +1529,7 @@ const checkComposeImages = async (
 ): Promise<void> => {
   const output = await runtime.run(
     "docker",
-    serverComposeArgs(
-      { directory: installation.directory, dockerContext: installation.config.dockerContext },
-      ["config", "--images"],
-    ),
+    serverComposeArgs(composeTarget(installation), ["config", "--images"]),
   );
   if (output.status !== 0) throw commandFailure("Docker Compose config failed", output);
   const images = output.stdout.trim().split(/\s+/).toSorted();
@@ -1225,10 +1537,11 @@ const checkComposeImages = async (
     `ghcr.io/sealant-sh/mend:${installation.config.serverVersion}`,
     "postgres:17-alpine",
     ...(installation.config.bucket === "garage" ? [GARAGE_IMAGE] : []),
+    ...(installation.edgeImage === undefined ? [] : [installation.edgeImage]),
   ].toSorted();
   if (images.join("\n") !== expected.join("\n")) {
     throw setupError(
-      `Compose must use only the canonical pinned Mend image, official postgres:17-alpine${installation.config.bucket === "garage" ? ` and ${GARAGE_IMAGE}` : ""}.`,
+      `Compose must use only the canonical pinned Mend image, official postgres:17-alpine${installation.config.bucket === "garage" ? ` and ${GARAGE_IMAGE}` : ""}${installation.edgeImage === undefined ? "" : ` and the edge's ${installation.edgeImage}`}.`,
     );
   }
 };
@@ -1250,10 +1563,15 @@ const initGarage = async (
   const exec = (args: ReadonlyArray<string>) =>
     runtime.run(
       "docker",
-      serverComposeArgs(
-        { directory: installation.directory, dockerContext: installation.config.dockerContext },
-        ["exec", "-T", "garage", "/garage", "-c", "/etc/garage.toml", ...args],
-      ),
+      serverComposeArgs(composeTarget(installation), [
+        "exec",
+        "-T",
+        "garage",
+        "/garage",
+        "-c",
+        "/etc/garage.toml",
+        ...args,
+      ]),
       { timeoutMs: serverProcessDeadlines.ordinary },
     );
   const status = await exec(["status"]);
@@ -1289,13 +1607,13 @@ const startingNotice = (runtime: ServerSetupRuntime, version: string): void =>
 
 const startCompose = async (
   runtime: ServerSetupRuntime,
-  config: ServerConfig,
-  generation: ServerGeneration,
+  installation: ServerInstallation,
+  options: { readonly removeOrphans: boolean },
 ): Promise<void> => {
-  startingNotice(runtime, config.serverVersion);
+  startingNotice(runtime, installation.config.serverVersion);
   const compose = await runtime.run(
     "docker",
-    serverComposeArgs({ directory: generation.directory, dockerContext: config.dockerContext }, [
+    serverComposeArgs(composeTarget(installation), [
       "up",
       "-d",
       "--wait",
@@ -1304,11 +1622,20 @@ const startCompose = async (
       "--pull",
       "never",
       "--no-build",
+      // Only when the edge was taken away: its container is no longer in the project, and
+      // Compose removes a container of this project alone. Never on an ordinary start.
+      ...(options.removeOrphans ? ["--remove-orphans"] : []),
     ]),
     { timeoutMs: serverProcessDeadlines.startup },
   );
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
 };
+
+/** What setup says once the edge's container is up: what Caddy does next, and where to read it. */
+const edgeStartedLine = (config: ServerConfig): string | null =>
+  config.edgeHost === undefined
+    ? null
+    : `The edge for ${config.edgeHost} is up on 80 and 443. Caddy asks for its certificate once ${config.edgeHost} resolves to this machine and both ports reach it from the Internet. mend server status says whether it holds one, and mend server logs shows what Caddy tried.`;
 
 const setupServer = async (
   args: ReadonlyArray<string>,
@@ -1377,26 +1704,50 @@ const setupServer = async (
     ...configWithoutBucket,
     ...(bucket === undefined ? {} : { bucket }),
   };
+  // Until the first account exists, registration is open to whoever arrives first, and the
+  // server refuses `public` without an operator (ADR 0004, decision 16). Said before anything
+  // is written, with the order that works.
+  if (existing === null && config.exposure === "public") {
+    throw setupError(
+      "A fresh install cannot start as public: until the first account exists, registration is open to whoever arrives first, and the server refuses MEND_EXPOSURE=public without an operator account. Set up with --exposure private, create the first account, then run mend server setup --exposure public.",
+    );
+  }
   const secrets = savedSecrets ?? createSecrets(runtime);
   const generation = persistSetup(store, config, secrets, assets);
-  await checkComposeImages(runtime, { directory: generation.directory, config });
+  const installation: ServerInstallation = {
+    directory: generation.directory,
+    config,
+    ...(generation.files.edge === undefined
+      ? {}
+      : { edgeImage: edgeImageOf(generation.files.edge) }),
+  };
+  await checkComposeImages(runtime, installation);
   const ownership = await claimServerDockerVolumes(runtime, {
     dockerContext: config.dockerContext,
     identityBytes: Buffer.from(generation.files.identity),
     namespace: namespaceOf(config),
   });
   if (ownership._tag === "error") throw setupError(ownership.error.message);
-  await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
+  await checkLocalImages(runtime, installation, options.offline ? "local" : "pull-missing");
   const userNamespaces = await hostUserNamespacesLine(
     runtime,
     config.dockerContext,
     `ghcr.io/sealant-sh/mend:${config.serverVersion}`,
   );
   storeValue(store.activate(generation));
-  await startCompose(runtime, config, generation);
-  await initGarage(runtime, { directory: generation.directory, config }, secrets);
-  await probeHealth(runtime, config.appUrl, config.serverVersion);
-  runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
+  await startCompose(runtime, installation, {
+    removeOrphans: existing?.config.edgeHost !== undefined && config.edgeHost === undefined,
+  });
+  await initGarage(runtime, installation, secrets);
+  await probeHealth(runtime, healthOrigin(config), config.serverVersion);
+  runtime.writeLine(reachableLine(config));
+  const edgeStarted = edgeStartedLine(config);
+  if (edgeStarted !== null) runtime.writeLine(edgeStarted);
+  if (existing?.config.edgeHost !== undefined && config.edgeHost === undefined) {
+    runtime.writeLine(
+      `The edge for ${existing.config.edgeHost} is gone. Its certificate volumes stay until you remove them: docker --context ${config.dockerContext} volume rm mend_mend-edge-data mend_mend-edge-config`,
+    );
+  }
   runtime.writeLine(
     `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
   );
@@ -1453,7 +1804,7 @@ const composeCommand = async (
   const output = await runtime.run(
     "docker",
     serverComposeArgs(
-      { directory: installation.directory, dockerContext: installation.config.dockerContext },
+      composeTarget(installation),
       args.flatMap((arg) =>
         arg === "--wait"
           ? [arg, "--wait-timeout", String(serverProcessDeadlines.composeWaitSeconds)]
@@ -1494,10 +1845,8 @@ const startInstallation = async (
     "--no-build",
   ]);
   await initGarage(runtime, installation, secrets);
-  await probeHealth(runtime, installation.config.appUrl, installation.config.serverVersion);
-  runtime.writeLine(
-    `Mend ${installation.config.serverVersion} is reachable at ${installation.config.appUrl}`,
-  );
+  await probeHealth(runtime, healthOrigin(installation.config), installation.config.serverVersion);
+  runtime.writeLine(reachableLine(installation.config));
 };
 
 const parseUpgradeOptions = (args: ReadonlyArray<string>): SetupOptions => {
@@ -1555,20 +1904,23 @@ const upgradeServer = async (
     ...(bucket === undefined ? {} : { bucket }),
   };
   const secrets = parseSecrets(previous.files.identity);
-  const files = {
-    identity: previous.files.identity,
-    config: `${JSON.stringify(config, null, 2)}\n`,
-    env: renderSecrets(secrets, config),
-    ...assets,
-  };
-  // Parse the proposed pair before publication. Identity bytes come only from the old generation.
+  // The edge and the posture are in `carried`, so the target renders the same overlays from the
+  // same config, with this CLI's copy of the edge files. Identity bytes come only from the old
+  // generation.
+  const files = generationFiles(config, secrets, assets, previous.files.identity);
+  // Parse the proposed pair before publication.
   const parsed = parseServerConfig(files.config);
   if (renderSecrets(parseSecrets(files.env), parsed) !== files.env)
     throw setupError("Invalid upgrade configuration.");
-  await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
+  const edgeImage = files.edge === undefined ? {} : { edgeImage: edgeImageOf(files.edge) };
+  await checkLocalImages(
+    runtime,
+    { config, ...edgeImage },
+    options.offline ? "local" : "pull-missing",
+  );
   await checkComposeImages(runtime, existing);
   const target = storeValue(store.prepare(files));
-  const installation = { directory: target.directory, config };
+  const installation: ServerInstallation = { directory: target.directory, config, ...edgeImage };
   await checkComposeImages(runtime, installation);
   // The Garage volume arrives with the bundle that carries it: claim it under the unchanged
   // identity before anything starts. Claiming is idempotent for the volumes that already exist.
@@ -1605,7 +1957,7 @@ const upgradeServer = async (
     ]);
     const dumped = await runtime.run(
       "docker",
-      serverComposeArgs({ directory: previous.directory, dockerContext: config.dockerContext }, [
+      serverComposeArgs(composeTarget(existing), [
         "exec",
         "-T",
         "postgres",
@@ -1654,14 +2006,155 @@ const upgradeServer = async (
   runtime.writeLine(`Upgraded to ${version}. Retained database backup: ${backup.directory}`);
 };
 
+/**
+ * Caddy's data volume holds one directory per issuer, and under it `<host>/<host>.crt` once a
+ * certificate was obtained. The path, or null when Caddy holds none for the host yet. The edge
+ * image ships BusyBox, so one `sh -c` with a glob is the whole question.
+ */
+const observeEdgeCertificate = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+  host: string,
+): Promise<string | null> => {
+  const listed = await runtime.run(
+    "docker",
+    serverComposeArgs(composeTarget(installation), [
+      "exec",
+      "-T",
+      "edge",
+      "sh",
+      "-c",
+      `ls /data/caddy/certificates/*/${host}/${host}.crt`,
+    ]),
+    { timeoutMs: serverProcessDeadlines.ordinary },
+  );
+  if (listed.status !== 0 || listed.error !== undefined) return null;
+  const file = listed.stdout.trim().split("\n")[0];
+  return file === undefined || file === "" ? null : file;
+};
+
+/**
+ * The operator's two gate reports, through this machine's saved sign-in when it is to this
+ * install. Read over Mend's own port with the bearer, the way the health probe reads. Lines to
+ * print, or the reason they could not be read, as a fact.
+ */
+const operatorReportLines = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+): Promise<ReadonlyArray<string>> => {
+  const login = runtime.readLogin?.(runtime.configDir) ?? null;
+  if (login === null) {
+    return [
+      `gate items · every item with its detail needs the operator's sign-in on this machine: mend login --url ${installation.config.appUrl}, then mend server status again, or mend operator gate and mend operator exposure`,
+    ];
+  }
+  let loginOrigin: string;
+  try {
+    loginOrigin = new URL(login.url).origin;
+  } catch {
+    return [`gate items · the saved sign-in's URL "${login.url}" is not a URL · not read`];
+  }
+  if (loginOrigin !== installation.config.appUrl) {
+    return [
+      `gate items · this machine is signed in to ${loginOrigin}, not ${installation.config.appUrl} · not read`,
+    ];
+  }
+  const headers = { Authorization: `Bearer ${login.token}` };
+  const read = async (route: string): Promise<unknown | string> => {
+    const response = await runtime.fetchText(
+      `${healthOrigin(installation.config)}/api${route}`,
+      5_000,
+      headers,
+    );
+    if (response.error !== undefined) return `${route} · not read: ${response.error}`;
+    if (response.status === 404)
+      return `${route} · 404: the signed-in account does not hold the operator role`;
+    if (response.status < 200 || response.status >= 300)
+      return `${route} · not read: HTTP ${response.status}`;
+    try {
+      return JSON.parse(response.body);
+    } catch {
+      return `${route} · not read: the answer is not JSON`;
+    }
+  };
+  const lines: Array<string> = [];
+  const gate = await read("/operator/gate");
+  const gateItems = Array.isArray(gate) ? gate.flatMap(gateItemOf) : null;
+  if (typeof gate === "string") lines.push(`gate items · ${gate}`);
+  else if (gateItems === null || gateItems.length === 0)
+    lines.push("gate items · /operator/gate answered in a shape this CLI does not read");
+  else lines.push("multi mode gate, as the server reports each item:", ...renderGate(gateItems));
+  const exposure = await read("/operator/exposure");
+  const report = exposureReportOf(exposure);
+  if (typeof exposure === "string") lines.push(`gate items · ${exposure}`);
+  else if (report === null)
+    lines.push("gate items · /operator/exposure answered in a shape this CLI does not read");
+  else
+    lines.push("public exposure gate, as the server reports each item:", ...renderExposure(report));
+  return lines;
+};
+
+const gateItemOf = (
+  value: unknown,
+): ReadonlyArray<{
+  readonly id: string;
+  readonly ok: boolean;
+  readonly detail: string;
+  readonly fix: string | null;
+}> => {
+  const fields = ownFields(value);
+  const id = fields?.get("id");
+  const ok = fields?.get("ok");
+  const detail = fields?.get("detail");
+  const fix = fields?.get("fix");
+  return typeof id === "string" &&
+    typeof ok === "boolean" &&
+    typeof detail === "string" &&
+    (fix === null || typeof fix === "string")
+    ? [{ id, ok, detail, fix: fix ?? null }]
+    : [];
+};
+
+type ExposureReport = Parameters<typeof renderExposure>[0];
+type ExposureItem = ExposureReport["items"][number];
+
+const isEstablished = (value: unknown): value is ExposureItem["established"] =>
+  value === "observed" || value === "carried" || value === "declared" || value === "open";
+
+const exposureItemOf = (value: unknown): ReadonlyArray<ExposureItem> => {
+  const fields = ownFields(value);
+  const id = fields?.get("id");
+  const established = fields?.get("established");
+  const detail = fields?.get("detail");
+  const fix = fields?.get("fix");
+  const blocksStart = fields?.get("blocksStart");
+  return typeof id === "string" &&
+    isEstablished(established) &&
+    typeof detail === "string" &&
+    (fix === null || typeof fix === "string") &&
+    typeof blocksStart === "boolean"
+    ? [{ id, established, detail, fix: fix ?? null, blocksStart }]
+    : [];
+};
+
+const exposureReportOf = (value: unknown): ExposureReport | null => {
+  const fields = ownFields(value);
+  const declared = fields?.get("declared");
+  const items = fields?.get("items");
+  if (typeof declared !== "string" || !isExposure(declared) || !Array.isArray(items)) return null;
+  const parsed = items.flatMap(exposureItemOf);
+  return parsed.length === items.length && parsed.length > 0 ? { declared, items: parsed } : null;
+};
+
 const serverStatus = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
 ): Promise<void> => {
-  runtime.writeLine(
-    `Pinned Mend ${installation.config.serverVersion} at ${installation.config.appUrl}`,
-  );
+  const { config } = installation;
+  runtime.writeLine(`Pinned Mend ${config.serverVersion} at ${config.appUrl}`);
   runtime.writeLine(`Active generation: ${installation.directory}`);
+  // What this install declares, from its own config: facts about the generation, whatever runs.
+  for (const line of declaredPostureLines(config)) runtime.writeLine(line);
   const state = await composeCommand(runtime, installation, ["ps", "--all"]);
   runtime.writeLine(state.stdout.trim() || "No Compose containers found. Run mend server start.");
   const running = await composeCommand(runtime, installation, [
@@ -1670,14 +2163,28 @@ const serverStatus = async (
     "running",
     "--services",
   ]);
-  if (!running.stdout.trim().split(/\s+/).includes("mend")) {
+  const runningServices = running.stdout.trim().split(/\s+/);
+  if (config.edgeHost !== undefined) {
+    const edgeRunning = runningServices.includes("edge");
+    runtime.writeLine(
+      observedEdgeLine(config.edgeHost, {
+        running: edgeRunning,
+        certificate: edgeRunning
+          ? await observeEdgeCertificate(runtime, installation, config.edgeHost)
+          : null,
+      }),
+    );
+  }
+  if (!runningServices.includes("mend")) {
     runtime.writeLine("Mend is stopped. No health claim was made.");
     return;
   }
-  const response = await runtime.fetchText(`${installation.config.appUrl}/api/health`, 2_000);
+  const response = await runtime.fetchText(`${healthOrigin(config)}/api/health`, 2_000);
   let fields: ReadonlyMap<string, unknown> | null = null;
+  let body: unknown = null;
   try {
-    fields = ownFields(JSON.parse(response.body));
+    body = JSON.parse(response.body);
+    fields = ownFields(body);
   } catch {
     /* Invalid health is not readiness. */
   }
@@ -1686,15 +2193,16 @@ const serverStatus = async (
     response.status < 200 ||
     response.status >= 300 ||
     fields?.get("status") !== "ok" ||
-    fields.get("version") !== installation.config.serverVersion
+    fields.get("version") !== config.serverVersion
   ) {
     throw setupError(
-      `Mend is running but exact-version health for ${installation.config.serverVersion} was not observed. Check mend server logs --tail 100.`,
+      `Mend is running but exact-version health for ${config.serverVersion} was not observed. Check mend server logs --tail 100.`,
     );
   }
-  runtime.writeLine(
-    `Mend ${installation.config.serverVersion} is reachable at ${installation.config.appUrl}`,
-  );
+  runtime.writeLine(reachableLine(config));
+  // What the running server reports, beside what was declared above.
+  for (const line of observedPostureLines(config, healthPosture(body))) runtime.writeLine(line);
+  for (const line of await operatorReportLines(runtime, installation)) runtime.writeLine(line);
 };
 
 const manageServer = async (
@@ -1758,12 +2266,18 @@ const manageServer = async (
   if (command === "stop") {
     interruptionNotice(runtime);
     await composeCommand(runtime, installation, ["stop", "--timeout", "30"]);
+    const stopped = [
+      "Mend",
+      "Postgres",
+      ...(installation.config.bucket === "garage" ? ["Garage"] : []),
+      ...(installation.config.edgeHost === undefined ? [] : ["the edge"]),
+    ];
     runtime.writeLine(
-      `Mend, Postgres${installation.config.bucket === "garage" ? " and Garage" : ""} stopped. Volumes, configuration and workspace containers are retained.`,
+      `${stopped.slice(0, -1).join(", ")} and ${stopped.at(-1)} stopped. Volumes, configuration and workspace containers are retained.`,
     );
     return;
   }
-  await checkLocalImages(runtime, installation.config);
+  await checkLocalImages(runtime, installation);
   if (command === "restart") {
     interruptionNotice(runtime);
     await composeCommand(runtime, installation, ["stop", "--timeout", "30", "mend"]);
@@ -1781,9 +2295,12 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     platform: process.platform,
     cliVersion: cliVersion(),
     run: (command, args, options) => runServerProcess(command, args, environment, options),
-    fetchText: async (url, timeoutMs) => {
+    fetchText: async (url, timeoutMs, headers) => {
       try {
-        const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(timeoutMs),
+          ...(headers === undefined ? {} : { headers }),
+        });
         return { status: response.status, body: await response.text() };
       } catch (cause) {
         return {
@@ -1797,7 +2314,29 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     sleep: (milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
     writeLine: (line) => process.stdout.write(`${line}\n`),
     dockerDaemonFacts: hostDockerDaemonFacts,
+    readLogin: (configDir) => savedLogin(configDir, environment),
   };
+};
+
+/**
+ * The sign-in `mend login` saved in `cli.json`, as `loadConfig` reads it: `MEND_URL` and
+ * `MEND_TOKEN` first, then the file. Null when there is no token; an unreadable file is none too.
+ */
+const savedLogin = (
+  configDir: string,
+  environment: NodeJS.ProcessEnv,
+): { readonly url: string; readonly token: string } | null => {
+  let saved: ReadonlyMap<string, unknown> | null = null;
+  try {
+    saved = ownFields(JSON.parse(fs.readFileSync(path.join(configDir, "cli.json"), "utf8")));
+  } catch {
+    saved = null;
+  }
+  const savedUrl = saved?.get("url");
+  const savedToken = saved?.get("token");
+  const url = environment["MEND_URL"] ?? (typeof savedUrl === "string" ? savedUrl : null);
+  const token = environment["MEND_TOKEN"] ?? (typeof savedToken === "string" ? savedToken : null);
+  return url === null || token === null || token === "" ? null : { url, token };
 };
 
 /** Compatibility name for callers predating the lifecycle command family. */

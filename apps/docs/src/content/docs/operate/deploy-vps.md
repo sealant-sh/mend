@@ -14,14 +14,14 @@ that holds every session's captured work. You do not install or choose a Sealant
 
 Mend asks the operator to state how an instance is reached, in `MEND_EXPOSURE`: `loopback` (this
 machine only), `private` (a network you control admission to, such as a tailnet, a LAN or a VPN) or
-`public`. The default is `private`, and `mend server setup` does not change it, so a server it
-installs runs as `private`. Put the server on a private network such as Tailscale before you bind it
+`public`. The default is `private`. `mend server setup --exposure <value>` declares it and keeps it
+across reruns and upgrades. Put the server on a private network such as Tailscale before you bind it
 to anything but localhost.
 
 `public` refuses to start while an item of the public exposure gate that the server can observe is
 open. `mend operator exposure` prints each item, marked `observed`, `carried`, `declared` or `open`.
-The repository also holds a Caddy TLS edge overlay (`deploy/docker/compose.edge.yaml`) for a Compose
-project you run yourself; setup does not install it and it is not among the release assets. Read
+`mend server setup --edge <host>` runs a Caddy TLS edge in front of Mend, from the repository's
+`deploy/docker/compose.edge.yaml` and `Caddyfile`, and keeps it across upgrades. Read
 [Exposure and budgets](/operate/exposure/) before exposing a server beyond a private network.
 
 ## Set up the server
@@ -47,6 +47,28 @@ Postgres and Garage publish no host port, and no image registry is published. Wo
 built and launched in the host Docker Engine through the mounted daemon socket. Workspaces work on
 their own disk and capture their work to the bucket; nothing from the host is bind-mounted into
 them.
+
+### Behind a TLS edge
+
+For a server reached from the Internet, let setup run the edge instead of binding Mend's port beyond
+loopback. The name's DNS points at the server and ports 80 and 443 reach it:
+
+```sh
+mend server setup --edge mend.example.com
+```
+
+Caddy obtains the certificate and proxies to Mend, whose own port stays on loopback. The origin is
+`https://mend.example.com`. Create the first account through it, then declare the posture:
+
+```sh
+mend server setup --exposure public
+mend server setup --exposure public --tenancy multi   # for more than one organization
+```
+
+A fresh install cannot start as `public`: until the first account exists, registration is open to
+whoever arrives first, and the server refuses `public` without an operator. `mend server status`
+shows the edge, the certificate as Caddy's data shows it, and the declared exposure and tenancy
+beside what the running server reports. Workspace SSH on port 2222 stays on loopback with the edge.
 
 Each workspace runs its own rootless Docker, which needs unprivileged user namespaces. Ubuntu 23.10
 and later (24.04 LTS included) refuse them by default, and then no session can start.
@@ -181,20 +203,20 @@ the plan and asks you to type `delete` first.
 
 ### Server defaults
 
-A server installed by `mend server setup` runs with these defaults, which setup does not expose as
-options:
+A server installed by `mend server setup` runs with these defaults:
 
 - `MEND_TENANCY=single`: one organization. The operator role administers the instance and has no
-  default read access to organization content. `multi` refuses to start until every item of the
-  multi mode gate passes; `mend operator gate` lists them.
+  default read access to organization content. `mend server setup --tenancy multi` declares many,
+  and sets `MEND_SOURCE_POLICY=tenant` and `MEND_CAPTURE_REQUIRE_SIZES=true` with it. `multi`
+  refuses to start until every item of the multi mode gate passes; `mend operator gate` lists them.
 - Budgets on at their default sizes. A budget bounds what a client, an account or an organization
-  may ask; it refuses new work and never stops running work.
+  may ask; it refuses new work and never stops running work. Setup does not expose them as options.
 - Database pool caps of 6 connections for Mend's queries (`MEND_DATABASE_POOL_MAX`), 3 for the job
   queue (`MEND_JOBS_POOL_MAX`) and 3 for sign-in sessions (`MEND_AUTH_DATABASE_POOL_MAX`), plus one
   for `LISTEN`. When Mend and Sealant share one Postgres, both sets of pools must fit under its
   `max_connections`.
 
-Changing them means running the Compose files yourself or deploying on
+Changing the rest means running the Compose files yourself or deploying on
 [Kubernetes](/operate/deploy-kubernetes/). [Server environment](/reference/server-environment/)
 lists every variable.
 

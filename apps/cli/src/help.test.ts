@@ -200,6 +200,32 @@ describe("man pages", () => {
       expect(text).not.toContain("no GitHub requests or Docker pulls");
     }
   });
+
+  it("documents the edge and the posture: setup sets them, upgrade carries them, status reports declared beside observed", () => {
+    expect(usageOf("server setup")).toContain(
+      "[--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>]",
+    );
+    const setup = renderCommand(findCommand(["server", "setup"])!, 120).replace(/\s+/g, " ");
+    expect(setup).toContain("--edge <host>");
+    expect(setup).toContain("--no-edge");
+    expect(setup).toContain("--exposure <v>");
+    expect(setup).toContain("--tenancy <v>");
+    expect(setup).toContain("Mend's own port stays on loopback");
+    expect(setup).toContain("a fresh install cannot start as public");
+    expect(setup).toContain("MEND_SOURCE_POLICY=tenant and MEND_CAPTURE_REQUIRE_SIZES=true");
+    expect(setup).toContain("mend server setup --edge mend.example.com");
+    const upgrade = renderCommand(findCommand(["server", "upgrade"])!, 120).replace(/\s+/g, " ");
+    expect(upgrade).toContain("An upgrade never drops the edge or the posture");
+    const status = renderCommand(findCommand(["server", "status"])!, 120).replace(/\s+/g, " ");
+    expect(status).toContain("declared beside observed");
+    expect(status).toContain("whether Caddy's data holds a certificate");
+    expect(status).toContain("None of it is a verdict");
+    for (const name of ["setup", "status", "stop", "upgrade"]) {
+      const text = renderCommand(findCommand(["server", name])!, 120).replace(/\s+/g, " ");
+      expect(text).not.toMatch(/\bsafe\b|gate passed|safe to expose|fit to expose/i);
+      expect(text).not.toMatch(/[—–]/);
+    }
+  });
   it("escapes roff and names every page", () => {
     const page = renderManPage(findCommand(["service", "run"])!, "0.17.0");
     expect(page.startsWith('.TH MEND-SERVICE-RUN 1 "" "mend 0.17.0"')).toBe(true);
