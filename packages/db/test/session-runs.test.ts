@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, SealantRunId, SealantWorkspaceId, SessionId, WorktreeId } from "@mend/domain";
-import { Effect, Layer, Redacted } from "effect";
+import { Cause, Effect, Exit, Layer, Redacted } from "effect";
 import * as Str from "effect/String";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -156,5 +156,51 @@ describe.skipIf(!reachable)("session runs repo", () => {
     expect(seen.settled?.summary).toBe("launch failed · the harness never started");
     expect(seen.settled?.settledAt).not.toBeNull();
     expect(seen.active?.sealantRunId).toBe(seen.second.sealantRunId);
+  });
+
+  it("create: a run id recorded already is the primary key colliding, a defect, even while another run of the session is open", async () => {
+    const exit = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRunsRepo;
+        const sessionId = yield* freshSession;
+        const first = yield* repo.create(runOf(sessionId));
+        yield* repo.settle(first.sealantRunId, "completed", null);
+        yield* repo.create(runOf(sessionId));
+        return yield* repo
+          .create({ ...runOf(sessionId), sealantRunId: first.sealantRunId })
+          .pipe(Effect.exit);
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      expect(Cause.hasDies(exit.cause)).toBe(true);
+      expect(Cause.hasFails(exit.cause)).toBe(false);
+    }
+  });
+
+  it("settle: first settle wins; restate: rewrites a settled run and leaves an open one alone", async () => {
+    const seen = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRunsRepo;
+        const sessionId = yield* freshSession;
+        const first = yield* repo.create(runOf(sessionId));
+        yield* repo.settle(first.sealantRunId, "failed", "executor not answering");
+        yield* repo.settle(first.sealantRunId, "completed", "a later settle");
+        const afterSecondSettle = yield* repo.bySealantRunId(first.sealantRunId);
+        yield* repo.restate(first.sealantRunId, "stopped", "stopped outside Mend · saved at …");
+        const restated = yield* repo.bySealantRunId(first.sealantRunId);
+        const second = yield* repo.create(runOf(sessionId));
+        yield* repo.restate(second.sealantRunId, "failed", "never");
+        const openUntouched = yield* repo.bySealantRunId(second.sealantRunId);
+        return { afterSecondSettle, restated, openUntouched };
+      }),
+    );
+    expect(seen.afterSecondSettle?.status).toBe("failed");
+    expect(seen.afterSecondSettle?.summary).toBe("executor not answering");
+    expect(seen.restated?.status).toBe("stopped");
+    expect(seen.restated?.summary).toBe("stopped outside Mend · saved at …");
+    expect(seen.restated?.settledAt).toEqual(seen.afterSecondSettle?.settledAt);
+    expect(seen.openUntouched?.status).toBe("running");
+    expect(seen.openUntouched?.summary).toBeNull();
   });
 });

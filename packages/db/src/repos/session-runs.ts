@@ -1,12 +1,15 @@
 import { type SealantRunId, type SealantWorkspaceId, type SessionId } from "@mend/domain";
 import { SessionRun } from "@mend/domain/workbench";
-import { and, asc, desc, eq, isNull, lt, max } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull, lt, max } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { sessionRuns } from "../schema/workbench.ts";
-import { isUniqueViolation } from "./unique-violation.ts";
+import { uniqueViolationConstraint } from "./unique-violation.ts";
+
+/** One open run per session: the partial unique index on `session_id` where `settled_at` is null. */
+const ONE_ACTIVE_INDEX = "session_runs_one_active_idx";
 
 /**
  * The one-active-run index (`session_runs_one_active_idx`) refused the insert: a run of the
@@ -72,7 +75,17 @@ export class SessionRunsRepo extends Context.Service<
     readonly activeForSession: (sessionId: SessionId) => Effect.Effect<SessionRun | null>;
     readonly listActive: () => Effect.Effect<ReadonlyArray<SessionRun>>;
     readonly saveLastSeenSequence: (id: SealantRunId, sequence: bigint) => Effect.Effect<void>;
+    /** First settle wins: a run already settled keeps its words. */
     readonly settle: (
+      id: SealantRunId,
+      outcome: SessionRunOutcome,
+      summary: string | null,
+    ) => Effect.Effect<void>;
+    /**
+     * A settled run's outcome and summary, rewritten from a later observation (the session it
+     * settled with was restated). Only while it is settled: a run still open is left to settle.
+     */
+    readonly restate: (
       id: SealantRunId,
       outcome: SessionRunOutcome,
       summary: string | null,
@@ -100,45 +113,59 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       return row === undefined ? null : toSessionRun(row);
     });
 
-    const create = Effect.fn("SessionRunsRepo.create")((input: NewSessionRun) =>
-      db
-        .transaction((tx) =>
+    const insertRun = (input: NewSessionRun) =>
+      db.transaction((tx) =>
+        Effect.gen(function* () {
+          const [current] = yield* tx
+            .select({ ordinal: max(sessionRuns.ordinal) })
+            .from(sessionRuns)
+            .where(eq(sessionRuns.sessionId, input.sessionId));
+          const [created] = yield* tx
+            .insert(sessionRuns)
+            .values({
+              ...input,
+              ordinal: (current?.ordinal ?? -1) + 1,
+              status: "running",
+            })
+            .returning();
+          if (created === undefined) return yield* Effect.die("session run insert returned no row");
+          return toSessionRun(created);
+        }),
+      );
+
+    /**
+     * The insert, and what its refusal means. Only the one-active index, by its name, is the typed
+     * refusal; the primary key and the ordinal colliding are defects, as before. The run that
+     * holds the index is read after the refusal: the one open now, which is what a caller acts
+     * on. When none is open any more (it settled meanwhile), the insert is asked once more over
+     * the freed index.
+     */
+    const createOnce = (
+      input: NewSessionRun,
+      retryFreed: boolean,
+    ): Effect.Effect<SessionRun, SessionRunActiveError> =>
+      insertRun(input).pipe(
+        Effect.catch((error) =>
           Effect.gen(function* () {
-            const [current] = yield* tx
-              .select({ ordinal: max(sessionRuns.ordinal) })
-              .from(sessionRuns)
-              .where(eq(sessionRuns.sessionId, input.sessionId));
-            const [created] = yield* tx
-              .insert(sessionRuns)
-              .values({
-                ...input,
-                ordinal: (current?.ordinal ?? -1) + 1,
-                status: "running",
-              })
-              .returning();
-            if (created === undefined)
-              return yield* Effect.die("session run insert returned no row");
-            return toSessionRun(created);
-          }),
-        )
-        .pipe(
-          Effect.catch((error) =>
-            Effect.gen(function* () {
-              if (!isUniqueViolation(error)) return yield* Effect.die(error);
-              // Which unique key: the one-active index names the open run; the primary key or
-              // the ordinal collided otherwise, and that is a defect as before.
-              const activeRun = yield* activeForSession(input.sessionId);
-              if (activeRun === null || activeRun.sealantRunId === input.sealantRunId) {
-                return yield* Effect.die(error);
-              }
+            if (uniqueViolationConstraint(error) !== ONE_ACTIVE_INDEX) {
+              return yield* Effect.die(error);
+            }
+            const activeRun = yield* activeForSession(input.sessionId);
+            if (activeRun !== null && activeRun.sealantRunId !== input.sealantRunId) {
               return yield* new SessionRunActiveError({
                 sessionId: input.sessionId,
                 sealantRunId: input.sealantRunId,
                 activeRun,
               });
-            }),
-          ),
+            }
+            if (activeRun === null && retryFreed) return yield* createOnce(input, false);
+            return yield* Effect.die(error);
+          }),
         ),
+      );
+
+    const create = Effect.fn("SessionRunsRepo.create")((input: NewSessionRun) =>
+      createOnce(input, true),
     );
 
     const bySealantRunId = Effect.fn("SessionRunsRepo.bySealantRunId")(function* (
@@ -212,6 +239,18 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
+    const restate = Effect.fn("SessionRunsRepo.restate")(function* (
+      id: SealantRunId,
+      outcome: SessionRunOutcome,
+      summary: string | null,
+    ) {
+      yield* db
+        .update(sessionRuns)
+        .set({ status: outcome, summary, updatedAt: new Date() })
+        .where(and(eq(sessionRuns.sealantRunId, id), isNotNull(sessionRuns.settledAt)))
+        .pipe(Effect.orDie);
+    });
+
     return {
       create,
       bySealantRunId,
@@ -221,6 +260,7 @@ export const SessionRunsRepoLive: Layer.Layer<SessionRunsRepo, never, MendDB> = 
       listActive,
       saveLastSeenSequence,
       settle,
+      restate,
     };
   }),
 );

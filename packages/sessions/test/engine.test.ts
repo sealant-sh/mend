@@ -2349,7 +2349,9 @@ const sessionRunsLayer = (world: World) => {
   };
   return Layer.succeed(SessionRunsRepo, {
     // The one-active-run index, as Postgres enforces it: a run of the session still open is the
-    // typed refusal naming it, never a second open row.
+    // typed refusal naming it, never a second open row. The primary key is not enforced here: the
+    // stand-in platform numbers its runs per layer, so a fixture world that outlives an engine
+    // restart sees a run id again, which real Sealant never issues twice.
     create: (input: NewSessionRun) =>
       Effect.suspend(() => {
         const activeRun = listForSession(input.sessionId).findLast((run) => run.settledAt === null);
@@ -2392,8 +2394,17 @@ const sessionRunsLayer = (world: World) => {
       Effect.succeed([...world.sessionRuns.values()].filter((run) => run.settledAt === null)),
     saveLastSeenSequence: (id, sequence) =>
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
+    // First settle wins, as in Postgres: a run already settled keeps its words.
     settle: (id, status, summary) =>
-      Effect.sync(() => update(id, { status, summary, settledAt: now() })),
+      Effect.sync(() => {
+        if (world.sessionRuns.get(id)?.settledAt === null) {
+          update(id, { status, summary, settledAt: now() });
+        }
+      }),
+    restate: (id, status, summary) =>
+      Effect.sync(() => {
+        if (world.sessionRuns.get(id)?.settledAt != null) update(id, { status, summary });
+      }),
   });
 };
 
@@ -19416,6 +19427,89 @@ const runsOf = (world: World, sessionId: SessionId) =>
     .filter((run) => run.sessionId === sessionId)
     .toSorted((left, right) => left.ordinal - right.ordinal);
 
+/** How many times the engine said it settled a run left open under a settled session. */
+const staleRunsSaid = (logs: ReadonlyArray<string>) =>
+  logs.filter((line) => line.includes("a run left open under a settled session")).length;
+
+/**
+ * A settled session with one run still `running`, as the owner's box had it. `runCreatedAt` after
+ * `settledAt` is the next launch's run, recorded before its reopen was written.
+ */
+const seedSettledWithOpenRun = (
+  world: World,
+  input: {
+    readonly sessionId: SessionId;
+    readonly runId: SealantRunId;
+    readonly summary: string;
+    readonly settledAt: Date;
+    readonly runCreatedAt: Date;
+  },
+) => {
+  const { sessionId, runId } = input;
+  world.sessions.set(
+    sessionId,
+    new Session({
+      id: sessionId,
+      projectId: ProjectId.make("project-run-left-open"),
+      worktreeId: WorktreeId.make(`wt-${sessionId}`),
+      harness: "claude",
+      providerSessionId: null,
+      label: null,
+      worktree: `session-${sessionId}`,
+      branch: `mend/session-${sessionId}`,
+      baseSha: Sha.make("0000000000000000000000000000000000000000"),
+      baseRef: "main",
+      contextSnapshotId: null,
+      referenceMounts: [],
+      extraMounts: [],
+      sealantRunId: runId,
+      sealantWorkspaceId: null,
+      sealantSessionId: null,
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
+      workspaceImage: null,
+      dotfiles: null,
+      ownerUserId: "user-fixture",
+      hasTranscript: true,
+      status: "failed",
+      summary: input.summary,
+      lastSeenSequence: 0n,
+      recordHistoryComplete: false,
+      startedAt: input.settledAt,
+      settledAt: input.settledAt,
+      createdAt: input.settledAt,
+      updatedAt: input.settledAt,
+    }),
+  );
+  world.sessionRuns.set(
+    runId,
+    new SessionRun({
+      sealantRunId: runId,
+      sessionId,
+      ordinal: 1,
+      harness: "claude",
+      sealantWorkspaceId: SealantWorkspaceId.make(`workspace-${runId}`),
+      sealantSessionId: `pty-${runId}`,
+      status: "running",
+      summary: null,
+      lastSeenSequence: 0n,
+      environmentRevision: null,
+      environmentVariableNames: null,
+      secretRevision: null,
+      secretNames: null,
+      clusterBindingRevision: null,
+      clusterBindingNames: null,
+      clusterServiceAccount: null,
+      startedAt: input.runCreatedAt,
+      settledAt: null,
+      createdAt: input.runCreatedAt,
+      updatedAt: input.runCreatedAt,
+    }),
+  );
+};
+
 describe("SessionEngine a session and its run settle together (2026-10-03)", () => {
   // Observed on the owner's box: a replacement launch that never reached its control socket was
   // settled by the leftover sweep (`failed · launch failed · the harness never started · saved at
@@ -19467,100 +19561,94 @@ describe("SessionEngine a session and its run settle together (2026-10-03)", () 
     );
   });
 
-  it("startup settles a run left `running` under a settled session with the session's words, said once", async () => {
-    const sessionId = SessionId.make(crypto.randomUUID());
-    const runId = SealantRunId.make("run-left-open");
+  it("startup and the reaper settle a run left `running` under a settled session with the session's words, once each; a run recorded after the settle is the next launch's and stays open", async () => {
     const summary = `${LAUNCH_NEVER_RAN} · saved at 15:04:33 UTC · capture 36`;
+    const stale = {
+      sessionId: SessionId.make(crypto.randomUUID()),
+      runId: SealantRunId.make("run-stale"),
+    };
+    const next = {
+      sessionId: SessionId.make(crypto.randomUUID()),
+      runId: SealantRunId.make("run-next-launch"),
+    };
+    const later = {
+      sessionId: SessionId.make(crypto.randomUUID()),
+      runId: SealantRunId.make("run-stale-later"),
+    };
     const logs: Array<string> = [];
     await withEngine(
       (world) =>
         Effect.gen(function* () {
-          const run = world.sessionRuns.get(runId);
-          expect(run?.status).toBe("failed");
-          expect(run?.summary).toBe(summary);
-          expect(run?.settledAt).not.toBeNull();
+          // Startup: the stale run reads as its session does.
+          const staleRun = world.sessionRuns.get(stale.runId);
+          expect(staleRun?.status).toBe("failed");
+          expect(staleRun?.summary).toBe(summary);
+          expect(staleRun?.settledAt).not.toBeNull();
           // The session itself is as it was: settled once, its words untouched.
-          const session = world.sessions.get(sessionId);
-          expect(session?.status).toBe("failed");
-          expect(session?.summary).toBe(summary);
-          expect(
-            logs.filter((line) => line.includes("a run left open under a settled session")),
-          ).toHaveLength(1);
-          // A later reaper tick finds nothing left to say.
+          expect(world.sessions.get(stale.sessionId)?.status).toBe("failed");
+          expect(world.sessions.get(stale.sessionId)?.summary).toBe(summary);
+          // The run recorded after its session settled is a launch under way: left open.
+          expect(world.sessionRuns.get(next.runId)?.status).toBe("running");
+          expect(world.sessionRuns.get(next.runId)?.settledAt).toBeNull();
+          expect(staleRunsSaid(logs)).toBe(1);
+
+          // The reaper: a pair that became inconsistent since boot is settled on its tick, said
+          // once, and the next tick has nothing left to say.
           const engine = yield* SessionEngine;
+          const settledAt = new Date();
+          seedSettledWithOpenRun(world, {
+            ...later,
+            summary: "executor lost · lease expired",
+            settledAt,
+            runCreatedAt: new Date(settledAt.getTime() - 60_000),
+          });
           yield* engine.reapCaptureLeases();
-          expect(
-            logs.filter((line) => line.includes("a run left open under a settled session")),
-          ).toHaveLength(1);
+          expect(world.sessionRuns.get(later.runId)?.status).toBe("failed");
+          expect(world.sessionRuns.get(later.runId)?.summary).toBe("executor lost · lease expired");
+          expect(staleRunsSaid(logs)).toBe(2);
+          yield* engine.reapCaptureLeases();
+          expect(staleRunsSaid(logs)).toBe(2);
+          expect(world.sessionRuns.get(next.runId)?.status).toBe("running");
         }),
       {
         logs,
+        captured: makeMemoryCaptureStore(),
         prepareWorld: (world) => {
-          const timestamp = now();
-          world.sessions.set(
-            sessionId,
-            new Session({
-              id: sessionId,
-              projectId: ProjectId.make("project-run-left-open"),
-              worktreeId: WorktreeId.make("wt-run-left-open"),
-              harness: "claude",
-              providerSessionId: null,
-              label: null,
-              worktree: "session-run-left-open",
-              branch: "mend/session-run-left-open",
-              baseSha: Sha.make("0000000000000000000000000000000000000000"),
-              baseRef: "main",
-              contextSnapshotId: null,
-              referenceMounts: [],
-              extraMounts: [],
-              sealantRunId: runId,
-              sealantWorkspaceId: null,
-              sealantSessionId: null,
-              workspaceExpiresAt: null,
-              workspaceTtlRenewedAt: null,
-              workspaceTtlRenewalFailedAt: null,
-              workspaceTtlRenewalError: null,
-              workspaceImage: null,
-              dotfiles: null,
-              ownerUserId: "user-fixture",
-              hasTranscript: true,
-              status: "failed",
-              summary,
-              lastSeenSequence: 0n,
-              recordHistoryComplete: false,
-              startedAt: timestamp,
-              settledAt: timestamp,
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            }),
-          );
-          world.sessionRuns.set(
-            runId,
-            new SessionRun({
-              sealantRunId: runId,
-              sessionId,
-              ordinal: 1,
-              harness: "claude",
-              sealantWorkspaceId: SealantWorkspaceId.make("workspace-replaced"),
-              sealantSessionId: "pty-replaced",
-              status: "running",
-              summary: null,
-              lastSeenSequence: 0n,
-              environmentRevision: null,
-              environmentVariableNames: null,
-              secretRevision: null,
-              secretNames: null,
-              clusterBindingRevision: null,
-              clusterBindingNames: null,
-              clusterServiceAccount: null,
-              startedAt: timestamp,
-              settledAt: null,
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            }),
-          );
+          const settledAt = now();
+          seedSettledWithOpenRun(world, {
+            ...stale,
+            summary,
+            settledAt,
+            runCreatedAt: new Date(settledAt.getTime() - 60_000),
+          });
+          seedSettledWithOpenRun(world, {
+            ...next,
+            summary,
+            settledAt,
+            runCreatedAt: new Date(settledAt.getTime() + 1_000),
+          });
         },
       },
+    );
+  });
+
+  it("an attached run with no process row is live work: a second attach is refused in the log, and the first run is never settled", async () => {
+    const created: Array<CreateOptions> = [];
+    const logs: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          const first = SealantRunId.make("attached-run-1");
+          const second = SealantRunId.make("attached-run-2");
+          yield* engine.attachRun(session.id, first, SealantWorkspaceId.make("workspace-1"));
+          yield* engine.attachRun(session.id, second, SealantWorkspaceId.make("workspace-1"));
+          const runs = runsOf(world, session.id);
+          expect(runs.map((run) => [run.sealantRunId, run.status])).toEqual([[first, "running"]]);
+          expect(world.sessions.get(session.id)?.sealantRunId).toBe(first);
+          expect(logs.some((line) => line.includes("attached run not recorded"))).toBe(true);
+        }),
+      { logs, sealantLayer: sealantLaunchLayer(created) },
     );
   });
 

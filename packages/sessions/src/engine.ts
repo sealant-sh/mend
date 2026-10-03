@@ -3983,8 +3983,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const summary = restatedSummary(session.summary, latest.words);
         if (summary === null || summary === session.summary) return;
         const launchFailed = session.summary?.startsWith("launch failed") === true;
-        yield* sessions.restate(sessionId, launchFailed ? "failed" : latest.outcome, summary);
-        // A run of it still open reads the restated words with it.
+        const outcome = launchFailed ? "failed" : latest.outcome;
+        yield* sessions.restate(sessionId, outcome, summary);
+        // The run that settled with the session's earlier words (same outcome, same summary)
+        // reads the restated ones with it; one with words of its own (its harness's end) keeps
+        // them. A run of it still open reads the restated words too.
+        const latestRun = yield* sessionRuns.latestForSession(sessionId);
+        if (
+          latestRun !== null &&
+          latestRun.settledAt !== null &&
+          latestRun.status === session.status &&
+          latestRun.summary === session.summary
+        ) {
+          yield* sessionRuns.restate(latestRun.sealantRunId, outcome, summary);
+        }
         yield* settleRunsOfSettled(sessionId);
         yield* Effect.logInfo("session engine: capture mode · settled session restated").pipe(
           Effect.annotateLogs({ sessionId, before: session.summary, after: summary }),
@@ -5466,8 +5478,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * summary. Only over a session that reads settled: one a stop drain holds reads `stopping`,
        * unsettled, and keeps its run until the drain ends and the session settles for real. Never
        * a run a live process row of the session still names: that is live work, and a session
-       * settled over it is the fold's to reopen, not this path's to end. Answers the run it
-       * settled, or null.
+       * settled over it is the fold's to reopen, not this path's to end. Never a run recorded
+       * after the session settled: that is the next launch's, inserted before its process row
+       * and its reopen are written (a protocol resume records the run first), and this look, a
+       * reaper tick that read the session before the launch, has no say over it. Answers the run
+       * it settled, or null.
        */
       const settleRunsOfSettled = Effect.fn("SessionEngine.settleRunsOfSettled")(function* (
         sessionId: SessionId,
@@ -5480,6 +5495,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (outcome === null) return null;
         const activeRun = yield* sessionRuns.activeForSession(sessionId);
         if (activeRun === null) return null;
+        if (activeRun.createdAt.getTime() > session.settledAt.getTime()) return null;
         const rows = yield* processes.listForSession(sessionId);
         if (
           rows.some(
@@ -5538,11 +5554,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * Record a new run of a session (`SessionRunsRepo.create`). A run of the session still
-       * open refuses the insert; one nothing live carries (no live process row of the session
-       * names it) is stale, and settles first: with its session's words when the session reads
-       * settled, else from the process that ran it, else `failed · end not recorded`. The insert
-       * is then asked once more. A run a live process still carries is live work: the insert is
-       * refused in words, `run_active`, and nothing is settled.
+       * open refuses the insert. One that is stale settles first and the insert is asked once
+       * more: a run of a session that reads settled takes the session's words
+       * (`settleRunsOfSettled`); one whose process rows all ended, under a session that did not
+       * settle, takes its process's end (`exited with code 1`, else `end not recorded`). A run
+       * that is live is refused in words, `run_active`, and nothing is settled: one a live process
+       * row carries, and one no process row names at all under a session that is not settled (a
+       * run attached from outside is supervised without a row, as `agentIsLive` and the fold
+       * read it, and so is a run another launch recorded a moment ago).
        */
       const createSessionRun = Effect.fn("SessionEngine.createSessionRun")(function* (
         input: NewSessionRun,
@@ -5559,13 +5578,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const settledWithSession = yield* settleRunsOfSettled(input.sessionId);
               if (settledWithSession === null) {
                 const carrier = currentAgentProcess(carriers);
-                const outcome = carrier === null ? null : agentProcessOutcome(carrier);
+                if (carrier === null) return yield* runActiveRefusal(stale);
                 yield* sessionRuns.settle(
                   stale.sealantRunId,
-                  outcome ?? "failed",
-                  carrier !== null && carrier.exitCode !== null
-                    ? `exited with code ${carrier.exitCode}`
-                    : RUN_SUPERSEDED_SUMMARY,
+                  agentProcessOutcome(carrier) ?? "failed",
+                  carrier.exitCode === null
+                    ? RUN_SUPERSEDED_SUMMARY
+                    : `exited with code ${carrier.exitCode}`,
                 );
               }
               yield* Effect.logWarning(
