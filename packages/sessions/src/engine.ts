@@ -756,29 +756,28 @@ const harvestReadyOf = (reading: DrainWord): boolean | null =>
     : reading === "sealed" || (reading !== "refused" && captureHarvestReady(reading));
 
 /**
- * How long one piece of work a Stop put off may run (a checkpoint's writer lock, a harvest's
- * store reads, which have no deadline of their own): past it the work is dropped and said, so a
- * stalled store never keeps a saved executor from being terminated (Astra review, 2026-10-03).
+ * Run what a Stop put off (`takeDeferred`) on the drain's word, in order, each failure said and
+ * none fatal. A piece that does not finish within the limit is interrupted, and it and the rest
+ * are answered back for a later round: nothing a Stop asked for is dropped.
  */
-const DEFERRED_WORK_LIMIT = Duration.minutes(2);
-
-/** Run what a Stop put off (`takeDeferred`) on the drain's word, each failure said, none fatal. */
 const runTaken = (
   workspaceId: SealantWorkspaceId,
   list: ReadonlyArray<(reading: DrainWord) => Effect.Effect<void>>,
   reading: DrainWord,
-) =>
-  Effect.forEach(
-    list,
-    (work) =>
-      work(reading).pipe(
+  limit: Duration.Duration,
+): Effect.Effect<ReadonlyArray<(reading: DrainWord) => Effect.Effect<void>>> =>
+  Effect.gen(function* () {
+    for (const [index, work] of list.entries()) {
+      const finished = yield* work(reading).pipe(
+        Effect.as(true),
         Effect.timeoutOrElse({
-          duration: DEFERRED_WORK_LIMIT,
+          duration: limit,
           orElse: () =>
             Effect.logWarning(
-              "session engine: work deferred to the final flush did not finish in time · dropped",
+              "session engine: work deferred to the final flush did not finish in time · kept for a later round",
             ).pipe(
-              Effect.annotateLogs({ workspaceId, limit: Duration.format(DEFERRED_WORK_LIMIT) }),
+              Effect.annotateLogs({ workspaceId, limit: Duration.format(limit) }),
+              Effect.as(false),
             ),
         }),
         Effect.catchCause((cause) =>
@@ -788,11 +787,14 @@ const runTaken = (
               reading: typeof reading === "string" ? reading : "read",
               cause: Cause.pretty(cause),
             }),
+            Effect.as(true),
           ),
         ),
-      ),
-    { discard: true },
-  );
+      );
+      if (!finished) return list.slice(index);
+    }
+    return [];
+  });
 
 /** What a round of a kept drain read: the reason, what was pending, what was refused. */
 const keptDrainReading = (session: Session) =>
@@ -3206,21 +3208,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const drains = new Map<SealantWorkspaceId, Deferred.Deferred<DrainOutcome>>();
       /** The last reading each running drain took of its executor (`runDeferred`). */
       const lastReadings = new Map<SealantWorkspaceId, CaptureReading>();
-      /**
-       * Deferred work a kept round left running beside the tail: a later round that saves waits
-       * for it before the executor goes and its lease with it, and before the row is removed, so
-       * nothing reads a successor's head or an absent row (Astra review, 2026-10-03).
-       */
-      const deferredRunning = new Map<SealantWorkspaceId, Set<Fiber.Fiber<void>>>();
-      const awaitDeferredRunning = (workspaceId: SealantWorkspaceId) =>
-        Effect.suspend(() => {
-          const running = [...(deferredRunning.get(workspaceId) ?? [])];
-          return running.length === 0
-            ? Effect.void
-            : Effect.forEach(running, (fiber) => Fiber.join(fiber).pipe(Effect.ignore), {
-                discard: true,
-              }).pipe(Effect.timeoutOption(DEFERRED_WORK_LIMIT), Effect.asVoid);
-        });
+      /** Workspaces a drain began on in this process: what their Stop put off waits for a save. */
+      const drainedOnce = new Set<SealantWorkspaceId>();
       /** Workspaces whose owner asked to discard what is unsaved: a running drain yields. */
       const discards = new Set<SealantWorkspaceId>();
       /** Sessions whose forked stop tail (harvest, then the sweep) is still running here. */
@@ -3258,9 +3247,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         deferredToFinal.delete(workspaceId);
         return list;
       };
-      /** Run what `workspaceId`'s end put off, once, on the drain's last reading of the executor. */
+      /**
+       * Run what `workspaceId`'s end put off on the drain's word. True when all of it finished;
+       * false when a piece ran out of time, with it and the rest put back for a later round.
+       */
       const runDeferred = (workspaceId: SealantWorkspaceId, reading: DrainWord) =>
-        Effect.suspend(() => runTaken(workspaceId, takeDeferred(workspaceId), reading));
+        Effect.suspend(() =>
+          runTaken(
+            workspaceId,
+            takeDeferred(workspaceId),
+            reading,
+            drainPolicy.deferredWorkLimit,
+          ).pipe(
+            Effect.map((unfinished) => {
+              for (const work of unfinished) deferToFinal(workspaceId, work);
+              return unfinished.length === 0;
+            }),
+          ),
+        );
       /**
        * Whether an end may put its work off to the drain's final flush: capture mode, and
        * nothing but what is ending holds the workspace (so the sweep that follows drains it).
@@ -3812,6 +3816,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               current !== null && current.sealantWorkspaceId === workspaceId
                 ? yield* executorEndOfSession(current, workspaceId)
                 : null;
+            // What the Stop put off runs before the lease goes with the tidy: the executor is
+            // gone, so the checkpoint is unflushed and no harvest reads (`refused`). What does not
+            // finish in time is dropped: nothing more can be read of this executor later.
+            yield* runDeferred(workspaceId, "refused");
+            takeDeferred(workspaceId);
             yield* tidyAfterGone(sessionId, workspaceId);
             if (end !== null && current !== null) {
               const confirmed = yield* confirmedExecutorEnd(current, end);
@@ -3823,10 +3832,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* sayEndedOutsideMend(sessionId, confirmed.summary);
               }
             }
-            yield* awaitDeferredRunning(workspaceId);
             yield* removeIfRequested(sessionId);
             return "gone" as const;
           }
+          // From here the executor is being drained: what its Stop put off runs when a round
+          // saves, before the executor goes, never beside a kept round (`runDeferred`).
+          drainedOnce.add(workspaceId);
           if (!begun) {
             begun = true;
             // Durable first, then the in-use look: a join reads the intent and stays out
@@ -3867,7 +3878,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   );
                 }
               }
-              yield* awaitDeferredRunning(workspaceId);
               yield* removeIfRequested(sessionId);
               return "gone" as const;
             }
@@ -4002,8 +4012,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // a successor launched after the release could register a newer head under them
             // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
             // executor: the head is sealed.
-            yield* awaitDeferredRunning(workspaceId);
-            yield* runDeferred(workspaceId, reading ?? "sealed");
+            if (!(yield* runDeferred(workspaceId, reading ?? "sealed"))) {
+              // A piece ran out of time (a writer lock held, a store not answering): the executor
+              // stays, saved, and the next round asks again — its FINAL snaps nothing — and runs
+              // what is left. Nothing a Stop asked for is dropped, and no lease goes under it.
+              yield* recordKept(
+                sessionId,
+                workspaceId,
+                "saved · the stop's checkpoint or harvest has not finished",
+                false,
+              );
+              return "kept" as const;
+            }
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.retained !== null) {
               // Mend read it saved; the platform does not confirm it and keeps the executor for
@@ -4029,7 +4049,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   );
                 }
               }
-              yield* awaitDeferredRunning(workspaceId);
               yield* removeIfRequested(sessionId);
             } else {
               yield* sessions.endCaptureDrain(sessionId);
@@ -4105,34 +4124,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 drains.delete(workspaceId);
               }),
             ),
-            // A drain that ended without a completed final flush: what was put off for it runs
-            // on the drain's last reading — beside the tail, not in it, so the reaper's next kept
-            // round is not held up by a harvest that asks a silent executor. A workspace found in
-            // use was not flushed at all: that work flushes for itself, as it did (`none`).
+            // A workspace found in use was not flushed at all: what the Stop put off flushes for
+            // itself, as it did (`none`). A kept round leaves it where it is: the round that saves
+            // runs it, before the executor goes (Astra reviews, 2026-10-03).
             Effect.tap((outcome) =>
-              Effect.suspend(() => {
-                // Taken now, before the tail goes on and takes it itself with no reading.
-                const taken = takeDeferred(workspaceId);
-                const word: DrainWord =
-                  outcome === "in-use" ? "none" : (lastReadings.get(workspaceId) ?? "refused");
-                if (taken.length === 0) return Effect.void;
-                return Effect.gen(function* () {
-                  const fibers = deferredRunning.get(workspaceId) ?? new Set();
-                  deferredRunning.set(workspaceId, fibers);
-                  const fiber = yield* Effect.forkIn(
-                    runTaken(workspaceId, taken, word).pipe(
-                      Effect.ensuring(
-                        Effect.sync(() => {
-                          fibers.delete(fiber);
-                          if (fibers.size === 0) deferredRunning.delete(workspaceId);
-                        }),
-                      ),
-                    ),
-                    scope,
-                  );
-                  fibers.add(fiber);
-                });
-              }),
+              outcome === "in-use"
+                ? runDeferred(workspaceId, "none").pipe(Effect.asVoid)
+                : Effect.void,
             ),
             Effect.ensuring(Effect.sync(() => lastReadings.delete(workspaceId))),
           );
@@ -6525,7 +6523,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             );
             yield* stopWorkspaceQuietly(sessionId);
-            yield* runDeferred(workspaceId, "none");
+            if (!drainedOnce.has(workspaceId)) yield* runDeferred(workspaceId, "none");
             return;
           }
           const captureReady = yield* flushBeforeHarvest(session, workspaceId, "settle harvest");
@@ -7064,7 +7062,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .agentEnded({ sessionId: session.id, worktreeId: session.worktreeId })
             .pipe(Effect.timeout("20 seconds"), Effect.ignore);
           yield* reconcileSession(agentProcess.sessionId, { sweep });
-          if (workspaceId !== null) yield* runDeferred(workspaceId, "none");
+          if (workspaceId !== null && !drainedOnce.has(workspaceId)) {
+            yield* runDeferred(workspaceId, "none");
+          }
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
       /**
@@ -10949,8 +10949,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               })
             : sweepWorkspace(sessionId, true)
           ).pipe(
-            // Anything still put off when the tail is over runs now, as it would have before.
-            Effect.ensuring(workspaceId === null ? Effect.void : runDeferred(workspaceId, "none")),
+            // Nothing drained (a lease appeared, a launch cut the sweep short): what was put off
+            // runs now, as it would have before. A drain that kept the executor leaves it for the
+            // round that saves.
+            Effect.ensuring(
+              Effect.suspend(() =>
+                workspaceId === null || drainedOnce.has(workspaceId)
+                  ? Effect.void
+                  : runDeferred(workspaceId, "none").pipe(Effect.asVoid),
+              ),
+            ),
             Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
           ),
           scope,

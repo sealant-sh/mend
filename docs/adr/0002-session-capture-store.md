@@ -1545,9 +1545,19 @@ Mend-side details the decision record left open, decided in this ADR:
       final flush is saved and before the executor is terminated: its lease goes with it, and a
       successor launched after the release could register a newer head under a harvest still reading
       (Astra review, 2026-10-03). The drain's own reading stands for the flush each would have asked
-      for: a complete one means `flushed`, an incomplete one `incomplete` and no harvest, a refused
-      one an unflushed checkpoint and no harvest, as a refused flush gave before. Nothing drained
-      (the workspace in use after all): each runs as it did, flush and all.
+      for: a complete one means `flushed`, a sealed answer the store stood for `flushed` as well, a
+      refused one (the executor gone) an unflushed checkpoint and no harvest, as a refused flush
+      gave before. Nothing drained (the workspace in use after all): each runs as it did, flush and
+      all.
+    - **A kept round leaves it.** A round that keeps the executor (`not saved · workspace kept`)
+      runs none of it: the work waits for the round that saves, and runs before that executor goes.
+      Run beside a kept round it would outlive the save (a landing holding the checkpoint writer)
+      and read a successor's head after the lease went (Astra review, 2026-10-03).
+    - **What runs out of time is owed, not dropped.** Each piece has `deferredWorkLimit` (two
+      minutes) once the flush is saved; a piece past it (a checkpoint writer held, a store not
+      answering) is interrupted, it and the rest are put back, and the round reads `kept` with the
+      executor saved: the next round's FINAL snaps nothing, and the work runs then. Nothing a Stop
+      asked for is dropped, and no lease goes under work still owed.
     - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
       judged (`executor not answering`, `completed`) and its executor looked at before the drain
       begins, and the tests of those judgements say so. Making every end read the drain's final is a
