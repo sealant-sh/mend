@@ -159,6 +159,7 @@ export const OWNER_CONTROL: SessionControlDto = {
   steer: true,
   stop: true,
   toggleSharedControl: true,
+  terminalInput: true,
 };
 
 export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDetailDto => ({

@@ -22,6 +22,13 @@ import { claudeMemoryDirFor, scanClaudeMemory, scanCodexMemory } from "./agent-m
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
+  ownerNameOf,
+  type TerminalControlFacts,
+  watchesTerminal,
+  watchKey,
+  watchNotice,
+} from "./attach-watch.ts";
+import {
   claudeCli,
   claudeGrantDir,
   forgetGrant,
@@ -252,8 +259,8 @@ interface SessionAnnotationDto {
 }
 
 /** The slice of /sessions/:id the CLI reads: the row plus the agent process it currently means. */
-interface SessionDetailLiteDto {
-  readonly session: SessionDto;
+interface SessionDetailLiteDto extends TerminalControlFacts {
+  readonly session: SessionDto & { readonly ownerUserId?: string | null };
   readonly currentAgent: (AgentProcessLike & AgentStartingProcess) | null;
   /** Every process the session has held, oldest first; read for the starting line's facts. */
   readonly processes?: ReadonlyArray<AgentStartingProcess>;
@@ -965,6 +972,9 @@ const takeTerminal = (): { readonly raw: boolean } => {
   return { raw: true };
 };
 
+/** How long an attach waits, once connected, for the detail that says whether the caller types. */
+const WATCH_READ_GRACE_MS = 3_000;
+
 /**
  * The terminal's size as the PTY should read it. A pty whose size was never set reads 0×0.
  */
@@ -990,6 +1000,10 @@ const terminalSize = (): { readonly cols: number; readonly rows: number } => ({
  * never a cooked terminal that echoes keys and waits forever. Once open, the
  * size goes up twice (one row short, then the real one) so a full-screen agent
  * that only repaints on SIGWINCH redraws at once.
+ *
+ * Only the session's owner types in its terminal (docs/adr/0013). Anyone else
+ * watches: the CLI says whose terminal it is, sends no keys or resizes, and
+ * Ctrl+] or Ctrl+C detach.
  */
 const attachTty = async (
   config: CliConfig,
@@ -1009,6 +1023,8 @@ const attachTty = async (
   };
 
   let ws: WebSocket | null = null;
+  // Read once the session's detail answers: someone else's terminal is watched, not typed in.
+  let watching = false;
   let detached = false;
   let sawEnd = false;
   let interrupted = false;
@@ -1026,7 +1042,7 @@ const attachTty = async (
   };
   const signals = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
   const sendResize = (size = terminalSize()) => {
-    if (ws === null || ws.readyState !== WebSocket.OPEN) return;
+    if (watching || ws === null || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({ t: "resize", cols: size.cols, rows: size.rows }));
   };
   const onWinch = () => sendResize();
@@ -1067,6 +1083,14 @@ const attachTty = async (
       // has not drawn yet.
       if (detachKeyEnabled && isDetachChunk(data)) abort("detached");
       else if (data.includes(0x03)) abort("interrupted");
+      return;
+    }
+    if (watching) {
+      // The owner's terminal: Ctrl+] or Ctrl+C leave it, and nothing else reaches it.
+      if (watchKey(data, detachKeyEnabled) === null) return;
+      detached = true;
+      ws.close();
+      finishAttachment?.();
       return;
     }
     if (detachKeyEnabled && isDetachChunk(data)) {
@@ -1145,6 +1169,11 @@ const attachTty = async (
     return connecting.signal.aborted ? "aborted" : "unavailable";
   };
 
+  // Whether this caller types, from the session's detail; read beside the upgrade, never after it.
+  const detailRead: Promise<SessionDetailLiteDto | null> = interactive
+    ? request<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`).catch(() => null)
+    : Promise.resolve(null);
+
   const started = Date.now();
   let connectingShown = false;
   const connectingTimer = setInterval(() => {
@@ -1168,6 +1197,27 @@ const attachTty = async (
       process.stdin.on("data", onKeys);
       process.stdin.resume();
     }
+    // Whose terminal this is, before the socket opens: an open socket's output is read from the
+    // moment it opens. A detail that has not answered in time is treated as typing; the server
+    // drops a watcher's keys whatever this side decides.
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    const detail = await Promise.race([
+      detailRead,
+      new Promise<null>((resolve) => {
+        graceTimer = setTimeout(() => resolve(null), WATCH_READ_GRACE_MS);
+      }),
+    ]);
+    clearTimeout(graceTimer);
+    if (watchesTerminal(detail)) {
+      watching = true;
+      const members = await request<
+        ReadonlyArray<{ readonly userId: string; readonly name: string }>
+      >(config, "GET", "/organization/members").catch(() => []);
+      process.stdout.write(
+        `\r\x1b[2K${dim(watchNotice(ownerNameOf(detail?.session.ownerUserId, members)))}\r\n` +
+          `${dim(`read-only · ${detachKeyEnabled ? "Ctrl+] or " : ""}Ctrl+C detaches`)}\r\n\r\n`,
+      );
+    }
     const connected = await connect();
     stopConnecting();
     if (connected === "unavailable") return "unavailable";
@@ -1183,11 +1233,12 @@ const attachTty = async (
         cancelHint: detachKeyEnabled ? "Ctrl+] detaches" : "",
       });
       starting = gate;
-      void request<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`).then(
-        (detail) =>
-          gate.update(agentStartingFacts(detail.currentAgent, detail.processes, Date.now())),
-        () => undefined,
-      );
+      void detailRead.then((read) => {
+        if (read !== null) {
+          gate.update(agentStartingFacts(read.currentAgent, read.processes, Date.now()));
+        }
+        return null;
+      });
     }
     stopHerdrHint = hintHerdrAttachment(harness);
     const onClose = () => finishAttachment?.();

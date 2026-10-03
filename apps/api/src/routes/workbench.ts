@@ -50,7 +50,6 @@ import {
   SessionActive,
   SessionAnnotation,
   WorktreeAnnotation,
-  SessionControlView,
   SessionDetail,
   SessionRepositoryView,
   SessionServicesStopped,
@@ -127,7 +126,6 @@ import {
   ServiceView,
   canChangeVisibility,
   canManageProject,
-  canSteerSession,
   canToggleSharedControl,
   captureDiscardAuditData,
   captureStatusLine,
@@ -185,7 +183,7 @@ import {
 } from "../services/workspace-environment.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
-import { SessionSteering } from "../session-steering.ts";
+import { SessionSteering, sessionControlView } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
@@ -2275,7 +2273,6 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const processes = yield* SessionProcessesRepo;
         const rows = yield* processes.listForSession(params.id);
         const viewer = yield* (yield* ProjectAccess).viewer();
-        const steer = viewer !== null && canSteerSession(session, viewer.userId);
         // The repositories the session holds beside its worktree (docs/adr/0010): each a worktree
         // of another project with a change of its own, and how far that chain has moved. Only
         // the ones whose project the caller can see: a private sibling stays private.
@@ -2301,14 +2298,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
         return new SessionDetail({
           session: asLaunching((yield* SessionEngine).launchUnderWay)(session),
-          control: new SessionControlView({
-            own: viewer !== null && session.ownerUserId === viewer.userId,
-            steer,
-            stop: steer || viewer?.role === "owner",
-            toggleSharedControl:
-              viewer !== null &&
-              canToggleSharedControl(session, viewer, session.sharedControlEnabledAt === null),
-          }),
+          control: sessionControlView(session, viewer),
           checkpoints: sessionCheckpoints,
           change,
           repositories,
@@ -2337,8 +2327,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("pasteImage", ({ params, payload }) =>
       Effect.gen(function* () {
+        // The image is pasted into a terminal, and only the owner types there (docs/adr/0013).
         const steering = yield* SessionSteering;
-        const session = yield* steering.session(params.id);
+        const session = yield* steering.owned(params.id);
         const bytes = Buffer.from(payload.contentsBase64, "base64");
         // Co-located: the mounted harness home on this machine. Capture mode: the live
         // workspace's own, through exec; no live workspace is `SessionNotLive`.
@@ -2438,8 +2429,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("openShell", ({ params }) =>
       Effect.gen(function* () {
+        // A shell runs on whatever login the workspace holds, so it is the owner's even while
+        // control is shared (docs/adr/0013, "Shells are the owner's").
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
         const shell = yield* engine.openShell(params.id).pipe(
           Effect.catchTag("SessionNotFoundError", () =>

@@ -22,6 +22,44 @@ import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tic
 /** How long the platform may take to hand over a terminal before the upgrade is answered without one. */
 export const TTY_ATTACH_BOUND = Duration.seconds(20);
 
+/** What one client frame asks of the PTY. */
+export type TtyInput =
+  | { readonly kind: "input"; readonly data: string | Uint8Array }
+  | { readonly kind: "resize"; readonly cols: number; readonly rows: number };
+
+/**
+ * Read one client frame. Only the session's owner types in its terminal, even while control is
+ * shared (docs/adr/0013-whoever-sends-a-turn-pays.md, "Terminal sessions: only the owner types"):
+ * for anyone else every frame is null, keys and resizes alike, and the output keeps streaming.
+ * An unknown or malformed text frame is null too.
+ */
+export const ttyInputOf = (data: string | Uint8Array, typing: boolean): TtyInput | null => {
+  if (!typing) return null;
+  if (typeof data !== "string") return { kind: "input", data };
+  let frame: unknown;
+  try {
+    frame = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (typeof frame !== "object" || frame === null || !("t" in frame)) return null;
+  if (
+    frame.t === "resize" &&
+    "cols" in frame &&
+    "rows" in frame &&
+    typeof frame.cols === "number" &&
+    typeof frame.rows === "number"
+  ) {
+    return { kind: "resize", cols: frame.cols, rows: frame.rows };
+  }
+  // Text-frame input: native clients (Hermes) send this — binary encoding is unreliable there,
+  // and the SDK encodes.
+  if (frame.t === "input" && "data" in frame && typeof frame.data === "string") {
+    return { kind: "input", data: frame.data };
+  }
+  return null;
+};
+
 /**
  * The terminal proxy (plan §8.1.F) as a DATA PLANE: one WebSocket per attach.
  * The CLI (and later the phone/web pane) reaches a session's platform PTY
@@ -37,6 +75,8 @@ export const TTY_ATTACH_BOUND = Duration.seconds(20);
  *   server → client   text   = `{"t":"end"}` then close (session settled)
  *   client → server   binary = PTY input bytes
  *   client → server   text   = `{"t":"resize","cols":n,"rows":n}`
+ *
+ * Any steerer may attach; only the session's owner types (`ttyInputOf`, docs/adr/0013).
  *
  * Auth: the session cookie (browser), an `Authorization` header, or `?ticket=`: an upgrade
  * ticket, single use, thirty seconds, minted for exactly this terminal (docs/adr/0004, "Upgrade
@@ -236,10 +276,12 @@ export const TtyRoutes = HttpRouter.use((router) =>
             yield* Effect.addFinalizer(() => Effect.sync(() => attachment.close()));
             const socket = yield* request.upgrade;
             const write = yield* socket.writer;
+            // Anyone but the owner watches: output streams, their keys and resizes are dropped.
+            const typing = caller.userId === ownerUserId;
             yield* controlEvents.record({
               sessionId,
               actorUserId: caller.userId,
-              kind: "terminal-attach",
+              kind: typing ? "terminal-attach" : "terminal-watch",
               refId: target.processId,
             });
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
@@ -270,32 +312,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
                 if (guard.revoked()) return Effect.void;
                 const overFrame = frames.refuse(data);
                 if (overFrame !== null) return overFrame;
-                if (typeof data !== "string") {
-                  attachment.send(data);
-                  return Effect.void;
-                }
-                try {
-                  const frame = JSON.parse(data) as {
-                    readonly t?: string;
-                    readonly cols?: number;
-                    readonly rows?: number;
-                    readonly data?: string;
-                  };
-                  if (
-                    frame.t === "resize" &&
-                    typeof frame.cols === "number" &&
-                    typeof frame.rows === "number"
-                  ) {
-                    attachment.resize(frame.cols, frame.rows);
-                  }
-                  // Text-frame input: native clients (Hermes) send this —
-                  // binary encoding is unreliable there, and the SDK encodes.
-                  if (frame.t === "input" && typeof frame.data === "string") {
-                    attachment.send(frame.data);
-                  }
-                } catch {
-                  // Unknown text frame — ignore.
-                }
+                const input = ttyInputOf(data, typing);
+                if (input?.kind === "input") attachment.send(input.data);
+                if (input?.kind === "resize") attachment.resize(input.cols, input.rows);
                 return Effect.void;
               })
               .pipe(Effect.ignore);

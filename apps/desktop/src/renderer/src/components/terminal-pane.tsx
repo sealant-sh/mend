@@ -1,4 +1,4 @@
-import { agentStartingFacts, pullRequestBase } from "@mend/domain/workbench";
+import { agentStartingFacts, pullRequestBase, terminalReadOnlyLine } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -265,6 +265,15 @@ export function TerminalPane({
     mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
     onSuccess: (opened) => onReview(opened.slice.changeId, opened.slice.id),
   });
+  // Only the owner types in a terminal, even while control is shared (docs/adr/0013): a steerer
+  // reads the live terminal, and is told whose it is. An older server's control omits the flag
+  // and takes every steerer's keys.
+  const terminalInput = control.terminalInput !== false;
+  const readsTerminal =
+    session !== null &&
+    control.steer &&
+    !terminalInput &&
+    (tab.kind === "shell" || (isSessionTab && live && !conversation && agentPty !== null));
 
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
@@ -445,7 +454,7 @@ export function TerminalPane({
                 {rename.error instanceof Error ? rename.error.message : "rename failed"}
               </span>
             )}
-            {!control.steer && (
+            {(!control.steer || !terminalInput) && (
               <span className="shrink-0 font-mono text-[11.5px] text-faint">read-only</span>
             )}
             {control.steer && (
@@ -466,6 +475,13 @@ export function TerminalPane({
 
       {session !== null && tab.kind !== "logs" && (
         <SharedControlFact session={session} control={control} ownerName={ownerName} />
+      )}
+      {readsTerminal && (
+        <div className="flex h-7 shrink-0 items-center border-b border-rule-faint bg-background px-3">
+          <span className="truncate font-sans text-[12.5px] text-ink-2">
+            {terminalReadOnlyLine(ownerName ?? "its owner")}
+          </span>
+        </div>
       )}
       {isSessionTab && landingHeadline !== null && (
         <button
@@ -572,6 +588,7 @@ export function TerminalPane({
             probe={probeTab(tab, session?.projectId ?? null)}
             focus
             focusRequest={terminalFocusRequest}
+            readOnly={!terminalInput}
           />
         )}
       </div>

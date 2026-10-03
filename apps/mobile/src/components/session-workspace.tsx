@@ -19,7 +19,13 @@ import { SessionPane, type Companion } from "@/components/session-pane";
 import { TerminalPane } from "@/components/terminal-pane";
 import { MonoText, UiText } from "@/components/typography";
 import { findLastMatching } from "@/data/collections";
-import { toneOf, useAllSessions, useSession, useSessionActions } from "@/data/live";
+import {
+  terminalInputOf,
+  toneOf,
+  useAllSessions,
+  useSession,
+  useSessionActions,
+} from "@/data/live";
 import { initialsOf, railSessions } from "@/data/rail";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
 
@@ -180,6 +186,8 @@ function ShellCompanion({
   const [error, setError] = useState<string | null>(null);
   const session = detail.data?.session;
   const running = session !== undefined && ["running", "waiting", "idle"].includes(session.status);
+  // A shell runs on the workspace's login: the owner's alone, even while shared (docs/adr/0013).
+  const opensShell = terminalInputOf(detail.data?.control);
   const shell = findLastMatching(
     detail.data?.processes ?? [],
     (process) => process.kind === "shell" && process.exitedAt === null,
@@ -219,7 +227,7 @@ function ShellCompanion({
             ? "no shell open in this worktree"
             : "the session's workspace is not running · resume it to open a shell"}
         </MonoText>
-        {running ? (
+        {running && opensShell ? (
           <EvButton
             size="sm"
             variant="outline"

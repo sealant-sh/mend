@@ -73,9 +73,9 @@ when an agent settles and later resumes.
 
 A session has an owner, the account that started it; the agent runs with the owner's provider logins
 and Git access. Only the owner steers it unless they turn on shared control, which lets everyone who
-can see the session send turns, answer approvals and type in its terminal, still on the owner's
-credentials. A session records where it was started from: Mend itself (the CLI, web, desktop or
-phone) or Slack.
+can see the session send turns and answer approvals, still on the owner's credentials. Only the
+owner types in a session's terminal or opens a shell; others read the terminal. A session records
+where it was started from: Mend itself (the CLI, web, desktop or phone) or Slack.
 
 A session can contain several agent processes over its life. Supporting shells and Services belong
 to the same session because they can read or change its worktree.

@@ -12,10 +12,13 @@ import type { OrganizationRole } from "./organization.ts";
  * the actor is the session's owner, whose agent it was. `discard-unsaved-stop` is the owner's
  * explicit "discard unsaved and stop": the one act that ends a workspace while captures are still
  * pending (docs/adr/0002-session-capture-store.md, "Stop drains, then terminates").
+ * `terminal-watch` is an attach by someone other than the owner: output only, since only the
+ * owner types in a session's terminal (docs/adr/0013-whoever-sends-a-turn-pays.md).
  */
 export const SessionControlKind = Schema.Literals([
   "interrupt",
   "terminal-attach",
+  "terminal-watch",
   "shell-open",
   "stop",
   "services-stop",
@@ -49,6 +52,21 @@ export interface SteeringFacts {
 export const canSteerSession = (session: SteeringFacts, callerUserId: string): boolean =>
   session.ownerUserId !== null &&
   (callerUserId === session.ownerUserId || session.sharedControlEnabledAt !== null);
+
+/**
+ * Typing into a session's terminal, opening a shell in its workspace, pasting into it: the owner's
+ * alone, even while control is shared (docs/adr/0013-whoever-sends-a-turn-pays.md). A terminal
+ * runs on whatever login the workspace holds and has no turn to switch it at, so a steerer's keys
+ * would spend the owner's. Steering a terminal session means continuing it as a conversation.
+ */
+export const canTypeInTerminal = (
+  session: Pick<SteeringFacts, "ownerUserId">,
+  callerUserId: string,
+): boolean => session.ownerUserId !== null && callerUserId === session.ownerUserId;
+
+/** What everyone but the owner reads beside a session's terminal (docs/adr/0013). */
+export const terminalReadOnlyLine = (ownerName: string): string =>
+  `This session runs in a terminal. Only ${ownerName} types here; they can continue it as a conversation.`;
 
 /**
  * Turning shared control on is the owner's choice alone: it lends their credentials. Turning it

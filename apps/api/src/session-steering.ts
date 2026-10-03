@@ -1,4 +1,9 @@
-import { CurrentUser, NotFound, SessionNotSteerable } from "@mend/api-contracts";
+import {
+  CurrentUser,
+  NotFound,
+  SessionControlView,
+  SessionNotSteerable,
+} from "@mend/api-contracts";
 import { AgentConversationRepo, ServicesRepo, SessionProcessesRepo } from "@mend/db";
 import {
   type AgentRequestId,
@@ -9,11 +14,15 @@ import {
 } from "@mend/domain";
 import {
   canSteerSession,
+  canToggleSharedControl,
+  canTypeInTerminal,
   type AgentRequest,
   type AgentTurn,
   type Service,
   type Session,
   type SessionProcess,
+  type SteeringFacts,
+  type Viewer,
 } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -27,6 +36,26 @@ const refuse = (session: Session) =>
     sessionId: session.id,
     message: "only the session owner can steer this session; the owner can turn on shared control",
   });
+
+/**
+ * What the viewer may do with a session, as its detail tells clients, so they show only real
+ * controls (docs/adr/0003). Typing in its terminals is the owner's alone (docs/adr/0013).
+ */
+export const sessionControlView = (
+  session: SteeringFacts,
+  viewer: Pick<Viewer, "userId" | "role"> | null,
+): SessionControlView => {
+  const steer = viewer !== null && canSteerSession(session, viewer.userId);
+  return new SessionControlView({
+    own: viewer !== null && session.ownerUserId === viewer.userId,
+    steer,
+    stop: steer || viewer?.role === "owner",
+    toggleSharedControl:
+      viewer !== null &&
+      canToggleSharedControl(session, viewer, session.sharedControlEnabledAt === null),
+    terminalInput: viewer !== null && canTypeInTerminal(session, viewer.userId),
+  });
+};
 
 /**
  * Resolves whether the caller may steer a session, before any steering effect

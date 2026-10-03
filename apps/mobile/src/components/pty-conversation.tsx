@@ -98,10 +98,19 @@ export function PtyConversation({
   active,
   summary,
   pickUp,
+  typing = true,
+  readOnlyLine = null,
 }: {
   readonly sessionId: string;
   readonly active: boolean;
   readonly summary: string | null;
+  /**
+   * Whether this account types in the terminal: only the owner does, even while control is
+   * shared (docs/adr/0013). Without it there is no composer.
+   */
+  readonly typing?: boolean;
+  /** Shown where the composer would be, for a steerer who does not type here. */
+  readonly readOnlyLine?: string | null;
   /**
    * Cross-mode pickup (claude and codex): the composer IS the pickup — the
    * first send hands the session off to structured mode with the typed
@@ -187,9 +196,12 @@ export function PtyConversation({
     height: state.height,
     isVisible: state.isVisible,
   }));
+  // The composer types into the terminal: the owner's, or the pickup that hands it off.
+  const composing = pickUp !== undefined || (active && typing);
+  const docked = composing || (active && readOnlyLine !== null);
   const bottomPad = pane.sticky
     ? (keyboard.isVisible ? keyboard.height : pane.bottom) +
-      (active ? composerHeight + spacing.xs : spacing.md)
+      (docked ? composerHeight + spacing.xs : spacing.md)
     : spacing.md;
   const serverEvents = transcript.data?.events ?? [];
 
@@ -269,7 +281,26 @@ export function PtyConversation({
         }
         ListEmptyComponent={<MonoText tone="faint">{emptyMessage}</MonoText>}
       />
-      {(active || pickUp !== undefined) && (
+      {!composing && docked && (
+        <ComposerDock>
+          <View
+            onLayout={(event) => setComposerHeight(event.nativeEvent.layout.height)}
+            style={{
+              paddingHorizontal: 16,
+              paddingTop: 10,
+              paddingBottom: pane.bottom + 10,
+              backgroundColor: colors.panel,
+              borderTopWidth: StyleSheet.hairlineWidth,
+              borderTopColor: colors.softRule,
+            }}
+          >
+            <UiText size={13} tone="ink2">
+              {readOnlyLine}
+            </UiText>
+          </View>
+        </ComposerDock>
+      )}
+      {composing && (
         <ComposerDock>
           {pickUp !== undefined && pickUp.pending && (
             <View

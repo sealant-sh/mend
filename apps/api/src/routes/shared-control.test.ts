@@ -48,18 +48,35 @@ describe("shared control", () => {
     expect(api.world.calls.length).toBeGreaterThan(0);
 
     // Shared control lends steering, not the session: deleting, renaming and handing off stay
-    // the owner's.
+    // the owner's. So do shells and images pasted into a terminal: only the owner types there
+    // (docs/adr/0013).
     api.world.calls.splice(0, api.world.calls.length);
     const session = `/api/sessions/${sharedA.session}`;
     const ownerOnly = [
       await api.request("carol", "DELETE", session),
       await api.request("carol", "POST", `${session}/label`, { label: "mine now" }),
       await api.request("carol", "POST", `${session}/handoff`, { to: "pty" }),
+      await api.request("carol", "POST", `${session}/shell`),
+      await api.request("carol", "POST", `${session}/images`, { contentsBase64: "iVBORw0KGgo=" }),
     ];
     expect({
       statuses: ownerOnly.map((response) => response.status),
       calls: api.world.calls,
-    }).toEqual({ statuses: [403, 403, 403], calls: [] });
+    }).toEqual({ statuses: [403, 403, 403, 403, 403], calls: [] });
+    const refusal: unknown = await (await api.request("carol", "POST", `${session}/shell`)).json();
+    expect(refusal).toMatchObject({
+      message: "only the session owner can do this, even while control is shared",
+    });
+
+    // A steerer still attaches the owner's shell to read it; the route drops their keys (tty.test.ts).
+    api.world.calls.splice(0, api.world.calls.length);
+    await api.rawRequest("carol", `/api/tty?process=${sharedA.process}`);
+    expect(api.world.calls).toContain("sealant.getWorkspace");
+
+    // The owner still opens one: past authorization to the engine.
+    api.world.calls.splice(0, api.world.calls.length);
+    await api.request("alice", "POST", `${session}/shell`);
+    expect(api.world.calls).toContain("engine.openShell");
 
     const off = await api.request("alice", "PUT", toggle, { enabled: false });
     expect(off.status).toBe(200);

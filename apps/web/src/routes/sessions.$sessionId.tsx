@@ -1,4 +1,4 @@
-import { agentStartingFacts, sessionModelLine } from "@mend/domain/workbench";
+import { agentStartingFacts, sessionModelLine, terminalReadOnlyLine } from "@mend/domain/workbench";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -436,9 +436,18 @@ function SessionPage() {
                   <div className="flex items-center gap-2 border-b border-rule-faint bg-secondary px-4 py-2">
                     <span className="size-1.5 animate-pulse rounded-full bg-[var(--sw-red)]" />
                     <p className="font-mono text-[11.5px] text-muted-foreground">
-                      run {session.sealantRunId} · live — the same session your terminal holds
+                      {control.terminalInput
+                        ? `run ${session.sealantRunId} · live — the same session your terminal holds`
+                        : `run ${session.sealantRunId} · live · read-only`}
                     </p>
                   </div>
+                  {/* Only the owner types in a terminal, even while control is shared
+                      (docs/adr/0013): everyone else reads it. */}
+                  {!control.terminalInput && (
+                    <p className="border-b border-rule-faint px-4 py-2 font-sans text-[12.5px] text-ink-2">
+                      {terminalReadOnlyLine(ownerName ?? "its owner")}
+                    </p>
+                  )}
                   {/* Keyed on the PLATFORM session: `mend continue` reopens the
                       session with a fresh PTY, and the pane must reconnect. */}
                   {/* Keyed on theme too: the terminal snapshots CSS variables at
@@ -448,6 +457,7 @@ function SessionPage() {
                     sessionId={session.id}
                     startingLabel={session.harness}
                     starting={agentStartingFacts(currentAgent, processes, Date.now())}
+                    readOnly={!control.terminalInput}
                   />
                 </div>
               </>
@@ -699,9 +709,9 @@ export function SharedControl({
             ))}
           </div>
           <p className="basis-full text-[12.5px] leading-relaxed text-muted-foreground">
-            On lets everyone who can see this project send turns, answer approvals, interrupt, and
-            type in the terminal, using your provider logins and Git access. Every action is
-            recorded with who sent it.
+            On lets everyone who can see this project send turns, answer approvals and interrupt,
+            using your provider logins and Git access. They can read the terminal; only you type in
+            it. Every action is recorded with who sent it.
           </p>
         </div>
       ) : (
