@@ -20,8 +20,10 @@ import { WORKSPACE_EXEC_ARG_CHARS } from "./workspace-files.ts";
  * proof is repeated before every chunk and the rename (Astra review, 2026-10-03: a planted staging
  * file under a symlinked directory took later chunks).
  *
- * What a delivery wrote is recorded at `~/.mend/secret-files`, one path per line, so the next
- * delivery into the same home removes a file the person no longer keeps.
+ * What a delivery wrote is recorded at `~/.mend/secret-files`, sealed with the machine key and
+ * bound to the workspace, each file with the digest of its bytes (`SecretFilesRecord`), so the
+ * next delivery into the same home removes a file the person no longer keeps, and only one that
+ * still holds what Mend wrote.
  *
  * Outcomes are one line per file on stdout, tab-separated: `written\t<path>`,
  * `refused\t<path>\t<reason>`, `removed\t<path>`, `kept\t<path>`. A tab cannot be in a path.
@@ -203,50 +205,103 @@ export const secretFilesCleanupExec = (
 ];
 
 /**
- * The exec that removes files an earlier delivery wrote and this one no longer carries. Each path
- * is proved a plain path in the home first, as a write is; a symlink, a directory or a missing
- * file is `kept`, never removed through a link.
+ * What a delivery recorded in a home: each file it wrote with the SHA-256 of its bytes, bound to
+ * the workspace. The record travels sealed with the machine key (`SecretCipher`), so a home
+ * cannot forge one: the only files Mend ever removes are ones a record of its own names, and only
+ * while they still hold the bytes it wrote.
  */
-export const secretFilesRemoveExec = (paths: ReadonlyArray<string>): ReadonlyArray<string> => [
+export interface SecretFilesRecord {
+  readonly workspaceId: string;
+  readonly files: ReadonlyArray<{ readonly path: string; readonly sha256: string }>;
+}
+
+export const encodeSecretFilesRecord = (record: SecretFilesRecord): string =>
+  JSON.stringify(record);
+
+/**
+ * The record `json` holds, when it is well-formed and `workspaceId`'s own; null otherwise. Every
+ * path must still validate and every digest be SHA-256 hex.
+ */
+export const decodeSecretFilesRecord = (
+  json: string,
+  workspaceId: string,
+): SecretFilesRecord | null => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record: Partial<Record<string, unknown>> = { ...parsed };
+  if (record["workspaceId"] !== workspaceId || !Array.isArray(record["files"])) return null;
+  const files: Array<{ path: string; sha256: string }> = [];
+  for (const entry of record["files"]) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const file: Partial<Record<string, unknown>> = { ...entry };
+    const path = file["path"];
+    const sha256 = file["sha256"];
+    if (typeof path !== "string" || validateSecretFilePath(path) !== null) return null;
+    if (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) return null;
+    files.push({ path, sha256 });
+  }
+  return { workspaceId, files };
+};
+
+/**
+ * The exec that removes files an earlier delivery wrote and this one no longer carries, as
+ * (path, sha256) pairs. Each path is proved a plain path in the home first, as a write is, and the
+ * file goes only while it still holds the bytes Mend wrote: `removed`. Nothing at the path is
+ * `absent`, and done with. A symlink, a directory, a file with other bytes or a path that failed
+ * the proof is `kept`, never removed through a link or out from under someone else.
+ */
+export const secretFilesRemoveExec = (
+  files: ReadonlyArray<{ readonly path: string; readonly sha256: string }>,
+): ReadonlyArray<string> => [
   "sh",
   "-c",
   PATH_FUNCTION +
-    'for p; do if secret_path "$p" >/dev/null && [ -f "$T" ]; then ' +
-    `rm -f "$T" && printf 'removed\\t%s\\n' "$p"; else printf 'kept\\t%s\\n' "$p"; fi; done; exit 0`,
+    'while [ "$#" -gt 1 ]; do if secret_path "$1" >/dev/null; then ' +
+    `if [ ! -e "$T" ]; then printf 'absent\\t%s\\n' "$1"; ` +
+    `elif [ -f "$T" ] && [ "$(sha256sum < "$T" | cut -d" " -f1)" = "$2" ]; then ` +
+    `{ rm -f "$T" && printf 'removed\\t%s\\n' "$1"; } || printf 'kept\\t%s\\n' "$1"; ` +
+    `else printf 'kept\\t%s\\n' "$1"; fi; else printf 'kept\\t%s\\n' "$1"; fi; shift 2; done; exit 0`,
   "mend-secret-files",
-  ...paths,
-];
-
-/** The exec that prints the paths the home's record lists; a home without one prints nothing. */
-export const secretFilesDeliveredExec: ReadonlyArray<string> = [
-  "sh",
-  "-c",
-  `cat "$HOME/${SECRET_FILES_DELIVERED}" 2>/dev/null; exit 0`,
+  ...files.flatMap((file) => [file.path, file.sha256]),
 ];
 
 /**
- * The exec that records `paths` as delivered into this home (0600, in `~/.mend` made 0700), or
- * removes the record when there are none.
+ * The exec that prints the home's sealed record, when `~/.mend` and the record are plain entries;
+ * a link in either place, or no record, prints nothing.
  */
-export const secretFilesRecordExec = (paths: ReadonlyArray<string>): ReadonlyArray<string> => [
+export const secretFilesDeliveredExec: ReadonlyArray<string> = [
   "sh",
   "-c",
-  `F="$HOME/${SECRET_FILES_DELIVERED}"; if [ "$#" -eq 0 ]; then rm -f "$F"; exit 0; fi; ` +
-    '[ -L "$HOME/.mend" ] && exit 0; (umask 077; mkdir -p "$HOME/.mend" && [ ! -L "$F" ] && ' +
-    'printf \'%s\\n\' "$@" > "$F"); exit 0',
-  "mend-secret-files",
-  ...paths,
+  `F="$HOME/${SECRET_FILES_DELIVERED}"; ` +
+    '{ [ -L "$HOME/.mend" ] || [ -L "$F" ] || [ ! -f "$F" ]; } && exit 0; cat "$F"; exit 0',
 ];
 
-/** The paths a record exec printed. */
-export const parseSecretFilesDelivered = (stdout: string): ReadonlyArray<string> =>
-  stdout.split("\n").filter((line) => line !== "" && validateSecretFilePath(line) === null);
+/**
+ * The exec that writes the sealed record `$1` into this home (0600, in `~/.mend` made 0700,
+ * staged and renamed into place), or removes the record when `null`. Nothing is written or
+ * removed when `~/.mend` or the record is a link.
+ */
+export const secretFilesRecordExec = (sealed: string | null): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `D="$HOME/.mend"; F="$HOME/${SECRET_FILES_DELIVERED}"; [ -L "$D" ] && exit 0; [ -L "$F" ] && exit 0; ` +
+    `if [ "$#" -eq 0 ]; then [ -f "$F" ] && rm -f "$F"; exit 0; fi; ` +
+    '(umask 077; mkdir -p "$D") || exit 0; [ -L "$D" ] && exit 0; [ -d "$D" ] || exit 0; ' +
+    `rm -f "$F.part"; (umask 077; printf '%s\\n' "$1" > "$F.part") && [ ! -L "$F" ] && mv -f "$F.part" "$F"; exit 0`,
+  "mend-secret-files",
+  ...(sealed === null ? [] : [sealed]),
+];
 
 /** What one exec did with one file. */
 export interface SecretFileOutcome {
   /** The HOME-relative path, as given. */
   readonly path: string;
-  readonly outcome: "written" | "refused" | "removed" | "kept";
+  readonly outcome: "written" | "refused" | "removed" | "absent" | "kept";
   /** Why, for a refusal. */
   readonly reason?: string;
 }
@@ -272,7 +327,7 @@ export const parseSecretFileOutcomes = (stdout: string): ReadonlyArray<SecretFil
   stdout.split("\n").flatMap((line): ReadonlyArray<SecretFileOutcome> => {
     const [kind, path, ...rest] = line.split("\t");
     if (path === undefined || path === "") return [];
-    if (kind === "written" || kind === "removed" || kind === "kept") {
+    if (kind === "written" || kind === "removed" || kind === "absent" || kind === "kept") {
       return [{ path, outcome: kind }];
     }
     if (kind === "refused") {

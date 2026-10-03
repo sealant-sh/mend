@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,13 +10,18 @@ import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@men
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { HARNESS_STATE } from "./harness-state.ts";
+import {
+  HARNESS_STATE,
+  harvestHarnessStateScript,
+  readHarnessFileScript,
+} from "./harness-state.ts";
 import {
   SECRET_FILE_PART_PREFIX,
   SECRET_FILES_DELIVERED,
+  decodeSecretFilesRecord,
+  encodeSecretFilesRecord,
   foldSecretFileOutcomes,
   parseSecretFileOutcomes,
-  parseSecretFilesDelivered,
   planSecretFiles,
   secretFilesCleanupExec,
   secretFilesDeliveredExec,
@@ -44,13 +49,15 @@ const utf8 = (at: string, text: string): SecretFileToWrite => ({
   bytes: new TextEncoder().encode(text),
 });
 
+const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+
 const STAMP = "0123abcd";
 
 /** Run one exec as the engine does, with `home` as the workspace user's `$HOME`. */
-const run = (home: string, argv: ReadonlyArray<string>) => {
+const run = (home: string, argv: ReadonlyArray<string>, env: Record<string, string> = {}) => {
   const [command, ...args] = argv;
   const result = spawnSync(command ?? "sh", args, {
-    env: { ...process.env, HOME: home },
+    env: { ...process.env, HOME: home, ...env },
     encoding: "utf8",
   });
   expect(result.status, result.stderr).toBe(0);
@@ -194,6 +201,7 @@ describe("writing secret files into a workspace home", () => {
     expect(outcomes).toEqual([
       { path: ".kube/config", outcome: "refused", reason: ".kube is a symlink" },
     ]);
+    // The worktree file is neither written to nor removed through the link.
     expect(filesUnder(worktree)).toEqual([`config${SECRET_FILE_PART_PREFIX}${STAMP}`]);
     expect(
       fs.readFileSync(path.join(worktree, `config${SECRET_FILE_PART_PREFIX}${STAMP}`)).byteLength,
@@ -238,46 +246,97 @@ describe("writing secret files into a workspace home", () => {
     expect(filesUnder(home)).toEqual([`.kube/config${SECRET_FILE_PART_PREFIX}feedbeef`]);
   });
 
-  it("removes a file an earlier delivery wrote, never through a symlink, and keeps the rest", () => {
+  it("removes a file an earlier delivery wrote only while it holds Mend's bytes, never through a symlink", () => {
     const home = tempDir("mend-secret-home-");
     const worktree = tempDir("mend-secret-worktree-");
-    write(home, [utf8(".aws/credentials", "old"), utf8(".npmrc", "old")]);
+    write(home, [utf8(".aws/credentials", "old"), utf8(".npmrc", "old"), utf8(".bashrc", "mine")]);
+    // The person's dotfiles since replaced .bashrc: no longer Mend's bytes.
+    fs.writeFileSync(path.join(home, ".bashrc"), "export PS1=x\n");
     fs.writeFileSync(path.join(worktree, "keep.txt"), "repo file\n");
     fs.symlinkSync(worktree, path.join(home, ".kube"));
     fs.mkdirSync(path.join(home, ".dir"));
     const outcomes = parseSecretFileOutcomes(
       run(
         home,
-        secretFilesRemoveExec([".aws/credentials", ".kube/keep.txt", ".dir", ".gone", ".npmrc"]),
+        secretFilesRemoveExec([
+          { path: ".aws/credentials", sha256: sha256("old") },
+          { path: ".kube/keep.txt", sha256: sha256("repo file\n") },
+          { path: ".dir", sha256: sha256("") },
+          { path: ".gone", sha256: sha256("") },
+          { path: ".bashrc", sha256: sha256("mine") },
+          { path: ".npmrc", sha256: sha256("old") },
+        ]),
       ),
     );
     expect(outcomes).toEqual([
       { path: ".aws/credentials", outcome: "removed" },
       { path: ".kube/keep.txt", outcome: "kept" },
       { path: ".dir", outcome: "kept" },
-      { path: ".gone", outcome: "kept" },
+      { path: ".gone", outcome: "absent" },
+      { path: ".bashrc", outcome: "kept" },
       { path: ".npmrc", outcome: "removed" },
     ]);
     expect(fs.readFileSync(path.join(worktree, "keep.txt"), "utf8")).toBe("repo file\n");
-    expect(filesUnder(home)).toEqual([".kube"]);
+    expect(filesUnder(home)).toEqual([".bashrc", ".kube"]);
   });
 
-  it("records what was delivered, 0600 under ~/.mend, and forgets it when nothing is", () => {
+  it("keeps the sealed record 0600 under ~/.mend, forgets it when told, and never through a link", () => {
     const home = tempDir("mend-secret-home-");
-    expect(parseSecretFilesDelivered(run(home, secretFilesDeliveredExec))).toEqual([]);
-    run(home, secretFilesRecordExec([".aws/credentials", "-odd dir/x y"]));
+    const worktree = tempDir("mend-secret-worktree-");
+    expect(run(home, secretFilesDeliveredExec)).toBe("");
+    run(home, secretFilesRecordExec("sealed:one"));
     expect(mode(path.join(home, SECRET_FILES_DELIVERED))).toBe("600");
     expect(mode(path.join(home, ".mend"))).toBe("700");
-    expect(parseSecretFilesDelivered(run(home, secretFilesDeliveredExec))).toEqual([
-      ".aws/credentials",
-      "-odd dir/x y",
-    ]);
-    run(home, secretFilesRecordExec([]));
+    expect(run(home, secretFilesDeliveredExec)).toBe("sealed:one\n");
+    run(home, secretFilesRecordExec("sealed:two"));
+    expect(run(home, secretFilesDeliveredExec)).toBe("sealed:two\n");
+    expect(filesUnder(path.join(home, ".mend"))).toEqual(["secret-files"]);
+    run(home, secretFilesRecordExec(null));
     expect(fs.existsSync(path.join(home, SECRET_FILES_DELIVERED))).toBe(false);
-    // A record someone else wrote with a captured path in it is not taken as delivered.
-    fs.mkdirSync(path.join(home, ".mend"), { recursive: true });
-    fs.writeFileSync(path.join(home, SECRET_FILES_DELIVERED), ".claude/x\n../etc\n.npmrc\n");
-    expect(parseSecretFilesDelivered(run(home, secretFilesDeliveredExec))).toEqual([".npmrc"]);
+    // The record a link: read nothing, write nothing, remove nothing through it (Astra review 2).
+    fs.writeFileSync(path.join(home, ".npmrc"), "NPM_TOKEN_VALUE\n");
+    fs.symlinkSync(path.join(home, ".npmrc"), path.join(home, SECRET_FILES_DELIVERED));
+    expect(run(home, secretFilesDeliveredExec)).toBe("");
+    run(home, secretFilesRecordExec("sealed:three"));
+    run(home, secretFilesRecordExec(null));
+    expect(fs.readFileSync(path.join(home, ".npmrc"), "utf8")).toBe("NPM_TOKEN_VALUE\n");
+    // ~/.mend a link into the worktree: the same.
+    fs.rmSync(path.join(home, ".mend"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(worktree, "secret-files"), ".ghost\n");
+    fs.symlinkSync(worktree, path.join(home, ".mend"));
+    expect(run(home, secretFilesDeliveredExec)).toBe("");
+    run(home, secretFilesRecordExec(null));
+    run(home, secretFilesRecordExec("sealed:four"));
+    expect(fs.readFileSync(path.join(worktree, "secret-files"), "utf8")).toBe(".ghost\n");
+    expect(filesUnder(worktree)).toEqual(["secret-files"]);
+  });
+
+  it("takes a record only when it is well-formed and this workspace's own", () => {
+    const record = {
+      workspaceId: "ws-1",
+      files: [{ path: ".aws/credentials", sha256: sha256("x") }],
+    };
+    expect(decodeSecretFilesRecord(encodeSecretFilesRecord(record), "ws-1")).toEqual(record);
+    expect(decodeSecretFilesRecord(encodeSecretFilesRecord(record), "ws-2")).toBeNull();
+    expect(decodeSecretFilesRecord("not json", "ws-1")).toBeNull();
+    expect(
+      decodeSecretFilesRecord(
+        JSON.stringify({
+          workspaceId: "ws-1",
+          files: [{ path: ".claude/x", sha256: sha256("x") }],
+        }),
+        "ws-1",
+      ),
+    ).toBeNull();
+    expect(
+      decodeSecretFilesRecord(
+        JSON.stringify({ workspaceId: "ws-1", files: [{ path: ".bashrc", sha256: "nope" }] }),
+        "ws-1",
+      ),
+    ).toBeNull();
+    expect(
+      decodeSecretFilesRecord(JSON.stringify({ workspaceId: "ws-1", files: [] }), "ws-1"),
+    ).toEqual({ workspaceId: "ws-1", files: [] });
   });
 
   it("leaves out a stored path that no longer validates, and says so", () => {
@@ -341,7 +400,13 @@ describe("a secret file is never captured", () => {
     expect(validateSecretFilePath(".claude-other/x")).toBeNull();
   });
 
-  it("appears in neither the executor's capture listing nor the co-located harvest, even behind a link an agent left in the harness home", async () => {
+  /**
+   * A home as the relocation leaves it, with a conversation in the harness root, two secret files
+   * written, and the links an agent could leave behind: a link beside the transcripts at a secret
+   * file, a link named like a transcript at it, a directory on the way to the state replaced by a
+   * link at the home, and a transcripts directory replaced by a link at a secret file's directory.
+   */
+  const relocatedHome = () => {
     const scratch = tempDir("mend-secret-capture-");
     const home = path.join(scratch, "home");
     const harnessHome = path.join(scratch, "harness-home");
@@ -349,15 +414,14 @@ describe("a secret file is never captured", () => {
     fs.mkdirSync(home, { recursive: true });
     fs.mkdirSync(worktree, { recursive: true });
     fs.writeFileSync(path.join(worktree, "README.md"), "# repo\n");
-    // The home as the relocation leaves it: each harness directory a symlink onto the harness
-    // root sealantd captures, with a conversation already in it.
     fs.mkdirSync(path.join(harnessHome, ".claude", "projects", "-workspace-repo"), {
       recursive: true,
     });
     fs.writeFileSync(
       path.join(harnessHome, ".claude", "projects", "-workspace-repo", "s.jsonl"),
-      "{}\n",
+      '{"ok":true}\n',
     );
+    fs.writeFileSync(path.join(harnessHome, ".claude", "settings.json"), "{}\n");
     for (const dir of new Set(Object.values(HARNESS_STATE).flatMap((shape) => shape.homeDirs))) {
       fs.mkdirSync(path.join(harnessHome, dir), { recursive: true });
       fs.mkdirSync(path.dirname(path.join(home, dir)), { recursive: true });
@@ -367,18 +431,31 @@ describe("a secret file is never captured", () => {
     const outcomes = write(home, [
       utf8(".aws/credentials", "[default]\naws_secret_access_key = SECRET\n"),
       utf8(".kube/config", "apiVersion: v1\n"),
+      utf8("sessions/00000000-0000-0000-0000-000000000001.jsonl", "SECRET too\n"),
     ]);
     expect(outcomes.every((outcome) => outcome.outcome === "written")).toBe(true);
-    // An agent in an earlier session left links in the harness home pointing at the secret file
-    // (Astra review 2): one among the transcripts, one named like a transcript.
+    const projects = path.join(harnessHome, ".claude", "projects", "-workspace-repo");
+    fs.symlinkSync(path.join(home, ".aws", "credentials"), path.join(projects, "notes.md"));
     fs.symlinkSync(
       path.join(home, ".aws", "credentials"),
-      path.join(harnessHome, ".claude", "projects", "-workspace-repo", "notes.md"),
+      path.join(projects, "00000000-0000-0000-0000-000000000002.jsonl"),
     );
-    fs.symlinkSync(
-      path.join(home, ".aws", "credentials"),
-      path.join(harnessHome, ".claude", "projects", "-workspace-repo", "z.jsonl"),
+    // `.claude/projects/leak -> ~/.aws`: a linked directory holding a transcript-named leaf.
+    fs.symlinkSync(path.join(home, ".aws"), path.join(harnessHome, ".claude", "projects", "leak"));
+    fs.writeFileSync(
+      path.join(home, ".aws", "00000000-0000-0000-0000-000000000003.jsonl"),
+      "SECRET leaf\n",
     );
+    // `.pi/agent -> ~`: a directory on the way replaced by a link at the home (Astra review 2).
+    fs.symlinkSync(home, path.join(harnessHome, ".pi", "agent"));
+    // `.codex -> ~/.aws` at the home itself: a top-level link that is not the relocation's.
+    fs.rmSync(path.join(home, ".codex"));
+    fs.symlinkSync(path.join(home, ".aws"), path.join(home, ".codex"));
+    return { scratch, home, harnessHome, worktree };
+  };
+
+  it("appears in neither the executor's capture listing nor the co-located harvest, whatever links an agent left", async () => {
+    const { scratch, home, harnessHome, worktree } = relocatedHome();
 
     // The workspace class sealantd ships (sealant-capture `roots.rs`): the worktree under `tree/`
     // and the harness root under `harness/`, links as links. Nothing else of the executor's disk
@@ -409,8 +486,11 @@ describe("a secret file is never captured", () => {
     expect(paths).toContain("tree/README.md");
     expect(paths).toContain("harness/.claude/projects/-workspace-repo/s.jsonl");
     expect(paths.filter((p) => p.includes(".aws") || p.includes(".kube"))).toEqual([]);
-    const linked = listed.find((file) => file.path.endsWith("/z.jsonl"));
-    expect(linked?.entry.kind).not.toBe("file");
+    for (const linked of listed.filter(
+      (file) => file.path.endsWith("/notes.md") || file.path.endsWith("000002.jsonl"),
+    )) {
+      expect(linked.entry.kind).not.toBe("file");
+    }
     const bytes = await Effect.runPromise(
       Effect.gen(function* () {
         const store = yield* BlobStore;
@@ -423,39 +503,73 @@ describe("a secret file is never captured", () => {
     );
     expect(bytes).not.toContain("SECRET");
 
-    // The co-located harvest (engine.ts, the harvest): `cd $HOME; tar -czhf … -X <carried and
-    // every symlink at or below a harvested path> <the harness's state paths that exist>`.
-    // -h dereferences the relocation's links; the exclusion keeps it from dereferencing a link
-    // an agent left below them.
-    const shape = HARNESS_STATE["claude"];
-    if (shape === undefined) throw new Error("claude shape");
-    const present = shape.paths.filter((p) => fs.existsSync(path.join(home, p)));
-    expect(present).toContain(".claude/projects");
-    const archive = path.join(scratch, "harvest.tgz");
-    const packed = spawnSync(
-      "sh",
-      [
-        "-c",
-        `X="$1"; shift; : > "$X"; find "$@" -type l 2>/dev/null | sed 's/[][*?\\\\]/\\\\&/g' >> "$X"; ` +
-          `tar -czhf "$0" -X "$X" "$@"`,
-        archive,
-        path.join(scratch, "harvest.exclude"),
-        ...present,
-      ],
-      { cwd: home, encoding: "utf8" },
-    );
-    expect(packed.status, packed.stderr).toBe(0);
-    const entries = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" }).stdout.split("\n");
-    expect(entries).toContain(".claude/projects/-workspace-repo/s.jsonl");
-    expect(entries).not.toContain(".claude/projects/-workspace-repo/notes.md");
-    expect(entries).not.toContain(".claude/projects/-workspace-repo/z.jsonl");
-    expect(entries.filter((e) => e.includes(".aws") || e.includes(".kube"))).toEqual([]);
-    const unpacked = path.join(scratch, "unpacked");
-    fs.mkdirSync(unpacked);
-    spawnSync("tar", ["-xzf", archive, "-C", unpacked]);
-    const everything = filesUnder(unpacked)
-      .map((file) => fs.readFileSync(path.join(unpacked, file), "latin1"))
-      .join("");
-    expect(everything).not.toContain("SECRET");
+    // The co-located harvest, the engine's own script, over every harness's state paths: links
+    // archived as links, a directory replaced by a link skipped, a top-level link that is not the
+    // relocation's skipped, and nothing of the home outside the harness state inside.
+    for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
+      const script = harvestHarnessStateScript(shape.paths, harnessHome);
+      const packed = spawnSync("sh", ["-c", script], {
+        env: { ...process.env, HOME: home, TMPDIR: scratch },
+        encoding: "utf8",
+      });
+      if (harness === "pi" || harness === "codex") {
+        // pi's `agent` is a link, codex's top-level link is not the relocation's: nothing left.
+        expect(packed.status, harness).toBe(3);
+        continue;
+      }
+      expect(packed.status, `${harness}: ${packed.stderr}`).toBe(0);
+      const archive = path.join(scratch, `${harness}.tgz`);
+      fs.writeFileSync(archive, Buffer.from(packed.stdout.trim(), "base64"));
+      const entries = spawnSync("tar", ["-tzvf", archive], { encoding: "utf8" }).stdout;
+      if (harness === "claude") {
+        expect(entries).toContain(".claude/projects/-workspace-repo/s.jsonl");
+        expect(entries).toContain(".claude/settings.json");
+        expect(entries).toContain(".claude.json");
+        // The links are there as links (`l` type, `->` target), never what they point at.
+        for (const line of entries
+          .split("\n")
+          .filter((l) => l.includes("notes.md") || l.includes("leak") || l.includes("000002"))) {
+          expect(line.startsWith("l"), line).toBe(true);
+        }
+      }
+      const unpacked = path.join(scratch, `unpacked-${harness}`);
+      fs.mkdirSync(unpacked);
+      spawnSync("tar", ["-xzf", archive, "-C", unpacked]);
+      const everything = filesUnder(unpacked)
+        .filter((file) => !fs.lstatSync(path.join(unpacked, file)).isSymbolicLink())
+        .map((file) => fs.readFileSync(path.join(unpacked, file), "latin1"))
+        .join("");
+      expect(everything, harness).not.toContain("SECRET");
+      expect(everything, harness).not.toContain("credentials");
+    }
+  });
+
+  it("the transcript read takes the relocation's link and no other", () => {
+    const { home, harnessHome } = relocatedHome();
+    const read = (file: string) =>
+      spawnSync("sh", ["-c", readHarnessFileScript(harnessHome), "mend-read", file], {
+        env: { ...process.env, HOME: home },
+        encoding: "utf8",
+      });
+    const own = read(path.join(home, ".claude", "projects", "-workspace-repo", "s.jsonl"));
+    expect(own.status).toBe(0);
+    expect(own.stdout).toBe('{"ok":true}\n');
+    for (const file of [
+      path.join(
+        home,
+        ".claude",
+        "projects",
+        "-workspace-repo",
+        "00000000-0000-0000-0000-000000000002.jsonl",
+      ),
+      path.join(home, ".claude", "projects", "leak", "00000000-0000-0000-0000-000000000003.jsonl"),
+      path.join(home, ".pi", "agent", "sessions", "00000000-0000-0000-0000-000000000001.jsonl"),
+      path.join(home, ".codex", "credentials"),
+      "/etc/hostname",
+    ]) {
+      const refused = read(file);
+      expect(refused.status, file).toBe(4);
+      expect(refused.stdout, file).toBe("");
+    }
   });
 });

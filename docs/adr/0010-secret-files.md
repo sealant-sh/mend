@@ -62,9 +62,11 @@ base64 (`workspace-files.ts`).
    unseals the set once per launch and holds the bytes only for that write. Each file lands 0600,
    its directory made 0700 when missing, staged beside the target under the delivery's own stamp and
    renamed into place; a delivery cut short removes its staging files. What was written is recorded
-   at `~/.mend/secret-files`, and the next delivery into that home removes a recorded file the
-   person no longer keeps, never through a link. Best-effort like skills: an agent without its files
-   still starts, and the session line says which were not written and why.
+   at `~/.mend/secret-files`, sealed with the machine key and bound to the workspace, each file with
+   the digest of its bytes; the next delivery into that home removes a recorded file the person no
+   longer keeps, only while it still holds those bytes, never through a link, and a record that does
+   not unseal or is another workspace's says nothing. Best-effort like skills: an agent without its
+   files still starts, and the session line says which were not written and why.
 
 4. **Never captured, by construction and by refusal.**
    - By construction: a secret file goes into the executor's own `$HOME`, which no capture root,
@@ -80,10 +82,12 @@ base64 (`workspace-files.ts`).
      physical path equals its literal one. Dotfiles that linked `~/.aws` into the worktree would
      otherwise make a secret file a captured one. Such a file is not written, and the session line
      says so.
-   - By refusal at harvest: the co-located harvest archives the harness's state paths with `tar -h`,
-     which follows links; every symlink at or below a harvested path is excluded first, and the
-     transcript read refuses a link, so a link an agent left in `.claude/projects` at
-     `~/.aws/credentials` archives nothing. sealantd captures a link as a link.
+   - By refusal at harvest: the co-located harvest archives the harness's state paths from where
+     they physically are, under the mount the relocation linked them onto, with a `tar` that follows
+     no link; the relocation's own links are the one indirection taken, and a directory on the way
+     that became a link is skipped. The transcript read takes the same path. So a link an agent left
+     in `.claude/projects` at `~/.aws/credentials`, or in place of `.pi/agent`, archives and reads
+     nothing. sealantd captures a link as a link.
    - The test `secret-files.test.ts` builds the executor's listing over a relocated home with such
      links and shows the written file in neither the capture listing nor the harvest archive.
 
@@ -137,3 +141,10 @@ base64 (`workspace-files.ts`).
   the co-located harvest excludes every symlink at or below a harvested path and the transcript read
   refuses a link, since `tar -h` dereferenced a link an agent left in `.claude/projects` at a secret
   file; the repo refuses a size outside 1 byte to 256 KB.
+- 2026-10-03, after the second Astra review: the harvest and the transcript read go through the
+  relocation's own links only and follow no other, since a directory on the way replaced by a link
+  still led `tar -h` and `cat` out of the harness home; the home's record is sealed, bound to the
+  workspace and carries each file's digest, since a plain record could be forged to make Mend remove
+  a file it did not write, or linked at a secret file to log its lines as paths; a refused removal
+  stays recorded. Client caches keyed without the account remain, as every other settings query on
+  those pages is keyed.
