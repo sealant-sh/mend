@@ -5,6 +5,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -6740,14 +6741,42 @@ describe("SessionEngine default shell profile", () => {
   });
 });
 
-/** What the batched write execs put where: absolute workspace path → contents. */
+const gunzipped = (text: string) => gunzipSync(Buffer.from(text, "base64"));
+
+/**
+ * What the batched write execs put where: absolute workspace path → contents. Reads the writer's
+ * operations (`workspace-files.ts`): `w` writes, `s`/`a` stage, `f` writes what was staged.
+ */
 const writtenFiles = (execCalls: ReadonlyArray<ReadonlyArray<string>>): Map<string, Buffer> => {
   const files = new Map<string, Buffer>();
+  const staged = new Map<string, string>();
   for (const argv of execCalls) {
-    if (argv[3] !== "mend-write" || argv[2]?.includes("while") !== true) continue;
-    const pairs = argv.slice(4);
-    for (let index = 0; index + 1 < pairs.length; index += 2) {
-      files.set(pairs[index] ?? "", Buffer.from(pairs[index + 1] ?? "", "base64"));
+    if (argv[3] !== "mend-write") continue;
+    const ops = argv.slice(4);
+    let index = 0;
+    const list = () => {
+      const count = Number(ops[index++]);
+      const out = ops.slice(index, index + count);
+      index += count;
+      return out;
+    };
+    while (index < ops.length) {
+      const op = ops[index++];
+      if (op === "w") {
+        const paths = list();
+        const bytes = gunzipped(list().join(""));
+        for (const target of paths) files.set(target, bytes);
+      } else if (op === "s" || op === "a") {
+        const target = ops[index++] ?? "";
+        const text = list().join("");
+        staged.set(target, (op === "a" ? (staged.get(target) ?? "") : "") + text);
+      } else if (op === "f") {
+        const paths = list();
+        const bytes = gunzipped(staged.get(paths[0] ?? "") ?? "");
+        for (const target of paths) files.set(target, bytes);
+      } else {
+        throw new Error(`unknown write operation ${op ?? ""}`);
+      }
     }
   }
   return files;
