@@ -831,13 +831,49 @@ export const storedObjectProblem = (
 const CONTENT_VERIFIED_KEYS = 200_000;
 const contentVerified = new Map<string, number>();
 
-const rememberContentVerified = (store: typeof BlobStore.Service, key: string, atMs: number) => {
+export const rememberContentVerified = (
+  store: typeof BlobStore.Service,
+  key: string,
+  atMs: number,
+) => {
   const cacheKey = proofKey(store, key);
   contentVerified.delete(cacheKey);
   contentVerified.set(cacheKey, atMs);
   for (const oldest of contentVerified.keys()) {
     if (contentVerified.size <= CONTENT_VERIFIED_KEYS) break;
     contentVerified.delete(oldest);
+  }
+};
+
+/**
+ * Git packs this process copied down whole from a store, hashed to their key and passed
+ * `git index-pack --verify` beside the index stored with them (`runner.ts` `installPack`), by
+ * store and key: the SHA-256 of that index, the object format `index-pack` ran in (a pair sound
+ * as SHA-1 says nothing about it as SHA-256; Astra review, 2026-10-03), and when the read began.
+ * A seal's read-back asked to reuse proofs (`storedCaptureProblem`) compares the index stored now
+ * with that digest instead of copying the pack down and verifying it again (2026-10-02: a 627 MB
+ * pack was verified twice in one Stop, 6 s at register and 7.9 s at the seal). Bounded, the oldest
+ * dropped first.
+ */
+const GIT_PACKS_VERIFIED_KEPT = 20_000;
+const gitPackVerified = new Map<
+  string,
+  { readonly idxSha256: string; readonly format: GitObjectFormat; readonly atMs: number }
+>();
+
+export const rememberGitPackVerified = (
+  store: typeof BlobStore.Service,
+  key: string,
+  idxSha256: string,
+  format: GitObjectFormat,
+  atMs: number,
+) => {
+  const cacheKey = proofKey(store, key);
+  gitPackVerified.delete(cacheKey);
+  gitPackVerified.set(cacheKey, { idxSha256, format, atMs });
+  for (const oldest of gitPackVerified.keys()) {
+    if (gitPackVerified.size <= GIT_PACKS_VERIFIED_KEPT) break;
+    gitPackVerified.delete(oldest);
   }
 };
 
@@ -3583,24 +3619,30 @@ const storedGitPackProblem = (
   BlobStore
 > =>
   Effect.gen(function* () {
-    const own = yield* storedObjectProblem(key);
-    if (own !== null) return own;
     const store = yield* BlobStore;
+    const expected = digestOfKey(key);
+    if (expected === null) return `${key} names no sha256`;
     const idxKey = packIdxKeyOf(key);
     const idx = yield* store.get(idxKey);
+    const readAtMs = Date.now();
     const stream = yield* store.getStream(key);
     return yield* Effect.acquireUseRelease(
       Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-seal-pack-"))),
       (dir) =>
         Effect.gen(function* () {
           const packPath = path.join(dir, "pack.pack");
-          // The pack copied down and checked on the Mend host: a copy or a check the host could
-          // not finish (the stream broke, the disk filled, git was killed) concluded nothing
-          // about the stored bytes (review 2026-09-28 (13) #1) — only git rejecting them does.
-          yield* Effect.tryPromise({
+          // The pack copied down, hashed as it goes, and checked on the Mend host: a copy or a
+          // check the host could not finish (the stream broke, the disk filled, git was killed)
+          // concluded nothing about the stored bytes (review 2026-09-28 (13) #1) — only a hash
+          // that is not the key's, or git rejecting them, does. One pass over the bytes: before
+          // 2026-10-02 they were streamed once to hash and once more to copy.
+          const actual = yield* Effect.tryPromise({
             try: async () => {
+              const hash = crypto.createHash("sha256");
+              stream.on("data", (chunk: Buffer | string) => hash.update(chunk));
               await pipelinePromise(stream, fs.createWriteStream(packPath));
               await fs.promises.writeFile(path.join(dir, "pack.idx"), idx);
+              return hash.digest("hex");
             },
             catch: (cause) =>
               new CaptureCheckUnfinishedError({
@@ -3608,6 +3650,10 @@ const storedGitPackProblem = (
                 reason: `copying it to the Mend host: ${cause instanceof Error ? cause.message : String(cause)}`,
               }),
           });
+          if (actual !== expected) {
+            return `${key} holds bytes that hash to ${actual || "nothing readable"}`;
+          }
+          rememberContentVerified(store, key, readAtMs);
           return yield* verifyGitPack(packPath, format).pipe(
             Effect.as(null),
             Effect.catchTag("GitError", (error) =>
@@ -3642,8 +3688,11 @@ const storedGitPackProblem = (
  * (`head`), so one that is gone is still found gone. `usedFromMs` is lowered to the earliest such
  * read the answer rests on. A sealing register has just read every pack it lists, and a Stop on a
  * self-hosted bucket read them all a second time here (2026-10-02). The caller decides what
- * `sinceMs` is safe (`sealStandingOf`: nothing could replace the bytes from then on). The
- * manifest, every git pack and every pack index are read each time.
+ * `sinceMs` is safe (`sealStandingOf`: nothing could replace the bytes from then on). A git pack
+ * this process copied down and verified beside its index at or after `sinceMs`
+ * (`rememberGitPackVerified`) is asked for, and its index is read and compared with the one
+ * verified then: the same index means `index-pack --verify` would say what it said. The
+ * manifest, every other git pack and every pack index are read each time.
  */
 export const storedCaptureProblem = (
   manifestKey: string,
@@ -3685,6 +3734,29 @@ export const storedCaptureProblem = (
     const proofs = options?.proofs;
     for (const key of keys) {
       if (key.endsWith(".idx") && gitPacks.has(key.slice(0, -".idx".length))) continue;
+      if (proofs !== undefined && gitPacks.has(key)) {
+        const content = contentVerified.get(proofKey(store, key));
+        const verified = gitPackVerified.get(proofKey(store, key));
+        if (
+          content !== undefined &&
+          content >= proofs.sinceMs &&
+          verified !== undefined &&
+          verified.atMs >= proofs.sinceMs &&
+          verified.format === (format ?? "sha1")
+        ) {
+          if ((yield* store.head(key)) === null) return `${key} is not stored`;
+          const idxKey = packIdxKeyOf(key);
+          const idx = yield* store
+            .get(idxKey)
+            .pipe(Effect.catchTag("BlobNotFoundError", () => Effect.succeed(null)));
+          if (idx === null) return `${idxKey} is not stored`;
+          if (sha256Hex(idx) === verified.idxSha256) {
+            proofs.usedFromMs = Math.min(proofs.usedFromMs, content, verified.atMs);
+            continue;
+          }
+          // Another index is stored now: the pack is checked against it, in full.
+        }
+      }
       if (
         proofs !== undefined &&
         key !== manifestKey &&

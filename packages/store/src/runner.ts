@@ -10,14 +10,17 @@ import * as Context from "effect/Context";
 import { type BlobNotFoundError, BlobStore, type BlobStoreError } from "./blob-store.ts";
 import {
   bytesOfKey,
-  type CaptureManifest,
   digestOfKey,
-  packIdxKeyOf,
-  verifyGitPack,
-  type GitObjectFormat,
+  GIT_OBJECT_ID,
   gitObjectFormatOf,
   gitObjectIdPattern,
-  GIT_OBJECT_ID,
+  packIdxKeyOf,
+  rememberContentVerified,
+  rememberGitPackVerified,
+  sha256Hex,
+  type CaptureManifest,
+  type GitObjectFormat,
+  verifyGitPack,
 } from "./captures.ts";
 import {
   git,
@@ -385,6 +388,8 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
           const stagedIdx = path.join(staging, `pack-${digest}.idx`);
           const attempt = Effect.gen(function* () {
             yield* cacheIo(projectId, () => fs.mkdirSync(staging, { recursive: true }));
+            // When the read began: what a proof about these bytes is dated from.
+            const readAtMs = Date.now();
             const stream = yield* blobs.getStream(key);
             const hash = crypto.createHash("sha256");
             // A download that did not finish — the stream broke, the disk filled — is the
@@ -427,6 +432,10 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
                     }),
               ),
             );
+            // The pack hashed to its key and passed `index-pack --verify` beside this index: a
+            // seal's read-back need not copy it down again (`storedCaptureProblem`).
+            rememberContentVerified(blobs, key, readAtMs);
+            rememberGitPackVerified(blobs, key, sha256Hex(idx), format, readAtMs);
             yield* cacheIo(projectId, () => {
               fs.mkdirSync(packDir, { recursive: true });
               fs.renameSync(stagedIdx, finalIdx);
