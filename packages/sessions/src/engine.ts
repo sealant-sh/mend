@@ -35,6 +35,7 @@ import {
   SessionsRepo,
   AgentMemoryRepo,
   PiProfilesRepo,
+  SecretFilesRepo,
   SettingsRepo,
   SkillsRepo,
   UserDotfilesRepo,
@@ -311,6 +312,12 @@ import {
   INSTALL_SESSION_LABEL,
   mayRunIn,
 } from "./run-eligibility.ts";
+import {
+  parseSecretFileOutcomes,
+  planSecretFiles,
+  secretFilesExecs,
+  type SecretFileOutcome,
+} from "./secret-files.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import { SessionRepository, type SessionRepositoryError } from "./session-repository.ts";
 import {
@@ -686,6 +693,16 @@ const DEPENDENCY_INSTALL_SKIPPED_PREFIX = "dependency install skipped";
 const dependencyInstallSkippedWords = (n: number) =>
   `${DEPENDENCY_INSTALL_SKIPPED_PREFIX} · capture ${n} manifest unavailable`;
 
+/**
+ * Said once, as the launch starts, when a secret file (docs/adr/0010) was not written: the path
+ * and the reason the workspace gave, so a session that then lacks `~/.aws/credentials` says why.
+ */
+const SECRET_FILES_SUMMARY_PREFIX = "secret files";
+const secretFilesRefusedWords = (refused: ReadonlyArray<SecretFileOutcome>) =>
+  `${SECRET_FILES_SUMMARY_PREFIX} · ${refused.length} not written · ${refused
+    .map((outcome) => `~/${outcome.path} · ${outcome.reason ?? "refused"}`)
+    .join(" · ")}`;
+
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
   "stopped outside Mend",
@@ -693,6 +710,7 @@ const STALE_ON_START_PREFIXES = [
   "executor not answering",
   SETUP_SKIPPED_PREFIX,
   DEPENDENCY_INSTALL_SKIPPED_PREFIX,
+  SECRET_FILES_SUMMARY_PREFIX,
 ] as const;
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
@@ -1539,6 +1557,7 @@ type SessionEngineRequirements =
   | SkillsRepo
   | PiProfilesRepo
   | AgentMemoryRepo
+  | SecretFilesRepo
   | SessionRunsRepo
   | SessionProcessesRepo
   | ServicesRepo
@@ -5301,6 +5320,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const skillsRepo = yield* SkillsRepo;
       const piProfiles = yield* PiProfilesRepo;
       const agentMemory = yield* AgentMemoryRepo;
+      const secretFiles = yield* SecretFilesRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const services = yield* ServicesRepo;
@@ -9009,6 +9029,71 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * The owner's secret files (docs/adr/0010-secret-files.md, `secret-files.ts`), into the
+       * workspace's own `$HOME` after the relocation and before the harness starts, in both
+       * stores through exec: the home is the executor's disk, which no capture root covers. The
+       * sealed set is read once per launch and unsealed here, the only place Mend holds the
+       * bytes; the workspace proves each path is still a plain path in the home before writing.
+       * Best-effort like skills: an agent without its files still starts, and the session line
+       * says which were not written and why.
+       */
+      const deliverSecretFiles = Effect.fn("SessionEngine.deliverSecretFiles")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        if (session.ownerUserId === null) return;
+        const sealed = yield* secretFiles.sealedForLaunch(session.ownerUserId);
+        if (sealed.length === 0) return;
+        const unsealed = yield* Effect.forEach(
+          sealed,
+          (file) =>
+            secretCipher.decrypt(file.sealedContents).pipe(
+              Effect.map((base64) => ({
+                path: file.path,
+                bytes: new Uint8Array(Buffer.from(base64, "base64")),
+              })),
+              // Named by PATH only: a broken or rotated machine key must never print a file.
+              Effect.mapError(
+                () =>
+                  new WorkspaceFileError({
+                    path: file.path,
+                    message: `~/${file.path} could not be unsealed with this machine's key`,
+                  }),
+              ),
+            ),
+          { concurrency: 1 },
+        );
+        const plan = planSecretFiles(unsealed);
+        const outcomes: Array<SecretFileOutcome> = [...plan.refused];
+        for (const argv of secretFilesExecs(plan.files)) {
+          const result = yield* sealant.exec(workspace, argv);
+          outcomes.push(...parseSecretFileOutcomes(result.stdout));
+          if (result.exitCode !== 0) {
+            return yield* new WorkspaceFileError({
+              path: "~",
+              message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
+            });
+          }
+        }
+        for (const outcome of outcomes) {
+          yield* (
+            outcome.outcome === "written"
+              ? Effect.logInfo("session engine: secret file · written")
+              : Effect.logWarning("session engine: secret file · not written")
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              path: `~/${outcome.path}`,
+              ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+            }),
+          );
+        }
+        const refused = outcomes.filter((outcome) => outcome.outcome === "refused");
+        if (refused.length > 0)
+          yield* noteLaunchWords(session.id, secretFilesRefusedWords(refused));
+      });
+
+      /**
        * Codex's memory (docs/adr/0009, "Codex"): the person's own Codex conversations on the
        * project, laid into this session's home before Codex starts. In full, the few Codex would
        * summarise and has not; as stubs, the ones it has summarised, so it keeps their summaries.
@@ -10016,6 +10101,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
+        // The owner's secret files (docs/adr/0010): into the executor's own home, which no capture
+        // root covers, before the harness starts.
+        yield* deliverSecretFiles(session, workspace).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: secret files were not written").pipe(
+              Effect.annotateLogs({ sessionId, message: error.message }),
+              Effect.andThen(
+                noteLaunchWords(
+                  sessionId,
+                  `${SECRET_FILES_SUMMARY_PREFIX} · not written · ${error.message}`,
+                ),
+              ),
+            ),
+          ),
+        );
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
         // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
         // is written through exec in either store, so a captured executor's agent reads the same
@@ -10631,6 +10731,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
           }
+          // The owner's secret files again (docs/adr/0010): a retained executor may predate a
+          // file the owner added or replaced since its launch, and this run reads the home as it
+          // is now. A workspace is one session's, so these are always its owner's own.
+          yield* deliverSecretFiles(session, workspace).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: secret files were not written").pipe(
+                Effect.annotateLogs({ sessionId, message: error.message }),
+              ),
+            ),
+          );
           const interactiveShell = argv[0] === "bash";
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))

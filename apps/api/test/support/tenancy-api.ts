@@ -15,6 +15,7 @@ import {
   OrganizationSettingsRepo,
   PiProfilesRepo,
   AgentMemoryRepo,
+  SecretFilesRepo,
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectLinksRepo,
@@ -176,6 +177,8 @@ export const createTenancyApi = async (
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
       readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
       readonly agentMemory?: Layer.PartialEffectful<AgentMemoryRepo["Service"]>;
+      readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
+      readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -295,7 +298,7 @@ export const createTenancyApi = async (
       recording(DotfilesCloner, "dotfilesCloner", options.dotfiles?.cloner ?? {}, calls),
       recording(FolderStore, "folderStore", {}, calls),
       recording(MendKeys, "keys", {}, calls),
-      recording(SecretCipher, "cipher", {}, calls),
+      recording(SecretCipher, "cipher", options.implement?.cipher ?? {}, calls),
     ),
     Layer.mergeAll(
       recording(Store, "store", {}, calls),
@@ -313,6 +316,7 @@ export const createTenancyApi = async (
       recording(HostEnvironment, "hostEnvironment", {}, calls),
       recording(PiProfilesRepo, "piProfiles", options.implement?.piProfiles ?? {}, calls),
       recording(AgentMemoryRepo, "agentMemory", options.implement?.agentMemory ?? {}, calls),
+      recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
       Layer.succeed(NetworkConfig, network),
       Layer.succeed(DeploymentConfig, {
         mode: "local",

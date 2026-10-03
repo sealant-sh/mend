@@ -1075,6 +1075,118 @@ const decoded = (body: SyncBody | undefined) =>
     mode: entry.mode,
   }));
 
+describe("mend secrets", () => {
+  /** A fake that records every secret-file request and never answers with a file's content. */
+  const startSecretsFake = async () => {
+    const requests: Array<{
+      readonly method: string;
+      readonly url: string;
+      readonly body: unknown;
+    }> = [];
+    const fake = await startFakeMend((request, response) => {
+      let body = "";
+      request.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on("end", () => {
+        const method = request.method ?? "";
+        const url = request.url ?? "";
+        requests.push({ method, url, body: body === "" ? null : JSON.parse(body) });
+        if (url === "/api/me/secret-files" && method === "GET") {
+          json(response, {
+            files: [
+              {
+                id: "a",
+                path: ".aws/credentials",
+                name: "credentials",
+                bytes: 116,
+                revision: 1,
+                createdAt: "2026-10-01T09:00:00.000Z",
+                updatedAt: "2026-10-01T09:00:00.000Z",
+              },
+            ],
+          });
+          return;
+        }
+        if (url === "/api/me/secret-files" && method === "PUT") {
+          const parsed = JSON.parse(body) as { readonly path: string; readonly contents: string };
+          json(response, {
+            action: "created",
+            file: {
+              id: "b",
+              path: parsed.path,
+              name: parsed.path,
+              bytes: Buffer.byteLength(parsed.contents),
+              revision: 1,
+              createdAt: "2026-10-03T12:00:00.000Z",
+              updatedAt: "2026-10-03T12:00:00.000Z",
+            },
+          });
+          return;
+        }
+        if (url.startsWith("/api/me/secret-files?path=") && method === "DELETE") {
+          json(response, { removed: true });
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      });
+    });
+    return { fake, requests };
+  };
+
+  it("adds a file from --from, lists by path and size, and removes by path", async () => {
+    const { fake, requests } = await startSecretsFake();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-secrets-"));
+    const source = path.join(dir, "npmrc");
+    fs.writeFileSync(source, "//registry.npmjs.org/:_authToken=t\n");
+    try {
+      const added = startCli(fake.url, ["secrets", "add", "~/.npmrc", "--from", source]);
+      expect((await added.exited).code, added.stderr()).toBe(0);
+      expect(added.stdout()).toContain("created ~/.npmrc · 35 B");
+      expect(added.stdout()).not.toContain("_authToken");
+      const listed = startCli(fake.url, ["secrets"]);
+      expect((await listed.exited).code, listed.stderr()).toBe(0);
+      expect(listed.stdout()).toContain("~/.aws/credentials");
+      expect(listed.stdout()).toContain("116 B");
+      const removed = startCli(fake.url, ["secrets", "rm", ".aws/credentials"]);
+      expect((await removed.exited).code, removed.stderr()).toBe(0);
+      expect(removed.stdout()).toContain("removed ~/.aws/credentials");
+      expect(requests.map((r) => `${r.method} ${r.url}`)).toEqual([
+        "PUT /api/me/secret-files",
+        "GET /api/me/secret-files",
+        "DELETE /api/me/secret-files?path=.aws%2Fcredentials",
+      ]);
+      expect(requests[0]?.body).toEqual({
+        path: ".npmrc",
+        encoding: "utf8",
+        contents: "//registry.npmjs.org/:_authToken=t\n",
+      });
+    } finally {
+      await fake.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a path sessions capture before any request", async () => {
+    const { fake, requests } = await startSecretsFake();
+    try {
+      const cli = startCli(fake.url, [
+        "secrets",
+        "add",
+        ".claude/settings.json",
+        "--from",
+        "/dev/null",
+      ]);
+      expect((await cli.exited).code).toBe(1);
+      expect(cli.stderr()).toContain("which sessions capture");
+      expect(requests).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
 describe("mend dotfiles sync", () => {
   /** A server that keeps every snapshot POST, and answers with the snapshot it would store. */
   const startSyncFake = async (refuse?: string) => {

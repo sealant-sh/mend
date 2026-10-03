@@ -7,6 +7,24 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-03 · 0.38.1 · A caller cannot carry a file into the workspace at launch
+
+- **Needed:** secret files (docs/adr/0010-secret-files.md): a person's `~/.aws/credentials`, a
+  kubeconfig, an `.npmrc` token file, written into the workspace's `$HOME` 0600 before the harness
+  starts, never persisted by the platform.
+- **Today:** Core writes exactly such files for connected accounts (`credentialFiles` on the runtime
+  adapter's launch input: `docker exec -i … sh -c` with the base64 content on stdin, `umask 077`,
+  `chmod`, before readiness), but the worker resolves them from the account store; no
+  `CreateOptions` field carries a caller's file. `dotfiles.archives` carries a tree, applied as
+  plain files by the dotfiles manager. `exec` takes argv only. Mend writes the files after boot over
+  `exec`, the bytes as base64 on argv as skills, the pi profile and memory already ride
+  (`packages/sessions/src/secret-files.ts`), with the symlink and physical-path checks the write
+  needs done inside the script.
+- **Suggested:** `CreateOptions.files: [{ path, contentBase64, mode }]`, written on the connected
+  accounts' channel (stdin, before readiness, never in the blueprint or the job payload), with the
+  same `credential-file-injection-failed` refusal. Mend would then send the set with the create and
+  drop its exec writer.
+
 ## 2026-09-30 · 0.38.0 · A launch cannot say whether the platform is building its image
 
 - **Needed:** after a workspace image recipe changes, the first launch per project and harness waits

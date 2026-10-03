@@ -21,6 +21,7 @@ import {
 import { enablePushNotifications } from "@/data/notifications";
 import type { ThemePreference } from "@/data/preferences";
 import { setDisplayPreferences, TEXT_SCALES, useDisplayPreferences } from "@/data/preferences";
+import { useSecretFiles } from "@/data/secret-files";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
 
 function Segmented<T extends string | number>({
@@ -145,6 +146,47 @@ function NotificationSwitches() {
       <MonoText size={11} tone="faint">
         A push about the session on screen stays silent.
       </MonoText>
+    </View>
+  );
+}
+
+const sizeOf = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`);
+
+/**
+ * The account's secret files (docs/adr/0010), by path and size. A list only: the content never
+ * comes back from the server, and adding one takes a file, which the CLI or the web app reads.
+ */
+function SecretFilesList() {
+  const { colors } = useEvidenceTheme();
+  const files = useSecretFiles(true);
+  if (files.data === undefined) {
+    return files.isError ? (
+      <MonoText tone="danger">secret files · could not be read</MonoText>
+    ) : (
+      <MonoText tone="faint">reading secret files</MonoText>
+    );
+  }
+  if (files.data.files.length === 0) {
+    return <MonoText tone="faint">none kept · mend secrets add {"<path>"} keeps one</MonoText>;
+  }
+  return (
+    <View>
+      {files.data.files.map((file, index) => (
+        <View
+          key={file.id}
+          style={{
+            paddingVertical: 8,
+            gap: 2,
+            borderTopWidth: index === 0 ? 0 : StyleSheet.hairlineWidth,
+            borderTopColor: colors.faintRule,
+          }}
+        >
+          <MonoText>~/{file.path}</MonoText>
+          <MonoText size={11} tone="faint">
+            {sizeOf(file.bytes)} · {file.updatedAt.slice(0, 10)}
+          </MonoText>
+        </View>
+      ))}
     </View>
   );
 }
@@ -428,6 +470,14 @@ export default function SettingsScreen() {
           {paired && <NotificationSwitches />}
         </View>
       </Panel>
+      {paired && (
+        <Panel>
+          <View style={{ padding: 16, gap: 12 }}>
+            <UiText>Secret files · written into every session you launch, never captured</UiText>
+            <SecretFilesList />
+          </View>
+        </Panel>
+      )}
     </Screen>
   );
 }

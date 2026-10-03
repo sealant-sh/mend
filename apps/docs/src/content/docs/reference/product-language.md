@@ -9,23 +9,24 @@ Use these terms in the interface, documentation, and support material.
 
 ## Work
 
-| Term                 | Availability | Meaning                                                                   |
-| -------------------- | ------------ | ------------------------------------------------------------------------- |
-| **Machine**          | Current      | A developer-controlled computer or devbox running Mend and Sealant        |
-| **Project**          | Current      | A repository adopted into Mend's central store                            |
-| **Worktree**         | Current      | A durable named checkout in the store; owns its change, chain, and review |
-| **Session**          | Current      | One supervised coding-agent conversation inside a worktree                |
-| **Process**          | Current      | One agent, shell, or Service execution that belongs to a session          |
-| **Change**           | Current      | A repository comparison, one per worktree, against its base               |
-| **Checkpoint**       | Current      | A hidden Git snapshot in the worktree's chain, with record positions      |
-| **Service**          | Current      | An explicitly declared development process or forwarded port in a session |
-| **Context item**     | Planned      | A file, document, note, URL, or previous handoff                          |
-| **Context pack**     | Planned      | An editable selection of context items for recurring work                 |
-| **Context snapshot** | Planned      | The immutable context supplied to one session                             |
-| **Handoff**          | Planned      | An editable session summary promoted into durable context                 |
-| **Workspace**        | Sealant      | The environment where session processes run                               |
-| **Run**              | Sealant      | A process execution with a durable platform record                        |
-| **Harness**          | Sealant      | Codex, Claude Code, or another agent command that Mend supervises         |
+| Term                 | Availability | Meaning                                                                                       |
+| -------------------- | ------------ | --------------------------------------------------------------------------------------------- |
+| **Machine**          | Current      | A developer-controlled computer or devbox running Mend and Sealant                            |
+| **Project**          | Current      | A repository adopted into Mend's central store                                                |
+| **Worktree**         | Current      | A durable named checkout in the store; owns its change, chain, and review                     |
+| **Session**          | Current      | One supervised coding-agent conversation inside a worktree                                    |
+| **Process**          | Current      | One agent, shell, or Service execution that belongs to a session                              |
+| **Change**           | Current      | A repository comparison, one per worktree, against its base                                   |
+| **Checkpoint**       | Current      | A hidden Git snapshot in the worktree's chain, with record positions                          |
+| **Service**          | Current      | An explicitly declared development process or forwarded port in a session                     |
+| **Secret file**      | Current      | A file a person keeps in Mend, encrypted, written into every session they own, never captured |
+| **Context item**     | Planned      | A file, document, note, URL, or previous handoff                                              |
+| **Context pack**     | Planned      | An editable selection of context items for recurring work                                     |
+| **Context snapshot** | Planned      | The immutable context supplied to one session                                                 |
+| **Handoff**          | Planned      | An editable session summary promoted into durable context                                     |
+| **Workspace**        | Sealant      | The environment where session processes run                                                   |
+| **Run**              | Sealant      | A process execution with a durable platform record                                            |
+| **Harness**          | Sealant      | Codex, Claude Code, or another agent command that Mend supervises                             |
 
 Do not call a process a session. A session can contain several agent processes over time plus
 supporting shells and Services.
