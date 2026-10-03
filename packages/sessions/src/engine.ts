@@ -755,6 +755,13 @@ const harvestReadyOf = (reading: DrainWord): boolean | null =>
     ? null
     : reading === "sealed" || (reading !== "refused" && captureHarvestReady(reading));
 
+/**
+ * How long one piece of work a Stop put off may run (a checkpoint's writer lock, a harvest's
+ * store reads, which have no deadline of their own): past it the work is dropped and said, so a
+ * stalled store never keeps a saved executor from being terminated (Astra review, 2026-10-03).
+ */
+const DEFERRED_WORK_LIMIT = Duration.minutes(2);
+
 /** Run what a Stop put off (`takeDeferred`) on the drain's word, each failure said, none fatal. */
 const runTaken = (
   workspaceId: SealantWorkspaceId,
@@ -765,6 +772,15 @@ const runTaken = (
     list,
     (work) =>
       work(reading).pipe(
+        Effect.timeoutOrElse({
+          duration: DEFERRED_WORK_LIMIT,
+          orElse: () =>
+            Effect.logWarning(
+              "session engine: work deferred to the final flush did not finish in time · dropped",
+            ).pipe(
+              Effect.annotateLogs({ workspaceId, limit: Duration.format(DEFERRED_WORK_LIMIT) }),
+            ),
+        }),
         Effect.catchCause((cause) =>
           Effect.logWarning("session engine: work deferred to the final flush failed").pipe(
             Effect.annotateLogs({
@@ -3190,6 +3206,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const drains = new Map<SealantWorkspaceId, Deferred.Deferred<DrainOutcome>>();
       /** The last reading each running drain took of its executor (`runDeferred`). */
       const lastReadings = new Map<SealantWorkspaceId, CaptureReading>();
+      /**
+       * Deferred work a kept round left running beside the tail: a later round that saves waits
+       * for it before the executor goes and its lease with it, and before the row is removed, so
+       * nothing reads a successor's head or an absent row (Astra review, 2026-10-03).
+       */
+      const deferredRunning = new Map<SealantWorkspaceId, Set<Fiber.Fiber<void>>>();
+      const awaitDeferredRunning = (workspaceId: SealantWorkspaceId) =>
+        Effect.suspend(() => {
+          const running = [...(deferredRunning.get(workspaceId) ?? [])];
+          return running.length === 0
+            ? Effect.void
+            : Effect.forEach(running, (fiber) => Fiber.join(fiber).pipe(Effect.ignore), {
+                discard: true,
+              }).pipe(Effect.timeoutOption(DEFERRED_WORK_LIMIT), Effect.asVoid);
+        });
       /** Workspaces whose owner asked to discard what is unsaved: a running drain yields. */
       const discards = new Set<SealantWorkspaceId>();
       /** Sessions whose forked stop tail (harvest, then the sweep) is still running here. */
@@ -3792,6 +3823,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* sayEndedOutsideMend(sessionId, confirmed.summary);
               }
             }
+            yield* awaitDeferredRunning(workspaceId);
             yield* removeIfRequested(sessionId);
             return "gone" as const;
           }
@@ -3835,6 +3867,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   );
                 }
               }
+              yield* awaitDeferredRunning(workspaceId);
               yield* removeIfRequested(sessionId);
               return "gone" as const;
             }
@@ -3969,6 +4002,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // a successor launched after the release could register a newer head under them
             // (Astra review, 2026-10-03). Saved on the store's seal with no answer from the
             // executor: the head is sealed.
+            yield* awaitDeferredRunning(workspaceId);
             yield* runDeferred(workspaceId, reading ?? "sealed");
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.retained !== null) {
@@ -3995,6 +4029,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   );
                 }
               }
+              yield* awaitDeferredRunning(workspaceId);
               yield* removeIfRequested(sessionId);
             } else {
               yield* sessions.endCaptureDrain(sessionId);
@@ -4080,9 +4115,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 const taken = takeDeferred(workspaceId);
                 const word: DrainWord =
                   outcome === "in-use" ? "none" : (lastReadings.get(workspaceId) ?? "refused");
-                return taken.length === 0
-                  ? Effect.void
-                  : Effect.forkIn(runTaken(workspaceId, taken, word), scope);
+                if (taken.length === 0) return Effect.void;
+                return Effect.gen(function* () {
+                  const fibers = deferredRunning.get(workspaceId) ?? new Set();
+                  deferredRunning.set(workspaceId, fibers);
+                  const fiber = yield* Effect.forkIn(
+                    runTaken(workspaceId, taken, word).pipe(
+                      Effect.ensuring(
+                        Effect.sync(() => {
+                          fibers.delete(fiber);
+                          if (fibers.size === 0) deferredRunning.delete(workspaceId);
+                        }),
+                      ),
+                    ),
+                    scope,
+                  );
+                  fibers.add(fiber);
+                });
               }),
             ),
             Effect.ensuring(Effect.sync(() => lastReadings.delete(workspaceId))),
