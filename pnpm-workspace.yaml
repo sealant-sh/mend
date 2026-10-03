@@ -67,6 +67,17 @@ catalog:
   wrangler: ^4.78.0
   zod: ^4.1.12
 
+# t3code's Effect, for the t3code gateway and its vendored contracts only (ADR 0012). The rest of
+# the monorepo stays on the default catalog. Versions are t3code's pins at the tag in
+# packages/t3-contracts/t3code.pin.json; vitest is the one vite-plus 1.0.0 pins. A package that
+# takes @effect/vitest from the default catalog must also declare effect, or pnpm satisfies the peer
+# with rc.115 (beta.93 is below @effect/vitest's ^4.0.0-beta.98); hence effect in apps/cli.
+catalogs:
+  t3:
+    "@effect/vitest": 4.0.0-rc.115
+    effect: 4.0.0-rc.115
+    vitest: 5.0.1
+
 onlyBuiltDependencies:
   - electron
   - esbuild
