@@ -1598,7 +1598,11 @@ Mend-side details the decision record left open, decided in this ADR:
       read dead at a launch or by the reaper, a create cut short) first runs what was put off to
       empty, every piece waited for (`owedBeforeRelease`): one choke point, so no successor
       registers a head under a harvest still owed whatever the path; and a discard waits for every
-      stop tail of the session, those started meanwhile included.
+      stop tail of the session, those started meanwhile included. A Stop is in flight from its
+      entry, not from its tail's fork, and under a discard that has stopped the session itself a
+      Stop is answered and starts nothing. A launch that finds a lapsed holder dead with work still
+      owed reads it as ending rather than waiting in place, so its own cancellation and deadline
+      stand; the drain that ends the holder runs the work and releases the lease.
     - **Known gap.** A Mend restart in the seconds between a Stop's answer and its checkpoint's
       write loses that user mark and the change head refresh with it: the restart interrupts the
       piece, and the drain intent that survives carries no record of it. The change is saved and the

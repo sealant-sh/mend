@@ -2944,7 +2944,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ? ("unknown" as const)
                 : yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId));
           if (state === "dead") {
-            if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
+            // Work its Stop put off is still owed: the holder is ending, not free. The drain that
+            // ends it runs that work and releases the lease; this launch's own wait keeps its
+            // cancellation and deadline instead of waiting here (Astra review, 2026-10-03).
+            if (workspaceId !== null && workOwed(workspaceId)) {
+              return { kind: "ending" as const, sessionId: lease.executorId, epoch: lease.epoch };
+            }
             yield* capture.repo.release(session.worktreeId, lease.epoch);
             yield* Effect.logInfo(
               "session engine: capture mode · the previous holder ended · lease released",
@@ -3204,8 +3209,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const discards = new Set<SealantWorkspaceId>();
       /** Sessions whose forked stop tail (harvest, then the sweep) is still running here. */
       const stopTails = new Set<SessionId>();
-      /** Each session's running stop tails' ends, for the discard that must wait for all of them. */
+      /**
+       * Each session's Stops in flight, from the Stop's entry to its tail's end, for the discard
+       * that must wait for all of them before it releases the lease.
+       */
       const stopTailsDone = new Map<SessionId, Set<Deferred.Deferred<void>>>();
+      /** Sessions a discard has stopped itself: a Stop arriving now is answered, and starts nothing. */
+      const discardSealed = new Set<SessionId>();
       /**
        * Work an end puts off until its drain's final flush, by workspace (ADR 0002 decision 50):
        * the stop's checkpoint and the harvest of each agent that ended. Before 2026-10-03 each
@@ -3326,11 +3336,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * registers a head under a harvest still owed (Astra reviews, 2026-10-03). Nothing owed,
        * nothing running: at once.
        */
+      const workOwed = (workspaceId: SealantWorkspaceId) =>
+        deferredToFinal.has(workspaceId) ||
+        deferredRunning.has(workspaceId) ||
+        deferredConsumers.has(workspaceId);
       const owedBeforeRelease = (workspaceId: SealantWorkspaceId) =>
         Effect.suspend(() =>
-          deferredToFinal.has(workspaceId) ||
-          deferredRunning.has(workspaceId) ||
-          deferredConsumers.has(workspaceId)
+          workOwed(workspaceId)
             ? runDeferred(
                 workspaceId,
                 deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
@@ -4387,6 +4399,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "session engine: discard of unsaved captures requested by the owner · stopping",
           ).pipe(Effect.annotateLogs(annotations));
           yield* stop(sessionId, null);
+          // From here a Stop is answered and starts nothing: the Stops in flight are waited for
+          // below, and none may join them.
+          discardSealed.add(sessionId);
           // The tail that stop forked harvests inline under a discard: waited for, so it never
           // reads under a successor once the lease below goes (Astra review, 2026-10-03).
           // Every tail, those a Stop meanwhile started included, until none is left.
@@ -4453,7 +4468,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : discardedBy.trim(),
           });
           yield* removeIfRequested(sessionId);
-        }).pipe(Effect.ensuring(Effect.sync(() => discards.delete(workspaceId))));
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              discards.delete(workspaceId);
+              discardSealed.delete(sessionId);
+            }),
+          ),
+        );
         const after = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
@@ -11064,9 +11086,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           : launchInternal(sessionId, argv, nativeImport, located);
       });
 
-      const stop = Effect.fn("SessionEngine.stop")(function* (
+      /**
+       * A Stop is in flight from its entry to its tail's end (`stopTailsDone`), so a discard can
+       * wait for every one of them; under a discard that has stopped the session itself
+       * (`discardSealed`) a Stop is already answered and starts nothing that could read under the
+       * lease the discard is about to release (Astra review, 2026-10-03). Entry and release are
+       * one uninterruptible step; the Stop itself runs interruptible.
+       */
+      const stop = (
         sessionId: SessionId,
         summary: string | null = null,
+      ): Effect.Effect<void, SessionNotFoundError> =>
+        Effect.uninterruptibleMask((restore) =>
+          Effect.suspend(() => {
+            if (discardSealed.has(sessionId)) return Effect.void;
+            const inFlight = { done: Deferred.makeUnsafe<void>(), tail: false };
+            const set = stopTailsDone.get(sessionId) ?? new Set<Deferred.Deferred<void>>();
+            set.add(inFlight.done);
+            stopTailsDone.set(sessionId, set);
+            return restore(stopUnguarded(sessionId, summary, inFlight)).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (inFlight.tail) return;
+                  set.delete(inFlight.done);
+                  if (set.size === 0) stopTailsDone.delete(sessionId);
+                  Deferred.doneUnsafe(inFlight.done, Exit.succeed(undefined));
+                }),
+              ),
+            );
+          }),
+        );
+      const stopUnguarded = Effect.fn("SessionEngine.stop")(function* (
+        sessionId: SessionId,
+        summary: string | null,
+        inFlight: { readonly done: Deferred.Deferred<void>; tail: boolean },
       ) {
         const session = yield* sessions.byId(sessionId);
         // A launch still waiting for the worktree's previous executor launches nothing now.
@@ -11205,10 +11258,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
               );
             stopTails.add(sessionId);
-            const tailDone = Deferred.makeUnsafe<void>();
+            inFlight.tail = true;
+            const tailDone = inFlight.done;
             const tailsDone = stopTailsDone.get(sessionId) ?? new Set<Deferred.Deferred<void>>();
-            tailsDone.add(tailDone);
-            stopTailsDone.set(sessionId, tailsDone);
             const tail = (
               ended.length > 0
                 ? Effect.forEach(ended, (agent) => finishAgentProcess(agent, null, true, true), {
