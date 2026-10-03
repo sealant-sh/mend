@@ -3180,6 +3180,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * running with the executor kept, and waited for by the next round before anything else.
        */
       const deferredRunning = new Map<SealantWorkspaceId, Fiber.Fiber<void>>();
+      /**
+       * The last reading of each held executor that left a readable head (a FINAL that registered
+       * it), kept across kept rounds for the harvest still owed: a later round that cannot read
+       * the executor (gone, platform-kept) still knows the head is there to read.
+       */
+      const deferredEvidence = new Map<SealantWorkspaceId, CaptureReading>();
+      /**
+       * Workspaces whose drain ran the queue to empty and is terminating the executor: an end
+       * that arrives now puts nothing off (`endsAtFinal`) and flushes for itself, as before, so
+       * nothing is admitted after the drain declared the queue finished. Cleared when the round
+       * keeps the executor after all.
+       */
+      const queueClosed = new Set<SealantWorkspaceId>();
       /** Workspaces whose owner asked to discard what is unsaved: a running drain yields. */
       const discards = new Set<SealantWorkspaceId>();
       /** Sessions whose forked stop tail (harvest, then the sweep) is still running here. */
@@ -3264,6 +3277,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const taken = takeDeferred(workspaceId);
             if (taken.length === 0) {
               queueHeld.delete(workspaceId);
+              deferredEvidence.delete(workspaceId);
               return true;
             }
             for (const [index, work] of taken.entries()) {
@@ -3300,6 +3314,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         if (capture === null || workspaceId === null) return false;
         if (discards.has(workspaceId)) return false;
+        if (queueClosed.has(workspaceId)) return false;
         const processLeases = yield* processes.listLiveForWorkspace(workspaceId);
         const forwardLeases = (yield* serviceForwards.listOpen()).filter(
           (forward) => forward.sealantWorkspaceId === workspaceId,
@@ -3847,7 +3862,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // leaves a readable head (`flushed`, the harvest reads it); none leaves an unflushed
             // checkpoint and no harvest (`refused`). There is no later round: every piece is
             // waited for.
-            yield* runDeferred(workspaceId, lastReadings.get(workspaceId) ?? "refused", null);
+            yield* runDeferred(
+              workspaceId,
+              deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
+              null,
+            );
             yield* tidyAfterGone(sessionId, workspaceId);
             if (end !== null && current !== null) {
               const confirmed = yield* confirmedExecutorEnd(current, end);
@@ -3869,7 +3888,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             begun = true;
             // Durable first, then the in-use look: a join reads the intent and stays out
             // (`leaseHolderWorkspace`), and whatever started before it is seen here.
-            yield* sessions.beginCaptureDrain(sessionId, reason, new Date(progressAtMs));
+            yield* sessions.beginCaptureDrain(sessionId, reason, new Date(progressAtMs)).pipe(
+              // Failed before the durable intent: nothing retries this drain, so the hold goes
+              // and the end that put the work off runs it itself.
+              Effect.onError(() => Effect.sync(() => queueHeld.delete(workspaceId))),
+            );
             // An executor already sent a final flush ended whatever ran in it and admits nothing
             // new: whatever reads live there is stale, and the drain goes on.
             const ending = yield* workspaceFinalFlushed(session.worktreeId, workspaceId);
@@ -3891,7 +3914,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (lookup.kind === "kept") {
             // Core's stop below may confirm an end and release the lease: what the Stop put off
             // runs first, on whatever the drain last read of the executor.
-            if (!(yield* runDeferred(workspaceId, lastReadings.get(workspaceId) ?? "refused"))) {
+            if (
+              !(yield* runDeferred(
+                workspaceId,
+                deferredEvidence.get(workspaceId) ?? lastReadings.get(workspaceId) ?? "refused",
+              ))
+            ) {
               yield* recordKept(
                 sessionId,
                 workspaceId,
@@ -3900,6 +3928,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
               return "kept" as const;
             }
+            // The queue is finished: an end that arrives from here flushes for itself.
+            queueClosed.add(workspaceId);
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.ended) {
               yield* endDrain(sessionId);
@@ -4040,6 +4070,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (reading !== null) {
             previous = reading;
             lastReadings.set(workspaceId, reading);
+            if (harvestReadyOf(reading) === true) deferredEvidence.set(workspaceId, reading);
           }
           if (step.kind === "saved" && lookup.kind === "found") {
             yield* Effect.logInfo("session engine: capture drain · saved · terminating").pipe(
@@ -4063,6 +4094,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
               return "kept" as const;
             }
+            // The queue is finished: an end that arrives from here flushes for itself.
+            queueClosed.add(workspaceId);
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.retained !== null) {
               // Mend read it saved; the platform does not confirm it and keeps the executor for
@@ -4154,7 +4187,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
             Effect.tap((outcome) =>
               outcome === "kept"
-                ? noteKeptDrain(sessionId)
+                ? Effect.andThen(
+                    Effect.sync(() => queueClosed.delete(workspaceId)),
+                    noteKeptDrain(sessionId),
+                  )
                 : Effect.sync(() => keptDrains.delete(sessionId)),
             ),
             // A workspace found in use was not flushed at all: what the Stop put off flushes for
@@ -4163,7 +4199,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // the round that saves runs it, before the executor goes (Astra reviews, 2026-10-03).
             Effect.tap((outcome) =>
               outcome === "in-use"
-                ? runDeferred(workspaceId, "none").pipe(Effect.asVoid)
+                ? runDeferred(workspaceId, "none").pipe(
+                    Effect.flatMap((finished) =>
+                      finished
+                        ? Effect.void
+                        : // A piece past its limit, and no drain owed here to wait for it: a
+                          // continuation does, runs the rest and releases the hold.
+                          Effect.forkIn(runDeferred(workspaceId, "none", null), scope).pipe(
+                            Effect.asVoid,
+                          ),
+                    ),
+                  )
                 : Effect.void,
             ),
             Effect.onExit((exit) =>
@@ -5955,7 +6001,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ? self
           : withCaptureReadPass(self).pipe(Effect.provideService(BlobStore, capture.blobs));
 
-      const harvestFromCapture = Effect.fn("SessionEngine.harvestFromCapture")(function* (
+      /**
+       * One harvest of an agent at a time: a deferred harvest left running past its limit and a
+       * recovery sweep's harvest of the same agent would each clear and rewrite the other's
+       * manifest (Astra review, 2026-10-03).
+       */
+      const harvestLocks = new Map<string, Semaphore.Semaphore>();
+      const harvestFromCapture = (session: Session, agent: SessionProcess) => {
+        const existing = harvestLocks.get(agent.id);
+        const lock = existing ?? Semaphore.makeUnsafe(1);
+        if (existing === undefined) harvestLocks.set(agent.id, lock);
+        return lock.withPermit(harvestFromCaptureAlone(session, agent));
+      };
+      const harvestFromCaptureAlone = Effect.fn("SessionEngine.harvestFromCapture")(function* (
         session: Session,
         agent: SessionProcess,
       ) {

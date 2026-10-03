@@ -1572,7 +1572,12 @@ Mend-side details the decision record left open, decided in this ADR:
       and a retry beside them could lose what it wrote. The rest is put back, the round reads `kept`
       with the executor saved, and the next round waits for that piece before anything else, then
       runs the rest after its FINAL (which snaps nothing). Nothing a Stop asked for is dropped, no
-      piece runs twice, and no lease goes under work still owed.
+      piece runs twice, and no lease goes under work still owed. The reading that left a readable
+      head is kept for the harvest still owed across those rounds (`deferredEvidence`); one harvest
+      of an agent runs at a time, so a piece left running and a recovery sweep's harvest never
+      rewrite each other's manifest; and once a round has run the queue to empty and is terminating
+      the executor, an end that arrives puts nothing off (`queueClosed`) and flushes for itself, as
+      before.
     - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
       judged (`executor not answering`, `completed`) and its executor looked at before the drain
       begins, and the tests of those judgements say so. Making every end read the drain's final is a
