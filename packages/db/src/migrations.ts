@@ -2947,5 +2947,6 @@ export const migrations = {
   "0098_agent_memory": agentMemoryMigration,
   "0099_capture_bound_indexes": captureBoundIndexesMigration,
   "0100_capture_launch_answers": captureLaunchAnswersMigration,
-  "0101_session_repositories": sessionRepositoriesMigration,
+  // 0101 and 0102 are taken by branches in flight today (secret files, harness models).
+  "0103_session_repositories": sessionRepositoriesMigration,
 };

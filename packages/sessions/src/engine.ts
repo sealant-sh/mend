@@ -322,6 +322,7 @@ import {
   failureReason,
   parseRelinkReport,
   REPOSITORY_EXISTS_EXIT,
+  REPOSITORY_OUTSIDE_EXIT,
   REPOSITORY_PATH_OCCUPIED_EXIT,
   repositoryCloneScript,
   repositoryRelinkScript,
@@ -5857,6 +5858,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return existing;
           }
         }
+        return yield* createWorktreeIn(project, input, ownerUserId);
+      });
+
+      /**
+       * The create half of `ensureWorktreeIn`, never a join: a name already taken fails at the
+       * worktrees table's unique name (or at the branch ref before it), so a caller that must not
+       * join an existing worktree (a repository in a session, docs/adr/0010) cannot be handed one
+       * made between its check and its create.
+       */
+      const createWorktreeIn = Effect.fn("SessionEngine.createWorktreeIn")(function* (
+        project: Project,
+        input: { readonly name: string | null; readonly base: string | null },
+        ownerUserId: string | null,
+      ) {
         const remoteEnv = yield* provisionRemoteEnv(project, ownerUserId);
         const worktreeId = WorktreeId.make(crypto.randomUUID());
         const identity = worktreeIdentityFor(worktreeId, input.name);
@@ -9420,10 +9435,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? `${nestedRepositoryPath(row.name)} already holds files that are not this repository`
             : result.exitCode === REPOSITORY_PATH_OCCUPIED_EXIT
               ? `${row.path} is a directory that is not Mend's link · nothing was cloned`
-              : failureReason(
-                  result.stderr,
-                  `the clone of ${originUrl} ended with exit ${String(result.exitCode)}`,
-                );
+              : result.exitCode === REPOSITORY_OUTSIDE_EXIT
+                ? `/workspace/repo/.mend is a link, not a directory inside the worktree · nothing was cloned`
+                : failureReason(
+                    result.stderr,
+                    `the clone of ${originUrl} ended with exit ${String(result.exitCode)}`,
+                  );
         yield* sessionRepositories.setState(row.id, "failed", reason);
         yield* Effect.logWarning("session engine: repository not added").pipe(
           Effect.annotateLogs({ sessionId: session.id, repository: row.name, reason }),
@@ -9511,7 +9528,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `project ${target.name} already has a worktree named ${worktreeName} · pick another with --worktree`,
           );
         }
-        const worktree = yield* ensureWorktreeIn(
+        // Create only, never join: a worktree made by another add in the same instant fails this
+        // create at the table's unique name rather than being handed over.
+        yield* refuseUnsupportedProject(target);
+        const worktree = yield* createWorktreeIn(
           target,
           { name: worktreeName, base: null },
           session.ownerUserId,
@@ -9563,11 +9583,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         workspace: Workspace,
       ) {
-        // `adding` rows too: an add the server did not see end (a restart between the clone and
-        // the row's `ready`) is settled by what the workspace holds, never left `adding` for good.
-        const rows = (yield* sessionRepositories.listForSession(session.id)).filter(
-          (row) => row.state !== "failed",
-        );
+        // Every row: an add the server did not see end (a restart between the clone and the
+        // row's `ready`) is settled by what the workspace holds, never left `adding` for good, and
+        // a `failed` row whose files and ready mark are there after all (the clone's answer was
+        // lost, not the clone) comes back as `ready`.
+        const rows = yield* sessionRepositories.listForSession(session.id);
         if (rows.length === 0) return rows;
         const result = yield* sealant.exec(workspace, [
           "sh",
@@ -9586,12 +9606,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
           );
         }
-        // Only an explicit observation moves a row; an unreported row keeps what it said.
+        // Only an explicit observation moves a row; an unreported row keeps what it said, and a
+        // `failed` row moves only to `ready` (its reason stands otherwise).
         for (const row of rows) {
           const nested = nestedRepositoryPath(row.name);
-          switch (report.get(row.name)) {
+          const observed = report.get(row.name);
+          if (row.state === "failed" && observed !== "ready") continue;
+          switch (observed) {
             case "ready":
               if (row.state !== "ready") yield* sessionRepositories.setState(row.id, "ready", null);
+              break;
+            case "outside":
+              yield* sessionRepositories.setState(
+                row.id,
+                row.state === "adding" ? "failed" : "missing",
+                `/workspace/repo/.mend is a link, so ${nested} is not inside the captured worktree · kept, not linked`,
+              );
               break;
             case "missing":
               yield* sessionRepositories.setState(
@@ -11050,6 +11080,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
           }
+          // A retained workspace may hold a repository whose add this server did not see end
+          // (docs/adr/0010): settle it from what the workspace holds, as a fresh launch would.
+          // Never the launch's to fail on.
+          yield* relinkRepositories(session, workspace).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("session engine: repositories were not relinked").pipe(
+                    Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                  ),
+            ),
+          );
           const interactiveShell = argv[0] === "bash";
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))

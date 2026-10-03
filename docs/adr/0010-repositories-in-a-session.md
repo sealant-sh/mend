@@ -221,7 +221,7 @@ co-located store keeps its bind for one release, as it keeps everything else.
 
 1. The in-workspace verbs live in the staged helper (`mend repo add|list|projects`), because that is
    the `mend` the workspace has; the `@sealant/mend` CLI is untouched.
-2. Table `session_repositories`, migration `0101_session_repositories`; domain `SessionRepository`
+2. Table `session_repositories`, migration `0103_session_repositories`; domain `SessionRepository`
    in `packages/domain/src/workbench/repository.ts`; repository `SessionRepositoriesRepo` in
    `packages/db/src/repos/session-repositories.ts`.
 3. Paths: `/workspace/repos/<name>` is the repository's path; `/workspace/repo/.mend/repos/<name>`
@@ -235,18 +235,24 @@ co-located store keeps its bind for one release, as it keeps everything else.
    creation behind the answer too would need that column nullable and is left for the daemon path,
    where capture 0 is the only remote work.
 6. States: `adding`, `ready`, `failed` (with the reason), `missing` (ready once, not found after a
-   restore). The clone leaves a ready mark (`/workspace/repo/.mend/repos/<name>.ready`) as its last
-   step; a relink trusts only a directory with the mark, so an add the server did not see end (a
-   restart between the checkout and the row's `ready`) is settled at the next launch from what the
-   workspace holds: `ready` with the mark, `failed` without it, with the directory kept.
+   restore). The clone leaves a ready mark, a regular file at `/workspace/repo/.mend/ready/<name>`
+   (a directory of its own, so no repository name can collide with it), as its last step; a relink
+   trusts only a directory with the mark, so an add the server did not see end (a restart between
+   the checkout and the row's `ready`) is settled at the next launch from what the workspace holds:
+   `ready` with the mark, `failed` without it, with the directory kept. A `failed` row whose files
+   and mark are there after all (the clone's answer was lost, not the clone) comes back `ready`. The
+   relink runs at every launch, a fresh one and one into a retained workspace alike.
 7. The row records `capture: nested | own` and `source: origin | store` so every surface can say how
    the sibling is saved and where it came from.
 8. Refusals, in the channel's words: own project, unknown or invisible project, a name already used,
    a name or a worktree name that is not a directory name, a worktree name already present in the
    target, a target with no origin, a session with no live workspace, a directory that is not Mend's
-   link at the repository's path. The worktree-taken check runs last before the worktree is made;
-   two adds racing for one name in the same instant are separated by the worktrees table's unique
-   name, which fails the second create rather than joining.
+   link at the repository's path, `.mend` or a directory under it being a link (the captures would
+   carry the link, not the files). The worktree-taken check runs last before the worktree is made,
+   and the worktree is made by a create-only path (`createWorktreeIn`, the create half of
+   `ensureWorktreeIn`): two adds racing for one name in the same instant are separated by the branch
+   ref and the worktrees table's unique name, which fail the second create rather than handing it
+   the first one's worktree.
 9. Capture mode records no linked-project extra mounts on the session.
 10. The web shows repositories on the session page and names them on the review page; the phone
     follows later.
@@ -256,8 +262,8 @@ co-located store keeps its bind for one release, as it keeps everything else.
     whether `/workspace/repo` is a repository of its own (capture mode) or a linked worktree whose
     `.git` is a file (the co-located store). Workspace images need git 2.31 or later for
     `--path-format`; every image family Mend ships has it.
-12. A relink moves a row only on an explicit observation (`ready`, `missing`, `partial`,
-    `occupied`): an unreported row keeps what it said, so a relink that could not run never turns a
+12. A relink moves a row only on an explicit observation (`ready`, `missing`, `partial`, `occupied`,
+    `outside`): an unreported row keeps what it said, so a relink that could not run never turns a
     saved repository into `missing`. Nothing the relink does can fail the launch; only the launch's
     own interruption passes through.
 13. The sealantd half is designed in sealantd ADR 0016 (sealant-sh/sealantd#134); this ADR ships
@@ -265,7 +271,12 @@ co-located store keeps its bind for one release, as it keeps everything else.
 14. A session's detail lists only the repositories whose project the caller can see: a private
     sibling added to a session in a shared project stays private to those who may see it.
 15. Removing a worktree counts the sessions that hold it as a repository among its members: their
-    owners have a say and their liveness refuses the removal, as a conversation's would.
+    owners have a say, a holder that is live or `stopping` refuses the removal, and so does a
+    capture hold on the holder's own worktree, since that is where the repository's files travel
+    today. Removing a project is refused while a session of another project holds one of its
+    worktrees as a repository and is live or `stopping`.
+16. The helper bounds every request of `mend repo add` with one wall-clock timer, connect and
+    response alike, and caps each poll by what is left of the thirty-minute budget.
 
 ## Open
 

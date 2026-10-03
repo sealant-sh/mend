@@ -668,6 +668,22 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             message: "The project still has live Service forwards. Stop them before removal.",
           });
         }
+        // A session of another project may hold one of this project's worktrees as a repository
+        // (docs/adr/0010): while it runs or saves, the project stays.
+        for (const row of yield* (yield* SessionRepositoriesRepo).listForProject(params.id)) {
+          const holder = yield* sessions
+            .byId(row.sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (
+            holder !== null &&
+            holder.projectId !== params.id &&
+            (LIVE_STATES.has(holder.status) || holder.status === "stopping")
+          ) {
+            return yield* new StoreFailure({
+              message: `not removed · a session of another project holds ${project.name} as a repository at ${row.path} and is ${holder.status} · stop it first`,
+            });
+          }
+        }
         yield* Effect.forEach(
           projectSessions.filter((session) => LIVE_STATES.has(session.status)),
           (session) => engine.stop(session.id).pipe(Effect.ignore),

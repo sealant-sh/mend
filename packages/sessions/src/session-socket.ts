@@ -165,7 +165,13 @@ const request = (method, route, body, timeoutMs) =>
   new Promise((resolve, reject) => {
     const options = transportOptions(method, route, { "content-type": "application/json" });
     if (options === null) { reject(new Error(transportUnavailable())); return; }
+    // One wall-clock timer for the whole request, connect and response alike: a socket idle
+    // timeout would restart on every byte and never fire on a connect that hangs.
     let timedOut = false;
+    let timer = null;
+    const settle = (finish) => (value) => { if (timer !== null) clearTimeout(timer); finish(value); };
+    const done = settle(resolve);
+    const failWith = settle(reject);
     const req = transportClient().request(options, (res) => {
       let text = "";
       res.on("data", (chunk) => (text += chunk));
@@ -173,17 +179,18 @@ const request = (method, route, body, timeoutMs) =>
         if (res.statusCode >= 400) {
           let message = text;
           try { message = JSON.parse(text).message ?? text; } catch {}
-          reject(new Error(message));
+          failWith(new Error(message));
           return;
         }
-        resolve(text === "" ? null : JSON.parse(text));
+        done(text === "" ? null : JSON.parse(text));
       });
+      res.on("error", () => failWith(new Error(transportDownMessage())));
     });
     req.on("error", () =>
-      reject(new Error(timedOut ? "the Mend server did not answer within " + Math.round(timeoutMs / 1000) + " s" : transportDownMessage())),
+      failWith(new Error(timedOut ? "the Mend server did not answer within " + Math.round(timeoutMs / 1000) + " s" : transportDownMessage())),
     );
     if (timeoutMs !== undefined) {
-      req.setTimeout(timeoutMs, () => { timedOut = true; req.destroy(new Error("timeout")); });
+      timer = setTimeout(() => { timedOut = true; req.destroy(new Error("timeout")); }, timeoutMs);
     }
     if (body !== undefined) req.write(JSON.stringify(body));
     req.end();
@@ -301,7 +308,8 @@ const main = async () => {
               return;
             }
             await new Promise((resolve) => setTimeout(resolve, 2000));
-            const rows = await request("GET", "/repositories", undefined, 30 * 1000);
+            const remaining = deadline - (Date.now() - startedAt);
+            const rows = await request("GET", "/repositories", undefined, Math.max(1000, Math.min(30 * 1000, remaining)));
             row = rows.find((r) => r.id === row.id) ?? row;
           }
           if (row.state !== "ready") fail(row.name + " · " + row.state + (row.error ? " · " + row.error : ""));

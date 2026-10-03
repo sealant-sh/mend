@@ -38,18 +38,33 @@ const excludeNested =
   `[ ! -s "$exclude" ] || [ -z "$(tail -c1 "$exclude")" ] || printf '\\n' >> "$exclude"; ` +
   `printf '%s\\n' ${shellQuote(NESTED_REPOSITORIES_EXCLUDE)} >> "$exclude"; }; }`;
 
+/** Where Mend keeps what it adds inside the worktree, and the ready marks beside it. */
+const MEND_DIR = "/workspace/repo/.mend";
+const REPOS_DIR = `${MEND_DIR}/repos`;
+const READY_DIR = `${MEND_DIR}/ready`;
+
+/**
+ * The captured root is `/workspace/repo` as a tree of real directories: a link at `.mend`,
+ * `.mend/repos` or `.mend/ready` would put the files somewhere the captures carry only as a link.
+ * Checked before anything is written, and again at every relink.
+ */
+const ancestorsAreDirectories = `( for p in ${MEND_DIR} ${REPOS_DIR} ${READY_DIR}; do [ ! -L "$p" ] || exit 1; done )`;
+
 /** The exit code of a clone that found the nested directory already there. */
 export const REPOSITORY_EXISTS_EXIT = 65;
 
 /** The exit code of a clone that found a directory, not a link, at the repository's path. */
 export const REPOSITORY_PATH_OCCUPIED_EXIT = 66;
 
+/** The exit code of a clone that found `.mend` or a directory under it to be a link. */
+export const REPOSITORY_OUTSIDE_EXIT = 67;
+
 /**
- * Written beside the nested directory once the clone, the checkout and the link are all in
- * place: a directory without it is an add that was interrupted, never a repository to relink.
+ * Written as a regular file once the clone, the checkout and the link are all in place: a
+ * directory without it is an add that was interrupted, never a repository to relink. It lives in
+ * a directory of its own, so no repository name can collide with it.
  */
-export const repositoryReadyMarker = (name: string): string =>
-  `${nestedRepositoryPath(name)}.ready`;
+export const repositoryReadyMarker = (name: string): string => `${READY_DIR}/${name}`;
 
 /**
  * Clone the project's origin into the nested place, check out the session's branch at Mend's
@@ -68,7 +83,9 @@ export const repositoryCloneScript = (input: {
   return [
     "set -eu",
     excludeNested,
-    "mkdir -p /workspace/repo/.mend/repos /workspace/repos",
+    `if ! ${ancestorsAreDirectories}; then echo "mend: ${MEND_DIR} or a directory under it is a link, not a directory inside the worktree" >&2; exit ${REPOSITORY_OUTSIDE_EXIT}; fi`,
+    `mkdir -p ${REPOS_DIR} ${READY_DIR} /workspace/repos`,
+    `if ! ${ancestorsAreDirectories}; then echo "mend: ${MEND_DIR} or a directory under it is a link, not a directory inside the worktree" >&2; exit ${REPOSITORY_OUTSIDE_EXIT}; fi`,
     `if [ -e ${nested} ]; then echo "mend: ${nestedRepositoryPath(input.name)} already exists" >&2; exit ${REPOSITORY_EXISTS_EXIT}; fi`,
     `if [ -e ${link} ] && [ ! -L ${link} ]; then echo "mend: ${repositoryPath(input.name)} exists and is not a link" >&2; exit ${REPOSITORY_PATH_OCCUPIED_EXIT}; fi`,
     `git clone --quiet --no-checkout -- ${shellQuote(input.originUrl)} ${nested}`,
@@ -79,26 +96,46 @@ export const repositoryCloneScript = (input: {
 };
 
 /** What the relink script says about one repository, one line each: `<word> <name>`. */
-export type RelinkObservation = "ready" | "missing" | "partial" | "occupied" | "unlinked";
+export type RelinkObservation =
+  | "ready"
+  | "missing"
+  | "partial"
+  | "occupied"
+  | "unlinked"
+  | "outside";
+
+const RELINK_WORDS: ReadonlySet<string> = new Set([
+  "ready",
+  "missing",
+  "partial",
+  "occupied",
+  "unlinked",
+  "outside",
+]);
+
+const isRelinkObservation = (word: string): word is RelinkObservation => RELINK_WORDS.has(word);
 
 /**
  * After a restore: the nested directories came back with the main worktree, the symlinks did not.
  * Relink every repository whose directory and ready mark are there and name the rest: `missing`
  * when nothing is there, `partial` when a directory without its mark is (an add that was
  * interrupted), `occupied` when a directory that is not a link sits at the repository's path,
- * `unlinked` when the link could not be made. The engine records what it observed and nothing
- * more.
+ * `unlinked` when the link could not be made, `outside` when `.mend` or a directory under it is
+ * a link. The engine records what it observed and nothing more.
  */
 export const repositoryRelinkScript = (names: ReadonlyArray<string>): string =>
   [
     "set -u",
     `${excludeNested} || true`,
     "mkdir -p /workspace/repos",
+    `outside=0; ${ancestorsAreDirectories} || outside=1`,
     `for name in ${names.map(shellQuote).join(" ")}; do`,
-    `  nested="/workspace/repo/.mend/repos/$name"`,
+    `  nested="${REPOS_DIR}/$name"`,
     `  link="/workspace/repos/$name"`,
-    `  if [ -e "$link" ] && [ ! -L "$link" ]; then echo "occupied $name"`,
-    `  elif [ -d "$nested/.git" ] && [ -e "$nested.ready" ]; then ln -sfn "$nested" "$link" && echo "ready $name" || echo "unlinked $name"`,
+    `  ready="${READY_DIR}/$name"`,
+    `  if [ "$outside" = 1 ]; then echo "outside $name"`,
+    `  elif [ -e "$link" ] && [ ! -L "$link" ]; then echo "occupied $name"`,
+    `  elif [ -d "$nested/.git" ] && [ -f "$ready" ]; then ln -sfn "$nested" "$link" && echo "ready $name" || echo "unlinked $name"`,
     `  elif [ -e "$nested" ]; then echo "partial $name"`,
     `  else echo "missing $name"; fi`,
     "done",
@@ -108,19 +145,11 @@ export const repositoryRelinkScript = (names: ReadonlyArray<string>): string =>
 export const parseRelinkReport = (stdout: string): ReadonlyMap<string, RelinkObservation> => {
   const report = new Map<string, RelinkObservation>();
   for (const line of stdout.split("\n")) {
-    const match = /^(ready|missing|partial|occupied|unlinked) (.+)$/.exec(line.trim());
+    const match = /^([a-z]+) (.+)$/.exec(line.trim());
     const word = match?.[1];
     const name = match?.[2];
-    if (word === undefined || name === undefined) continue;
-    if (
-      word === "ready" ||
-      word === "missing" ||
-      word === "partial" ||
-      word === "occupied" ||
-      word === "unlinked"
-    ) {
-      report.set(name, word);
-    }
+    if (word === undefined || name === undefined || !isRelinkObservation(word)) continue;
+    report.set(name, word);
   }
   return report;
 };

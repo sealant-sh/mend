@@ -10,6 +10,7 @@ import {
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
+  SessionRepositoriesRepo,
   SessionsRepo,
   UserGitAccessRepo,
   WorktreeChangesRepo,
@@ -258,6 +259,7 @@ type ProjectRouteServices =
   | ProjectAccess
   | GithubIdentity
   | DeploymentConfig
+  | SessionRepositoriesRepo
   | TenancyConfig;
 
 type UnusedProjectRouteServices = Exclude<
@@ -287,6 +289,8 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(Gh, {}),
   Layer.mock(InstanceRolesRepo, { isOperator: () => Effect.succeed(false) }),
   Layer.mock(GithubIdentity, {}),
+  // No session holds a worktree of these projects as a repository (docs/adr/0010).
+  Layer.mock(SessionRepositoriesRepo, { listForProject: () => Effect.succeed([]) }),
   Layer.succeed(DeploymentConfig, {
     mode: "local",
     sessionEndpoint: undefined,

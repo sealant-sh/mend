@@ -239,6 +239,7 @@ export const createTenancyApi = async (
         {
           listForSession: () => Effect.succeed([]),
           listForWorktree: () => Effect.succeed([]),
+          listForProject: () => Effect.succeed([]),
           ...options.implement?.sessionRepositories,
         },
         calls,

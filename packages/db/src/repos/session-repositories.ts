@@ -78,6 +78,10 @@ export class SessionRepositoriesRepo extends Context.Service<
     readonly listForWorktree: (
       worktreeId: WorktreeId,
     ) => Effect.Effect<ReadonlyArray<SessionRepository>>;
+    /** Every row whose repository belongs to this project: who holds its worktrees from elsewhere. */
+    readonly listForProject: (
+      projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<SessionRepository>>;
     /** Move the row to a state; `error` is the reason for `failed` or `missing`, null otherwise. */
     readonly setState: (
       id: SessionRepositoryId,
@@ -199,6 +203,18 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       return rows.map(toSessionRepository);
     });
 
+    const listForProject = Effect.fn("SessionRepositoriesRepo.listForProject")(function* (
+      projectId: ProjectId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(sessionRepositories)
+        .where(eq(sessionRepositories.projectId, projectId))
+        .orderBy(asc(sessionRepositories.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map(toSessionRepository);
+    });
+
     const setState = Effect.fn("SessionRepositoriesRepo.setState")(function* (
       id: SessionRepositoryId,
       state: SessionRepositoryState,
@@ -228,7 +244,16 @@ export const SessionRepositoriesRepoLive: Layer.Layer<
       if (row !== undefined) yield* announce(row);
     });
 
-    return { create, byId, byName, listForSession, listForWorktree, setState, remove };
+    return {
+      create,
+      byId,
+      byName,
+      listForSession,
+      listForWorktree,
+      listForProject,
+      setState,
+      remove,
+    };
   }),
 );
 
@@ -283,6 +308,8 @@ export const SessionRepositoriesRepoMemory: Layer.Layer<SessionRepositoriesRepo>
         ),
       listForWorktree: (worktreeId) =>
         Effect.sync(() => list().filter((row) => row.worktreeId === worktreeId)),
+      listForProject: (projectId) =>
+        Effect.sync(() => list().filter((row) => row.projectId === projectId)),
       setState: (id, state, error) =>
         Effect.sync(() => {
           const row = rows.get(id);

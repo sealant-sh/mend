@@ -9,6 +9,7 @@ import {
   failureReason,
   parseRelinkReport,
   REPOSITORY_EXISTS_EXIT,
+  REPOSITORY_OUTSIDE_EXIT,
   REPOSITORY_PATH_OCCUPIED_EXIT,
   repositoryCloneScript,
   repositoryRelinkScript,
@@ -85,7 +86,26 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
       ".mend/\n",
     );
     // The ready mark says the add ran to its end: a relink trusts only a directory that has it.
-    expect(fs.existsSync(`${nested}.ready`)).toBe(true);
+    // It lives in a directory of its own, so a repository named `core.ready` cannot collide.
+    expect(fs.statSync(path.join(main, ".mend", "ready", "core")).isFile()).toBe(true);
+  });
+
+  it("refuses to work behind a link at .mend, where the captures would carry only the link", () => {
+    const { root, main, origin, baseSha } = makeWorkspace();
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-elsewhere-"));
+    fs.symlinkSync(elsewhere, path.join(main, ".mend"));
+    const cloned = runSh(
+      inScratch(
+        repositoryCloneScript({ originUrl: origin, name: "core", branch: "mend/x", baseSha }),
+        root,
+      ),
+    );
+    expect(cloned.exitCode).toBe(REPOSITORY_OUTSIDE_EXIT);
+    expect(cloned.stderr).toContain("is a link");
+    // Nothing was written behind the link, not even the directories.
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    const relinked = runSh(inScratch(repositoryRelinkScript(["core"]), root));
+    expect(parseRelinkReport(relinked.stdout).get("core")).toBe("outside");
   });
 
   it("adds the exclude on a line of its own when the exclude file ends without a newline", () => {
@@ -170,7 +190,7 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
     // A directory that is not a link where the link should go.
     fs.mkdirSync(path.join(root, "workspace", "repos", "taken"), { recursive: true });
     fs.mkdirSync(path.join(main, ".mend", "repos", "taken", ".git"), { recursive: true });
-    fs.writeFileSync(path.join(main, ".mend", "repos", "taken.ready"), "");
+    fs.writeFileSync(path.join(main, ".mend", "ready", "taken"), "");
     const result = runSh(
       inScratch(repositoryRelinkScript(["core", "sealantd", "half", "taken"]), root),
     );
@@ -189,12 +209,15 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
   });
 
   it("reads only the words it knows from a relink report", () => {
-    const report = parseRelinkReport("ready core\nnoise\nmissing a b\noccupied x\n\nunlinked y\n");
+    const report = parseRelinkReport(
+      "ready core\nnoise\nmissing a b\noccupied x\n\nunlinked y\noutside z\nbogus w\n",
+    );
     expect([...report.entries()]).toEqual([
       ["core", "ready"],
       ["a b", "missing"],
       ["x", "occupied"],
       ["y", "unlinked"],
+      ["z", "outside"],
     ]);
   });
 

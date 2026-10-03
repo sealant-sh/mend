@@ -178,18 +178,22 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
               .byId(row.sessionId)
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))),
         );
-        const members = [
-          ...inhabitants,
-          ...holders.filter(
-            (holder) => holder !== null && !inhabitants.some((member) => member.id === holder.id),
-          ),
-        ].flatMap((member) => (member === null ? [] : [member]));
+        const holdingSessions = holders.flatMap((holder) =>
+          holder === null || inhabitants.some((member) => member.id === holder.id) ? [] : [holder],
+        );
+        const members = [...inhabitants, ...holdingSessions];
         if (!manages && members.some((member) => member.ownerUserId !== caller.user.id)) {
           return yield* new WorktreeNotFound({ id: params.id });
         }
         // Refuse while anything lives here — a live conversation, a process
-        // holding the workspace, or an open Service forward. Never silently stop.
-        const liveSessions = members.filter((session) => LIVE_STATES.has(session.status));
+        // holding the workspace, or an open Service forward. Never silently stop. A holding
+        // session that is `stopping` still holds: its drain is saving the repository's files.
+        const liveSessions = members.filter(
+          (session) =>
+            LIVE_STATES.has(session.status) ||
+            (session.status === "stopping" &&
+              holdingSessions.some((holder) => holder.id === session.id)),
+        );
         const openForwards = yield* forwards.listOpen();
         let liveHolds = liveSessions.length;
         for (const member of members) {
@@ -217,6 +221,16 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           return yield* new StoreFailure({
             message: `not removed · ${captureHoldWords(holds)} · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved`,
           });
+        }
+        // A holding session's files for this repository travel with ITS worktree's captures
+        // (docs/adr/0010, today): while that worktree's executor saves, this one stays too.
+        for (const holder of holdingSessions) {
+          const holderHolds = yield* (yield* SessionEngine).captureHolds(holder.worktreeId);
+          if (holderHolds.length > 0) {
+            return yield* new StoreFailure({
+              message: `not removed · a session holding this worktree as a repository is ${captureHoldWords(holderHolds)} · the worktree stays until that session's workspace has saved and ended`,
+            });
+          }
         }
         const project = yield* projects
           .byId(worktree.projectId)
