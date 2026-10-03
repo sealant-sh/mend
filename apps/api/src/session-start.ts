@@ -284,7 +284,8 @@ export const makeSessionStart = Effect.gen(function* () {
     // the workspace still provisions.
     if (inlineNamePrompt !== null) yield* queueAutoName;
     // Recorded once the launch is admitted, never for one the slot refuses. A protocol launch
-    // records inside the engine, after its own live-agent check; a PTY launch here.
+    // records inside the engine, after its own live-agent check; a PTY launch here. A verbatim
+    // argv names its own flags, which Mend did not resolve: the row says so with null.
     const launch =
       input.mode === "protocol"
         ? engine.launchProtocol(
@@ -292,9 +293,9 @@ export const makeSessionStart = Effect.gen(function* () {
             guarded ? { ...input, prompt: withLandingGuard(prompt) } : input,
             userId,
           )
-        : (resolved === null ? Effect.void : sessions.setLaunchOptions(session.id, resolved)).pipe(
-            Effect.andThen(engine.launch(session.id, argv)),
-          );
+        : sessions
+            .setLaunchOptions(session.id, resolved ?? { model: null, effort: null })
+            .pipe(Effect.andThen(engine.launch(session.id, argv)));
     // A launch holds a platform workspace build for minutes. One account starts a bounded
     // number at once; a launch already under way is never touched. The slot is held for the
     // launch's whole course, in the background too: it is taken and given back inside the

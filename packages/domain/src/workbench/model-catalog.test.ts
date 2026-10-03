@@ -134,6 +134,19 @@ describe("modelPicker", () => {
     expect(pickerLaunchFields(picker)).toEqual({ model: "gpt-5.5", effort: "xhigh" });
   });
 
+  it("marks the model a launch runs as the default, even when no row is flagged", () => {
+    const rows = [
+      new HarnessModel({ id: "b", label: "B", isDefault: false, efforts: null }),
+      new HarnessModel({ id: "a", label: "A", isDefault: false, efforts: null }),
+    ];
+    const picker = modelPicker(harnessModelCatalog("codex", rows), { model: null, effort: null });
+    expect(picker.model).toBe("b");
+    expect(picker.models.map((row) => [row.id, row.isDefault])).toEqual([
+      ["b", true],
+      ["a", false],
+    ]);
+  });
+
   it("reads a sticky id the catalog no longer lists as the default", () => {
     const picker = modelPicker(seeded("claude"), { model: "claude-fable-5", effort: "high" });
     expect(picker.model).toBe("fable");

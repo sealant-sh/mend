@@ -339,15 +339,13 @@ describe("SessionStart.startAs", () => {
     );
   });
 
-  it("records nothing for a verbatim argv: the command names its own model", async () => {
+  it("resolves nothing for a verbatim argv, and records that: the command names its own model", async () => {
     const world = startWorld();
     const result = await startAs(world, "alice", request({ argv: ["claude", "--model", "opus"] }));
 
     expect(result._tag).toBe("Success");
     expect(world.effects.some((entry) => entry.startsWith("harnessModels."))).toBe(false);
-    expect(world.effects.some((entry) => entry.startsWith("sessions.setLaunchOptions"))).toBe(
-      false,
-    );
+    expect(world.effects).toContain(`sessions.setLaunchOptions:${SESSION}:null:null`);
     expect(world.effects).toContain(`engine.launch:${SESSION}:claude --model opus`);
   });
 

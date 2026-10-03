@@ -43,6 +43,27 @@ describe("mend models", () => {
     ]);
   });
 
+  it("prints a list with a gap in full, and marks the first row when none is flagged", () => {
+    const lines = modelCatalogLines([
+      {
+        harness: "codex",
+        models: [
+          { id: "gpt-a", label: "A", isDefault: false, efforts: ["low", "high", "max"] },
+          { id: "gpt-b", label: "B", isDefault: false, efforts: null },
+        ],
+        // What the server resolved when no row is flagged: the first.
+        defaultModel: "gpt-a",
+        efforts: ["low", "medium", "high", "xhigh", "max"],
+        fastCapable: false,
+      },
+    ]);
+    expect(lines).toEqual([
+      "codex  effort low … max",
+      "  gpt-a  A  default · effort low, high, max",
+      "  gpt-b  B",
+    ]);
+  });
+
   it("says when the server lists nothing", () => {
     expect(modelCatalogLines([])).toEqual([
       "no models listed · the server's harness_models table is empty",

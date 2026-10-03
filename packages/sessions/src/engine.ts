@@ -10267,7 +10267,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const launchProtocol = Effect.fn("SessionEngine.launchProtocol")(function* (
         sessionId: SessionId,
-        start: LaunchStart,
+        requested: LaunchStart,
         author: string | null,
         launchCorrelationId: string | null = null,
         forceFreshWorkspace = false,
@@ -10287,12 +10287,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
-        // Admitted: the model and effort this launch runs on are the session's from here
-        // (docs/models-audit.md), written before the workspace builds so the row says what runs.
-        yield* sessions.setLaunchOptions(sessionId, {
-          model: start.model ?? null,
-          effort: start.effort ?? null,
-        });
+        // A continuation that names neither a model nor an effort (a resume, a stopped session's
+        // follow-up) runs on what the session was started with (docs/models-audit.md); a start
+        // that names either is taken as given.
+        const start: LaunchStart =
+          requested.model === undefined && requested.effort === undefined
+            ? {
+                ...requested,
+                ...(session.model === null ? {} : { model: session.model }),
+                ...(session.effort === null ? {} : { effort: session.effort }),
+              }
+            : requested;
         const previous = currentAgentProcess(rows);
         // Any prior same-harness agent resumes by provider id — a PTY-born
         // session picked up in protocol mode continues the same conversation
@@ -10305,6 +10310,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
         }
+        // Admitted and composable: the model and effort this launch runs on are the session's
+        // from here, written before the workspace builds so the row says what runs.
+        yield* sessions.setLaunchOptions(sessionId, {
+          model: start.model ?? null,
+          effort: start.effort ?? null,
+        });
         // A fresh-workspace relaunch must carry the harvested state with it: the composed
         // argv resumes by provider id, and without the restored transcript the harness
         // refuses the resume ("No conversation found"). A first launch (no prior protocol

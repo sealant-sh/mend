@@ -19,11 +19,20 @@ export interface HarnessModelCatalogDto {
   readonly fastCapable: boolean;
 }
 
-/** `low … max` when the levels run without a gap in the server's scale, else the list as given. */
-const effortRange = (efforts: ReadonlyArray<string>): string =>
+/** Whether `efforts` is one unbroken run of `scale`, so `first … last` names every level in it. */
+const contiguousIn = (efforts: ReadonlyArray<string>, scale: ReadonlyArray<string>): boolean => {
+  const from = scale.indexOf(efforts[0] ?? "");
+  return from >= 0 && efforts.every((effort, index) => scale[from + index] === effort);
+};
+
+/**
+ * `low … max` when the levels run without a gap in the harness's scale; the full list when they
+ * do not, so `low, high, max` never reads as `low … max`.
+ */
+const effortRange = (efforts: ReadonlyArray<string>, scale: ReadonlyArray<string>): string =>
   efforts.length === 0
     ? "none"
-    : efforts.length <= 2
+    : efforts.length <= 2 || !contiguousIn(efforts, scale)
       ? efforts.join(", ")
       : `${efforts[0]} … ${efforts.at(-1)}`;
 
@@ -41,15 +50,18 @@ export const modelCatalogLines = (
   const lines: Array<string> = [];
   for (const [index, catalog] of catalogs.entries()) {
     if (index > 0) lines.push("");
-    const efforts = effortRange(catalog.efforts);
+    const efforts = effortRange(catalog.efforts, catalog.efforts);
     lines.push(
       `${catalog.harness}  ${dim(`effort ${efforts}${catalog.fastCapable ? " · --fast" : ""}`)}`,
     );
     const idWidth = Math.max(...catalog.models.map((model) => model.id.length));
     for (const model of catalog.models) {
       const facts: Array<string> = [];
-      if (model.isDefault) facts.push("default");
-      if (model.efforts !== null) facts.push(`effort ${effortRange(model.efforts)}`);
+      // The one a launch runs when none is named: what the server resolved, flag or first row.
+      if (model.id === catalog.defaultModel) facts.push("default");
+      if (model.efforts !== null) {
+        facts.push(`effort ${effortRange(model.efforts, catalog.efforts)}`);
+      }
       lines.push(
         `  ${model.id.padEnd(idWidth)}  ${model.label}${facts.length === 0 ? "" : `  ${dim(facts.join(" · "))}`}`,
       );

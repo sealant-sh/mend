@@ -123,3 +123,11 @@ phone names a model.
 - Slack's vocabulary reads the seed, not the table.
 - The catalog is not discovered from the harness binaries (t3code's `refreshModels`); it is a table
   an operator edits.
+- A PTY launch records its options inside the account's launch slot but before the engine's
+  per-session gate: two PTY launches of one session that both pass the account budget can leave the
+  row reporting the second's model while the first one ran (the second fails `session_starting`).
+  Recording inside the engine's `oneLaunch`, as the protocol path does inside `launchProtocol`,
+  closes it; it needs `engine.launch` to take the resolved options beside the argv.
+- A protocol launch records after `composeProtocolArgv` accepts the harness, so an unsupported
+  harness rewrites nothing; the engine's later refusals (a workspace that fails to build) leave the
+  record standing beside the failed session, which is what it ran with.

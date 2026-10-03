@@ -182,7 +182,8 @@ export const modelPicker = (
     models: catalog.models.map((entry) => ({
       id: entry.id,
       label: entry.label,
-      isDefault: entry.isDefault,
+      // The one a launch runs when none is named: the flagged row, else the first (`defaultModel`).
+      isDefault: entry.id === catalog.defaultModel,
       selected: entry.id === model,
     })),
     efforts: [
