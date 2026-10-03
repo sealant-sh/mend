@@ -170,11 +170,12 @@ describe("every method not served", () => {
           }
 
           // Every refusal arrives as an exit; silent feeds send nothing at all. Read until the
-          // socket has been quiet for a while.
+          // socket has been quiet for a while: long enough for a loaded CI runner to answer the
+          // first of 168 requests at all (500 ms read every one as silent there, 2026-10-03).
           const answered = new Map<string, unknown>();
           const others: Array<unknown> = [];
           while (true) {
-            const next = yield* Queue.take(socket.inbox).pipe(Effect.timeoutOption("500 millis"));
+            const next = yield* Queue.take(socket.inbox).pipe(Effect.timeoutOption("4 seconds"));
             if (Option.isNone(next)) break;
             const frame = decodeFrame(next.value);
             if (
