@@ -16,6 +16,8 @@ import {
   openForBranchArgv,
   parsePullRequest,
   parsePullRequests,
+  pullRequestNumbersIn,
+  pullRequestUrlsOpenedIn,
   viewArgv,
   writeFileArgv,
 } from "../src/gh.ts";
@@ -33,6 +35,7 @@ const wire = {
   headRefOid: "a".repeat(40),
   isCrossRepository: false,
   headRepositoryOwner: { login: "acme" },
+  createdAt: "2026-10-03T09:00:00Z",
 };
 
 /** The same branch name, pushed to someone's fork. */
@@ -54,6 +57,7 @@ const view = {
   headRefOid: "a".repeat(40),
   crossRepository: false,
   headOwner: "acme",
+  createdAt: new Date("2026-10-03T09:00:00Z"),
 };
 
 describe("gh argv", () => {
@@ -99,7 +103,7 @@ describe("gh argv", () => {
       "view",
       "412",
       "--repo=acme/api",
-      "--json=number,url,state,title,body,headRefName,headRefOid,isCrossRepository,headRepositoryOwner",
+      "--json=number,url,state,title,body,headRefName,headRefOid,isCrossRepository,headRepositoryOwner,createdAt",
     ]);
     expect(openForBranchArgv(repository, "mend/x")).toContain("--head=mend/x");
     expect(openForBranchArgv(repository, "mend/x")).toContain("--state=open");
@@ -187,5 +191,55 @@ describe("parsers", () => {
       "pull request create failed: GraphQL: No commits between main and mend/x (createPullRequest)",
     );
     expect(ghWords({ exitCode: 4, stdout: "", stderr: "" })).toBe("gh exited 4");
+  });
+});
+
+const command = (title: string, text: string | null = null) => ({
+  kind: "command-execution",
+  title,
+  text,
+  data: null,
+});
+const message = (text: string) => ({ kind: "assistant-message", title: null, text, data: null });
+
+describe("a turn that ran gh pr create", () => {
+  it("reads the URLs from the whole turn, the agent's own message included", () => {
+    expect(
+      pullRequestUrlsOpenedIn([
+        // Claude records the command in the tool call's input, not its output.
+        {
+          kind: "command-execution",
+          title: "Bash",
+          text: null,
+          data: { input: { command: 'gh pr create --title "Fix login" --body-file /tmp/b.md' } },
+        },
+        message("Opened https://github.com/acme/api/pull/413 for the fix."),
+      ]),
+    ).toEqual(["https://github.com/acme/api/pull/413"]);
+    expect(
+      pullRequestUrlsOpenedIn([
+        command("gh pr create --fill", "https://github.com/acme/api/pull/414\n"),
+      ]),
+    ).toEqual(["https://github.com/acme/api/pull/414"]);
+  });
+
+  it("is empty when no command ran gh pr create, however many URLs the turn names", () => {
+    expect(
+      pullRequestUrlsOpenedIn([
+        command("gh pr view 400"),
+        message("This is like https://github.com/acme/api/pull/400, and gh pr create would…"),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("keeps the project's own pull requests, newest first", () => {
+    expect(
+      pullRequestNumbersIn(repository, [
+        "https://github.com/acme/api/pull/400",
+        "https://github.com/ACME/api/pull/413",
+        "https://github.com/someone/else/pull/999",
+        "https://github.com/acme/api-docs/pull/5",
+      ]),
+    ).toEqual([413, 400]);
   });
 });

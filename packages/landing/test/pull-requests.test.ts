@@ -9,6 +9,7 @@ import {
   PullRequestsLive,
   PullRequestStepError,
   PullRequestWorkspaces,
+  type OpenedInTurn,
 } from "../src/pull-requests.ts";
 
 const repository = { owner: "acme", name: "api", slug: "acme/api" };
@@ -38,6 +39,7 @@ interface GhPullRequest {
   readonly headRefOid: string;
   readonly isCrossRepository: boolean;
   readonly headRepositoryOwner: { readonly login: string } | null;
+  readonly createdAt?: string;
 }
 
 const pr = (number: number, overrides: Partial<GhPullRequest> = {}): GhPullRequest => ({
@@ -288,13 +290,18 @@ describe("PullRequests: pull requests from forks", () => {
 describe("PullRequests.find", () => {
   const findWith = (
     pullRequests: ReadonlyArray<GhPullRequest>,
-    input: { readonly branches: ReadonlyArray<string>; readonly commit: string | null },
+    input: {
+      readonly branches: ReadonlyArray<string>;
+      readonly commit: string | null;
+      readonly opened?: OpenedInTurn;
+    },
   ) => {
     const github = fakeGitHub({ pullRequests, kind: "session" });
     return Effect.gen(function* () {
       return yield* (yield* PullRequests).find({
         target: { ownerUserId: "ada", sessionId: null, liveOnly: true },
         repository,
+        opened: null,
         ...input,
       });
     }).pipe(Effect.provide(github.layer));
@@ -334,6 +341,27 @@ describe("PullRequests.find", () => {
         headOwner: "anna",
         headRefName: "fix-login",
       });
+    }),
+  );
+
+  it.effect("takes the pull request a turn named when gh says it was opened during the turn", () =>
+    Effect.gen(function* () {
+      const since = new Date("2026-10-03T09:00:00Z");
+      // The agent pushed over HTTPS to a branch Mend never saw, and named the pull request.
+      const found = yield* findWith(
+        [
+          pr(400, { headRefName: "older", createdAt: "2026-09-01T00:00:00Z" }),
+          pr(413, { headRefName: "fix/login", createdAt: "2026-10-03T09:04:00Z" }),
+        ],
+        { branches: ["mend/wt/1"], commit: null, opened: { numbers: [413, 400], since } },
+      );
+      expect(found).toMatchObject({ number: 413, headRefName: "fix/login" });
+      // One the turn only mentioned was opened before it started: not the change's.
+      const mentioned = yield* findWith(
+        [pr(400, { headRefName: "older", createdAt: "2026-09-01T00:00:00Z" })],
+        { branches: ["mend/wt/1"], commit: null, opened: { numbers: [400], since } },
+      );
+      expect(mentioned).toBeNull();
     }),
   );
 });

@@ -98,6 +98,30 @@ export interface PublishInput {
   readonly previous: number | null;
 }
 
+export interface FindInput {
+  readonly target: PullRequestWorkspaceTarget;
+  readonly repository: GitHubRepository;
+  readonly branches: ReadonlyArray<string>;
+  readonly commit: string | null;
+  /** What a turn that ran `gh pr create` named, and when that turn started; null otherwise. */
+  readonly opened: OpenedInTurn | null;
+}
+
+/** The pull requests a turn named after it ran `gh pr create` (`pullRequestUrlsOpenedIn`). */
+export interface OpenedInTurn {
+  /** Of the project's repository only, newest first. */
+  readonly numbers: ReadonlyArray<number>;
+  readonly since: Date;
+}
+
+/** `gh`'s clock and Mend's may disagree by this much. */
+const CLOCK_SLACK_MS = 2 * 60_000;
+
+/** Opened since the turn started: a pull request it merely mentioned was opened before. */
+const openedSince = (pullRequest: PullRequestView, since: Date): boolean =>
+  pullRequest.createdAt !== null &&
+  pullRequest.createdAt.getTime() >= since.getTime() - CLOCK_SLACK_MS;
+
 export interface Published {
   readonly action: "opened" | "updated";
   readonly pullRequest: LandedPullRequest;
@@ -118,13 +142,13 @@ export class PullRequests extends Context.Service<
      * whose head is on origin (a fork's branch of the same name is someone else's); then, when a
      * commit is given, any pull request that contains it, a fork's included. Among several, an
      * open one first, then the newest. Null when none is found.
+     *
+     * Before any of that, the pull requests the agent's turn named after it ran `gh pr create`,
+     * newest first: the first `gh` says was opened since the turn started is the one.
      */
-    readonly find: (input: {
-      readonly target: PullRequestWorkspaceTarget;
-      readonly repository: GitHubRepository;
-      readonly branches: ReadonlyArray<string>;
-      readonly commit: string | null;
-    }) => Effect.Effect<PullRequestView | null, PullRequestStepError>;
+    readonly find: (
+      input: FindInput,
+    ) => Effect.Effect<PullRequestView | null, PullRequestStepError>;
     /** The pull request's number, URL and state as `gh` reports them now. */
     readonly observe: (input: {
       readonly target: PullRequestWorkspaceTarget;
@@ -174,6 +198,7 @@ const landed = (pullRequest: PullRequestView, at: Date): LandedPullRequest => ({
   number: pullRequest.number,
   url: pullRequest.url,
   state: pullRequest.state,
+  title: pullRequest.title,
   observedAt: at,
 });
 
@@ -286,36 +311,42 @@ export const PullRequestsLive: Layer.Layer<PullRequests, never, PullRequestWorks
         ),
       );
 
-      const find = Effect.fn("PullRequests.find")(
-        (input: {
-          readonly target: PullRequestWorkspaceTarget;
-          readonly repository: GitHubRepository;
-          readonly branches: ReadonlyArray<string>;
-          readonly commit: string | null;
-        }) =>
-          workspaces.within(input.target, (workspace) =>
-            Effect.gen(function* () {
-              for (const branch of input.branches) {
-                const onOrigin = (yield* listed(
-                  workspace,
-                  anyForBranchArgv(input.repository, branch),
-                )).filter((pullRequest) => !pullRequest.crossRepository);
-                const found = preferred(onOrigin);
-                if (found !== null) return found;
+      const find = Effect.fn("PullRequests.find")((input: FindInput) =>
+        workspaces.within(input.target, (workspace) =>
+          Effect.gen(function* () {
+            for (const number of input.opened?.numbers ?? []) {
+              const named = yield* view(workspace, input.repository, number).pipe(
+                Effect.orElseSucceed(() => null),
+              );
+              if (
+                named !== null &&
+                input.opened !== null &&
+                openedSince(named, input.opened.since)
+              ) {
+                return named;
               }
-              if (input.commit === null) return null;
-              const commit = input.commit;
-              const containing = yield* listed(
+            }
+            for (const branch of input.branches) {
+              const onOrigin = (yield* listed(
                 workspace,
-                anyWithCommitArgv(input.repository, commit),
-              );
-              // The commit at the head beats one further down another pull request's history.
-              return (
-                preferred(containing.filter((pullRequest) => pullRequest.headRefOid === commit)) ??
-                preferred(containing)
-              );
-            }),
-          ),
+                anyForBranchArgv(input.repository, branch),
+              )).filter((pullRequest) => !pullRequest.crossRepository);
+              const found = preferred(onOrigin);
+              if (found !== null) return found;
+            }
+            if (input.commit === null) return null;
+            const commit = input.commit;
+            const containing = yield* listed(
+              workspace,
+              anyWithCommitArgv(input.repository, commit),
+            );
+            // The commit at the head beats one further down another pull request's history.
+            return (
+              preferred(containing.filter((pullRequest) => pullRequest.headRefOid === commit)) ??
+              preferred(containing)
+            );
+          }),
+        ),
       );
 
       const observe = Effect.fn("PullRequests.observe")(

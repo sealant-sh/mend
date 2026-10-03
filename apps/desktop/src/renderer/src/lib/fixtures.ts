@@ -148,6 +148,7 @@ export const annotationFixture = (
   totalComments: 0,
   pendingFollowUp: false,
   currentAgent: null,
+  pullRequest: null,
   liveServices: 0,
   ...patch,
 });
@@ -190,6 +191,7 @@ export const landingFixture = (patch: Partial<ChangeLandingDto> = {}): ChangeLan
     number: 412,
     url: "https://github.com/acme/app/pull/412",
     state: "open",
+    title: null,
     observedAt: AT,
   },
   pullRequestCrossRepository: false,

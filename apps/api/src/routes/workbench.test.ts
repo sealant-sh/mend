@@ -193,6 +193,7 @@ const changesLayer = (world: TestWorld): Layer.Layer<WorktreeChangesRepo> =>
         [...(world.liveServices?.keys() ?? [])].map((sessionId) => ({
           sessionId,
           changeId: null,
+          pullRequest: null,
           openComments: 0,
           totalComments: 0,
           pendingFollowUp: false,

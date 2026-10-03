@@ -1,13 +1,19 @@
 import { PgClient } from "@effect/sql-pg";
 import { ChangeId, type ProjectId, type SessionId, type Sha, type WorktreeId } from "@mend/domain";
-import { Change } from "@mend/domain/workbench";
-import { and, count, eq, isNull, ne, or } from "drizzle-orm";
+import { Change, type ChangePullRequest } from "@mend/domain/workbench";
+import { and, asc, count, desc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { agentSessions, followUps, reviewComments, worktreeChanges } from "../schema/workbench.ts";
+import {
+  agentSessions,
+  changeLandings,
+  followUps,
+  reviewComments,
+  worktreeChanges,
+} from "../schema/workbench.ts";
 
 export class SessionChangeNotFoundError extends Schema.TaggedErrorClass<SessionChangeNotFoundError>()(
   "SessionChangeNotFoundError",
@@ -28,6 +34,8 @@ export interface SessionAnnotationRow {
   readonly openComments: number;
   readonly totalComments: number;
   readonly pendingFollowUp: boolean;
+  /** The change's newest recorded pull request (docs/adr/0007-landing.md); null when none. */
+  readonly pullRequest: ChangePullRequest | null;
 }
 
 /**
@@ -194,6 +202,23 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         .where(eq(followUps.status, "pending"))
         .groupBy(followUps.sessionId)
         .as("sessions_with_pending_follow_ups");
+      // Each change's newest landing that recorded a pull request, by the partial index (0104).
+      const latestPullRequests = db
+        .selectDistinctOn([changeLandings.changeId], {
+          changeId: changeLandings.changeId,
+          number: changeLandings.pullRequestNumber,
+          url: changeLandings.pullRequestUrl,
+          state: changeLandings.pullRequestState,
+          title: changeLandings.pullRequestTitle,
+          observedAt: changeLandings.prObservedAt,
+          trigger: changeLandings.trigger,
+        })
+        .from(changeLandings)
+        .where(
+          and(eq(changeLandings.projectId, projectId), isNotNull(changeLandings.pullRequestNumber)),
+        )
+        .orderBy(asc(changeLandings.changeId), desc(changeLandings.createdAt))
+        .as("latest_pull_requests");
 
       const rows = yield* db
         .select({
@@ -202,6 +227,12 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           openComments: openCommentCounts.value,
           totalComments: totalCommentCounts.value,
           pendingSessionId: sessionsWithPendingFollowUps.sessionId,
+          pullRequestNumber: latestPullRequests.number,
+          pullRequestUrl: latestPullRequests.url,
+          pullRequestState: latestPullRequests.state,
+          pullRequestTitle: latestPullRequests.title,
+          pullRequestObservedAt: latestPullRequests.observedAt,
+          pullRequestTrigger: latestPullRequests.trigger,
         })
         .from(agentSessions)
         .leftJoin(worktreeChanges, eq(worktreeChanges.worktreeId, agentSessions.worktreeId))
@@ -211,6 +242,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           sessionsWithPendingFollowUps,
           eq(sessionsWithPendingFollowUps.sessionId, agentSessions.id),
         )
+        .leftJoin(latestPullRequests, eq(latestPullRequests.changeId, worktreeChanges.id))
         .where(eq(agentSessions.projectId, projectId))
         .pipe(Effect.orDie);
 
@@ -221,6 +253,20 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           openComments: row.openComments ?? 0,
           totalComments: row.totalComments ?? 0,
           pendingFollowUp: row.pendingSessionId !== null,
+          pullRequest:
+            row.pullRequestNumber === null ||
+            row.pullRequestUrl === null ||
+            row.pullRequestState === null ||
+            row.pullRequestObservedAt === null
+              ? null
+              : {
+                  number: row.pullRequestNumber,
+                  url: row.pullRequestUrl,
+                  state: row.pullRequestState,
+                  title: row.pullRequestTitle,
+                  observedAt: row.pullRequestObservedAt,
+                  adopted: row.pullRequestTrigger === "adopted",
+                },
         }),
       );
     });

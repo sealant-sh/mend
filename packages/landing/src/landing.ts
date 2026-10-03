@@ -47,6 +47,7 @@ import {
   landingCommitMessage,
   pullRequestTitle,
 } from "./description.ts";
+import { pullRequestNumbersIn } from "./gh.ts";
 import { pullRequestAvailability, pullRequestBase } from "./github.ts";
 import { PullRequests, PullRequestStepError } from "./pull-requests.ts";
 
@@ -274,6 +275,12 @@ export interface AdoptInput {
    * workspace.
    */
   readonly background: boolean;
+  /**
+   * A turn that ran `gh pr create`: the pull request URLs it named and when it started
+   * (`pullRequestUrlsOpenedIn`). Those are looked at first, and the look runs even when nothing
+   * the agent committed or pushed reached Mend yet. Absent for every other look.
+   */
+  readonly openedInTurn?: { readonly urls: ReadonlyArray<string>; readonly since: Date };
 }
 
 /** What the look came to. Only `adopted` records a row; `observed` refreshed an existing one. */
@@ -786,8 +793,20 @@ export const LandingLive: Layer.Layer<
       const agentBranches = yield* agentBranchesOf(members);
       const commit =
         change.headSha !== null && change.headSha !== worktree.baseSha ? change.headSha : null;
-      // Nothing the agent committed or pushed: no pull request of its can exist.
-      if (input.background && commit === null && agentBranches.length === 0) {
+      const opened =
+        input.openedInTurn === undefined
+          ? null
+          : {
+              numbers: pullRequestNumbersIn(availability.repository, input.openedInTurn.urls),
+              since: input.openedInTurn.since,
+            };
+      // Nothing the agent committed, pushed or named: no pull request of its can exist.
+      if (
+        input.background &&
+        commit === null &&
+        agentBranches.length === 0 &&
+        (opened === null || opened.numbers.length === 0)
+      ) {
         return { _tag: "none" } satisfies Adoption;
       }
       // `gh` speaks as the owner, in a workspace of the owner's own sessions: the newest live
@@ -817,12 +836,14 @@ export const LandingLive: Layer.Layer<
         repository: availability.repository,
         branches,
         commit,
+        opened,
       });
       if (found === null) return { _tag: "none" } satisfies Adoption;
       const pullRequest: LandedPullRequest = {
         number: found.number,
         url: found.url,
         state: found.state,
+        title: found.title,
         observedAt: new Date(yield* Clock.currentTimeMillis),
       };
       const history = yield* landings.listForChange(change.id);

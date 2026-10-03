@@ -1,7 +1,7 @@
 import { AuditEventsRepo, ProjectsRepo, WorktreeChangesRepo } from "@mend/db";
 import { ChangeId, type WorktreeId } from "@mend/domain";
 import { JobRunner } from "@mend/jobs";
-import { Landing } from "@mend/landing";
+import { type AdoptInput, Landing } from "@mend/landing";
 import { WorkspaceGitHooks } from "@mend/sessions";
 import { Cause, Effect, Layer, Schema } from "effect";
 
@@ -17,7 +17,11 @@ import { auditAdoption } from "./landing-state.ts";
  *   request from that branch has had time to be opened (`adopt-pull-request`, one per change
  *   while queued);
  * - an agent that ended while its workspace is still up is looked after at once, before the
- *   workspace may stop.
+ *   workspace may stop;
+ * - a turn that ran `gh pr create` is looked after at once when it ends, by the URLs it named,
+ *   so the pull request shows in the session as soon as the agent opened it. Without this, a push
+ *   over HTTPS (which `gh pr create` itself can make) never reaches the transport, and the look
+ *   waited for the agent to end.
  *
  * The owner's "Check GitHub" in the Land panel is the third, on demand.
  */
@@ -45,32 +49,38 @@ export const PullRequestAdoptionLive: Layer.Layer<
     const audit = yield* Effect.context<AuditEventsRepo>();
 
     /** Look once, in the background; what came of it is logged, and an adoption audited. */
-    const adopt = (changeId: ChangeId) =>
-      landing.adoptPullRequest({ changeId, background: true }).pipe(
-        Effect.tap((adoption) =>
-          Effect.gen(function* () {
-            if (adoption._tag !== "adopted") return;
-            const project = yield* projects.byId(adoption.landing.projectId);
-            yield* auditAdoption(adoption.landing, project.organizationId).pipe(
-              Effect.provide(audit),
-            );
-            yield* Effect.logInfo("landing: a pull request opened outside Mend was adopted").pipe(
-              Effect.annotateLogs({
-                changeId,
-                pullRequest: adoption.landing.pullRequest?.number,
-                branch: adoption.landing.remoteBranch,
-                fork: adoption.landing.pullRequestCrossRepository,
-              }),
-            );
-          }),
-        ),
-        Effect.catchCause((cause) =>
-          Effect.logWarning("landing: the look for a pull request opened outside Mend failed").pipe(
-            Effect.annotateLogs({ changeId, cause: Cause.pretty(cause) }),
+    const adopt = (changeId: ChangeId, openedInTurn?: AdoptInput["openedInTurn"]) =>
+      landing
+        .adoptPullRequest(
+          openedInTurn === undefined
+            ? { changeId, background: true }
+            : { changeId, background: true, openedInTurn },
+        )
+        .pipe(
+          Effect.tap((adoption) =>
+            Effect.gen(function* () {
+              if (adoption._tag !== "adopted") return;
+              const project = yield* projects.byId(adoption.landing.projectId);
+              yield* auditAdoption(adoption.landing, project.organizationId).pipe(
+                Effect.provide(audit),
+              );
+              yield* Effect.logInfo("landing: a pull request opened outside Mend was adopted").pipe(
+                Effect.annotateLogs({
+                  changeId,
+                  pullRequest: adoption.landing.pullRequest?.number,
+                  branch: adoption.landing.remoteBranch,
+                  fork: adoption.landing.pullRequestCrossRepository,
+                }),
+              );
+            }),
           ),
-        ),
-        Effect.asVoid,
-      );
+          Effect.catchCause((cause) =>
+            Effect.logWarning(
+              "landing: the look for a pull request opened outside Mend failed",
+            ).pipe(Effect.annotateLogs({ changeId, cause: Cause.pretty(cause) })),
+          ),
+          Effect.asVoid,
+        );
 
     const changeOf = (worktreeId: WorktreeId) =>
       changes.byWorktree(worktreeId).pipe(Effect.map((change) => change?.id ?? null));
@@ -112,6 +122,14 @@ export const PullRequestAdoptionLive: Layer.Layer<
       agentEnded: (event) =>
         changeOf(event.worktreeId).pipe(
           Effect.flatMap((changeId) => (changeId === null ? Effect.void : adopt(changeId))),
+        ),
+      pullRequestOpened: (event) =>
+        changeOf(event.worktreeId).pipe(
+          Effect.flatMap((changeId) =>
+            changeId === null
+              ? Effect.void
+              : adopt(changeId, { urls: event.urls, since: event.since }),
+          ),
         ),
     });
   }),

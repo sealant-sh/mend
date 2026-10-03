@@ -804,6 +804,7 @@ describe("Mend Drizzle schema", () => {
       "pull_request_number",
       "pull_request_url",
       "pull_request_state",
+      "pull_request_title",
       "pr_observed_at",
       "pr_cross_repository",
       "pr_head_owner",
@@ -827,6 +828,7 @@ describe("Mend Drizzle schema", () => {
     expect(config.indexes.map((index) => index.config.name)).toEqual([
       "change_landings_change_created_idx",
       "change_landings_session_idx",
+      "change_landings_project_pull_request_idx",
     ]);
   });
 

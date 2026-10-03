@@ -108,6 +108,7 @@ const toLanding = (row: typeof changeLandings.$inferSelect): ChangeLanding =>
             number: row.pullRequestNumber,
             url: row.pullRequestUrl,
             state: row.pullRequestState,
+            title: row.pullRequestTitle,
             observedAt: row.prObservedAt,
           },
     pullRequestCrossRepository: row.prCrossRepository,
@@ -122,6 +123,7 @@ const pullRequestColumns = (pullRequest: LandedPullRequest | null) => ({
   pullRequestNumber: pullRequest?.number ?? null,
   pullRequestUrl: pullRequest?.url ?? null,
   pullRequestState: pullRequest?.state ?? null,
+  pullRequestTitle: pullRequest?.title ?? null,
   prObservedAt: pullRequest?.observedAt ?? null,
 });
 

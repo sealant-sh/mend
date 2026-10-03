@@ -15,6 +15,7 @@ import {
   type SlackThreadSession,
 } from "@mend/db";
 import {
+  AgentItemId,
   AgentTurnId,
   ChangeId,
   ChangeLandingId,
@@ -29,6 +30,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
+  AgentItem,
   AgentTurn,
   Change,
   ChangeLanding,
@@ -46,7 +48,13 @@ import {
 import { InferenceError, RequestIntentReader, type RequestIntentInput } from "@mend/inference";
 import { Landing, LandingNotStartedError, type LandInput } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
-import { type CaptureFlushObservation, SessionEngine, WorktreeReads } from "@mend/sessions";
+import {
+  type CaptureFlushObservation,
+  type PullRequestOpenedEvent,
+  SessionEngine,
+  WorkspaceGitHooks,
+  WorktreeReads,
+} from "@mend/sessions";
 import {
   AgentBridge,
   type ChangedFile,
@@ -107,6 +115,9 @@ interface World {
   /** What each ask for a capture flush answers, in order; `flushed` once they run out. */
   flushes: Array<CaptureFlushObservation>;
   flushAsks: number;
+  /** What each turn's agent said and did, by turn id. */
+  items: Map<string, ReadonlyArray<AgentItem>>;
+  opened: Array<PullRequestOpenedEvent>;
 }
 
 const blankWorld = (): World => ({
@@ -131,6 +142,8 @@ const blankWorld = (): World => ({
   changedFilesReads: 0,
   flushes: [],
   flushAsks: 0,
+  items: new Map(),
+  opened: [],
 });
 
 let world: World = blankWorld();
@@ -276,9 +289,13 @@ const replaceTurn = (id: AgentTurnId, update: (turn: AgentTurn) => AgentTurn) =>
 };
 
 const layer = Layer.mergeAll(
+  Layer.mock(WorkspaceGitHooks, {
+    pullRequestOpened: (event) => Effect.sync(() => void world.opened.push(event)),
+  }),
   Layer.mock(AgentConversationRepo, {
     listTurns: () => Effect.sync(() => [...world.turns]),
     hasPendingRequests: () => Effect.sync(() => world.pending),
+    turnItems: (id) => Effect.sync(() => world.items.get(id) ?? []),
     claimTurnLanding: (id) =>
       Effect.sync(() => {
         const current = world.turns.find((candidate) => candidate.id === id);
@@ -860,5 +877,72 @@ describe("a request to land (docs/adr/0007, amended 2026-09-27)", () => {
     expect(world.reads).toEqual([]);
     expect(world.lands).toEqual([]);
     expect(decisions()).toEqual([[0, "skipped"]]);
+  });
+});
+
+describe("a turn that ran gh pr create (docs/adr/0007, pull requests opened outside Mend)", () => {
+  const item = (
+    turnId: string,
+    index: number,
+    kind: AgentItem["kind"],
+    fields: { readonly title?: string; readonly text?: string; readonly data?: unknown },
+  ) =>
+    new AgentItem({
+      id: AgentItemId.make(`${turnId}-item-${index}`),
+      sessionId: SESSION,
+      processId: SessionProcessId.make("process-1"),
+      turnId: AgentTurnId.make(turnId),
+      seq: index,
+      providerItemId: `provider-${index}`,
+      kind,
+      status: "completed",
+      title: fields.title ?? null,
+      text: fields.text ?? null,
+      data: fields.data ?? null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+  it("has the pull request looked for when the turn ends, landing on or off", async () => {
+    world.projectAutoLand = "inherit";
+    world.turns = [turn(0, { input: "open a pull request for this" })];
+    world.items.set("turn-0", [
+      item("turn-0", 0, "command-execution", {
+        title: "Bash",
+        data: { input: { command: "gh pr create --fill" } },
+      }),
+      item("turn-0", 1, "assistant-message", {
+        text: "Opened https://github.com/acme/api/pull/413.",
+      }),
+    ]);
+    await look();
+    expect(world.opened).toEqual([
+      {
+        sessionId: SESSION,
+        worktreeId: WORKTREE,
+        urls: ["https://github.com/acme/api/pull/413"],
+        since: world.turns[0]?.startedAt ?? world.turns[0]?.createdAt,
+      },
+    ]);
+  });
+
+  it("looks for nothing when no command ran gh pr create, or the turn is history", async () => {
+    world.turns = [turn(0)];
+    world.items.set("turn-0", [
+      item("turn-0", 0, "assistant-message", { text: "See https://github.com/acme/api/pull/400." }),
+    ]);
+    await look();
+    expect(world.opened).toEqual([]);
+
+    world = blankWorld();
+    world.turns = [turn(0, { endedAt: new Date(NOW.getTime() - 60 * 60_000) })];
+    world.items.set("turn-0", [
+      item("turn-0", 0, "command-execution", {
+        title: "gh pr create --fill",
+        text: "https://github.com/acme/api/pull/413",
+      }),
+    ]);
+    await look();
+    expect(world.opened).toEqual([]);
   });
 });

@@ -135,6 +135,7 @@ describe("landing a co-located session", () => {
               number: 7,
               url: "https://github.com/acme/api/pull/7",
               state: "open" as const,
+              title: null,
               observedAt: new Date(),
             },
             workspace: "short-lived" as const,

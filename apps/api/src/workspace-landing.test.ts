@@ -108,6 +108,7 @@ const pullRequest = {
   number: 412,
   url: "https://github.com/acme/api/pull/412",
   state: "open" as const,
+  title: null,
   observedAt: NOW,
 };
 
