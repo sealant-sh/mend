@@ -2917,6 +2917,9 @@ const landingPullRequestTitleMigration = Effect.gen(function* () {
     CREATE INDEX change_landings_project_pull_request_idx
     ON change_landings (project_id, change_id, created_at DESC)
     WHERE pull_request_number IS NOT NULL`;
+});
+
+/**
  * Who opened a turn (`request` | `harness`): Claude opens a turn on its own when a background
  * task or workflow it started ends, and Mend records it rather than dropping its output.
  */
