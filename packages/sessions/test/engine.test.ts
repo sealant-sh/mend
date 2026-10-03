@@ -7085,7 +7085,9 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
           (process) => process.kind === "agent-pty" && process.exitedAt === null,
         );
         if (agent === undefined) throw new Error("launch recorded no agent");
-        const flushThatShips = pathKind === "handoff" ? 1 : 2;
+        // The flush that ships the final capture: the handoff's own, or the drain's final, which
+        // is a stop's first and only flush (decision 50).
+        const flushThatShips = 1;
 
         if (pathKind === "handoff") {
           const handoff = yield* engine
@@ -7213,9 +7215,8 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
           },
           flush: () => {
             flushes += 1;
-            const flushThatShips = pathKind === "handoff" ? 1 : 2;
             return Effect.gen(function* () {
-              if (flushes === flushThatShips && !shipped) {
+              if (flushes === 1 && !shipped) {
                 yield* Deferred.succeed(flushStarted, undefined);
                 yield* Deferred.await(releaseFlush);
                 yield* finalCapture;
@@ -7460,8 +7461,8 @@ describe("SessionEngine capture mode", () => {
               outputHighWater: 0n,
             });
 
-            // The checkpoint flush observes no new capture. The process-end barrier must request a
-            // second flush, then wait for that final registration before harvest reads the head.
+            // The stop's one flush is the drain's final (decision 50); the harvest waits for its
+            // registration before it reads the head.
             yield* Deferred.await(flushStarted);
             expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(true);
             yield* Deferred.succeed(releaseFlush, undefined);
@@ -7572,7 +7573,7 @@ describe("SessionEngine capture mode", () => {
               flush: () =>
                 Effect.gen(function* () {
                   flushes += 1;
-                  if (flushes > 1 && !shipped) {
+                  if (flushes >= 1 && !shipped) {
                     yield* Deferred.succeed(flushStarted, undefined);
                     yield* Deferred.await(releaseFlush);
                     yield* finalCapture;
@@ -7765,16 +7766,12 @@ describe("SessionEngine capture mode", () => {
           expect(lease?.epoch).toBe(2);
           expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
 
-          // A user stop is a planned stop: the user mark, the post-process harvest barrier, and
-          // the stop itself each flush before the workspace goes.
+          // A user stop is a planned stop: one final flush before the workspace goes. The user
+          // mark and the harvest read that flush's head (ADR 0002 decision 50); before 2026-10-03
+          // each asked for a flush of its own, three before the final one.
           yield* engine.stop(session.id);
           yield* until(() => events.includes("workspace-1"), "the workspace stop");
-          expect(events).toEqual([
-            "flush:workspace-1",
-            "flush:workspace-1",
-            "flush:workspace-1",
-            "workspace-1",
-          ]);
+          expect(events).toEqual(["flush:workspace-1", "workspace-1"]);
           expect(world.sessions.get(session.id)?.hasTranscript).toBe(false);
         }),
       {

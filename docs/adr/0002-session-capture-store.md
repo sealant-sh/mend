@@ -1531,3 +1531,24 @@ Mend-side details the decision record left open, decided in this ADR:
       once (the proofs are in memory). The walk of the tree and the register's restorability check
       are still one thread each. An executor of an older daemon, an object over 5 GiB, and a scope
       whose worktree is gone wait as decision 48 says.
+
+50. (2026-10-03) A Stop makes one final flush, and reads it.
+    - **What waited.** A Stop asked the executor for three small flushes before the drain's final
+      one: the stop's own checkpoint (`checkpoint · user-mark`), the harvest barrier of each agent
+      it ended (`process-end harvest`), and, for a session with no agent, the settle harvest. Each
+      was a snapshot, a ship and a register: 8.6 s of a 25 s Stop on the box, and the `mend stop`
+      answer waited for the first of them.
+    - **One flush.** When a Stop will drain the workspace (capture mode, and nothing but what it
+      ends holds it), the checkpoint and the harvest are put off until the drain's final flush
+      (`deferToFinal` in the session engine) and read its head: a checkpoint reads the chain, a
+      harvest reads the head capture in the store, so neither needs the workspace. They run beside
+      the executor's termination, not before it. The drain's own reading stands for the flush each
+      would have asked for: a complete one means `flushed`, an incomplete one `incomplete` and no
+      harvest, a refused one an unflushed checkpoint and no harvest, as a refused flush gave before.
+      Nothing drained (the workspace in use after all): each runs as it did, flush and all.
+    - **Only a Stop.** An agent that ends on its own keeps its flushes before any drain: its end is
+      judged (`executor not answering`, `completed`) and its executor looked at before the drain
+      begins, and the tests of those judgements say so. Making every end read the drain's final is a
+      later change, with those judgements moved after it.
+    - **One FINAL per kept round, still.** The drain's own answer no longer stands for a later
+      round's (`recentFinals`): with the harvest put off, the drain is the round's one FINAL.
