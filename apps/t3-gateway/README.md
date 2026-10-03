@@ -21,12 +21,8 @@ decodes only the Mend fields it reads.
 | `POST /api/auth/browser-session`  | Refused: the gateway offers bearer tokens only                                                                                                 |
 | pairing links and client sessions | Refused with `insufficient_scope`: devices are administered in Mend                                                                            |
 
-| `GET /api/orchestration/shell` | The empty shell: no projects, no threads. The thread routes
-beside it answer `thread_not_found` |
-
 Refusals carry t3code's own error bodies (`EnvironmentAuthInvalidError`,
-`EnvironmentRequestInvalidError`, `EnvironmentScopeRequiredError`, `EnvironmentInternalError`). The
-project and pull request routes come with phase 1.
+`EnvironmentRequestInvalidError`, `EnvironmentScopeRequiredError`, `EnvironmentInternalError`).
 
 ## Phase 0: the RPC socket
 
@@ -39,7 +35,6 @@ socket gets its own RPC server, holding the handlers of the person who paired.
 | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `subscribeServerConfig`, `server.getConfig`             | The config: the descriptor, and one provider per Mend harness from `GET /api/harnesses/models` read as the person |
 | `subscribeServerLifecycle`                              | `welcome` with `bootstrapStatus: "complete"`, then open                                                           |
-| `orchestration.subscribeShell`                          | The empty shell, the catch-up marker when asked, then open                                                        |
 | `server.probe`                                          | `{}`                                                                                                              |
 | every other command or read                             | A typed failure from the method's own contract, never a defect                                                    |
 | feeds of things Mend never has (terminals, previews, …) | Open, and never emit                                                                                              |
@@ -50,6 +45,30 @@ no rollback, no plan mode, runtime modes `full-access` (`bypass`) and `approval-
 and no provider setup through t3code. Mend unreachable answers `ServerSettingsError`, which t3code
 retries; a device revoked in Mend answers `EnvironmentAuthorizationError`, which blocks the
 connection.
+
+## Phase 1: the projection
+
+One projection hub per paired person (`src/hub.ts`), shared by all of their sockets and requests and
+kept two minutes after the last one closes. It holds one `GET /api/events` stream from Mend, read
+with one of the person's device tokens, and re-reads what each pointer names through Mend's API:
+`project`, `session`, `session-process`, `worktree` and `session-change` re-read the project
+(`GET /api/projects/:id`), `agent-conversation` re-reads the session's turns and requests, and
+`organization`, `user` and `resync` re-read everything. A burst of pointers for one thing is one
+read. After the stream drops, the hub reconnects with backoff and reads everything again.
+
+Each read rebuilds the t3code entities (`src/shell.ts`), encodes them through the vendored schemas,
+and sends only what changed, each change stamped with the hub's next sequence. A fresh snapshot is
+always a legal reset for a t3code client, so a restarted gateway starts its sequence again.
+
+| t3code                                                         | From Mend                                                                                                       |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `orchestration.subscribeShell`, `GET /api/orchestration/shell` | Every project the person sees, and every session whose current agent is a codex or claude protocol process      |
+| project                                                        | `workspaceRoot` is the store path; no default model                                                             |
+| thread                                                         | the session; title from its label, else its first message; `worktreePath` is the worktree beside the store      |
+| run                                                            | one per turn; a running turn whose agent asked something is `waiting`                                           |
+| shell status                                                   | the latest run's status, else `idle`; the newest pending request; message bodies stay out, as in t3code's shell |
+
+PTY and shell sessions, and harnesses t3code has no driver for, are not threads.
 
 ## Run it
 

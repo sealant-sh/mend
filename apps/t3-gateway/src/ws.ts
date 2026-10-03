@@ -18,6 +18,7 @@ import * as RpcServer from "effect/unstable/rpc/RpcServer";
 import { GatewayAuth, type AuthenticatedBearer } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal } from "./http-errors.ts";
+import { Projections } from "./hub.ts";
 import { MendClient } from "./mend-client.ts";
 import { gatewayRpcHandlersLayer } from "./rpc.ts";
 import { WebSocketTickets } from "./tickets.ts";
@@ -50,13 +51,19 @@ const protocolIncompatible = () =>
 export const WebSocketRouteLive: Layer.Layer<
   never,
   never,
-  HttpRouter.HttpRouter | GatewayAuth | WebSocketTickets | GatewayEnvironment | MendClient
+  | HttpRouter.HttpRouter
+  | GatewayAuth
+  | WebSocketTickets
+  | GatewayEnvironment
+  | MendClient
+  | Projections
 > = Layer.unwrap(
   Effect.gen(function* () {
     const auth = yield* GatewayAuth;
     const tickets = yield* WebSocketTickets;
     const environment = yield* GatewayEnvironment;
     const mend = yield* MendClient;
+    const projections = yield* Projections;
 
     /**
      * As t3code reads an upgrade: a ticket when the URL carries one, else the request's own
@@ -96,10 +103,12 @@ export const WebSocketRouteLive: Layer.Layer<
 
         // One RPC server per socket, holding this person's handlers, as t3code builds one per
         // connection. It lives in the request's scope, which lasts as long as the socket.
+        // The person's hub, held while the socket is open (ADR 0012, "Projection").
+        const hub = yield* projections.hub(bearer.session);
         const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
         yield* RpcServer.make(WsRpcGroup, { disableTracing: true }).pipe(
           Effect.provideService(RpcServer.Protocol, protocol),
-          Effect.provide(gatewayRpcHandlersLayer(bearer.session)),
+          Effect.provide(gatewayRpcHandlersLayer(bearer.session, hub)),
           Effect.provideService(GatewayEnvironment, environment),
           Effect.provideService(MendClient, mend),
           Effect.forkScoped,

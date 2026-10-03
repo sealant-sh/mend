@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { AuthSessionId, EnvironmentId, WsRpcGroup } from "@mend/t3-contracts";
+import { EnvironmentId, WsRpcGroup } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -10,13 +10,12 @@ import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcSchema from "effect/unstable/rpc/RpcSchema";
 import * as Socket from "effect/unstable/socket/Socket";
 
-import { BEARER_TTL_MS, GRANTED_SCOPES } from "../src/auth.ts";
 import { makeGatewayEnvironment } from "../src/environment.ts";
-import { MendUnavailable } from "../src/mend-client.ts";
 import { makeGatewayRpcHandlers, SERVED_METHODS, SILENT_STREAMS } from "../src/rpc.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 import { socketUrl } from "./support/rpc.ts";
+import { emptyHub, testBearerSession, unreachableMend } from "./support/stubs.ts";
 
 /**
  * The whole of t3code's RPC group is registered (ADR 0012, "The surface"): a method the server
@@ -36,24 +35,9 @@ describe("the RPC surface", () => {
         host: "127.0.0.1",
         statePath: ":memory:",
       }),
-      mend: {
-        claimPairing: () =>
-          Effect.fail(new MendUnavailable({ operation: "test", status: null, cause: null })),
-        checkDevice: () => Effect.succeed("accepted"),
-        listHarnessModels: () => Effect.succeed([]),
-      },
-      session: {
-        sessionId: AuthSessionId.make("session-1"),
-        tokenHash: "hash",
-        deviceToken: "mdt_test",
-        mendUser: PERSON,
-        mendDeviceId: "device-1",
-        scopes: GRANTED_SCOPES,
-        client: { label: null, deviceType: "desktop", os: null },
-        issuedAt: 0,
-        expiresAt: BEARER_TTL_MS,
-        revokedAt: null,
-      },
+      mend: unreachableMend,
+      session: testBearerSession,
+      hub: emptyHub,
     });
     assert.deepStrictEqual(Object.keys(handlers).toSorted(), groupMethods());
   });
