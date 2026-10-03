@@ -49,6 +49,7 @@ import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import type { HubReadError, PersonHub } from "./hub.ts";
+import { makeReviewHandlers } from "./review.ts";
 import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
 
@@ -85,6 +86,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+  WS_METHODS.reviewGetDiffPreview,
+  WS_METHODS.reviewGetDiffFileContents,
 ]);
 
 /** Streams that stay open and never emit: feeds of things Mend never has. */
@@ -222,6 +225,7 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
   const { mend } = hub;
   const { descriptor, paths } = environment;
+  const review = makeReviewHandlers({ hub, mend, session });
 
   /** The socket's own device token, checked on every call, then the scope it needs. */
   const authorize = (bearer: BearerSession, requiredScope: AuthEnvironmentScope) =>
@@ -685,10 +689,11 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
     [WS_METHODS.subscribeWorktreeSetup]: () => Stream.never,
     [WS_METHODS.worktreeSetupCancel]: () => refuse(WS_METHODS.worktreeSetupCancel, OPERATE),
 
-    // ── Review (phase 1) ────────────────────────────────────────────────────
-    [WS_METHODS.reviewGetDiffPreview]: () => vcsUnsupported(WS_METHODS.reviewGetDiffPreview),
-    [WS_METHODS.reviewGetDiffFileContents]: () =>
-      vcsUnsupported(WS_METHODS.reviewGetDiffFileContents),
+    // ── Review: the thread's change ─────────────────────────────────────────
+    [WS_METHODS.reviewGetDiffPreview]: (input) =>
+      authorize(session, READ).pipe(Effect.andThen(review.getDiffPreview(input))),
+    [WS_METHODS.reviewGetDiffFileContents]: (input) =>
+      authorize(session, READ).pipe(Effect.andThen(review.getDiffFileContents(input))),
 
     // ── Terminal (phase 3, over Mend's /api/tty) ────────────────────────────
     [WS_METHODS.terminalOpen]: () => refuse(WS_METHODS.terminalOpen, TERMINAL),

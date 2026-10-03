@@ -141,6 +141,16 @@ agent up) is taken as under way, and the message waits for the agent. Every wait
 Steering mid-turn, images and holding a message for later are refused; queue edit and reorder, and a
 queue that survives a gateway restart, are phase 2.
 
+### Review
+
+`review.getDiffPreview` and `review.getDiffFileContents` (`src/review.ts`) show the thread's change:
+the `cwd` t3code names is the thread's `worktreePath`, and the answer is one `branch-range` source,
+the change against its base, from `GET /api/changes/:id/diff` read as the person. A preview for one
+file is that file's section of the patch. Mend serves the change as a patch, so whole contents (for
+expanding a hunk) come back only for files the patch holds whole, added or deleted; a changed file
+answers `VcsUnsupportedOperationError` until phase 3's worktree read. Whitespace is never ignored:
+Mend's change diff has no such option. Per-turn diffs are phase 3.
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:

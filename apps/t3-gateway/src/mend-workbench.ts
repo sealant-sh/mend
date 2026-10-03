@@ -158,6 +158,21 @@ export const MendSessionDetail = Schema.Struct({
 });
 export type MendSessionDetail = typeof MendSessionDetail.Type;
 
+/** `ChangeDiff` in @mend/api-contracts, from `GET /api/changes/:id/diff`: git's live answer. */
+export const MendChangeDiff = Schema.Struct({
+  change: Schema.Struct({
+    id: Schema.String,
+    branch: Schema.String,
+    baseSha: Schema.String,
+    headSha: Schema.NullOr(Schema.String),
+  }),
+  diff: Schema.String,
+  files: Schema.Array(
+    Schema.Struct({ path: Schema.String, additions: Schema.Number, deletions: Schema.Number }),
+  ),
+});
+export type MendChangeDiff = typeof MendChangeDiff.Type;
+
 /**
  * One SSE frame of `GET /api/events` (`MendEvent` in @mend/db): a pointer, never data. The
  * gateway reads which project and session it concerns and re-reads through the API.

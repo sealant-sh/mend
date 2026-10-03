@@ -26,6 +26,7 @@ export const unreachableMend: MendClient["Service"] = {
   listItems: () => unavailable("GET /api/sessions/:id/items"),
   listRequests: () => unavailable("GET /api/sessions/:id/requests"),
   sessionDetail: () => unavailable("GET /api/sessions/:id"),
+  changeDiff: () => unavailable("GET /api/changes/:id/diff"),
   submitTurn: () => unavailable("POST /api/sessions/:id/turns"),
   launchProtocol: () => unavailable("POST /api/sessions/:id/launch"),
   interruptTurn: () => unavailable("POST /api/turns/:id/interrupt"),
@@ -47,6 +48,7 @@ export const emptyHub: PersonHub = {
   mend: gateDeviceCalls(unreachableMend, () => Effect.void),
   threadSnapshot: () => Effect.succeed(null),
   subscribeThread: () => Effect.succeed(null),
+  changeOfWorktree: () => Effect.succeed(null),
   commands: {
     send: () => refused,
     interrupt: () => refused,

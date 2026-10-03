@@ -58,6 +58,7 @@ import {
   projectShellOf,
   threadShellOf,
   type ThreadSource,
+  worktreePathOf,
 } from "./shell.ts";
 import { GatewayState, type BearerSession, type TurnIds } from "./state.ts";
 import { threadProjectionOf } from "./thread-projection.ts";
@@ -132,6 +133,19 @@ export interface PersonHub {
   ) => Effect.Effect<ThreadSubscription | null, HubReadError, Scope.Scope>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
+  /**
+   * The change of the thread whose worktree is at `worktreePath` (what t3code's review calls its
+   * `cwd`), or null when no thread of the person's is there or its worktree has no change yet.
+   */
+  readonly changeOfWorktree: (
+    worktreePath: string,
+  ) => Effect.Effect<WorktreeChange | null, HubReadError>;
+}
+
+export interface WorktreeChange {
+  readonly changeId: string;
+  /** The ref the worktree was based on, when Mend recorded one. */
+  readonly baseRef: string | null;
 }
 
 /** A thread command Mend or the gateway did not take; `authorization` when it is not theirs. */
@@ -1482,6 +1496,20 @@ export const makePersonHub = (input: {
         return subscribed;
       });
 
+    const changeOfWorktree = (worktreePath: string) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        return yield* locked(
+          Effect.sync((): WorktreeChange | null => {
+            const source = threadSources().find(
+              (candidate) => worktreePathOf(candidate.project, candidate.session) === worktreePath,
+            );
+            if (source === undefined || source.changeId === null) return null;
+            return { changeId: source.changeId, baseRef: source.session.baseRef };
+          }),
+        );
+      });
+
     return {
       shellSnapshot,
       subscribeShell,
@@ -1491,6 +1519,7 @@ export const makePersonHub = (input: {
       refusal: tokens.refusal,
       mend,
       commands,
+      changeOfWorktree,
     };
   });
 
