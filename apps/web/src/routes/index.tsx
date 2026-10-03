@@ -9,6 +9,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useState } from "react";
 
 import { FirstRun, PairHint } from "#/components/first-run";
+import { PullRequestLink } from "#/components/pull-request-link";
 import { SessionComposer } from "#/components/session-composer";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
@@ -219,6 +220,7 @@ function HomePage() {
                 session={session}
                 project={project}
                 changeId={annotation?.changeId ?? ""}
+                pullRequest={annotation?.pullRequest ?? null}
                 onContextMenu={(event) =>
                   openMenu(event, sessionMenu(session, annotation, navigate, launchContext, viewer))
                 }
@@ -359,6 +361,12 @@ function HomePage() {
                               status={session.status}
                               recorded={session.sealantRunId !== null}
                             />
+                            {annotation === undefined || annotation.pullRequest === null ? null : (
+                              <PullRequestLink
+                                pullRequest={annotation.pullRequest}
+                                className="max-w-[16rem]"
+                              />
+                            )}
                             {annotation?.changeId != null && (
                               <Link
                                 to="/changes/$changeId"
@@ -460,24 +468,56 @@ function SessionCard({
 }) {
   const { session, project, annotation } = entry;
   return (
-    <Link
-      to="/sessions/$sessionId"
-      params={{ sessionId: session.id }}
+    <CardWithPullRequest
+      pullRequest={annotation?.pullRequest ?? null}
       onContextMenu={onContextMenu}
-      className="block rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
     >
-      <div className="flex items-center justify-between gap-4">
-        <p className="font-sans text-sm font-medium text-foreground">
-          {entry.worktreeName} · {project}
+      <Link
+        to="/sessions/$sessionId"
+        params={{ sessionId: session.id }}
+        className="block p-5 no-underline"
+      >
+        <div className="flex items-center justify-between gap-4">
+          <p className="font-sans text-sm font-medium text-foreground">
+            {entry.worktreeName} · {project}
+          </p>
+          <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
+        </div>
+        <p className="mt-3 truncate font-mono text-xs text-faint">
+          {progressLine ??
+            `${session.harness}${session.label === null ? "" : ` — ${session.label}`} · ${session.branch}${session.baseRef === null ? "" : ` · base ${session.baseRef}`}`}
+          <AnnotationSuffix annotation={annotation} />
         </p>
-        <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
-      </div>
-      <p className="mt-3 truncate font-mono text-xs text-faint">
-        {progressLine ??
-          `${session.harness}${session.label === null ? "" : ` — ${session.label}`} · ${session.branch}${session.baseRef === null ? "" : ` · base ${session.baseRef}`}`}
-        <AnnotationSuffix annotation={annotation} />
-      </p>
-    </Link>
+      </Link>
+    </CardWithPullRequest>
+  );
+}
+
+/**
+ * A row card whose change has a pull request: the card's own link, and below it the way to
+ * GitHub, a sibling so neither link sits inside the other.
+ */
+function CardWithPullRequest({
+  pullRequest,
+  onContextMenu,
+  children,
+}: {
+  readonly pullRequest: SessionAnnotationDto["pullRequest"] | null;
+  readonly onContextMenu: React.MouseEventHandler | undefined;
+  readonly children: React.ReactNode;
+}) {
+  return (
+    <div
+      onContextMenu={onContextMenu}
+      className="rounded-2xl bg-card shadow-sm transition-shadow hover:shadow-md"
+    >
+      {children}
+      {pullRequest === null ? null : (
+        <div className="-mt-2 flex px-5 pb-4">
+          <PullRequestLink pullRequest={pullRequest} />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -486,33 +526,32 @@ function ReviewRow({
   session,
   project,
   changeId,
+  pullRequest,
   onContextMenu,
 }: {
   readonly session: SessionDto;
   readonly project: string;
   readonly changeId: string;
+  readonly pullRequest: SessionAnnotationDto["pullRequest"] | null;
   readonly onContextMenu?: React.MouseEventHandler;
 }) {
   return (
-    <Link
-      to="/changes/$changeId"
-      params={{ changeId }}
-      onContextMenu={onContextMenu}
-      className="block rounded-2xl bg-card p-5 no-underline shadow-sm transition-shadow hover:shadow-md"
-    >
-      <div className="flex items-center justify-between gap-4">
-        <p className="font-sans text-sm font-medium text-foreground">
-          {session.harness} · {project}
-          {session.label === null ? "" : ` — ${session.label}`}
+    <CardWithPullRequest pullRequest={pullRequest} onContextMenu={onContextMenu}>
+      <Link to="/changes/$changeId" params={{ changeId }} className="block p-5 no-underline">
+        <div className="flex items-center justify-between gap-4">
+          <p className="font-sans text-sm font-medium text-foreground">
+            {session.harness} · {project}
+            {session.label === null ? "" : ` — ${session.label}`}
+          </p>
+          <span className="font-sans text-xs font-medium text-primary">Review →</span>
+        </div>
+        <p className="mt-3 truncate font-mono text-xs text-faint">
+          {session.settledAt === null
+            ? session.branch
+            : `settled ${new Date(session.settledAt).toLocaleString()}`}
+          <ChangeStatsChip changeId={changeId} />
         </p>
-        <span className="font-sans text-xs font-medium text-primary">Review →</span>
-      </div>
-      <p className="mt-3 truncate font-mono text-xs text-faint">
-        {session.settledAt === null
-          ? session.branch
-          : `settled ${new Date(session.settledAt).toLocaleString()}`}
-        <ChangeStatsChip changeId={changeId} />
-      </p>
-    </Link>
+      </Link>
+    </CardWithPullRequest>
   );
 }
