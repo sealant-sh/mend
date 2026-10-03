@@ -2829,7 +2829,10 @@ const secretFilesMigration = Effect.gen(function* () {
       updated_at timestamptz NOT NULL DEFAULT now(),
       CONSTRAINT user_secret_files_user_id_path_key UNIQUE (user_id, path)
     )`;
- * The server-owned model catalog (docs/models-audit.md): one row per harness and model id, seeded
+});
+
+/**
+ * 0102: the server-owned model catalog (docs/models-audit.md): one row per harness and model id, seeded
  * with what the harness adapters supported on 2026-10-03 (`HARNESS_MODEL_SEED`, written out here
  * so the migration stays what it was). `efforts` null means the harness's own; one default per
  * harness. And the model and effort a session was started with, on the session itself.
