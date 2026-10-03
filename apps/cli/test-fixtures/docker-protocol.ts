@@ -80,8 +80,13 @@ export class DockerProtocol {
         const namePatterns = filters
           .filter((value) => value.startsWith("name="))
           .map((value) => new RegExp(value.replace("name=", "")));
-        const bare =
-          args.indexOf("--format") >= 0 && args[args.indexOf("--format") + 1] === "{{.Names}}";
+        // `{{.Names}}` alone or followed by `{{.Label "key"}}` columns, tab separated; else JSON names.
+        const format =
+          args.indexOf("--format") >= 0 ? (args[args.indexOf("--format") + 1] ?? "") : "";
+        const bare = format.startsWith("{{.Names}}");
+        const labelColumns = [...format.matchAll(/\{\{\.Label "([^"]+)"\}\}/g)].flatMap((match) =>
+          match[1] === undefined ? [] : [match[1]],
+        );
         return ok(
           [...collection]
             .filter(
@@ -89,7 +94,11 @@ export class DockerProtocol {
                 labels.every(([key, value]) => resourceLabels?.[key ?? ""] === value) &&
                 namePatterns.every((pattern) => pattern.test(name)),
             )
-            .map(([name]) => (bare ? name : JSON.stringify(name)))
+            .map(([name, resourceLabels]) =>
+              bare
+                ? [name, ...labelColumns.map((key) => resourceLabels?.[key] ?? "")].join("\t")
+                : JSON.stringify(name),
+            )
             .join("\n"),
         );
       }

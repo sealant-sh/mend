@@ -211,7 +211,7 @@ describe("man pages", () => {
     expect(setup).toContain("--exposure <v>");
     expect(setup).toContain("--tenancy <v>");
     expect(setup).toContain("Mend's own port stays on loopback");
-    expect(setup).toContain("a fresh install cannot start as public");
+    expect(setup).toContain("A fresh install cannot start with the edge");
     expect(setup).toContain("MEND_SOURCE_POLICY=tenant and MEND_CAPTURE_REQUIRE_SIZES=true");
     expect(setup).toContain("mend server setup --edge mend.example.com");
     const upgrade = renderCommand(findCommand(["server", "upgrade"])!, 120).replace(/\s+/g, " ");

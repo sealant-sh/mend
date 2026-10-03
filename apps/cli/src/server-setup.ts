@@ -30,6 +30,7 @@ import {
   declaredPostureLines,
   EDGE_CADDYFILE,
   EDGE_COMPOSE_OVERLAY,
+  type EdgeCertificate,
   EXPOSURES,
   type Exposure,
   healthPosture,
@@ -459,9 +460,15 @@ const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boo
  */
 const checkPosture = (
   bind: string,
+  ports: { readonly appPort: number; readonly sshPort: number },
   edgeHost: string | undefined,
   exposure: Exposure | undefined,
 ): void => {
+  if (edgeHost !== undefined && [ports.appPort, ports.sshPort].some((p) => p === 80 || p === 443)) {
+    throw setupError(
+      "With an edge, --port and --ssh-port must not be 80 or 443: the edge publishes both on every interface.",
+    );
+  }
   if (edgeHost !== undefined && !isLoopbackBind(bind)) {
     throw setupError(
       `With an edge, --bind stays on loopback, ${DEFAULT_BIND}: the edge publishes 80 and 443, and Mend's own port is reached through it alone.`,
@@ -507,7 +514,7 @@ const validateExposure = (
   const edgeHost = options.noEdge ? undefined : (options.edge ?? existing?.edgeHost);
   const exposure = options.exposure ?? existing?.exposure;
   const tenancy = options.tenancy ?? existing?.tenancy;
-  checkPosture(bind, edgeHost, exposure);
+  checkPosture(bind, { appPort, sshPort }, edgeHost, exposure);
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
   if (edgeHost === undefined)
@@ -718,10 +725,12 @@ const parseContextRows = (raw: string): ReadonlyArray<DockerContextRow> => {
 
 const localUnixEndpoint = (endpoint: string): boolean => endpoint.startsWith("unix:///");
 
-const commandFailure = (label: string, output: CommandOutput): ServerSetupError => {
-  const detail = output.stderr.trim() || output.error || `exit ${output.status ?? "unknown"}`;
-  return setupError(`${label}: ${detail}`);
-};
+/** What a failed command said: its stderr, else the runtime's failure, else its exit status. */
+const outputDetail = (output: CommandOutput): string =>
+  output.stderr.trim() || output.error || `exit ${output.status ?? "unknown"}`;
+
+const commandFailure = (label: string, output: CommandOutput): ServerSetupError =>
+  setupError(`${label}: ${outputDetail(output)}`);
 
 const selectDockerContext = async (
   runtime: ServerSetupRuntime,
@@ -1619,6 +1628,8 @@ const removeStrayEdge = async (
 ): Promise<void> => {
   if (installation.config.edgeHost !== undefined) return;
   const context = installation.config.dockerContext;
+  // Never fatal: this runs after a restart or an upgrade stopped Mend, and a listing the daemon
+  // refuses must not keep Mend down. What could not be done is said, and status shows the rest.
   const listed = await runtime.run("docker", [
     "--context",
     context,
@@ -1630,14 +1641,41 @@ const removeStrayEdge = async (
     "--filter",
     "label=com.docker.compose.service=edge",
     "--format",
-    "{{.Names}}",
+    '{{.Names}}\t{{.Label "com.docker.compose.project.working_dir"}}',
   ]);
-  if (listed.status !== 0 || listed.error !== undefined)
-    throw commandFailure("Could not list this project's containers", listed);
-  const names = listed.stdout
-    .trim()
-    .split(/\s+/)
-    .filter((name) => name !== "");
+  if (listed.status !== 0 || listed.error !== undefined) {
+    runtime.writeLine(
+      `Could not list this project's containers: ${outputDetail(listed)}. An edge container left by an earlier generation, if any, stays until the next start. mend server status shows it.`,
+    );
+    return;
+  }
+  // Only a container Compose started from one of this installation's generations is this
+  // installation's edge: the working directory label names the generation it ran from. A
+  // project of the same name run from somewhere else keeps its container.
+  const generations = path.dirname(installation.directory);
+  let resolvedGenerations = generations;
+  try {
+    resolvedGenerations = fs.realpathSync(generations);
+  } catch {
+    resolvedGenerations = generations;
+  }
+  const own = (workingDir: string): boolean =>
+    [generations, resolvedGenerations].some((root) => workingDir.startsWith(`${root}${path.sep}`));
+  const rows = listed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .map((line) => {
+      const [name = "", workingDir = ""] = line.split("\t");
+      return { name, workingDir };
+    })
+    .filter((row) => row.name !== "");
+  for (const row of rows.filter((candidate) => !own(candidate.workingDir))) {
+    runtime.writeLine(
+      `Edge container ${row.name} was started from ${row.workingDir || "an unknown directory"}, not from this installation's generations. It stays.`,
+    );
+  }
+  const names = rows.filter((row) => own(row.workingDir)).map((row) => row.name);
   if (names.length === 0) return;
   const removed = await runtime.run("docker", [
     "--context",
@@ -1647,10 +1685,14 @@ const removeStrayEdge = async (
     "--force",
     ...names,
   ]);
-  if (removed.status !== 0 || removed.error !== undefined)
-    throw commandFailure(`Could not remove the edge container ${names.join(", ")}`, removed);
+  if (removed.status !== 0 || removed.error !== undefined) {
+    runtime.writeLine(
+      `Could not remove the edge container ${names.join(", ")}: ${outputDetail(removed)}. It may still hold 80 and 443. To remove it: docker --context ${context} container rm --force ${names.join(" ")}`,
+    );
+    return;
+  }
   runtime.writeLine(
-    `Removed the edge container ${names.join(", ")}: this generation runs no edge, so nothing listens on 80 and 443.`,
+    `Removed the edge container ${names.join(", ")}, which this generation does not run.`,
   );
 };
 
@@ -1753,9 +1795,9 @@ const setupServer = async (
   // Until the first account exists, registration is open to whoever arrives first, and the
   // server refuses `public` without an operator (ADR 0004, decision 16). Said before anything
   // is written, with the order that works.
-  if (existing === null && config.exposure === "public") {
+  if (existing === null && (config.edgeHost !== undefined || config.exposure === "public")) {
     throw setupError(
-      "A fresh install cannot start as public: until the first account exists, registration is open to whoever arrives first, and the server refuses MEND_EXPOSURE=public without an operator account. Set up with --exposure private, create the first account, then run mend server setup --exposure public.",
+      `A fresh install cannot start with the edge or as public: until the first account exists, registration is open to whoever reaches the origin first, and the server refuses MEND_EXPOSURE=public without an operator account. Run mend server setup without --edge and --exposure public, create the first account at http://localhost:${config.appPort}, then run mend server setup --edge <host> and declare the posture.`,
     );
   }
   const secrets = savedSecrets ?? createSecrets(runtime);
@@ -2060,7 +2102,7 @@ const observeEdgeCertificate = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
   host: string,
-): Promise<string | null> => {
+): Promise<EdgeCertificate> => {
   const listed = await runtime.run(
     "docker",
     serverComposeArgs(composeTarget(installation), [
@@ -2073,9 +2115,18 @@ const observeEdgeCertificate = async (
     ]),
     { timeoutMs: serverProcessDeadlines.ordinary },
   );
-  if (listed.status !== 0 || listed.error !== undefined) return null;
+  if (listed.error !== undefined) return { kind: "unavailable", reason: listed.error };
+  if (listed.status !== 0) {
+    // `ls` on a glob that matched nothing: the file is not there. Anything else was not a look.
+    return /No such file or directory/.test(listed.stderr)
+      ? { kind: "none" }
+      : {
+          kind: "unavailable",
+          reason: listed.stderr.trim() || `exit ${listed.status ?? "unknown"}`,
+        };
+  }
   const file = listed.stdout.trim().split("\n")[0];
-  return file === undefined || file === "" ? null : file;
+  return file === undefined || file === "" ? { kind: "none" } : { kind: "observed", file };
 };
 
 /**
@@ -2216,7 +2267,7 @@ const serverStatus = async (
         running: edgeRunning,
         certificate: edgeRunning
           ? await observeEdgeCertificate(runtime, installation, config.edgeHost)
-          : null,
+          : { kind: "unavailable", reason: "the edge is not running, so its data was not read" },
       }),
     );
   }

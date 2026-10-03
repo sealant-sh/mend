@@ -80,7 +80,7 @@ interface discovery cannot add trust.
 > does not do it for you.
 
 Plain HTTP does not protect credentials on an untrusted network. Use an encrypted private network or
-a TLS edge. Setup runs the edge for you:
+a TLS edge. Setup runs the edge for you, once the first account exists:
 
 ```sh
 mend server setup --edge mend.example.com
@@ -90,7 +90,8 @@ Caddy then listens on ports 80 and 443 of every interface, obtains and renews a 
 `mend.example.com` and proxies to Mend, whose own port stays on loopback. The browser origin becomes
 `https://mend.example.com`. For a certificate to be issued, the name's DNS must point at this
 machine and both ports must reach it from the Internet. `mend server status` says whether Caddy
-holds one.
+holds one. A fresh install refuses `--edge`: until the first account exists, registration is open to
+whoever reaches the origin first, so set up on localhost, create the account, then add the edge.
 
 Setup also takes the posture the server declares, `--exposure loopback|private|public` and
 `--tenancy single|multi`, and keeps the edge and the posture across reruns and upgrades. Without the

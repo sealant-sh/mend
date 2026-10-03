@@ -618,10 +618,14 @@ describe.skipIf(!composeAvailable)(
       const root = temporary();
       const configDir = path.join(root, "server");
       const runtime = setupRuntime(configDir);
-      // The first account must exist before `public`: the edge first, the posture on a rerun.
+      // The first account must exist before the edge and before `public`: the plain install
+      // first, the edge and the posture on reruns.
+      expect(await serverCommand(["setup", "--context", "default"], runtime)).toEqual({
+        _tag: "ok",
+      });
       expect(
         await serverCommand(
-          ["setup", "--context", "default", "--edge", "mend.example.test", "--tenancy", "multi"],
+          ["setup", "--edge", "mend.example.test", "--tenancy", "multi"],
           runtime,
         ),
       ).toEqual({ _tag: "ok" });

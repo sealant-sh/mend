@@ -179,17 +179,34 @@ describe("what status says", () => {
     ]);
   });
 
-  it("says what the edge showed", () => {
-    expect(observedEdgeLine("alpha.mend.run", { running: false, certificate: null })).toBe(
-      "edge · alpha.mend.run · container not running · no certificate in Caddy's data yet · mend server logs shows what Caddy tried",
+  it("says what the edge showed, and when nothing was looked at", () => {
+    expect(
+      observedEdgeLine("alpha.mend.run", { running: true, certificate: { kind: "none" } }),
+    ).toBe(
+      "edge · alpha.mend.run · container running · no certificate in Caddy's data yet · mend server logs shows what Caddy tried",
     );
     expect(
       observedEdgeLine("alpha.mend.run", {
         running: true,
-        certificate: "/data/caddy/certificates/x/alpha.mend.run/alpha.mend.run.crt",
+        certificate: {
+          kind: "observed",
+          file: "/data/caddy/certificates/x/alpha.mend.run/alpha.mend.run.crt",
+        },
       }),
     ).toBe(
       "edge · alpha.mend.run · container running · certificate observed in Caddy's data · /data/caddy/certificates/x/alpha.mend.run/alpha.mend.run.crt",
+    );
+    // A stopped edge or a refused look is not an absence: the line says no look was taken.
+    expect(
+      observedEdgeLine("alpha.mend.run", {
+        running: false,
+        certificate: {
+          kind: "unavailable",
+          reason: "the edge is not running, so its data was not read",
+        },
+      }),
+    ).toBe(
+      "edge · alpha.mend.run · container not running · certificate not observed · the edge is not running, so its data was not read",
     );
   });
 
@@ -230,7 +247,14 @@ describe("what status says", () => {
   it("never words a report as a verdict", () => {
     const everything = [
       ...declaredPostureLines({ edgeHost: "a.example.com", exposure: "public", tenancy: "multi" }),
-      observedEdgeLine("a.example.com", { running: true, certificate: "/data/x.crt" }),
+      observedEdgeLine("a.example.com", {
+        running: true,
+        certificate: { kind: "observed", file: "/data/x.crt" },
+      }),
+      observedEdgeLine("a.example.com", {
+        running: false,
+        certificate: { kind: "unavailable", reason: "the edge is not running" },
+      }),
       ...observedPostureLines(
         { exposure: "public", tenancy: "multi" },
         {

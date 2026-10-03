@@ -1198,9 +1198,12 @@ describe("mend server setup", () => {
     [["--edge", "mend.example.test", "--exposure", "loopback"], "contradict"],
     [["--edge", "mend.example.test", "--no-edge"], "contradict"],
     [["--exposure", "public"], "needs the edge"],
+    [["--edge", "mend.example.test"], "A fresh install cannot start with the edge or as public"],
+    [["--edge", "mend.example.test", "--port", "443"], "must not be 80 or 443"],
+    [["--edge", "mend.example.test", "--ssh-port", "80"], "must not be 80 or 443"],
     [
       ["--exposure", "public", "--edge", "mend.example.test"],
-      "A fresh install cannot start as public",
+      "A fresh install cannot start with the edge or as public",
     ],
     [
       ["--exposure", "loopback", "--bind", "0.0.0.0", "--url", "http://10.0.0.4:3105"],
@@ -1228,6 +1231,9 @@ describe("mend server setup", () => {
 
   it("an edge host writes the overlay and the Caddyfile, runs them with compose.yaml, and probes Mend on loopback", async () => {
     const control = makeRuntime();
+    // The plain install first, where the first account is created; the edge on a rerun.
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    const plainCommands = control.commands.length;
     expect(await serverCommand(["setup", "--edge", "Mend.Example.Test."], control.runtime)).toEqual(
       { _tag: "ok" },
     );
@@ -1262,7 +1268,7 @@ describe("mend server setup", () => {
     expect(env.get("APP_URL")).toBe("https://mend.example.test");
     expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
     expect(env.has("MEND_EXPOSURE")).toBe(false);
-    const up = control.commands.find(([, args]) => args.includes("up"));
+    const up = control.commands.slice(plainCommands).find(([, args]) => args.includes("up"));
     expect(up?.[1].slice(0, 14)).toEqual([
       "--context",
       "default",
@@ -1282,6 +1288,7 @@ describe("mend server setup", () => {
     expect(up?.[1]).not.toContain("--remove-orphans");
     // Health on Mend's own port, where this machine can reach it; the edge image checked like the rest.
     expect(control.fetched.filter((url) => url.endsWith("/api/health"))).toEqual([
+      "http://localhost:3105/api/health",
       "http://127.0.0.1:3105/api/health",
     ]);
     expect(
@@ -1302,7 +1309,7 @@ describe("mend server setup", () => {
     // A rerun keeps the edge without being told again, and writes nothing new.
     expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
     expect(activeDirectory(configDir)).toBe(generation);
-    expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(1);
+    expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(2);
   });
 
   it("does not report the advertised URL reachable when every health request fails", async () => {

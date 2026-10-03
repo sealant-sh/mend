@@ -21,6 +21,8 @@ interface DaemonState {
   readonly certificate?: string;
   /** How many times the CLI removed a stray edge container by its labels. */
   readonly removedEdge?: number;
+  /** The generation directory the edge was started from, as Compose would label it. */
+  readonly edgeDirectory?: string;
   readonly version: string;
   readonly images: Readonly<Record<string, string>>;
   readonly fail: string;
@@ -229,7 +231,8 @@ const fixture = async () => {
   const upgrade = (version = "0.24.0") =>
     serverCommand(["upgrade", "--version", version, "--assets-dir", assets, "--offline"], runtime);
   /** Setup behind the edge: Mend's port stays on loopback, where the fixture's health answers. */
-  const setupEdge = (host: string, ...more: ReadonlyArray<string>) =>
+  /** The edge on a fresh box, which setup refuses: the plain install first, the edge on a rerun. */
+  const freshEdge = (host: string, ...more: ReadonlyArray<string>) =>
     serverCommand(
       [
         "setup",
@@ -248,6 +251,11 @@ const fixture = async () => {
       ],
       runtime,
     );
+  const setupEdge = async (host: string, ...more: ReadonlyArray<string>) => {
+    const first = await setup();
+    if (first._tag !== "ok") return first;
+    return serverCommand(["setup", "--offline", "--edge", host, ...more], runtime);
+  };
   return {
     root,
     configDir,
@@ -263,6 +271,7 @@ const fixture = async () => {
     files,
     setup,
     setupEdge,
+    freshEdge,
     upgrade,
     assets,
     runCalls,
@@ -966,6 +975,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(f.fetched.every((request) => request === `http://127.0.0.1:${f.port}/api/health`)).toBe(
       true,
     );
+    expect(f.fetched.some((request) => request.includes(host))).toBe(false);
     expect(f.lines).toContain(
       `Mend 0.23.0 answers at http://127.0.0.1:${f.port} on this machine · the edge is set up for https://${host}`,
     );
@@ -1010,6 +1020,15 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
   it("status says what was declared beside what was observed, and never a verdict", async () => {
     const f = await fixture();
     expect(await f.setupEdge(host, "--exposure", "private")).toEqual({ _tag: "ok" });
+    // Stopped, the edge's data is not read: the line says so instead of claiming an absence.
+    expect(await serverCommand(["stop"], f.runtime)).toEqual({ _tag: "ok" });
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      `edge · ${host} · container not running · certificate not observed · the edge is not running, so its data was not read`,
+    );
+    expect(f.lines).toContain("Mend is stopped. No health claim was made.");
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
     f.lines.length = 0;
     expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
     expect(f.lines).toContain(
@@ -1085,10 +1104,13 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
 
   it("a public, multi install renders the gate's environment, after the first account exists", async () => {
     const f = await fixture();
-    expect(await f.setupEdge(host, "--exposure", "public")).toMatchObject({
-      _tag: "error",
-      message: expect.stringContaining("A fresh install cannot start as public"),
-    });
+    // A fresh box takes neither the edge nor public: registration would be open on the origin.
+    for (const flags of [["--exposure", "public"], [], ["--exposure", "private"]]) {
+      expect(await f.freshEdge(host, ...flags)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("A fresh install cannot start with the edge or as public"),
+      });
+    }
     expect(fs.existsSync(path.join(f.configDir, "active"))).toBe(false);
     expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
     const plain = f.files();
@@ -1163,7 +1185,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(f.state().edgeRunning).toBe(false);
     expect(f.state().removedEdge).toBe(1);
     expect(f.lines).toContain(
-      "Removed the edge container mend-edge-1: this generation runs no edge, so nothing listens on 80 and 443.",
+      "Removed the edge container mend-edge-1, which this generation does not run.",
     );
     expect(
       f.lines.some((line) =>
@@ -1175,6 +1197,36 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(await serverCommand(["restart"], f.runtime)).toEqual({ _tag: "ok" });
     expect(f.state().removedEdge).toBe(1);
     expect(f.runCalls.some((call) => call.args.includes("--remove-orphans"))).toBe(false);
+  });
+
+  it("an edge of another compose directory stays, and a refused listing never keeps Mend down", async () => {
+    const f = await fixture();
+    expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup", "--no-edge", "--url", `http://127.0.0.1:${f.port}`], f.runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(f.state().removedEdge).toBe(1);
+    // A project of the same name run by hand from another directory has an edge of its own.
+    f.update({ edgeRunning: true, edgeDirectory: "/opt/other-mend" });
+    f.lines.length = 0;
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.state().removedEdge).toBe(1);
+    expect(f.state().edgeRunning).toBe(true);
+    expect(f.lines).toContain(
+      "Edge container mend-edge-1 was started from /opt/other-mend, not from this installation's generations. It stays.",
+    );
+    expect(f.runCalls.some((call) => call.args[2] === "container" && call.args[3] === "rm")).toBe(
+      true,
+    );
+    // The daemon refuses the listing: Mend restarts all the same, and the line says what was not done.
+    f.update({ fail: "container-ls" });
+    f.lines.length = 0;
+    expect(await serverCommand(["restart"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.state().appRunning).toBe(true);
+    expect(
+      f.lines.some((line) => line.startsWith("Could not list this project's containers:")),
+    ).toBe(true);
+    expect(f.lines.some((line) => line.includes("stays until the next start"))).toBe(true);
   });
 
   it("an edge left behind by a failed edge-less start goes on the next start", async () => {

@@ -51,24 +51,35 @@ them.
 ### Behind a TLS edge
 
 For a server reached from the Internet, let setup run the edge instead of binding Mend's port beyond
-loopback. The name's DNS points at the server and ports 80 and 443 reach it:
+loopback. The order matters: until the first account exists, registration is open to whoever reaches
+the origin first, so the account is created on localhost before anything is published. Set up on the
+server with no flags, then create the account over an SSH tunnel from your laptop:
+
+```sh
+mend server setup                                  # on the server: http://localhost:3105, loopback only
+ssh -L 3105:127.0.0.1:3105 your-vps                # on your laptop, then open http://localhost:3105
+```
+
+With the account created, add the edge. The name's DNS points at the server and ports 80 and 443
+reach it:
 
 ```sh
 mend server setup --edge mend.example.com
 ```
 
 Caddy obtains the certificate and proxies to Mend, whose own port stays on loopback. The origin is
-`https://mend.example.com`. Create the first account through it, then declare the posture:
+now `https://mend.example.com`, and `mend login --url https://mend.example.com` signs the laptop in.
+Then declare the posture:
 
 ```sh
 mend server setup --exposure public
 mend server setup --exposure public --tenancy multi   # for more than one organization
 ```
 
-A fresh install cannot start as `public`: until the first account exists, registration is open to
-whoever arrives first, and the server refuses `public` without an operator. `mend server status`
-shows the edge, the certificate as Caddy's data shows it, and the declared exposure and tenancy
-beside what the running server reports. Workspace SSH on port 2222 stays on loopback with the edge.
+Setup refuses `--edge` and `--exposure public` on a fresh install for the reason above, and the
+server refuses `public` without an operator account. `mend server status` shows the edge, the
+certificate as Caddy's data shows it, and the declared exposure and tenancy beside what the running
+server reports. Workspace SSH on port 2222 stays on loopback with the edge.
 
 Each workspace runs its own rootless Docker, which needs unprivileged user namespaces. Ubuntu 23.10
 and later (24.04 LTS included) refuse them by default, and then no session can start.

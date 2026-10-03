@@ -71,7 +71,9 @@ if (
 // without an edge finds one still running. Answered from this daemon's state, not the protocol's.
 const edgeLabelFilter = "label=com.docker.compose.service=edge";
 if (args[2] === "container" && args[3] === "ls" && args.includes(edgeLabelFilter)) {
-  out(state.edgeRunning ? "mend-edge-1" : "");
+  if (state.fail === "container-ls") fail();
+  // Name and the working directory Compose recorded: the generation the edge was started from.
+  out(state.edgeRunning ? `mend-edge-1\t${state.edgeDirectory ?? ""}` : "");
   process.exit(0);
 }
 if (args[2] === "container" && args[3] === "rm" && args.includes("mend-edge-1")) {
@@ -152,10 +154,14 @@ else if (args.includes("image")) {
       `mend ${state.appRunning ? "running" : "exited"}\npostgres ${state.postgresRunning ? "running" : "exited"}${withGarage ? `\ngarage ${state.postgresRunning ? "running" : "exited"}` : ""}${withEdge || state.edgeRunning ? `\nedge ${state.edgeRunning ? "running" : "exited"}` : ""}`,
     );
 } else if (command[0] === "exec" && command.includes("edge")) {
-  // `mend server status` asks Caddy's data for the host's certificate: a path when it holds one.
+  // `mend server status` asks Caddy's data for the host's certificate: a path when it holds one,
+  // else what `ls` says of a glob that matched nothing.
   if (!withEdge || !state.edgeRunning) fail();
   if (typeof state.certificate === "string") out(state.certificate);
-  else fail();
+  else {
+    process.stderr.write("ls: /data/caddy/certificates/*/x/x.crt: No such file or directory\n");
+    process.exit(1);
+  }
 } else if (command[0] === "logs") out("bounded fixture log");
 else if (command[0] === "down") {
   state.appRunning = false;
@@ -182,7 +188,10 @@ else if (command[0] === "down") {
     state.appRunning = true;
     // The edge runs when its overlay is among the files. Without it, Compose does not know the
     // service and leaves a running edge alone; the CLI removes that container itself, by label.
-    if (withEdge) state.edgeRunning = true;
+    if (withEdge) {
+      state.edgeRunning = true;
+      state.edgeDirectory = directory;
+    }
     state.version = config.serverVersion;
     state.upFiles = composeFiles.map((file) => path.basename(file));
     save();

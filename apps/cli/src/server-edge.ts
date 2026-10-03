@@ -180,21 +180,31 @@ export const declaredPostureLines = (posture: ServerPosture): ReadonlyArray<stri
   `tenancy · declared ${posture.tenancy ?? "single"}${posture.tenancy === undefined ? " · the default, not set on this install" : ""}`,
 ];
 
+/**
+ * What a look into Caddy's data found: the certificate file for the host, none there, or no look
+ * at all. Only the first two are observations; the third says why there was none.
+ */
+export type EdgeCertificate =
+  | { readonly kind: "observed"; readonly file: string }
+  | { readonly kind: "none" }
+  | { readonly kind: "unavailable"; readonly reason: string };
+
 /** What the edge's container and Caddy's data showed. */
 export interface EdgeObservation {
   /** Whether the `edge` service is among the running Compose services. */
   readonly running: boolean;
-  /** The certificate file Caddy holds for the host, or null when none was found. */
-  readonly certificate: string | null;
+  readonly certificate: EdgeCertificate;
 }
 
 export const observedEdgeLine = (host: string, observed: EdgeObservation): string =>
   [
     `edge · ${host}`,
     observed.running ? "container running" : "container not running",
-    observed.certificate === null
-      ? "no certificate in Caddy's data yet · mend server logs shows what Caddy tried"
-      : `certificate observed in Caddy's data · ${observed.certificate}`,
+    observed.certificate.kind === "observed"
+      ? `certificate observed in Caddy's data · ${observed.certificate.file}`
+      : observed.certificate.kind === "none"
+        ? "no certificate in Caddy's data yet · mend server logs shows what Caddy tried"
+        : `certificate not observed · ${observed.certificate.reason}`,
   ].join(" · ");
 
 /** The posture as the running server reports it, beside what was declared. */
