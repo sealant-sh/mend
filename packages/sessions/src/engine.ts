@@ -10922,10 +10922,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
+        const previous = currentAgentProcess(rows);
         // A continuation that names neither a model nor an effort (a resume, a stopped session's
         // follow-up) runs on what the session was started with (docs/models-audit.md); a start
         // that names either is taken as given.
-        const start: LaunchStart =
+        const withModel: LaunchStart =
           requested.model === undefined && requested.effort === undefined
             ? {
                 ...requested,
@@ -10933,7 +10934,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ...(session.effort === null ? {} : { effort: session.effort }),
               }
             : requested;
-        const previous = currentAgentProcess(rows);
+        // A continuation that names no permission mode keeps the one its last protocol agent
+        // recorded: a session that asked for approval comes back asking. A first launch, or one
+        // after a terminal agent, has none recorded and runs on the default.
+        const recordedPermissionMode =
+          previous?.kind === "agent-protocol"
+            ? previous.protocolOptions?.permissionMode
+            : undefined;
+        const start: LaunchStart =
+          requested.permissionMode === undefined && recordedPermissionMode !== undefined
+            ? { ...withModel, permissionMode: recordedPermissionMode }
+            : withModel;
         // Any prior same-harness agent resumes by provider id — a PTY-born
         // session picked up in protocol mode continues the same conversation
         // (mode handoff), not a fresh one.
@@ -11582,7 +11593,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (priorAgent?.kind === "agent-protocol") {
           return yield* launchProtocol(
             sessionId,
-            { mode: "protocol", prompt: instruction, permissionMode: "bypass" },
+            // No permission mode named: the relaunch keeps the one recorded (`launchProtocol`).
+            { mode: "protocol", prompt: instruction },
             author,
             launchCorrelationId,
           ).pipe(
@@ -11681,7 +11693,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (!forcePty && priorAgent?.kind === "agent-protocol" && target === session.harness) {
           return yield* launchProtocol(
             sessionId,
-            { mode: "protocol", permissionMode: "bypass" },
+            // No permission mode named: the relaunch keeps the one recorded (`launchProtocol`).
+            { mode: "protocol" },
             null,
             null,
             fresh,
