@@ -68,8 +68,9 @@ phone names a model.
    `packages/db/src/migrations.ts`), one row per harness and model id: label, whether it is the
    harness's default, the efforts it takes when fewer than the harness's, and its position. Seeded
    from what the harness adapters supported on 2026-10-03, the former `HARNESS_MODELS`; opencode's
-   rows (the Codex models as `openai/<id>`, through the ChatGPT login) came in 0107. One default per
-   harness is a partial unique index. Editable by SQL today; no write endpoint yet.
+   rows (the Codex models as `openai/<id>`, through the ChatGPT login) came in 0107, with no default
+   (see 3). One default per harness is a partial unique index. Editable by SQL today; no write
+   endpoint yet.
 2. **One endpoint.** `GET /api/harnesses/models` returns every harness's catalog: its models, the
    default model id, the efforts the harness accepts, and whether it offers priority processing
    (`packages/api-contracts/src/harness-models.ts`). Clients read this and nothing else. The domain
@@ -86,9 +87,11 @@ phone names a model.
    live-agent check, so every protocol path (a handoff to a conversation, a crash relaunch, Slack)
    records the same way. The composed argv always names the model for a harness that has a catalog,
    and `Session.model` says which. A harness without a catalog (a custom command, a shell) records
-   `null`: the harness's own choice. A verbatim `argv` (`mend run -- …`) names its own command and
-   records nothing; the CLI and the dashboard send a structured start for every harness, bare or
-   not.
+   `null`: the harness's own choice. So does opencode when nobody chose a model: its catalog lists
+   models but has no default unless an operator flags one (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`),
+   because `--model` would beat the project's or the user's own opencode config. A verbatim `argv`
+   (`mend run -- …`) names its own command and records nothing; the CLI and the dashboard send a
+   structured start for every harness, bare or not.
 4. **Effort stays optional.** `null` means the harness's own default and is reported as such. The
    catalog carries which efforts a model takes, not a default effort: the harnesses pick their own
    default and Mend does not second-guess it.

@@ -2086,7 +2086,7 @@ describe.skipIf(!reachable)("0107 opencode models", () => {
     );
   });
 
-  it("lists the ChatGPT login's models for opencode, its default first, and keeps an operator's rows", async () => {
+  it("lists the ChatGPT login's models for opencode with no default of its own, and keeps an operator's rows", async () => {
     const rows = await withModelsDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -2123,8 +2123,8 @@ describe.skipIf(!reachable)("0107 opencode models", () => {
         is_default: model.isDefault,
       })),
     );
-    expect(fresh.filter((row) => row.is_default).map((row) => row.id)).toEqual([
-      OPENCODE_DEFAULT_MODEL,
-    ]);
+    // No default: a launch naming no model leaves the choice to opencode and its config.
+    expect(fresh.filter((row) => row.is_default)).toEqual([]);
+    expect(fresh[0]?.id).toBe(OPENCODE_DEFAULT_MODEL);
   });
 });

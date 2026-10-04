@@ -188,12 +188,11 @@ describe("the seed and the composer's own clamp", () => {
     expect(HARNESS_MODEL_SEED.codex?.find((model) => model.isDefault)?.id).toBe("gpt-6.1-sol");
   });
 
-  it("seeds opencode with the Codex models through the ChatGPT login, and the same default", () => {
+  it("seeds opencode with the Codex models through the ChatGPT login, and no default of its own", () => {
     const codex = (HARNESS_MODEL_SEED.codex ?? []).map((model) => `openai/${model.id}`);
     expect((HARNESS_MODEL_SEED.opencode ?? []).map((model) => model.id)).toEqual(codex);
-    expect(HARNESS_MODEL_SEED.opencode?.find((model) => model.isDefault)?.id).toBe(
-      OPENCODE_DEFAULT_MODEL,
-    );
+    expect(HARNESS_MODEL_SEED.opencode?.some((model) => model.isDefault)).toBe(false);
+    expect(HARNESS_MODEL_SEED.opencode?.[0]?.id).toBe(OPENCODE_DEFAULT_MODEL);
     expect(composeLaunchArgv("opencode", { model: OPENCODE_DEFAULT_MODEL })).toEqual([
       "opencode",
       "--model",

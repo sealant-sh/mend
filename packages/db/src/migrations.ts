@@ -2933,30 +2933,23 @@ const turnOriginMigration = Effect.gen(function* () {
 
 /**
  * 0107: opencode's models in the catalog (`HARNESS_MODEL_SEED.opencode`, written out here so the
- * migration stays what it was): the Codex models through the ChatGPT login, as opencode names them.
- * Without them opencode had no default, and a launch with no model opened on whatever opencode
- * picked. A row an operator already added is kept as it is; the default goes in only when the
- * harness has none.
+ * migration stays what it was): the Codex models through the ChatGPT login, as opencode names them,
+ * for the pickers to list. None is the default: a launch that names no model leaves the choice to
+ * opencode and the person's own opencode config (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`). A row an
+ * operator already added is kept as it is, their default with it.
  */
 const opencodeModelsMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
-    INSERT INTO harness_models (harness, id, label, is_default, efforts, position)
-    SELECT 'opencode', seed.id, seed.label,
-      seed.is_default AND NOT EXISTS (
-        SELECT 1 FROM harness_models WHERE harness = 'opencode' AND is_default
-      ),
-      NULL, seed.position
-    FROM (VALUES
-      ('openai/gpt-6.1-sol', 'GPT-6.1 Sol', true, 0),
-      ('openai/gpt-6-astra', 'GPT-6 Astra', false, 1),
-      ('openai/gpt-6-sol', 'GPT-6 Sol', false, 2),
-      ('openai/gpt-6-luna', 'GPT-6 Luna', false, 3),
-      ('openai/gpt-5.6-sol', 'GPT-5.6 Sol', false, 4),
-      ('openai/gpt-5.6-terra', 'GPT-5.6 Terra', false, 5),
-      ('openai/gpt-5.6-luna', 'GPT-5.6 Luna', false, 6),
-      ('openai/gpt-5.5', 'GPT-5.5', false, 7)
-    ) AS seed (id, label, is_default, position)
+    INSERT INTO harness_models (harness, id, label, is_default, efforts, position) VALUES
+      ('opencode', 'openai/gpt-6.1-sol', 'GPT-6.1 Sol', false, NULL, 0),
+      ('opencode', 'openai/gpt-6-astra', 'GPT-6 Astra', false, NULL, 1),
+      ('opencode', 'openai/gpt-6-sol', 'GPT-6 Sol', false, NULL, 2),
+      ('opencode', 'openai/gpt-6-luna', 'GPT-6 Luna', false, NULL, 3),
+      ('opencode', 'openai/gpt-5.6-sol', 'GPT-5.6 Sol', false, NULL, 4),
+      ('opencode', 'openai/gpt-5.6-terra', 'GPT-5.6 Terra', false, NULL, 5),
+      ('opencode', 'openai/gpt-5.6-luna', 'GPT-5.6 Luna', false, NULL, 6),
+      ('opencode', 'openai/gpt-5.5', 'GPT-5.5', false, NULL, 7)
     ON CONFLICT (harness, id) DO NOTHING`;
 });
 
