@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +16,7 @@ import {
   AgentMemoryRepoLive,
   agentMemoryDigest,
   type MergeText,
+  isSoleCopy,
   mergeAgentMemoryText,
   planAgentMemoryImport,
   planAgentMemoryReadBack,
@@ -488,6 +489,52 @@ describe("importing memory from a machine", () => {
     expect(unreported).toBe(0);
   });
 });
+
+// Review round 3, invariant C: one function writes versions, and decides pinning itself, so no
+// path can keep a version without the rule.
+describe("where versions are written", () => {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "src", "repos", "agent-memory.ts"),
+    "utf8",
+  );
+  it("has one insert into the versions table, inside keepVersion, pinned by isSoleCopy", () => {
+    expect(source.match(/\.insert\(agentMemoryVersions\)/g)).toHaveLength(1);
+    const keep = source.slice(source.indexOf("const keepVersion = ("));
+    expect(keep.indexOf(".insert(agentMemoryVersions)")).toBeLessThan(
+      keep.indexOf("const write = ("),
+    );
+    expect(keep).toMatch(/const pinned = yield\* isSoleCopy\(version, current, holdsDatabase\);/);
+    // Every call must name the file it is kept beside (null for a deletion) and a database check:
+    // both parameters are required, with no default, so the compiler holds every call to it.
+    expect(keep).toMatch(
+      /version: StoredMemoryFile,\s+current: MemoryFile \| null,\s+holdsDatabase: HoldsDatabase,\s+\) =>/,
+    );
+  });
+
+  it("pins a version that holds a line, or any bytes, the current file lacks", async () => {
+    const t = (contents: string) => text("x.md", contents);
+    const b = (contents: string) => ({
+      path: `${ROOT}/x.png`,
+      encoding: "base64" as const,
+      contents,
+    });
+    expect(await soleCopy(t("a\n"), t("a\nb\n"))).toBe(false);
+    expect(await soleCopy(t("a\nA\n"), t("a\n"))).toBe(true);
+    expect(await soleCopy(t("a\n"), null)).toBe(true);
+    expect(await soleCopy(b("AAAA"), b("AAAA"))).toBe(false);
+    expect(await soleCopy(b("AAAA"), b("BBBB"))).toBe(true);
+  });
+});
+
+type MemoryLike = {
+  readonly path: string;
+  readonly encoding: "utf8" | "base64";
+  readonly contents: string;
+};
+
+/** `isSoleCopy` with no database check. */
+const soleCopy = (version: MemoryLike, current: MemoryLike | null) =>
+  Effect.runPromise(isSoleCopy(version, current, () => Effect.succeed(false)));
 
 /**
  * Against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database. Without one
@@ -1045,6 +1092,127 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
           laptop.contents,
         ]);
         expect(versions.filter((row) => !row.pinned)).toHaveLength(20);
+      }),
+    );
+  });
+
+  // Review round 3, finding 1 (reproduced): A and B receive the same file; A saves base+A, B saves
+  // base+B (merged to base+A+B); B's identical second read-back takes the same-session path and
+  // writes base+B. The versions holding A were unpinned, and 25 later saves evicted them.
+  it("pins every version that holds a line the current file lacks, on the same-session path too", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const base = text("ab.md", "base\n");
+        yield* repo.importFiles(importing([base], { source: null }));
+        const delivered = { [base.path]: agentMemoryDigest(base) };
+        const readBack = (sessionId: string, contents: string, from = delivered) =>
+          repo.readBack({
+            userId: "anna",
+            projectId: project,
+            sessionId,
+            delivered: from,
+            session: [text("ab.md", contents)],
+            merge: gitUnion,
+          });
+        yield* readBack("s-a", "base\nA\n");
+        yield* readBack("s-b", "base\nB\n");
+        expect((yield* repo.read("anna", project, base.path))?.file.contents).toContain("A\n");
+        yield* readBack("s-b", "base\nB\n");
+        // Twenty-five later saves that each add a line.
+        let saved = (yield* repo.read("anna", project, base.path))?.file.contents ?? "";
+        for (let n = 0; n < 25; n += 1) {
+          const next = `${saved}later ${n}\n`;
+          yield* readBack("s-c", next, { [base.path]: agentMemoryDigest(text("ab.md", saved)) });
+          saved = next;
+        }
+        const current = (yield* repo.read("anna", project, base.path))?.file.contents ?? "";
+        const pinned = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_versions WHERE path = ${base.path} AND pinned`;
+        // A is in the current file or in a pinned version: never only in an evictable one.
+        expect(
+          current.includes("\nA\n") || pinned.some((row) => row.contents.includes("\nA\n")),
+        ).toBe(true);
+      }),
+    );
+  });
+
+  // Review round 3, finding 1, binary: two sessions replace the same binary file; the one they
+  // both replaced and the first one's are pinned, and survive 25 later saves.
+  it("pins a binary version another session's save replaced", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const png = (bytes: string) => ({
+          path: `${ROOT}/race.png`,
+          encoding: "base64" as const,
+          contents: Buffer.from(`${bytes}\0`).toString("base64"),
+        });
+        yield* repo.importFiles(importing([png("zero")], { source: null }));
+        const delivered = { [png("zero").path]: agentMemoryDigest(png("zero")) };
+        for (const [sessionId, bytes] of [
+          ["s-png-a", "a"],
+          ["s-png-b", "b"],
+        ] as const) {
+          yield* repo.readBack({
+            userId: "anna",
+            projectId: project,
+            sessionId,
+            delivered,
+            session: [png(bytes)],
+            merge: gitUnion,
+          });
+        }
+        for (let n = 0; n < 25; n += 1) {
+          yield* repo.readBack({
+            userId: "anna",
+            projectId: project,
+            sessionId: "s-png-c",
+            delivered: {},
+            session: [png(`later ${n}`)],
+            merge: gitUnion,
+          });
+        }
+        const pinned = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_versions WHERE path = ${png("a").path} AND pinned`;
+        expect(pinned.map((row) => row.contents)).toEqual(
+          expect.arrayContaining([png("zero").contents, png("a").contents]),
+        );
+      }),
+    );
+  });
+
+  // Review round 3, finding 3 through the store: nothing lost, nothing reported, base advanced.
+  it("imports an index with a repeated entry in an indented code block whole", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const path = "indented/MEMORY.md";
+        yield* repo.importFiles(importing([text(path, "# Memory\n")], { source: null }));
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-indented",
+          delivered: {},
+          session: [text(path, "# Memory\n- [mend](mend.md)\n")],
+          merge: gitUnion,
+        });
+        const laptop = text(path, "# Memory\nExample:\n\n    - [E](e.md)\n    - [E](e.md)\n");
+        const report = yield* repo.importFiles(
+          importing([laptop], { source: { id: "machine-3:/code/repo", label: "desk" } }),
+        );
+        expect(report.merged).toEqual([
+          {
+            path: laptop.path,
+            against: "no-shared-version",
+            missingLines: 0,
+            storeMissingLines: 0,
+          },
+        ]);
+        const merged = (yield* repo.read("anna", project, laptop.path))?.file.contents ?? "";
+        expect(merged.split("\n").filter((line) => line === "    - [E](e.md)")).toHaveLength(2);
       }),
     );
   });

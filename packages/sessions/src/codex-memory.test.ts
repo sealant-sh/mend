@@ -11,6 +11,7 @@ import {
   CARRIED_INCOMING,
   CODEX_CARRY_MAX_CONVERSATIONS,
   carryConversationsExec,
+  codexDatabaseHolds,
   codexWouldSummarise,
   consolidateCodexDatabase,
   materializeCarriedConversations,
@@ -148,6 +149,25 @@ describe("rolloutPathOf", () => {
   });
 });
 
+/** Whether `current` holds every summary of `version`. */
+const holds = (current: Uint8Array, version: Uint8Array) =>
+  Effect.runPromise(codexDatabaseHolds({ current, version }));
+
+/** A summary database with `rows` of (thread, revision, summary), and `extra` columns. */
+const summaryDatabase = (rows: ReadonlyArray<readonly [string, number, string]>, extra = "") => {
+  const file = path.join(scratch(), "memories_1.sqlite");
+  const db = new DatabaseSync(file);
+  db.exec(
+    `create table stage1_outputs (thread_id text primary key, source_updated_at integer not null, raw_memory text not null${extra})`,
+  );
+  const insert = db.prepare(
+    `insert into stage1_outputs values (?, ?, ?${extra === "" ? "" : ", null"})`,
+  );
+  for (const row of rows) insert.run(...row);
+  db.close();
+  return new Uint8Array(fs.readFileSync(file));
+};
+
 describe("Codex's summary database", () => {
   const withWal = (dir: string) => {
     const file = path.join(dir, "memories_1.sqlite");
@@ -190,25 +210,12 @@ describe("Codex's summary database", () => {
   });
 
   it("merges an imported database by conversation: the newer summary of each, from either", async () => {
-    const database = (rows: ReadonlyArray<readonly [string, number, string]>, extra = "") => {
-      const file = path.join(scratch(), "memories_1.sqlite");
-      const db = new DatabaseSync(file);
-      db.exec(
-        `create table stage1_outputs (thread_id text primary key, source_updated_at integer not null, raw_memory text not null${extra})`,
-      );
-      const insert = db.prepare(
-        `insert into stage1_outputs values (?, ?, ?${extra === "" ? "" : ", null"})`,
-      );
-      for (const row of rows) insert.run(...row);
-      db.close();
-      return new Uint8Array(fs.readFileSync(file));
-    };
-    const ours = database([
+    const ours = summaryDatabase([
       [id(1), 100, "mend's only"],
       [id(2), 300, "mend's newer"],
       [id(3), 100, "mend's older"],
     ]);
-    const theirs = database([
+    const theirs = summaryDatabase([
       [id(2), 200, "laptop's older"],
       [id(3), 200, "laptop's newer"],
       [id(4), 100, "laptop's only"],
@@ -230,11 +237,30 @@ describe("Codex's summary database", () => {
       [id(4), "laptop's only"],
     ]);
     // Another Codex's columns, or bytes that are not a database: not merged.
-    const other = database([[id(5), 1, "x"]], ", usage_count integer");
+    const other = summaryDatabase([[id(5), 1, "x"]], ", usage_count integer");
     expect(await Effect.runPromise(mergeCodexDatabases({ ours, theirs: other }))).toBeNull();
     expect(
       await Effect.runPromise(mergeCodexDatabases({ ours, theirs: Buffer.from("torn") })),
     ).toBeNull();
+  });
+
+  // Review round 3, invariant C: a replaced summary database is pinned unless the new one holds
+  // every summary it held, at the same revision or newer.
+  it("says whether one database holds every summary of another", async () => {
+    const older = summaryDatabase([
+      [id(1), 100, "one"],
+      [id(2), 100, "two"],
+    ]);
+    const newer = summaryDatabase([
+      [id(1), 200, "one, again"],
+      [id(2), 100, "two"],
+      [id(3), 100, "three"],
+    ]);
+    const missing = summaryDatabase([[id(1), 200, "one, again"]]);
+    expect(await holds(newer, older)).toBe(true);
+    expect(await holds(older, newer)).toBe(false);
+    expect(await holds(missing, older)).toBe(false);
+    expect(await holds(newer, Buffer.from("torn"))).toBe(false);
   });
 
   it("stores nothing for bytes that are not a database, and reads them as nothing summarised", async () => {

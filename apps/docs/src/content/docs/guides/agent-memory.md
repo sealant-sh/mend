@@ -32,11 +32,11 @@ with its own, and the output names each file and what happened to it:
 
 - **added**: a file Mend did not have.
 - **merged**: a file both sides have with other contents. Both sides' lines are kept, each line the
-  two share once. `MEMORY.md` keeps each entry once. A note's frontmatter is merged key by key.
-  Where the two give a key different values, Mend's value stays and your machine's is kept under it
-  as a comment (`# from <host>, <date>: description: …`), which the agent reads and can fold in. If
-  the result does not hold every line your machine sent, the output says how many, and your
-  machine's file is kept as a version.
+  two share once. A line both sides wrote at different places stays twice. A note's frontmatter is
+  merged key by key. Where the two give a key different values, Mend's value stays and your
+  machine's is kept under it as a comment (`# from <host>, <date>: description: …`), which the agent
+  reads and can fold in. If the result does not hold every line your machine sent, the output says
+  how many, and your machine's file is kept as a version.
 - **updated**: a file Mend has not changed since your last import from this checkout, which your
   machine has. Your machine's replaces it.
 - **kept**: a file Mend changed since your last import, and your machine did not.

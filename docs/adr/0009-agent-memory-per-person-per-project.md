@@ -103,17 +103,16 @@ much smaller: the memory.
        comments, which belong to the key above them and are content like it. Frontmatter outside
        that subset (a quoted key, a block scalar, a nested map, a key written twice) that differs is
        not merged. Line endings are compared as LF; the result keeps the store's.
-     - An index (`MEMORY.md`) keeps each index entry (`- [Title](file.md) …`) once. Every other
-       line, and anything inside a code block, stays however often it repeats. Code blocks are read
-       after CommonMark: a block closes only on a fence of its own character, at least as long, with
-       nothing after it, and an unclosed block runs to the end.
+     - No line is removed after the merge, in `MEMORY.md` or anywhere: a line both sides wrote at
+       different places stays twice, and the agent folds it when it next rewrites its memory.
      - Codex's summary database keeps every conversation's newer summary from either side.
-     - The last step of every merge compares the machine's lines, as received, with the final text,
-       as multisets. A line need not be there only when the store removed it since the last import
-       (as many copies as it removed), or when it is a repeated index entry outside a code block,
-       read by the same parser as the dedupe. A merge that misses any other line keeps the machine's
-       file whole as a version, says how many lines, and leaves the base where it was, so the next
-       import merges it and says so again.
+     - The last step of every merge compares both inputs, the store's and the machine's, line by
+       line as multisets, with the final text. The one exemption: with a last import, as many copies
+       of a line as the other side removed since it. A frontmatter value the merge kept as a comment
+       counts as there: it is in the file byte for byte after the `# from …:` prefix. A merge that
+       misses any other line of either side keeps that side's file whole as a version and says how
+       many lines; when it is the machine's, the base stays where it was, so the next import merges
+       it and says so again.
      - Anything else (not text, frontmatter not merged, too different to align), or a merge over the
        size limit, keeps the store's file. The machine's is kept as a version, and the next import
        reports it again.
@@ -122,15 +121,17 @@ much smaller: the memory.
    - Every version an import replaces is kept, the machine's own copy of a merged file too, as for a
      read-back. `--dry-run` asks the server for the same plan and writes nothing, on the machine
      either: it makes no machine id.
-   - A kept version that is the only copy of some lines is pinned, and the cap of twenty versions
-     per file never takes it: the machine's file in a conflict or in a merge that missed a line, a
-     session's file in a read-back merge that missed a line, and a stored file a read-back could not
-     merge.
+   - One rule pins versions, for every version Mend keeps, on every path (import, read-back, a
+     session replacing its own earlier save, a binary replacement, a conflict, a removal): a version
+     that holds a line, or for a binary file any content, that the file the store holds after that
+     step lacks is pinned, and the cap of twenty versions per file never takes it. Codex's summary
+     database counts as held when the new one has every summary at the same revision or newer. One
+     function writes every version and applies the rule; no path writes one any other way.
 
    The same rules apply to a read-back merge. A read-back merge with no shared version (a file the
    session made itself, or a delivered version no longer kept) keeps each shared line once instead
    of repeating the whole file. One that cannot be merged takes the session's, as for a file that is
-   not text, and one that does not hold every line the session wrote keeps the session's file as a
+   not text, and one that does not hold every line of either side keeps that side's file as a pinned
    version.
 
 5. **People can see and remove it.** `mend memory` lists the files for the current project,
@@ -275,3 +276,12 @@ to build it.
   pinned rather than counted in the cap. Pinning, rather than raising the cap or counting pinned
   versions in it, because any finite cap would still evict the only copy after enough saves, and
   these versions are rare: one per conflict or lossy merge, and a repeated one is the same row.
+- 2026-10-04, third review: two invariants instead of more cases. The index dedupe is dropped: a
+  repeated line in `MEMORY.md` is harmless, as the Consequences already accept, and a lost one is
+  not, while every rule that decided which repeats were safe to drop (fences, indented code, lines a
+  union moved into or out of a block) found another way to drop a real line. The check is symmetric,
+  on both inputs, with base deletions as its only exemption. And pinning is one rule in one
+  function, applied to every version on every path, rather than chosen at each call site; the
+  same-session replacement and binary paths had kept sole copies unpinned. The cost: a version that
+  lost lines to an agent's own edit is pinned too, so the cap now bounds only versions the next file
+  holds whole.

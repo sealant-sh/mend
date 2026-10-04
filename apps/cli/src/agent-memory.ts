@@ -157,6 +157,10 @@ export const memoryDisplayName = (filePath: string): string => {
   return named.harness === "claude" ? named.name : `${named.harness}:${named.name}`;
 };
 
+/** How a merged row says some of one side's lines are not in the result. */
+const lost = (n: number, whose: string) =>
+  `${n} of ${whose} line${n === 1 ? " is" : "s are"} not in the result: its copy kept as a version`;
+
 /** At most this many added files are named one by one. */
 const ADDED_NAMED = 20;
 
@@ -180,8 +184,6 @@ export const importReportLines = (report: ImportReport): ReadonlyArray<string> =
   for (const merge of report.merged ?? []) {
     const missing = merge.missingLines ?? 0;
     const storeMissing = merge.storeMissingLines ?? 0;
-    const lost = (n: number, whose: string) =>
-      `${n} of ${whose} line${n === 1 ? " is" : "s are"} not in the result: its copy kept as a version`;
     row(
       "merged",
       merge.path,
