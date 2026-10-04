@@ -5,6 +5,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -6744,14 +6745,43 @@ describe("SessionEngine default shell profile", () => {
   });
 });
 
-/** What the batched write execs put where: absolute workspace path → contents. */
+const gunzipped = (text: string) => gunzipSync(Buffer.from(text, "base64"));
+
+/**
+ * What the batched write execs put where: absolute workspace path → contents. Reads the writer's
+ * operations (`workspace-files.ts`): `w` writes, `s`/`a` stage, `f` writes what was staged.
+ */
 const writtenFiles = (execCalls: ReadonlyArray<ReadonlyArray<string>>): Map<string, Buffer> => {
   const files = new Map<string, Buffer>();
+  const staged = new Map<string, string>();
   for (const argv of execCalls) {
-    if (argv[3] !== "mend-write" || argv[2]?.includes("while") !== true) continue;
-    const pairs = argv.slice(4);
-    for (let index = 0; index + 1 < pairs.length; index += 2) {
-      files.set(pairs[index] ?? "", Buffer.from(pairs[index + 1] ?? "", "base64"));
+    if (argv[3] !== "mend-write") continue;
+    const ops = argv.slice(4);
+    let index = 0;
+    const list = () => {
+      const count = Number(ops[index++]);
+      const out = ops.slice(index, index + count);
+      index += count;
+      return out;
+    };
+    while (index < ops.length) {
+      const op = ops[index++];
+      if (op === "w") {
+        const paths = list();
+        const bytes = gunzipped(list().join(""));
+        for (const target of paths) files.set(target, bytes);
+      } else if (op === "s" || op === "a") {
+        const staging = ops[index++] ?? "";
+        const text = list().join("");
+        staged.set(staging, (op === "a" ? (staged.get(staging) ?? "") : "") + text);
+      } else if (op === "f") {
+        const staging = ops[index++] ?? "";
+        const paths = list();
+        const bytes = gunzipped(staged.get(staging) ?? "");
+        for (const target of paths) files.set(target, bytes);
+      } else {
+        throw new Error(`unknown write operation ${op ?? ""}`);
+      }
     }
   }
   return files;
@@ -12122,6 +12152,54 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
                 Effect.sync(() => {
                   if (created.length > 1) firstEnded = false;
                 }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a resume never creates over a lease of the session's earlier launch whose end nothing confirms (alpha 2026-10-03)",
+    { timeout: 20_000 },
+    async () => {
+      // Alpha 8fe91d79: an earlier executor of the session kept its lease, bound to its launch,
+      // and each relaunch read the session's own lease as free. And the row's workspace is not
+      // that executor: a replacement that overwrote the row and then stopped says nothing of
+      // the lease's launch, which may still hold work it has not shipped (review of #516).
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.status === "stopped",
+              "the row's executor, stopped",
+            );
+            // The lease names a launch the row does not: its end is unknown.
+            const epoch = (memory.leases.get(session.worktreeId)?.epoch ?? 0) + 1;
+            memory.leases.set(session.worktreeId, {
+              executorId: session.id,
+              epoch,
+              expiresAt: memory.clock.now() - 1,
+              launchId: "launch:unresolved-predecessor",
+            });
+            const outcome = yield* engine.resumeSession(session.id, "shell").pipe(Effect.exit);
+            expect(outcome._tag).toBe("Failure");
+            expect(created).toHaveLength(1);
+            const lease = memory.leases.get(session.worktreeId);
+            expect(lease?.launchId).toBe("launch:unresolved-predecessor");
+            expect(lease?.epoch).toBe(epoch);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { leaseWait: Duration.millis(300), leaseWaitInterval: Duration.millis(20) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              status: (stopAsked) => (stopAsked && created.length === 1 ? "stopped" : "ready"),
             },
           }),
         },

@@ -3058,19 +3058,56 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * - `lapsed`: another executor's lease lapsed without a release (a partition) and the
        *   platform does not say it ended: it may still hold work it has not shipped, so no new
        *   epoch is granted over it (ADR-0002 "Replacement and pickup").
+       *
+       * The session's own earlier executor is a holder like any other: a lease bound to a launch
+       * of this session other than `ownLaunch` (the create this launch asks again, if any) is
+       * that executor's, and no claim takes it over until its end is confirmed and the lease
+       * released. Its end is read only through that very executor: when the lease's launch is the
+       * one the row names, through the row's workspace (a relaunch or a replacement has drained
+       * it, so it reads `ending` until it ends; one kept alive by another session's process reads
+       * `held`, and the launch joins it). A launch the row no longer names (an earlier replacement
+       * whose row was overwritten) has nothing here that can confirm its end: the launch waits,
+       * then is refused, and the lease is never released, since that executor may hold work it
+       * has not shipped. Read as free, the launch went on to create an executor whose boot waited
+       * in `plan.get` for that lease (alpha 2026-10-03, 8fe91d79: four replacements in a row, each
+       * past the platform's readiness budget, `launch-retained`).
        */
       const leaseHolderWorkspace = Effect.fn("SessionEngine.leaseHolderWorkspace")(function* (
         session: Session,
+        ownLaunch: string | null,
       ) {
         if (capture === null) return { kind: "free" as const };
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        const ownEarlierLaunch =
+          lease !== null &&
+          lease.executorId === session.id &&
+          (lease.launchId ?? null) !== null &&
+          lease.launchId !== ownLaunch;
         if (
           lease === null ||
           lease.executorId === null ||
-          lease.executorId === session.id ||
+          (lease.executorId === session.id && !ownEarlierLaunch) ||
           lease.executorId.startsWith("mend:")
         ) {
           return { kind: "free" as const };
+        }
+        if (ownEarlierLaunch) {
+          const named = yield* sessions.executorLaunchOf(session.id);
+          if (named === null || named.launchId !== lease.launchId) {
+            return lease.live
+              ? {
+                  kind: "unreachable" as const,
+                  sessionId: lease.executorId,
+                  epoch: lease.epoch,
+                  expiresAt: lease.expiresAt?.toISOString() ?? "never",
+                }
+              : {
+                  kind: "lapsed" as const,
+                  sessionId: lease.executorId,
+                  epoch: lease.epoch,
+                  state: "unknown" as const,
+                };
+          }
         }
         const holder = yield* sessions
           .byId(SessionId.make(lease.executorId))
@@ -3188,11 +3225,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * `leaseWait` the last reading is answered, and the caller refuses it as before.
        */
       const awaitWorktreeHolder = Effect.fn("SessionEngine.awaitWorktreeHolder")(
-        function* (session: Session) {
+        function* (session: Session, ownLaunch: string | null) {
           const deadline = Date.now() + Duration.toMillis(drainPolicy.leaseWait);
           let said: string | null = null;
           while (true) {
-            const holder = yield* leaseHolderWorkspace(session);
+            const holder = yield* leaseHolderWorkspace(session, ownLaunch);
             if (stoppedWhileWaiting.has(session.id)) {
               return yield* new SealantPlatformError({
                 code: "launch_cancelled",
@@ -3227,7 +3264,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.sleep(drainPolicy.leaseWaitInterval);
           }
         },
-        (effect, session) =>
+        (effect, session, _ownLaunch) =>
           Effect.suspend(() => {
             waitingLaunches.add(session.id);
             return effect;
@@ -3660,7 +3697,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return lookup.kind !== "gone";
       });
 
-      /** Release the worktree lease when its holder is the executor in `workspaceId`. */
+      /**
+       * Release the worktree lease when its holder is the executor in `workspaceId`. A lease of
+       * this session bound to a launch is that launch's: released for `workspaceId` only while
+       * the row names that executor under that very launch, never for an earlier executor of the
+       * session whose end is observed after a later one took the worktree.
+       */
       const releaseLeaseOfWorkspace = Effect.fn("SessionEngine.releaseLeaseOfWorkspace")(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
@@ -3678,6 +3720,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .byId(SessionId.make(lease.executorId))
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (holder === null || holder.sealantWorkspaceId !== workspaceId) return;
+        } else if ((lease.launchId ?? null) !== null) {
+          const own = yield* sessions.executorLaunchOf(session.id);
+          if (own === null || own.workspaceId !== workspaceId || own.launchId !== lease.launchId) {
+            return;
+          }
         }
         yield* owedBeforeRelease(workspaceId);
         const released = yield* capture.repo.release(session.worktreeId, lease.epoch);
@@ -10216,7 +10263,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // with `worktree_leased`.
         if (capture !== null && adopted === null) {
           const waitStartedAt = Date.now();
-          const holder = yield* awaitWorktreeHolder(session);
+          const holder = yield* awaitWorktreeHolder(session, reusedCreateKey);
           if (holder.kind === "held") {
             yield* Effect.logInfo("session engine: capture mode · joining the lease holder").pipe(
               Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }),
