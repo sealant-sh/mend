@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// The version a commit on main gets on the `next` channel (docs/adr/0015-next-channel.md):
+// The version a commit on main gets on the `next` channel (ADR 0015 in sealant-sh/mend,
+// docs/adr/0015-next-channel.md):
 //
 //   X.(Y+1).0-next.N            N = commits reachable from the commit and not from vX.Y.0
 //   X.(Y+1).0-next.N.preview.R  a preview build: N of the branch's merge base with main, R the run
