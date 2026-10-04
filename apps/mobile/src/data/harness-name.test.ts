@@ -10,4 +10,11 @@ describe("harnessName", () => {
     expect(harnessName("pi")).toBe("pi");
     expect(harnessName("shell")).toBe("shell");
   });
+
+  it("shows an id that names an object property as it is, never an inherited value", () => {
+    expect(harnessName("__proto__")).toBe("__proto__");
+    expect(harnessName("constructor")).toBe("constructor");
+    expect(harnessName("toString")).toBe("toString");
+    expect(harnessName("run")).toBe("run");
+  });
 });
