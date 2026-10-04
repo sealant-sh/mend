@@ -1,46 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  isAgentMemoryIndex,
+  containsLines,
   joinFrontmatter,
+  lostLines,
   mergeFrontmatterLines,
-  missingLines,
   splitFrontmatter,
   unionLines,
-  fencedLines,
-  withoutRepeatedEntries,
 } from "./agent-memory-merge.ts";
-
-const ENTRY = "- [Build](build.md) — pnpm";
-
-// Review round 2, finding 1: the fence detector toggled on every ``` line, so a ``` inside a
-// four-backtick block ended "code" early and a repeated entry inside the block was deduped away.
-describe("code blocks, read after CommonMark", () => {
-  it("keeps a four-backtick block open across a ``` line inside it", () => {
-    const lines = ["````md", "```sh", ENTRY, "```", ENTRY, "````", ENTRY];
-    expect(fencedLines(lines)).toEqual([true, true, true, true, true, true, false]);
-    expect(withoutRepeatedEntries(`${lines.join("\n")}\n`)).toBe(`${lines.join("\n")}\n`);
-  });
-
-  it("closes a ~~~ block only on ~~~, never on backticks", () => {
-    const lines = ["~~~", ENTRY, "```", ENTRY, "~~~~", ENTRY, ENTRY];
-    expect(fencedLines(lines)).toEqual([true, true, true, true, true, false, false]);
-    expect(withoutRepeatedEntries(`${lines.join("\n")}\n`)).toBe(
-      `${lines.slice(0, 6).join("\n")}\n`,
-    );
-  });
-
-  it("reads an unclosed block as code to the end", () => {
-    const lines = [ENTRY, "```", ENTRY, ENTRY];
-    expect(fencedLines(lines)).toEqual([false, true, true, true]);
-    expect(withoutRepeatedEntries(`${lines.join("\n")}\n`)).toBe(`${lines.join("\n")}\n`);
-  });
-
-  it("does not close on a fence with an info string, and does not open on backticks in one", () => {
-    expect(fencedLines(["```", "```sh", "```"])).toEqual([true, true, true]);
-    expect(fencedLines(["``` a`b", ENTRY])).toEqual([false, false]);
-  });
-});
 
 /** 2,001 distinct lines, about 19 KB: past the alignment limit against another such file. */
 const file = (side: string) =>
@@ -82,58 +49,6 @@ describe("both versions' lines with no shared version", () => {
     const shared = Array.from({ length: 3000 }, (_, i) => `shared ${i}`).join("\n");
     expect(unionLines(`${shared}\nmend\n`, `${shared}\nlaptop\n`)).toBe(
       `${shared}\nmend\nlaptop\n`,
-    );
-  });
-});
-
-describe("an index keeps each entry once", () => {
-  it("names MEMORY.md, at any depth, as an index", () => {
-    expect(isAgentMemoryIndex(".claude/projects/-workspace-repo/memory/MEMORY.md")).toBe(true);
-    expect(isAgentMemoryIndex("MEMORY.md")).toBe(true);
-    expect(isAgentMemoryIndex(".claude/projects/-workspace-repo/memory/notes.md")).toBe(false);
-  });
-
-  it("drops later copies of an entry and keeps blank lines", () => {
-    expect(withoutRepeatedEntries("- [a](a.md)\n\n- [b](b.md)\n- [a](a.md)\n\n- [c](c.md)\n")).toBe(
-      "- [a](a.md)\n\n- [b](b.md)\n\n- [c](c.md)\n",
-    );
-  });
-
-  // Review round 1, finding 1: the whole-document dedupe removed the closing `---` and the second
-  // block's fences.
-  it("never drops a delimiter, a fence, a repeated heading or anything inside a fence", () => {
-    const text = [
-      "---",
-      "name: index",
-      "---",
-      "# Memory",
-      "```sh",
-      "- [a](a.md)",
-      "```",
-      "- [a](a.md)",
-      "```sh",
-      "- [a](a.md)",
-      "```",
-      "# Memory",
-      "- [a](a.md)",
-      "",
-    ].join("\n");
-    expect(withoutRepeatedEntries(text)).toBe(
-      [
-        "---",
-        "name: index",
-        "---",
-        "# Memory",
-        "```sh",
-        "- [a](a.md)",
-        "```",
-        "- [a](a.md)",
-        "```sh",
-        "- [a](a.md)",
-        "```",
-        "# Memory",
-        "",
-      ].join("\n"),
     );
   });
 });
@@ -216,91 +131,67 @@ describe("frontmatter", () => {
   });
 });
 
+// Review round 3: the check is symmetric, on the final text, with one exemption only: lines the
+// other side removed since the base.
 describe("what a merge did not keep", () => {
-  const path = ".claude/projects/-workspace-repo/memory/build.md";
-  it("names a line of theirs the result lacks, counting repeats", () => {
+  it("names a line of either side the result lacks, counting repeats and blank lines", () => {
+    const merged = "a\n```\nb\n```\n";
     expect(
-      missingLines({
-        path,
-        merged: "a\n```\nb\n```\n",
-        theirs: "```\nb\n```\n```\nc\n```\n",
-        ours: "",
-        base: null,
-      }),
+      lostLines({ side: "```\nb\n```\n```\nc\n```\n", other: "", base: null, merged }),
     ).toEqual(["```", "c"]);
+    expect(lostLines({ side: "a\n\nb\n", other: "", base: null, merged: "a\nb\n" })).toEqual([""]);
   });
 
-  it("counts a noted line as kept, and a line ours removed since the base as not missing", () => {
+  it("lets a line go only when the other side removed it since the base", () => {
+    const base = "keep\ngone\n";
+    expect(lostLines({ side: base, other: "keep\n", base, merged: "keep\n" })).toEqual([]);
+    // Without a base, or when the other side still has it, the same line is lost.
+    expect(lostLines({ side: base, other: "keep\n", base: null, merged: "keep\n" })).toEqual([
+      "gone",
+    ]);
+    expect(lostLines({ side: base, other: base, base, merged: "keep\n" })).toEqual(["gone"]);
+  });
+
+  it("never exempts a repeated index entry, inside a code block or not", () => {
+    const entry = "- [E](e.md)";
+    for (const side of [
+      `${entry}\n${entry}\n`,
+      `\`\`\`\`\n\`\`\`\n${entry}\n\`\`\`\n${entry}\n\`\`\`\`\n`,
+      `    ${entry}\n    ${entry}\n`,
+    ]) {
+      const merged = side.replace(`${entry}\n`, "");
+      expect(lostLines({ side, other: "", base: null, merged }).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("holds a frontmatter value the merge kept as a comment, only inside the frontmatter", () => {
     expect(
-      missingLines({
-        path,
+      lostLines({
+        side: "---\nname: b\n---\n",
+        other: "---\nname: a\n---\n",
+        base: null,
         merged: "---\nname: a\n# from laptop, 2026-10-01: name: b\n---\n",
-        theirs: "---\nname: b\n---\n",
-        ours: "---\nname: a\n---\n",
-        base: null,
       }),
     ).toEqual([]);
     expect(
-      missingLines({
-        path,
-        merged: "keep\n",
-        theirs: "keep\ngone\n",
-        ours: "keep\n",
-        base: "keep\ngone\n",
-      }),
-    ).toEqual([]);
-  });
-
-  it("asks an index for each entry once", () => {
-    expect(
-      missingLines({
-        path: "MEMORY.md",
-        merged: "- [a](a.md)\n",
-        theirs: "- [a](a.md)\n- [a](a.md)\n",
-        ours: "",
+      lostLines({
+        side: "name: b\n",
+        other: "",
         base: null,
-      }),
-    ).toEqual([]);
-  });
-
-  // Review round 2: the check is the last line of defence, on the final text with the same
-  // parser as the dedupe, so a copy inside a code block is always needed.
-  it("needs every copy of an entry inside a code block, however the block is fenced", () => {
-    const theirs = ["````md", "```", ENTRY, "```", ENTRY, "````", ""].join("\n");
-    const lost = ["````md", "```", ENTRY, "```", "````", ""].join("\n");
-    expect(missingLines({ path: "MEMORY.md", merged: lost, theirs, ours: "", base: null })).toEqual(
-      [ENTRY],
-    );
-    const unclosed = `~~~\n${ENTRY}\n${ENTRY}\n`;
-    expect(
-      missingLines({
-        path: "MEMORY.md",
-        merged: `~~~\n${ENTRY}\n`,
-        theirs: unclosed,
-        ours: "",
-        base: null,
-      }),
-    ).toEqual([ENTRY]);
-  });
-
-  it("counts blank lines, and credits a noted line only in the merged frontmatter", () => {
-    expect(
-      missingLines({
-        path: "notes.md",
-        merged: "a\nb\n",
-        theirs: "a\n\nb\n",
-        ours: "",
-        base: null,
-      }),
-    ).toEqual([""]);
-    expect(
-      missingLines({
-        path: "notes.md",
         merged: "body\n# from laptop, 2026-10-04: name: b\n",
-        theirs: "name: b\n",
-        ours: "",
-        base: null,
       }),
     ).toEqual(["name: b"]);
+  });
+
+  it("compares CRLF and LF as the same lines", () => {
+    expect(lostLines({ side: "a\r\nb\r\n", other: "", base: null, merged: "a\nb\n" })).toEqual([]);
+  });
+});
+
+describe("whether a kept version is the only copy of a line", () => {
+  it("is not when the current file holds every line as often, with no exemption", () => {
+    expect(containsLines("a\nb\nc\n", "b\na\n")).toBe(true);
+    expect(containsLines("a\nb\n", "a\na\n")).toBe(false);
+    expect(containsLines("base\nB\n", "base\nA\nB\n")).toBe(false);
   });
 });

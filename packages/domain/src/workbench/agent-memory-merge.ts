@@ -10,8 +10,10 @@
  * - Frontmatter (`---` … `---` at the top of a Claude topic file) is merged key by key, never by
  *   line: a line union would write a key twice. Only a simple subset is merged by key (`key: value`
  *   lines and whole-line comments); any other YAML that differs is not merged (null).
- * - An index (`MEMORY.md`) keeps each index entry (`- [Title](file.md) …`) once.
- * - `missingLines` says whether a merge kept every line of the incoming side.
+ * - No line is ever removed after the merge: a line both sides wrote at different places stays
+ *   twice, and the agent folds it when it next rewrites its memory.
+ * - `lostLines` is the check every merge ends with, on both sides; `containsLines` decides whether
+ *   a version kept beside the current file is the only copy of some lines.
  */
 
 interface Lines {
@@ -103,73 +105,6 @@ export const unionLines = (ours: string, theirs: string): string | null => {
     j = pj + 1;
   }
   return textOf(out, o.trailingNewline || t.trailingNewline);
-};
-
-/** Claude's `MEMORY.md` (and Codex's): an index, one line per memory. */
-export const isAgentMemoryIndex = (filePath: string): boolean =>
-  filePath === "MEMORY.md" || filePath.endsWith("/MEMORY.md");
-
-/** One index entry: a list item that opens with a link, `- [Title](file.md) — hook`. */
-const INDEX_ENTRY = /^\s*[-*+]\s+\[[^\]]*\]\([^)\s]+\)/;
-/** A line that can open a code fence: three or more backticks or tildes, and an info string. */
-const FENCE_OPEN = /^\s*(`{3,}|~{3,})(.*)$/;
-/** A line that can close one: only the fence characters, then whitespace. */
-const FENCE_CLOSE = /^\s*(`{3,}|~{3,})[ \t]*$/;
-
-/**
- * For each line, whether it belongs to a fenced code block, its fence lines included, after
- * CommonMark: a block opens with three or more backticks or tildes (a backtick fence's info string
- * has no backtick), and closes only on a line of the same character, at least as long, with
- * nothing after it; an unclosed block runs to the end of the text. Indentation is not limited to
- * three spaces as CommonMark limits it, so a fence inside a list item counts too: reading more of
- * the text as code only ever means comparing fewer lines as entries.
- */
-export const fencedLines = (lines: ReadonlyArray<string>): ReadonlyArray<boolean> => {
-  const out: Array<boolean> = [];
-  let open: { readonly char: string; readonly length: number } | null = null;
-  for (const line of lines) {
-    if (open === null) {
-      const opening = FENCE_OPEN.exec(line);
-      const fence = opening?.[1];
-      const info = opening?.[2] ?? "";
-      if (fence !== undefined && !(fence.startsWith("`") && info.includes("`"))) {
-        open = { char: fence.charAt(0), length: fence.length };
-        out.push(true);
-      } else out.push(false);
-      continue;
-    }
-    const closing = FENCE_CLOSE.exec(line)?.[1];
-    if (closing !== undefined && closing.charAt(0) === open.char && closing.length >= open.length) {
-      open = null;
-    }
-    out.push(true);
-  }
-  return out;
-};
-
-/** Each line's index-entry text when it is one outside a code block, else null. */
-const entriesOutsideFences = (lines: ReadonlyArray<string>): ReadonlyArray<string | null> => {
-  const fenced = fencedLines(lines);
-  return lines.map((line, i) => (fenced[i] !== true && INDEX_ENTRY.test(line) ? line : null));
-};
-
-/**
- * Each index entry once, at its first place: what an index merge leaves. Only entry lines outside
- * code blocks (`fencedLines`) are compared; every other line (headings, blank lines, fences,
- * delimiters, prose, anything in a code block) stays as it is, however often it repeats.
- */
-export const withoutRepeatedEntries = (text: string): string => {
-  const { lines, trailingNewline } = linesOf(text);
-  const entries = entriesOutsideFences(lines);
-  const seen = new Set<string>();
-  const kept = lines.filter((_, i) => {
-    const entry = entries[i] ?? null;
-    if (entry === null) return true;
-    if (seen.has(entry)) return false;
-    seen.add(entry);
-    return true;
-  });
-  return textOf(kept, trailingNewline);
 };
 
 export interface Frontmatter {
@@ -287,7 +222,7 @@ export const mergeFrontmatterLines = (input: {
   return out;
 };
 
-/** A line a merge noted rather than kept: `# from <who>, <yyyy-mm-dd>: <line>`. */
+/** A line a frontmatter merge noted rather than kept: `# from <who>, <yyyy-mm-dd>: <line>`. */
 const NOTED = /^# from .+?, \d{4}-\d{2}-\d{2}: (.*)$/;
 
 const counts = (lines: ReadonlyArray<string>): Map<string, number> => {
@@ -296,43 +231,48 @@ const counts = (lines: ReadonlyArray<string>): Map<string, number> => {
   return out;
 };
 
+/** LF line endings: how lines are compared. */
+const lf = (text: string) => text.replaceAll("\r\n", "\n");
+
 /**
- * The lines of `theirs`, as received, that the final `merged` text does not hold, compared as
- * multisets, blank lines included: the last check before a merge is stored, run on the output of
- * every step (union, three-way, frontmatter, index), so no step can drop a line unseen. A line is
- * held when it is in `merged` as often as in `theirs`, a frontmatter line also when the merged
- * frontmatter notes it (`# from <who>, <date>: <line>`). The only lines that need not be held:
- * - with a `base`, as many copies of a line as `ours` removed since it (a three-way merge drops
- *   them on purpose);
- * - in an index, repeated copies of one entry outside code blocks, read by the same `fencedLines`
- *   the dedupe reads: one copy is needed, and every copy inside a code block.
+ * The lines of one input of a merge (`side`, as received) that the final `merged` text does not
+ * hold, compared as multisets, blank lines included. Run on each side, after every step of the
+ * merge, so no step can drop a line unseen. The one exemption: with a `base`, as many copies of a
+ * line as the `other` side removed since it, which a three-way merge drops on purpose. A line the
+ * frontmatter merge kept as a comment (`# from <who>, <date>: <line>`, inside the merged
+ * frontmatter) is held: it is in the file byte for byte after that prefix.
  */
-export const missingLines = (input: {
-  readonly path: string;
-  readonly merged: string;
-  readonly theirs: string;
-  readonly ours: string;
+export const lostLines = (input: {
+  readonly side: string;
+  readonly other: string;
   readonly base: string | null;
+  readonly merged: string;
 }): ReadonlyArray<string> => {
-  const mergedLines = linesOf(input.merged).lines;
-  const noted = (splitFrontmatter(input.merged)?.lines ?? []).flatMap((line) => {
+  const merged = lf(input.merged);
+  const noted = (splitFrontmatter(merged)?.lines ?? []).flatMap((line) => {
     const kept = NOTED.exec(line)?.[1];
     return kept === undefined ? [] : [kept];
   });
-  const have = counts([...mergedLines, ...noted]);
-  const ours = counts(linesOf(input.ours).lines);
-  const base = input.base === null ? new Map<string, number>() : counts(linesOf(input.base).lines);
-  const theirs = linesOf(input.theirs).lines;
-  // In an index, the copies of each entry outside code blocks, which only need to be there once.
-  const repeatable = isAgentMemoryIndex(input.path)
-    ? counts(entriesOutsideFences(theirs).flatMap((entry) => (entry === null ? [] : [entry])))
-    : new Map<string, number>();
-  const missing: Array<string> = [];
-  for (const [line, count] of counts(theirs)) {
-    const removedByOurs = Math.max(0, (base.get(line) ?? 0) - (ours.get(line) ?? 0));
-    const outside = repeatable.get(line) ?? 0;
-    const wanted = outside > 1 ? count - outside + 1 : count;
-    if ((have.get(line) ?? 0) < wanted - removedByOurs) missing.push(line);
+  const have = counts([...linesOf(merged).lines, ...noted]);
+  const other = counts(linesOf(lf(input.other)).lines);
+  const base =
+    input.base === null ? new Map<string, number>() : counts(linesOf(lf(input.base)).lines);
+  const lost: Array<string> = [];
+  for (const [line, count] of counts(linesOf(lf(input.side)).lines)) {
+    const removedByOther = Math.max(0, (base.get(line) ?? 0) - (other.get(line) ?? 0));
+    if ((have.get(line) ?? 0) < count - removedByOther) lost.push(line);
   }
-  return missing;
+  return lost;
+};
+
+/**
+ * Whether `current` holds every line of `version`, as often as `version` has it: when it does
+ * not, `version` is the only copy of some lines. No exemption of any kind.
+ */
+export const containsLines = (current: string, version: string): boolean => {
+  const have = counts(linesOf(lf(current)).lines);
+  for (const [line, count] of counts(linesOf(lf(version)).lines)) {
+    if ((have.get(line) ?? 0) < count) return false;
+  }
+  return true;
 };

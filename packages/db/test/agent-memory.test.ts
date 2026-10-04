@@ -256,7 +256,8 @@ describe("importing memory from a machine", () => {
   }) => {
     const result = await outcome(input);
     if (result.kind !== "merged") throw new Error("merges");
-    expect(result.missing).toEqual([]);
+    expect(result.lostTheirs).toEqual([]);
+    expect(result.lostOurs).toEqual([]);
     return result.contents;
   };
 
@@ -294,7 +295,9 @@ describe("importing memory from a machine", () => {
     ).toBe(note("new", "- zero\n- one\n- two\n- three\n- mend\n"));
   });
 
-  it("keeps each line of a merged index once", async () => {
+  // Review round 3: no line is removed after the merge. A line both sides wrote at different
+  // places stays twice; the agent folds it when it next rewrites its memory.
+  it("keeps a line both sides wrote at different places twice in a merged index", async () => {
     expect(
       await merge({
         path: `${ROOT}/MEMORY.md`,
@@ -302,7 +305,29 @@ describe("importing memory from a machine", () => {
         theirs: "- [b](b.md)\n- [a](a.md)\n- [c](c.md)\n",
         base: null,
       }),
-    ).toBe("- [a](a.md)\n- [b](b.md)\n- [c](c.md)\n");
+    ).toBe("- [a](a.md)\n- [b](b.md)\n- [a](a.md)\n- [c](c.md)\n");
+  });
+
+  // Review round 3, finding 2 (reproduced): the union closed the store's unclosed fence, then the
+  // dedupe took the store's second entry, and the check only looked at the incoming side.
+  it("keeps every line of the store's side too", async () => {
+    const ours = "- [E](e.md)\n~~~\n\nb\n- [E](e.md)\n";
+    const theirs = "\n~~~\nb\n";
+    const merged = await merge({ path: `${ROOT}/MEMORY.md`, ours, theirs, base: null });
+    expect(merged.split("\n").filter((line) => line === "- [E](e.md)")).toHaveLength(2);
+  });
+
+  // Review round 3, finding 3 (reproduced): an indented code block was not code to the fence
+  // parser, so a repeated entry in it was deduped and exempted.
+  it("keeps a repeated entry inside an indented code block", async () => {
+    const block = "Example:\n\n    - [E](e.md)\n    - [E](e.md)\n";
+    const merged = await merge({
+      path: `${ROOT}/MEMORY.md`,
+      ours: "# Memory\n",
+      theirs: `# Memory\n${block}`,
+      base: null,
+    });
+    expect(merged.split("\n").filter((line) => line === "    - [E](e.md)")).toHaveLength(2);
   });
 
   // Review round 1, finding 1 (reproduced): the index dedupe ran over the whole document and took
@@ -375,7 +400,7 @@ describe("importing memory from a machine", () => {
       base: "a\n",
       with: keepsOurs,
     });
-    expect(result).toEqual({ kind: "merged", contents: "a\n", missing: ["b"] });
+    expect(result).toEqual({ kind: "merged", contents: "a\n", lostOurs: [], lostTheirs: ["b"] });
   });
 
   // Review round 2, finding 1 (reproduced): a ``` line inside a four-backtick block ended the
@@ -412,7 +437,8 @@ describe("importing memory from a machine", () => {
     ] as const) {
       const result = await outcome({ path: `${ROOT}/MEMORY.md`, ours, theirs, base: null });
       if (result.kind !== "merged") throw new Error("merges");
-      expect(result.missing).toEqual([]);
+      expect(result.lostTheirs).toEqual([]);
+      expect(result.lostOurs).toEqual([]);
       for (const line of theirs.split("\n")) expect(result.contents).toContain(line);
       const want = (contents: string) =>
         contents.split("\n").filter((line) => line === entry).length;
@@ -422,8 +448,8 @@ describe("importing memory from a machine", () => {
 
   // Review round 2: the check runs on the final text after every step. Over random files from a
   // vocabulary of fences, delimiters, frontmatter keys and entries, merged with the real three-way
-  // merge, a line of the incoming side is either in the result as often as it was (less what Mend
-  // removed since the base; an index entry outside code needs one copy at most) or reported.
+  // merge, a line of either side is in the result as often as it was, less the copies the other
+  // side removed since the base, or the merge reports it. No other exemption.
   it("never loses an incoming line without reporting it", async () => {
     const vocabulary = ["---", "name: a", "x", "x", "- [a](a.md)", "```", "````", "~~~", "", "# h"];
     let seed = 7;
@@ -443,17 +469,19 @@ describe("importing memory from a machine", () => {
       const theirs = file();
       for (const path of [`${ROOT}/notes.md`, `${ROOT}/MEMORY.md`]) {
         const result = await outcome({ path, ours, theirs, base });
-        if (result.kind !== "merged" || result.missing.length > 0) continue;
+        if (result.kind !== "merged") continue;
         const have = lineCounts(result.contents);
-        const kept = lineCounts(ours);
         const shared = base === null ? new Map<string, number>() : lineCounts(base);
-        for (const [line, count] of lineCounts(theirs)) {
-          const removed = Math.max(0, (shared.get(line) ?? 0) - (kept.get(line) ?? 0));
-          const floor = path.endsWith("MEMORY.md") && line.startsWith("- [") ? 1 : count;
-          const noted = [...have.keys()].some(
-            (h) => h.startsWith("# from") && h.endsWith(`: ${line}`),
-          );
-          if ((have.get(line) ?? 0) < Math.min(floor, count) - removed && !noted) unreported += 1;
+        for (const [side, other, reported] of [
+          [theirs, ours, result.lostTheirs],
+          [ours, theirs, result.lostOurs],
+        ] as const) {
+          if (reported.length > 0) continue;
+          const kept = lineCounts(other);
+          for (const [line, count] of lineCounts(side)) {
+            const removed = Math.max(0, (shared.get(line) ?? 0) - (kept.get(line) ?? 0));
+            if ((have.get(line) ?? 0) < count - removed) unreported += 1;
+          }
         }
       }
     }
@@ -551,6 +579,7 @@ const importing = (
   dryRun: options.dryRun ?? false,
   merge: options.merge ?? gitUnion,
   mergeDatabase: () => Effect.succeed(null),
+  holdsDatabase: () => Effect.succeed(false),
 });
 
 describe.skipIf(!reachable)("agent memory, in Postgres", () => {
@@ -707,7 +736,14 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         const planned = yield* repo.importFiles(importing([laptop], { dryRun: true }));
         expect(planned).toEqual({
           ...nothing,
-          merged: [{ path: laptop.path, against: "no-shared-version", missingLines: 0 }],
+          merged: [
+            {
+              path: laptop.path,
+              against: "no-shared-version",
+              missingLines: 0,
+              storeMissingLines: 0,
+            },
+          ],
         });
         expect(yield* sql`SELECT 1 FROM agent_memory_import_bases`).toEqual([]);
         expect(yield* repo.importFiles(importing([laptop]))).toEqual(planned);
@@ -740,7 +776,7 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         );
         const second = yield* repo.importFiles(importing([laptop2]));
         expect(second.merged).toEqual([
-          { path: laptop.path, against: "last-import", missingLines: 0 },
+          { path: laptop.path, against: "last-import", missingLines: 0, storeMissingLines: 0 },
         ]);
         // Three-way against the last import: what each side added since stays.
         expect(lastMergeBase).toBe(laptop.contents);
@@ -756,7 +792,12 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
           }),
         );
         expect(other.merged).toEqual([
-          { path: laptop.path, against: "no-shared-version", missingLines: 0 },
+          {
+            path: laptop.path,
+            against: "no-shared-version",
+            missingLines: 0,
+            storeMissingLines: 0,
+          },
         ]);
       }),
     );
@@ -845,7 +886,7 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         for (let round = 0; round < 2; round += 1) {
           const report = yield* repo.importFiles(importing([laptop], { merge: keepsOurs }));
           expect(report.merged).toEqual([
-            { path: laptop.path, against: "last-import", missingLines: 1 },
+            { path: laptop.path, against: "last-import", missingLines: 1, storeMissingLines: 0 },
           ]);
         }
         const versions = yield* sql<{ contents: string }>`
@@ -981,14 +1022,20 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         const laptop = text("capped.md", "a\nlaptop\n");
         const report = yield* repo.importFiles(importing([laptop], { merge: keepsOurs }));
         expect(report.merged[0]?.missingLines).toBe(1);
-        // Twenty-five later saves by one session, each replacing the last.
+        // Twenty-five later saves by one session, each adding a line: every version they displace
+        // is held by the next, so those are the ones the cap may take.
         for (let n = 0; n < 25; n += 1) {
           yield* repo.readBack({
             userId: "anna",
             projectId: project,
             sessionId: "s-capped",
             delivered: {},
-            session: [text("capped.md", `a\nmend\nsave ${n}\n`)],
+            session: [
+              text(
+                "capped.md",
+                `a\nmend\n${Array.from({ length: n + 1 }, (_, i) => `save ${i}\n`).join("")}`,
+              ),
+            ],
             merge: unionMerge,
           });
         }

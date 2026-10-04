@@ -10,15 +10,14 @@ import {
   type AgentMemoryImportSource,
   agentMemoryNameOf,
   CODEX_MEMORY_DATABASE,
-  isAgentMemoryIndex,
+  containsLines,
   joinFrontmatter,
+  lostLines,
   mergeFrontmatterLines,
   piProfileFileBytes,
   splitFrontmatter,
-  missingLines,
   unionLines,
   validateAgentMemoryPath,
-  withoutRepeatedEntries,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
@@ -208,6 +207,7 @@ export interface AgentMemoryImportReport {
     readonly path: string;
     readonly against: AgentMemoryImportMerge["against"];
     readonly missingLines: number;
+    readonly storeMissingLines: number;
   }>;
   readonly keptStored: ReadonlyArray<string>;
   readonly removedInMend: ReadonlyArray<string>;
@@ -235,14 +235,58 @@ export type MergeDatabase = (input: {
 }) => Effect.Effect<Uint8Array | null>;
 
 /**
+ * Whether Codex's summary database `current` holds every summary `version` holds, at the same
+ * revision or a newer one; the server supplies it (SQLite). False when either does not open.
+ */
+export type HoldsDatabase = (input: {
+  readonly current: Uint8Array;
+  readonly version: Uint8Array;
+}) => Effect.Effect<boolean>;
+
+/** No database check: a binary version is held only by the same bytes. */
+const noDatabaseCheck: HoldsDatabase = () => Effect.succeed(false);
+
+/**
+ * Whether `version`, kept beside `current` (the file the store holds after this step, null when
+ * the path is deleted), is the only copy of something: a line `current` lacks or has fewer times,
+ * or for a binary file any content (`holdsDatabase` for Codex's summary database, else the same
+ * bytes). Such a version is pinned, and the cap never takes it.
+ */
+export const isSoleCopy = (
+  version: MemoryFile,
+  current: MemoryFile | null,
+  holdsDatabase: HoldsDatabase,
+): Effect.Effect<boolean> => {
+  if (current === null) return Effect.succeed(true);
+  if (version.encoding === "utf8" && current.encoding === "utf8") {
+    return Effect.succeed(!containsLines(current.contents, version.contents));
+  }
+  if (version.encoding === current.encoding && version.contents === current.contents) {
+    return Effect.succeed(false);
+  }
+  if (version.path === CODEX_MEMORY_DATABASE && version.encoding === current.encoding) {
+    return holdsDatabase({
+      current: piProfileFileBytes(current) ?? new Uint8Array(),
+      version: piProfileFileBytes(version) ?? new Uint8Array(),
+    }).pipe(Effect.map((holds) => !holds));
+  }
+  return Effect.succeed(true);
+};
+
+/**
  * What merging two versions of a memory file gave:
- * - `merged`: the contents, and the lines of `theirs` they do not hold (`missingLines`); when there
- *   are any, the caller keeps `theirs` whole as a version and says so;
+ * - `merged`: the contents, and the lines of each side they do not hold (`lostLines`, against the
+ *   other side and the base); the caller keeps a side that lost lines whole, pinned, and says so;
  * - `unmergeable`: frontmatter outside the subset merged by key that differs, or files too
  *   different to align with no shared version. The caller keeps both whole.
  */
 export type AgentMemoryTextMerge =
-  | { readonly kind: "merged"; readonly contents: string; readonly missing: ReadonlyArray<string> }
+  | {
+      readonly kind: "merged";
+      readonly contents: string;
+      readonly lostOurs: ReadonlyArray<string>;
+      readonly lostTheirs: ReadonlyArray<string>;
+    }
   | { readonly kind: "unmergeable" };
 
 /** Text with LF line endings: how a merge compares lines. */
@@ -252,8 +296,8 @@ const lf = (text: string) => text.replaceAll("\r\n", "\n");
  * Two versions of a memory file merged keeping both sides' lines (docs/adr/0009): three-way with
  * `merge` against `base`, else `unionLines`. Frontmatter on both sides is merged key by key, so a
  * union never writes a key twice; a key both set differently keeps `ours` and notes `theirs` as a
- * comment (`note`). An index (`MEMORY.md`) keeps each entry once. Line endings are compared as
- * LF; the result keeps `ours`' (CRLF when `ours` has any).
+ * comment (`note`). Nothing is removed afterwards: the last step checks both sides against the
+ * result. Line endings are compared as LF; the result keeps `ours`' (CRLF when `ours` has any).
  */
 export const mergeAgentMemoryText = (input: {
   readonly path: string;
@@ -273,8 +317,6 @@ export const mergeAgentMemoryText = (input: {
       base === null || base === ""
         ? Effect.succeed(unionLines(ours, theirs))
         : input.merge({ base, ours, theirs });
-    const index = (text: string) =>
-      isAgentMemoryIndex(input.path) ? withoutRepeatedEntries(text) : text;
     const ours = splitFrontmatter(oursText);
     const theirs = splitFrontmatter(theirsText);
     const base = baseText === null ? null : splitFrontmatter(baseText);
@@ -288,23 +330,18 @@ export const mergeAgentMemoryText = (input: {
       });
       const body =
         front === null ? null : yield* lines(ours.body, theirs.body, base?.body ?? baseText);
-      merged =
-        front === null || body === null
-          ? null
-          : joinFrontmatter({ lines: front, body: index(body) });
+      merged = front === null || body === null ? null : joinFrontmatter({ lines: front, body });
     } else {
       const whole = yield* lines(oursText, theirsText, baseText);
-      merged = whole === null ? null : index(whole);
+      merged = whole;
     }
     if (merged === null) return { kind: "unmergeable" };
-    const missing = missingLines({
-      path: input.path,
-      merged,
-      theirs: theirsText,
-      ours: oursText,
-      base: baseText,
-    });
-    return { kind: "merged", contents: crlf ? merged.replaceAll("\n", "\r\n") : merged, missing };
+    return {
+      kind: "merged",
+      contents: crlf ? merged.replaceAll("\n", "\r\n") : merged,
+      lostOurs: lostLines({ side: oursText, other: theirsText, base: baseText, merged }),
+      lostTheirs: lostLines({ side: theirsText, other: oursText, base: baseText, merged }),
+    };
   });
 
 /** `from <who>, <yyyy-mm-dd>`: who the second side of a merge came from, as its notes say. */
@@ -337,6 +374,8 @@ export class AgentMemoryRepo extends Context.Service<
       readonly delivered: Readonly<Record<string, string>>;
       readonly session: ReadonlyArray<MemoryFile>;
       readonly merge: MergeText;
+      /** Absent: a replaced summary database is held only by the same bytes. */
+      readonly holdsDatabase?: HoldsDatabase;
     }) => Effect.Effect<AgentMemoryReadBack>;
     /**
      * Files from the person's own machine (`planAgentMemoryImport`). With a `source`, what was
@@ -351,6 +390,7 @@ export class AgentMemoryRepo extends Context.Service<
       readonly dryRun: boolean;
       readonly merge: MergeText;
       readonly mergeDatabase: MergeDatabase;
+      readonly holdsDatabase: HoldsDatabase;
     }) => Effect.Effect<AgentMemoryImportReport>;
   }
 >()("@mend/db/AgentMemoryRepo") {}
@@ -414,31 +454,32 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
   AgentMemoryRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
-    /** Keep `stored` as a version, and only the newest few of its path. */
     /**
-     * Keep `stored` as a version, and only the newest `VERSIONS_KEPT` unpinned ones of its path. A
-     * pinned version holds lines no stored file does (a machine's file in a conflict, or one a
-     * merge did not keep whole, or a stored file a read-back could not merge), so the cap never
-     * takes it: it is the only copy. Pinning sticks once set, whatever later saves of the same
-     * contents ask.
+     * The one place a version is written: every path that displaces a stored file, or keeps an
+     * input a merge did not hold whole, comes through here. `version` is kept beside `current`,
+     * the file the store holds after this step (null when the path is deleted), and is pinned when
+     * it is the only copy of something (`isSoleCopy`): the cap of `VERSIONS_KEPT` unpinned
+     * versions per file never takes a pinned one. Pinning sticks once set.
      */
     const keepVersion = (
       tx: Tx,
       userId: string,
       projectId: ProjectId,
-      stored: StoredMemoryFile,
-      pinned = false,
+      version: StoredMemoryFile,
+      current: MemoryFile | null,
+      holdsDatabase: HoldsDatabase,
     ) =>
       Effect.gen(function* () {
+        const pinned = yield* isSoleCopy(version, current, holdsDatabase);
         yield* tx
           .insert(agentMemoryVersions)
           .values({
             userId,
             projectId,
-            path: stored.path,
-            digest: stored.digest,
-            encoding: stored.encoding,
-            contents: stored.contents,
+            path: version.path,
+            digest: version.digest,
+            encoding: version.encoding,
+            contents: version.contents,
             pinned,
           })
           .onConflictDoUpdate({
@@ -454,16 +495,13 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         yield* tx
           .execute(
             sql`delete from agent_memory_versions where user_id = ${userId} and project_id = ${projectId}
-              and path = ${stored.path} and not pinned and digest not in (
+              and path = ${version.path} and not pinned and digest not in (
                 select digest from agent_memory_versions where user_id = ${userId}
-                  and project_id = ${projectId} and path = ${stored.path} and not pinned
+                  and project_id = ${projectId} and path = ${version.path} and not pinned
                 order by saved_at desc limit ${VERSIONS_KEPT})`,
           )
           .pipe(Effect.orDie);
       });
-    /** A version that is the only copy of some lines: never taken by the cap. */
-    const pinVersion = (tx: Tx, userId: string, projectId: ProjectId, stored: StoredMemoryFile) =>
-      keepVersion(tx, userId, projectId, stored, true);
 
     const write = (
       tx: Tx,
@@ -550,7 +588,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
               .where(and(of(userId, projectId), eq(agentMemoryFiles.path, path)))
               .pipe(Effect.orDie);
             if (row === undefined) return false;
-            yield* keepVersion(tx, userId, projectId, toStored(row));
+            yield* keepVersion(tx, userId, projectId, toStored(row), null, noDatabaseCheck);
             yield* tx
               .delete(agentMemoryFiles)
               .where(and(of(userId, projectId), eq(agentMemoryFiles.path, path)))
@@ -568,8 +606,10 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       readonly delivered: Readonly<Record<string, string>>;
       readonly session: ReadonlyArray<MemoryFile>;
       readonly merge: MergeText;
+      readonly holdsDatabase?: HoldsDatabase;
     }) {
       const { userId, projectId, sessionId } = input;
+      const holds = input.holdsDatabase ?? noDatabaseCheck;
       const kept = withinLimits(input.session);
       const keptPaths = new Set(kept.map((file) => file.path));
       const skipped = input.session.map((file) => file.path).filter((p) => !keptPaths.has(p));
@@ -594,7 +634,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
             const deleted: Array<string> = [];
             for (const step of steps) {
               if (step.kind === "delete") {
-                yield* keepVersion(tx, userId, projectId, step.stored);
+                yield* keepVersion(tx, userId, projectId, step.stored, null, holds);
                 yield* tx
                   .delete(agentMemoryFiles)
                   .where(and(of(userId, projectId), eq(agentMemoryFiles.path, step.stored.path)))
@@ -604,7 +644,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
               }
               if (step.kind === "save") {
                 if (step.replacing !== null) {
-                  yield* keepVersion(tx, userId, projectId, step.replacing);
+                  yield* keepVersion(tx, userId, projectId, step.replacing, step.file, holds);
                 }
                 yield* write(tx, userId, projectId, step.file, sessionId);
                 saved.push(step.file.path);
@@ -636,29 +676,28 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                 merge: input.merge,
               });
               if (outcome.kind === "unmergeable") {
-                // As for a file that is not text: the session's, with the stored one kept, pinned:
-                // its lines are in no stored file now.
-                yield* pinVersion(tx, userId, projectId, step.stored);
+                // As for a file that is not text: the session's, with the stored one kept.
+                yield* keepVersion(tx, userId, projectId, step.stored, step.file, holds);
                 yield* write(tx, userId, projectId, step.file, sessionId);
                 saved.push(step.file.path);
                 continue;
               }
-              yield* keepVersion(tx, userId, projectId, step.stored);
-              if (outcome.missing.length > 0) {
+              const current = {
+                path: step.file.path,
+                encoding: "utf8" as const,
+                contents: outcome.contents,
+              };
+              yield* keepVersion(tx, userId, projectId, step.stored, current, holds);
+              if (outcome.lostTheirs.length > 0) {
                 // The merge does not hold every line the session wrote: its file is kept whole.
-                yield* pinVersion(tx, userId, projectId, {
+                const sessionFile = {
                   ...step.file,
                   digest: agentMemoryDigest(step.file),
                   updatedBySession: sessionId,
-                });
+                };
+                yield* keepVersion(tx, userId, projectId, sessionFile, current, holds);
               }
-              yield* write(
-                tx,
-                userId,
-                projectId,
-                { path: step.file.path, encoding: "utf8", contents: outcome.contents },
-                sessionId,
-              );
+              yield* write(tx, userId, projectId, current, sessionId);
               merged.push(step.file.path);
             }
             return { saved, merged, deleted, skipped };
@@ -675,8 +714,10 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       readonly dryRun: boolean;
       readonly merge: MergeText;
       readonly mergeDatabase: MergeDatabase;
+      readonly holdsDatabase: HoldsDatabase;
     }) {
       const { userId, projectId, source, dryRun } = input;
+      const holds = input.holdsDatabase;
       // The API refuses these (AgentMemoryImportInvalid); every file is planned against one
       // snapshot of the store, so a path named twice would be written twice.
       if (new Set(input.files.map((file) => file.path)).size !== input.files.length) {
@@ -765,36 +806,34 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                       })
                       .pipe(Effect.orDie),
                   );
+            /** This machine's file, kept as a version beside `current`. */
+            const keepIncoming = (file: DigestedFile, current: MemoryFile) =>
+              apply(
+                keepVersion(
+                  tx,
+                  userId,
+                  projectId,
+                  { ...file, updatedBySession: null },
+                  current,
+                  holds,
+                ),
+              );
             /** Mend's stays; this machine's is kept as a version, and its base is not moved. */
-            const conflict = (file: DigestedFile) =>
+            const conflict = (step: { file: DigestedFile; stored: StoredMemoryFile }) =>
               Effect.gen(function* () {
-                yield* apply(
-                  pinVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
-                );
-                report.conflicting.push(file.path);
+                yield* keepIncoming(step.file, step.stored);
+                report.conflicting.push(step.file.path);
               });
-            /**
-             * Both sides' contents become `merged`; each is kept as a version, the machine's
-             * pinned when `merged` does not hold all of it.
-             */
+            /** Both sides' contents become `merged`; each is kept as a version beside it. */
             const replaceMerged = (
               step: { file: DigestedFile; stored: StoredMemoryFile },
               merged: MemoryFile,
-              incomplete: boolean,
             ) =>
-              apply(
-                Effect.gen(function* () {
-                  yield* keepVersion(tx, userId, projectId, step.stored);
-                  yield* keepVersion(
-                    tx,
-                    userId,
-                    projectId,
-                    { ...step.file, updatedBySession: null },
-                    incomplete,
-                  );
-                  yield* write(tx, userId, projectId, merged, null);
-                }),
-              );
+              Effect.gen(function* () {
+                yield* apply(keepVersion(tx, userId, projectId, step.stored, merged, holds));
+                yield* keepIncoming(step.file, merged);
+                yield* apply(write(tx, userId, projectId, merged, null));
+              });
             let count = stored.size;
             for (const step of steps) {
               const { file } = step;
@@ -816,7 +855,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                   break;
                 }
                 case "update": {
-                  yield* apply(keepVersion(tx, userId, projectId, step.replacing));
+                  yield* apply(keepVersion(tx, userId, projectId, step.replacing, file, holds));
                   yield* apply(write(tx, userId, projectId, file, null));
                   yield* recordBase(file);
                   report.updated.push(file.path);
@@ -844,24 +883,20 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                       ? { path: file.path, encoding: "utf8" as const, contents: outcome.contents }
                       : null;
                   if (outcome.kind === "unmergeable" || merged === null || !storable(merged)) {
-                    yield* conflict(file);
+                    yield* conflict(step);
                     break;
                   }
-                  if (merged.contents !== step.stored.contents) {
-                    yield* replaceMerged(step, merged, outcome.missing.length > 0);
-                  } else if (outcome.missing.length > 0) {
-                    yield* apply(
-                      pinVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
-                    );
-                  }
+                  if (merged.contents !== step.stored.contents) yield* replaceMerged(step, merged);
+                  else if (outcome.lostTheirs.length > 0) yield* keepIncoming(file, step.stored);
                   // A merge that does not hold every line this machine sent keeps its file as a
                   // version and does not move the base: the next import merges and says so again.
-                  if (outcome.missing.length === 0) yield* recordBase(file);
+                  if (outcome.lostTheirs.length === 0) yield* recordBase(file);
                   report.merged.push({
                     path: file.path,
                     against:
                       step.base === null || step.base === "" ? "no-shared-version" : "last-import",
-                    missingLines: outcome.missing.length,
+                    missingLines: outcome.lostTheirs.length,
+                    storeMissingLines: outcome.lostOurs.length,
                   });
                   break;
                 }
@@ -879,16 +914,21 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                           contents: Buffer.from(bytes).toString("base64"),
                         };
                   if (merged === null || !storable(merged)) {
-                    yield* conflict(file);
+                    yield* conflict(step);
                     break;
                   }
-                  yield* replaceMerged(step, merged, false);
+                  yield* replaceMerged(step, merged);
                   yield* recordBase(file);
-                  report.merged.push({ path: file.path, against: "summaries", missingLines: 0 });
+                  report.merged.push({
+                    path: file.path,
+                    against: "summaries",
+                    missingLines: 0,
+                    storeMissingLines: 0,
+                  });
                   break;
                 }
                 case "conflict": {
-                  yield* conflict(file);
+                  yield* conflict(step);
                   break;
                 }
               }

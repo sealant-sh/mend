@@ -9,7 +9,7 @@ import {
   AgentMemoryRemoved,
   AgentMemoryView,
 } from "@mend/domain/workbench";
-import { mergeCodexDatabases, mergeTextUnion } from "@mend/sessions";
+import { codexDatabaseHolds, mergeCodexDatabases, mergeTextUnion } from "@mend/sessions";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -50,6 +50,7 @@ const importFiles = (projectId: ProjectId, payload: AgentMemoryImport, dryRun: b
       dryRun,
       merge: mergeTextUnion,
       mergeDatabase: mergeCodexDatabases,
+      holdsDatabase: codexDatabaseHolds,
     });
     return new AgentMemoryImported({
       ...report,

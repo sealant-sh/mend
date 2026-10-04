@@ -122,6 +122,12 @@ export class AgentMemoryImportMerge extends Schema.Class<AgentMemoryImportMerge>
    * import from there merges it again.
    */
   missingLines: Schema.Int,
+  /**
+   * How many of Mend's lines the result does not hold (a line this machine removed since its last
+   * import is not counted). Mend's file is always kept as a version, pinned when it is the only
+   * copy of a line.
+   */
+  storeMissingLines: Schema.Int,
 }) {}
 
 /** What an import did, or would do, path by path. */

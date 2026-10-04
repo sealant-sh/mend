@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
 
-import type { MergeDatabase } from "@mend/db";
+import type { HoldsDatabase, MergeDatabase } from "@mend/db";
 import { CODEX_MEMORY_DATABASE } from "@mend/domain/workbench";
 import { Effect } from "effect";
 
@@ -305,6 +305,22 @@ export const mergeCodexDatabases: MergeDatabase = ({ ours, theirs }) =>
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+
+/**
+ * Whether summary database `current` holds every summary `version` holds, at the same revision or
+ * a newer one (docs/adr/0009): when it does, a replaced `version` is not the only copy of anything
+ * and need not be pinned. False when either does not open as a summary database.
+ */
+export const codexDatabaseHolds: HoldsDatabase = ({ current, version }) =>
+  Effect.gen(function* () {
+    const [now, then] = yield* Effect.all([summarisedThreads(current), summarisedThreads(version)]);
+    // An empty or unreadable `version` holds nothing to lose only when it really is empty.
+    if (then.size === 0) return Buffer.from(current).equals(Buffer.from(version));
+    for (const [thread, revision] of then) {
+      if ((now.get(thread) ?? Number.NEGATIVE_INFINITY) < revision) return false;
+    }
+    return true;
   });
 
 /** Rollout facts already read, by path, size and time: a launch reads each file once. */

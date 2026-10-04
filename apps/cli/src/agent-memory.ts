@@ -142,6 +142,7 @@ export interface ImportReport {
     readonly path: string;
     readonly against: "last-import" | "no-shared-version" | "summaries";
     readonly missingLines?: number;
+    readonly storeMissingLines?: number;
   }>;
   readonly keptStored?: ReadonlyArray<string>;
   readonly removedInMend?: ReadonlyArray<string>;
@@ -178,16 +179,21 @@ export const importReportLines = (report: ImportReport): ReadonlyArray<string> =
   }
   for (const merge of report.merged ?? []) {
     const missing = merge.missingLines ?? 0;
+    const storeMissing = merge.storeMissingLines ?? 0;
+    const lost = (n: number, whose: string) =>
+      `${n} of ${whose} line${n === 1 ? " is" : "s are"} not in the result: its copy kept as a version`;
     row(
       "merged",
       merge.path,
       missing > 0
-        ? `${missing} of this machine's line${missing === 1 ? " is" : "s are"} not in the result: its copy kept as a version`
-        : merge.against === "last-import"
-          ? "both changed since this machine's last import, both sides' lines kept"
-          : merge.against === "summaries"
-            ? "both sides' summaries kept, the newer one per conversation"
-            : "both sides' lines kept, no earlier import to compare against",
+        ? lost(missing, "this machine's")
+        : storeMissing > 0
+          ? lost(storeMissing, "Mend's")
+          : merge.against === "last-import"
+            ? "both changed since this machine's last import, both sides' lines kept"
+            : merge.against === "summaries"
+              ? "both sides' summaries kept, the newer one per conversation"
+              : "both sides' lines kept, no earlier import to compare against",
     );
   }
   for (const p of report.keptStored ?? []) {
