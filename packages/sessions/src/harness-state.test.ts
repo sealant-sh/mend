@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { writeOpencodeDatabase } from "../test/opencode-db.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
@@ -13,7 +14,7 @@ import {
   extractTranscript,
   hasLiveConversation,
   hasLiveHarnessState,
-  hasLiveStateFile,
+  harvestHarnessStateScript,
   locateLiveTranscript,
   HARNESS_HOME_CREDENTIALS,
   nativeResumeArgv,
@@ -165,16 +166,23 @@ describe("transcript adapters", () => {
     expect(nativeResumeArgv("codex", null, ["codex"])).toEqual(["codex"]);
   });
 
-  it("continues opencode's newest conversation, with no session id to name", () => {
-    expect(nativeResumeArgv("opencode", null, ["opencode"])).toEqual(["opencode", "--continue"]);
-    expect(nativeResumeArgv("opencode", null, ["opencode", "--model", "openai/x"])).toEqual([
+  it("opens opencode's own conversation by id, and never guesses one", () => {
+    expect(nativeResumeArgv("opencode", "ses_a", ["opencode"])).toEqual([
       "opencode",
-      "--continue",
+      "--session",
+      "ses_a",
+    ]);
+    expect(nativeResumeArgv("opencode", "ses_a", ["opencode", "--model", "openai/x"])).toEqual([
+      "opencode",
+      "--session",
+      "ses_a",
       "--model",
       "openai/x",
     ]);
+    // No id is no resume: never `--continue`, which opens whichever conversation is newest.
+    expect(nativeResumeArgv("opencode", null, ["opencode"])).toEqual(["opencode"]);
     // A launch that names a conversation, or brings a prompt (submitted only from opencode's home
-    // screen, which --continue skips), stays as it is; so does one wrapped in a shell.
+    // screen, which opening a conversation skips), stays as it is; so does one in a shell.
     for (const argv of [
       ["opencode", "--continue"],
       ["opencode", "-c"],
@@ -183,7 +191,7 @@ describe("transcript adapters", () => {
       ["opencode", "--prompt", "fix the test"],
       ["sh", "-c", "exec opencode", "sh"],
     ]) {
-      expect(nativeResumeArgv("opencode", null, argv)).toEqual(argv);
+      expect(nativeResumeArgv("opencode", "ses_a", argv)).toEqual(argv);
     }
   });
 
@@ -507,26 +515,79 @@ describe("harness home", () => {
     ).toBeNull();
   });
 
-  it("reads opencode's database as its conversation: a regular file only", async () => {
+  it("counts opencode's database as a conversation only when it opens and lists one", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harness-home-"));
-    expect(await Effect.runPromise(hasLiveStateFile(home, "opencode"))).toBe(false);
     expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
-    const data = path.join(home, ".local", "share", "opencode");
-    fs.mkdirSync(data, { recursive: true });
+    const db = path.join(home, ".local", "share", "opencode", "opencode.db");
+    fs.mkdirSync(path.dirname(db), { recursive: true });
     // A link where the database belongs leads anywhere; it is not the harness's state.
-    fs.symlinkSync("/etc/hostname", path.join(data, "opencode.db"));
-    expect(await Effect.runPromise(hasLiveStateFile(home, "opencode"))).toBe(false);
-    fs.rmSync(path.join(data, "opencode.db"));
-    fs.writeFileSync(path.join(data, "opencode.db"), "SQLite format 3\0");
-    expect(await Effect.runPromise(hasLiveStateFile(home, "opencode"))).toBe(true);
+    fs.symlinkSync("/etc/hostname", db);
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    fs.rmSync(db);
+    // Zero bytes, a header and nothing else, and a real database with no conversation: none.
+    fs.writeFileSync(db, "");
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    fs.writeFileSync(db, "SQLite format 3\0");
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    fs.rmSync(db);
+    writeOpencodeDatabase(db, []);
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    writeOpencodeDatabase(db, [{ id: "ses_1", createdAt: 1 }]);
     expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(true);
     // A harness with a transcript answers by its transcript; one with neither, false.
-    expect(await Effect.runPromise(hasLiveStateFile(home, "claude"))).toBe(false);
     expect(await Effect.runPromise(hasLiveConversation(home, "claude"))).toBe(false);
     const projectDir = path.join(home, ".claude", "projects", "-workspace-repo");
     fs.mkdirSync(projectDir, { recursive: true });
     fs.writeFileSync(path.join(projectDir, "0f9a2c3d-1111-2222-3333-444455556666.jsonl"), "{}\n");
     expect(await Effect.runPromise(hasLiveConversation(home, "claude"))).toBe(true);
     expect(await Effect.runPromise(hasLiveConversation(home, "unknown"))).toBe(false);
+  });
+});
+
+describe("the co-located harvest keeps no login", () => {
+  it("archives opencode's data and state without its login files, and no harness's login", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harvest-logins-"));
+    const home = path.join(root, "home");
+    const put = (relative: string, text: string) => {
+      fs.mkdirSync(path.dirname(path.join(home, relative)), { recursive: true });
+      fs.writeFileSync(path.join(home, relative), text);
+    };
+    for (const credential of HARNESS_HOME_CREDENTIALS) {
+      put(credential, `{"access":"SYNTHETIC-LOGIN-${credential}"}`);
+    }
+    put(".local/share/opencode/opencode.db", "the conversations");
+    put(".local/share/opencode/snapshot/x", "a snapshot");
+    put(".local/state/opencode/model.json", '{"recent":[]}');
+    put(".claude/projects/-workspace-repo/s.jsonl", "{}\n");
+    put(".pi/agent/settings.json", "{}");
+    for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
+      const packed = spawnSync(
+        "sh",
+        ["-c", harvestHarnessStateScript(shape.paths, path.join(root, "no-mount"))],
+        { env: { ...process.env, HOME: home, TMPDIR: root }, encoding: "utf8" },
+      );
+      if (packed.status === 3) continue;
+      expect(packed.status, `${harness}: ${packed.stderr}`).toBe(0);
+      const archive = path.join(root, `${harness}.tgz`);
+      fs.writeFileSync(archive, Buffer.from(packed.stdout.trim(), "base64"));
+      const listed = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" }).stdout;
+      for (const credential of HARNESS_HOME_CREDENTIALS) {
+        expect(listed, `${harness}: ${credential}`).not.toContain(credential);
+      }
+      const unpacked = path.join(root, `unpacked-${harness}`);
+      fs.mkdirSync(unpacked);
+      spawnSync("tar", ["-xzf", archive, "-C", unpacked]);
+      const bytes = execFileSync("sh", ["-c", 'find "$1" -type f -exec cat {} +', "sh", unpacked], {
+        encoding: "utf8",
+      });
+      expect(bytes, harness).not.toContain("SYNTHETIC-LOGIN");
+      if (harness === "opencode") {
+        expect(listed).toContain(".local/share/opencode/opencode.db");
+        expect(listed).toContain(".local/share/opencode/snapshot/x");
+        expect(listed).toContain(".local/state/opencode/model.json");
+      }
+    }
+    expect(HARNESS_HOME_CREDENTIALS).toContain(".local/share/opencode/mcp-auth.json");
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });

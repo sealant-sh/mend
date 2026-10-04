@@ -270,7 +270,6 @@ import {
   extractTranscript,
   hasLiveHarnessState,
   hasLiveConversation,
-  hasLiveStateFile,
   CARRIED_TRANSCRIPTS,
   harvestHarnessStateScript,
   locateLiveTranscript,
@@ -295,6 +294,13 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
+import {
+  type OpencodeConversation,
+  opencodeConversationOf,
+  opencodeSpanOf,
+  readOpencodeConversations,
+  readOpencodeHome,
+} from "./opencode-state.ts";
 import {
   checkPastedImage,
   PastedImageError,
@@ -6361,6 +6367,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
         });
 
+        if (shape.liveTranscript === null && shape.stateFile !== undefined) {
+          // No transcript file (opencode): the conversation this process held is read out of the
+          // database in the durable home the workspace mounts, and the manifest names it. None
+          // that can be told is no saved state: a resume is refused rather than open a guess.
+          const listed = yield* readOpencodeHome(harnessHomePathOf(project.storePath, session.id));
+          const held =
+            listed === null ? null : yield* opencodeConversationFor(session, agentProcess, listed);
+          if (held === null) {
+            return yield* new HarnessStateCommandError({
+              sessionId,
+              harness,
+              operation: "identify-session",
+              exitCode: 0,
+              stderr: "",
+              message: `No ${harness} conversation in the harness home is session ${sessionId}'s.`,
+            });
+          }
+          yield* commitConversationState(session, project, agentProcess, held);
+          return;
+        }
+
         const located = yield* sealant.exec(workspace, ["sh", "-c", shape.latestTranscript]);
         const transcriptFile = located.stdout.trim().split("\n")[0] ?? "";
         let providerSessionId: string | null = null;
@@ -6500,6 +6527,64 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           : withCaptureReadPass(self).pipe(Effect.provideService(BlobStore, capture.blobs));
 
       /**
+       * The opencode conversation `agent` held, out of the conversations its database lists
+       * (`opencodeConversationOf`): the other opencode processes of the worktree, every session's,
+       * are what could have started one of them instead. Null when it cannot be told.
+       */
+      const opencodeConversationFor = Effect.fn("SessionEngine.opencodeConversationFor")(function* (
+        session: Session,
+        agent: SessionProcess,
+        listed: ReadonlyArray<OpencodeConversation>,
+      ) {
+        const inWorktree = yield* sessions.listForWorktree(session.worktreeId);
+        const rows = yield* processes.listForSessions(inWorktree.map((row) => row.id));
+        const others = rows
+          .filter(
+            (row) =>
+              row.id !== agent.id && row.harness === "opencode" && isAgentProcessKind(row.kind),
+          )
+          .map(opencodeSpanOf);
+        return opencodeConversationOf(listed, opencodeSpanOf(agent), others, Date.now());
+      });
+
+      /**
+       * Commit a transcript-less harness's state (opencode) for `agent`: the manifest naming the
+       * conversation it held, which a resume opens by id, and the id on the process and session.
+       */
+      const commitConversationState = Effect.fn("SessionEngine.commitConversationState")(function* (
+        session: Session,
+        project: { readonly storePath: string },
+        agent: SessionProcess,
+        providerSessionId: string,
+      ) {
+        const harness = agent.harness ?? session.harness;
+        const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+        const manifestPath = path.join(stateDir, "manifest.json");
+        const manifest: HarnessStateManifest = {
+          harness,
+          providerSessionId,
+          capturedAt: new Date().toISOString(),
+        };
+        yield* Effect.tryPromise({
+          try: async () => {
+            await fs.mkdir(stateDir, { recursive: true });
+            await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+          },
+          catch: (cause) =>
+            new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "write-manifest",
+              path: manifestPath,
+              message: `Could not commit saved harness state for session ${session.id}.`,
+              cause,
+            }),
+        });
+        yield* processes.setProviderSessionId(agent.id, providerSessionId);
+        yield* sessions.setProviderSessionId(session.id, providerSessionId);
+        return { stateDir, manifest } satisfies LocatedHarnessState;
+      });
+
+      /**
        * One harvest of an agent at a time: a deferred harvest left running past its limit and a
        * recovery sweep's harvest of the same agent would each clear and rewrite the other's
        * manifest (Astra review, 2026-10-03).
@@ -6591,28 +6676,58 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const pattern = shape.liveTranscript;
         if (pattern === null) {
-          // A harness with no transcript file (opencode): its database in the capture is the
-          // conversation. The capture itself is what a resume materialises; the manifest commits
-          // that there is one to continue, with no transcript and no session id to name.
+          // A harness with no transcript file (opencode): its database in the capture holds the
+          // conversations, and the one this process held is read out of it by id. The capture
+          // itself is what a resume materialises; the manifest names the conversation to open.
           const stateFile = `harness/${shape.stateFile}`;
-          if (!files.some((file) => file.entry.kind === "file" && file.path === stateFile)) {
-            return null;
+          const database = files.find((file) => file.path === stateFile);
+          if (database === undefined || database.entry.kind !== "file") return null;
+          const wal = files.find((file) => file.path === `${stateFile}-wal`);
+          // sealantd marks a database (or its log) that changed under every read as torn: what
+          // it holds is no answer either way, so the session is left unclassified, not a dead end.
+          if (database.entry.torn === true || wal?.entry.torn === true) {
+            return yield* new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "read-transcript",
+              path: stateFile,
+              message: `The captured ${harness} database for session ${session.id} was torn.`,
+              cause: null,
+            });
           }
-          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
-          const manifestPath = path.join(stateDir, "manifest.json");
-          const stateManifest: HarnessStateManifest = {
-            harness,
-            providerSessionId: null,
-            capturedAt: new Date().toISOString(),
-          };
-          yield* io("write-manifest", manifestPath, async () => {
-            await fs.mkdir(stateDir, { recursive: true });
-            await fs.writeFile(manifestPath, JSON.stringify(stateManifest, null, 2));
-          });
+          const read = (relative: string) =>
+            readCaptureFileBytes(manifest, "workspace", relative).pipe(
+              Effect.provideService(BlobStore, blobs),
+            );
+          const bytes = yield* read(stateFile).pipe(
+            Effect.mapError(
+              (cause) =>
+                new HarnessStateIOError({
+                  sessionId: session.id,
+                  operation: "read-transcript",
+                  path: stateFile,
+                  message: `Could not read the captured ${harness} database for session ${session.id}.`,
+                  cause,
+                }),
+            ),
+          );
+          const walBytes =
+            wal === undefined || wal.entry.kind !== "file"
+              ? null
+              : yield* read(wal.path).pipe(Effect.orElseSucceed(() => null));
+          const listed = yield* readOpencodeConversations(bytes, walBytes);
+          if (listed === null) return null;
+          const providerSessionId = yield* opencodeConversationFor(session, agent, listed);
+          if (providerSessionId === null) return null;
+          const located = yield* commitConversationState(
+            session,
+            project,
+            agent,
+            providerSessionId,
+          );
           yield* Effect.logInfo("session engine: harness state observed at capture").pipe(
             Effect.annotateLogs({ sessionId: session.id, captureN: head.n, seq: String(head.seq) }),
           );
-          return { stateDir, manifest: stateManifest } satisfies LocatedHarnessState;
+          return located;
         }
         // Never a conversation Mend carried in from another session (docs/adr/0009, "Codex"),
         // and the newest of the rest: a resumed session's home holds several of its own.
@@ -6716,31 +6831,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture !== null) return yield* inOneReadPass(harvestFromCapture(session, agent));
         const harnessHome = harnessHomePathOf(project.storePath, session.id);
         if (HARNESS_STATE[harness]?.liveTranscript === null) {
-          // No transcript file (opencode): the database in the durable home is the conversation,
-          // and a relaunch boots on that home. The manifest commits that there is one.
-          if (!(yield* hasLiveStateFile(harnessHome, harness))) return null;
-          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
-          const manifestPath = path.join(stateDir, "manifest.json");
-          const manifest: HarnessStateManifest = {
-            harness,
-            providerSessionId: null,
-            capturedAt: new Date().toISOString(),
-          };
-          yield* Effect.tryPromise({
-            try: async () => {
-              await fs.mkdir(stateDir, { recursive: true });
-              await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
-            },
-            catch: (cause) =>
-              new HarnessStateIOError({
-                sessionId: session.id,
-                operation: "write-manifest",
-                path: manifestPath,
-                message: `Could not commit saved harness state for session ${session.id}.`,
-                cause,
-              }),
-          });
-          return { stateDir, manifest } satisfies LocatedHarnessState;
+          // No transcript file (opencode): the database in the durable home holds the
+          // conversations; the one this process held is read out of it by id.
+          const listed = yield* readOpencodeHome(harnessHome);
+          if (listed === null) return null;
+          const providerSessionId = yield* opencodeConversationFor(session, agent, listed);
+          if (providerSessionId === null) return null;
+          return yield* commitConversationState(session, project, agent, providerSessionId);
         }
         const live = yield* locateLiveTranscript(harnessHome, harness);
         if (live === null) return null;
@@ -11999,14 +12096,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
 
-        // Resume addresses the LATEST agent process's capture (its provider session id).
-        const located = yield* harnessStateFor(session);
+        // Resume addresses the LATEST agent process's capture (its provider session id). opencode
+        // keeps no file to find: what is missing is a conversation Mend can tell is this
+        // session's, and the refusal says so.
+        const located = yield* harnessStateFor(session).pipe(
+          Effect.mapError((error) =>
+            error._tag === "HarnessStateNotFoundError" && session.harness === "opencode"
+              ? new HarnessStateInvalidError({
+                  sessionId,
+                  path: error.path,
+                  message: `opencode left no conversation Mend can tell is session ${sessionId}'s; refusing to open another one.`,
+                  cause: error,
+                })
+              : error,
+          ),
+        );
         const { stateDir, manifest } = located;
         let argv = defaultArgv;
         let nativeImport: ConvertedNativeSession | null = null;
         if (
           manifest.harness === target &&
-          (target === "claude" || target === "codex") &&
+          (target === "claude" || target === "codex" || target === "opencode") &&
           manifest.providerSessionId === null
         ) {
           return yield* new HarnessStateInvalidError({
