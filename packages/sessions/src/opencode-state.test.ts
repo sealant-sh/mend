@@ -227,3 +227,29 @@ describe("the launch snapshot", () => {
     ]);
   });
 });
+
+describe("a write-ahead log that cannot be read (review 2026-10-04, round 3)", () => {
+  it("leaves the database unread rather than read without its log", async () => {
+    const home = tmp();
+    const db = path.join(home, OPENCODE_DATABASE);
+    writeOpencodeDatabase(db, [{ id: "ses_1", createdAt: 1 }]);
+    // A log that is a directory, then one that cannot be opened: no answer either way.
+    fs.mkdirSync(`${db}-wal`);
+    expect(await Effect.runPromise(readOpencodeHome(home))).toBeNull();
+    expect(await Effect.runPromise(snapshotOpencodeHome(home))).toBeNull();
+    fs.rmdirSync(`${db}-wal`);
+    fs.writeFileSync(`${db}-wal`, "");
+    fs.chmodSync(`${db}-wal`, 0o000);
+    try {
+      if (process.getuid?.() !== 0) {
+        expect(await Effect.runPromise(readOpencodeHome(home))).toBeNull();
+        expect(await Effect.runPromise(snapshotOpencodeHome(home))).toBeNull();
+      }
+    } finally {
+      fs.chmodSync(`${db}-wal`, 0o600);
+    }
+    // No log at all is the database read whole.
+    fs.rmSync(`${db}-wal`);
+    expect(await Effect.runPromise(snapshotOpencodeHome(home))).toEqual(["ses_1"]);
+  });
+});

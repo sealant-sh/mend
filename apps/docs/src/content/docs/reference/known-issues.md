@@ -107,6 +107,13 @@ When a repository has a `.opencode` directory, opencode installs its own plugin 
 startup, and a lockfile committed in it can change. That edit shows up in the session's change like
 any other.
 
+opencode's database is saved with the session as its conversation, and in a remote workspace the
+next session in the worktree, anyone's, opens it. A login you make inside opencode to the opencode
+console or to one of its integrations is kept in that database, so it travels with it. The logins
+Mend gives opencode (your ChatGPT login) never go there, and the logins of the MCP servers opencode
+signs in to are kept out of saved state; sign in to the console or integrations only in a worktree
+nobody else uses.
+
 ## pi runs in the terminal only
 
 pi sessions run as terminals: attach from the CLI, the web app, the desktop app or VS Code. The
