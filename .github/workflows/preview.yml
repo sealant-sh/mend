@@ -56,7 +56,13 @@ jobs:
       sealantd_sha: ${{ steps.resolve.outputs.sealantd_sha }}
       platforms: ${{ steps.resolve.outputs.platforms }}
     steps:
+      # Full history and tags: the version is counted from the branch's merge base with main.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
       - name: Resolve the version, the upstream commits and the platforms
         id: resolve
         env:
@@ -82,14 +88,10 @@ jobs:
           sealant_sha=$(resolve sealant-sh/sealant "$SEALANT_REF")
           sealantd_sha=$(resolve sealant-sh/sealantd "$SEALANTD_REF")
 
-          # The next minor of the CLI version, so a preview always upgrades from the release it
-          # follows, and the run number, so each preview upgrades from the one before it.
-          cli_version=$(jq -r .version apps/cli/package.json)
-          [[ $cli_version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\. ]] || {
-            echo "::error::apps/cli/package.json has no usable version (\"$cli_version\")."
-            exit 1
-          }
-          version="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).0-preview.$RUN_NUMBER"
+          # The next build of the branch's merge base with main, then the run number:
+          # 0.36.0-next.56.preview.17 sorts after 0.36.0-next.56 and before 0.36.0-next.57, so a box
+          # moves between next builds and previews in order (docs/adr/0015-next-channel.md).
+          version=$(node scripts/next-version.mjs --preview "$RUN_NUMBER" --main origin/main HEAD)
 
           amd64='{"arch":"amd64","runner":"blacksmith-4vcpu-ubuntu-2404"}'
           arm64='{"arch":"arm64","runner":"blacksmith-4vcpu-ubuntu-2404-arm"}'

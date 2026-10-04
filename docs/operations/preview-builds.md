@@ -1,8 +1,12 @@
 # Preview builds
 
-A preview build puts unreleased branches of Mend, Sealant Core and sealantd on one self-hosted box,
+A preview build puts unmerged branches of Mend, Sealant Core and sealantd on one self-hosted box,
 through the same `mend server setup` and `mend server upgrade` an operator uses for a release. The
 workflow is `.github/workflows/preview.yml`; the box side is `scripts/preview-deploy.sh`.
+
+What is already on main does not need a preview: Core and sealantd publish a prerelease on every
+merge, and a Mend `next` build is one tag away. Read [The next channel](next-channel.md). A preview
+is for the branches that have not merged yet, and it reaches only the box: nothing goes to npm.
 
 ## Build
 
@@ -29,10 +33,13 @@ because Core trusts the recovery boot only of released `ghcr.io/sealant-sh/seala
 and of the images listed there. The reference is a digest, so each sealantd build gets its own
 workspace images instead of reusing the last preview's.
 
-The version is the next minor of `apps/cli/package.json` plus the run number: on `0.35.1`, run 17 is
-`0.36.0-preview.17`. A later run is always a higher version, and the release that follows (`0.36.0`)
-is higher than every preview of it. Re-running a run keeps its number, and the box already pinned to
-that version does nothing: dispatch a new run instead.
+The version is the `next` version of the branch's merge base with main, plus the run number
+(`scripts/next-version.mjs --preview`): a branch cut from main's `0.36.0-next.56`, built by run 17,
+is `0.36.0-next.56.preview.17`. It sorts after `0.36.0-next.56` and before `0.36.0-next.57`, so the
+box moves between next builds and previews in main's order, and the release that follows (`0.36.0`)
+is higher than both. A branch cut from an older main sorts lower, and a box already past it refuses
+it: rebase the branch. Re-running a run keeps its number, and the box already pinned to that version
+does nothing: dispatch a new run instead.
 
 The run's summary lists the three refs and their commits, every image it pushed, the version, and
 the deploy command. The workflow runs no packaged acceptance, so a preview takes one image build per
@@ -76,15 +83,17 @@ writes it into every generation). It ends with `mend server status`.
 
 ## Limits
 
-- `mend server upgrade` refuses an equal or lower version, so a preview from a Mend branch whose CLI
-  version is behind the box's cannot be installed over it. Neither can a release older than the
-  preview: a box on `0.36.0-preview.17` takes `0.36.0` or later.
+- `mend server upgrade` refuses an equal or lower version, so a preview of a branch cut before the
+  box's version cannot be installed over it. Neither can a release older than the preview: a box on
+  `0.36.0-next.56.preview.17` takes `0.36.0-next.57`, `0.36.0` or later.
+- Previews before ADR 0015 were numbered `0.36.0-preview.R`. `preview` sorts after `next`, so a box
+  on one of those refuses every `0.36.0-next.*` until `0.36.0` (ADR 0015, decision 7).
 - A preview applies its Mend and Sealant migrations to the box's databases, and they are not
   reversed. Use a box you can rebuild.
 - Mend imports `@sealant/sdk` and `@sealant/api-contracts` from npm, and Core imports the
   `@sealant/runtime-*` packages from npm. A Core branch that changes the SDK or the API contract
   Mend uses, or a sealantd branch that changes those runtime packages, does not reach the preview:
-  publish them first.
+  merge it, and pin the prerelease main publishes.
 - The deploy script covers a box installed with `mend server setup`. An arm64 deployment such as
   alpha (`deploy/aws`) is deployed by hand for now, from the images a `linux/arm64` run pushed.
 - A release build passes none of these arguments: the root `Dockerfile` defaults are the pinned Core

@@ -16,6 +16,16 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Every install reads the committed lockfile, so a package published after the commit (a
+      # Sealant prerelease included) never drifts in. The brackets keep this step from matching
+      # itself.
+      - name: Installs stay bound to the lockfile
+        run: |
+          if git grep -nE 'lockfile[=]false|PNPM_CONFIG_LOCKFIL[E]|no-frozen-lockfil[e]' -- \
+            .github Dockerfile 'apps/*/Dockerfile' 'scripts/*.sh' 'tooling/**'; then
+            echo "::error::Install with --frozen-lockfile, not without the lockfile."
+            exit 1
+          fi
       # Build first: the vite builds generate the gitignored routeTree.gen.ts
       # files that typecheck needs — CI was red for weeks on exactly this.
       - run: pnpm build
@@ -30,4 +40,6 @@ jobs:
           scripts/packaged-ssh-acceptance.test.mjs scripts/packaged-git-access-acceptance.test.mjs
           scripts/packaged-dotfiles-acceptance.test.mjs scripts/helm-chart.test.mjs
           scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs
+          scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
+          scripts/check-release-pins.test.mjs
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml

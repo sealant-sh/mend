@@ -1,6 +1,11 @@
 # A vVERSION tag releases the complete Mend product. Historical cli-v tags do not
 # have the versioned server assets required by the new installer.
 # npm Trusted Publishing uses sealant-sh/Mend, release-cli.yml, environment release.
+#
+# Two kinds of tag (docs/adr/0015-next-channel.md):
+# - vX.Y.Z-next.N, a `next` build: a GitHub prerelease and npm's `next` dist-tag. `latest` stays.
+# - vX.Y.Z, a stable release: a promotion of a next build, with no prerelease pinned anywhere.
+# The pins job refuses anything else before an image is built.
 name: Release Mend
 
 on:
@@ -12,8 +17,24 @@ permissions:
   contents: read
 
 jobs:
+  pins:
+    name: Check what the release pins
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      # Full history and every tag: the next version is counted from the minor's first release,
+      # and a stable release is compared with the next build it promotes.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - run: node scripts/check-release-pins.mjs "$GITHUB_REF_NAME"
+
   images:
     name: Build and verify server images
+    needs: pins
     uses: ./.github/workflows/image.yml
     permissions:
       contents: read
@@ -73,6 +94,15 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#cli-}"
           VERSION="${VERSION#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            cat > release-notes.md <<NOTES
+          A \`next\` build of Mend from main at $GITHUB_SHA. It passed the packaged acceptance; it is
+          not a release. Install it with \`npm install --global @sealant/mend@next\`, then
+          \`mend server setup\` or \`mend server upgrade --version $VERSION\`. Read
+          https://docs.mend.run/getting-started/try-a-preview/ before you do: a server on a next
+          build moves forward only, to a later next build or to the stable release that follows.
+          NOTES
+          else
           awk -v version="$VERSION" '
             $0 ~ "^## " version "$" { grab = 1; next }
             grab && /^## / { exit }
@@ -81,6 +111,7 @@ jobs:
           if ! [ -s release-notes.md ]; then
             echo "No CHANGELOG section found for $VERSION — using a pointer instead." >&2
             echo "See apps/cli/CHANGELOG.md." > release-notes.md
+          fi
           fi
           # One version stamps every artifact — list them so the release
           # object is the complete record of what this tag produced.

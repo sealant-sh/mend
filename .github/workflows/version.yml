@@ -31,8 +31,8 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      # CI resolves package.json without modifying the intentionally frozen lockfile.
-      - run: pnpm install --lockfile=false --ignore-scripts
+      # Bound to the committed lockfile, like every other install (docs/adr/0015-next-channel.md).
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - uses: changesets/action@v1
         id: changesets
         with:

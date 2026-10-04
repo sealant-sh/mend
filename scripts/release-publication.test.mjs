@@ -68,3 +68,21 @@ test("stable latest promotion waits for npm and the GitHub release", () => {
   assert.ok(promotion.indexOf("docker buildx imagetools create") > prereleaseGuard);
   assert.ok(promotion.indexOf("gh release edit") > prereleaseGuard);
 });
+
+test("nothing builds or publishes before the pins are checked", () => {
+  const pins = job("pins");
+  assert.match(pins, /fetch-depth: 0/);
+  assert.match(pins, /node scripts\/check-release-pins\.mjs "\$GITHUB_REF_NAME"/);
+  assert.ok(dependencies("images").includes("pins"));
+  // npm, the GitHub release and the latest promotion all wait on images, so on the pins too.
+  assert.ok(dependencies("github-release").includes("images"));
+});
+
+test("a next build is a GitHub prerelease on npm's next dist-tag, and never moves latest", () => {
+  assert.match(job("npm"), /if \[\[ "\$version" == \*-\* \]\]; then channel=next; fi/);
+  assert.match(
+    job("github-release"),
+    /if \[\[ "\$VERSION" == \*-\* \]\]; then flags\+=\(--prerelease\); fi/,
+  );
+  assert.match(job("github-release"), /A \\`next\\` build of Mend from main/);
+});
