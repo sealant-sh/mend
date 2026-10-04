@@ -1,6 +1,6 @@
 # A `next` channel: prereleases from main, and a stable release as their promotion
 
-Status: proposed 2026-10-04, revised the same day after two reviews. Covers `sealant-sh/mend`,
+Status: proposed 2026-10-04, revised the same day after three reviews. Covers `sealant-sh/mend`,
 `sealant-sh/sealant` (Core) and `sealant-sh/sealantd`. Amends ROADMAP "How releases work". Read
 against Mend `6d2b48e01`, Core `3599f9d` (SDK 0.38.1) and sealantd `05ce137` (0.19.0).
 
@@ -32,22 +32,34 @@ Each has a recommendation. The pull requests implement the recommendation; the o
      up to ten per package);
    - (c) on `main` in both repositories, **require a pull request with review from code owners**.
      The PRs add `CODEOWNERS` covering `.github/`, the release scripts, the Dockerfiles, the
-     changesets config and the published packages' `package.json` files (a lifecycle script there
-     runs while the tarball is packed).
+     changesets config, the published packages' `package.json` files, and what configures installs
+     and builds: the root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.pnpmfile.cjs`
+     (pnpm runs it even under `--frozen-lockfile --ignore-scripts`), `.npmrc`, and in sealantd
+     `Cargo.toml` and `Cargo.lock`;
+   - (d, optional) tick **Allow npm dist-tag** on the `next` trusted publishers, so the publish job
+     can move `latest` back itself if it ever finds it on a next version (it needs npm 11.21 or
+     later for that; otherwise it fails and prints the command for you).
 
-   Recommended, all three. Why (c) matters: npm's trusted publisher grants (repository, `next.yml`,
-   `next`) the right to publish any version under any dist-tag, `latest` included. The `-next` check
-   and `--tag next` live in the workflow file. Core main today requires Lint and Typecheck but no
-   review, and has a maintain-role collaborator, so anyone who can merge could merge an edit to
-   `next.yml`, or a `postpack` script, and publish `@sealant/sdk` as `latest` or as a stable version
-   without you. The PRs close the other paths: the job that holds the npm credential runs no
-   repository code, so a build dependency cannot reach it; and it refuses a tarball with an entry
-   outside `package/` and reads the name and version from npm's own dry run, so a crafted tarball
-   cannot publish a version that is not this run's `-next.N`. Without (c), that narrows the hole but
-   does not close it. sealantd has only admin writers today, so there (c) guards the future.
+   Recommended, (a) to (c). What the design guarantees:
+   - **Without (c):** the job that holds the npm credential runs no repository code and never
+     publishes the tarball it was given. It extracts it with pacote (npm's own reader, pinned and
+     installed in the job), rewrites `package.json` from an allowlist (no `tag`, no scripts, no
+     `publishConfig` but `access`), checks the name, the `-next.N` version and the commit on that
+     rewritten manifest, repacks it, and publishes that with `--tag next`. Nothing a build
+     dependency, a pnpmfile or a crafted tarball does can change the version, the dist-tag or the
+     commit it publishes under. But anyone who can merge to main (Core today: no required review, a
+     maintain-role collaborator) can edit `next.yml` itself and publish anything under any dist-tag:
+     npm's trusted publisher does not restrict versions or dist-tags.
+   - **With (c):** that edit, and edits to the files that configure installs, builds and packing,
+     need your review. Other paths still merge without it; they change the code inside the next
+     build, as any merge does, never its version, dist-tag or commit.
+
+   sealantd has only admin writers today, so there (c) guards the future.
 
 4. **Mend's `next` builds reuse `release-cli.yml` and its `release` environment,** so each one still
-   waits for your approval and needs no new trusted publisher. Recommended.
+   waits for your approval and needs no new trusted publisher. Its npm job is split the same way: a
+   credential-free `npm-pack` job builds and packs; the `npm` job checks nothing out and publishes
+   the tarball rebuilt from npm's reading, with the same allowlist and checks. Recommended.
 5. **A stable Mend release must be a promotion,** enforced. The release refuses a `vX.Y.Z` tag
    unless the newest next build of `X.Y.Z` it contains reached npm and, since that build, only the
    Version Packages pull request, release notes and docs changed. It also refuses while any next tag
@@ -181,6 +193,14 @@ different commit (`gitHead`) is refused.
 proves the patch as the version it ships as, and a server on it can upgrade to `0.36.1`. Once a
 minor changeset lands, builds are `0.37.0-next.N`, and stay there even if the minor is reverted; a
 server on one of those cannot take `0.36.1` (a downgrade) and waits for `0.37.0`. The docs say so.
+And once a `0.37.0-next.*` build is handed out, no next build of `0.36.1` can follow it, so the
+promotion rule cannot release `0.36.1`: after a reverted minor changeset, the next release is
+`0.37.0`. sealantd's and Core's Version Packages commit then publishes `0.37.0-next.N`, and that is
+the build release step 1 pins.
+
+A next tag counts as handed out the moment it exists. A mistyped or refused Mend next tag raises B
+for later builds, and one off main blocks its version's release, so the runbook says to delete it
+(`git push origin --delete v<version>`) unless its release already published.
 
 The three copies of `next-version.mjs` (Mend and sealantd `scripts/`, Core `tooling/scripts/`) are
 identical and tested, and refuse a shallow clone, where N would come out too small.
@@ -228,31 +248,50 @@ a GitHub prerelease with the setup assets, then npm `next` after your approval. 
 
 ### Who holds the npm credential
 
-In Core and sealantd the work is split so the OIDC credential never meets repository code:
+In all three repositories the work is split so the OIDC credential never meets repository code, and
+what is checked is what is published:
 
-- `plan` decides first: done if this commit already published; failed if npm's `next` is not older.
+- `plan` (Core, sealantd) decides first: done if this commit already published; failed if npm's
+  `next` is not older. Every registry read retries and fails closed: an error, or a 404 for a
+  package that exists, never reads as "nothing published".
 - `pack` (no `id-token`) installs, writes the version and the commit (`gitHead`) into each
-  `package.json`, builds, runs `pnpm pack`, and checks each tarball (`check-tarball.mjs`): every
-  file its `exports`, `main` and `types` name is in it, nothing sits outside `package/`, and there
-  is one `package.json`. (Core's first draft packed without building; this check is what would have
-  caught it.)
-- `publish` (`id-token: write`, environment `next`, GitHub-hosted runner) checks out nothing. For
-  each tarball it refuses any entry outside `package/` and a second `package/package.json` (npm
-  extracts with `strip: 1`, so a crafted `zzz/package.json` would be the manifest it publishes),
-  takes the name and version from `npm publish --dry-run --json --tag next`, requires them and the
-  manifest's `gitHead` to be this run's, and runs
-  `npm publish ./<tarball> --tag next --provenance --ignore-scripts`, the contract or protocol
-  first. A test runs that block, as written in `next.yml`, against crafted tarballs.
+  `package.json`, builds, runs `pnpm pack`, and (Core, sealantd) checks each tarball
+  (`check-tarball.mjs`): every file its `exports`, `main` and `types` name is in it, nothing sits
+  outside `package/`, and there is one `package.json` however its path is spelled. Core's first
+  draft packed without building; this check is what would have caught it.
+- `publish` (`id-token: write`, its environment, a GitHub-hosted runner) checks out nothing and does
+  not publish the tarball it was given. For each one it:
+  1. extracts it with pacote, npm's own reader, at a version pinned in the job and installed there;
+  2. rewrites `package.json` from an allowlist (name, version, description, license, repository,
+     homepage, bugs, keywords, type, main, module, types, typings, exports, files, bin, man,
+     directories, engines, the four dependency maps, gitHead, and `publishConfig.access`), dropping
+     everything else: any `tag`, other `publishConfig` keys, all scripts;
+  3. checks the name, the `-next.N` version (or, for a Mend stable release, `X.Y.Z`) and the commit
+     on that rewritten manifest;
+  4. checks, right before publishing, that a next version is newer than the current `next`, so
+     re-running an old failed job cannot move `next` back;
+  5. repacks with `npm pack --ignore-scripts` and publishes that with `--tag next` (or `latest`) and
+     `--ignore-scripts`;
+  6. under `next`, reads the dist-tags afterwards: if `latest` is the new version, it moves `latest`
+     back and fails loudly.
 
-That closes the paths through a build dependency and through a crafted tarball. It does not stop a
-merged edit to `next.yml` itself; decision 3(c) does.
+  A test runs that block, as written in each workflow, against a stub registry, with every tarball
+  the three reviews crafted: a second manifest outside `package/`, a doubled `package/package.json`,
+  `package/./package.json` and `package//package.json`, a `tag` field, `publishConfig` redirects, a
+  stable version, a forged commit, an older version than `next`, and a registry that moves `latest`.
+
+Three rounds of review each found a way npm reads a tarball differently from a check of the tarball
+as built (a second manifest, the `tag` field, normalized paths). Rebuilding from npm's own reading
+ends that class: the tarball published is one this job made from a manifest it wrote.
 
 ### Dist-tags
 
-- Prereleases publish with `--tag next` only, refused unless the version is `-next.N`, and only when
-  newer than the current `next`: the tag only moves forward. In Mend the pins job refuses a next tag
-  below an existing higher one, and the npm step checks `next` again after the approval, so two
-  approvals in the wrong order cannot move `next` back.
+- Prereleases publish with `--tag next` from a rewritten manifest that has no `tag` field, refused
+  unless the version is `-next.N`, and only when newer than the current `next`, checked right before
+  publishing: the tag only moves forward. If `latest` still ends up on a next version, the job moves
+  it back and fails. In Mend the pins job refuses a next tag below an existing higher one, and the
+  npm step checks `next` again after the approval, so two approvals in the wrong order cannot move
+  `next` back.
 - `latest` moves only from a `v*.*.*` tag, exactly as today. Core's and sealantd's releases now
   refuse a prerelease tag, which `v*.*.*` matched and which would have published to `latest`.
 - No floating image tags: nothing tags `next` or `edge`. Every reference names an exact version or a
@@ -309,10 +348,14 @@ images on the box before Mend releases.
    `@sealant/mend@<version>` on npm.
 2. On the box, as root: `npm install --global @sealant/mend@<version>` (the CLI with
    `--from-preview`).
-3. `mend server upgrade --version <version> --from-preview` (online: the setup assets come from that
-   version's GitHub prerelease). Before running it, check that every branch the box's previews
-   carried migrations from was merged unchanged: a Mend migration changed under the same id and name
-   is the one case the check cannot see.
+3. Check each preview the box ran (the one case the CLI cannot see is a Mend migration changed under
+   the same id and name). Every preview image carries its commit in
+   `org.opencontainers.image.revision`; the runbook gives the exact loop: for each local
+   `ghcr.io/sealant-sh/mend:*-preview.*` image, it diffs the preview branch's change to
+   `packages/db/src/migrations.ts` against its merge base and runs `git apply --check --reverse` on
+   main, which succeeds only when main carries that change exactly. Then run
+   `mend server upgrade --version <version> --from-preview` (online: the setup assets come from that
+   version's GitHub prerelease).
 4. If it refuses, the named migrations came from a branch main lacks or has in another form: merge
    it and cut a next build that contains it, then repeat step 3; or, for a changed or skipped
    migration, restore the box from a backup taken before that preview.
@@ -402,9 +445,10 @@ mend server setup
   npm token exists in any repository. Recommended once this works: **Require two-factor
   authentication and disallow tokens** on all five packages, and consider pnpm's
   `trustPolicy: no-downgrade` in Core so a runtime package published without provenance is refused.
-- Who can publish a prerelease: in Core and sealantd, whoever can merge to main, until decision 3(c)
-  makes `.github/` changes need your review; in Mend, only an admin, who alone can create `v*` tags
-  (ruleset `protect-release-tags`), and only after your approval in `release`.
+- Who can publish a prerelease: in Core and sealantd, whoever can merge to main, and with exactly
+  the version, dist-tag and commit the workflow computes, unless they edit the workflow itself,
+  which decision 3(c) puts behind your review; in Mend, only an admin, who alone can create `v*`
+  tags (ruleset `protect-release-tags`), and only after your approval in `release`.
 - Neither `next.yml` runs for a fork: `push` to main and `workflow_run` on a push to main only.
 - Images push with the workflow's `GITHUB_TOKEN` (`packages: write`) into the existing public
   packages. A prerelease version tag is never rewritten: a run whose version already exists keeps
@@ -495,6 +539,10 @@ sealant#313, #315 and #316.
 - 2026-10-04: lockfile-bound installs in Core before any publish job exists.
 - 2026-10-04: preview builds stay, renumbered into main's order; the box leaves the old numbering
   with `mend server upgrade --from-preview`.
+- 2026-10-04 (third review): the publish job publishes a tarball it rebuilt from npm's own reading
+  with an allowlisted manifest, in all three repositories; registry reads fail closed; CODEOWNERS
+  covers what configures installs and builds; what the design guarantees with and without code-owner
+  review, said exactly.
 - 2026-10-04 (second review): N is the whole history's commit count and B never falls below a base
   already handed out, so versions only go up by construction; `pack` builds and checks its tarballs;
   `publish` reads what npm would publish; one release order with a freeze from each Version Packages
