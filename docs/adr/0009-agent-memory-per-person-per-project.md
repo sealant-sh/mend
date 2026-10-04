@@ -125,8 +125,9 @@ much smaller: the memory.
      session replacing its own earlier save, a binary replacement, a conflict, a removal): a version
      that holds a line, or for a binary file any content, that the file the store holds after that
      step lacks is pinned, and the cap of twenty versions per file never takes it. Codex's summary
-     database counts as held when the new one has every summary at the same revision or newer. One
-     function writes every version and applies the rule; no path writes one any other way.
+     database counts as held when the new one has every summary at a newer valid revision, or at the
+     same revision with the same words. One function writes every version and applies the rule; no
+     path writes one any other way.
 
    The same rules apply to a read-back merge. A read-back merge with no shared version (a file the
    session made itself, or a delivered version no longer kept) keeps each shared line once instead
@@ -285,3 +286,9 @@ to build it.
   same-session replacement and binary paths had kept sole copies unpinned. The cost: a version that
   lost lines to an agent's own edit is pinned too, so the cap now bounds only versions the next file
   holds whole.
+- 2026-10-04, fourth review: a summary database row is held only by the same conversation at a
+  valid, strictly newer revision, or at the same revision with the same words. A missing row, a
+  revision that is not an integer, or a database that does not open is not held; two databases with
+  one conversation at one revision in other words are not merged, as one row cannot keep both.
+  Migration 0106 pins every version kept before it: nothing recorded which were the only copy of a
+  line, and memory versions are small.

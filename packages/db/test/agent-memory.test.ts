@@ -629,6 +629,61 @@ const importing = (
   holdsDatabase: () => Effect.succeed(false),
 });
 
+// Review round 4, finding 2 (reproduced by reading 0106): the column came in as `false` on every
+// existing version, so a version that was the only copy of some lines before the upgrade could be
+// pruned by later saves. 0106 pins them all.
+const UPGRADE_DB = `mend_agent_memory_upgrade_${process.pid}_${Date.now()}`;
+const upgradeLayer = PgClient.layer({
+  url: Redacted.make(
+    (() => {
+      const url = new URL(ADMIN_URL);
+      url.pathname = `/${UPGRADE_DB}`;
+      return url.toString();
+    })(),
+  ),
+});
+
+describe.skipIf(!reachable)("upgrading to 0106", () => {
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${UPGRADE_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("pins every version kept before it", async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${UPGRADE_DB}`);
+      }),
+    );
+    const pinned = await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+        const before = ordered.filter(([name]) => name < "0106");
+        const upgrade = ordered.filter(([name]) => name >= "0106");
+        yield* Effect.forEach(before, ([, migration]) => migration, { discard: true });
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('anna', 'Anna Example', 'anna@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-up', 'p', '/store/p-up/repo.git', 'main', (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO agent_memory_versions (user_id, project_id, path, digest, encoding, contents)
+          VALUES ('anna', 'p-up', ${`${ROOT}/old.md`}, 'd-old', 'utf8', 'the only copy')`;
+        yield* Effect.forEach(upgrade, ([, migration]) => migration, { discard: true });
+        return yield* sql<{ pinned: boolean }>`SELECT pinned FROM agent_memory_versions`;
+      }).pipe(Effect.provide(upgradeLayer), Effect.scoped),
+    );
+    expect(pinned).toEqual([{ pinned: true }]);
+  });
+});
+
 describe.skipIf(!reachable)("agent memory, in Postgres", () => {
   beforeAll(async () => {
     await withAdmin(

@@ -2955,6 +2955,9 @@ const agentMemoryImportBasesMigration = Effect.gen(function* () {
   // did not keep whole, a stored file a read-back could not merge) is pinned: the cap of twenty
   // versions per file never takes it.
   yield* sql`ALTER TABLE agent_memory_versions ADD COLUMN pinned boolean NOT NULL DEFAULT false`;
+  // Every version kept before this one may be the only copy of some lines, and nothing recorded
+  // which: all of them are pinned. Memory versions are small text, and few.
+  yield* sql`UPDATE agent_memory_versions SET pinned = true`;
 });
 
 export const migrations = {
