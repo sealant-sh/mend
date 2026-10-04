@@ -23,6 +23,11 @@ const revokedMend: DeviceCalls = {
   listTurns: () => refused("turns"),
   listItems: () => refused("items"),
   listRequests: () => refused("requests"),
+  sessionDetail: () => refused("session"),
+  submitTurn: () => refused("submit"),
+  launchProtocol: () => refused("launch"),
+  interruptTurn: () => refused("interrupt"),
+  respondRequest: () => refused("respond"),
   events: () => Stream.fail(new MendDeviceRefused({ operation: "events" })),
 };
 
@@ -59,6 +64,11 @@ describe("the device gate", () => {
         listTurns: gated.listTurns("t-listTurns", "s"),
         listItems: gated.listItems("t-listItems", "s", 0, 500),
         listRequests: gated.listRequests("t-listRequests", "s"),
+        sessionDetail: gated.sessionDetail("t-sessionDetail", "s"),
+        submitTurn: gated.submitTurn("t-submitTurn", "s", "hi"),
+        launchProtocol: gated.launchProtocol("t-launchProtocol", "s", ""),
+        interruptTurn: gated.interruptTurn("t-interruptTurn", "turn"),
+        respondRequest: gated.respondRequest("t-respondRequest", "r", { decision: "accept" }),
         events: Stream.runDrain(gated.events("t-events")),
       };
       for (const call of Object.values(calls)) yield* Effect.exit(call);

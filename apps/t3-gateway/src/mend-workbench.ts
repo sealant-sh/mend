@@ -55,6 +55,8 @@ export const MendSession = Schema.Struct({
   baseRef: Schema.NullOr(Schema.String),
   status: Schema.String,
   ownerUserId: Schema.NullOr(Schema.String),
+  /** What Mend reported when the session settled: a failed launch says why here. */
+  summary: Schema.optional(Schema.NullOr(Schema.String)),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });
@@ -138,6 +140,23 @@ export const MendRequest = Schema.Struct({
   decidedAt: Schema.NullOr(Schema.String),
 });
 export type MendRequest = typeof MendRequest.Type;
+
+/** `SessionDetail` in @mend/api-contracts, from `GET /api/sessions/:id`. */
+export const MendSessionDetail = Schema.Struct({
+  session: MendSession,
+  /** What the caller may do; servers before organizations omit it. */
+  control: Schema.optional(Schema.Struct({ steer: Schema.Boolean })),
+  change: Schema.NullOr(
+    Schema.Struct({
+      id: Schema.String,
+      branch: Schema.String,
+      baseSha: Schema.String,
+      headSha: Schema.NullOr(Schema.String),
+    }),
+  ),
+  currentAgent: Schema.NullOr(MendProcess),
+});
+export type MendSessionDetail = typeof MendSessionDetail.Type;
 
 /**
  * One SSE frame of `GET /api/events` (`MendEvent` in @mend/db): a pointer, never data. The

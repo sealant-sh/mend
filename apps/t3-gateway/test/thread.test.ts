@@ -374,6 +374,8 @@ describe("Mend's items as turn items", () => {
         requests: [],
         runIds: new Map(),
         messageIds: new Map(),
+        pending: [],
+        queueHeld: false,
       },
       items,
     );
@@ -482,6 +484,8 @@ describe("Mend's items as turn items", () => {
         ],
         runIds: new Map(),
         messageIds: new Map(),
+        pending: [],
+        queueHeld: false,
       },
       [],
     );

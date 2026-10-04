@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   EventId,
   OrchestrationProjectShell,
@@ -25,15 +27,18 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
-import type * as Scope from "effect/Scope";
+import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { GatewayConfig } from "./config.ts";
 import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import {
   MendClient,
   MendDeviceRefused,
+  type MendCommandRefused,
+  type MendRequestResponse,
   type MendNotFound,
   type MendUnavailable,
 } from "./mend-client.ts";
@@ -46,6 +51,7 @@ import type {
   MendSessionAnnotation,
   MendTurn,
 } from "./mend-workbench.ts";
+import * as Queueing from "./queue.ts";
 import {
   isProjectable,
   PROJECTION_SCHEMA_VERSION,
@@ -53,7 +59,7 @@ import {
   threadShellOf,
   type ThreadSource,
 } from "./shell.ts";
-import { GatewayState, type BearerSession } from "./state.ts";
+import { GatewayState, type BearerSession, type TurnIds } from "./state.ts";
 import { threadProjectionOf } from "./thread-projection.ts";
 
 /**
@@ -124,6 +130,53 @@ export interface PersonHub {
   readonly subscribeThread: (
     threadId: string,
   ) => Effect.Effect<ThreadSubscription | null, HubReadError, Scope.Scope>;
+  /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
+  readonly commands: ThreadCommands;
+}
+
+/** A thread command Mend or the gateway did not take; `authorization` when it is not theirs. */
+export class ThreadCommandRefused extends Schema.TaggedError<ThreadCommandRefused>()(
+  "ThreadCommandRefused",
+  { reason: Schema.String, authorization: Schema.Boolean },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
+export type ThreadCommandFailure = ThreadCommandRefused | HubReadError;
+
+export interface ThreadCommands {
+  /**
+   * A message for the thread. The gateway queues it and sends it once no turn is open: as a turn
+   * of the live agent, or, when the agent has stopped (the idle stop), as the opening turn of a
+   * protocol launch on the options the session last recorded, so it comes back as it was.
+   */
+  readonly send: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly commandId: string;
+    readonly messageId: string;
+    readonly text: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Interrupts a running run, or takes back a queued one; `holdQueue` holds what is queued. */
+  readonly interrupt: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly runId: string;
+    readonly holdQueue: boolean;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  readonly cancelQueued: (
+    threadId: string,
+    runId: string,
+  ) => Effect.Effect<number, ThreadCommandFailure>;
+  readonly resumeQueue: (threadId: string) => Effect.Effect<number, ThreadCommandFailure>;
+  readonly respond: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly requestId: string;
+    readonly response: MendRequestResponse;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
 /**
@@ -174,6 +227,21 @@ interface Watch {
   /** The thread as last sent, for the `thread.deleted` event if it goes. */
   thread: OrchestrationV2AppThread | null;
 }
+
+/** A refusal Mend gave a command, in the words t3code shows. */
+const commandRefusalOf = (error: MendCommandRefused | MendNotFound): ThreadCommandRefused =>
+  error._tag === "MendNotFound"
+    ? new ThreadCommandRefused({ reason: error.message, authorization: false })
+    : new ThreadCommandRefused({
+        reason: error.message,
+        authorization: error.status === 403,
+      });
+
+/** What a message is told when Mend refused the call that carried it. */
+const reasonOf = (error: { readonly _tag: string; readonly message: string }) =>
+  error._tag === "MendDeviceRefused"
+    ? "Mend no longer accepts the device that sent this message."
+    : error.message;
 
 /** How many items one `GET /api/sessions/:id/items` page asks for. */
 const ITEM_PAGE = 500;
@@ -366,12 +434,52 @@ const mergeItems = (watch: Watch, read: ReadonlyArray<MendItem>) => {
 export const makePersonHub = (input: {
   /** The only way the hub reaches Mend (`device-gate.ts`). */
   readonly mend: GatedMend;
+  readonly state: GatewayState["Service"];
   readonly tokens: PersonTokens;
   /** Lets go of the hub in the registry, once it has torn itself down. */
   readonly dispose?: Effect.Effect<void>;
+  /**
+   * Holds the hub (true) or lets it go (false) independently of sockets: while a message the
+   * gateway accepted is queued or on its way, the hub must outlive every client.
+   */
+  readonly retain?: (busy: boolean) => Effect.Effect<void>;
+  /** The queue's waits (`queue.ts`); Mend-sized defaults when unset. */
+  readonly queueTimings?: Queueing.QueueTimings;
 }): Effect.Effect<PersonHub, never, Scope.Scope> =>
   Effect.gen(function* () {
-    const { mend, tokens } = input;
+    const { mend, state, tokens } = input;
+    const retain = input.retain ?? (() => Effect.void);
+    const timings = input.queueTimings ?? Queueing.DEFAULT_QUEUE_TIMINGS;
+    /** Session id → how many reads of it from Mend were applied: fresh evidence for a retry. */
+    const evidence = new Map<string, number>();
+    const sawSession = (sessionId: string) =>
+      evidence.set(sessionId, (evidence.get(sessionId) ?? 0) + 1);
+    const hubScope = yield* Scope.Scope;
+
+    /** Mend session id → the t3code ids of the turns the gateway sent (the id map). */
+    const turnIds = new Map<
+      string,
+      { readonly runIds: Map<string, string>; readonly messageIds: Map<string, string> }
+    >();
+    const rememberIds = (ids: TurnIds) => {
+      const known = turnIds.get(ids.sessionId) ?? { runIds: new Map(), messageIds: new Map() };
+      known.runIds.set(ids.turnId, ids.runId);
+      known.messageIds.set(ids.turnId, ids.messageId);
+      turnIds.set(ids.sessionId, known);
+    };
+    for (const ids of yield* state
+      .listTurnIds()
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logError("t3 gateway could not read its id map", { cause: error.message }).pipe(
+            Effect.as<ReadonlyArray<TurnIds>>([]),
+          ),
+        ),
+      )) {
+      rememberIds(ids);
+    }
+    const queues = new Map<string, Queueing.ThreadQueue>();
+    const handledCommands = new Set<string>();
 
     const projects = new Map<string, ProjectEntry>();
     const conversations = new Map<string, Conversation>();
@@ -419,6 +527,8 @@ export const makePersonHub = (input: {
           const agent = annotation?.currentAgent ?? null;
           if (agent === null || !isProjectable(session, agent)) continue;
           const conversation = conversations.get(session.id) ?? EMPTY_CONVERSATION;
+          const ids = turnIds.get(session.id);
+          const queue = queues.get(session.id);
           sources.push({
             project: entry.project,
             session,
@@ -426,8 +536,17 @@ export const makePersonHub = (input: {
             changeId: annotation?.changeId ?? null,
             turns: conversation.turns,
             requests: conversation.requests,
-            runIds: NO_IDS,
-            messageIds: NO_IDS,
+            runIds: ids?.runIds ?? NO_IDS,
+            messageIds: ids?.messageIds ?? NO_IDS,
+            pending: (queue?.entries ?? []).map((queued) => ({
+              runId: queued.runId,
+              messageId: queued.messageId,
+              text: queued.text,
+              requestedAt: queued.requestedAt,
+              state: Queueing.pendingStateOf(queued),
+              error: queued.error,
+            })),
+            queueHeld: queue?.held ?? false,
           });
         }
       }
@@ -600,7 +719,21 @@ export const makePersonHub = (input: {
       Effect.forEach(Array.from(watches.keys()), publishThread, { discard: true }),
     );
 
-    const publishAll = Effect.andThen(publishShell, publishThreads);
+    /** Moves every queue on after a read (set below, once the queue's machinery exists). */
+    let settleQueues: Effect.Effect<void> = Effect.void;
+    /** Whether a message the gateway accepted can still reach Mend: what holds the hub alive. */
+    let busy = false;
+    const holdWhileBusy = Effect.suspend(() => {
+      const now = !dead && Queueing.anyProgress(queues.values());
+      if (now === busy) return Effect.void;
+      busy = now;
+      return retain(now);
+    });
+    const publishAll = Effect.suspend(() => settleQueues).pipe(
+      Effect.andThen(publishShell),
+      Effect.andThen(publishThreads),
+      Effect.andThen(holdWhileBusy),
+    );
 
     // ─── Reading Mend ──────────────────────────────────────────────────────
 
@@ -687,6 +820,9 @@ export const makePersonHub = (input: {
             const watch = watches.get(sessionId);
             if (watch !== undefined) mergeItems(watch, items);
           }
+          for (const entry of entries) {
+            for (const session of entry.sessions) sawSession(session.id);
+          }
           yield* publishAll;
         }),
       );
@@ -719,6 +855,7 @@ export const makePersonHub = (input: {
             for (const [sessionId, conversation] of read) {
               if (conversation !== null) conversations.set(sessionId, conversation);
             }
+            for (const session of entry?.sessions ?? []) sawSession(session.id);
             yield* publishAll;
           }),
         );
@@ -753,6 +890,7 @@ export const makePersonHub = (input: {
             }
             const current = watches.get(sessionId);
             if (current !== undefined) mergeItems(current, items);
+            sawSession(sessionId);
             yield* publishAll;
           }),
         );
@@ -907,6 +1045,364 @@ export const makePersonHub = (input: {
       yield* input.dispose ?? Effect.void;
     });
     yield* tokens.noneLeft.pipe(Effect.andThen(teardown), Effect.forkScoped);
+    // ─── The queue ─────────────────────────────────────────────────────────
+
+    const queueOf = (sessionId: string): Queueing.ThreadQueue => {
+      const existing = queues.get(sessionId);
+      if (existing !== undefined) return existing;
+      const created = Queueing.emptyQueue();
+      queues.set(sessionId, created);
+      return created;
+    };
+
+    /** What Mend says of the session now, for the queue's rules (`queue.ts`). */
+    const viewOf = (sessionId: string): Queueing.SessionView => {
+      const source = sourceOf(sessionId);
+      if (source === null) {
+        return {
+          known: false,
+          agentLive: false,
+          turnOpen: false,
+          status: null,
+          updatedAt: null,
+          summary: null,
+          evidence: evidence.get(sessionId) ?? 0,
+        };
+      }
+      const turns = conversations.get(sessionId)?.turns ?? [];
+      return {
+        known: true,
+        agentLive: source.agent.exitedAt === null && source.agent.status === "running",
+        turnOpen: turns.some((turn) => turn.status === "queued" || turn.status === "running"),
+        status: source.session.status,
+        updatedAt: source.session.updatedAt,
+        summary: source.session.summary ?? null,
+        evidence: evidence.get(sessionId) ?? 0,
+      };
+    };
+
+    /** The message is its Mend turn, by the id `POST /turns` answered; it keeps the client's ids. */
+    const adopt = (sessionId: string, entry: Queueing.QueueEntry, turn: MendTurn) =>
+      Effect.gen(function* () {
+        const ids: TurnIds = {
+          sessionId,
+          turnId: turn.id,
+          runId: entry.runId,
+          messageId: entry.messageId,
+        };
+        rememberIds(ids);
+        Queueing.adopted(queueOf(sessionId), entry);
+        const conversation = conversations.get(sessionId) ?? EMPTY_CONVERSATION;
+        if (!conversation.turns.some((known) => known.id === turn.id)) {
+          conversations.set(sessionId, { ...conversation, turns: [...conversation.turns, turn] });
+        }
+        yield* state
+          .recordTurnIds(ids, Date.now())
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not record a turn's ids", { cause: error.message }),
+            ),
+          );
+        // Taken back while it was being sent: its own turn, by id, is interrupted.
+        if (entry.takenBack) {
+          yield* Effect.forkIn(
+            mend.interruptTurn(entry.token, turn.id).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("t3 gateway could not interrupt a taken-back turn", {
+                  cause: error.message,
+                }),
+              ),
+            ),
+            hubScope,
+          );
+        }
+      });
+
+    /** `POST /turns` with the message: Mend answers its turn. */
+    const sendTurn = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const sent = yield* mend.submitTurn(entry.token, sessionId, entry.text).pipe(Effect.result);
+        yield* locked(
+          Effect.gen(function* () {
+            const queue = queueOf(sessionId);
+            if (sent._tag === "Success") {
+              yield* adopt(sessionId, entry, sent.success);
+            } else if (
+              sent.failure._tag === "MendCommandRefused" &&
+              sent.failure.tag === "ProtocolSessionNotLive"
+            ) {
+              // Mend says the agent is not live though the row may still read it running: retry
+              // only after a backoff and a fresh read, until the send deadline.
+              Queueing.notLive(queue, entry, {
+                now: performance.now(),
+                evidence: evidence.get(sessionId) ?? 0,
+                refusal: sent.failure.message,
+                timings,
+              });
+            } else {
+              Queueing.fail(queue, entry, reasonOf(sent.failure));
+            }
+            yield* publishAll;
+          }),
+        );
+        yield* requestRefresh(`conversation:${sessionId}`);
+      });
+
+    /**
+     * Launches the stopped session again with no prompt: the message goes out by `POST /turns`
+     * once Mend reports the agent live. Naming no options, Mend reuses what the session's last
+     * protocol agent recorded (mend#493), so an ask session comes back asking.
+     */
+    const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const launched = yield* mend.launchProtocol(entry.token, sessionId, "").pipe(Effect.result);
+        // Mend refuses a launch that races another (`session_starting`) or finds the agent up
+        // (`session_active`); its 422 carries only words, so the session itself is read: launching
+        // or with a live agent, the launch is under way or done, and the message waits for it.
+        const underWay =
+          launched._tag === "Failure" &&
+          launched.failure._tag === "MendCommandRefused" &&
+          launched.failure.status === 422
+            ? yield* mend.sessionDetail(entry.token, sessionId).pipe(
+                Effect.map((detail) => {
+                  const agent = detail.currentAgent;
+                  const agentUp =
+                    agent !== null &&
+                    agent.exitedAt === null &&
+                    (agent.status === "running" || agent.status === "starting");
+                  return detail.session.status === "starting" || agentUp
+                    ? detail.session.updatedAt
+                    : null;
+                }),
+                Effect.orElseSucceed(() => null),
+              )
+            : null;
+        yield* locked(
+          Effect.gen(function* () {
+            if (launched._tag === "Success") {
+              Queueing.launchAnswered(entry, launched.success.updatedAt);
+            } else if (underWay !== null) {
+              Queueing.launchAnswered(entry, underWay);
+            } else {
+              Queueing.fail(queueOf(sessionId), entry, reasonOf(launched.failure));
+            }
+            yield* publishAll;
+          }),
+        );
+        const projectId = sourceOf(sessionId)?.project.id;
+        if (projectId !== undefined) yield* requestRefresh(`project:${projectId}`);
+      });
+
+    /** Session id → when its queue is next looked at without a read (a retry, a deadline). */
+    const wakes = new Map<string, number>();
+    /**
+     * Looks at a thread's queue again when it next needs it: a fresh read of its project, which is
+     * the evidence a retry waits for, and moves a launch past its deadline.
+     */
+    const scheduleWake = (sessionId: string, queue: Queueing.ThreadQueue) =>
+      Effect.suspend(() => {
+        const at = Queueing.nextWake(queue);
+        const scheduled = wakes.get(sessionId);
+        if (at === null || (scheduled !== undefined && scheduled <= at)) return Effect.void;
+        wakes.set(sessionId, at);
+        const projectId = sourceOf(sessionId)?.project.id;
+        return Effect.sleep(Math.max(0, at - performance.now())).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (wakes.get(sessionId) === at) wakes.delete(sessionId);
+            }),
+          ),
+          Effect.andThen(
+            projectId === undefined ? locked(publishAll) : requestRefresh(`project:${projectId}`),
+          ),
+          Effect.forkIn(hubScope),
+          Effect.asVoid,
+        );
+      });
+
+    /** Each thread's next step, after any read (`queue.ts` decides; this carries it out). */
+    settleQueues = Effect.suspend(() =>
+      Effect.forEach(
+        Array.from(queues),
+        ([sessionId, queue]) => {
+          // Before the first full read, nothing is known of any session yet.
+          if (!loaded) return Effect.void;
+          const step = Queueing.nextStep(queue, viewOf(sessionId), performance.now(), timings);
+          const work =
+            step === null
+              ? Effect.void
+              : Effect.forkIn(
+                  step.kind === "send"
+                    ? sendTurn(sessionId, step.entry)
+                    : launchAgain(sessionId, step.entry),
+                  hubScope,
+                ).pipe(Effect.asVoid);
+          return Effect.andThen(work, scheduleWake(sessionId, queue));
+        },
+        { discard: true },
+      ),
+    );
+
+    /** Every device of the person was revoked: what was queued for them fails, the lease goes. */
+    onTeardown = locked(
+      Effect.gen(function* () {
+        for (const queue of queues.values()) {
+          Queueing.failAll(queue, "Every device of this person was revoked in Mend.");
+        }
+        yield* publishShell;
+        yield* publishThreads;
+        busy = false;
+        yield* retain(false);
+      }),
+    );
+
+    const refused = (reason: string, authorization = false) =>
+      Effect.fail(new ThreadCommandRefused({ reason, authorization }));
+
+    const send: ThreadCommands["send"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        // Reserved before anything is read, so a copy sent concurrently is one message; released
+        // again if this one is refused, so a retry is taken.
+        if (handledCommands.has(command.commandId)) return sequence;
+        handledCommands.add(command.commandId);
+        const release = Effect.sync(() => {
+          handledCommands.delete(command.commandId);
+        });
+        return yield* sendReserved(command).pipe(Effect.onError(() => release));
+      });
+
+    const sendReserved: ThreadCommands["send"] = (command) =>
+      Effect.gen(function* () {
+        // Mend's steering rule, read as the sender: only those who may steer queue a message.
+        const detail = yield* mend
+          .sessionDetail(command.session.deviceToken, command.threadId)
+          .pipe(Effect.catchTag("MendNotFound", () => Effect.succeed(null)));
+        if (detail === null)
+          return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+        if (detail.control?.steer === false) {
+          return yield* refused(
+            "This session is not yours to steer. Its owner can turn on shared control in Mend.",
+            true,
+          );
+        }
+        return yield* locked(
+          Effect.gen(function* () {
+            if (sourceOf(command.threadId) === null) {
+              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            }
+            queueOf(command.threadId).entries.push(
+              Queueing.newEntry({
+                runId: `t3-run:${randomUUID()}`,
+                messageId: command.messageId,
+                text: command.text,
+                requestedAt: new Date().toISOString(),
+                token: command.session.deviceToken,
+              }),
+            );
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
+
+    /** The Mend turn a run is: the turn the gateway sent it as, or the turn of that id. */
+    const turnOfRun = (sessionId: string, runId: string): MendTurn | null => {
+      const runIds = turnIds.get(sessionId)?.runIds ?? NO_IDS;
+      let turnId = runId;
+      for (const [candidate, minted] of runIds) {
+        if (minted === runId) turnId = candidate;
+      }
+      return conversations.get(sessionId)?.turns.find((turn) => turn.id === turnId) ?? null;
+    };
+
+    /** Takes a message back wherever it is on its way, holding the queue if asked. */
+    const takeBack = (threadId: string, runId: string, holdQueue: boolean) =>
+      locked(
+        Effect.gen(function* () {
+          if (!Queueing.takeBack(queueOf(threadId), runId, holdQueue)) {
+            return yield* refused("That message is not queued any more.");
+          }
+          yield* publishAll;
+          return sequence;
+        }),
+      );
+
+    const cancelQueued: ThreadCommands["cancelQueued"] = (threadId, runId) =>
+      takeBack(threadId, runId, false);
+
+    const interrupt: ThreadCommands["interrupt"] = (command) =>
+      Effect.gen(function* () {
+        const target = yield* locked(
+          Effect.gen(function* () {
+            const queue = queueOf(command.threadId);
+            if (queue.entries.some((entry) => entry.runId === command.runId)) {
+              return { kind: "queued" as const };
+            }
+            const turn = turnOfRun(command.threadId, command.runId);
+            if (turn === null) return yield* refused(`Run ${command.runId} is not in this thread.`);
+            const wasHeld = queue.held;
+            // Held before the turn ends, so the next message does not go out behind it.
+            Queueing.holdIfQueued(queue, command.holdQueue);
+            yield* publishAll;
+            return { kind: "turn" as const, turn, wasHeld };
+          }),
+        );
+        // A message still in the queue or on its way: taken back, honouring holdQueue too.
+        if (target.kind === "queued") {
+          return yield* takeBack(command.threadId, command.runId, command.holdQueue);
+        }
+        yield* mend.interruptTurn(command.session.deviceToken, target.turn.id).pipe(
+          Effect.catchTags({
+            MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
+            MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
+          }),
+          Effect.tapError(() =>
+            locked(
+              Effect.gen(function* () {
+                queueOf(command.threadId).held = target.wasHeld;
+                yield* publishAll;
+              }),
+            ),
+          ),
+        );
+        yield* requestRefresh(`conversation:${command.threadId}`);
+        return yield* locked(Effect.sync(() => sequence));
+      });
+
+    const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
+      locked(
+        Effect.gen(function* () {
+          Queueing.resume(queueOf(threadId));
+          yield* publishAll;
+          return sequence;
+        }),
+      );
+
+    const respond: ThreadCommands["respond"] = (command) =>
+      Effect.gen(function* () {
+        const known = yield* locked(
+          Effect.sync(
+            () =>
+              conversations
+                .get(command.threadId)
+                ?.requests.some((request) => request.id === command.requestId) ?? false,
+          ),
+        );
+        if (!known) return yield* refused(`Request ${command.requestId} is not in this thread.`);
+        yield* mend
+          .respondRequest(command.session.deviceToken, command.requestId, command.response)
+          .pipe(
+            Effect.catchTags({
+              MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
+              MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
+            }),
+          );
+        yield* requestRefresh(`conversation:${command.threadId}`);
+        return yield* locked(Effect.sync(() => sequence));
+      });
+
+    const commands: ThreadCommands = { send, interrupt, cancelQueued, resumeQueue, respond };
 
     // ─── The hub ───────────────────────────────────────────────────────────
 
@@ -994,6 +1490,7 @@ export const makePersonHub = (input: {
       isRefused: tokens.isRefused,
       refusal: tokens.refusal,
       mend,
+      commands,
     };
   });
 
@@ -1016,97 +1513,126 @@ export class Projections extends Context.Service<
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";
 
-export const ProjectionsLive: Layer.Layer<Projections, never, MendClient | GatewayState> =
-  Layer.effect(
-    Projections,
-    Effect.gen(function* () {
-      const mend = yield* MendClient;
-      const state = yield* GatewayState;
-      /** Mend user id → the device tokens of theirs the gateway holds, in pairing order. */
-      const known = new Map<string, Set<string>>();
-      /** Device token → completed once Mend refuses it. */
-      const refusals = new Map<string, Deferred.Deferred<void>>();
-      const refusalOf = (token: string) => {
-        const existing = refusals.get(token);
-        if (existing !== undefined) return existing;
-        const created = Deferred.makeUnsafe<void>();
-        refusals.set(token, created);
-        return created;
-      };
-      const isRefused = (token: string) => {
-        const refusal = refusals.get(token);
-        return refusal !== undefined && Deferred.isDoneUnsafe(refusal);
-      };
-      /** Mend user id → completed once every token of theirs the gateway holds was refused. */
-      const exhausted = new Map<string, Deferred.Deferred<void>>();
-      const exhaustedOf = (userId: string) => {
-        const existing = exhausted.get(userId);
-        if (existing !== undefined) return existing;
-        const created = Deferred.makeUnsafe<void>();
-        exhausted.set(userId, created);
-        return created;
-      };
-      const liveOf = (userId: string) =>
-        Array.from(known.get(userId) ?? []).filter((token) => !isRefused(token));
+export const ProjectionsLive: Layer.Layer<
+  Projections,
+  never,
+  MendClient | GatewayState | GatewayConfig
+> = Layer.effect(
+  Projections,
+  Effect.gen(function* () {
+    const mend = yield* MendClient;
+    const state = yield* GatewayState;
+    const config = yield* GatewayConfig;
+    /** Mend user id → the device tokens of theirs the gateway holds, in pairing order. */
+    const known = new Map<string, Set<string>>();
+    /** Device token → completed once Mend refuses it. */
+    const refusals = new Map<string, Deferred.Deferred<void>>();
+    const refusalOf = (token: string) => {
+      const existing = refusals.get(token);
+      if (existing !== undefined) return existing;
+      const created = Deferred.makeUnsafe<void>();
+      refusals.set(token, created);
+      return created;
+    };
+    const isRefused = (token: string) => {
+      const refusal = refusals.get(token);
+      return refusal !== undefined && Deferred.isDoneUnsafe(refusal);
+    };
+    /** Mend user id → completed once every token of theirs the gateway holds was refused. */
+    const exhausted = new Map<string, Deferred.Deferred<void>>();
+    const exhaustedOf = (userId: string) => {
+      const existing = exhausted.get(userId);
+      if (existing !== undefined) return existing;
+      const created = Deferred.makeUnsafe<void>();
+      exhausted.set(userId, created);
+      return created;
+    };
+    const liveOf = (userId: string) =>
+      Array.from(known.get(userId) ?? []).filter((token) => !isRefused(token));
 
-      const tokensOf = (userId: string): PersonTokens => ({
-        current: () => {
-          for (const token of known.get(userId) ?? []) {
-            if (!isRefused(token)) return token;
-          }
-          return null;
-        },
-        live: () => liveOf(userId),
-        refuse: (token) =>
-          Effect.suspend(() => {
-            if (isRefused(token)) return Effect.void;
-            Deferred.doneUnsafe(refusalOf(token), Exit.void);
-            // The last device of the person: their hub tears itself down.
-            if (liveOf(userId).length === 0) Deferred.doneUnsafe(exhaustedOf(userId), Exit.void);
-            // The bearers standing for the device stop authenticating too.
-            return state.revokeSessionsForDevice(token, Date.now()).pipe(
-              Effect.catch((error) =>
-                Effect.logError("t3 gateway could not revoke a refused device's bearers", {
-                  cause: error.message,
-                }),
-              ),
-            );
-          }),
-        isRefused,
-        refusal: (token) => Deferred.await(refusalOf(token)),
-        noneLeft: Deferred.await(exhaustedOf(userId)),
-      });
-
-      const hubs: RcMap.RcMap<string, PersonHub> = yield* RcMap.make({
-        lookup: (userId: string) => {
-          const tokens = tokensOf(userId);
-          return makePersonHub({
-            // Every call the hub makes with a device token goes through the gate.
-            mend: gateDeviceCalls(mend, tokens.refuse),
-            tokens,
-            dispose: RcMap.invalidate(hubs, userId),
-          });
-        },
-        idleTimeToLive: HUB_IDLE_TTL,
-      });
-
-      const hub = (session: BearerSession) =>
+    const tokensOf = (userId: string): PersonTokens => ({
+      current: () => {
+        for (const token of known.get(userId) ?? []) {
+          if (!isRefused(token)) return token;
+        }
+        return null;
+      },
+      live: () => liveOf(userId),
+      refuse: (token) =>
         Effect.suspend(() => {
-          const userId = session.mendUser.id;
-          const tokens = known.get(userId) ?? new Set<string>();
-          tokens.add(session.deviceToken);
-          known.set(userId, tokens);
-          // A person who pairs again after every device was revoked gets a fresh hub.
-          const done = exhausted.get(userId);
-          if (done !== undefined && Deferred.isDoneUnsafe(done) && liveOf(userId).length > 0) {
-            exhausted.delete(userId);
+          if (isRefused(token)) return Effect.void;
+          Deferred.doneUnsafe(refusalOf(token), Exit.void);
+          // The last device of the person: their hub tears itself down.
+          if (liveOf(userId).length === 0) Deferred.doneUnsafe(exhaustedOf(userId), Exit.void);
+          // The bearers standing for the device stop authenticating too.
+          return state.revokeSessionsForDevice(token, Date.now()).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not revoke a refused device's bearers", {
+                cause: error.message,
+              }),
+            ),
+          );
+        }),
+      isRefused,
+      refusal: (token) => Deferred.await(refusalOf(token)),
+      noneLeft: Deferred.await(exhaustedOf(userId)),
+    });
+
+    /** Mend user id → the scope holding their hub while a message is in the gateway's hands. */
+    const keepers = new Map<string, Scope.Closeable>();
+    const retainFor =
+      (userId: string) =>
+      (busy: boolean): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          const held = keepers.get(userId);
+          if (busy && held === undefined) {
+            const scope = Scope.makeUnsafe();
+            keepers.set(userId, scope);
+            return RcMap.get(hubs, userId).pipe(
+              Effect.provideService(Scope.Scope, scope),
+              Effect.asVoid,
+            );
           }
-          return RcMap.get(hubs, userId);
+          if (!busy && held !== undefined) {
+            keepers.delete(userId);
+            return Scope.close(held, Exit.void);
+          }
+          return Effect.void;
         });
 
-      const refuseDevice = (userId: string, deviceToken: string) =>
-        tokensOf(userId).refuse(deviceToken);
+    const hubs: RcMap.RcMap<string, PersonHub> = yield* RcMap.make({
+      lookup: (userId: string) => {
+        const tokens = tokensOf(userId);
+        return makePersonHub({
+          // Every call the hub makes with a device token goes through the gate.
+          mend: gateDeviceCalls(mend, tokens.refuse),
+          state,
+          tokens,
+          retain: retainFor(userId),
+          queueTimings: { ...Queueing.DEFAULT_QUEUE_TIMINGS, ...config.queueTimings },
+          dispose: RcMap.invalidate(hubs, userId),
+        });
+      },
+      idleTimeToLive: config.hubIdleTimeToLive ?? HUB_IDLE_TTL,
+    });
 
-      return { hub, refuseDevice };
-    }),
-  );
+    const hub = (session: BearerSession) =>
+      Effect.suspend(() => {
+        const userId = session.mendUser.id;
+        const tokens = known.get(userId) ?? new Set<string>();
+        tokens.add(session.deviceToken);
+        known.set(userId, tokens);
+        // A person who pairs again after every device was revoked gets a fresh hub.
+        const done = exhausted.get(userId);
+        if (done !== undefined && Deferred.isDoneUnsafe(done) && liveOf(userId).length > 0) {
+          exhausted.delete(userId);
+        }
+        return RcMap.get(hubs, userId);
+      });
+
+    const refuseDevice = (userId: string, deviceToken: string) =>
+      tokensOf(userId).refuse(deviceToken);
+
+    return { hub, refuseDevice };
+  }),
+);

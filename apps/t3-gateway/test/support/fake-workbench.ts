@@ -35,6 +35,7 @@ export interface FakeSession {
   readonly baseRef: string | null;
   status: string;
   readonly ownerUserId: string | null;
+  summary: string | null;
   readonly createdAt: string;
   updatedAt: string;
 }
@@ -128,8 +129,22 @@ export class FakeWorkbench {
   requestsDelayMs = 0;
   /** `GET /api/projects` answers 502, as Mend does while it comes back from a restart. */
   projectsDown = false;
-  /** What `POST /api/sessions/:id/launch` does after it answers: open the prompt's turn. */
-  launchOpensTurn = true;
+  /** Whether a launch brings the agent up at all (false: provisioning stalls, to fail it later). */
+  launchBringsAgentUp = true;
+  /** How long after a launch answers its new agent is running. */
+  launchLiveDelayMs = 50;
+  /** `POST /api/sessions/:id/turns` answers 401, as for a device revoked mid-flight. */
+  turnsUnauthorized = false;
+  /** `POST /turns` answers 409 though the row reads running (idle stop claimed, host not attached). */
+  turnsNotLive = false;
+  /**
+   * Another client's launch is under way: `POST /launch` answers Mend's 422 with these words, the
+   * session reads `starting`, and the agent comes up `launchLiveDelayMs` later.
+   */
+  launchRefusal: string | null = null;
+  /** How long `POST /launch` takes to answer, and a status it then refuses with (null: it launches). */
+  launchAnswerDelayMs = 0;
+  launchFailStatus: number | null = null;
 
   get eventStreams(): number {
     return this.streams.size;
@@ -183,6 +198,7 @@ export class FakeWorkbench {
       baseRef: "main",
       status: input.live === false ? "stopped" : "idle",
       ownerUserId: "user-1",
+      summary: null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -217,6 +233,19 @@ export class FakeWorkbench {
     const session = this.sessions.get(sessionId);
     if (session === undefined) return;
     this.sessions.delete(sessionId);
+    this.emit({ type: "session", sessionId, projectId: session.projectId });
+  }
+
+  /** Provisioning fails after the launch answered, as Mend records it: failed, and why. */
+  failSession(sessionId: string, summary: string): void {
+    const agent = this.agents.get(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (agent === undefined || session === undefined) return;
+    agent.status = "exited";
+    agent.exitedAt = tick();
+    session.status = "failed";
+    session.summary = summary;
+    session.updatedAt = tick();
     this.emit({ type: "session", sessionId, projectId: session.projectId });
   }
 
@@ -468,6 +497,21 @@ export class FakeWorkbench {
           .slice(0, limit);
         return json(200, changed);
       }
+      if (method === "POST" && sub === "launch" && this.launchAnswerDelayMs > 0) {
+        return body().then((value) => {
+          record(value);
+          return new Promise<boolean>((resolve) =>
+            setTimeout(() => {
+              const status = this.launchFailStatus;
+              resolve(
+                status === null
+                  ? this.command(sub, session, value, json)
+                  : json(status, { _tag: "StoreFailure", message: "launch refused" }),
+              );
+            }, this.launchAnswerDelayMs),
+          );
+        });
+      }
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
         return body().then((value) => {
           record(value);
@@ -568,7 +612,9 @@ export class FakeWorkbench {
     const payload = typeof value === "object" && value !== null ? value : {};
     const agent = this.agents.get(session.id);
     if (sub === "turns") {
-      if (agent === undefined || agent.exitedAt !== null) {
+      if (this.turnsUnauthorized) return json(401, { _tag: "Unauthorized" });
+      if (this.turnsNotLive) return json(409, { _tag: "ProtocolSessionNotLive", processId: "p" });
+      if (agent === undefined || agent.exitedAt !== null || agent.status !== "running") {
         return json(409, { _tag: "ProtocolSessionNotLive", processId: agent?.id ?? "none" });
       }
       const input = "input" in payload && typeof payload.input === "string" ? payload.input : "";
@@ -577,20 +623,51 @@ export class FakeWorkbench {
       );
       return json(200, this.addTurn(session.id, input, open ? "queued" : "running"));
     }
-    // A launch: the agent comes back on the options it last recorded, and the prompt opens a turn.
-    if (agent !== undefined) {
-      agent.status = "running";
-      agent.exitedAt = null;
+    // A launch answers at once; a new agent process comes up on the options the last one
+    // recorded, and only a prompt would open a turn.
+    const refusal = this.launchRefusal;
+    if (refusal !== null) {
+      this.launchRefusal = null;
+      session.status = "starting";
+      session.updatedAt = tick();
+      setTimeout(() => {
+        const previous = this.agents.get(session.id);
+        if (previous === undefined) return;
+        this.agents.set(session.id, {
+          ...previous,
+          id: this.nextId("process"),
+          status: "running",
+          exitedAt: null,
+          createdAt: tick(),
+        });
+        session.status = "running";
+        session.updatedAt = tick();
+        this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
+      }, this.launchLiveDelayMs);
+      return json(422, { _tag: "StoreFailure", message: refusal });
     }
-    session.status = "running";
+    session.status = "starting";
     session.updatedAt = tick();
-    this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
     const prompt =
       "prompt" in payload && typeof payload.prompt === "string" ? payload.prompt : null;
-    if (prompt !== null && this.launchOpensTurn) {
-      setTimeout(() => this.addTurn(session.id, prompt, "running"), 50);
+    if (this.launchBringsAgentUp) {
+      setTimeout(() => {
+        const previous = this.agents.get(session.id);
+        if (previous === undefined) return;
+        this.agents.set(session.id, {
+          ...previous,
+          id: this.nextId("process"),
+          status: "running",
+          exitedAt: null,
+          createdAt: tick(),
+        });
+        session.status = "running";
+        session.updatedAt = tick();
+        this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
+        if (prompt !== null && prompt !== "") this.addTurn(session.id, prompt, "running");
+      }, this.launchLiveDelayMs);
     }
-    return json(200, session);
+    return json(200, { ...session });
   }
 
   private projectView(id: string) {

@@ -4,7 +4,7 @@ import * as Stream from "effect/Stream";
 
 import { BEARER_TTL_MS, GRANTED_SCOPES } from "../../src/auth.ts";
 import { gateDeviceCalls } from "../../src/device-gate.ts";
-import type { PersonHub } from "../../src/hub.ts";
+import { ThreadCommandRefused, type PersonHub } from "../../src/hub.ts";
 import { MendUnavailable, type MendClient } from "../../src/mend-client.ts";
 import { EMPTY_SHELL_SNAPSHOT } from "../../src/shell.ts";
 import type { BearerSession } from "../../src/state.ts";
@@ -25,9 +25,18 @@ export const unreachableMend: MendClient["Service"] = {
   listTurns: () => unavailable("GET /api/sessions/:id/turns"),
   listItems: () => unavailable("GET /api/sessions/:id/items"),
   listRequests: () => unavailable("GET /api/sessions/:id/requests"),
+  sessionDetail: () => unavailable("GET /api/sessions/:id"),
+  submitTurn: () => unavailable("POST /api/sessions/:id/turns"),
+  launchProtocol: () => unavailable("POST /api/sessions/:id/launch"),
+  interruptTurn: () => unavailable("POST /api/turns/:id/interrupt"),
+  respondRequest: () => unavailable("POST /api/requests/:id/respond"),
   events: () =>
     Stream.fail(new MendUnavailable({ operation: "GET /api/events", status: null, cause: null })),
 };
+
+const refused = Effect.fail(
+  new ThreadCommandRefused({ reason: "The empty hub has no threads.", authorization: false }),
+);
 
 /** A hub with nothing in it. */
 export const emptyHub: PersonHub = {
@@ -38,6 +47,13 @@ export const emptyHub: PersonHub = {
   mend: gateDeviceCalls(unreachableMend, () => Effect.void),
   threadSnapshot: () => Effect.succeed(null),
   subscribeThread: () => Effect.succeed(null),
+  commands: {
+    send: () => refused,
+    interrupt: () => refused,
+    cancelQueued: () => refused,
+    resumeQueue: () => refused,
+    respond: () => refused,
+  },
 };
 
 export const testBearerSession: BearerSession = {
