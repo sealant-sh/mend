@@ -2,7 +2,9 @@
 // Mend's pins of Sealant Core: the SDK and API contract in the pnpm catalog, the three Core images
 // the root Dockerfile copies by digest, and the version the bundle declares in its label, its
 // migration log line and its setup assets. They move together, to one Core version (stable or a
-// `next` prerelease, docs/adr/0015-next-channel.md):
+// `next` prerelease, docs/adr/0015-next-channel.md). A prerelease lives under separate names: the
+// catalog aliases `@sealant/sdk` to `npm:@sealant/sdk-next@<version>`, and the images come from
+// `sealant-api-next` and its siblings. A stable release is the plain names.
 //
 //   node scripts/sealant-pins.mjs pin 0.39.0-next.12      # rewrite every pin, then pnpm install
 //   node scripts/sealant-pins.mjs pin 0.39.0 --no-install
@@ -67,7 +69,16 @@ export const readPins = ({ dockerfile, workspace }) => ({
     /^ARG MEND_PREVIEW_SEALANTD_IMAGE=(.*)$/m,
     "preview sealantd",
   )[1],
+  aliases: [...workspace.matchAll(/npm:@sealant\/[a-z0-9-]+-next@\S+/g)].map((match) => match[0]),
 });
+
+/** Where a Core version's image lives: `sealant-api` for a release, `sealant-api-next` before. */
+export const repositoryFor = (repository, version) =>
+  version.includes("-") ? `${repository}-next` : repository;
+
+/** The catalog entry for a Core package at `version`: plain for a release, an alias before. */
+export const catalogSpec = (name, version) =>
+  version.includes("-") ? `npm:${name}-next@${version}` : version;
 
 /** The digest an image argument pins, when it pins one in the expected repository. */
 export const pinnedDigest = (reference, repository) =>
@@ -89,13 +100,16 @@ export const pinProblems = (pins, { stable }) => {
     ["@sealant/sdk", pins.sdk],
     ["@sealant/api-contracts", pins.apiContracts],
   ]) {
-    if (pinned !== version) {
-      problems.push(`The catalog pins ${name} ${pinned}; the bundle declares Sealant ${version}.`);
+    if (pinned !== catalogSpec(name, version)) {
+      problems.push(
+        `The catalog pins ${name} as ${pinned}; the bundle declares Sealant ${version}, so it must be ${catalogSpec(name, version)}.`,
+      );
     }
   }
   for (const { argument, repository } of SEALANT_IMAGES) {
-    if (pinnedDigest(pins.images[argument], repository) === undefined) {
-      problems.push(`ARG ${argument} must name ghcr.io/${repository}@sha256:<digest>.`);
+    const expected = repositoryFor(repository, version);
+    if (pinnedDigest(pins.images[argument], expected) === undefined) {
+      problems.push(`ARG ${argument} must name ghcr.io/${expected}@sha256:<digest>.`);
     }
   }
   if (pins.previewSealantd !== '""') {
@@ -106,20 +120,31 @@ export const pinProblems = (pins, { stable }) => {
       `A stable release cannot pin Sealant ${version}. Release Core ${version.split("-")[0]} and pin it first.`,
     );
   }
+  if (stable && (pins.aliases ?? []).length > 0) {
+    problems.push(
+      `A stable release cannot depend on a prerelease package: ${pins.aliases.join(", ")}.`,
+    );
+  }
   return problems;
 };
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** A reference as a test writes it in a regular expression: `ghcr\.io\/sealant-sh\/…`. */
+const asRegExpSource = (text) => text.replaceAll(".", "\\.").replaceAll("/", "\\/");
+
 /**
- * `text` with the old Core version and digests replaced by the new ones. The version is replaced as
- * written and as a test writes it in a regular expression (`0\.38\.1`), and only as a whole version:
- * `0.39.0-next.9` never rewrites part of `0.39.0-next.90`.
+ * `text` with the old Core pins replaced by the new ones: each image reference (repository and
+ * digest, as written and as a test writes it in a regular expression), the version (as written and
+ * as `0\.38\.1`, and only as a whole version: `0.39.0-next.9` never rewrites part of
+ * `0.39.0-next.90`), and the two catalog entries.
  */
 export const rewritePins = (text, from, to) => {
   let result = text;
-  for (const [argument, digest] of Object.entries(from.digests)) {
-    result = result.replaceAll(digest, to.digests[argument]);
+  for (const [argument, reference] of Object.entries(from.images)) {
+    result = result
+      .replaceAll(reference, to.images[argument])
+      .replaceAll(asRegExpSource(reference), asRegExpSource(to.images[argument]));
   }
   const whole = (literal) =>
     new RegExp(
@@ -130,7 +155,14 @@ export const rewritePins = (text, from, to) => {
     whole(from.version.replaceAll(".", "\\.")),
     to.version.replaceAll(".", "\\."),
   );
-  return result.replace(whole(from.version), to.version);
+  result = result.replace(whole(from.version), to.version);
+  for (const name of ["@sealant/sdk", "@sealant/api-contracts"]) {
+    result = result.replace(
+      new RegExp(`^( {2}"${escapeRegExp(name)}": )\\S+$`, "m"),
+      `$1${catalogSpec(name, to.version)}`,
+    );
+  }
+  return result;
 };
 
 const MANIFEST_TYPES = [
@@ -162,7 +194,8 @@ export const registryDigest = async (repository, tag, fetchImpl = fetch) => {
 /** Problems with the pinned digests: each must be what GHCR serves for the pinned version's tag. */
 export const digestProblems = async (pins, fetchImpl = fetch) => {
   const problems = [];
-  for (const { argument, repository } of SEALANT_IMAGES) {
+  for (const { argument, repository: name } of SEALANT_IMAGES) {
+    const repository = repositoryFor(name, pins.sealantVersion);
     const pinned = pinnedDigest(pins.images[argument], repository);
     if (pinned === undefined) continue;
     try {
@@ -238,24 +271,15 @@ export const readRepositoryPins = async () => {
 const pin = async (version, { install }) => {
   if (!SEMVER.test(version)) throw new Error(`"${version}" is not an exact Core version.`);
   const current = await readRepositoryPins();
-  const from = {
-    version: current.sealantVersion,
-    digests: Object.fromEntries(
-      SEALANT_IMAGES.map(({ argument, repository }) => {
-        const digest = pinnedDigest(current.images[argument], repository);
-        if (digest === undefined) throw new Error(`ARG ${argument} does not pin a digest today.`);
-        return [argument, digest];
-      }),
-    ),
-  };
+  const from = { version: current.sealantVersion, images: current.images };
   const to = {
     version,
-    digests: Object.fromEntries(
+    images: Object.fromEntries(
       await Promise.all(
-        SEALANT_IMAGES.map(async ({ argument, repository }) => [
-          argument,
-          await registryDigest(repository, version),
-        ]),
+        SEALANT_IMAGES.map(async ({ argument, repository: name }) => {
+          const repository = repositoryFor(name, version);
+          return [argument, `ghcr.io/${repository}@${await registryDigest(repository, version)}`];
+        }),
       ),
     ),
   };
@@ -268,7 +292,7 @@ const pin = async (version, { install }) => {
   const problems = pinProblems(await readRepositoryPins(), { stable: false });
   if (problems.length > 0) throw new Error(problems.join("\n"));
   console.log(`Sealant ${from.version} → ${version}`);
-  for (const { argument } of SEALANT_IMAGES) console.log(`  ${argument} ${to.digests[argument]}`);
+  for (const { argument } of SEALANT_IMAGES) console.log(`  ${argument} ${to.images[argument]}`);
   if (install) execFileSync("pnpm", ["install"], { cwd: root, stdio: "inherit" });
 };
 

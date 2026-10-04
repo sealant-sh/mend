@@ -50,7 +50,7 @@ jobs:
             case $OVERRIDE_VERSION in
               "" | 0.0.0-dev.* | 0.0.0-acceptance.*) ;;
               *)
-                if ! commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/v$OVERRIDE_VERSION" --jq .sha 2>/dev/null) ||
+                if ! commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/v$OVERRIDE_VERSION" --jq .sha 2>/dev/null) ||
                   [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
                   echo "::error::No tag v$OVERRIDE_VERSION: a dispatch builds a tagged version or a dev build."
                   exit 1

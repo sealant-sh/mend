@@ -109,7 +109,7 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   const tagCommit = "a".repeat(40);
   writeFileSync(
     `${bin}/gh`,
-    `#!/bin/sh\ncase "$2" in */commits/v0.36.0-next.60) echo ${tagCommit}; exit 0 ;; esac\nexit 1\n`,
+    `#!/bin/sh\ncase "$2" in */commits/refs/tags/v0.36.0-next.60) echo ${tagCommit}; exit 0 ;; esac\nexit 1\n`,
   );
   chmodSync(`${bin}/gh`, 0o755);
   const run = (event, workflow, ref, version = "") => {
@@ -157,6 +157,8 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
     commit: tagCommit,
   });
   assert.equal(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0").status, 1);
+  // Only a tag resolves: the lookup names refs/tags/, so a branch called v<version> never does.
+  assert.match(image, /commits\/refs\/tags\/v\$OVERRIDE_VERSION/);
   assert.match(image, /ref: \$\{\{ needs\.version\.outputs\.commit \}\}/);
 });
 
@@ -170,9 +172,13 @@ test("npm publishes a tarball rebuilt from npm's own reading, with no repository
   // The republish block (run against a stub registry by republish.test.mjs) does the publishing,
   // under next re-checking the current next after the approval.
   assert.match(npm, /# --- republish ---/);
+  assert.match(npm, /check_artifacts "\$artifacts" "\$tarball"/);
+  assert.match(npm, /cd "\$\(mktemp -d\)"/);
   assert.match(
     npm,
-    /publish_rebuilt "\$tarball" "@sealant\/mend" "\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
+    /publish_rebuilt "\$artifacts\/\$tarball" "@sealant\/mend" "\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
   );
-  assert.match(npm, /pacote@\d+\.\d+\.\d+/);
+  // npm's own pacote, nothing installed: no unpinned code loads beside the credential.
+  assert.doesNotMatch(npm, /npm install|pacote@/);
+  assert.doesNotMatch(job("npm-pack"), /cache: pnpm/);
 });
