@@ -79,6 +79,7 @@ describe("review", () => {
         assert.strictEqual(preview.sources.length, 1);
         const [source] = preview.sources;
         assert.strictEqual(source?.kind, "branch-range");
+        assert.strictEqual(source?.title, "Changes · observed at capture 3 · seq 7");
         assert.strictEqual(source?.diff, DIFF);
         assert.strictEqual(source?.baseRef, "main");
         assert.isFalse(source?.truncated);

@@ -170,6 +170,8 @@ export const MendChangeDiff = Schema.Struct({
   files: Schema.Array(
     Schema.Struct({ path: Schema.String, additions: Schema.Number, deletions: Schema.Number }),
   ),
+  /** What the diff was observed on ("observed at capture 18 · seq 22"); older servers omit it. */
+  observation: Schema.optional(Schema.Struct({ label: Schema.String })),
 });
 export type MendChangeDiff = typeof MendChangeDiff.Type;
 

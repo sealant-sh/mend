@@ -142,7 +142,9 @@ export const makeReviewHandlers = (input: {
           {
             id: `mend-change:${change.changeId}`,
             kind: "branch-range",
-            title: "Changes",
+            // Evidence, not a verdict: say what Mend observed the change on.
+            title:
+              diff.observation === undefined ? "Changes" : `Changes · ${diff.observation.label}`,
             baseRef: nonEmptyOr(change.baseRef, diff.change.baseSha),
             headRef: nonEmptyOr(diff.change.headSha, diff.change.branch),
             diff: patch,
