@@ -127,13 +127,6 @@ export type MendCommand<A> = Effect.Effect<
   MendDeviceRefused | MendNotFound | MendCommandRefused | MendUnavailable
 >;
 
-/** What a protocol launch names (`LaunchRequest` in @mend/api-contracts), each optional. */
-export interface MendLaunchOptions {
-  readonly model?: string;
-  readonly effort?: string;
-  readonly permissionMode?: string;
-}
-
 /** The answer a request takes (`RespondAgentRequest` in @mend/api-contracts). */
 export type MendRequestResponse =
   | { readonly decision: "accept" | "accept-for-session" | "decline" | "cancel" }
@@ -196,15 +189,14 @@ export class MendClient extends Context.Service<
       input: string,
     ) => MendCommand<MendTurn>;
     /**
-     * `POST /api/sessions/:id/launch` in protocol mode with the prompt as its opening turn, on the
-     * options given (the ones the session's last protocol agent recorded). An option left out runs
-     * on what Mend resolves for it.
+     * `POST /api/sessions/:id/launch` in protocol mode with the prompt as its opening turn. Naming
+     * no model, effort or permission mode, the launch runs on what the session's last protocol
+     * agent recorded (mend#493).
      */
     readonly launchProtocol: (
       deviceToken: string,
       sessionId: string,
       prompt: string,
-      options: MendLaunchOptions,
     ) => MendCommand<MendSession>;
     /** `POST /api/turns/:id/interrupt`. */
     readonly interruptTurn: (deviceToken: string, turnId: string) => MendCommand<void>;
@@ -446,18 +438,13 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/sessions/:id/turns",
         );
 
-      const launchProtocol = (
-        deviceToken: string,
-        sessionId: string,
-        prompt: string,
-        options: MendLaunchOptions,
-      ) =>
+      const launchProtocol = (deviceToken: string, sessionId: string, prompt: string) =>
         answered(
           command(
             "POST /api/sessions/:id/launch",
             `/api/sessions/${encodeURIComponent(sessionId)}/launch`,
             deviceToken,
-            { mode: "protocol", prompt, ...options },
+            { mode: "protocol", prompt },
             decodeSession,
           ),
           "POST /api/sessions/:id/launch",

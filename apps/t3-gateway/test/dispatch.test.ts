@@ -14,6 +14,7 @@ import {
   type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
@@ -33,12 +34,13 @@ import { pairAndConnect } from "./support/rpc.ts";
 const withGateway = <A, E, R>(
   test: (mend: FakeMend) => Effect.Effect<A, E, R>,
   statePath?: string,
+  options: { readonly hubIdleTimeToLive?: Duration.Input } = {},
 ) =>
   Effect.gen(function* () {
     const mend = yield* startFakeMend;
     return yield* test(mend).pipe(
       Effect.scoped,
-      Effect.provide(gatewayTestLayer(mend.url, statePath)),
+      Effect.provide(gatewayTestLayer(mend.url, statePath, options)),
     );
   });
 
@@ -150,7 +152,7 @@ describe("message.dispatch", () => {
       ),
   );
 
-  it.live("launches a stopped session again with the message, on its recorded options", () =>
+  it.live("launches a stopped session again with the message, naming no options", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         setup(mend, { ask: true });
@@ -174,12 +176,11 @@ describe("message.dispatch", () => {
           runEvent((run) => run.userMessageId === "message-c" && run.status === "preparing"),
         );
         yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
-        // The relaunch names what the agent last recorded: ask stays ask.
+        // The relaunch names no options: Mend reuses what the agent last recorded (mend#493),
+        // so nothing the gateway cached can turn ask back into bypass.
         assert.deepStrictEqual(posts(mend, "/launch")[0]?.body, {
           mode: "protocol",
           prompt: "Pick it up again",
-          model: "gpt-6.1-sol",
-          permissionMode: "ask",
         });
         assert.strictEqual(posts(mend, "/turns").length, 0);
         // The launch's opening turn is the message: same run, same message, now running.
@@ -234,6 +235,141 @@ describe("message.dispatch", () => {
           );
           assert.isFalse(Cause.hasDies(fork.cause));
         }
+      }),
+    ),
+  );
+});
+
+describe("review round 1", () => {
+  it.live("a queued message outlives its last client", () =>
+    withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const turn = mend.workbench.addTurn("session-1", "A long job");
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const { rpc } = yield* pairAndConnect(mend, "LEAVING");
+              yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                message("session-1", "message-left", "Then this"),
+              );
+            }),
+          );
+          // The client is gone for longer than an idle hub lives.
+          yield* Effect.sleep("800 millis");
+          mend.workbench.setTurn(turn, "completed");
+          yield* eventually(() => posts(mend, "/turns").length === 1, "the queued turn");
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Then this" });
+        }),
+      undefined,
+      { hubIdleTimeToLive: "200 millis" },
+    ),
+  );
+
+  it.live("a launch that fails after it answered fails the message with Mend's reason", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.workbench.stopAgent("session-1");
+        mend.workbench.launchOpensTurn = false;
+        const { rpc } = yield* pairAndConnect(mend, "LAUNCHFAILS");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-doomed", "Try this"),
+        );
+        yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
+        yield* Effect.sleep("200 millis");
+        // Provisioning fails after the launch answered.
+        mend.workbench.failSession("session-1", "launch failed: Transport error (POST /v1/users)");
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-doomed" && run.status === "failed"),
+        );
+        const failure = yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "turn-item.updated" &&
+            item.event.payload.type === "error",
+        );
+        assert.isTrue(
+          failure.event.type === "turn-item.updated" &&
+            failure.event.payload.type === "error" &&
+            failure.event.payload.failure.message ===
+              "launch failed: Transport error (POST /v1/users)",
+        );
+        // The queue is not blocked: the next message launches again.
+        mend.workbench.launchOpensTurn = true;
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-again", "Try again"),
+        );
+        yield* eventually(() => posts(mend, "/launch").length === 2, "the second launch");
+      }),
+    ),
+  );
+
+  it.live("a message on its way can be taken back, and its turn is interrupted when it opens", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.workbench.stopAgent("session-1");
+        mend.workbench.launchTurnDelayMs = 1_000;
+        const { rpc } = yield* pairAndConnect(mend, "TAKEBACK");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-back", "Never mind"),
+        );
+        const preparing = yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-back" && run.status === "preparing"),
+        );
+        const runId =
+          preparing.event.type === "run.updated" ? preparing.event.payload.id : RunId.make("none");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "run.interrupt",
+          commandId: commandId(),
+          threadId: ThreadId.make("session-1"),
+          runId,
+          holdQueue: true,
+        });
+        yield* thread.next(runEvent((run) => run.id === runId && run.status === "cancelled"));
+        // Mend opens the launch's turn; the gateway interrupts it.
+        yield* eventually(
+          () => posts(mend, "/interrupt").length === 1,
+          "the interrupt of the opened turn",
+        );
+        yield* thread.next(runEvent((run) => run.id === runId && run.status === "interrupted"));
+      }),
+    ),
+  );
+
+  it.live("a command sent twice at once is one message", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "TWICE");
+        const command = message("session-1", "message-once", "Only once");
+        yield* Effect.all(
+          [
+            rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command),
+            rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command),
+          ],
+          { concurrency: 2 },
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the turn");
+        yield* Effect.sleep("300 millis");
+        assert.strictEqual(posts(mend, "/turns").length, 1);
       }),
     ),
   );

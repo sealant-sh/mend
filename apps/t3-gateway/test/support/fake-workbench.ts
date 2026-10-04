@@ -35,6 +35,7 @@ export interface FakeSession {
   readonly baseRef: string | null;
   status: string;
   readonly ownerUserId: string | null;
+  summary: string | null;
   readonly createdAt: string;
   updatedAt: string;
 }
@@ -130,6 +131,8 @@ export class FakeWorkbench {
   projectsDown = false;
   /** What `POST /api/sessions/:id/launch` does after it answers: open the prompt's turn. */
   launchOpensTurn = true;
+  /** How long after a launch answers its opening turn appears. */
+  launchTurnDelayMs = 50;
 
   get eventStreams(): number {
     return this.streams.size;
@@ -183,6 +186,7 @@ export class FakeWorkbench {
       baseRef: "main",
       status: input.live === false ? "stopped" : "idle",
       ownerUserId: "user-1",
+      summary: null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -217,6 +221,19 @@ export class FakeWorkbench {
     const session = this.sessions.get(sessionId);
     if (session === undefined) return;
     this.sessions.delete(sessionId);
+    this.emit({ type: "session", sessionId, projectId: session.projectId });
+  }
+
+  /** Provisioning fails after the launch answered, as Mend records it: failed, and why. */
+  failSession(sessionId: string, summary: string): void {
+    const agent = this.agents.get(sessionId);
+    const session = this.sessions.get(sessionId);
+    if (agent === undefined || session === undefined) return;
+    agent.status = "exited";
+    agent.exitedAt = tick();
+    session.status = "failed";
+    session.summary = summary;
+    session.updatedAt = tick();
     this.emit({ type: "session", sessionId, projectId: session.projectId });
   }
 
@@ -588,7 +605,7 @@ export class FakeWorkbench {
     const prompt =
       "prompt" in payload && typeof payload.prompt === "string" ? payload.prompt : null;
     if (prompt !== null && this.launchOpensTurn) {
-      setTimeout(() => this.addTurn(session.id, prompt, "running"), 50);
+      setTimeout(() => this.addTurn(session.id, prompt, "running"), this.launchTurnDelayMs);
     }
     return json(200, session);
   }

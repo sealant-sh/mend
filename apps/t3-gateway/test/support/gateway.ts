@@ -1,5 +1,6 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { EnvironmentHttpApi } from "@mend/t3-contracts";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
@@ -13,7 +14,11 @@ import { GatewayAppLive } from "../../src/server.ts";
  * unless a path is given. The layer's `HttpClient` points at the gateway, so `t3Client` is what a
  * t3code client builds: `HttpApiClient` over the vendored `EnvironmentHttpApi`.
  */
-export const gatewayTestLayer = (mendUrl: URL, statePath = ":memory:") =>
+export const gatewayTestLayer = (
+  mendUrl: URL,
+  statePath = ":memory:",
+  options: { readonly hubIdleTimeToLive?: Duration.Input } = {},
+) =>
   HttpRouter.serve(GatewayAppLive, { disableLogger: true, disableListenLog: true }).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
     Layer.provideMerge(
@@ -23,6 +28,9 @@ export const gatewayTestLayer = (mendUrl: URL, statePath = ":memory:") =>
         port: 0,
         statePath,
         label: "Mend under test",
+        ...(options.hubIdleTimeToLive === undefined
+          ? {}
+          : { hubIdleTimeToLive: options.hubIdleTimeToLive }),
       }),
     ),
   );

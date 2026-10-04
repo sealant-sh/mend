@@ -103,6 +103,15 @@ export const dispatchCommand = (
   const respond = (threadId: string, requestId: string, response: MendRequestResponse) =>
     answered(hub.commands.respond({ session, threadId, requestId, response }));
 
+  // The socket's own device token, checked on every command: a revoked device steers nothing.
+  if (hub.isRefused(session.deviceToken)) {
+    return Effect.fail(
+      new EnvironmentAuthorizationError({
+        message: "Mend no longer accepts this device. Pair again from Mend.",
+        requiredScope: AuthOrchestrationOperateScope,
+      }),
+    );
+  }
   if (!session.scopes.includes(AuthOrchestrationOperateScope)) {
     return Effect.fail(
       new EnvironmentAuthorizationError({

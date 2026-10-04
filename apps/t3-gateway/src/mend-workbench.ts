@@ -55,6 +55,8 @@ export const MendSession = Schema.Struct({
   baseRef: Schema.NullOr(Schema.String),
   status: Schema.String,
   ownerUserId: Schema.NullOr(Schema.String),
+  /** What Mend reported when the session settled: a failed launch says why here. */
+  summary: Schema.optional(Schema.NullOr(Schema.String)),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });

@@ -102,8 +102,9 @@ export class GatewayState extends Context.Service<
 /**
  * Migrations by `PRAGMA user_version`. Append only. t3code shows Mend's projects and sessions by
  * their Mend ids, so `project_ids` and `thread_ids` stay empty until a t3code client creates a
- * thread (phase 2). `message_ids` (keyed by the Mend turn) and `run_ids` carry the ids of every
- * turn a t3code client sent.
+ * thread (phase 2). `message_ids` and `run_ids` carry the ids of every turn a t3code client sent,
+ * keyed by the Mend turn: a message id comes from the client, so it is never a key across
+ * sessions, and a recorded turn is never replaced (migration 3).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -152,6 +153,19 @@ const MIGRATIONS: ReadonlyArray<string> = [
     mend_turn_id TEXT NOT NULL UNIQUE,
     created_at INTEGER NOT NULL
   );
+  `,
+  `
+  CREATE TABLE message_ids_by_turn (
+    mend_session_id TEXT NOT NULL,
+    mend_ref TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (mend_session_id, mend_ref)
+  );
+  INSERT OR IGNORE INTO message_ids_by_turn (mend_session_id, mend_ref, message_id, created_at)
+    SELECT mend_session_id, mend_ref, message_id, created_at FROM message_ids;
+  DROP TABLE message_ids;
+  ALTER TABLE message_ids_by_turn RENAME TO message_ids;
   `,
 ];
 
@@ -331,13 +345,13 @@ export const openGatewayState = (
         try {
           database
             .prepare(
-              `INSERT OR REPLACE INTO run_ids (run_id, mend_session_id, mend_turn_id, created_at)
+              `INSERT OR IGNORE INTO run_ids (run_id, mend_session_id, mend_turn_id, created_at)
                VALUES (?, ?, ?, ?)`,
             )
             .run(ids.runId, ids.sessionId, ids.turnId, at);
           database
             .prepare(
-              `INSERT OR REPLACE INTO message_ids (message_id, mend_session_id, mend_ref, created_at)
+              `INSERT OR IGNORE INTO message_ids (message_id, mend_session_id, mend_ref, created_at)
                VALUES (?, ?, ?, ?)`,
             )
             .run(ids.messageId, ids.sessionId, ids.turnId, at);
