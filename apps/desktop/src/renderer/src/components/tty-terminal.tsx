@@ -88,6 +88,7 @@ export function TtyTerminal({
   onState,
   startingLabel,
   starting,
+  readOnly = false,
 }: {
   readonly target: TtyTarget;
   /**
@@ -114,6 +115,11 @@ export function TtyTerminal({
   readonly startingLabel?: string;
   /** When the agent started and on what machine; the line counts from the socket's open without it. */
   readonly starting?: AgentStartingFacts;
+  /**
+   * Output only: no keys, resizes or images go up. Someone other than the session's owner reads
+   * its terminals this way, and the server drops their input anyway (docs/adr/0013).
+   */
+  readonly readOnly?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<GhosttyTerminalSurface | null>(null);
@@ -169,6 +175,7 @@ export function TtyTerminal({
     let generation = 0;
 
     const sendResize = (cols: number, rows: number) => {
+      if (readOnly) return;
       if (ws !== null && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ t: "resize", cols, rows }));
       }
@@ -296,6 +303,7 @@ export function TtyTerminal({
       theme: TERMINAL_THEME,
       font: fontRef.current,
       onData: (data) => {
+        if (readOnly) return;
         if (ws !== null && ws.readyState === WebSocket.OPEN) {
           ws.send(encoder.encode(data).buffer as ArrayBuffer);
         }
@@ -313,7 +321,7 @@ export function TtyTerminal({
       // answers with the workspace path; that path is pasted like any text
       // (bracketed, when the app asked for it). Codex attaches a pasted image
       // path as an image; claude reads it.
-      ...(sessionId === undefined
+      ...(sessionId === undefined || readOnly
         ? {}
         : {
             onImageFiles: (files: ReadonlyArray<File>) => {
@@ -375,7 +383,7 @@ export function TtyTerminal({
       host.replaceChildren();
     };
     // `focus` only matters at mount; re-running for it would reset the screen.
-  }, [target.kind, target.id, sessionId, from, watchesStart]);
+  }, [target.kind, target.id, sessionId, from, watchesStart, readOnly]);
 
   const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
   const startingLine =

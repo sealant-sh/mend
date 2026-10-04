@@ -87,6 +87,7 @@ export function GhosttyTerminal({
   processId,
   registerSend,
   transformInput,
+  readOnly = false,
 }: {
   readonly serverUrl: string;
   readonly token: string;
@@ -97,6 +98,11 @@ export function GhosttyTerminal({
   readonly registerSend?: (send: (data: string) => void) => void;
   /** Applied to keyboard input before it hits the wire (sticky modifiers). */
   readonly transformInput?: (data: string) => string;
+  /**
+   * Output only: no keys or resizes go up. Someone other than the session's owner reads its
+   * terminals this way, and the server drops their input anyway (docs/adr/0013).
+   */
+  readonly readOnly?: boolean;
 }) {
   const Native = nativeTerminalView();
   const { scheme, colors } = useEvidenceTheme();
@@ -156,7 +162,9 @@ export function GhosttyTerminal({
     enabled: Native !== null,
     onBinary,
   });
-  registerSend?.((data) => void tty.send(data));
+  registerSend?.((data) => {
+    if (!readOnly) void tty.send(data);
+  });
 
   if (Native === null) {
     // Binary without the native module — the WebView terminal still works.
@@ -167,6 +175,7 @@ export function GhosttyTerminal({
         sessionId={sessionId}
         processId={processId}
         background={colors.panel}
+        readOnly={readOnly}
       />
     );
   }
@@ -185,16 +194,19 @@ export function GhosttyTerminal({
         terminalKey={processId ?? sessionId}
         initialBuffer={buffer}
         fontSize={12.5 * textScale}
-        autoFocus
+        autoFocus={!readOnly}
         appearanceScheme={scheme}
         themeConfig={`${themeConfig}\n`}
         backgroundColor={colors.panel}
         foregroundColor={colors.ink}
         onInput={(event) => {
+          if (readOnly) return;
           const data = transformInput?.(event.nativeEvent.data) ?? event.nativeEvent.data;
           tty.send(data);
         }}
-        onResize={(event) => tty.resize(event.nativeEvent.cols, event.nativeEvent.rows)}
+        onResize={(event) => {
+          if (!readOnly) tty.resize(event.nativeEvent.cols, event.nativeEvent.rows);
+        }}
       />
       {(tty.phase === "reconnecting" || tty.phase === "ended") && (
         <Pressable
@@ -231,12 +243,14 @@ const EmbeddedTerminal = ({
   sessionId,
   processId,
   background,
+  readOnly,
 }: {
   readonly serverUrl: string;
   readonly token: string;
   readonly sessionId: string;
   readonly processId: string | undefined;
   readonly background: string;
+  readonly readOnly: boolean;
 }) => {
   // The page is told both; the ticket is bound to the one it attaches by (the process when named).
   const address = `session=${encodeURIComponent(sessionId)}${
@@ -272,7 +286,9 @@ const EmbeddedTerminal = ({
   const remint = () => void credential.refetch();
   return (
     <WebView
-      source={{ uri: `${serverUrl}/tty-embed?${address}&${credential.data}` }}
+      source={{
+        uri: `${serverUrl}/tty-embed?${address}&${credential.data}${readOnly ? "&readOnly=1" : ""}`,
+      }}
       style={{ flex: 1, backgroundColor: background }}
       keyboardDisplayRequiresUserAction={false}
       onMessage={(event) => {

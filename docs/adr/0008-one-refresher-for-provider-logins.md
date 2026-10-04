@@ -124,7 +124,8 @@ account selects it.
 - **Shared control** ([ADR 0003](0003-organizations-and-tenancy.md)) is the one path that spends a
   login on another person's action: the session's owner lets other members steer it, and the
   session's harness keeps running on the owner's subscription. The owner turns it on, and the
-  setting says so where they do.
+  setting says so where they do. **Amended by [ADR 0013](0013-whoever-sends-a-turn-pays.md):** each
+  turn now runs on its sender's login, and in a terminal session only the owner types.
 
 ## Consequences
 

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { canSteerSession, canToggleSharedControl } from "./session-control.ts";
+import {
+  canRelaunchSession,
+  canSteerSession,
+  canToggleSharedControl,
+  canTypeInTerminal,
+  startsInTerminal,
+  terminalOwnerOnlyLine,
+  terminalReadOnlyLine,
+} from "./session-control.ts";
 
 const owned = { ownerUserId: "alice", sharedControlEnabledAt: null };
 const shared = { ownerUserId: "alice", sharedControlEnabledAt: new Date() };
@@ -25,5 +33,38 @@ describe("steering a visible session (docs/adr/0003)", () => {
     expect(canToggleSharedControl(owned, bob, true)).toBe(false);
     expect(canToggleSharedControl(shared, bob, false)).toBe(true);
     expect(canToggleSharedControl(ownerless, bob, false)).toBe(false);
+  });
+
+  it("only the owner types in a terminal, even while control is shared (docs/adr/0013)", () => {
+    expect(canTypeInTerminal(owned, "alice")).toBe(true);
+    expect(canTypeInTerminal(shared, "alice")).toBe(true);
+    expect(canTypeInTerminal(shared, "carol")).toBe(false);
+    expect(canTypeInTerminal(ownerless, "alice")).toBe(false);
+    expect(terminalReadOnlyLine("Alice")).toBe(
+      "This session runs in a terminal. Only Alice types here; they can continue it as a conversation.",
+    );
+  });
+
+  it("a resume or a send-back starts a terminal unless it continues a conversation (docs/adr/0013)", () => {
+    expect(startsInTerminal("agent-protocol")).toBe(false);
+    expect(startsInTerminal("agent-protocol", true)).toBe(true);
+    expect(startsInTerminal("agent-pty")).toBe(true);
+    expect(startsInTerminal("agent-external")).toBe(true);
+    expect(startsInTerminal(null)).toBe(true);
+    const owner = { steer: true, terminalInput: true };
+    const steerer = { steer: true, terminalInput: false };
+    expect(canRelaunchSession(owner, "agent-pty")).toBe(true);
+    expect(canRelaunchSession(steerer, "agent-pty")).toBe(false);
+    expect(canRelaunchSession(steerer, "agent-protocol")).toBe(true);
+    expect(canRelaunchSession(steerer, "agent-protocol", true)).toBe(false);
+    expect(canRelaunchSession({ steer: false, terminalInput: false }, "agent-protocol")).toBe(
+      false,
+    );
+    expect(terminalOwnerOnlyLine("Alice", "resume")).toBe(
+      "This session runs in a terminal. Only Alice resumes it; they can continue it as a conversation.",
+    );
+    expect(terminalOwnerOnlyLine("Alice", "send-back")).toBe(
+      "This session runs in a terminal. Only Alice sends comments to it; they can continue it as a conversation.",
+    );
   });
 });
