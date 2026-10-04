@@ -303,6 +303,7 @@ import {
 import {
   materializePiProfile,
   piProfileFilesToWrite,
+  piProfileInSharedWorkspace,
   piProfileKeptDir,
   planPiProfile,
   preparePiProfileExec,
@@ -591,7 +592,6 @@ const logAgentMemoryDelivered = (
       );
 };
 
-/** A pi profile directory kept aside, or one that could not be cleared, is said once. */
 /**
  * A pi session's harness home could not be made to hold its owner's profile, or none: the launch
  * stops rather than run pi on another person's profile, or on the owner's half delivered.
@@ -8262,7 +8262,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
-        // durability for this launch, never the launch itself.
+        // durability for this launch, never the launch itself, except a pi launch's: its profile
+        // cannot be set up in a home that is not there, and it refuses (`deliverPiProfile`).
         const harnessHome = harnessHomePathOf(project.storePath, sessionId);
         const harnessHomeReady = yield* Effect.promise(() =>
           fs.mkdir(harnessHome, { recursive: true }).then(
@@ -11607,6 +11608,43 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           const interactiveShell = argv[0] === "bash";
+          // A pi launch here runs on its owner's freshly delivered profile, on none, or not at
+          // all, as a fresh launch does (`deliverPiProfile`); the harness home may hold whoever's
+          // pi ran here last, or run another person's pi now.
+          if (session.harness === "pi" && !interactiveShell) {
+            const livePi = (yield* processes.listLiveForWorkspace(
+              SealantWorkspaceId.make(workspace.id),
+            )).filter(
+              (process) => process.harness === "pi" && AGENT_PROCESS_KINDS.has(process.kind),
+            );
+            const owners = yield* Effect.forEach(livePi, (process) =>
+              sessions.byId(process.sessionId).pipe(
+                Effect.map((row) => row.ownerUserId),
+                Effect.catch(() => Effect.succeed(null)),
+              ),
+            );
+            const verdict = piProfileInSharedWorkspace(session.ownerUserId, owners);
+            if (verdict === "refuse") {
+              const refusal = new SealantPlatformError({
+                code: "PI_PROFILE_IN_USE",
+                status: null,
+                message:
+                  "another person's pi is running in this workspace, on their pi profile; pi runs on one person's profile at a time, so this pi session starts once theirs ends",
+                cause: null,
+              });
+              yield* settleSession(sessionId, "failed", refusal.message).pipe(Effect.ignore);
+              return yield* refusal;
+            }
+            if (verdict === "prepare") {
+              yield* deliverPiProfile(session, project, workspace).pipe(
+                Effect.tapError((error) =>
+                  settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
+                    Effect.ignore,
+                  ),
+                ),
+              );
+            }
+          }
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
             : argv;

@@ -929,6 +929,39 @@ const skillsStubLayer = Layer.succeed(SkillsRepo, {
 });
 
 /** The owner's pi profile; none unless a test brings one. */
+/** A live process row in a workspace, as the engine records one. */
+const liveProcessRow = (
+  id: string,
+  sessionId: SessionId,
+  workspaceId: SealantWorkspaceId,
+  kind: "shell" | "agent-pty",
+  harness: string | null,
+) =>
+  new SessionProcess({
+    id: SessionProcessId.make(id),
+    sessionId,
+    sealantWorkspaceId: workspaceId,
+    sealantSessionId: `pty-${id}`,
+    sealantRunId: null,
+    launchCorrelationId: null,
+    serviceId: null,
+    attemptOrdinal: null,
+    kind,
+    harness,
+    providerSessionId: null,
+    protocolOptions: null,
+    label: kind,
+    argv: kind === "shell" ? ["bash", "-i"] : [harness ?? "pi"],
+    status: "running",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: now(),
+    exitedAt: null,
+    updatedAt: now(),
+  });
+
 /** Another person's pi profile, as a restored harness home brings it. */
 const plantForeignPiProfile = (home: string) => {
   const file = path.join(home, ".pi/agent/mend/profile/extensions/theirs/index.ts");
@@ -3225,6 +3258,71 @@ describe("SessionEngine", () => {
           expect(world.sessions.get(session.id)?.status).toBe("failed");
         }),
       { sealantLayer: sealantLaunchLayer(created), piProfilesLayer },
+    );
+  });
+
+  it("a pi follow-up in a retained workspace runs on its owner's profile, and refuses beside another person's pi", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const provision = (ownerUserId: string) =>
+            engine.provision({
+              projectId: project.id,
+              harness: "pi",
+              label: null,
+              name: null,
+              ownerUserId,
+              base: null,
+            });
+          const session = yield* provision("owner-a");
+          yield* engine.launch(session.id, ["pi"]);
+          const workspaceId =
+            [...world.processes.values()].find((process) => process.sessionId === session.id)
+              ?.sealantWorkspaceId ?? SealantWorkspaceId.make("workspace-1");
+          const shell = liveProcessRow("shell-a", session.id, workspaceId, "shell", null);
+          world.processes.set(shell.id, shell);
+          const stopAgent = Effect.gen(function* () {
+            yield* engine.stop(session.id);
+            const agentLive = () =>
+              [...world.processes.values()].some(
+                (process) =>
+                  process.sessionId === session.id &&
+                  process.kind === "agent-pty" &&
+                  process.exitedAt === null,
+              );
+            for (let i = 0; i < 200 && agentLive(); i++) yield* Effect.sleep(Duration.millis(10));
+            expect(agentLive()).toBe(false);
+          });
+          const home = harnessHomePathOf(project.storePath, session.id);
+          const profile = path.join(home, ".pi/agent/mend/profile");
+
+          // No pi runs there: the profile the harness home holds is moved aside, as at a launch.
+          yield* stopAgent;
+          plantForeignPiProfile(home);
+          yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-1", "owner-a");
+          expect(fs.existsSync(profile)).toBe(false);
+          expect(fs.readdirSync(path.join(home, ".mend/pi-profile-kept")).length).toBeGreaterThan(
+            0,
+          );
+
+          // Another person's pi runs in the workspace: refused, and nothing there is touched.
+          yield* stopAgent;
+          plantForeignPiProfile(home);
+          const other = yield* provision("owner-b");
+          const theirs = liveProcessRow("pi-b", other.id, workspaceId, "agent-pty", "pi");
+          world.processes.set(theirs.id, theirs);
+          const failure = yield* engine
+            .launchFollowUp(session.id, "Carry on.", "follow-up:pi-2", "owner-a")
+            .pipe(Effect.flip);
+          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
+          expect(platformFailure?.code).toBe("PI_PROFILE_IN_USE");
+          expect(platformFailure?.message).toContain("another person's pi is running");
+          expect(fs.existsSync(profile)).toBe(true);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 

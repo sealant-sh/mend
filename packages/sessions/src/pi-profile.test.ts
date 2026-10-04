@@ -15,6 +15,7 @@ import {
   PI_PROFILE_PROGRAM,
   PI_PROFILE_SECRET_FILE,
   materializePiProfile,
+  piProfileInSharedWorkspace,
   preparePiProfileExec,
   planPiProfile,
 } from "./pi-profile.ts";
@@ -184,6 +185,73 @@ describe("delivering a pi profile into a harness home", () => {
     expect(fs.existsSync(path.join(copy, "mcp.json"))).toBe(true);
     expect(fs.existsSync(path.join(copy, "mend/delivered-settings.json"))).toBe(true);
     expect(fs.existsSync(path.join(copy, "mend/profile/settings.json"))).toBe(true);
+  });
+
+  it("knows a delivered package pi rewrote, and refuses rather than guess over files that do not parse", () => {
+    const home = tempDir("mend-pi-home-");
+    const agent = path.join(home, ".pi/agent");
+    const prepare = () => {
+      const [command, ...args] = preparePiProfileExec(home, ".mend/pi-profile-kept/t", null);
+      return spawnSync(command ?? "sh", args, { encoding: "utf8" });
+    };
+    write(
+      path.join(agent, "mend/delivered-settings.json"),
+      JSON.stringify({
+        packages: [
+          "./mend/profile",
+          "npm:theirs@1.0.0",
+          "git:github.com/b/ext@v1",
+          "https://b:TOKEN@github.com/b/other.git",
+        ],
+      }),
+    );
+    // pi rewrote each in the session: an extension turned off, a re-pin, a normalised source.
+    const settings = {
+      packages: [
+        { source: "git:github.com/b/ext@v1", extensions: ["-noisy"] },
+        "npm:theirs@2.0.0",
+        "git:git@github.com:b/other",
+        "npm:session-own@1.0.0",
+      ],
+    };
+    // A BOM is pi's to skip, and ours.
+    write(path.join(agent, "settings.json"), `﻿${JSON.stringify(settings)}`);
+    const run = prepare();
+    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
+    expect(readJson(path.join(agent, "settings.json"))).toEqual({
+      packages: ["npm:session-own@1.0.0"],
+    });
+
+    // A settings.json that does not parse: left, with the records, and the launch refuses.
+    write(path.join(agent, "mend/delivered-settings.json"), JSON.stringify({ theme: "theirs" }));
+    write(path.join(agent, "settings.json"), "{ not json");
+    const broken = prepare();
+    expect(broken.status).not.toBe(0);
+    expect(broken.stderr).toContain("~/.pi/agent/settings.json does not parse");
+    expect(fs.readFileSync(path.join(agent, "settings.json"), "utf8")).toBe("{ not json");
+    expect(fs.existsSync(path.join(agent, "mend/delivered-settings.json"))).toBe(true);
+
+    // A record that does not parse: never read as empty.
+    write(path.join(agent, "settings.json"), JSON.stringify({ theme: "theirs" }));
+    write(path.join(agent, "mend/delivered-settings.json"), "{ not json");
+    const unreadable = prepare();
+    expect(unreadable.status).not.toBe(0);
+    expect(unreadable.stderr).toContain("delivered-settings.json does not parse");
+    expect(readJson(path.join(agent, "settings.json"))).toEqual({ theme: "theirs" });
+  });
+
+  it("says why when the profile there cannot be moved aside", () => {
+    const home = tempDir("mend-pi-home-");
+    write(path.join(home, PI_PROFILE_HOME_DIR, extension.path), extension.contents);
+    write(path.join(home, ".mend"), "not a directory");
+    const [command, ...args] = preparePiProfileExec(home, ".mend/pi-profile-kept/t", null);
+    const run = spawnSync(command ?? "sh", args, { encoding: "utf8" });
+    expect(run.status).not.toBe(0);
+    expect(run.stdout).toContain(`skill error ${PI_PROFILE_HOME_DIR}`);
+    expect(run.stderr).toContain(
+      "mend: the pi profile there could not be moved aside: skill error",
+    );
   });
 
   it("moves a changed profile directory aside whole, never deleting it, then writes the new one", async () => {
@@ -389,6 +457,31 @@ describe("setting up a delivered pi profile before pi starts", () => {
     });
   });
 
+  it("keeps a delivered package the session changed in pi, matched as pi matches it", () => {
+    const { agent, run } = setUp();
+    run();
+    const settings = path.join(agent, "settings.json");
+    const session = readJson(settings) as { packages: Array<unknown> };
+    // The person turned one extension of a delivered package off in pi: pi rewrote the entry.
+    const toggled = { source: "npm:good@1.0.0", extensions: ["-loud"] };
+    write(
+      settings,
+      JSON.stringify({
+        ...session,
+        packages: session.packages.map((e) => (e === "npm:good@1.0.0" ? toggled : e)),
+      }),
+    );
+    expect(run().status).toBe(0);
+    const after = readJson(settings) as { packages: Array<unknown> };
+    expect(after.packages).toContainEqual(toggled);
+    expect(after.packages).not.toContain("npm:good@1.0.0");
+    // And the record says what the profile delivered, so a later undo knows it.
+    const record = readJson(path.join(agent, "mend", "delivered-settings.json")) as {
+      packages: Array<unknown>;
+    };
+    expect(record.packages).toContain("npm:good@1.0.0");
+  });
+
   it("leaves an mcp.json the session changed as it is, and says so", () => {
     const { agent, profile, run } = setUp();
     run();
@@ -427,5 +520,16 @@ describe("setting up a delivered pi profile before pi starts", () => {
       defaultProvider: "openai-codex",
       theme: "github-dark-default",
     });
+  });
+});
+
+describe("a pi launch into a workspace other processes hold", () => {
+  it("sets the profile up when no pi runs there, leaves the owner's own, and refuses beside another person's", () => {
+    expect(piProfileInSharedWorkspace("a", [])).toBe("prepare");
+    expect(piProfileInSharedWorkspace(null, [])).toBe("prepare");
+    expect(piProfileInSharedWorkspace("a", ["a", "a"])).toBe("running");
+    expect(piProfileInSharedWorkspace("a", ["a", "b"])).toBe("refuse");
+    expect(piProfileInSharedWorkspace("a", [null])).toBe("refuse");
+    expect(piProfileInSharedWorkspace(null, [null])).toBe("refuse");
   });
 });

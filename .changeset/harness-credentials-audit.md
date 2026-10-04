@@ -13,7 +13,11 @@ docs page "How Mend handles your provider logins" lists in full. Leaving them ou
 workspace saves needs a Sealant runtime with sealantd#136.
 
 Codex sessions Mend starts run with its shell snapshot off (`-c features.shell_snapshot=false`), so
-the snapshot is never written. A pi session runs on its owner's freshly delivered pi profile, on
-none, or does not start: Mend moves aside the profile and settings an earlier session delivered into
-the worktree, never deleting them, then delivers the owner's. A pi profile restored without its
-`mcp.json` is no longer delivered again and reinstalled at every resume.
+the snapshot is never written. A pi session Mend starts runs on its owner's freshly delivered pi
+profile, on none, or does not start, whether it launches fresh or joins, resumes or follows up in a
+workspace that is already running: Mend moves aside the profile and settings an earlier session
+delivered into the worktree, never deleting them, then delivers the owner's. Beside another person's
+running pi, a pi session does not start; beside the same person's, it runs on the profile already
+there. A pi typed by hand in a session that is not a pi session is not set up (known issues). A pi
+profile restored without its `mcp.json` is no longer delivered again and reinstalled at every
+resume.

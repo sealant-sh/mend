@@ -68,9 +68,25 @@ the session:
 
 Each step prints a line starting with `mend:` in the terminal. None of them stops pi from starting.
 
-Nothing that was there is deleted. If the profile directory in a session holds anything other than
-the profile being delivered, such as an extension the agent edited, it is moved whole to
-`.mend/pi-profile-kept/` in the harness home first.
+Before those steps, a pi session is set up to run on your profile or on none. In a remote workspace
+the agent state belongs to the worktree, so it can hold the profile and settings of whoever's pi
+session ran there last:
+
+- A profile directory that is not exactly the profile being delivered is moved whole to
+  `.mend/pi-profile-kept/` in the harness home: someone else's profile, or yours with an extension
+  the agent edited.
+- What an earlier delivery put into `settings.json` is taken back out. A copy of every file this
+  touches goes beside the moved profile first. A setting the session changed keeps its value, and a
+  package the session installed stays; a delivered package goes even where the session turned one of
+  its extensions off, since pi matches it by its source.
+- In a remote workspace, `.mend/pi-profile-kept/` is never saved: what is set aside there lasts as
+  long as that session's machine.
+
+When any of this cannot be done, the session does not start, and it says why
+(`PI_PROFILE_NOT_DELIVERED`). A `settings.json` or delivery record that does not parse is one such
+case: it is left as it is, and the session says which file to fix. A pi session that would join a
+workspace where another person's pi is running does not start either (`PI_PROFILE_IN_USE`): pi runs
+on one person's profile at a time.
 
 ## Packages that build native code
 

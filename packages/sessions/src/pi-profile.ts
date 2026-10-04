@@ -114,30 +114,49 @@ export const piProfileKeptDir = (now: Date = new Date()): string =>
   );
 
 /**
+ * pi's own identity of a package entry, as its package manager matches a source: `npm:<name>`
+ * whatever the version, `git:<host>/<path>` whatever the protocol, credentials or ref, and the
+ * path of a local one. An entry in object form (`{ source, extensions }`, which pi writes when an
+ * extension of the package is turned off) has its source's identity. Shared by the merge and the
+ * undo, so a delivered package pi rewrote is still known as the one delivered.
+ */
+const PI_PACKAGE_KEY_FUNCTION = String.raw`function pkgKey(e){const s=typeof e==="string"?e:e!==null&&typeof e==="object"&&typeof e.source==="string"?e.source:null;if(s===null)return "?"+JSON.stringify(e);const t=s.trim();if(t.startsWith("npm:")){const spec=t.slice(4).trim(),at=spec.lastIndexOf("@");return "npm:"+(at>0?spec.slice(0,at):spec)}const g=t.startsWith("git:");let u=g?t.slice(4).trim():t;if(!g&&!/^(https?|ssh|git):\/\//i.test(u))return "local:"+t;u=u.replace(/^[a-z][a-z0-9+.-]*:\/\//i,"").replace(/^[^@\/]*@/,"").replace(/#.*$/,"").replace(/^([^\/:]+):\d+\//,"$1/").replace(/^([^\/:]+):/,"$1/");const parts=u.split("/"),host=(parts.shift()||"").toLowerCase();return "git:"+host+"/"+parts.join("/").replace(/\/+$/,"").replace(/@[^\/@]*$/,"").replace(/\.git$/,"")}`;
+
+/** A JSON object file: `{}` when absent, null when it does not parse; a leading BOM is pi's to skip, and ours. */
+const READ_JSON_FUNCTION = String.raw`function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8").replace(/^﻿/,""));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`;
+
+/**
  * Takes an earlier delivery's settings back out of pi's agent directory (`argv[1]`), keeping a
  * copy of everything it touches under `argv[2]` first: `settings.json`, the copied `mcp.json` and
  * `keybindings.json`, and the delivery records (`mend/delivered-*.json`). A setting still holding
  * the value that delivery wrote goes; one the session changed stays. The packages it delivered go;
- * the session's own stay. A copied file the session did not change goes. A `settings.json` that
- * cannot be read is moved aside whole. Nothing goes that is not in the copy. Exits non-zero when
- * any of it fails. No single quotes: it rides `sh -c` inside them.
+ * the session's own stay, each matched as pi matches a package (`PI_PACKAGE_KEY_FUNCTION`). A
+ * copied file the session did not change goes. Nothing goes that is not in the copy. A
+ * `settings.json` or record that does not parse is left as it is, and the program exits 2 saying
+ * which: the launch refuses rather than guess. With `check` as `argv[3]` it only checks that. No
+ * single quotes: it rides `sh -c` inside them.
  */
 export const PI_PROFILE_UNDO_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
-  `const [A,K]=process.argv.slice(1),M=path.join(A,"mend"),D=path.join(M,"delivered-settings.json"),F=path.join(M,"delivered-files.json");`,
+  `const [A,K,mode]=process.argv.slice(1),M=path.join(A,"mend"),D=path.join(M,"delivered-settings.json"),F=path.join(M,"delivered-files.json"),S=path.join(A,"settings.json");`,
+  READ_JSON_FUNCTION,
+  PI_PACKAGE_KEY_FUNCTION,
+  `const refuse=m=>{process.stderr.write("mend: "+m+"\\n");process.exit(2)};`,
+  `const cur=read(S),last=read(D),lastFiles=read(F);`,
+  `if(last===null)refuse("~/.pi/agent/mend/delivered-settings.json does not parse, so what an earlier pi profile delivered cannot be told apart; fix or remove it");`,
+  `if(lastFiles===null)refuse("~/.pi/agent/mend/delivered-files.json does not parse, so what an earlier pi profile delivered cannot be told apart; fix or remove it");`,
   `if(!fs.existsSync(D)&&!fs.existsSync(F))process.exit(0);`,
+  `if(cur===null)refuse("~/.pi/agent/settings.json does not parse, so the settings an earlier pi profile delivered cannot be taken out of it; fix it, or move it away");`,
+  `if(mode==="check")process.exit(0);`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
-  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
   `for(const f of ["settings.json","mcp.json","keybindings.json","mend/delivered-settings.json","mend/delivered-files.json"]){`,
   `const from=path.join(A,f);if(!fs.existsSync(from))continue;const to=path.join(K,f);fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to)}`,
-  `const S=path.join(A,"settings.json"),cur=read(S),last=read(D)||{};`,
-  `if(cur===null)fs.renameSync(S,path.join(K,"settings.json.unreadable"));else if(fs.existsSync(S)){`,
-  `const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),has=Object.hasOwn,out=Object.assign({},cur);`,
+  `if(fs.existsSync(S)){const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),has=Object.hasOwn,out=Object.assign({},cur);`,
   `for(const k of Object.keys(last)){if(k!=="packages"&&has(cur,k)&&same(cur[k],last[k]))delete out[k]}`,
-  `const id=e=>JSON.stringify(e),before=new Set((Array.isArray(last.packages)?last.packages:[]).map(id));`,
-  `if(Array.isArray(cur.packages))out.packages=cur.packages.filter(e=>!before.has(id(e)));`,
+  `const gone=new Set((Array.isArray(last.packages)?last.packages:[]).map(pkgKey));`,
+  `if(Array.isArray(cur.packages))out.packages=cur.packages.filter(e=>!gone.has(pkgKey(e)));`,
   `const t=S+".mend-seed-"+process.pid;fs.writeFileSync(t,JSON.stringify(out,null,2),{mode:0o600});fs.renameSync(t,S)}`,
-  `const lastFiles=read(F)||{};for(const f of ["mcp.json","keybindings.json"]){if(!lastFiles[f])continue;`,
+  `for(const f of ["mcp.json","keybindings.json"]){if(!lastFiles[f])continue;`,
   `const to=path.join(A,f);let have=null;try{have=sha(fs.readFileSync(to))}catch(e){if(e.code!=="ENOENT")throw e}`,
   `if(have===lastFiles[f])fs.rmSync(to)}`,
   `fs.rmSync(D,{force:true});fs.rmSync(F,{force:true})`,
@@ -155,7 +174,8 @@ const PI_AGENT_DIR = path.posix.dirname(path.posix.dirname(PI_PROFILE_HOME_DIR))
  *    delivered (`unchanged`: the same files, whoever delivered them); otherwise it is moved aside
  *    whole to `kept` (`SKILLS_VACATE_PROGRAM`), never deleted.
  * 2. Unless it was left as it is, what an earlier delivery put into pi's settings is taken back
- *    out, with a copy under `kept` (`PI_PROFILE_UNDO_PROGRAM`).
+ *    out, with a copy under `kept` (`PI_PROFILE_UNDO_PROGRAM`). Left as it is, its settings and
+ *    records are only checked to parse.
  *
  * Prints the vacate's outcome lines. Exits non-zero when either step fails: the launch then
  * stops, as it does when the files cannot be written. A pi launch runs on its owner's freshly
@@ -169,10 +189,12 @@ export const preparePiProfileExec = (
   "sh",
   "-c",
   `set -e; mkdir -p "$1"/${shellQuote(path.posix.dirname(PI_PROFILE_HOME_DIR))}; ` +
-    `out=$(node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3"); printf '%s\\n' "$out"; ` +
-    `case "$out" in *"skill unchanged "*) ;; ` +
-    `*) node -e ${shellQuote(PI_PROFILE_UNDO_PROGRAM)} "$1"/${shellQuote(PI_AGENT_DIR)} ` +
-    `"$1/$2"/${shellQuote(PI_AGENT_DIR)} ;; esac`,
+    `out=$(node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3") || ` +
+    `{ printf '%s\\n' "$out"; printf 'mend: the pi profile there could not be moved aside: %s\\n' "$out" >&2; exit 1; }; ` +
+    `printf '%s\\n' "$out"; ` +
+    `case "$out" in *"skill unchanged "*) mode=check ;; *) mode=undo ;; esac; ` +
+    `node -e ${shellQuote(PI_PROFILE_UNDO_PROGRAM)} "$1"/${shellQuote(PI_AGENT_DIR)} ` +
+    `"$1/$2"/${shellQuote(PI_AGENT_DIR)} "$mode"`,
   "mend-pi-profile",
   home,
   kept,
@@ -272,7 +294,8 @@ export const PI_PROFILE_PROGRAM = [
   `const A=process.argv[1],M=path.join(A,"mend"),P=path.join(M,"profile");if(!fs.existsSync(P))process.exit(0);`,
   `const say=m=>process.stderr.write("mend: "+m+"\\n");`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
-  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
+  READ_JSON_FUNCTION,
+  PI_PACKAGE_KEY_FUNCTION,
   `function put(p,v,mode){fs.mkdirSync(path.dirname(p),{recursive:true});const t=p+".mend-seed-"+process.pid;`,
   `fs.writeFileSync(t,Buffer.isBuffer(v)?v:JSON.stringify(v,null,2),{mode:mode||0o644});fs.renameSync(t,p)}`,
   `function why(r){const l=String(r.stderr||r.error||"").split("\\n").map(x=>x.trim()).filter(x=>x&&!/_logs\\/|complete log|^npm (ERR!|error) *$/.test(x));`,
@@ -301,19 +324,43 @@ export const PI_PROFILE_PROGRAM = [
   `if(!fs.existsSync(path.join(N,"package.json")))put(path.join(N,"package.json"),{name:"pi-extensions",private:true});`,
   `say("installing pi package "+spec);const r=npm(["install",spec,"--prefix",N,"--legacy-peer-deps","--no-audit","--no-fund"],A);`,
   `if(r.status!==0){failed.add(s);say("pi package "+spec+" did not install, so this session runs without it: "+why(r))}}`,
-  `const S=path.join(A,"settings.json"),D=path.join(M,"delivered-settings.json"),cur=read(S);`,
-  `if(cur===null)say("settings.json could not be read, so your profile settings were not applied");else{`,
-  `const last=read(D)||{},same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),has=Object.hasOwn,out=Object.assign({},cur);`,
+  `const S=path.join(A,"settings.json"),D=path.join(M,"delivered-settings.json"),cur=read(S),last=read(D);`,
+  `if(cur===null)say("settings.json could not be read, so your profile settings were not applied");`,
+  `else if(last===null)say("mend/delivered-settings.json could not be read, so your profile settings were not applied");else{`,
+  `const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),has=Object.hasOwn,out=Object.assign({},cur);`,
   `for(const k of Object.keys(prof)){if(k!=="packages"&&(!has(cur,k)||same(cur[k],last[k])))out[k]=prof[k]}`,
   `for(const k of Object.keys(last)){if(k!=="packages"&&!has(prof,k)&&has(cur,k)&&same(cur[k],last[k]))delete out[k]}`,
-  `const id=e=>JSON.stringify(e),delivered=["./${PI_PROFILE_AGENT_PATH}",...declared.filter(e=>!failed.has(src(e)))];`,
-  `const before=new Set((Array.isArray(last.packages)?last.packages:[]).map(id)),now=new Set(delivered.map(id));`,
-  `out.packages=[...delivered,...(Array.isArray(cur.packages)?cur.packages:[]).filter(e=>!before.has(id(e))&&!now.has(id(e)))];`,
-  `put(S,out,0o600);put(D,Object.assign({},prof,{packages:delivered}))}`,
-  `const F=path.join(M,"delivered-files.json"),lastFiles=read(F)||{},nextFiles={};`,
+  `const delivered=["./${PI_PROFILE_AGENT_PATH}",...declared.filter(e=>!failed.has(src(e)))];`,
+  `const lastPkgs=Array.isArray(last.packages)?last.packages:[],curPkgs=Array.isArray(cur.packages)?cur.packages:[];`,
+  `const lastBy=new Map(lastPkgs.map(e=>[pkgKey(e),e])),curBy=new Map(curPkgs.map(e=>[pkgKey(e),e])),now=new Set(delivered.map(pkgKey));`,
+  `const kept=e=>{const k=pkgKey(e),c=curBy.get(k);return c!==undefined&&lastBy.has(k)&&!same(c,lastBy.get(k))?c:e};`,
+  `out.packages=[...delivered.map(kept),...curPkgs.filter(e=>!lastBy.has(pkgKey(e))&&!now.has(pkgKey(e)))];`,
+  `const next=Object.assign({},prof,{packages:delivered});`,
+  `put(D,Object.assign({},last,next,{packages:[...lastPkgs,...delivered]}));put(S,out,0o600);put(D,next)}`,
+  `const F=path.join(M,"delivered-files.json"),lastFiles=read(F)||{},nextFiles={},union=Object.assign({},lastFiles);`,
   `for(const f of ["mcp.json","keybindings.json"]){let want;try{want=fs.readFileSync(path.join(P,"root",f))}catch{continue}`,
   `const to=path.join(A,f);let have=null;try{have=sha(fs.readFileSync(to))}catch(e){if(e.code!=="ENOENT")continue}`,
-  `if(have===null||have===lastFiles[f]||have===sha(want)){put(to,want,0o600);nextFiles[f]=sha(want)}`,
+  `if(have===null||have===lastFiles[f]||have===sha(want)){union[f]=sha(want);put(F,union);put(to,want,0o600);nextFiles[f]=sha(want)}`,
   `else{say(f+" was changed in this session, so the profile did not replace it");if(lastFiles[f])nextFiles[f]=lastFiles[f]}}`,
   `put(F,nextFiles)}catch(e){process.stderr.write("mend: the pi profile was not set up: "+(e&&e.message)+"\\n")}`,
 ].join("");
+
+/**
+ * What a pi launch into a workspace that already runs other processes (a join, a resume or a
+ * follow-up in a retained workspace) does about the profile there, from the owners of the pi
+ * agents live in it:
+ *
+ * - `prepare`: no pi runs there; set the harness home up for this owner as a fresh launch does.
+ * - `running`: only this owner's pi runs there, on the profile delivered for them; leave it.
+ * - `refuse`: another person's pi runs there, on their profile; pi cannot run on two profiles in
+ *   one harness home, so this launch does not start.
+ */
+export const piProfileInSharedWorkspace = (
+  ownerUserId: string | null,
+  livePiOwners: ReadonlyArray<string | null>,
+): "prepare" | "running" | "refuse" => {
+  if (livePiOwners.length === 0) return "prepare";
+  return ownerUserId !== null && livePiOwners.every((owner) => owner === ownerUserId)
+    ? "running"
+    : "refuse";
+};
