@@ -33,6 +33,8 @@ import {
   secretFilesExecs,
   secretFilesRecordExec,
   secretFilesRemoveExec,
+  secretFilesSetAsideExec,
+  SECRET_FILES_SET_ASIDE,
   type SecretFileOutcome,
   type SecretFileToWrite,
 } from "./secret-files.ts";
@@ -93,6 +95,34 @@ const filesUnder = (root: string): ReadonlyArray<string> => {
   walk(root, "");
   return out.toSorted();
 };
+
+/** A home delivered into before `.local/state/opencode` was reserved, and a harness root. */
+const homeWithOpencodeState = () => {
+  const scratch = tempDir("mend-secret-evict-");
+  const home = path.join(scratch, "home");
+  const harnessHome = path.join(scratch, "harness-home");
+  fs.mkdirSync(path.join(home, ".local", "state", "opencode"), { recursive: true });
+  fs.mkdirSync(harnessHome);
+  fs.writeFileSync(path.join(home, ".local", "state", "opencode", "model.json"), "{}");
+  return { scratch, home, harnessHome };
+};
+const relocate = (home: string, harnessHome: string) => {
+  const relocated = spawnSync(
+    "sh",
+    ["-c", relocateHarnessHomeScript(harnessHome, { keepStoreReadable: false })],
+    { env: { ...process.env, HOME: home }, encoding: "utf8" },
+  );
+  expect(relocated.status, relocated.stderr).toBe(0);
+};
+const setAside = (home: string, files: ReadonlyArray<{ path: string; sha256: string }>) => {
+  const result = spawnSync("sh", secretFilesSetAsideExec(files, STAMP).slice(1), {
+    env: { ...process.env, HOME: home },
+    encoding: "utf8",
+  });
+  return { status: result.status, outcomes: parseSecretFileOutcomes(result.stdout) };
+};
+const TOKEN = ".local/state/opencode/token";
+const SET_ASIDE = `${SECRET_FILES_SET_ASIDE}/${STAMP}/${TOKEN}`;
 
 describe("writing secret files into a workspace home", () => {
   it("writes each file 0600 in a directory made 0700, and leaves no staging file", () => {
@@ -368,22 +398,15 @@ describe("writing secret files into a workspace home", () => {
     }
   });
 
-  it("removes a file delivered under opencode's state before the relocation moves that directory into the captured root", () => {
-    const scratch = tempDir("mend-secret-evict-");
-    const home = path.join(scratch, "home");
-    const harnessHome = path.join(scratch, "harness-home");
-    fs.mkdirSync(home);
-    fs.mkdirSync(harnessHome);
-    // Delivered before the path was reserved: a plain file in a plain directory of the home.
-    fs.mkdirSync(path.join(home, ".local", "state", "opencode"), { recursive: true });
-    fs.writeFileSync(path.join(home, ".local", "state", "opencode", "token"), "SECRET-TOKEN");
-    fs.writeFileSync(path.join(home, ".local", "state", "opencode", "model.json"), "{}");
-    // What the engine runs first (`evictReservedSecretFiles`): the record's reserved entries.
+  it("removes a delivered file under opencode's state that still holds Mend's bytes, before the relocation", () => {
+    const { home, harnessHome } = homeWithOpencodeState();
+    fs.writeFileSync(path.join(home, TOKEN), "SECRET-TOKEN");
+    // The engine sets aside only the record's reserved entries.
     const record = decodeSecretFilesRecord(
       encodeSecretFilesRecord({
         workspaceId: "ws-1",
         files: [
-          { path: ".local/state/opencode/token", sha256: sha256("SECRET-TOKEN") },
+          { path: TOKEN, sha256: sha256("SECRET-TOKEN") },
           { path: ".aws/credentials", sha256: sha256("kept") },
         ],
       }),
@@ -392,23 +415,70 @@ describe("writing secret files into a workspace home", () => {
     const reserved = (record?.files ?? []).filter(
       (file) => reservedSecretFileRoot(file.path) !== null,
     );
-    expect(reserved.map((file) => file.path)).toEqual([".local/state/opencode/token"]);
-    expect(parseSecretFileOutcomes(run(home, secretFilesRemoveExec(reserved)))).toEqual([
-      { path: ".local/state/opencode/token", outcome: "removed" },
-    ]);
-    // Then the relocation: opencode's state moves into the captured root without the secret.
-    const relocated = spawnSync(
-      "sh",
-      ["-c", relocateHarnessHomeScript(harnessHome, { keepStoreReadable: false })],
-      { env: { ...process.env, HOME: home }, encoding: "utf8" },
-    );
-    expect(relocated.status, relocated.stderr).toBe(0);
+    expect(reserved.map((file) => file.path)).toEqual([TOKEN]);
+    expect(setAside(home, reserved)).toEqual({
+      status: 0,
+      outcomes: [{ path: TOKEN, outcome: "removed" }],
+    });
+    relocate(home, harnessHome);
     expect(filesUnder(path.join(harnessHome, ".local", "state", "opencode"))).toEqual([
       "model.json",
     ]);
-    expect(fs.realpathSync(path.join(home, ".local", "state", "opencode"))).toBe(
-      path.join(harnessHome, ".local", "state", "opencode"),
+  });
+
+  it("moves an edited secret file out whole, never deleting it, and the relocation captures nothing of it", () => {
+    const { home, harnessHome } = homeWithOpencodeState();
+    fs.writeFileSync(path.join(home, TOKEN), "SECRET-TOKEN edited by the person");
+    expect(setAside(home, [{ path: TOKEN, sha256: sha256("SECRET-TOKEN") }])).toEqual({
+      status: 0,
+      outcomes: [{ path: TOKEN, outcome: "moved", movedTo: `~/${SET_ASIDE}` }],
+    });
+    expect(fs.readFileSync(path.join(home, SET_ASIDE), "utf8")).toBe(
+      "SECRET-TOKEN edited by the person",
     );
+    expect(mode(path.join(home, SECRET_FILES_SET_ASIDE))).toBe("700");
+    relocate(home, harnessHome);
+    expect(filesUnder(harnessHome).filter((file) => file.includes("token"))).toEqual([]);
+    expect(filesUnder(path.join(harnessHome, ".local", "state", "opencode"))).toEqual([
+      "model.json",
+    ]);
+  });
+
+  it("moves a secret file reached through a linked directory out of wherever the link leads", () => {
+    const { scratch, home } = homeWithOpencodeState();
+    // `~/.local/state/opencode` a link into a captured root: the file is really there.
+    const captured = path.join(scratch, "captured-root", "opencode");
+    fs.mkdirSync(captured, { recursive: true });
+    fs.rmSync(path.join(home, ".local", "state", "opencode"), { recursive: true });
+    fs.symlinkSync(captured, path.join(home, ".local", "state", "opencode"));
+    fs.writeFileSync(path.join(captured, "token"), "SECRET-TOKEN");
+    // Mend's own bytes, but not on a plain path: moved, not deleted through the link.
+    expect(setAside(home, [{ path: TOKEN, sha256: sha256("SECRET-TOKEN") }])).toEqual({
+      status: 0,
+      outcomes: [{ path: TOKEN, outcome: "moved", movedTo: `~/${SET_ASIDE}` }],
+    });
+    expect(fs.existsSync(path.join(captured, "token"))).toBe(false);
+    expect(fs.readFileSync(path.join(home, SET_ASIDE), "utf8")).toBe("SECRET-TOKEN");
+    // An entry already gone is done with.
+    expect(setAside(home, [{ path: TOKEN, sha256: sha256("SECRET-TOKEN") }]).outcomes).toEqual([
+      { path: TOKEN, outcome: "absent" },
+    ]);
+  });
+
+  it("fails, leaving the file where it is, when it cannot be set aside outside the captured roots", () => {
+    const { scratch, home } = homeWithOpencodeState();
+    fs.writeFileSync(path.join(home, TOKEN), "SECRET-TOKEN edited");
+    // `~/.mend` a link into the worktree: the place to set it aside is not the home's own.
+    const worktree = path.join(scratch, "worktree");
+    fs.mkdirSync(worktree);
+    fs.symlinkSync(worktree, path.join(home, ".mend"));
+    const { status, outcomes } = setAside(home, [{ path: TOKEN, sha256: sha256("SECRET-TOKEN") }]);
+    expect(status).toBe(1);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]?.outcome).toBe("failed");
+    expect(outcomes[0]?.reason).toContain("is really");
+    expect(fs.readFileSync(path.join(home, TOKEN), "utf8")).toBe("SECRET-TOKEN edited");
+    expect(filesUnder(worktree)).toEqual([]);
   });
 
   it("leaves out a stored path that no longer validates, and says so", () => {

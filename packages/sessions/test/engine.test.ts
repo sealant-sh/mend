@@ -167,6 +167,7 @@ import {
   WORKSPACE_MEND_TOML,
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
+  secretFilesDeliveredExec,
 } from "@mend/sessions";
 import {
   AgentBridge,
@@ -735,6 +736,11 @@ const sealantLaunchLayer = (
           });
         }
         if (execCalls !== undefined) {
+          return Effect.succeed({ exitCode: 0, stdout: "", stderr: "", run: fakeExecRun });
+        }
+        // A test executor's home holds no record of delivered secret files: the read every launch
+        // makes before the harness home relocation (`evictReservedSecretFiles`) finds none.
+        if (argv.join(" ") === secretFilesDeliveredExec.join(" ")) {
           return Effect.succeed({ exitCode: 0, stdout: "", stderr: "", run: fakeExecRun });
         }
         return Effect.fail(
@@ -19525,6 +19531,65 @@ const outputEntry = (sequence: bigint, occurredAt: string, byteCount: string): T
  * first time. The launch reads them once in the background while the rest of its setup runs, and
  * the session line says the agent is starting until its record carries output.
  */
+describe("secret files under a directory sessions now save (review 2026-10-04)", () => {
+  it("refuses the launch, before the harness home moves, when the home's record of secret files cannot be read", async () => {
+    for (const answer of ["exits", "fails"] as const) {
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      let opened = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "opencode",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const refusal = yield* engine.launch(session.id, ["opencode"]).pipe(Effect.flip);
+            expect(String(refusal.message), answer).toContain(
+              "a secret file under a directory sessions now save could not be taken out of it",
+            );
+            // Nothing moved the harness home, and no agent started.
+            expect(
+              execCalls.some((argv) => String(argv[2]).includes("harness-home relocation")),
+            ).toBe(false);
+            expect(opened).toBe(0);
+            expect(world.sessions.get(session.id)?.status).toBe("failed");
+            expect(world.sessions.get(session.id)?.summary ?? "").toContain("launch failed:");
+          }),
+        {
+          sealantLayer: lifecycleLayer(created, {
+            execCalls,
+            captureOps: {
+              execEffect: (argv) =>
+                argv.join(" ") === secretFilesDeliveredExec.join(" ")
+                  ? answer === "exits"
+                    ? Effect.succeed({ exitCode: 1, stdout: "", stderr: "unreadable" })
+                    : Effect.fail(
+                        new SealantPlatformError({
+                          code: "exec-failed",
+                          status: null,
+                          message: "the workspace did not answer",
+                          cause: null,
+                        }),
+                      )
+                  : undefined,
+              beforeOpen: () => {
+                opened += 1;
+              },
+            },
+          }),
+        },
+      );
+    }
+  });
+});
+
 describe("an agent's first screen (alpha 2026-09-30)", () => {
   it("a launch warms the harness's files in the background: asked before the agent starts, never waited for", async () => {
     const created: Array<CreateOptions> = [];
