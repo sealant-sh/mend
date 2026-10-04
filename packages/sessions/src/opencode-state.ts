@@ -99,14 +99,15 @@ export const readOpencodeHome = (
     const file = path.join(harnessHomePath, OPENCODE_DATABASE);
     const database = await regularFile(file);
     if (database === null) return null;
-    let wal: Uint8Array | null = null;
-    try {
-      const stat = await fs.lstat(`${file}-wal`);
-      if (!stat.isFile()) return null;
-      wal = await regularFile(`${file}-wal`);
-    } catch {
-      wal = null;
-    }
+    // No log is a database read whole; a log that is there but is not a plain file, or cannot be
+    // read, is no answer: the database without it can be missing conversations.
+    const present = await fs.lstat(`${file}-wal`).then(
+      () => true,
+      () => false,
+    );
+    if (!present) return { database, wal: null };
+    const wal = await regularFile(`${file}-wal`);
+    if (wal === null) return null;
     return { database, wal };
   }).pipe(
     Effect.flatMap((found) =>

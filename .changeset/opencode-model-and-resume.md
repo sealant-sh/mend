@@ -21,3 +21,7 @@ removed while it holds what Mend wrote, otherwise moved whole to `~/.mend/secret
 
 The co-located store's saved harness state no longer includes opencode's login files (`auth.json`,
 `mcp-auth.json`).
+
+opencode's MCP server logins (`mcp-auth.json`) are kept out of saved state: the file in its data
+directory is a link into the workspace's own home, and a copy a saved session brought is removed
+unread before opencode starts.

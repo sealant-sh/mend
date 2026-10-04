@@ -7922,9 +7922,10 @@ describe("SessionEngine capture mode", () => {
    * An opencode session in capture mode: its harness home rides the worktree's captures, so the
    * database the harvest reads may hold other sessions' conversations too, and what is its own is
    * what the database did not hold when it launched (the launch snapshot). `own` starts a
-   * conversation; `none` leaves an empty database.
+   * conversation; `none` leaves an empty database; `unattributed` starts one that its launch
+   * snapshot says was already there, so Mend cannot tell it is the session's.
    */
-  const verifyOpencodeHarvest = (kind: "own" | "none") => async () => {
+  const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed") => async () => {
     const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
     const ptyStates = new Map<string, InteractiveSessionStatus>();
@@ -7971,12 +7972,35 @@ describe("SessionEngine capture mode", () => {
           if (agent?.sealantSessionId === null || agent?.sealantSessionId === undefined) {
             throw new Error("the launch recorded no agent PTY");
           }
+          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+          if (kind === "unattributed") {
+            fs.writeFileSync(
+              path.join(stateDir, "opencode-launch.json"),
+              JSON.stringify(["ses_own"]),
+            );
+          }
           ptyStates.set(agent.sealantSessionId, {
             status: "exited",
             exitCode: 0,
             outputHighWater: 0n,
           });
-          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+          if (kind === "unattributed") {
+            // A conversation Mend cannot tell is the session's is no answer, not an absence: the
+            // session is never hidden as a dead end, and its resume is refused, not guessed.
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt !== null,
+              "the first process settle",
+            );
+            yield* Effect.sleep("1 second");
+            expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(false);
+            expect(fs.existsSync(path.join(stateDir, "manifest.json"))).toBe(false);
+            const refusal = yield* engine.resumeSession(session.id, null).pipe(Effect.flip);
+            expect(String(refusal.message)).toContain(
+              "opencode left no conversation Mend can tell is session",
+            );
+            expect(opens).toBe(1);
+            return;
+          }
           if (kind === "none") {
             // Nothing in the database is this session's: no saved state, and the resume says so
             // rather than open the other session's conversation.
@@ -8074,7 +8098,7 @@ describe("SessionEngine capture mode", () => {
               if (opens === 1) {
                 writeOpencodeDatabase(
                   databaseOf(),
-                  kind === "own" ? [{ id: "ses_own", createdAt: Date.now() }] : [],
+                  kind === "none" ? [] : [{ id: "ses_own", createdAt: Date.now() }],
                 );
                 return;
               }
@@ -8116,6 +8140,12 @@ describe("SessionEngine capture mode", () => {
     "refuses to resume an opencode session none of whose conversations it can tell is its own",
     { timeout: 20_000 },
     verifyOpencodeHarvest("none"),
+  );
+
+  it(
+    "leaves an opencode session whose conversation Mend cannot attribute unclassified, never a dead end",
+    { timeout: 20_000 },
+    verifyOpencodeHarvest("unattributed"),
   );
 
   it(

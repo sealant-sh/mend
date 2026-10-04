@@ -133,6 +133,25 @@ const OPENCODE_MODEL_PROGRAM = [
 ].join("");
 
 /**
+ * Where opencode keeps the logins of the MCP servers it connects to (`mcp-auth.json`, tokens and
+ * client secrets), kept out of saved state: its data directory is the harness home a capture saves
+ * and the next session in the worktree, anyone's, materialises. Until sealantd leaves the file out
+ * of captures, as it does opencode's `auth.json` (sealantd#136, PLATFORM-FEEDBACK.md), the file there is a link
+ * to `~/.mend/opencode/mcp-auth.json` in the executor's own home, which opencode writes through
+ * (it writes the file in place, `core/src/fs-util.ts` `writeJson`). A plain file found there came
+ * from a capture, maybe another person's, and is removed unread. A home where the link cannot be
+ * made stops the launch rather than let the logins be saved.
+ */
+export const OPENCODE_MCP_AUTH_SEED =
+  `d="\${XDG_DATA_HOME:-$HOME/.local/share}/opencode"; f="$d/mcp-auth.json"; k="$HOME/.mend/opencode"; ` +
+  `if [ -e "$f" ] && [ ! -L "$f" ]; then rm -rf "$f"; fi; ` +
+  `kp=$( (umask 077; mkdir -p "$k") 2>/dev/null && cd "$k" 2>/dev/null && pwd -P) || kp=""; ` +
+  `case "$kp" in ""|/workspace|/workspace/*) rm -f "$f"; ` +
+  `echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1;; esac; ` +
+  `[ "$(readlink "$f" 2>/dev/null)" = "$kp/mcp-auth.json" ] || { rm -f "$f"; mkdir -p "$d" && ln -s "$kp/mcp-auth.json" "$f"; } || ` +
+  `{ echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1; }; `;
+
+/**
  * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the
  * launch's environment, pi's project trust its `--approve`). Each writes the ChatGPT login it runs
  * on (`CHATGPT_LOGIN_PROGRAM`) and turns off its own update check, which a workspace's image owns:
@@ -143,6 +162,7 @@ const OPENCODE_MODEL_PROGRAM = [
 export const OPENCODE_SEED =
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" openai "" 2>/dev/null; ` +
   `node -e '${OPENCODE_MODEL_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" "\${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json" '${OPENCODE_DEFAULT_MODEL}' 2>/dev/null; ` +
+  OPENCODE_MCP_AUTH_SEED +
   `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
 export const PI_SEED =
   `node -e '${PI_PROFILE_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; ` +

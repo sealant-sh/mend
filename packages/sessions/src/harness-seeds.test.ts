@@ -447,3 +447,49 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
     expect(withCodexMemory(["claude"])).toEqual(["claude"]);
   });
 });
+
+const mcpAuth = (home: string) => path.join(home, ".local", "share", "opencode", "mcp-auth.json");
+const kept = (home: string) => path.join(home, ".mend", "opencode", "mcp-auth.json");
+
+describe("opencode's seed: MCP logins stay out of saved state", () => {
+  it("links mcp-auth.json to the executor's own home, which opencode writes through", () => {
+    const home = makeHome();
+    expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(mcpAuth(home))).toBe(
+      fs.realpathSync(path.join(home, ".mend", "opencode")) + "/mcp-auth.json",
+    );
+    // opencode writes the file in place: the tokens land outside the saved data directory.
+    fs.writeFileSync(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SYNTHETIC-MCP"}}}');
+    expect(fs.readFileSync(kept(home), "utf8")).toContain("SYNTHETIC-MCP");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    // A second launch keeps its own link and the logins behind it.
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.readFileSync(kept(home), "utf8")).toContain("SYNTHETIC-MCP");
+  });
+
+  it("removes, unread, a plain mcp-auth.json a capture brought, maybe another person's", () => {
+    const home = makeHome();
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SOMEONE-ELSES"}}}');
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(kept(home))).toBe(false);
+  });
+
+  it("does not start opencode when the logins cannot be kept out of saved state", () => {
+    const home = makeHome();
+    // `~/.mend` a file: no place in the executor's own home to keep them.
+    fs.writeFileSync(path.join(home, ".mend"), "");
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SOMEONE-ELSES"}}}');
+    const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
+    for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME"]) delete env[name];
+    const result = spawnSync("sh", ["-c", OPENCODE_SEED, "sh", "sh", "-c", "echo ran"], {
+      encoding: "utf8",
+      env,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("cannot be kept out of saved state");
+    expect(fs.existsSync(mcpAuth(home))).toBe(false);
+  });
+});
