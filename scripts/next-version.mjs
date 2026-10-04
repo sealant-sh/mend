@@ -10,11 +10,11 @@
 // on main gets a higher version than every earlier one. A preview sorts after the `next` of its
 // merge base and before the next commit's, so a box can move between the two channels in order.
 //
-// The same file lives in sealant-sh/mend, sealant-sh/sealant and sealant-sh/sealantd. Keep them
-// identical.
+// The same file lives in sealant-sh/mend and sealant-sh/sealantd (scripts/) and sealant-sh/sealant
+// (tooling/scripts/). Keep them identical.
 //
-//   node scripts/next-version.mjs [commit]                       # default HEAD
-//   node scripts/next-version.mjs --preview <run> --main <ref> [commit]
+//   node next-version.mjs [commit]                       # default HEAD
+//   node next-version.mjs --preview <run> --main <ref> [commit]
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
