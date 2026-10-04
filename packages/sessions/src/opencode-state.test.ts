@@ -8,11 +8,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { writeOpencodeDatabase } from "../test/opencode-db.ts";
 import {
-  OPENCODE_CLOCK_SKEW_MS,
   OPENCODE_DATABASE,
   opencodeConversationOf,
   readOpencodeConversations,
   readOpencodeHome,
+  readOpencodeLaunchSnapshot,
+  snapshotOpencodeHome,
+  writeOpencodeLaunchSnapshot,
 } from "./opencode-state.ts";
 
 const dirs: Array<string> = [];
@@ -110,53 +112,118 @@ describe("reading opencode's database", () => {
   });
 });
 
+/** A span on Mend's clock; the conversations' own times are the executor's and never compared. */
+const span = (
+  startedAt: number,
+  endedAt: number | null,
+  atLaunch: ReadonlyArray<string> | null,
+  providerSessionId: string | null = null,
+) => ({ providerSessionId, startedAt, endedAt, atLaunch });
+
 describe("which conversation an agent process held", () => {
   it("is the one a resume named, while the database still has it", () => {
-    const agent = { providerSessionId: "ses_a", startedAt: 0, endedAt: 10 * minute };
+    const agent = span(0, 10 * minute, ["ses_a"], "ses_a");
     expect(opencodeConversationOf([conversation("ses_a", -99 * minute)], agent, [], 0)).toBe(
       "ses_a",
     );
-    expect(opencodeConversationOf([conversation("ses_b", 1)], agent, [], 0)).toBeNull();
+    // Gone from the database, with nothing new beside it: none.
+    expect(
+      opencodeConversationOf([conversation("ses_b", 1)], { ...agent, atLaunch: ["ses_b"] }, [], 0),
+    ).toBeNull();
   });
 
-  it("is the newest one started while it ran, within the clock skew", () => {
-    const agent = { providerSessionId: null, startedAt: 10 * minute, endedAt: 20 * minute };
+  it("is the newest one its database did not hold when it launched, whatever the executor's clock said", () => {
+    const agent = span(10 * minute, 20 * minute, ["ses_before"]);
     const conversations = [
-      conversation("ses_before", 5 * minute, 30 * minute),
-      conversation("ses_first", 10 * minute + OPENCODE_CLOCK_SKEW_MS / 2 - minute, 12 * minute),
-      conversation("ses_second", 15 * minute, 19 * minute),
-      conversation("ses_after", 25 * minute),
+      // Updated last, but there before the launch: another session's.
+      conversation("ses_before", 5 * minute, 99 * minute),
+      // The executor's clock is days off: no window would have held these.
+      conversation("ses_first", -9_000 * minute, -8_999 * minute),
+      conversation("ses_second", -8_998 * minute, -8_990 * minute),
     ];
-    expect(opencodeConversationOf(conversations, agent, [], 99 * minute)).toBe("ses_second");
-    expect(opencodeConversationOf([conversations[0]!], agent, [], 99 * minute)).toBeNull();
+    expect(opencodeConversationOf(conversations, agent, [], 30 * minute)).toBe("ses_second");
+    // Without a snapshot, nothing it started is known: no guess.
+    expect(
+      opencodeConversationOf(conversations, span(10 * minute, 20 * minute, null), [], 30 * minute),
+    ).toBeNull();
   });
 
   it("two sessions in one worktree, both stopped: each resumes its own, never the newer one", () => {
-    // A ran first and B after it; the head capture after both holds both conversations, and B's
-    // is the most recently updated: `--continue` would have opened B's for A.
-    const a = { providerSessionId: null, startedAt: 0, endedAt: 10 * minute };
-    const b = { providerSessionId: null, startedAt: 11 * minute, endedAt: 20 * minute };
+    // A ran, then B; B launched on the head capture A left, which held A's conversation.
+    const a = span(0, 10 * minute, []);
+    const b = span(11 * minute, 20 * minute, ["ses_a"]);
     const conversations = [
       conversation("ses_a", 1 * minute, 9 * minute),
       conversation("ses_b", 12 * minute, 19 * minute),
     ];
     expect(opencodeConversationOf(conversations, a, [b], 30 * minute)).toBe("ses_a");
     expect(opencodeConversationOf(conversations, b, [a], 30 * minute)).toBe("ses_b");
-    // Once B's id is known, A never takes it, even inside A's window.
-    const late = [conversation("ses_b", 9 * minute, 19 * minute)];
+    // Once B's id is known, A never takes it.
     expect(
-      opencodeConversationOf(late, a, [{ ...b, providerSessionId: "ses_b" }], 30 * minute),
+      opencodeConversationOf(
+        [conversation("ses_b", 12 * minute, 19 * minute)],
+        a,
+        [span(11 * minute, 20 * minute, ["ses_a"], "ses_b")],
+        30 * minute,
+      ),
     ).toBeNull();
   });
 
-  it("a conversation started while another opencode process of the worktree ran is nobody's to guess", () => {
-    const a = { providerSessionId: null, startedAt: 0, endedAt: 20 * minute };
-    const b = { providerSessionId: null, startedAt: 5 * minute, endedAt: 15 * minute };
-    const conversations = [conversation("ses_x", 6 * minute, 14 * minute)];
+  it("overlapping sessions in one worktree refuse rather than guess, with any clock skew", () => {
+    // B launched while A ran, before A's conversation reached a capture: B's snapshot lacks it.
+    const a = span(0, 20 * minute, []);
+    const b = span(5 * minute, 15 * minute, []);
+    // The executor clocks are minutes apart from each other and from Mend's; nothing reads them.
+    const conversations = [
+      conversation("ses_x", 90 * minute, 91 * minute),
+      conversation("ses_y", -45 * minute, -44 * minute),
+    ];
     expect(opencodeConversationOf(conversations, a, [b], 30 * minute)).toBeNull();
     expect(opencodeConversationOf(conversations, b, [a], 30 * minute)).toBeNull();
-    // A's own conversation from before B started is still A's.
-    const own = [...conversations, conversation("ses_a", 1 * minute, 2 * minute)];
-    expect(opencodeConversationOf(own, a, [b], 30 * minute)).toBe("ses_a");
+    // A conversation A started before B launched is in B's snapshot, and stays A's.
+    const bAfter = span(5 * minute, 15 * minute, ["ses_a"]);
+    const withOwn = [...conversations, conversation("ses_a", 2 * minute, 3 * minute)];
+    expect(opencodeConversationOf(withOwn, a, [bAfter], 30 * minute)).toBe("ses_a");
+    // A later process with no snapshot makes every new conversation ambiguous.
+    expect(
+      opencodeConversationOf(withOwn, a, [span(5 * minute, 15 * minute, null)], 30 * minute),
+    ).toBeNull();
+    // Still running (no recorded end) counts as running.
+    expect(opencodeConversationOf(withOwn, b, [span(0, null, [])], 30 * minute)).toBeNull();
+  });
+
+  it("a resumed session that opened a new conversation in opencode is recorded on it at its next Stop", () => {
+    const first = span(0, 10 * minute, [], "ses_old");
+    const resumed = span(20 * minute, 30 * minute, ["ses_old"], "ses_old");
+    const conversations = [
+      conversation("ses_old", 1 * minute, 21 * minute),
+      conversation("ses_new", 22 * minute, 29 * minute),
+    ];
+    expect(opencodeConversationOf(conversations, resumed, [first], 40 * minute)).toBe("ses_new");
+    // Went back to the old one and worked there last: the old one.
+    const backAgain = [
+      conversation("ses_old", 1 * minute, 29 * minute),
+      conversation("ses_new", 22 * minute, 23 * minute),
+    ];
+    expect(opencodeConversationOf(backAgain, resumed, [first], 40 * minute)).toBe("ses_old");
+  });
+});
+
+describe("the launch snapshot", () => {
+  it("lists a home's conversations, none before the first, null when unreadable, and keeps it", async () => {
+    const home = tmp();
+    expect(await Effect.runPromise(snapshotOpencodeHome(home))).toEqual([]);
+    writeOpencodeDatabase(path.join(home, OPENCODE_DATABASE), [{ id: "ses_1", createdAt: 1 }]);
+    expect(await Effect.runPromise(snapshotOpencodeHome(home))).toEqual(["ses_1"]);
+    fs.rmSync(path.join(home, OPENCODE_DATABASE));
+    fs.writeFileSync(path.join(home, OPENCODE_DATABASE), "not a database");
+    expect(await Effect.runPromise(snapshotOpencodeHome(home))).toBeNull();
+    const stateDir = path.join(tmp(), "processes", "p1");
+    expect(await Effect.runPromise(readOpencodeLaunchSnapshot(stateDir))).toBeNull();
+    await Effect.runPromise(writeOpencodeLaunchSnapshot(stateDir, ["ses_1", "ses_2"]));
+    expect(await Effect.runPromise(readOpencodeLaunchSnapshot(stateDir))).toEqual([
+      "ses_1",
+      "ses_2",
+    ]);
   });
 });

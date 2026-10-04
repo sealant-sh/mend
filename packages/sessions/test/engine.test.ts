@@ -7896,9 +7896,9 @@ describe("SessionEngine capture mode", () => {
 
   /**
    * An opencode session in capture mode: its harness home rides the worktree's captures, so the
-   * database the harvest reads may hold other sessions' conversations too. `own` starts one of
-   * its own beside an older one that was updated last (the one `--continue` would have opened);
-   * `none` starts nothing, so only the older one is there.
+   * database the harvest reads may hold other sessions' conversations too, and what is its own is
+   * what the database did not hold when it launched (the launch snapshot). `own` starts a
+   * conversation; `none` leaves an empty database.
    */
   const verifyOpencodeHarvest = (kind: "own" | "none") => async () => {
     const created: Array<CreateOptions> = [];
@@ -7995,6 +7995,21 @@ describe("SessionEngine capture mode", () => {
           expect(resumedAgent?.argv).toEqual(["opencode", "--session", "ses_own"]);
           expect(resumedAgent?.providerSessionId).toBe("ses_own");
           expect(opens).toBe(2);
+          // Both launches kept what the database held as they started: nothing the first time, the
+          // first process's conversation (read from the head capture) the second.
+          const kept = (processId: string) =>
+            JSON.parse(
+              fs.readFileSync(
+                path.join(
+                  processStatePathOf(project.storePath, session.id, processId),
+                  "opencode-launch.json",
+                ),
+                "utf8",
+              ),
+            );
+          expect(kept(agent.id)).toEqual([]);
+          if (resumedAgent === undefined) throw new Error("no resumed agent");
+          expect(kept(resumedAgent.id)).toEqual(["ses_own"]);
         }),
       {
         captured: memory,
@@ -8033,12 +8048,10 @@ describe("SessionEngine capture mode", () => {
             beforeOpen: () => {
               opens += 1;
               if (opens === 1) {
-                const openedAt = Date.now();
-                writeOpencodeDatabase(databaseOf(), [
-                  // Another session's, from long before this launch, updated last.
-                  { id: "ses_old", createdAt: openedAt - 3_600_000, updatedAt: openedAt + 60_000 },
-                  ...(kind === "own" ? [{ id: "ses_own", createdAt: openedAt }] : []),
-                ]);
+                writeOpencodeDatabase(
+                  databaseOf(),
+                  kind === "own" ? [{ id: "ses_own", createdAt: Date.now() }] : [],
+                );
                 return;
               }
               // The pickup opens on the materialised database.

@@ -114,36 +114,109 @@ export const readOpencodeHome = (
     ),
   );
 
-/** How far apart the executor's clock and Mend's may be when a conversation is tied to a launch. */
-export const OPENCODE_CLOCK_SKEW_MS = 60_000;
+/**
+ * The conversation ids an opencode database in a harness home holds, as a launch snapshot needs
+ * them: none when there is no database yet (a first launch), null when one is there but cannot be
+ * read, which leaves the launch's conversations unknown.
+ */
+export const snapshotOpencodeHome = (
+  harnessHomePath: string,
+): Effect.Effect<ReadonlyArray<string> | null> =>
+  Effect.promise(async () => {
+    try {
+      await fs.lstat(path.join(harnessHomePath, OPENCODE_DATABASE));
+      return true;
+    } catch {
+      return false;
+    }
+  }).pipe(
+    Effect.flatMap((present) =>
+      present
+        ? readOpencodeHome(harnessHomePath).pipe(
+            Effect.map((listed) => (listed === null ? null : listed.map((entry) => entry.id))),
+          )
+        : Effect.succeed([]),
+    ),
+  );
 
-/** An opencode agent process as identity needs it: what it is known to hold, and when it ran. */
+/** Where an opencode process's launch snapshot is kept, in its process state directory. */
+export const OPENCODE_LAUNCH_SNAPSHOT = "opencode-launch.json";
+
+/** The launch snapshot kept in a process state directory; null when none was kept. */
+export const readOpencodeLaunchSnapshot = (
+  stateDir: string,
+): Effect.Effect<ReadonlyArray<string> | null> =>
+  Effect.promise(async () => {
+    try {
+      const parsed: unknown = JSON.parse(
+        await fs.readFile(path.join(stateDir, OPENCODE_LAUNCH_SNAPSHOT), "utf8"),
+      );
+      return Array.isArray(parsed) && parsed.every((id) => typeof id === "string")
+        ? parsed.filter((id): id is string => typeof id === "string")
+        : null;
+    } catch {
+      return null;
+    }
+  });
+
+/** Keep a launch snapshot in a process state directory. */
+export const writeOpencodeLaunchSnapshot = (
+  stateDir: string,
+  conversations: ReadonlyArray<string>,
+): Effect.Effect<void, Error> =>
+  Effect.tryPromise({
+    try: async () => {
+      await fs.mkdir(stateDir, { recursive: true });
+      await fs.writeFile(
+        path.join(stateDir, OPENCODE_LAUNCH_SNAPSHOT),
+        JSON.stringify(conversations),
+      );
+    },
+    catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
+  });
+
+/**
+ * An opencode agent process as identity needs it: the conversation a resume named, when Mend
+ * started it and recorded its end (Mend's own clock, never the executor's), and the conversations
+ * its database already held when it started (`atLaunch`; null when that was not read).
+ */
 export interface OpencodeAgentSpan {
   readonly providerSessionId: string | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
+  readonly atLaunch: ReadonlyArray<string> | null;
 }
 
-/** An agent process row's span: when Mend started it and recorded its end, and what it held. */
-export const opencodeSpanOf = (row: {
-  readonly providerSessionId: string | null;
-  readonly createdAt: Date;
-  readonly exitedAt: Date | null;
-}): OpencodeAgentSpan => ({
+/** An agent process row's span, with the launch snapshot recorded beside it. */
+export const opencodeSpanOf = (
+  row: {
+    readonly providerSessionId: string | null;
+    readonly createdAt: Date;
+    readonly exitedAt: Date | null;
+  },
+  atLaunch: ReadonlyArray<string> | null,
+): OpencodeAgentSpan => ({
   providerSessionId: row.providerSessionId,
   startedAt: row.createdAt.getTime(),
   endedAt: row.exitedAt?.getTime() ?? null,
+  atLaunch,
 });
 
 /**
  * The conversation `agent` held, or null when that cannot be established, and a resume is then
- * refused rather than open a guess.
+ * refused rather than open a guess. No timestamp opencode wrote is compared with Mend's: the
+ * executor's clock may be anywhere.
  *
- * - A process launched on a known conversation (a resume names it) holds that one, while the
- *   database still has it.
- * - Otherwise it holds the newest conversation started while it ran (within the clock skew) that
- *   no other opencode process of the worktree is known to hold. A conversation started while
- *   another opencode process of the worktree also ran could be either's: it is left out.
+ * - Its own are the conversation a resume named, while the database still has it, and every
+ *   conversation the database did not hold when it launched (`atLaunch`). Without a snapshot only
+ *   the named one is known.
+ * - None another opencode process of the worktree is known to hold.
+ * - Another opencode process of the worktree that was still running when this one launched could
+ *   have started any new conversation: only the named one stays. One that launched after this one
+ *   could have started any conversation its own snapshot does not hold: those go (all of them, when
+ *   it has no snapshot).
+ * - Of what remains, the most recently updated: a resumed session that opened a new conversation in
+ *   opencode and worked in it last is recorded on that one at its next Stop.
  */
 export const opencodeConversationOf = (
   conversations: ReadonlyArray<OpencodeConversation>,
@@ -151,26 +224,21 @@ export const opencodeConversationOf = (
   others: ReadonlyArray<OpencodeAgentSpan>,
   now: number,
 ): string | null => {
-  if (agent.providerSessionId !== null) {
-    return conversations.some((conversation) => conversation.id === agent.providerSessionId)
-      ? agent.providerSessionId
-      : null;
-  }
   const claimed = new Set(
     others.flatMap((other) => (other.providerSessionId === null ? [] : [other.providerSessionId])),
   );
-  const from = agent.startedAt - OPENCODE_CLOCK_SKEW_MS;
-  const to = (agent.endedAt ?? now) + OPENCODE_CLOCK_SKEW_MS;
-  // Exact spans here: widening them by the skew would make back-to-back sessions disown each other.
-  const whileAnotherRan = (createdAt: number) =>
-    others.some((other) => createdAt >= other.startedAt && createdAt <= (other.endedAt ?? now));
-  const candidates = conversations.filter(
-    (conversation) =>
-      !claimed.has(conversation.id) &&
-      conversation.createdAt >= from &&
-      conversation.createdAt <= to &&
-      !whileAnotherRan(conversation.createdAt),
+  const atLaunch = agent.atLaunch === null ? null : new Set(agent.atLaunch);
+  const runningAtLaunch = others.some(
+    (other) => other.startedAt <= agent.startedAt && (other.endedAt ?? now) > agent.startedAt,
   );
+  const later = others.filter((other) => other.startedAt > agent.startedAt);
+  const isNamed = (id: string) => id === agent.providerSessionId;
+  const candidates = conversations.filter((conversation) => {
+    const id = conversation.id;
+    if (isNamed(id)) return true;
+    if (atLaunch === null || atLaunch.has(id) || claimed.has(id) || runningAtLaunch) return false;
+    return later.every((other) => other.atLaunch !== null && other.atLaunch.includes(id));
+  });
   return (
     candidates.reduce<OpencodeConversation | null>(
       (newest, conversation) =>
