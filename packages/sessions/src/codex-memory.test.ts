@@ -11,9 +11,11 @@ import {
   CARRIED_INCOMING,
   CODEX_CARRY_MAX_CONVERSATIONS,
   carryConversationsExec,
+  codexDatabaseHolds,
   codexWouldSummarise,
   consolidateCodexDatabase,
   materializeCarriedConversations,
+  mergeCodexDatabases,
   parseCarryOutcomes,
   planCodexCarry,
   prepareCarriedConversations,
@@ -147,6 +149,28 @@ describe("rolloutPathOf", () => {
   });
 });
 
+/** Whether `current` holds every summary of `version`. */
+const holds = (current: Uint8Array, version: Uint8Array) =>
+  Effect.runPromise(codexDatabaseHolds({ current, version }));
+
+/** A summary database with `rows` of (thread, revision, summary), and `extra` columns. */
+const summaryDatabase = (
+  rows: ReadonlyArray<readonly [string, number | string, string]>,
+  extra = "",
+) => {
+  const file = path.join(scratch(), "memories_1.sqlite");
+  const db = new DatabaseSync(file);
+  db.exec(
+    `create table stage1_outputs (thread_id text primary key, source_updated_at integer not null, raw_memory text not null${extra})`,
+  );
+  const insert = db.prepare(
+    `insert into stage1_outputs values (?, ?, ?${extra === "" ? "" : ", null"})`,
+  );
+  for (const row of rows) insert.run(...row);
+  db.close();
+  return new Uint8Array(fs.readFileSync(file));
+};
+
 describe("Codex's summary database", () => {
   const withWal = (dir: string) => {
     const file = path.join(dir, "memories_1.sqlite");
@@ -186,6 +210,86 @@ describe("Codex's summary database", () => {
     db.close();
     const read = await Effect.runPromise(summarisedThreads(fs.readFileSync(file)));
     expect([...read.keys()]).toEqual([id(2), id(3), id(1)]);
+  });
+
+  it("merges an imported database by conversation: the newer summary of each, from either", async () => {
+    const ours = summaryDatabase([
+      [id(1), 100, "mend's only"],
+      [id(2), 300, "mend's newer"],
+      [id(3), 100, "mend's older"],
+    ]);
+    const theirs = summaryDatabase([
+      [id(2), 200, "laptop's older"],
+      [id(3), 200, "laptop's newer"],
+      [id(4), 100, "laptop's only"],
+    ]);
+    const merged = await Effect.runPromise(mergeCodexDatabases({ ours, theirs }));
+    if (merged === null) throw new Error("the two merge");
+    const file = path.join(scratch(), "merged.sqlite");
+    fs.writeFileSync(file, merged);
+    const db = new DatabaseSync(file, { readOnly: true });
+    const rows = db
+      .prepare("select thread_id, raw_memory from stage1_outputs order by thread_id")
+      .all()
+      .map((row) => [row["thread_id"], row["raw_memory"]]);
+    db.close();
+    expect(rows).toEqual([
+      [id(1), "mend's only"],
+      [id(2), "mend's newer"],
+      [id(3), "laptop's newer"],
+      [id(4), "laptop's only"],
+    ]);
+    // Another Codex's columns, or bytes that are not a database: not merged.
+    const other = summaryDatabase([[id(5), 1, "x"]], ", usage_count integer");
+    expect(await Effect.runPromise(mergeCodexDatabases({ ours, theirs: other }))).toBeNull();
+    expect(
+      await Effect.runPromise(mergeCodexDatabases({ ours, theirs: Buffer.from("torn") })),
+    ).toBeNull();
+  });
+
+  // Review round 3, invariant C: a replaced summary database is pinned unless the new one holds
+  // every summary it held, at the same revision or newer.
+  it("says whether one database holds every summary of another", async () => {
+    const older = summaryDatabase([
+      [id(1), 100, "one"],
+      [id(2), 100, "two"],
+    ]);
+    const newer = summaryDatabase([
+      [id(1), 200, "one, again"],
+      [id(2), 100, "two"],
+      [id(3), 100, "three"],
+    ]);
+    const missing = summaryDatabase([[id(1), 200, "one, again"]]);
+    expect(await holds(newer, older)).toBe(true);
+    expect(await holds(older, newer)).toBe(false);
+    expect(await holds(missing, older)).toBe(false);
+    expect(await holds(newer, Buffer.from("torn"))).toBe(false);
+  });
+
+  // Review round 4, finding 1 (reproduced): two databases with conversation t at revision 100 and
+  // other words. The merge kept the store's and the check called the machine's held, so its
+  // summary sat in an unpinned version.
+  it("neither merges nor counts as held a summary with other words at the same revision", async () => {
+    const mend = summaryDatabase([[id(1), 100, "mend's words"]]);
+    const laptop = summaryDatabase([[id(1), 100, "laptop's words"]]);
+    expect(await Effect.runPromise(mergeCodexDatabases({ ours: mend, theirs: laptop }))).toBeNull();
+    expect(await holds(mend, laptop)).toBe(false);
+    // The same words at the same revision, in another file: held.
+    expect(await holds(mend, summaryDatabase([[id(1), 100, "mend's words"]]))).toBe(true);
+  });
+
+  // Review round 4, finding 3 (reproduced): a revision that is not a number read as NaN, and
+  // every comparison with NaN is false, so a missing row or a corrupt database counted as held.
+  it("does not count a missing row, an invalid revision or an unreadable database as held", async () => {
+    const version = summaryDatabase([[id(1), 100, "one"]]);
+    expect(await holds(summaryDatabase([[id(2), 100, "two"]]), version)).toBe(false);
+    const unknown = summaryDatabase([[id(1), "unknown", "one"]]);
+    expect(await holds(unknown, version)).toBe(false);
+    expect(await holds(version, unknown)).toBe(false);
+    expect(await holds(Buffer.from("torn"), version)).toBe(false);
+    expect(
+      await Effect.runPromise(mergeCodexDatabases({ ours: version, theirs: unknown })),
+    ).toBeNull();
   });
 
   it("stores nothing for bytes that are not a database, and reads them as nothing summarised", async () => {

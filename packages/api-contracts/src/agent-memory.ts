@@ -12,6 +12,13 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 
+/** An import Mend refuses whole: it names the same path more than once. */
+export class AgentMemoryImportInvalid extends Schema.TaggedErrorClass<AgentMemoryImportInvalid>()(
+  "AgentMemoryImportInvalid",
+  { message: Schema.String, paths: Schema.Array(Schema.String) },
+  { httpApiStatus: 400 },
+) {}
+
 /**
  * The signed-in account's agent memory in one project (docs/adr/0009): what its sessions there
  * receive and save. Only ever the caller's own, in a project the caller can see.
@@ -45,7 +52,16 @@ export const agentMemoryGroup = HttpApiGroup.make("agentMemory")
       params: { id: ProjectId },
       payload: AgentMemoryImport,
       success: AgentMemoryImported,
-      error: NotFound,
+      error: [NotFound, AgentMemoryImportInvalid],
+    }),
+  )
+  .add(
+    // What `import` would do with the same files, written nowhere: `mend memory import --dry-run`.
+    HttpApiEndpoint.post("importPlan", "/projects/:id/memory/import/plan", {
+      params: { id: ProjectId },
+      payload: AgentMemoryImport,
+      success: AgentMemoryImported,
+      error: [NotFound, AgentMemoryImportInvalid],
     }),
   )
   .middleware(AuthMiddleware);

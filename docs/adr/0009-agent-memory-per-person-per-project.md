@@ -79,10 +79,61 @@ much smaller: the memory.
    wrote is lost to another session's save.
 
 4. **Import from the person's machine is the CLI's,** run from inside the repository:
-   `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/` and adds each file
-   the store does not have; a file it has with other contents is reported and left. Transcripts
+   `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/`. Transcripts
    ("bring your previous sessions") are a later step: a transcript needs its paths rewritten for
-   `/workspace/repo` to resume. Logins, goals, logs and caches are never read.
+   `/workspace/repo` to resume. Logins, goals, logs and caches are never read. Amended 2026-10-04:
+   an import merges what both sides have, as a read-back does.
+   - **Mend records what it last imported from each checkout on each machine** (the import's source:
+     the CLI's machine id, kept in its config directory, and the checkout's path), file by file: a
+     text file's contents, a binary file's digest. That is the shared version the next import from
+     there merges against.
+   - A file the store does not have is added, unless the store removed it since the last import from
+     there and the machine still has it as it was then: that file is not added again.
+   - A file one side changed since the last import takes that side's.
+   - A file both changed since then, or any file that differs with no last import, is merged:
+     - Text keeps both sides' lines, three-way (`git merge-file --union`) against the last import
+       when there is one. With none, each line the two share is kept once, in place, and between two
+       shared lines the store's own lines come first, then the machine's. Two files too different to
+       align that way (over four million comparisons once a shared start and end are set aside) are
+       not merged: no line is ever dropped to make a merge fit.
+     - When both versions open with YAML frontmatter, the frontmatter is merged key by key and only
+       the body by line. A key both set differently keeps the store's value and the machine's under
+       it as a YAML comment (`# from <host>, <date>: description: …`). Only a simple subset is
+       merged by key: `key: value` lines with a plain key and a one-line value, and whole-line
+       comments, which belong to the key above them and are content like it. Frontmatter outside
+       that subset (a quoted key, a block scalar, a nested map, a key written twice) that differs is
+       not merged. Line endings are compared as LF; the result keeps the store's.
+     - No line is removed after the merge, in `MEMORY.md` or anywhere: a line both sides wrote at
+       different places stays twice, and the agent folds it when it next rewrites its memory.
+     - Codex's summary database keeps every conversation's newer summary from either side.
+     - The last step of every merge compares both inputs, the store's and the machine's, line by
+       line as multisets, with the final text. The one exemption: with a last import, as many copies
+       of a line as the other side removed since it. A frontmatter value the merge kept as a comment
+       counts as there: it is in the file byte for byte after the `# from …:` prefix. A merge that
+       misses any other line of either side keeps that side's file whole as a version and says how
+       many lines; when it is the machine's, the base stays where it was, so the next import merges
+       it and says so again.
+     - Anything else (not text, frontmatter not merged, too different to align), or a merge over the
+       size limit, keeps the store's file. The machine's is kept as a version, and the next import
+       reports it again.
+   - A file the store has and the machine no longer sends stays in the store.
+   - An import that names a path twice is refused whole (400).
+   - Every version an import replaces is kept, the machine's own copy of a merged file too, as for a
+     read-back. `--dry-run` asks the server for the same plan and writes nothing, on the machine
+     either: it makes no machine id.
+   - One rule pins versions, for every version Mend keeps, on every path (import, read-back, a
+     session replacing its own earlier save, a binary replacement, a conflict, a removal): a version
+     that holds a line, or for a binary file any content, that the file the store holds after that
+     step lacks is pinned, and the cap of twenty versions per file never takes it. Codex's summary
+     database counts as held when the new one has every summary at a newer valid revision, or at the
+     same revision with the same words. One function writes every version and applies the rule; no
+     path writes one any other way.
+
+   The same rules apply to a read-back merge. A read-back merge with no shared version (a file the
+   session made itself, or a delivered version no longer kept) keeps each shared line once instead
+   of repeating the whole file. One that cannot be merged takes the session's, as for a file that is
+   not text, and one that does not hold every line of either side keeps that side's file as a pinned
+   version.
 
 5. **People can see and remove it.** `mend memory` lists the files for the current project,
    `mend memory show <file>` prints one, `mend memory rm <file>` removes it. The API serves the same
@@ -207,3 +258,38 @@ to build it.
   would not bring, and the owner does not use it.
 - 2026-10-02: Codex memory carried. The owner chose to carry the memory folder and the conversations
   Codex builds it from over carrying the folder only, which would never fill, or waiting a release.
+- 2026-10-04: an import merges (decision 4). Leaving a file both sides have meant a second machine,
+  or a second import after both sides changed, never combined anything, and `MEMORY.md` is the file
+  most certain to differ. A note is merged into one file rather than kept beside under a second
+  name: Claude finds a note through one index line, a second copy would need a synthesized index
+  line and its own merges on every later import, and two drifted versions of the same note mostly
+  differ by added lines, which a line merge keeps in place. Frontmatter is merged by key because a
+  line union writes a key twice. A conflicting value is kept as a YAML comment, which no parser
+  reads, so the frontmatter stays valid. The agent still sees the comment and can fold it in.
+- 2026-10-04, after review: the merge never drops a line to succeed. The index keeps each entry
+  once, never a delimiter, fence or line inside one; frontmatter is merged by key only within a
+  simple subset (no YAML parser is in the tree, and guessing at the rest wrote keys twice or lost a
+  block scalar's lines); files too different to align are a conflict rather than a lossy union; and
+  any merge that still misses a line keeps the incoming file as a version and holds the base.
+- 2026-10-04, second review: the missing-line check is the last step, on the final text, with two
+  named exceptions only; code blocks are read after CommonMark (a ``` line inside a four-backtick
+  block, a ~~~ block, an unclosed block); and versions that are the only copy of some lines are
+  pinned rather than counted in the cap. Pinning, rather than raising the cap or counting pinned
+  versions in it, because any finite cap would still evict the only copy after enough saves, and
+  these versions are rare: one per conflict or lossy merge, and a repeated one is the same row.
+- 2026-10-04, third review: two invariants instead of more cases. The index dedupe is dropped: a
+  repeated line in `MEMORY.md` is harmless, as the Consequences already accept, and a lost one is
+  not, while every rule that decided which repeats were safe to drop (fences, indented code, lines a
+  union moved into or out of a block) found another way to drop a real line. The check is symmetric,
+  on both inputs, with base deletions as its only exemption. And pinning is one rule in one
+  function, applied to every version on every path, rather than chosen at each call site; the
+  same-session replacement and binary paths had kept sole copies unpinned. The cost: a version that
+  lost lines to an agent's own edit is pinned too, so the cap now bounds only versions the next file
+  holds whole.
+- 2026-10-04, fourth review: a summary database row is held only by the same conversation at a
+  valid, strictly newer revision, or at the same revision with the same words. A missing row, a
+  revision that is not an integer, or a database that does not open is not held; two databases with
+  one conversation at one revision in other words are not merged, as one row cannot keep both.
+  Migration 0108 (0106 when written; renumbered after main took 0106 and 0107) pins every version
+  kept before it: nothing recorded which were the only copy of a line, and memory versions are
+  small.

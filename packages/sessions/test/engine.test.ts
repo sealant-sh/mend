@@ -959,7 +959,17 @@ const agentMemoryLayerOf = (
     read: () => Effect.succeed(null),
     remove: () => Effect.succeed(false),
     readBack: () => Effect.succeed({ saved: [], merged: [], deleted: [], skipped: [] }),
-    importFiles: () => Effect.succeed({ added: [], unchanged: [], conflicting: [] }),
+    importFiles: () =>
+      Effect.succeed({
+        added: [],
+        unchanged: [],
+        updated: [],
+        merged: [],
+        keptStored: [],
+        removedInMend: [],
+        conflicting: [],
+        skipped: [],
+      }),
     ...implement,
   });
 

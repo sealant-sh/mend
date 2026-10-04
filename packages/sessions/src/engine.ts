@@ -241,6 +241,7 @@ import {
 import { CaptureSeals } from "./capture-seals.ts";
 import {
   carryConversationsExec,
+  codexDatabaseHolds,
   consolidateCodexDatabase,
   materializeCarriedConversations,
   parseCarryOutcomes,
@@ -9672,6 +9673,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           delivered: withoutSkipped(read),
           session: read.files,
           merge: mergeTextUnion,
+          holdsDatabase: codexDatabaseHolds,
         });
         if (
           report.saved.length +
