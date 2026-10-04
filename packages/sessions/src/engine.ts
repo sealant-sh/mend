@@ -125,6 +125,7 @@ import {
   type CaptureReading,
   captureDrainStep,
   captureBehindReason,
+  CAPTURE_HEALTH_UNREPORTED,
   captureCaughtUp,
   captureHarvestReady,
   captureIncompleteReasonOf,
@@ -453,6 +454,14 @@ const capturedOpencode = (
       conversations: yield* readOpencodeConversations(bytes, walBytes),
     } as const;
   });
+
+/**
+ * The session line when an opencode launch could not read what its database held before it
+ * started (`opencodeLaunchSnapshot`): nothing it starts can be told apart from what was there, so
+ * resuming its conversation will be refused.
+ */
+const OPENCODE_SNAPSHOT_MISSING =
+  "opencode · could not read its conversations before it started · this session's conversation may not be resumable";
 
 /** Why a launch stops before the harness home relocation (`evictReservedSecretFiles`). */
 const secretFilesNotSetAside = (why: string) =>
@@ -6625,14 +6634,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture === null)
           return yield* snapshotOpencodeHome(harnessHomePathOf(storePath, session.id));
         if (liveExecutor !== null) {
-          const reading = yield* observeCaptureFlush(
+          // Caught up means the snapshot the flush followed was taken and holds everything: not
+          // only nothing pending, but no small snap failing, no quota refusal, no unreadable path.
+          // An answer that does not report snapshot health (SDK 0.37.2) is taken on its queue.
+          // One retry, then no snapshot: the launch says so (`OPENCODE_SNAPSHOT_MISSING`).
+          const caughtUp = observeCaptureFlush(
             session,
             liveExecutor,
             "opencode launch snapshot",
             CHECKPOINT_FLUSH_TIMEOUT,
             "suspend",
+          ).pipe(
+            Effect.map((reading) => {
+              if (reading === null) return false;
+              const behind = captureBehindReason(reading);
+              return behind === null || behind === CAPTURE_HEALTH_UNREPORTED;
+            }),
           );
-          if (reading === null || !captureHarvestReady(reading)) return null;
+          if (!(yield* caughtUp) && !(yield* caughtUp)) return null;
         }
         const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
         if (head === null) return [];
@@ -6829,6 +6848,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (listed.length === 0) return null;
           const providerSessionId = yield* opencodeConversationFor(session, agent, listed);
           if (providerSessionId === null) {
+            // A process that named no conversation, and whose launch snapshot holds every one
+            // the database lists, started none: a provable absence, not an unknown.
+            const atLaunch = yield* readOpencodeLaunchSnapshot(
+              processStatePathOf(project.storePath, session.id, agent.id),
+            );
+            if (
+              agent.providerSessionId === null &&
+              atLaunch !== null &&
+              listed.every((conversation) => atLaunch.includes(conversation.id))
+            ) {
+              return null;
+            }
             return yield* unknown(
               `opencode left no conversation Mend can tell is session ${session.id}'s; refusing to open another one.`,
             );
@@ -9331,6 +9362,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "-c",
           relocateHarnessHomeScript(HARNESS_HOME_MOUNT_PATH, {
             keepStoreReadable: capture === null,
+            // A capture made before sealantd left opencode's MCP logins out may still hold one.
+            dropCapturedLogins: capture !== null,
           }),
         ]);
         if (result.exitCode === 0) return;
@@ -11264,6 +11297,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
               )
             : null;
+        if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
+          yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+        }
         const launchedArgv =
           protocolStart === null
             ? withHarnessBootstrap(session.harness, shapedArgv)
@@ -11997,6 +12033,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
                 )
               : null;
+          if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
+            yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+          }
           const launchedArgv =
             protocolStart === null
               ? withHarnessBootstrap(session.harness, shapedArgv)
@@ -12388,8 +12427,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // launchInternal lays the conversation down for every supported
         // harness, so either agent opens it natively from inside the shell.
         if (target === "shell") {
+          // A shell opens no conversation: saved state it cannot read, or a conversation Mend
+          // cannot tell is the session's (opencode, review 2026-10-04 round 4), is no state here,
+          // never a refusal.
           const located = yield* harnessStateFor(session).pipe(
-            Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
+            Effect.catchTags({
+              HarnessStateNotFoundError: () => Effect.succeed(null),
+              HarnessStateIOError: () => Effect.succeed(null),
+              HarnessStateInvalidError: () => Effect.succeed(null),
+            }),
           );
           yield* sessions.reopen(sessionId, "running");
           return yield* retainCurrentWorkspace

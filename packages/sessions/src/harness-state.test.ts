@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { writeOpencodeDatabase } from "../test/opencode-db.ts";
 import {
+  CAPTURED_LOGIN_FILES,
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
   distillOpeningPrompt,
@@ -589,5 +590,57 @@ describe("the co-located harvest keeps no login", () => {
     }
     expect(HARNESS_HOME_CREDENTIALS).toContain(".local/share/opencode/mcp-auth.json");
     fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+const relocateWithLogins = (home: string, root: string, dropCapturedLogins: boolean) => {
+  const run = spawnSync(
+    "sh",
+    ["-c", relocateHarnessHomeScript(root, { keepStoreReadable: false, dropCapturedLogins })],
+    { env: { ...process.env, HOME: home }, encoding: "utf8" },
+  );
+  expect(run.stderr).toBe("");
+  expect(run.status).toBe(0);
+};
+describe("a login an older capture brought (review 2026-10-04, round 4)", () => {
+  it("capture mode removes a plain mcp-auth.json unread before any harness starts; co-located keeps its own", () => {
+    for (const dropCapturedLogins of [true, false]) {
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-captured-login-"));
+      const home = path.join(scratch, "home");
+      const root = path.join(scratch, "harness");
+      // What a materialised head brought: the earlier person's MCP logins beside the database.
+      const data = path.join(root, ".local", "share", "opencode");
+      fs.mkdirSync(data, { recursive: true });
+      fs.mkdirSync(home);
+      fs.writeFileSync(
+        path.join(data, "mcp-auth.json"),
+        '{"s":{"tokens":{"accessToken":"ALICE"}}}',
+      );
+      fs.writeFileSync(path.join(data, "opencode.db"), "the conversations");
+      relocateWithLogins(home, root, dropCapturedLogins);
+      const login = path.join(home, ".local", "share", "opencode", "mcp-auth.json");
+      expect(fs.existsSync(login), String(dropCapturedLogins)).toBe(!dropCapturedLogins);
+      expect(fs.existsSync(path.join(home, ".local", "share", "opencode", "opencode.db"))).toBe(
+        true,
+      );
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the link the opencode seed made, and the logins behind it", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-captured-login-"));
+    const home = path.join(scratch, "home");
+    const root = path.join(scratch, "harness");
+    const data = path.join(root, ".local", "share", "opencode");
+    fs.mkdirSync(data, { recursive: true });
+    fs.mkdirSync(path.join(home, ".mend", "opencode"), { recursive: true });
+    const kept = path.join(home, ".mend", "opencode", "mcp-auth.json");
+    fs.writeFileSync(kept, "mine");
+    fs.symlinkSync(kept, path.join(data, "mcp-auth.json"));
+    relocateWithLogins(home, root, true);
+    expect(fs.lstatSync(path.join(data, "mcp-auth.json")).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(kept, "utf8")).toBe("mine");
+    expect(CAPTURED_LOGIN_FILES).toEqual([".local/share/opencode/mcp-auth.json"]);
+    fs.rmSync(scratch, { recursive: true, force: true });
   });
 });

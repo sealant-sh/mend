@@ -134,22 +134,31 @@ const OPENCODE_MODEL_PROGRAM = [
 
 /**
  * Where opencode keeps the logins of the MCP servers it connects to (`mcp-auth.json`, tokens and
- * client secrets), kept out of saved state: its data directory is the harness home a capture saves
- * and the next session in the worktree, anyone's, materialises. Until sealantd leaves the file out
- * of captures, as it does opencode's `auth.json` (sealantd#136, PLATFORM-FEEDBACK.md), the file there is a link
- * to `~/.mend/opencode/mcp-auth.json` in the executor's own home, which opencode writes through
- * (it writes the file in place, `core/src/fs-util.ts` `writeJson`). A plain file found there came
- * from a capture, maybe another person's, and is removed unread. A home where the link cannot be
- * made stops the launch rather than let the logins be saved.
+ * client secrets), kept out of saved state in capture mode: its data directory is the harness home
+ * a capture saves and the next session in the worktree, anyone's, materialises. Until sealantd
+ * leaves the file out of captures, as it does opencode's `auth.json` (sealantd#136,
+ * PLATFORM-FEEDBACK.md), the file there is a link to `~/.mend/opencode/mcp-auth.json` in the
+ * executor's own home, which opencode writes through (it writes the file in place,
+ * `core/src/fs-util.ts` `writeJson`). A plain file found there came from a capture, maybe another
+ * person's, and is removed unread (as capture mode's relocation also does before any launch,
+ * `CAPTURED_LOGIN_FILES`). A home where the link cannot be made stops the launch rather than let
+ * the logins be saved. Two launches into one executor at once both end with the same link.
+ *
+ * Only in capture mode (`SEALANT_CAPTURE_HARNESS_HOME`, set in a capture executor's environment):
+ * a co-located session's harness home is its own and leaves the file out of what it saves, so the
+ * person's MCP logins stay there across relaunches.
  */
 export const OPENCODE_MCP_AUTH_SEED =
+  `if [ -n "\${SEALANT_CAPTURE_HARNESS_HOME:-}" ]; then ` +
   `d="\${XDG_DATA_HOME:-$HOME/.local/share}/opencode"; f="$d/mcp-auth.json"; k="$HOME/.mend/opencode"; ` +
   `if [ -e "$f" ] && [ ! -L "$f" ]; then rm -rf "$f"; fi; ` +
   `kp=$( (umask 077; mkdir -p "$k") 2>/dev/null && cd "$k" 2>/dev/null && pwd -P) || kp=""; ` +
   `case "$kp" in ""|/workspace|/workspace/*) rm -f "$f"; ` +
   `echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1;; esac; ` +
-  `[ "$(readlink "$f" 2>/dev/null)" = "$kp/mcp-auth.json" ] || { rm -f "$f"; mkdir -p "$d" && ln -s "$kp/mcp-auth.json" "$f"; } || ` +
-  `{ echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1; }; `;
+  `[ "$(readlink "$f" 2>/dev/null)" = "$kp/mcp-auth.json" ] || ` +
+  `{ mkdir -p "$d" && { ln -sfn "$kp/mcp-auth.json" "$f" 2>/dev/null || [ "$(readlink "$f" 2>/dev/null)" = "$kp/mcp-auth.json" ]; }; } || ` +
+  `{ echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1; }; ` +
+  `fi; `;
 
 /**
  * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the

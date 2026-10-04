@@ -110,9 +110,21 @@ any other.
 opencode's database is saved with the session as its conversation, and in a remote workspace the
 next session in the worktree, anyone's, opens it. A login you make inside opencode to the opencode
 console or to one of its integrations is kept in that database, so it travels with it. The logins
-Mend gives opencode (your ChatGPT login) never go there, and the logins of the MCP servers opencode
-signs in to are kept out of saved state; sign in to the console or integrations only in a worktree
-nobody else uses.
+Mend gives opencode (your ChatGPT login) never go there. Sign in to the console or integrations only
+in a worktree nobody else uses.
+
+In a remote workspace, opencode keeps the logins of the MCP servers it signs in to in a file Mend
+keeps out of what the session saves, when Mend starts opencode:
+
+- An MCP sign-in lasts only as long as that workspace. Resuming the session on a new workspace asks
+  for it again.
+- People joined on one workspace share that file. One person's opencode uses MCP sign-ins the other
+  made there.
+- An opencode you start by hand in a session's shell writes that file into saved state until the
+  platform leaves it out too (sealantd#136). The next session in the worktree then removes it unread
+  before it starts, but the earlier saved states still hold it.
+- A session saved before this change may hold MCP sign-ins; every later session in the worktree
+  removes them unread before it starts.
 
 ## pi runs in the terminal only
 
