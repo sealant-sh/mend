@@ -5548,6 +5548,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // The lease is an earlier launch's, not the row's executor's: nothing of the row's is
             // picked up over it. Released only once that launch's own executor is judged ended.
             if (judged.state === "dead") {
+              // Work put off for that executor runs first, as at every other release.
+              if (judged.workspaceId !== null) yield* owedBeforeRelease(judged.workspaceId);
               yield* capture.repo.release(session.worktreeId, lease.epoch);
               yield* Effect.logInfo(
                 "session engine: capture mode · a lapsed lease of an earlier launch · its executor ended · released",
