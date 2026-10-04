@@ -146,6 +146,7 @@ export function SessionTerminal({
   token,
   startingLabel = "the agent",
   starting,
+  readOnly = false,
 }: {
   readonly sessionId: string;
   /** A supporting shell process. Omitted for the session's agent PTY. */
@@ -167,6 +168,11 @@ export function SessionTerminal({
   readonly startingLabel?: string;
   /** When the agent started and on what machine; the line counts from the socket's open without it. */
   readonly starting?: AgentStartingFacts;
+  /**
+   * Output only: no keys, resizes or images go up. Someone other than the session's owner reads
+   * its terminal this way, and the server drops their input anyway (docs/adr/0013).
+   */
+  readonly readOnly?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<WireState>("connecting");
@@ -192,7 +198,8 @@ export function SessionTerminal({
       const term = new Terminal({
         fontFamily: cssVar("--font-mono", "JetBrains Mono, monospace"),
         fontSize: 12.5,
-        cursorBlink: true,
+        cursorBlink: !readOnly,
+        disableStdin: readOnly,
         scrollback: 10_000,
         theme: {
           background: cssVar("--sw-panel", "#ffffff"),
@@ -232,6 +239,7 @@ export function SessionTerminal({
             );
 
       const sendResize = () => {
+        if (readOnly) return;
         if (ws !== null && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ t: "resize", cols: term.cols, rows: term.rows }));
         }
@@ -298,7 +306,7 @@ export function SessionTerminal({
           }
           setState("live");
           sendResize();
-          term.focus();
+          if (!readOnly) term.focus();
         });
         socket.addEventListener("message", (event) => {
           if (disposed || socket !== ws) return;
@@ -349,6 +357,7 @@ export function SessionTerminal({
 
       const encoder = new TextEncoder();
       const onData = term.onData((data) => {
+        if (readOnly) return;
         if (ws !== null && ws.readyState === WebSocket.OPEN) {
           ws.send(new Uint8Array(encoder.encode(data)).buffer);
         }
@@ -399,9 +408,11 @@ export function SessionTerminal({
         event.preventDefault();
         void sendImages(files);
       };
-      element.addEventListener("paste", onPaste, { capture: true });
-      element.addEventListener("dragover", onDragOver);
-      element.addEventListener("drop", onDrop);
+      if (!readOnly) {
+        element.addEventListener("paste", onPaste, { capture: true });
+        element.addEventListener("dragover", onDragOver);
+        element.addEventListener("drop", onDrop);
+      }
 
       return () => {
         disposed = true;
@@ -423,7 +434,7 @@ export function SessionTerminal({
       cancelled = true;
       teardown?.();
     };
-  }, [sessionId, processId, embedTicket, token]);
+  }, [sessionId, processId, embedTicket, token, readOnly]);
 
   const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
   const startingLine =

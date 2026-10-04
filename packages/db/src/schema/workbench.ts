@@ -1544,6 +1544,11 @@ export const agentTurns = pgTable(
     landingClaimedAt: timestamp({ mode: "date", withTimezone: true }),
     landing: text().$type<TurnLanding>(),
     landingId: text().$type<ChangeLandingId>(),
+    // Whose login the turn ran on (0107, docs/adr/0013-whoever-sends-a-turn-pays.md).
+    // `billedUserId` is a FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    billedUserId: text(),
+    billedAccountId: text(),
+    billedAccountName: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ mode: "date", withTimezone: true }),
     endedAt: timestamp({ mode: "date", withTimezone: true }),

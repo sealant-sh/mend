@@ -145,6 +145,22 @@ export const turnEndWord = (
   }
 };
 
+/**
+ * The line under a turn's message: who sent it, whose login paid when that is someone else
+ * (`turnPayerWords`, docs/adr/0013), and how it ended. A payer is an observation, so a line
+ * that names one says so even while the turn runs.
+ */
+export const turnLine = (
+  author: string | null,
+  payer: string | null,
+  ending: string | null,
+): string | null => {
+  const parts = [author, payer, ending ?? (payer === null ? null : "observed")].filter(
+    (part) => part !== null,
+  );
+  return parts.length === 0 ? null : parts.join(" · ");
+};
+
 const invalidateSession = (sessionId: string) =>
   Promise.all([
     queryClient.invalidateQueries({ queryKey: conversationKey(sessionId) }),

@@ -13,6 +13,7 @@ import {
   requestName,
   requestOutcome,
   toggleChoice,
+  turnPayerWords,
   type AgentRequestResponse,
   type AnswerChoices,
   type WrittenAnswers,
@@ -29,6 +30,7 @@ import {
   interruptersByTurn,
   turnAuthorLine,
   turnEndWord,
+  turnLine,
   useConversationActions,
   type ConversationEntry,
 } from "#/lib/conversation";
@@ -51,12 +53,11 @@ const errorText = (error: unknown): string =>
 
 function TurnRow({
   turn,
-  author,
-  ending,
+  line,
 }: {
   readonly turn: AgentTurnDto;
-  readonly author: string | null;
-  readonly ending: string | null;
+  /** Who sent it, who paid, how it ended (`turnLine`); null when there is nothing to say. */
+  readonly line: string | null;
 }) {
   return (
     <div className="ml-auto flex max-w-[80%] flex-col items-end gap-1">
@@ -65,11 +66,7 @@ function TurnRow({
           {turn.input}
         </p>
       </div>
-      {(author !== null || ending !== null) && (
-        <p className="font-mono text-[11px] text-faint">
-          {[author, ending].filter((part) => part !== null).join(" · ")}
-        </p>
-      )}
+      {line !== null && <p className="font-mono text-[11px] text-faint">{line}</p>}
       {turn.error !== null && (
         <p className="font-mono text-[11px] whitespace-pre-wrap text-danger">{turn.error}</p>
       )}
@@ -354,12 +351,10 @@ export function ProtocolConversation({
           <TurnRow
             key={entry.key}
             turn={entry.turn}
-            author={turnAuthorLine(entry.turn, viewerId, names, processKinds)}
-            ending={turnEndWord(
-              entry.turn,
-              interrupters.get(entry.turn.id) ?? null,
-              viewerId,
-              names,
+            line={turnLine(
+              turnAuthorLine(entry.turn, viewerId, names, processKinds),
+              turnPayerWords(entry.turn, viewerId, names),
+              turnEndWord(entry.turn, interrupters.get(entry.turn.id) ?? null, viewerId, names),
             )}
           />
         );

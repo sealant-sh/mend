@@ -1,4 +1,8 @@
-import type { Viewer, WorktreeRemovalRefusal } from "@mend/domain/workbench";
+import {
+  canRelaunchSession,
+  type Viewer,
+  type WorktreeRemovalRefusal,
+} from "@mend/domain/workbench";
 import type { ContextMenuEntry, ContextMenuSpec } from "@mend/ui/context-menu";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
@@ -126,7 +130,10 @@ export const sessionMenu = (
     ]);
   const live = LIVE_STATES.has(session.status);
   // Only what this viewer may do (docs/adr/0003): steering is the owner's unless shared.
-  const { own, steer, stop } = sessionActions(session, viewer);
+  const actions = sessionActions(session, viewer);
+  const { own, stop } = actions;
+  // A resume that opens a terminal is the owner's alone, even while shared (docs/adr/0013).
+  const resumes = canRelaunchSession(actions, annotation?.currentAgent?.kind ?? null);
   const entries: ContextMenuEntry[] = [
     {
       label: "Open session",
@@ -157,7 +164,7 @@ export const sessionMenu = (
             .finally(() => invalidateSession()),
       });
     }
-  } else if (steer) {
+  } else if (resumes) {
     entries.push({
       // Same worktree, restored state, fresh workspace; harness null = last used.
       label: "Resume session",

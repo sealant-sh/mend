@@ -13,6 +13,11 @@ export interface AgentTurnDto {
   readonly ordinal: number;
   /** `request` (sent by Mend) or `harness` (the agent opened it); absent from older servers. */
   readonly origin?: string;
+  /** Who sent it: a Mend user id, or null for a turn Mend sent itself. */
+  readonly author?: string | null;
+  /** Whose login it ran on (docs/adr/0013); absent from older servers. See `turnPayerWords`. */
+  readonly billedUserId?: string | null;
+  readonly billedAccountName?: string | null;
   readonly input: string;
   readonly status: string;
   readonly error: string | null;

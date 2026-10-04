@@ -1,4 +1,9 @@
-import { CurrentUser, NotFound, SessionNotSteerable } from "@mend/api-contracts";
+import {
+  CurrentUser,
+  NotFound,
+  SessionControlView,
+  SessionNotSteerable,
+} from "@mend/api-contracts";
 import { AgentConversationRepo, ServicesRepo, SessionProcessesRepo } from "@mend/db";
 import {
   type AgentRequestId,
@@ -9,11 +14,15 @@ import {
 } from "@mend/domain";
 import {
   canSteerSession,
+  canToggleSharedControl,
+  canTypeInTerminal,
   type AgentRequest,
   type AgentTurn,
   type Service,
   type Session,
   type SessionProcess,
+  type SteeringFacts,
+  type Viewer,
 } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -27,6 +36,48 @@ const refuse = (session: Session) =>
     sessionId: session.id,
     message: "only the session owner can steer this session; the owner can turn on shared control",
   });
+
+/**
+ * What the viewer may do with a session, as its detail tells clients, so they show only real
+ * controls (docs/adr/0003). Typing in its terminals is the owner's alone (docs/adr/0013).
+ */
+export const sessionControlView = (
+  session: SteeringFacts,
+  viewer: Pick<Viewer, "userId" | "role"> | null,
+): SessionControlView => {
+  const steer = viewer !== null && canSteerSession(session, viewer.userId);
+  return new SessionControlView({
+    own: viewer !== null && session.ownerUserId === viewer.userId,
+    steer,
+    stop: steer || viewer?.role === "owner",
+    toggleSharedControl:
+      viewer !== null &&
+      canToggleSharedControl(session, viewer, session.sharedControlEnabledAt === null),
+    terminalInput: viewer !== null && canTypeInTerminal(session, viewer.userId),
+  });
+};
+
+/** What only the owner runs in a session's workspace, and the words its refusal says. */
+const OWNER_RUNS = {
+  terminal:
+    "only the session owner starts its agent in a terminal, even while control is shared; the owner can continue it as a conversation",
+  command: "only the session owner runs commands in its workspace, even while control is shared",
+} as const;
+
+/**
+ * Anything that runs in a session's workspace besides a turn spends whatever login the workspace
+ * holds, so it is the owner's alone, even while control is shared (docs/adr/0013): a terminal
+ * agent started with the caller's words, which is typing into it, and a command such as a
+ * Service. Call it after `SessionSteering.session`, so a caller who cannot steer at all hears that.
+ */
+export const requireOwnerRuns = Effect.fn("SessionSteering.requireOwnerRuns")(function* (
+  session: Session,
+  act: keyof typeof OWNER_RUNS,
+) {
+  const caller = yield* CurrentUser;
+  if (canTypeInTerminal(session, caller.user.id)) return session;
+  return yield* new SessionNotSteerable({ sessionId: session.id, message: OWNER_RUNS[act] });
+});
 
 /**
  * Resolves whether the caller may steer a session, before any steering effect

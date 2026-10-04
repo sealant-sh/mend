@@ -1,4 +1,10 @@
-import { agentStartingFacts, sessionModelLine } from "@mend/domain/workbench";
+import {
+  agentStartingFacts,
+  canRelaunchSession,
+  sessionModelLine,
+  terminalOwnerOnlyLine,
+  terminalReadOnlyLine,
+} from "@mend/domain/workbench";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -42,6 +48,9 @@ export const Route = createFileRoute("/sessions/$sessionId")({
 });
 
 const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
+
+/** The harnesses a settled session resumes with; another than its own receives the distilled conversation. */
+const RESUME_HARNESSES = ["claude", "codex", "opencode", "pi"] as const;
 
 function TranscriptEvent({ event }: { readonly event: TranscriptEventDto }) {
   if (event.kind === "user" && event.text !== null) {
@@ -209,6 +218,11 @@ function SessionPage() {
   // The model and effort the session was started with (docs/models-audit.md); null before the
   // launch resolved them, and for sessions from before they were recorded.
   const modelLine = sessionModelLine(null, session);
+  // A resume that opens a terminal is the owner's alone, even while control is shared
+  // (docs/adr/0013): a steerer resumes a conversation, on its own harness, and nothing else.
+  const resumeHarnesses = RESUME_HARNESSES.filter((harness) =>
+    canRelaunchSession(control, currentAgent?.kind ?? null, harness !== session.harness),
+  );
 
   return (
     <AppShell projectId={session.projectId}>
@@ -386,10 +400,15 @@ function SessionPage() {
                   : "Delete…"}
             </button>
           )}
-          {!agentLive && control.steer && (
+          {!agentLive && control.steer && resumeHarnesses.length === 0 && (
+            <p className="max-w-[560px] text-[12.5px] leading-relaxed text-ink-2">
+              {terminalOwnerOnlyLine(ownerName ?? "its owner", "resume")}
+            </p>
+          )}
+          {!agentLive && resumeHarnesses.length > 0 && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-label">resume with:</span>
-              {(["claude", "codex", "opencode", "pi"] as const).map((harness) => (
+              {resumeHarnesses.map((harness) => (
                 <button
                   key={harness}
                   type="button"
@@ -436,9 +455,18 @@ function SessionPage() {
                   <div className="flex items-center gap-2 border-b border-rule-faint bg-secondary px-4 py-2">
                     <span className="size-1.5 animate-pulse rounded-full bg-[var(--sw-red)]" />
                     <p className="font-mono text-[11.5px] text-muted-foreground">
-                      run {session.sealantRunId} · live — the same session your terminal holds
+                      {control.terminalInput
+                        ? `run ${session.sealantRunId} · live — the same session your terminal holds`
+                        : `run ${session.sealantRunId} · live · read-only`}
                     </p>
                   </div>
+                  {/* Only the owner types in a terminal, even while control is shared
+                      (docs/adr/0013): everyone else reads it. */}
+                  {!control.terminalInput && (
+                    <p className="border-b border-rule-faint px-4 py-2 font-sans text-[12.5px] text-ink-2">
+                      {terminalReadOnlyLine(ownerName ?? "its owner")}
+                    </p>
+                  )}
                   {/* Keyed on the PLATFORM session: `mend continue` reopens the
                       session with a fresh PTY, and the pane must reconnect. */}
                   {/* Keyed on theme too: the terminal snapshots CSS variables at
@@ -448,6 +476,7 @@ function SessionPage() {
                     sessionId={session.id}
                     startingLabel={session.harness}
                     starting={agentStartingFacts(currentAgent, processes, Date.now())}
+                    readOnly={!control.terminalInput}
                   />
                 </div>
               </>
@@ -505,6 +534,8 @@ function SessionPage() {
               sessionId={sessionId}
               sessionLive={ACTIVE.has(session.status)}
               steer={control.steer}
+              runs={control.terminalInput}
+              ownerName={ownerName}
             />
           </section>
         </div>
@@ -699,9 +730,9 @@ export function SharedControl({
             ))}
           </div>
           <p className="basis-full text-[12.5px] leading-relaxed text-muted-foreground">
-            On lets everyone who can see this project send turns, answer approvals, interrupt, and
-            type in the terminal, using your provider logins and Git access. Every action is
-            recorded with who sent it.
+            On lets everyone who can see this project send turns, answer approvals and interrupt,
+            using your provider logins and Git access. They can read the terminal; only you type in
+            it. Every action is recorded with who sent it.
           </p>
         </div>
       ) : (

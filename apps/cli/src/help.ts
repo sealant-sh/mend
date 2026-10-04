@@ -973,7 +973,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "let everyone who can see a session steer it, or stop",
     synopsis: ["<session> on|off"],
     description: [
-      "The session's owner turns shared control on or off; an organization owner may turn it off. While it is on, anyone who can see the project sends turns, answers approvals, interrupts and types in the terminal, using your provider logins and Git access. Every act is recorded with who did it. A prefix of the session id is enough.",
+      "The session's owner turns shared control on or off; an organization owner may turn it off. While it is on, anyone who can see the project sends turns, answers approvals and interrupts, using your provider logins and Git access. They can read the terminal; only the owner types in it, opens a shell or starts a Service. Every act is recorded with who did it. A prefix of the session id is enough.",
     ],
     examples: [{ command: "mend session share 3f2a on", text: "" }],
     see: ["sessions"],

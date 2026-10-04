@@ -159,6 +159,7 @@ export const OWNER_CONTROL: SessionControlDto = {
   steer: true,
   stop: true,
   toggleSharedControl: true,
+  terminalInput: true,
 };
 
 export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDetailDto => ({
@@ -233,6 +234,9 @@ export const turnFixture = (patch: Partial<AgentTurnDto> = {}): AgentTurnDto => 
   intentSource: null,
   landing: null,
   landingId: null,
+  billedUserId: "user-1",
+  billedAccountId: null,
+  billedAccountName: "default",
   createdAt: AT,
   startedAt: AT,
   endedAt: AT,

@@ -43,6 +43,17 @@ export type AgentTurnUsage = typeof AgentTurnUsage.Type;
 export const AgentTurnOrigin = Schema.Literals(["request", "harness"]);
 export type AgentTurnOrigin = typeof AgentTurnOrigin.Type;
 
+/**
+ * Whose login a turn ran on (docs/adr/0013-whoever-sends-a-turn-pays.md, "Every turn records its
+ * payer"): the person, and the connected account as Core reported it, with the account's name as
+ * it was then. Each part is null when Mend cannot say it.
+ */
+export interface TurnPayer {
+  readonly userId: string | null;
+  readonly accountId: string | null;
+  readonly accountName: string | null;
+}
+
 /** One submitted input and the agent work associated with it. */
 export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   id: AgentTurnId,
@@ -76,6 +87,24 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   landing: Schema.NullOr(TurnLanding).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
   /** The automatic landing this turn started, when it `attempted` one and the row remains. */
   landingId: Schema.NullOr(ChangeLandingId).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Whose login the turn ran on (`TurnPayer`), recorded when Mend sent it or the harness opened
+   * it. Null on a turn never sent, one recorded before payers were, and where Mend cannot say.
+   */
+  billedUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /** The connected account's id as Core reported it; null until Core reports one. */
+  billedAccountId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /** The connected account's name when the turn ran (`default`, `work`). */
+  billedAccountName: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   createdAt: Timestamp,
