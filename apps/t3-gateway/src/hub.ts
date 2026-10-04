@@ -443,10 +443,17 @@ export const makePersonHub = (input: {
    * gateway accepted is queued or on its way, the hub must outlive every client.
    */
   readonly retain?: (busy: boolean) => Effect.Effect<void>;
+  /** The queue's waits (`queue.ts`); Mend-sized defaults when unset. */
+  readonly queueTimings?: Queueing.QueueTimings;
 }): Effect.Effect<PersonHub, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { mend, state, tokens } = input;
     const retain = input.retain ?? (() => Effect.void);
+    const timings = input.queueTimings ?? Queueing.DEFAULT_QUEUE_TIMINGS;
+    /** Session id → how many reads of it from Mend were applied: fresh evidence for a retry. */
+    const evidence = new Map<string, number>();
+    const sawSession = (sessionId: string) =>
+      evidence.set(sessionId, (evidence.get(sessionId) ?? 0) + 1);
     const hubScope = yield* Scope.Scope;
 
     /** Mend session id → the t3code ids of the turns the gateway sent (the id map). */
@@ -813,6 +820,9 @@ export const makePersonHub = (input: {
             const watch = watches.get(sessionId);
             if (watch !== undefined) mergeItems(watch, items);
           }
+          for (const entry of entries) {
+            for (const session of entry.sessions) sawSession(session.id);
+          }
           yield* publishAll;
         }),
       );
@@ -845,6 +855,7 @@ export const makePersonHub = (input: {
             for (const [sessionId, conversation] of read) {
               if (conversation !== null) conversations.set(sessionId, conversation);
             }
+            for (const session of entry?.sessions ?? []) sawSession(session.id);
             yield* publishAll;
           }),
         );
@@ -879,6 +890,7 @@ export const makePersonHub = (input: {
             }
             const current = watches.get(sessionId);
             if (current !== undefined) mergeItems(current, items);
+            sawSession(sessionId);
             yield* publishAll;
           }),
         );
@@ -1054,6 +1066,7 @@ export const makePersonHub = (input: {
           status: null,
           updatedAt: null,
           summary: null,
+          evidence: evidence.get(sessionId) ?? 0,
         };
       }
       const turns = conversations.get(sessionId)?.turns ?? [];
@@ -1064,6 +1077,7 @@ export const makePersonHub = (input: {
         status: source.session.status,
         updatedAt: source.session.updatedAt,
         summary: source.session.summary ?? null,
+        evidence: evidence.get(sessionId) ?? 0,
       };
     };
 
@@ -1117,7 +1131,14 @@ export const makePersonHub = (input: {
               sent.failure._tag === "MendCommandRefused" &&
               sent.failure.tag === "ProtocolSessionNotLive"
             ) {
-              Queueing.notLive(queue, entry);
+              // Mend says the agent is not live though the row may still read it running: retry
+              // only after a backoff and a fresh read, until the send deadline.
+              Queueing.notLive(queue, entry, {
+                now: Date.now(),
+                evidence: evidence.get(sessionId) ?? 0,
+                refusal: sent.failure.message,
+                timings,
+              });
             } else {
               Queueing.fail(queue, entry, reasonOf(sent.failure));
             }
@@ -1135,19 +1156,68 @@ export const makePersonHub = (input: {
     const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
         const launched = yield* mend.launchProtocol(entry.token, sessionId, "").pipe(Effect.result);
+        // Mend refuses a launch that races another (`session_starting`) or finds the agent up
+        // (`session_active`); its 422 carries only words, so the session itself is read: launching
+        // or with a live agent, the launch is under way or done, and the message waits for it.
+        const underWay =
+          launched._tag === "Failure" &&
+          launched.failure._tag === "MendCommandRefused" &&
+          launched.failure.status === 422
+            ? yield* mend.sessionDetail(entry.token, sessionId).pipe(
+                Effect.map((detail) => {
+                  const agent = detail.currentAgent;
+                  const agentUp =
+                    agent !== null &&
+                    agent.exitedAt === null &&
+                    (agent.status === "running" || agent.status === "starting");
+                  return detail.session.status === "starting" || agentUp
+                    ? detail.session.updatedAt
+                    : null;
+                }),
+                Effect.orElseSucceed(() => null),
+              )
+            : null;
         yield* locked(
           Effect.gen(function* () {
-            if (launched._tag === "Failure") {
-              Queueing.fail(queueOf(sessionId), entry, reasonOf(launched.failure));
+            if (launched._tag === "Success") {
+              Queueing.launchAnswered(entry, launched.success.updatedAt);
+            } else if (underWay !== null) {
+              Queueing.launchAnswered(entry, underWay);
             } else {
-              entry.launchAnsweredAt = launched.success.updatedAt;
+              Queueing.fail(queueOf(sessionId), entry, reasonOf(launched.failure));
             }
             yield* publishAll;
           }),
         );
-        if (launched._tag === "Success") {
-          yield* requestRefresh(`project:${launched.success.projectId}`);
-        }
+        const projectId = sourceOf(sessionId)?.project.id;
+        if (projectId !== undefined) yield* requestRefresh(`project:${projectId}`);
+      });
+
+    /** Session id → when its queue is next looked at without a read (a retry, a deadline). */
+    const wakes = new Map<string, number>();
+    /**
+     * Looks at a thread's queue again when it next needs it: a fresh read of its project, which is
+     * the evidence a retry waits for, and moves a launch past its deadline.
+     */
+    const scheduleWake = (sessionId: string, queue: Queueing.ThreadQueue) =>
+      Effect.suspend(() => {
+        const at = Queueing.nextWake(queue);
+        const scheduled = wakes.get(sessionId);
+        if (at === null || (scheduled !== undefined && scheduled <= at)) return Effect.void;
+        wakes.set(sessionId, at);
+        const projectId = sourceOf(sessionId)?.project.id;
+        return Effect.sleep(Math.max(0, at - Date.now())).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (wakes.get(sessionId) === at) wakes.delete(sessionId);
+            }),
+          ),
+          Effect.andThen(
+            projectId === undefined ? locked(publishAll) : requestRefresh(`project:${projectId}`),
+          ),
+          Effect.forkIn(hubScope),
+          Effect.asVoid,
+        );
       });
 
     /** Each thread's next step, after any read (`queue.ts` decides; this carries it out). */
@@ -1157,13 +1227,17 @@ export const makePersonHub = (input: {
         ([sessionId, queue]) => {
           // Before the first full read, nothing is known of any session yet.
           if (!loaded) return Effect.void;
-          const step = Queueing.nextStep(queue, viewOf(sessionId));
-          if (step === null) return Effect.void;
+          const step = Queueing.nextStep(queue, viewOf(sessionId), Date.now(), timings);
           const work =
-            step.kind === "send"
-              ? sendTurn(sessionId, step.entry)
-              : launchAgain(sessionId, step.entry);
-          return Effect.forkIn(work, hubScope).pipe(Effect.asVoid);
+            step === null
+              ? Effect.void
+              : Effect.forkIn(
+                  step.kind === "send"
+                    ? sendTurn(sessionId, step.entry)
+                    : launchAgain(sessionId, step.entry),
+                  hubScope,
+                ).pipe(Effect.asVoid);
+          return Effect.andThen(work, scheduleWake(sessionId, queue));
         },
         { discard: true },
       ),
@@ -1217,18 +1291,15 @@ export const makePersonHub = (input: {
             if (sourceOf(command.threadId) === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
-            queueOf(command.threadId).entries.push({
-              runId: `t3-run:${randomUUID()}`,
-              messageId: command.messageId,
-              text: command.text,
-              requestedAt: new Date().toISOString(),
-              token: command.session.deviceToken,
-              state: "queued",
-              error: null,
-              launchAnsweredAt: null,
-              launches: 0,
-              takenBack: false,
-            });
+            queueOf(command.threadId).entries.push(
+              Queueing.newEntry({
+                runId: `t3-run:${randomUUID()}`,
+                messageId: command.messageId,
+                text: command.text,
+                requestedAt: new Date().toISOString(),
+                token: command.session.deviceToken,
+              }),
+            );
             yield* publishAll;
             return sequence;
           }),
@@ -1538,6 +1609,7 @@ export const ProjectionsLive: Layer.Layer<
           state,
           tokens,
           retain: retainFor(userId),
+          queueTimings: { ...Queueing.DEFAULT_QUEUE_TIMINGS, ...config.queueTimings },
           dispose: RcMap.invalidate(hubs, userId),
         });
       },

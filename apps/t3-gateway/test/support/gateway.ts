@@ -7,6 +7,7 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
 import { GatewayConfig } from "../../src/config.ts";
+import type { QueueTimings } from "../../src/queue.ts";
 import { GatewayAppLive } from "../../src/server.ts";
 
 /**
@@ -17,7 +18,10 @@ import { GatewayAppLive } from "../../src/server.ts";
 export const gatewayTestLayer = (
   mendUrl: URL,
   statePath = ":memory:",
-  options: { readonly hubIdleTimeToLive?: Duration.Input } = {},
+  options: {
+    readonly hubIdleTimeToLive?: Duration.Input;
+    readonly queueTimings?: Partial<QueueTimings>;
+  } = {},
 ) =>
   HttpRouter.serve(GatewayAppLive, { disableLogger: true, disableListenLog: true }).pipe(
     Layer.provideMerge(NodeHttpServer.layerTest),
@@ -31,6 +35,7 @@ export const gatewayTestLayer = (
         ...(options.hubIdleTimeToLive === undefined
           ? {}
           : { hubIdleTimeToLive: options.hubIdleTimeToLive }),
+        ...(options.queueTimings === undefined ? {} : { queueTimings: options.queueTimings }),
       }),
     ),
   );

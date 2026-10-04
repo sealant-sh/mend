@@ -116,13 +116,22 @@ the agent live, the message goes out as `POST /api/sessions/:id/turns`, which an
 exact identity. With the agent stopped (the 15-minute idle stop), the session is launched again with
 no prompt and no options (Mend reuses what its last protocol agent recorded, mend#493, so an `ask`
 session comes back asking), and once Mend reports the agent running the message goes out the same
-way. A launch fails only when the launch call fails or Mend settles the session as ended after the
-launch answered; the message then fails with Mend's reason and the queue moves on.
+way. A launch that races another client's (Mend's 422 while the session reads `starting` or its
+agent up) is taken as under way, and the message waits for the agent. Every wait is bounded:
+
+- A launch fails when the call fails, when Mend settles the session as ended after the launch
+  answered, or when the agent is not up 10 minutes after the launch (above Mend's own launch budget:
+  a 30-second answer window plus workspace start, saves and image builds). The message then fails
+  with the reason and the queue moves on.
+- A `409 ProtocolSessionNotLive` while the row still reads the agent running is retried only after a
+  backoff (1 s doubling to 15 s) and a fresh read of the session from Mend, never in the same pass;
+  still refused 2 minutes after the first 409, the message fails with Mend's refusal.
 
 - While a message can still reach Mend, the hub holds itself without any socket; a closed client
   never loses an accepted message, and a hub with nothing that can progress is let go.
-- A message in the queue or on its way can be taken back (`queued-run.cancel`, `run.interrupt`); one
-  being sent has its own turn interrupted when Mend answers. Every interrupt honours `holdQueue`.
+- A message in the queue or waiting on a launch can be taken back (`queued-run.cancel`,
+  `run.interrupt`) and stops blocking at once; one being sent has its own turn interrupted when Mend
+  answers. Every interrupt honours `holdQueue`.
 - A session removed, or no longer a protocol session, fails what was queued for it.
 - Every Mend call made with a device token goes through one gate (`src/device-gate.ts`): a 401
   refuses that token and closes its sockets. When every device of the person is refused, the hub

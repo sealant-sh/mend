@@ -8,10 +8,18 @@ import type { PendingRun } from "./shell.ts";
  * A message never guesses which Mend turn is its own. If the session's agent is live, it is sent
  * with `POST /sessions/:id/turns`, which answers the turn: an exact identity. If the agent has
  * stopped (the idle stop), the session is launched again with no prompt, and once Mend reports the
- * agent live the message is sent the same way. A launch fails only when the launch call fails or
- * Mend settles the session as ended after the launch answered.
+ * agent live the message is sent the same way.
  *
- * - `queued`: waiting behind an open turn, or for its turn in the queue.
+ * Every wait is bounded and every retry waits for evidence:
+ *
+ * - A launch fails when the launch call fails, when Mend settles the session as ended after the
+ *   launch answered, or when no live agent appears within `launchDeadlineMs`.
+ * - A `POST /turns` answered "not live" while the row still reads the agent running (an idle stop
+ *   finishing, Mend restarting, a launch answered before its agent attached) is sent again only
+ *   after a backoff and a fresh read of the session, never in the same pass; after `sendDeadlineMs`
+ *   the message fails with Mend's refusal.
+ *
+ * - `queued`: waiting behind an open turn, for its turn in the queue, or for a retry.
  * - `launching`: the session is being launched again; sent once the agent is live.
  * - `sending`: `POST /turns` is in flight.
  * - `failed`, `cancelled`: settled; kept a while so the client sees why.
@@ -28,15 +36,21 @@ export interface QueueEntry {
   readonly token: string;
   state: EntryState;
   error: string | null;
-  /** The session's `updatedAt` as the launch answered it, on Mend's own clock. */
-  launchAnsweredAt: string | null;
   /** How many launches this message asked for. */
   launches: number;
-  /**
-   * Taken back while on its way: a `launching` message is never sent (the launch may still bring
-   * the agent up), and the turn a `sending` message's `POST /turns` answers is interrupted. It
-   * shows as cancelled at once, and settles once Mend answered.
-   */
+  /** While `launching`: the session's `updatedAt` as the launch answered it (Mend's clock). */
+  launchAnsweredAt: string | null;
+  /** While `launching`: when the gateway gives up waiting for a live agent (its own clock). */
+  launchDeadline: number | null;
+  /** After a "not live" answer: not before this, and only after a read newer than `retryEvidence`. */
+  retryAt: number | null;
+  retryEvidence: number;
+  /** How many "not live" answers this message had; the backoff doubles with each. */
+  notLiveAnswers: number;
+  /** When the gateway stops retrying a message Mend keeps answering "not live", and why it said so. */
+  sendDeadline: number | null;
+  lastRefusal: string | null;
+  /** Taken back while `sending`: the turn `POST /turns` answers is interrupted. */
   takenBack: boolean;
 }
 
@@ -57,7 +71,36 @@ export interface SessionView {
   readonly status: string | null;
   readonly updatedAt: string | null;
   readonly summary: string | null;
+  /** How many reads of this session from Mend the hub has applied: fresh evidence counts up. */
+  readonly evidence: number;
 }
+
+export interface QueueTimings {
+  /**
+   * How long a relaunch may take to bring a live agent up. Mend answers a launch within 30 s
+   * (`LAUNCH_ANSWER_WINDOW`) and goes on in the background; on the box a relaunch on a fresh
+   * workspace took 67–80 s (2026-10-04), and a launch may also wait for the previous session's
+   * workspace to save or for a workspace image to build. Ten minutes is well above all of that and
+   * still ends a launch Mend forgot (a restart mid-launch) in bounded time.
+   */
+  readonly launchDeadlineMs: number;
+  /** The first wait after a "not live" answer; it doubles up to `retryMaxMs`. */
+  readonly retryBaseMs: number;
+  readonly retryMaxMs: number;
+  /**
+   * How long Mend may keep answering "not live" to a message whose session reads live. The idle
+   * stop takes 15–19 s to finish on the box, a restart re-hosts its processes on boot, and a launch
+   * answered at its 30 s window attaches its agent shortly after: two minutes covers them.
+   */
+  readonly sendDeadlineMs: number;
+}
+
+export const DEFAULT_QUEUE_TIMINGS: QueueTimings = {
+  launchDeadlineMs: 10 * 60_000,
+  retryBaseMs: 1_000,
+  retryMaxMs: 15_000,
+  sendDeadlineMs: 2 * 60_000,
+};
 
 export type QueueStep =
   | { readonly kind: "send"; readonly entry: QueueEntry }
@@ -72,11 +115,32 @@ const ENDED: ReadonlySet<string> = new Set(["failed", "stopped", "completed"]);
 
 export const emptyQueue = (): ThreadQueue => ({ entries: [], held: false });
 
-/** A message that can still reach Mend. */
+export const newEntry = (input: {
+  readonly runId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly requestedAt: string;
+  readonly token: string;
+}): QueueEntry => ({
+  ...input,
+  state: "queued",
+  error: null,
+  launches: 0,
+  launchAnsweredAt: null,
+  launchDeadline: null,
+  retryAt: null,
+  retryEvidence: 0,
+  notLiveAnswers: 0,
+  sendDeadline: null,
+  lastRefusal: null,
+  takenBack: false,
+});
+
+/** A message that can still reach Mend: only these hold the hub alive. */
 export const canProgress = (entry: QueueEntry): boolean =>
   entry.state === "queued" || entry.state === "launching" || entry.state === "sending";
 
-/** Whether any message in any queue can still progress: what holds the hub alive. */
+/** Whether any message in any queue can still progress. */
 export const anyProgress = (queues: Iterable<ThreadQueue>): boolean => {
   for (const queue of queues) {
     if (queue.entries.some(canProgress)) return true;
@@ -131,79 +195,143 @@ export const resume = (queue: ThreadQueue) => {
 };
 
 /**
- * Takes a message back, wherever it is on its way: queued or launching, it simply never goes
- * out; sending, its turn is interrupted when `POST /turns` answers. With `holdQueue`, what is
- * still queued then waits. False when the message is not in the queue or already settled.
+ * Takes a message back, wherever it is on its way. Queued or launching, it is cancelled at once:
+ * it stops blocking the thread and stops holding the hub (a launch already asked for may still
+ * bring the agent up). Sending, its turn is interrupted when `POST /turns` answers. With
+ * `holdQueue`, what is still queued then waits. False when the message is not in the queue or
+ * already settled.
  */
 export const takeBack = (queue: ThreadQueue, runId: string, holdQueue: boolean): boolean => {
   const entry = queue.entries.find((candidate) => candidate.runId === runId);
   if (entry === undefined || !canProgress(entry) || entry.takenBack) return false;
-  if (entry.state === "queued") entry.state = "cancelled";
-  else entry.takenBack = true;
+  if (entry.state === "sending") entry.takenBack = true;
+  else entry.state = "cancelled";
   holdIfQueued(queue, holdQueue);
   tidy(queue);
   return true;
 };
 
-/** `POST /turns` answered that the agent is not live: launch again, unless that keeps failing. */
-export const notLive = (queue: ThreadQueue, entry: QueueEntry) => {
+/** A launch answered: the agent is awaited from here (`launching` with its answer stamped). */
+export const launchAnswered = (entry: QueueEntry, sessionUpdatedAt: string) => {
+  if (entry.state === "launching") entry.launchAnsweredAt = sessionUpdatedAt;
+};
+
+/**
+ * `POST /turns` answered that the agent is not live. The message goes back to the queue, to be
+ * sent again after a backoff and a fresh read of the session (never in the same pass), until
+ * `sendDeadlineMs` has passed since the first such answer.
+ */
+export const notLive = (
+  queue: ThreadQueue,
+  entry: QueueEntry,
+  input: {
+    readonly now: number;
+    readonly evidence: number;
+    readonly refusal: string;
+    readonly timings: QueueTimings;
+  },
+) => {
   if (entry.takenBack) {
     fail(queue, entry, "");
     return;
   }
-  if (entry.launches >= MAX_LAUNCHES) {
-    fail(queue, entry, "Mend could not keep the session's agent running to take this message.");
+  const deadline = entry.sendDeadline ?? input.now + input.timings.sendDeadlineMs;
+  if (input.now >= deadline) {
+    fail(queue, entry, input.refusal);
     return;
   }
+  entry.notLiveAnswers += 1;
   entry.state = "queued";
-  entry.launchAnsweredAt = null;
+  entry.sendDeadline = deadline;
+  entry.lastRefusal = input.refusal;
+  entry.retryEvidence = input.evidence;
+  entry.retryAt =
+    input.now +
+    Math.min(input.timings.retryMaxMs, input.timings.retryBaseMs * 2 ** (entry.notLiveAnswers - 1));
   tidy(queue);
 };
 
 /**
- * The next step for one thread, after any read. Settles what Mend's state decides (the session
- * gone, a launch that ended), then picks at most one message to move: never a second while one is
- * on its way, never while a Mend turn is open, never while held.
+ * The next step for one thread, after any read or wake-up. Settles what Mend's state and the
+ * clock decide (the session gone, a launch that ended or ran out of time, a retry past its
+ * deadline), then picks at most one message to move: never a second while one is on its way,
+ * never while a Mend turn is open, never while held, never a retry before its time and evidence.
  */
-export const nextStep = (queue: ThreadQueue, view: SessionView): QueueStep | null => {
+export const nextStep = (
+  queue: ThreadQueue,
+  view: SessionView,
+  now: number,
+  timings: QueueTimings,
+): QueueStep | null => {
   if (!view.known) {
     failAll(queue, "The session is gone from Mend, or is no longer a protocol session.");
     return null;
   }
   const launching = queue.entries.find((entry) => entry.state === "launching");
   if (launching !== undefined) {
-    if (launching.launchAnsweredAt === null) return null;
-    if (view.agentLive) {
-      // Taken back: the agent is up, and the message never goes out.
-      if (launching.takenBack) {
-        fail(queue, launching, "");
-        return null;
-      }
+    if (launching.launchAnsweredAt !== null && view.agentLive) {
       launching.state = "sending";
       return { kind: "send", entry: launching };
     }
     const endedAfterLaunch =
+      launching.launchAnsweredAt !== null &&
       view.status !== null &&
       ENDED.has(view.status) &&
       view.updatedAt !== null &&
       Date.parse(view.updatedAt) > Date.parse(launching.launchAnsweredAt);
     if (endedAfterLaunch) {
       fail(queue, launching, view.summary ?? `The session ${view.status} while it launched.`);
+    } else if (launching.launchDeadline !== null && now >= launching.launchDeadline) {
+      fail(
+        queue,
+        launching,
+        `Mend did not bring the session's agent up within ${Math.round(timings.launchDeadlineMs / 60_000)} minutes.`,
+      );
+    } else {
+      return null;
     }
-    return null;
   }
   if (queue.held) return null;
   if (queue.entries.some((entry) => entry.state === "sending")) return null;
   if (view.turnOpen) return null;
   const next = queue.entries.find((entry) => entry.state === "queued");
   if (next === undefined) return null;
+  if (next.retryAt !== null) {
+    if (next.sendDeadline !== null && now >= next.sendDeadline) {
+      fail(queue, next, next.lastRefusal ?? "Mend kept answering that the agent is not live.");
+      return nextStep(queue, view, now, timings);
+    }
+    if (now < next.retryAt || view.evidence <= next.retryEvidence) return null;
+  }
+  next.retryAt = null;
   if (view.agentLive) {
     next.state = "sending";
     return { kind: "send", entry: next };
   }
+  if (next.launches >= MAX_LAUNCHES) {
+    fail(queue, next, "Mend could not keep the session's agent running to take this message.");
+    return nextStep(queue, view, now, timings);
+  }
   next.state = "launching";
   next.launches += 1;
+  next.launchAnsweredAt = null;
+  next.launchDeadline = now + timings.launchDeadlineMs;
   return { kind: "launch", entry: next };
+};
+
+/** When this thread's queue next needs a look without any read: a retry, or a launch deadline. */
+export const nextWake = (queue: ThreadQueue): number | null => {
+  let wake: number | null = null;
+  for (const entry of queue.entries) {
+    const at =
+      entry.state === "launching"
+        ? entry.launchDeadline
+        : entry.state === "queued"
+          ? entry.retryAt
+          : null;
+    if (at !== null && (wake === null || at < wake)) wake = at;
+  }
+  return wake;
 };
 
 /** The run status t3code shows for a message still in the queue. */

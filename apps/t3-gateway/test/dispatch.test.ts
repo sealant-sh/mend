@@ -21,6 +21,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import { mendAnswersOf, mendDecisionOf } from "../src/commands.ts";
+import type { QueueTimings } from "../src/queue.ts";
 import { openGatewayState } from "../src/state.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -35,7 +36,10 @@ import { pairAndConnect } from "./support/rpc.ts";
 const withGateway = <A, E, R>(
   test: (mend: FakeMend) => Effect.Effect<A, E, R>,
   statePath?: string,
-  options: { readonly hubIdleTimeToLive?: Duration.Input } = {},
+  options: {
+    readonly hubIdleTimeToLive?: Duration.Input;
+    readonly queueTimings?: Partial<QueueTimings>;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const mend = yield* startFakeMend;
@@ -587,6 +591,183 @@ describe("review round 2", () => {
       undefined,
       { hubIdleTimeToLive: "200 millis" },
     ),
+  );
+});
+
+describe("review round 3", () => {
+  // Reproduction from the round-3 review (repro-wedge.test.ts), kept as a regression test.
+  it.live("a relaunch Mend forgets neither wedges the queue nor holds the hub", () =>
+    withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          const { workbench } = mend;
+          setup(mend);
+          const session = workbench.sessions.get("session-1");
+          workbench.stopAgent("session-1");
+          workbench.launchBringsAgentUp = false;
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const { rpc } = yield* pairAndConnect(mend, "WEDGE");
+              const thread = yield* feed(
+                rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                  threadId: ThreadId.make("session-1"),
+                }),
+              );
+              yield* thread.next(
+                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              );
+              yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                message("session-1", "message-first", "first"),
+              );
+              const preparing = yield* thread.next(
+                runEvent(
+                  (run) => run.userMessageId === "message-first" && run.status === "preparing",
+                ),
+              );
+              const runId =
+                preparing.event.type === "run.updated"
+                  ? preparing.event.payload.id
+                  : RunId.make("none");
+              yield* Effect.sleep("300 millis");
+              // Mend restarts mid-launch: the row reads settled `stopped` again, updatedAt unchanged.
+              if (session !== undefined) session.status = "stopped";
+              workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
+              yield* Effect.sleep("300 millis");
+              // Taken back, it stops blocking at once: the next message moves.
+              yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+                type: "run.interrupt",
+                commandId: commandId(),
+                threadId: ThreadId.make("session-1"),
+                runId,
+                holdQueue: false,
+              });
+              yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                message("session-1", "message-second", "second"),
+              );
+              yield* eventually(() => posts(mend, "/launch").length === 2, "the second launch");
+              // And a launch that never brings the agent up fails at its deadline.
+              yield* thread.next(
+                runEvent(
+                  (run) => run.userMessageId === "message-second" && run.status === "failed",
+                ),
+              );
+            }),
+          );
+          // Nothing can progress: the hub goes after its idle time.
+          yield* eventually(() => workbench.eventStreams === 0, "the hub to go");
+          assert.strictEqual(posts(mend, "/turns").length, 0);
+        }),
+      undefined,
+      { hubIdleTimeToLive: "200 millis", queueTimings: { launchDeadlineMs: 1_000 } },
+    ),
+  );
+
+  // Reproduction from the round-3 review (repro-hotloop.test.ts), kept as a regression test.
+  it.live(
+    "a 409 while the row reads running is retried after a backoff and a fresh read, not looped",
+    () =>
+      withGateway(
+        (mend) =>
+          Effect.gen(function* () {
+            setup(mend);
+            const { rpc } = yield* pairAndConnect(mend, "HOTLOOP");
+            const thread = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: ThreadId.make("session-1"),
+              }),
+            );
+            yield* thread.next(
+              (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+            );
+            mend.workbench.turnsNotLive = true;
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              message("session-1", "message-busy", "hello"),
+            );
+            yield* Effect.sleep("1 second");
+            const tried = posts(mend, "/turns").length;
+            assert.isAtMost(tried, 2, `POST /turns ${tried} times in 1 s`);
+            // Mend takes turns again: after its backoff and a fresh read, the message goes out.
+            mend.workbench.turnsNotLive = false;
+            yield* thread.next(
+              runEvent((run) => run.userMessageId === "message-busy" && run.status === "running"),
+              "10 seconds",
+            );
+            assert.isAtMost(posts(mend, "/turns").length, tried + 2);
+          }),
+        undefined,
+        { queueTimings: { retryBaseMs: 500, retryMaxMs: 1_000 } },
+      ),
+  );
+
+  it.live("a message Mend keeps answering not-live fails at its deadline with Mend's reason", () =>
+    withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "NOTLIVEDEADLINE");
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: ThreadId.make("session-1"),
+            }),
+          );
+          yield* thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          mend.workbench.turnsNotLive = true;
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            message("session-1", "message-stuck", "hello"),
+          );
+          yield* thread.next(
+            runEvent((run) => run.userMessageId === "message-stuck" && run.status === "failed"),
+            "10 seconds",
+          );
+          const failure = yield* thread.next(
+            (item): item is Extract<Item, { kind: "event" }> =>
+              item.kind === "event" &&
+              item.event.type === "turn-item.updated" &&
+              item.event.payload.type === "error",
+          );
+          assert.isTrue(
+            failure.event.type === "turn-item.updated" &&
+              failure.event.payload.type === "error" &&
+              failure.event.payload.failure.message.includes("ProtocolSessionNotLive"),
+          );
+          assert.isAtMost(posts(mend, "/turns").length, 6);
+        }),
+      undefined,
+      { queueTimings: { retryBaseMs: 200, retryMaxMs: 400, sendDeadlineMs: 1_500 } },
+    ),
+  );
+
+  it.live(
+    "a relaunch that races another client's launch waits for the agent instead of failing",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          mend.workbench.stopAgent("session-1");
+          mend.workbench.launchRefusal =
+            "starting · a launch of this session is already under way · nothing new started";
+          mend.workbench.launchLiveDelayMs = 500;
+          const { rpc } = yield* pairAndConnect(mend, "RACE");
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: ThreadId.make("session-1"),
+            }),
+          );
+          yield* thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            message("session-1", "message-race", "Go on"),
+          );
+          yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
+          assert.strictEqual(posts(mend, "/launch").length, 1);
+          yield* thread.next(
+            runEvent((run) => run.userMessageId === "message-race" && run.status === "running"),
+          );
+        }),
+      ),
   );
 });
 

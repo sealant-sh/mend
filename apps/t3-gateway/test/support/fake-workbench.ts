@@ -135,6 +135,13 @@ export class FakeWorkbench {
   launchLiveDelayMs = 50;
   /** `POST /api/sessions/:id/turns` answers 401, as for a device revoked mid-flight. */
   turnsUnauthorized = false;
+  /** `POST /turns` answers 409 though the row reads running (idle stop claimed, host not attached). */
+  turnsNotLive = false;
+  /**
+   * Another client's launch is under way: `POST /launch` answers Mend's 422 with these words, the
+   * session reads `starting`, and the agent comes up `launchLiveDelayMs` later.
+   */
+  launchRefusal: string | null = null;
 
   get eventStreams(): number {
     return this.streams.size;
@@ -588,6 +595,7 @@ export class FakeWorkbench {
     const agent = this.agents.get(session.id);
     if (sub === "turns") {
       if (this.turnsUnauthorized) return json(401, { _tag: "Unauthorized" });
+      if (this.turnsNotLive) return json(409, { _tag: "ProtocolSessionNotLive", processId: "p" });
       if (agent === undefined || agent.exitedAt !== null || agent.status !== "running") {
         return json(409, { _tag: "ProtocolSessionNotLive", processId: agent?.id ?? "none" });
       }
@@ -599,6 +607,27 @@ export class FakeWorkbench {
     }
     // A launch answers at once; a new agent process comes up on the options the last one
     // recorded, and only a prompt would open a turn.
+    const refusal = this.launchRefusal;
+    if (refusal !== null) {
+      this.launchRefusal = null;
+      session.status = "starting";
+      session.updatedAt = tick();
+      setTimeout(() => {
+        const previous = this.agents.get(session.id);
+        if (previous === undefined) return;
+        this.agents.set(session.id, {
+          ...previous,
+          id: this.nextId("process"),
+          status: "running",
+          exitedAt: null,
+          createdAt: tick(),
+        });
+        session.status = "running";
+        session.updatedAt = tick();
+        this.emit({ type: "session-process", sessionId: session.id, projectId: session.projectId });
+      }, this.launchLiveDelayMs);
+      return json(422, { _tag: "StoreFailure", message: refusal });
+    }
     session.status = "starting";
     session.updatedAt = tick();
     const prompt =
