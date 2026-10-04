@@ -14004,23 +14004,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessions.setHasTranscript(session.id, live !== null);
         }
       });
+      // Boot runs with no request context, and the platform answers for nobody: every piece of
+      // boot work that reaches it runs as its session's owner (`owned`), forked in the engine's
+      // scope, and the engine stands as soon as the rows are reconciled. Nothing here waits on an
+      // executor — a flush it owes, a pipe that is slow to answer, a drain — because the engine is
+      // what the HTTP server, the capture channel every executor ships through and the health check
+      // that restarts the process are all built on (2026-10-03: a session stopped and resumed
+      // seconds before a deploy, its old executor mid-drain, held `resume` for up to the drain's
+      // ten-minute stall window; the bundle restarted Mend at four minutes).
+      /** Sessions whose settle tail the boot pass forked itself: not the leftover sweep's. */
+      const bootSwept = new Set<SessionId>();
+      /** Sessions a protocol recovery holds (the rehydrate, or the relaunch behind it), counted. */
+      const recovering = new Map<SessionId, number>();
+      const enterRecovery = (sessionId: SessionId) =>
+        recovering.set(sessionId, (recovering.get(sessionId) ?? 0) + 1);
+      const leaveRecovery = (sessionId: SessionId) => {
+        const left = (recovering.get(sessionId) ?? 1) - 1;
+        if (left <= 0) recovering.delete(sessionId);
+        else recovering.set(sessionId, left);
+      };
       const resume = Effect.fn("SessionEngine.resume")(function* () {
-        // Restart policy v2: surviving protocol pipes are rehydrated in place —
-        // a Mend restart is never, by itself, the end of a protocol session.
-        for (const protocolProcess of (yield* processes.listLive()).filter(
-          (process) => process.kind === "agent-protocol",
-        )) {
-          yield* rehydrateProtocolProcess(protocolProcess).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logError("session engine: protocol rehydrate failed").pipe(
-                Effect.annotateLogs({
-                  processId: protocolProcess.id,
-                  cause: String(cause),
-                }),
-              ),
-            ),
-          );
-        }
         // A run left open under a session that settled is settled with the session's words
         // before anything re-attaches to it: it is not live work, and the next resume of its
         // session would otherwise meet the one-active-run index.
@@ -14046,16 +14049,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Processes that were live when the last process died: their PTYs
         // kept running (a detached client is not intent to stop), so watch
         // them again — the watcher itself records the end if the workspace is
-        // gone. Rehydrated protocol rows join the same watch; a relaunched-away
-        // row already reads exited and drops out of this list on its own.
+        // gone. Protocol rows are watched once their pipe is rehydrated, at
+        // the end of this pass.
         const liveProcesses = yield* processes.listLive();
         const sessionsWithLiveProcesses = new Set(
           liveProcesses.map((liveProcess) => liveProcess.sessionId),
         );
 
         // Sessions settled before transcripts were classified: read the store once, bounded, so
-        // the dashboard can hide dead ends from before this column existed.
-        yield* classifyUnclassifiedSessions.pipe(Effect.ignore);
+        // the dashboard can hide dead ends from before this column existed. Forked: it reads
+        // harness state under the harvest permit a supervisor forked above may be holding.
+        yield* Effect.forkIn(classifyUnclassifiedSessions.pipe(Effect.ignore), scope);
         const unsettled = yield* sessions.listUnsettled();
         for (const session of unsettled) {
           if (reattached.has(session.id)) continue;
@@ -14069,13 +14073,41 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
             continue;
           }
-          // Every process ended but nobody folded (the fiber died mid-tail): fold now. A row
-          // that never reached a process died before the harness started.
+          // Every process ended but nobody folded (the fiber died mid-tail): fold now — the row
+          // inline, its workspace forked. The fold is a few reads and a write; the tail the dead
+          // fiber owed (`sweepWorkspace`: a flush, the late harvest, then the drain that asks the
+          // executor for its final flush and waits for it, up to the stall window) runs as the
+          // owner once the engine stands, and is this pass's alone (`bootSwept`): the leftover
+          // sweep leaves it be. A row that never reached a process died before the harness
+          // started.
           const hadAgent = (yield* processes.listForSession(session.id)).some((process) =>
             isAgentProcessKind(process.kind),
           );
           if (hadAgent) {
-            yield* reconcileSession(session.id, { sweep: true }).pipe(Effect.ignore);
+            yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
+            const folded = yield* sessions.byId(session.id).pipe(Effect.option);
+            if (Option.isSome(folded) && folded.value.settledAt !== null) {
+              bootSwept.add(session.id);
+              const tail: Effect.Effect<void> =
+                folded.value.sealantWorkspaceId === null
+                  ? // No workspace to drain: a removal asked before, or a lease that still names
+                    // the row, as the sweep read them before.
+                    stopWorkspaceIfUnleased(session.id).pipe(Effect.asVoid)
+                  : sweepWorkspace(session.id);
+              yield* Effect.forkIn(
+                tail.pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning(
+                      "session engine: the boot sweep of a folded session's workspace failed",
+                    ).pipe(
+                      Effect.annotateLogs({ sessionId: session.id, cause: Cause.pretty(cause) }),
+                    ),
+                  ),
+                  asSealantUser(folded.value.ownerUserId),
+                ),
+                scope,
+              );
+            }
             continue;
           }
           yield* settleSession(
@@ -14119,19 +14151,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (service.currentForwardId !== null) socketSessions.add(service.sessionId);
         }
         for (const liveProcess of liveProcesses) {
+          // Protocol rows are watched after their rehydrate, below: a watcher that read the pipe
+          // the relaunch closes would end the row and cancel the turns the relaunch is moving.
+          if (liveProcess.kind === "agent-protocol") continue;
           if (
             isAgentProcessKind(liveProcess.kind) ||
             liveProcess.kind === "shell" ||
             (liveProcess.kind === "service" && liveProcess.serviceId !== null)
           ) {
-            yield* Effect.forkIn(watchProcess(liveProcess), scope);
+            // As the owner: a watcher with no principal is refused its first lookup and retries
+            // it forever, blind, and the process's end is never recorded.
+            yield* Effect.forkIn(
+              watchProcess(liveProcess).pipe(owned(liveProcess.sessionId)),
+              scope,
+            );
           }
         }
 
         // A host listener is process-local. Commit replacement intent and retire the stale
         // listener record before platform I/O, then retry transient workspace observation while
         // the Service honestly reads `binding`. The shared lifecycle permit prevents Stop or
-        // Restart from interleaving with this transition.
+        // Restart from interleaving with this transition. Forked: the observation retries for
+        // seconds and the bind reaches into the workspace, and nothing below reads what it binds.
         for (const serviceStub of allServices) {
           const reconcileForward = withServiceLifecycle(
             Effect.gen(function* () {
@@ -14252,7 +14293,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
-          yield* reconcileForward;
+          yield* Effect.forkIn(reconcileForward, scope);
         }
         // Capture mode: an executor Mend is still saving, or one still holding its worktree's
         // lease, calls in through its session's channel whatever the session's status — a
@@ -14290,11 +14331,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (row !== null) socketSessions.add(owner);
           }
         }
-        // Expose in-workspace controls only after boot reconciliation has reached a stable fact.
+        // Expose in-workspace controls once the rows are reconciled; everything that reaches the
+        // platform runs forked, after them.
         for (const socketSessionId of socketSessions) {
           yield* socketHost
             .start(socketSessionId, socketApiFor(socketSessionId))
             .pipe(Effect.ignore);
+        }
+        // Restart policy v2: surviving protocol pipes are rehydrated in place — a Mend restart is
+        // never, by itself, the end of a protocol session. Last, once the sockets are up (the
+        // relaunch behind a failed rehydrate binds the session's socket itself, and two binds at
+        // once leave one listener untracked), each forked and as its owner: the probe and the
+        // rehydrate (or the relaunch), then the watch of the row, in that order in one fiber, so
+        // no watcher reads the pipe the relaunch closes and cancels the turns it is moving. A row
+        // the relaunch retired reads ended by then and is not watched. The session is nobody
+        // else's to sweep meanwhile (`recovering`): the relaunch settles it for a moment before it
+        // reopens it, and a sweep that read it then would reap its replacement.
+        for (const protocolProcess of liveProcesses) {
+          if (protocolProcess.kind !== "agent-protocol") continue;
+          enterRecovery(protocolProcess.sessionId);
+          yield* Effect.forkIn(
+            rehydrateProtocolProcess(protocolProcess).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("session engine: protocol rehydrate failed").pipe(
+                  Effect.annotateLogs({
+                    processId: protocolProcess.id,
+                    cause: String(cause),
+                  }),
+                ),
+              ),
+              Effect.ensuring(Effect.sync(() => leaveRecovery(protocolProcess.sessionId))),
+              Effect.andThen(processes.byId(protocolProcess.id)),
+              Effect.flatMap((row) =>
+                row === null || row.exitedAt !== null ? Effect.void : watchProcess(row),
+              ),
+              owned(protocolProcess.sessionId),
+            ),
+            scope,
+          );
         }
       });
 
@@ -14309,10 +14383,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const settled = yield* sessions.listRecentlySettled();
         for (const session of settled) {
           if (session.sealantWorkspaceId === null) continue;
+          // The boot pass forked this session's whole tail itself, or a protocol recovery holds
+          // the session: neither is a leftover.
+          if (bootSwept.has(session.id) || recovering.has(session.id)) continue;
           const workspaceId = session.sealantWorkspaceId;
           const sweepIfAlive = Effect.gen(function* () {
             const workspace = yield* sealant.getWorkspace(workspaceId);
             const status = yield* Effect.promise(() => workspace.status());
+            // Read again once the platform answered: a session a recovery reopened meanwhile, or
+            // whose row moved to another executor, is live work, not a leftover.
+            const current = yield* sessions.byId(session.id);
+            if (
+              current.settledAt === null ||
+              current.sealantWorkspaceId !== workspaceId ||
+              recovering.has(session.id)
+            ) {
+              return;
+            }
             if (status !== "queued" && status !== "running" && status !== "ready") {
               // The container is gone (stopped externally or reaped by TTL) —
               // no process row for it can still be live. Reconcile the leases.
