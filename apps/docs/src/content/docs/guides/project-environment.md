@@ -176,11 +176,13 @@ captures starts cold until the executor can materialise a delta.
 
 ## Automatic install
 
-Automatic install is on by default. On, Mend picks the install command from the lockfile at the root
-of the base tree, for example `pnpm install --frozen-lockfile` from `pnpm-lock.yaml` or
-`cargo fetch --locked` from `Cargo.lock`, and runs it before the agent starts. The setup page shows
-the command it detects on the default branch. A custom command, if you set one, replaces the
-detected one. Mend runs the command in two places, both under its own control:
+Automatic install applies in capture mode, and it is on by default. On, Mend picks the install
+command from the lockfile at the root of the base tree, for example `pnpm install --frozen-lockfile`
+from `pnpm-lock.yaml` or `cargo fetch --locked` from `Cargo.lock`, and runs it before the agent
+starts. The Dependencies card on the setup page shows the command it detects on origin's default
+branch as last fetched, the ref a launch bases on; it says "not read" when it could not read that
+tree. A custom command, if you set one, replaces the detected one. Mend runs the command in two
+places, both under its own control:
 
 - in a workspace whose captured dependency tree was built for another platform (or that has none
   yet), before the harness starts; the log line names the platform observed and the command;
@@ -188,9 +190,10 @@ detected one. Mend runs the command in two places, both under its own control:
   on, whose result fills the project's shared cache for that platform. Standby workspaces and cold
   launches read that cache.
 
-Off, Mend runs no install command for the project, in a session or in the install session; the agent
-installs when it needs to. A dependency tree already in the session's saved state, or in the
-project's shared cache, is restored either way. Turning it off keeps the custom command.
+Off, Mend runs no install command for the project, in a session or in the install session; an agent
+can install by hand. A dependency tree already in the session's saved state, or in the project's
+shared cache, is restored either way. Turning it off keeps the custom command. In co-located mode a
+worktree keeps its own dependencies and Mend runs no install, whatever the switch says.
 
 A session's own dependency tree is captured with its work, like any other bytes, and is never
 promoted into the shared cache: what one agent installed belongs to that session.

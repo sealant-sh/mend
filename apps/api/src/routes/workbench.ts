@@ -883,33 +883,40 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const store = yield* Store;
         const project = yield* (yield* ProjectAccess).project(params.id);
-        // The engine's detection, read at the default branch instead of a session's base. An
-        // unreadable store answers nothing detected: the card then says it is read at launch.
-        const detected = yield* store
-          .listTopLevel(project.storePath, project.defaultBranch, FILE_LISTING_LIMIT)
-          .pipe(
-            Effect.map((listing) => detectInstall(listing.files)),
-            Effect.catch(() => Effect.succeed(null)),
-          );
+        const branch = project.defaultBranch;
+        // The ref a launch bases on (`resolveBase`): origin's branch as last fetched, else the
+        // local one. A read never fetches; an unreadable store answers "not read".
+        const read = (ref: string, shown: string) =>
+          store
+            .listTopLevel(project.storePath, ref, FILE_LISTING_LIMIT)
+            .pipe(
+              Effect.map((listing) => ({ ref: shown, detected: detectInstall(listing.files) })),
+            );
+        const answer = yield* read(`refs/remotes/origin/${branch}`, `origin/${branch}`).pipe(
+          Effect.catch(() => read(branch, branch)),
+          Effect.catch(() => Effect.succeed(null)),
+        );
         return new ProjectInstallDetection({
-          ref: project.defaultBranch,
-          command: detected?.command ?? null,
-          from: detected?.from ?? null,
+          ref: answer?.ref ?? branch,
+          read: answer !== null,
+          command: answer?.detected?.command ?? null,
+          from: answer?.detected?.from ?? null,
         });
       }),
     )
     .handle("installEnabled", ({ params, payload }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
+        const before = yield* (yield* ProjectAccess).manageProject(params.id);
         const caller = yield* CurrentUser;
         const projects = yield* ProjectsRepo;
         const jobs = yield* JobRunner;
         const project = yield* projects
           .setInstallEnabled(params.id, payload.installEnabled)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // Turned on, the install job fills the shared cache as a changed command would. Turned
-        // off, nothing is queued, and a job already queued finds it off and runs nothing.
-        if (project.installEnabled) {
+        // Turned on from off, the install job fills the shared cache as a changed command would.
+        // A repeated "on" queues nothing; turned off, nothing is queued, and a job already queued
+        // finds it off and runs nothing.
+        if (!before.installEnabled && project.installEnabled) {
           yield* jobs
             .enqueue({
               name: "dependency-install",

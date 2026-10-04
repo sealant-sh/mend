@@ -291,13 +291,15 @@ export class ProjectInstallEnabledRequest extends Schema.Class<ProjectInstallEna
 
 /**
  * What a launch would run with no saved command: the command detected from the lockfile at the
- * root of the default branch, and the file that decided it. Null when no file is recognised, or
- * the store could not be read; a launch detects again from its own base.
+ * root of the ref a launch bases on (`origin/<default>` as last fetched, else the local default
+ * branch; never fetched for this read), and the file that decided it. `read` false: no tree was
+ * read, so nothing is said about the lockfile; a launch detects again from its own base.
  */
 export class ProjectInstallDetection extends Schema.Class<ProjectInstallDetection>(
   "ProjectInstallDetection",
 )({
   ref: Schema.String,
+  read: Schema.Boolean,
   command: Schema.NullOr(Schema.String),
   from: Schema.NullOr(Schema.String),
 }) {}
