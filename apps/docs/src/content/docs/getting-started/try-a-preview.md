@@ -14,6 +14,9 @@ used for long, and it can change before the release.
 - **A server moves forward only.** `mend server upgrade` refuses a lower version, because database
   migrations do not run backwards. A server on `0.36.0-next.56` can take a later next build or
   `0.36.0`, never `0.35.1` or `0.36.0-next.50`.
+- **A patch release may be behind you.** A preview of the next minor (`0.37.0-next.4`) is higher
+  than a patch released after it (`0.36.1`), so a server on it skips that patch and waits for
+  `0.37.0`. Previews of a patch (`0.36.1-next.2`) lead to the patch.
 - **Use a server you can rebuild,** or back up its Docker volumes first. The upgrade's SQL dump does
   not cover repositories, session captures or SSH identity.
 - **Everything else is the same.** A preview server is set up, operated and upgraded with the
@@ -59,14 +62,15 @@ npm install --global @sealant/mend@latest
 mend server upgrade --version latest
 ```
 
-`--version latest` resolves the newest release, never a preview, and the release is higher than
-every preview of it. After that the server follows releases until you install `@next` again.
+`--version latest` resolves the newest release, never a preview, and a release is higher than every
+preview of it. After that the server follows releases until you install `@next` again.
 
 ## If a preview is withdrawn
 
-A preview found broken after publishing is deprecated on npm, and `npm install @sealant/mend@next`
-goes back to the previous one. A server already on the withdrawn version cannot go back: upgrade to
-the next preview that replaces it. Its GitHub prerelease says which one.
+A preview found broken after publishing is deprecated on npm, and `next` is moved back, so
+`npm install @sealant/mend@next` installs the previous one again. A server already on the withdrawn
+version cannot go back: upgrade to the next preview that replaces it. Its GitHub prerelease says
+which one.
 
 ## Report what you find
 
