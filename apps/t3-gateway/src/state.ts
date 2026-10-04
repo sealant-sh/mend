@@ -44,6 +44,18 @@ export interface BearerSession {
   readonly revokedAt: number | null;
 }
 
+/**
+ * The t3code ids a gateway-sent turn carries (ADR 0012, "State"): the run id the gateway minted
+ * when it queued the message, and the message id the t3code client sent it with. A client
+ * reconciles its own message by that id, so the map outlives a gateway restart.
+ */
+export interface TurnIds {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly runId: string;
+  readonly messageId: string;
+}
+
 export class GatewayStateError extends Schema.TaggedError<GatewayStateError>()(
   "GatewayStateError",
   {
@@ -73,14 +85,26 @@ export class GatewayState extends Context.Service<
       sessionId: AuthSessionId,
       at: number,
     ) => Effect.Effect<void, GatewayStateError>;
+    /** Revokes every bearer standing for a Mend device token Mend refused. */
+    readonly revokeSessionsForDevice: (
+      deviceToken: string,
+      at: number,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Records the t3code ids of a turn the gateway sent. */
+    readonly recordTurnIds: (ids: TurnIds, at: number) => Effect.Effect<void, GatewayStateError>;
+    /** Every turn the gateway sent, with its t3code ids. */
+    readonly listTurnIds: () => Effect.Effect<ReadonlyArray<TurnIds>, GatewayStateError>;
   }
 >()("@mend/t3-gateway/GatewayState") {}
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 
 /**
- * Migrations by `PRAGMA user_version`. Append only. The id maps are empty in phase 0; phase 1
- * fills them as Mend projects, sessions and items are first shown to t3code.
+ * Migrations by `PRAGMA user_version`. Append only. t3code shows Mend's projects and sessions by
+ * their Mend ids, so `project_ids` and `thread_ids` stay empty until a t3code client creates a
+ * thread (phase 2). `message_ids` and `run_ids` carry the ids of every turn a t3code client sent,
+ * keyed by the Mend turn: a message id comes from the client, so it is never a key across
+ * sessions, and a recorded turn is never replaced (migration 3).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -122,6 +146,27 @@ const MIGRATIONS: ReadonlyArray<string> = [
     UNIQUE (mend_session_id, mend_ref)
   );
   `,
+  `
+  CREATE TABLE run_ids (
+    run_id TEXT PRIMARY KEY,
+    mend_session_id TEXT NOT NULL,
+    mend_turn_id TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL
+  );
+  `,
+  `
+  CREATE TABLE message_ids_by_turn (
+    mend_session_id TEXT NOT NULL,
+    mend_ref TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (mend_session_id, mend_ref)
+  );
+  INSERT OR IGNORE INTO message_ids_by_turn (mend_session_id, mend_ref, message_id, created_at)
+    SELECT mend_session_id, mend_ref, message_id, created_at FROM message_ids;
+  DROP TABLE message_ids;
+  ALTER TABLE message_ids_by_turn RENAME TO message_ids;
+  `,
 ];
 
 const UserVersionRow = Schema.Struct({ user_version: Schema.Number });
@@ -144,6 +189,13 @@ const SessionRow = Schema.Struct({
   revoked_at: Schema.NullOr(Schema.Number),
 });
 const decodeSessionRow = Schema.decodeUnknownEffect(SessionRow);
+const TurnIdsRow = Schema.Struct({
+  session_id: Schema.String,
+  turn_id: Schema.String,
+  run_id: Schema.String,
+  message_id: Schema.String,
+});
+const decodeTurnIdsRows = Schema.decodeUnknownEffect(Schema.Array(TurnIdsRow));
 const encodeScopes = Schema.encodeSync(Scopes);
 
 const toBearerSession = (decoded: typeof SessionRow.Type): BearerSession => ({
@@ -279,7 +331,75 @@ export const openGatewayState = (
           .run(at, sessionId);
       });
 
-    return { environmentId, insertSession, findSession, findSessionById, revokeSession };
+    const revokeSessionsForDevice = (deviceToken: string, at: number) =>
+      run("revokeSessionsForDevice", () => {
+        database
+          .prepare(
+            "UPDATE bearer_sessions SET revoked_at = ? WHERE device_token = ? AND revoked_at IS NULL",
+          )
+          .run(at, deviceToken);
+      });
+    const recordTurnIds = (ids: TurnIds, at: number) =>
+      run("recordTurnIds", () => {
+        database.exec("BEGIN");
+        try {
+          database
+            .prepare(
+              `INSERT OR IGNORE INTO run_ids (run_id, mend_session_id, mend_turn_id, created_at)
+               VALUES (?, ?, ?, ?)`,
+            )
+            .run(ids.runId, ids.sessionId, ids.turnId, at);
+          database
+            .prepare(
+              `INSERT OR IGNORE INTO message_ids (message_id, mend_session_id, mend_ref, created_at)
+               VALUES (?, ?, ?, ?)`,
+            )
+            .run(ids.messageId, ids.sessionId, ids.turnId, at);
+          database.exec("COMMIT");
+        } catch (error) {
+          database.exec("ROLLBACK");
+          throw error;
+        }
+      });
+
+    const listTurnIds = () =>
+      run("listTurnIds", () =>
+        database
+          .prepare(
+            `SELECT r.mend_session_id AS session_id, r.mend_turn_id AS turn_id, r.run_id AS run_id,
+                    m.message_id AS message_id
+               FROM run_ids r
+               JOIN message_ids m ON m.mend_session_id = r.mend_session_id AND m.mend_ref = r.mend_turn_id`,
+          )
+          .all(),
+      ).pipe(
+        Effect.flatMap((rows) =>
+          decodeTurnIdsRows(rows).pipe(
+            Effect.mapError((cause) => new GatewayStateError({ operation: "listTurnIds", cause })),
+          ),
+        ),
+        Effect.map((rows) =>
+          rows.map(
+            (row): TurnIds => ({
+              sessionId: row.session_id,
+              turnId: row.turn_id,
+              runId: row.run_id,
+              messageId: row.message_id,
+            }),
+          ),
+        ),
+      );
+
+    return {
+      environmentId,
+      insertSession,
+      findSession,
+      findSessionById,
+      revokeSession,
+      revokeSessionsForDevice,
+      recordTurnIds,
+      listTurnIds,
+    };
   });
 
 /** The state file at the configured path. */

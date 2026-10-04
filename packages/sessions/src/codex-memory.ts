@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
 
+import type { HoldsDatabase, MergeDatabase } from "@mend/db";
 import { CODEX_MEMORY_DATABASE } from "@mend/domain/workbench";
 import { Effect } from "effect";
 
@@ -245,6 +246,178 @@ export const consolidateCodexDatabase = (
         check.close();
       }
       return new Uint8Array(await fs.readFile(out));
+    } catch {
+      return null;
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+/**
+ * Two of Codex's summary databases as one (docs/adr/0009, decision 4): `ours` with every summary
+ * `theirs` holds of a conversation `ours` has not summarised, or has summarised at an older
+ * revision. Everything else (Codex's jobs, its consolidation state) stays `ours`'. Null, and the
+ * caller keeps `ours` and the machine's whole, when the two do not open as databases, their
+ * `stage1_outputs` columns differ (another Codex version), a revision is not an integer, or both
+ * hold one conversation at the same revision with other words, which one row cannot keep.
+ */
+export const mergeCodexDatabases: MergeDatabase = ({ ours, theirs }) =>
+  Effect.promise(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mend-codex-merge-"));
+    try {
+      const mine = path.join(dir, "ours.sqlite");
+      const other = path.join(dir, "theirs.sqlite");
+      const out = path.join(dir, "merged.sqlite");
+      await fs.writeFile(mine, ours);
+      await fs.writeFile(other, theirs);
+      const db = new DatabaseSync(mine);
+      try {
+        db.exec(`attach database '${other.replaceAll("'", "''")}' as theirs`);
+        const columns = (schema: string) =>
+          db
+            .prepare("select name from pragma_table_info('stage1_outputs', ?) order by cid")
+            .all(schema)
+            .map((row) => String(row["name"]))
+            .join(",");
+        const own = columns("main");
+        if (own === "" || own !== columns("theirs") || !own.split(",").includes("thread_id")) {
+          return null;
+        }
+        const count = (query: string) => Number(db.prepare(query).get()?.["n"] ?? 1);
+        // A revision that is not an integer cannot say which summary is newer: not merged.
+        for (const schema of ["main", "theirs"]) {
+          if (
+            count(
+              `select count(*) as n from ${schema}.stage1_outputs where typeof(source_updated_at) != 'integer'`,
+            ) > 0
+          ) {
+            return null;
+          }
+        }
+        // The same conversation at the same revision with other words: one row cannot keep both,
+        // so the two are not merged (a conflict, with the machine's database kept, pinned).
+        const content = own
+          .split(",")
+          .filter((column) => !SUMMARY_KEY_AND_USE.has(column))
+          .map((column) => `"${column.replaceAll('"', '""')}"`);
+        if (
+          content.length > 0 &&
+          count(`select count(*) as n from theirs.stage1_outputs t
+            join main.stage1_outputs m on m.thread_id = t.thread_id
+            where t.source_updated_at = m.source_updated_at
+              and (${content.map((column) => `t.${column} is not m.${column}`).join(" or ")})`) > 0
+        ) {
+          return null;
+        }
+        db.exec(`delete from main.stage1_outputs where thread_id in (
+          select t.thread_id from theirs.stage1_outputs t
+          join main.stage1_outputs m on m.thread_id = t.thread_id
+          where t.source_updated_at > m.source_updated_at)`);
+        db.exec("insert or ignore into main.stage1_outputs select * from theirs.stage1_outputs");
+        db.exec("detach database theirs");
+        db.exec(`vacuum into '${out.replaceAll("'", "''")}'`);
+      } finally {
+        db.close();
+      }
+      const check = new DatabaseSync(out, { readOnly: true });
+      try {
+        if (check.prepare("pragma integrity_check").get()?.["integrity_check"] !== "ok")
+          return null;
+      } finally {
+        check.close();
+      }
+      return new Uint8Array(await fs.readFile(out));
+    } catch {
+      return null;
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+/**
+ * Whether summary database `current` holds every summary `version` holds, at the same revision or
+ * a newer one (docs/adr/0009): when it does, a replaced `version` is not the only copy of anything
+ * and need not be pinned. False when either does not open as a summary database.
+ */
+export const codexDatabaseHolds: HoldsDatabase = ({ current, version }) =>
+  Effect.gen(function* () {
+    if (Buffer.from(current).equals(Buffer.from(version))) return true;
+    const [now, then] = yield* Effect.all([summaryRows(current), summaryRows(version)]);
+    // A database that does not open as a summary database holds nothing anyone can check.
+    if (now === null || then === null) return false;
+    for (const [thread, row] of then) {
+      const held = now.get(thread);
+      // Held only by the same thread, at a valid revision: a newer one, or the same one saying
+      // exactly the same. A missing row, an invalid revision or other words at the same revision
+      // is not held.
+      if (held === undefined || held.revision === null || row.revision === null) return false;
+      if (held.revision > row.revision) continue;
+      if (held.revision === row.revision && held.content === row.content) continue;
+      return false;
+    }
+    return true;
+  });
+
+/**
+ * Columns Codex changes as it uses a summary, or that key it: not part of what the summary says.
+ * Everything else in a row (`raw_memory`, `rollout_summary`, …) is its content.
+ */
+const SUMMARY_KEY_AND_USE = new Set([
+  "thread_id",
+  "source_updated_at",
+  "usage_count",
+  "last_usage",
+  "selected_for_phase2",
+  "selected_for_phase2_source_updated_at",
+]);
+
+/** One SQLite value as text that tells every value apart. */
+const valueText = (value: unknown): string =>
+  value === null
+    ? "n"
+    : typeof value === "string"
+      ? `s${value}`
+      : value instanceof Uint8Array
+        ? `b${Buffer.from(value).toString("base64")}`
+        : `v${String(value)}`;
+
+/**
+ * Each summary in a database, by thread: its revision (null unless a finite integer) and what it
+ * says (its content columns, as text). Null when the bytes do not open as a database with
+ * `stage1_outputs`.
+ */
+const summaryRows = (
+  database: Uint8Array,
+): Effect.Effect<ReadonlyMap<
+  string,
+  { readonly revision: number | null; readonly content: string }
+> | null> =>
+  Effect.promise(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mend-codex-rows-"));
+    try {
+      const file = path.join(dir, "memories_1.sqlite");
+      await fs.writeFile(file, database);
+      const db = new DatabaseSync(file, { readOnly: true });
+      try {
+        const rows = db.prepare("select * from stage1_outputs").all();
+        const out = new Map<string, { revision: number | null; content: string }>();
+        for (const row of rows) {
+          const thread = row["thread_id"];
+          if (typeof thread !== "string") return null;
+          const revision = row["source_updated_at"];
+          const content = Object.entries(row)
+            .filter(([column]) => !SUMMARY_KEY_AND_USE.has(column))
+            .map(([column, value]) => `${column}=${valueText(value)}`);
+          out.set(thread, {
+            revision:
+              typeof revision === "number" && Number.isSafeInteger(revision) ? revision : null,
+            content: JSON.stringify(content),
+          });
+        }
+        return out;
+      } finally {
+        db.close();
+      }
     } catch {
       return null;
     } finally {

@@ -10,6 +10,7 @@ import { GatewayAuthLive } from "./auth.ts";
 import { GatewayConfig } from "./config.ts";
 import { GatewayEnvironmentLive } from "./environment.ts";
 import { GatewayRoutesLive } from "./http.ts";
+import { ProjectionsLive } from "./hub.ts";
 import { MendClientLive } from "./mend-client.ts";
 import { GatewayStateLive } from "./state.ts";
 import { WebSocketTicketsLive } from "./tickets.ts";
@@ -23,9 +24,10 @@ export const MendClientFetchLive = MendClientLive.pipe(Layer.provide(FetchHttpCl
  */
 export const GatewayAppLive = GatewayRoutesLive.pipe(
   Layer.provide(GatewayAuthLive),
+  Layer.provide(ProjectionsLive),
   Layer.provideMerge(WebSocketTicketsLive),
   Layer.provideMerge(GatewayEnvironmentLive),
-  Layer.provide(MendClientFetchLive),
+  Layer.provideMerge(MendClientFetchLive),
   Layer.provideMerge(GatewayStateLive),
 );
 
