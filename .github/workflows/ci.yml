@@ -5,17 +5,31 @@ on:
     branches: [main]
   pull_request:
 
+# Checks read the repository and write nothing.
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Every install reads the committed lockfile, so a package published after the commit (a
+      # Sealant prerelease included) never drifts in. The brackets keep this step from matching
+      # itself.
+      - name: Installs stay bound to the lockfile
+        run: |
+          if git grep -nE 'lockfile[=]false|PNPM_CONFIG_LOCKFIL[E]|no-frozen-lockfil[e]' -- \
+            .github Dockerfile 'apps/*/Dockerfile' 'scripts/*.sh' 'tooling/**'; then
+            echo "::error::Install with --frozen-lockfile, not without the lockfile."
+            exit 1
+          fi
       # Build first: the vite builds generate the gitignored routeTree.gen.ts
       # files that typecheck needs — CI was red for weeks on exactly this.
       - run: pnpm build
@@ -30,4 +44,7 @@ jobs:
           scripts/packaged-ssh-acceptance.test.mjs scripts/packaged-git-access-acceptance.test.mjs
           scripts/packaged-dotfiles-acceptance.test.mjs scripts/helm-chart.test.mjs
           scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs
+          scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
+          scripts/check-release-pins.test.mjs scripts/mend-migrations.test.mjs
+          scripts/republish.test.mjs
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml

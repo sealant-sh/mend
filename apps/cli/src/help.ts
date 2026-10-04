@@ -1216,7 +1216,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "server upgrade",
     section: "this machine",
     summary: "upgrade to an explicit version with a database backup",
-    synopsis: ["--version <target|latest> [--assets-dir <dir>] [--offline]"],
+    synopsis: ["--version <target|latest> [--assets-dir <dir>] [--offline] [--from-preview]"],
     description: [
       "Preflights release assets and the canonical image's version label before interrupting Mend. Downgrades are refused. latest is resolved only when explicitly requested; a same-version request does nothing.",
       "The installed configuration stays: the bind, the origin, the ports, the edge host and the declared exposure and tenancy are carried into the new generation, which renders the same overlays beside the new compose.yaml. An upgrade never drops the edge or the posture; mend server setup is where they change.",
@@ -1235,6 +1235,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         flag: "--offline",
         text: "no GitHub requests or release-image pulls; target assets and exact-version images must be local",
+      },
+      {
+        flag: "--from-preview",
+        text: "once, from a preview numbered X.Y.Z-preview.K to a next build X.Y.Z-next.N; refused unless the target carries every migration the server applied",
       },
     ],
     examples: [

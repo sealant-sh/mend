@@ -11,9 +11,9 @@ catalog:
   "@dnd-kit/modifiers": ^9.0.0
   "@dnd-kit/sortable": ^10.0.0
   "@dnd-kit/utilities": ^3.2.2
-  # Effect family pinned exactly: CI installs with --lockfile=false, so a caret
-  # here means CI typechecks against a different effect than the lockfile runs
-  # (beta.94+ changed Schedule.modifyDelay and broke main's CI on 2026-08-01).
+  # Effect family pinned exactly: when CI installed with --lockfile=false, a
+  # caret here meant CI typechecked against a different effect than the lockfile
+  # ran (beta.94+ changed Schedule.modifyDelay and broke main's CI on 2026-08-01).
   "@effect/platform-node": 4.0.0-beta.98
   "@effect/sql-pg": 4.0.0-beta.98
   "@effect/vitest": 4.0.0-beta.98

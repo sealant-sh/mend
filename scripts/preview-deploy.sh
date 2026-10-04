@@ -32,7 +32,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: preview-deploy.sh <version> <mend-commit-sha> [mend server setup options]
 
-  version          the version the preview workflow printed, such as 0.36.0-preview.17
+  version          the version the preview workflow printed, such as 0.36.0-next.56.preview.17
   mend-commit-sha  the full 40-character Mend commit the workflow built
 USAGE
   exit 2
@@ -44,7 +44,7 @@ commit=$2
 shift 2
 
 [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]] ||
-  die "version must be an exact Mend version such as 0.36.0-preview.17, not \"$version\"."
+  die "version must be an exact Mend version such as 0.36.0-next.56.preview.17, not \"$version\"."
 [[ $commit =~ ^[0-9a-f]{40}$ ]] ||
   die "mend-commit-sha must be the full 40-character commit the workflow printed, not \"$commit\"."
 [[ $EUID -eq 0 ]] || die "run this as root: mend server setup and upgrade drive the host's Docker."

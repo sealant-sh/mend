@@ -15,9 +15,9 @@ on:
         required: false
         type: string
 
+# Only the jobs that push hold packages: write.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   version:
@@ -26,7 +26,49 @@ jobs:
     outputs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
+      commit: ${{ steps.commit.outputs.commit }}
     steps:
+      # A dispatch of image.yml itself pushes ghcr.io/sealant-sh/mend:<version>, the tag
+      # `mend server setup` pulls: from main only, and only for a version that has its git tag (built
+      # from that tag's commit, not main's head), or a dev or acceptance build. A call from
+      # release-acceptance.yml or release-cli.yml carries its caller's event and ref, so the check
+      # reads github.workflow_ref, the top-level workflow, and builds the caller's commit.
+      - name: Choose the commit to build
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          commit=$GITHUB_SHA
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch &&
+            $GITHUB_WORKFLOW_REF == "$GITHUB_REPOSITORY/.github/workflows/image.yml@"* ]]; then
+            if [[ $GITHUB_REF != refs/heads/main ]]; then
+              echo "::error::Dispatch image.yml from main only."
+              exit 1
+            fi
+            case $OVERRIDE_VERSION in
+              "" | 0.0.0-dev.* | 0.0.0-acceptance.*) ;;
+              *)
+                # git/ref names exactly one ref (a prefix or a branch never matches); an annotated
+                # tag is peeled to its commit.
+                if ! ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$OVERRIDE_VERSION" \
+                  --jq '.object.type + " " + .object.sha' 2>/dev/null); then
+                  echo "::error::No tag v$OVERRIDE_VERSION: a dispatch builds a tagged version or a dev build."
+                  exit 1
+                fi
+                commit=${ref##* }
+                if [[ ${ref%% *} == tag ]]; then
+                  commit=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$commit" --jq .object.sha)
+                fi
+                [[ $commit =~ ^[0-9a-f]{40}$ ]] || {
+                  echo "::error::v$OVERRIDE_VERSION does not name a commit."
+                  exit 1
+                }
+                ;;
+            esac
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - name: Resolve one version for image labels and tags
         id: resolve
         env:
@@ -50,6 +92,9 @@ jobs:
           NODE
 
   build:
+    permissions:
+      contents: read
+      packages: write
     needs: version
     strategy:
       matrix:
@@ -63,15 +108,20 @@ jobs:
           - { arch: arm64, runner: blacksmith-4vcpu-ubuntu-2404-arm }
     runs-on: ${{ matrix.platform.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      # BuildKit at a fixed digest: it runs privileged and performs the push.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: ${{ matrix.image.dockerfile }}
@@ -88,7 +138,7 @@ jobs:
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digests-${{ matrix.image.id }}--${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -96,6 +146,9 @@ jobs:
           retention-days: 1
 
   merge:
+    permissions:
+      contents: read
+      packages: write
     runs-on: blacksmith-4vcpu-ubuntu-2404
     needs: [version, build]
     strategy:
@@ -106,13 +159,12 @@ jobs:
           - { id: mend-api, name: mend-api, baseline: false }
           - { id: mend-web, name: mend-web, baseline: false }
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: digests-${{ matrix.image.id }}--*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -125,6 +177,14 @@ jobs:
             ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
             }}
         run: |
+          set -euo pipefail
+          # A version is pushed once. Overwriting ghcr.io/sealant-sh/mend:<version> would change
+          # what every server pinned to it pulls. Only a commit's own dev build may be rebuilt.
+          if [[ $VERSION != 0.0.0-dev.* && $VERSION != 0.0.0-acceptance.* ]] &&
+            docker buildx imagetools inspect "$REPOSITORY:$VERSION" >/dev/null 2>&1; then
+            echo "::error::$REPOSITORY:$VERSION already exists; a version is pushed once."
+            exit 1
+          fi
           sources=()
           for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
           docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"
@@ -145,14 +205,16 @@ jobs:
       contents: read
       packages: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
           cache: pnpm

@@ -25,6 +25,7 @@ WORKDIR /app
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build
+RUN node scripts/mend-migrations.mjs > /app/mend-migrations.txt
 
 # The runtime is the same slim Node image the build stages use. Sealant's published bundles
 # support this newer Node too.
@@ -66,6 +67,18 @@ COPY --from=sealant-worker /app/node_modules /opt/sealant/worker/node_modules
 COPY --from=sealant-worker /app/microvm-image /opt/sealant/worker/microvm-image
 COPY --from=sealant-ssh-gateway /app/dist /opt/sealant/ssh-gateway/dist
 COPY --from=sealant-ssh-gateway /app/node_modules /opt/sealant/ssh-gateway/node_modules
+# Every migration this image carries: Mend's as `mend <id>_<name>`, Sealant's as
+# `sealant <folder> <sha256 of migration.sql>` (drizzle's hash). `mend server upgrade --from-preview`
+# reads it to refuse a target that lacks, changed or would skip one a server already applied.
+COPY --from=mend-build /app/mend-migrations.txt /tmp/mend-migrations.txt
+RUN { sed 's/^/mend /' /tmp/mend-migrations.txt; \
+    for folder in /opt/sealant/api/drizzle/*/; do \
+      if [ -f "${folder}migration.sql" ]; then \
+        echo "sealant $(basename "$folder") $(sha256sum "${folder}migration.sql" | cut -d ' ' -f 1)"; \
+      fi; \
+    done; } > /app/migrations.txt \
+  && rm /tmp/mend-migrations.txt \
+  && grep -q '^mend ' /app/migrations.txt && grep -q '^sealant ' /app/migrations.txt
 RUN mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /run/sealant/sockets /run/mend-bundle
 
 ENV NODE_ENV=production \
