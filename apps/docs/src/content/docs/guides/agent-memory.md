@@ -15,8 +15,8 @@ learned.
 
 Your memory is yours. Other people's sessions on the same project never receive it, and yours never
 receive theirs. When someone steers your session under shared control, what the agent learns goes
-into your memory, as it runs on your login. The one exception is a session that joins another
-person's executor on a server: see
+into your memory, as it runs on your login. On a server, sharing a worktree with someone has two
+exceptions: see
 [Known issues](/reference/known-issues/#a-session-that-joins-someone-elses-executor-uses-their-memory).
 
 ## Bring what your machine already knows

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { ProjectId } from "@mend/domain";
+import type { ProjectId, WorktreeId } from "@mend/domain";
 import {
   AGENT_MEMORY_MAX_BYTES,
   agentMemoryMaxFileBytes,
@@ -26,6 +26,7 @@ import * as Context from "effect/Context";
 import { MendDB, type MendDatabase } from "../client.ts";
 import {
   agentMemoryFiles,
+  agentMemoryHomes,
   agentMemoryImportBases,
   agentMemoryVersions,
 } from "../schema/workbench.ts";
@@ -392,8 +393,24 @@ export class AgentMemoryRepo extends Context.Service<
       readonly mergeDatabase: MergeDatabase;
       readonly holdsDatabase: HoldsDatabase;
     }) => Effect.Effect<AgentMemoryImportReport>;
+    /**
+     * Whose memory a worktree's capture-mode home holds, as the server decided it at the launch
+     * of the executor holding it (`workspaceId`); null when no launch recorded one.
+     */
+    readonly homeOf: (worktreeId: WorktreeId) => Effect.Effect<AgentMemoryHome | null>;
+    /** The home is `home.userId`'s, held by the executor `home.workspaceId`, from now on. */
+    readonly recordHome: (worktreeId: WorktreeId, home: AgentMemoryHome) => Effect.Effect<void>;
   }
 >()("@mend/db/AgentMemoryRepo") {}
+
+/** Whose memory a capture-mode harness home holds, and the executor holding it. */
+export interface AgentMemoryHome {
+  /** Null: the person was removed, or nobody could be named. */
+  readonly userId: string | null;
+  /** The session whose launch made the executor; its row may be gone. */
+  readonly sessionId: string | null;
+  readonly workspaceId: string;
+}
 
 type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "delete" | "execute">;
 
@@ -939,6 +956,30 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    return { forLaunch, list, read, remove, readBack, importFiles };
+    const homeOf = Effect.fn("AgentMemoryRepo.homeOf")(function* (worktreeId: WorktreeId) {
+      const [row] = yield* db
+        .select()
+        .from(agentMemoryHomes)
+        .where(eq(agentMemoryHomes.worktreeId, worktreeId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined
+        ? null
+        : { userId: row.userId, sessionId: row.sessionId, workspaceId: row.workspaceId };
+    });
+
+    const recordHome = Effect.fn("AgentMemoryRepo.recordHome")(function* (
+      worktreeId: WorktreeId,
+      home: AgentMemoryHome,
+    ) {
+      const values = { ...home, updatedAt: new Date() };
+      yield* db
+        .insert(agentMemoryHomes)
+        .values({ worktreeId, ...values })
+        .onConflictDoUpdate({ target: agentMemoryHomes.worktreeId, set: values })
+        .pipe(Effect.orDie);
+    });
+
+    return { forLaunch, list, read, remove, readBack, importFiles, homeOf, recordHome };
   }),
 );

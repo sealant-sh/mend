@@ -688,6 +688,21 @@ export const agentMemoryImportBases = pgTable(
   (table) => [primaryKey({ columns: [table.userId, table.projectId, table.source, table.path] })],
 );
 
+/**
+ * Whose memory a worktree's capture-mode harness home holds (docs/adr/0009): decided by the
+ * server when the executor holding it was launched. Outlives the session rows.
+ */
+export const agentMemoryHomes = pgTable("agent_memory_homes", {
+  worktreeId: text()
+    .$type<WorktreeId>()
+    .primaryKey()
+    .references(() => worktrees.id, { onDelete: "cascade" }),
+  userId: text(),
+  sessionId: text(),
+  workspaceId: text().notNull(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),

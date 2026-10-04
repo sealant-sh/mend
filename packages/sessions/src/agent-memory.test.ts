@@ -100,7 +100,6 @@ describe("delivering agent memory into a harness home", () => {
       `${ROOT}/learned.md`,
     ]);
     expect(read.delivered).toEqual({ [`${ROOT}/MEMORY.md`]: stored("MEMORY.md", "v1\n").digest });
-    expect(read.owner).toEqual({ kind: "named", userId: "user-anna" });
   });
 
   it("records whose memory the home holds, with nothing stored too, and the next person's over it", async () => {
@@ -108,14 +107,7 @@ describe("delivering agent memory into a harness home", () => {
     await deliver(home, [], "user-anna");
     expect(fs.readFileSync(path.join(home, AGENT_MEMORY_OWNER), "utf8")).toBe("user-anna");
     await deliver(home, [stored("MEMORY.md", "v1\n")], "user-maria");
-    expect((await Effect.runPromise(readAgentMemoryFromHome(home))).owner).toEqual({
-      kind: "named",
-      userId: "user-maria",
-    });
-    // A home no delivery recorded an owner in says nobody.
-    expect((await Effect.runPromise(readAgentMemoryFromHome(makeHome()))).owner).toEqual({
-      kind: "absent",
-    });
+    expect(fs.readFileSync(path.join(home, AGENT_MEMORY_OWNER), "utf8")).toBe("user-maria");
   });
 });
 
@@ -166,7 +158,6 @@ describe("a memory file the read-back could not read", () => {
     expect(
       withoutSkipped({
         delivered: { a: "1", ".codex/memories_1.sqlite": "2" },
-        owner: { kind: "absent" },
         files: [],
         skipped: [".codex/memories_1.sqlite"],
       }),
@@ -185,7 +176,7 @@ describe("handing a harness home over to another person (docs/adr/0009)", () => 
     fs.writeFileSync(path.join(home, ".codex", "memories_1.sqlite-wal"), "wal");
     fs.writeFileSync(path.join(home, ".codex", "auth.json"), "{}");
     const kept = agentMemoryHandoverKeptDir();
-    const [, , script, ...args] = handOverAgentMemoryExec(home, kept, "user-maria");
+    const [, , script, ...args] = handOverAgentMemoryExec(home, kept, "user-maria", false);
     const result = spawnSync("sh", ["-c", script ?? "", ...args], {
       encoding: "utf8",
       env: { PATH: process.env["PATH"] ?? "" },

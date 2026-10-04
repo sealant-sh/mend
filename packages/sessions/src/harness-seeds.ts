@@ -135,6 +135,33 @@ export const withCodexMemory = (argv: ReadonlyArray<string>): ReadonlyArray<stri
 };
 
 /**
+ * A Codex launch with its memory off, whatever it asked: when Mend could not take the other
+ * people's conversations in a capture-mode home out of Codex's memory (no node, no `node:sqlite`),
+ * Codex must not summarise them into the launcher's memory (docs/adr/0009, "Codex"). Takes both
+ * shapes Mend launches: `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
+ */
+export const withCodexMemoryOff = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const [head, ...rest] = argv;
+  if (head === "codex") {
+    const named = argv.some((arg) => arg.startsWith("features.memories"));
+    const turned = argv.map((arg) =>
+      arg.startsWith("features.memories") ? "features.memories=false" : arg,
+    );
+    return named ? turned : [head, "-c", "features.memories=false", ...rest];
+  }
+  const script = argv[2];
+  if (head === "sh" && argv[1] === "-c" && script !== undefined) {
+    return [
+      head,
+      "-c",
+      script.replaceAll("features.memories=true", "features.memories=false"),
+      ...argv.slice(3),
+    ];
+  }
+  return argv;
+};
+
+/**
  * Codex's background server, never started by a Codex session Mend starts. Codex 0.160's TUI
  * starts a shared app-server daemon by default (`features.daemon_auto_start`), and the daemon first
  * copies Codex's own release into `.codex/packages/app-server-daemon/`: about 427 MB in the harness

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { PgClient } from "@effect/sql-pg";
-import type { ProjectId } from "@mend/domain";
+import { type ProjectId, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -717,6 +717,39 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("records whose memory a worktree's home holds, past the session rows, and forgets a removed person", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('maria', 'Maria Example', 'maria@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-homes', ${project}, 'homes', 'homes', 'mend/homes', 'abc')`;
+        const worktree = WorktreeId.make("wt-homes");
+        expect(yield* repo.homeOf(worktree)).toBeNull();
+        yield* repo.recordHome(worktree, { userId: "anna", sessionId: "s1", workspaceId: "ws-1" });
+        yield* repo.recordHome(worktree, { userId: "maria", sessionId: "s2", workspaceId: "ws-2" });
+        expect(yield* repo.homeOf(worktree)).toEqual({
+          userId: "maria",
+          sessionId: "s2",
+          workspaceId: "ws-2",
+        });
+        // A removed person is nobody Mend can name; the executor it held is still known.
+        yield* sql`DELETE FROM "user" WHERE id = 'maria'`;
+        expect(yield* repo.homeOf(worktree)).toEqual({
+          userId: null,
+          sessionId: "s2",
+          workspaceId: "ws-2",
+        });
+        yield* sql`DELETE FROM worktrees WHERE id = 'wt-homes'`;
+        expect(yield* repo.homeOf(worktree)).toBeNull();
       }),
     );
   });

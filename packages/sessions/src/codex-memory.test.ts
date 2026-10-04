@@ -23,6 +23,10 @@ import {
   rolloutPathOf,
   summarisedThreads,
   type CodexRevision,
+  CODEX_MEMORY_WITHHELD,
+  CODEX_STATE_DATABASE,
+  codexMemoryMayStayOn,
+  withholdCodexThreadsExec,
 } from "./codex-memory.ts";
 import { CARRIED_TRANSCRIPTS, locateLiveTranscript } from "./harness-state.ts";
 
@@ -391,5 +395,87 @@ describe("readRolloutFacts", () => {
       memoryMode: "disabled",
     });
     expect(await Effect.runPromise(readRolloutFacts(path.join(scratch(), "none")))).toBeNull();
+  });
+});
+
+const runWithhold = (home: string, own: ReadonlyArray<string>) => {
+  const [, , script, ...args] = withholdCodexThreadsExec(home, own);
+  return spawnSync("sh", ["-c", script ?? "", ...args], { encoding: "utf8" });
+};
+const threadModes = (home: string) => {
+  const db = new DatabaseSync(path.join(home, CODEX_STATE_DATABASE), { readOnly: true });
+  const rows = db.prepare("SELECT id, memory_mode FROM threads ORDER BY id").all();
+  db.close();
+  return Object.fromEntries(rows.map((row) => [String(row["id"]), String(row["memory_mode"])]));
+};
+
+describe("other people's conversations in a capture-mode home (docs/adr/0009, Codex)", () => {
+  const OWN = "11111111-1111-4111-8111-111111111111";
+  const THEIRS = "22222222-2222-4222-8222-222222222222";
+  const THEY_CHOSE = "33333333-3333-4333-8333-333333333333";
+  const OWN_WITHHELD = "44444444-4444-4444-8444-444444444444";
+  const OWN_CHOSE = "55555555-5555-4555-8555-555555555555";
+  it("takes every thread that is not the launcher's out of Codex's memory, gives back only what it took, through the write-ahead log", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-withhold-"));
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    const db = new DatabaseSync(path.join(home, CODEX_STATE_DATABASE));
+    db.exec("PRAGMA journal_mode=WAL");
+    db.exec(
+      "CREATE TABLE threads (id TEXT PRIMARY KEY, memory_mode TEXT NOT NULL DEFAULT 'enabled')",
+    );
+    const insert = db.prepare("INSERT INTO threads (id, memory_mode) VALUES (?, ?)");
+    insert.run(OWN, "enabled");
+    insert.run(THEIRS, "enabled");
+    insert.run(THEY_CHOSE, "disabled");
+    insert.run(OWN_WITHHELD, "disabled");
+    insert.run(OWN_CHOSE, "disabled");
+    // Held open, as a Codex in a joined executor would: the change goes through SQLite's locking.
+    fs.mkdirSync(path.join(home, ".mend"), { recursive: true });
+    fs.writeFileSync(path.join(home, CODEX_MEMORY_WITHHELD), JSON.stringify([OWN_WITHHELD]));
+
+    const result = runWithhold(home, [OWN, OWN_WITHHELD, OWN_CHOSE]);
+    expect(result.status).toBe(0);
+    expect(codexMemoryMayStayOn(result.status ?? -1, result.stdout)).toBe(true);
+    expect(result.stdout.trim()).toBe("withheld 1 restored 1");
+    db.close();
+    expect(threadModes(home)).toEqual({
+      [OWN]: "enabled",
+      [THEIRS]: "disabled",
+      // A mode a person chose is theirs: neither taken nor given back.
+      [THEY_CHOSE]: "disabled",
+      [OWN_WITHHELD]: "enabled",
+      [OWN_CHOSE]: "disabled",
+    });
+    expect(JSON.parse(fs.readFileSync(path.join(home, CODEX_MEMORY_WITHHELD), "utf8"))).toEqual([
+      THEIRS,
+    ]);
+
+    // The other person launches next: theirs comes back, the first launcher's goes out.
+    const next = runWithhold(home, [THEIRS]);
+    expect(next.stdout.trim()).toBe("withheld 2 restored 1");
+    expect(threadModes(home)[THEIRS]).toBe("enabled");
+    expect(threadModes(home)[OWN]).toBe("disabled");
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("with no state database yet, Codex's memory goes off when another person's rollout is in the home", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-withhold-"));
+    const day = path.join(home, ".codex", "sessions", "2026", "10", "05");
+    fs.mkdirSync(day, { recursive: true });
+    fs.writeFileSync(path.join(day, `rollout-2026-10-05T10-00-00-${OWN}.jsonl`), "{}\n");
+    const clean = runWithhold(home, [OWN]);
+    expect(clean.stdout.trim()).toBe("clean");
+    expect(codexMemoryMayStayOn(clean.status ?? -1, clean.stdout)).toBe(true);
+    fs.writeFileSync(path.join(day, `rollout-2026-10-05T11-00-00-${THEIRS}.jsonl`), "{}\n");
+    const theirs = runWithhold(home, [OWN]);
+    expect(theirs.stdout).toContain("memory-off");
+    expect(codexMemoryMayStayOn(theirs.status ?? -1, theirs.stdout)).toBe(false);
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("anything else turns Codex's memory off: no node, no node:sqlite, a failure", () => {
+    expect(codexMemoryMayStayOn(127, "")).toBe(false);
+    expect(codexMemoryMayStayOn(3, "")).toBe(false);
+    expect(codexMemoryMayStayOn(1, "withheld 1 restored 0")).toBe(false);
   });
 });

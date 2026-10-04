@@ -61,6 +61,7 @@ import {
   WorktreeNotFoundError,
   type ExecutorCaptureEvidence,
   piProfileDigest,
+  type AgentMemoryHome,
   agentMemoryDigest,
 } from "@mend/db";
 import {
@@ -953,8 +954,12 @@ const secretFilesLayerOf = (
 /** The owner's agent memory; none stored, and every read-back recorded, unless a test says. */
 const agentMemoryLayerOf = (
   implement: Partial<AgentMemoryRepo["Service"]> = {},
+  /** Whose memory each worktree's home holds, as the server records it (`agent_memory_homes`). */
+  homes: Map<string, AgentMemoryHome> = new Map(),
 ): Layer.Layer<AgentMemoryRepo> =>
   Layer.succeed(AgentMemoryRepo, {
+    homeOf: (worktreeId) => Effect.sync(() => homes.get(worktreeId) ?? null),
+    recordHome: (worktreeId, home) => Effect.sync(() => void homes.set(worktreeId, home)),
     forLaunch: () => Effect.succeed([]),
     list: () => Effect.succeed([]),
     read: () => Effect.succeed(null),
@@ -9130,7 +9135,8 @@ describe("SessionEngine capture mode", () => {
   it.each([
     ["no owner record", null, "user-fixture"],
     ["the record names the holder", "user-fixture", "user-fixture"],
-    ["the record forged to name the joiner", "user-maria", null],
+    // The home's own record is never consulted: whatever it says, the server decides.
+    ["the record forged to name the joiner", "user-maria", "user-fixture"],
   ] as const)(
     "agent memory in a joined executor is read back only for the person whose launch made it, as the server knows it (%s; docs/adr/0009)",
     { timeout: 20_000 },
@@ -9246,10 +9252,197 @@ describe("SessionEngine capture mode", () => {
   );
 
   it.each([
+    ["withheld", 0, "withheld 1 restored 0", "features.memories=true"],
+    ["no node in the image", 127, "", "features.memories=false"],
+  ] as const)(
+    "a Codex launch takes other people's conversations in the home out of Codex's memory first, or starts with its memory off (%s; docs/adr/0009, Codex)",
+    { timeout: 20_000 },
+    async (_label, exitCode, stdout, memoryFlag) => {
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const withholds: Array<ReadonlyArray<string>> = [];
+      const memory = makeMemoryCaptureStore();
+      const mine = crypto.randomUUID();
+      const theirs = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const earlier = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const other = yield* engine.provisionSessionIn(earlier.worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: "user-maria",
+            });
+            // Each person's earlier Codex conversation in this worktree, ended.
+            for (const [sessionId, providerSessionId] of [
+              [earlier.id, mine],
+              [other.id, theirs],
+            ] as const) {
+              const processId = SessionProcessId.make(crypto.randomUUID());
+              world.processes.set(
+                processId,
+                new SessionProcess({
+                  id: processId,
+                  sessionId,
+                  sealantWorkspaceId: SealantWorkspaceId.make("ws-earlier"),
+                  sealantSessionId: "pty-earlier",
+                  sealantRunId: SealantRunId.make("run-earlier"),
+                  launchCorrelationId: null,
+                  serviceId: null,
+                  attemptOrdinal: null,
+                  kind: "agent-pty",
+                  harness: "codex",
+                  providerSessionId,
+                  protocolOptions: null,
+                  label: "codex",
+                  argv: ["codex"],
+                  status: "exited",
+                  exitCode: 0,
+                  workspacePort: null,
+                  protocol: "tcp",
+                  hostPort: null,
+                  createdAt: now(),
+                  exitedAt: now(),
+                  updatedAt: now(),
+                }),
+              );
+            }
+            const session = yield* engine.provisionSessionIn(earlier.worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            yield* engine.launch(session.id, ["codex"]);
+            // The launcher's own conversations stay in Codex's memory; Maria's do not.
+            expect(withholds).toHaveLength(1);
+            expect(JSON.parse(withholds[0]?.at(-1) ?? "[]")).toEqual([mine]);
+            const agentArgv = spawned.at(-1) ?? [];
+            expect(agentArgv).toContain(memoryFlag);
+            expect(agentArgv).not.toContain(
+              memoryFlag === "features.memories=true"
+                ? "features.memories=false"
+                : "features.memories=true",
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            spawned,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              exec: (argv) => {
+                if (argv[3]?.includes("memory_mode") !== true) return undefined;
+                withholds.push(argv);
+                return { exitCode, stdout, stderr: "" };
+              },
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a join waits while the holder's launch hands the worktree's home over (docs/adr/0009)",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const homes = new Map<string, AgentMemoryHome>();
+      const handingOver = await Effect.runPromise(Deferred.make<void>());
+      const release = await Effect.runPromise(Deferred.make<void>());
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const holder = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            // The worktree's home was Maria's: the holder's launch hands it over.
+            homes.set(holder.worktreeId, {
+              userId: "user-maria",
+              sessionId: null,
+              workspaceId: "ws-earlier",
+            });
+            const launching = yield* engine.launch(holder.id, ["claude"]).pipe(Effect.forkChild);
+            yield* Deferred.await(handingOver);
+            const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const joining = yield* engine.launch(joined.id, ["claude"]).pipe(Effect.forkChild);
+            yield* Effect.sleep(Duration.millis(150));
+            // Nothing started while the home still held Maria's memory.
+            expect(spawned).toEqual([]);
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(launching);
+            yield* Fiber.join(joining);
+            expect(created).toHaveLength(1);
+            expect(world.sessions.get(joined.id)?.sealantWorkspaceId).toBe("workspace-1");
+            expect(spawned).toHaveLength(2);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { leaseWait: Duration.seconds(10), leaseWaitInterval: Duration.millis(10) },
+          agentMemoryLayer: agentMemoryLayerOf({}, homes),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            spawned,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              execEffect: (argv) =>
+                argv[2]?.includes(".mend/agent-memory-kept") === true
+                  ? Deferred.succeed(handingOver, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.as({ exitCode: 0, stdout: "", stderr: "" }),
+                    )
+                  : undefined,
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it.each([
     ["the hand-over finishes", false],
     ["the first hand-over cannot move the memory aside", true],
   ] as const)(
-    "a person who launches in a worktree another person used never takes their memory: it is read back for them first, then kept aside (%s; docs/adr/0009)",
+    "a person who launches in a worktree another person used never takes their memory: it is read back for them first, then moved out of the way (%s; docs/adr/0009)",
     { timeout: 30_000 },
     async (_label, firstHandoverFails) => {
       let handoverFails = firstHandoverFails;
@@ -9314,12 +9507,12 @@ describe("SessionEngine capture mode", () => {
               );
               expect(world.sessions.get(failed.id)?.status).toBe("failed");
               handoverFails = false;
-              readBacks.splice(0);
             }
             const maria = yield* startMaria;
             yield* engine.launch(maria.id, ["claude"]);
             expect(created).toHaveLength(firstHandoverFails ? 3 : 2);
-            // Anna's unsaved memory reached Anna first, credited to her own session.
+            // Anna's unsaved memory reached Anna first, credited to her own session, once: a retried
+            // hand-over of the same home does not save it over itself again.
             expect(readBacks.map((input) => [input.userId, input.sessionId])).toEqual([
               ["user-fixture", anna.id],
             ]);
@@ -9327,26 +9520,13 @@ describe("SessionEngine capture mode", () => {
               `${root}/MEMORY.md`,
               `${root}/feedback.md`,
             ]);
-            // Then it moved aside in Maria's executor: kept, never deleted, and nowhere Maria's
-            // agent or read-back looks.
+            // Then it left Maria's executor: nowhere Maria's agent or read-back looks. Anna's store
+            // took all of it, so no kept set rides along into every later executor here.
             const second = created.at(-1);
             if (second === undefined) return yield* Effect.die("Maria's launch made no executor");
             const mariaHome = configuredHarnessHomePath(second, relocation.executorRoot);
             expect(fs.existsSync(path.join(mariaHome, root))).toBe(false);
-            const keptDirs = fs.readdirSync(path.join(mariaHome, ".mend/agent-memory-kept"));
-            expect(keptDirs).toHaveLength(1);
-            expect(
-              fs.readFileSync(
-                path.join(
-                  mariaHome,
-                  ".mend/agent-memory-kept",
-                  keptDirs[0] ?? "",
-                  root,
-                  "feedback.md",
-                ),
-                "utf8",
-              ),
-            ).toBe("Anna prefers small PRs\n");
+            expect(fs.existsSync(path.join(mariaHome, ".mend/agent-memory-kept"))).toBe(false);
             expect(fs.readFileSync(path.join(mariaHome, ".mend/agent-memory-owner"), "utf8")).toBe(
               "user-maria",
             );
@@ -9411,6 +9591,153 @@ describe("SessionEngine capture mode", () => {
                   if (source?.kind !== "capture" || source.worktreeId === undefined) {
                     throw new Error("test executor requires a capture source");
                   }
+                  yield* restoreConfiguredHarnessHome(
+                    testRoot,
+                    memory,
+                    WorktreeId.make(source.worktreeId),
+                    options,
+                    relocation.executorRoot,
+                  );
+                }),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a removed session's executor is still its owner's: the next person's launch hands that memory over, never takes it (docs/adr/0009)",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
+      const relocation = { homePath: "", executorRoot: "" };
+      const root = ".claude/projects/-workspace-repo/memory";
+      let testRoot = "";
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            testRoot = tmp;
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            // Anna used the worktree once; nothing of her memory is in its home.
+            const anna = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(anna.id, ["claude"]);
+            yield* engine.stop(anna.id);
+            yield* until(() => world.sessions.get(anna.id)?.settledAt != null, "Anna settles");
+
+            // Maria is new: nothing stored. Her agent learns, and her read-back saves it.
+            const maria = yield* engine.provisionSessionIn(anna.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-maria",
+            });
+            yield* engine.launch(maria.id, ["claude"]);
+            const mariaExecutor = created.at(-1);
+            if (mariaExecutor === undefined) return yield* Effect.die("Maria's launch made none");
+            const mariaHome = configuredHarnessHomePath(mariaExecutor, relocation.executorRoot);
+            // Her hand-over wrote the owner record though she had nothing to deliver.
+            expect(fs.readFileSync(path.join(mariaHome, ".mend/agent-memory-owner"), "utf8")).toBe(
+              "user-maria",
+            );
+            fs.mkdirSync(path.join(mariaHome, root), { recursive: true });
+            fs.writeFileSync(path.join(mariaHome, root, "MEMORY.md"), "- [b](b.md)\n");
+            fs.writeFileSync(path.join(mariaHome, root, "b.md"), "Maria deploys on Fridays\n");
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              anna.worktreeId,
+              memory.leases.get(anna.worktreeId)?.epoch ?? 0,
+              mariaExecutor,
+              relocation.executorRoot,
+            );
+            yield* engine.stop(maria.id);
+            yield* until(() => readBacks.length > 0, "Maria's read-back");
+            expect(readBacks.map((input) => input.userId)).toEqual(["user-maria"]);
+            yield* until(() => world.sessions.get(maria.id)?.settledAt != null, "Maria settles");
+
+            // Maria removes her session: its row and its processes are gone; the worktree stays.
+            world.sessions.delete(maria.id);
+            for (const [id, row] of world.processes) {
+              if (row.sessionId === maria.id) world.processes.delete(id);
+            }
+
+            // Anna starts again in the worktree. The server still knows the home is Maria's.
+            const again = yield* engine.provisionSessionIn(anna.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            yield* engine.launch(again.id, ["claude"]);
+            const annaExecutor = created.at(-1);
+            if (annaExecutor === undefined) return yield* Effect.die("Anna's launch made none");
+            const annaHome = configuredHarnessHomePath(annaExecutor, relocation.executorRoot);
+            // Maria's memory is out of Anna's way, and nothing of it was credited to Anna.
+            expect(fs.existsSync(path.join(annaHome, root, "b.md"))).toBe(false);
+            expect(readBacks.map((input) => input.userId)).toEqual(["user-maria"]);
+
+            // Anna's agent learns; her read-back holds hers alone.
+            fs.mkdirSync(path.join(annaHome, root), { recursive: true });
+            fs.writeFileSync(path.join(annaHome, root, "a.md"), "Anna reviews on Mondays\n");
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              anna.worktreeId,
+              memory.leases.get(anna.worktreeId)?.epoch ?? 0,
+              annaExecutor,
+              relocation.executorRoot,
+            );
+            yield* engine.stop(again.id);
+            yield* until(() => readBacks.length > 1, "Anna's read-back");
+            expect(readBacks[1]?.userId).toBe("user-fixture");
+            expect(readBacks[1]?.session.map((file) => file.path)).toEqual([`${root}/a.md`]);
+          }),
+        {
+          captured: memory,
+          agentMemoryLayer: agentMemoryLayerOf({
+            readBack: (input) =>
+              Effect.sync(() => {
+                readBacks.push(input);
+                return { saved: [], merged: [], deleted: [], skipped: [] };
+              }),
+          }),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              relocation,
+              beforeCreate: (options) =>
+                Effect.gen(function* () {
+                  relocation.executorRoot = path.join(
+                    testRoot,
+                    `removed-executor-${created.length}`,
+                  );
+                  relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+                  fs.mkdirSync(relocation.executorRoot, { recursive: true });
+                  const source = options.source;
+                  if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                    throw new Error("test executor requires a capture source");
+                  }
+                  const head = memory.chains.get(WorktreeId.make(source.worktreeId))?.headCapture;
+                  if (head === null || head === undefined) return;
                   yield* restoreConfiguredHarnessHome(
                     testRoot,
                     memory,

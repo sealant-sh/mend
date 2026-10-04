@@ -37,6 +37,7 @@ import {
   SessionRunsRepo,
   SessionsRepo,
   AgentMemoryRepo,
+  agentMemoryDigest,
   PiProfilesRepo,
   SecretFilesRepo,
   SettingsRepo,
@@ -212,8 +213,6 @@ import * as Semaphore from "effect/Semaphore";
 
 import {
   AGENT_MEMORY_DELIVERED,
-  AGENT_MEMORY_OWNER,
-  type AgentMemoryOwnerRecord,
   type AgentMemoryRead,
   agentMemoryHandoverKeptDir,
   asMemoryFile,
@@ -221,10 +220,8 @@ import {
   handOverAgentMemoryExec,
   materializeAgentMemory,
   mergeTextUnion,
-  ownerRecordAllows,
   parseAgentMemoryDelivered,
   parseAgentMemoryOutcomes,
-  parseAgentMemoryOwner,
   planAgentMemory,
   readAgentMemoryFromHome,
   withoutSkipped,
@@ -249,6 +246,7 @@ import { CaptureSeals } from "./capture-seals.ts";
 import {
   carryConversationsExec,
   codexDatabaseHolds,
+  codexMemoryMayStayOn,
   consolidateCodexDatabase,
   materializeCarriedConversations,
   parseCarryOutcomes,
@@ -260,12 +258,13 @@ import {
   summarisedThreads,
   type CodexRevision,
   type RolloutFacts,
+  withholdCodexThreadsExec,
 } from "./codex-memory.ts";
 import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
-import { CODEX_DAEMON_OFF, withHarnessSetup } from "./harness-seeds.ts";
+import { CODEX_DAEMON_OFF, withCodexMemoryOff, withHarnessSetup } from "./harness-seeds.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
@@ -598,6 +597,10 @@ const logAgentMemoryDelivered = (
         }),
       );
 };
+
+/** A hand-over that could not finish: the launch fails rather than start on another's memory. */
+const notHandedOver = (message: string, cause: unknown) =>
+  new SealantPlatformError({ code: "AGENT_MEMORY_NOT_HANDED_OVER", status: null, message, cause });
 
 /** A pi profile directory kept aside, or one that could not be cleared, is said once. */
 const logPiProfileVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
@@ -3057,6 +3060,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Images that ran no memory delivery for want of node: said once each (`deliverAgentMemory`). */
       const nodelessImages = new Set<string>();
+      /** Worktrees whose home is being handed over right now: a join waits (`handOverAgentMemory`). */
+      const memoryHandovers = new Set<WorktreeId>();
+      /** The last read credited per person, project and session (`creditAgentMemory`). */
+      const lastCredited = new Map<string, string>();
 
       /**
        * The workspace of the executor a lease is bound to, as its holder's row names it: a lease
@@ -3338,6 +3345,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   "stopped while waiting for the previous session in this worktree · nothing launched",
                 cause: null,
               });
+            }
+            // The holder's launch is still handing its home over: a join would start on the
+            // previous person's memory, or have Codex's database moved from under it.
+            const handingOver =
+              holder.kind === "held" &&
+              memoryHandovers.has(session.worktreeId) &&
+              Date.now() < deadline;
+            if (handingOver) {
+              yield* Effect.sleep(drainPolicy.leaseWaitInterval);
+              continue;
             }
             if (holder.kind === "free" || holder.kind === "held" || Date.now() >= deadline) {
               if (said !== null) {
@@ -9491,7 +9508,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        *
        * In capture mode another person's memory never reaches it: `handOverAgentMemory` has
        * already moved it aside. An image without node cannot run the program; that is said once
-       * per image, not at every launch.
+       * per image, and its later launches stage nothing.
        */
       const deliverAgentMemory = Effect.fn("SessionEngine.deliverAgentMemory")(function* (
         session: Session,
@@ -9518,6 +9535,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return;
         }
         const home = HARNESS_HOME_MOUNT_PATH;
+        const image =
+          session.workspaceImage === null
+            ? "the default image"
+            : JSON.stringify(session.workspaceImage);
+        // Nothing staged where the program cannot run: staged files would stay in the shared home.
+        if (nodelessImages.has(image)) return;
         if (stored.length === 0) {
           const before = yield* sealant.exec(workspace, [
             "cat",
@@ -9536,12 +9559,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspace,
           deliverAgentMemoryExec(home, plan, session.ownerUserId),
         );
-        // `sh` says 127 for a command it cannot find: an image without node.
+        // `sh` says 127 for a command it cannot find: an image without node. What was staged for
+        // the program goes, so this person's memory does not stay in the worktree's home.
         if (delivered.exitCode === 127) {
-          const image =
-            session.workspaceImage === null
-              ? "the default image"
-              : JSON.stringify(session.workspaceImage);
+          yield* sealant
+            .exec(workspace, ["rm", "-rf", path.posix.join(home, ".mend/agent-memory-incoming")])
+            .pipe(Effect.ignore);
           if (!nodelessImages.has(image)) {
             nodelessImages.add(image);
             yield* Effect.logInfo(
@@ -9562,93 +9585,160 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Capture mode: the worktree's home is handed to the person launching this executor before
        * any of their memory goes in (docs/adr/0009). The home holds whatever the worktree's last
-       * executor left, and that is the memory of whoever launched it. When that is someone else,
-       * or nobody the server can name:
-       * - the home is first read back into the previous person's memory, crediting the person the
-       *   server names, never the home's own record, so what they learned and had not saved yet
-       *   reaches them. Nobody is credited when the record names someone else or does not read;
-       * - then every memory path moves aside to `.mend/agent-memory-kept/<stamp>-handover-…`,
-       *   never deleted, and the owner record names the new person.
+       * executor left: the memory of the person the server recorded for it (`agent_memory_homes`,
+       * which outlives the session rows). The launcher's own home costs one database write and
+       * nothing in the executor. When it was someone else's, or nobody's the server can name:
+       * - the home is first read back into the previous person's memory, so what they learned and
+       *   had not saved yet reaches them. Nobody the server cannot name is credited;
+       * - then every memory path moves out of the agent's way and the owner record names the new
+       *   person, written even when the home held nothing. What the previous person's store now
+       *   holds in full is removed; anything it could not take stays in
+       *   `.mend/agent-memory-kept/<stamp>-handover-…`, never deleted;
+       * - then the server records the home as the launcher's, before any delivery step that can
+       *   fail.
        *
        * Load-bearing, as pi's profile is: a hand-over that cannot finish fails the launch rather
-       * than start an agent on another person's memory and credit it to its owner later.
-       *
-       * `previous` is what `latestExecutorOf` said before this launch recorded its own executor.
-       * With none on record (a new worktree, or a home from before), the worktree's other sessions
-       * decide: all the launcher's, nothing to hand over; all one other person's, theirs.
+       * than start an agent on another person's memory. A join waits while it runs
+       * (`awaitWorktreeHolder`). A worktree the server recorded nothing for (executors launched
+       * before the record): its latest executor that ran a process, else its other sessions, all
+       * the launcher's or all one other person's.
        */
-      const handOverAgentMemory = Effect.fn("SessionEngine.handOverAgentMemory")(function* (
+      const handOverAgentMemory = Effect.fn("SessionEngine.handOverAgentMemory")(
+        function* (session: Session, workspace: Workspace) {
+          if (capture === null) return;
+          const owner = session.ownerUserId;
+          const recordHome = agentMemory.recordHome(session.worktreeId, {
+            userId: owner,
+            sessionId: session.id,
+            workspaceId: workspace.id,
+          });
+          const recorded = yield* agentMemory.homeOf(session.worktreeId);
+          let from: { readonly userId: string | null; readonly sessionId: string | null } | null =
+            recorded ?? (yield* latestExecutorOf(session.worktreeId));
+          if (from === null) {
+            const others = (yield* sessions.listForWorktree(session.worktreeId)).filter(
+              (member) => member.id !== session.id,
+            );
+            const owners = new Set(others.map((member) => member.ownerUserId));
+            const [only] = others;
+            from =
+              owners.size === 0
+                ? { userId: owner, sessionId: session.id }
+                : owners.size === 1 && only !== undefined
+                  ? { userId: only.ownerUserId, sessionId: only.id }
+                  : null;
+          }
+          if (owner !== null && from?.userId === owner) return yield* recordHome;
+          let credited: string | null = null;
+          let savedInFull = false;
+          if (from !== null && from.userId !== null) {
+            const read = yield* inOneReadPass(agentMemoryFromCapture(session)).pipe(
+              Effect.mapError((error) =>
+                notHandedOver(
+                  `the previous person's memory in this worktree could not be read: ${error.message}`,
+                  error,
+                ),
+              ),
+            );
+            if (read !== null) {
+              const report = yield* creditAgentMemory(
+                from.userId,
+                from.sessionId ?? `handover:${session.id}`,
+                session.projectId,
+                read,
+              ).pipe(
+                Effect.mapError((error) =>
+                  notHandedOver(
+                    `the previous person's memory in this worktree could not be saved for them: ${String(error)}`,
+                    error,
+                  ),
+                ),
+              );
+              credited = from.userId;
+              savedInFull = read.skipped.length === 0 && (report?.skipped.length ?? 0) === 0;
+            }
+          }
+          const kept = agentMemoryHandoverKeptDir();
+          const result = yield* sealant.exec(
+            workspace,
+            handOverAgentMemoryExec(HARNESS_HOME_MOUNT_PATH, kept, owner ?? "", savedInFull),
+          );
+          if (result.exitCode !== 0) {
+            return yield* notHandedOver(
+              `another person's memory in this worktree could not be moved aside: exit ${result.exitCode}: ${result.stderr.trim()}`,
+              null,
+            );
+          }
+          yield* recordHome;
+          yield* Effect.logInfo("session engine: agent memory · handed over").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              credited: credited === null ? "nobody" : "the previous person",
+              kept: savedInFull ? "none" : kept,
+              moved: result.stdout.split("\n").filter((line) => line.startsWith("memory moved"))
+                .length,
+            }),
+          );
+        },
+        (effect, session) =>
+          Effect.suspend(() => {
+            memoryHandovers.add(session.worktreeId);
+            return effect;
+          }).pipe(Effect.ensuring(Effect.sync(() => memoryHandovers.delete(session.worktreeId)))),
+      );
+
+      /**
+       * Capture mode, before any Codex starts in a worktree's home (a launch, a join, a resume):
+       * every conversation there that is not the launcher's comes out of Codex's memory
+       * (`CODEX_WITHHOLD_PROGRAM`), or Codex would summarise other people's conversations into the
+       * launcher's memory at startup. The launcher's own: their sessions' conversations in this
+       * worktree and what this launch carried. When that cannot be done (no node, no
+       * `node:sqlite`, a database another Codex held past the wait), this launch's Codex starts
+       * with its memory off. Answers whether it may keep it on.
+       */
+      const withholdCodexThreads = Effect.fn("SessionEngine.withholdCodexThreads")(function* (
         session: Session,
         workspace: Workspace,
-        previous: { readonly userId: string | null; readonly sessionId: SessionId } | null,
+        carried: ReadonlyArray<string>,
       ) {
-        if (capture === null) return;
-        const owner = session.ownerUserId;
-        const read = yield* inOneReadPass(agentMemoryFromCapture(session));
-        if (read === null) return;
-        const holdsMemory =
-          read.files.length > 0 ||
-          read.skipped.length > 0 ||
-          Object.keys(read.delivered).length > 0 ||
-          read.owner.kind !== "absent";
-        if (!holdsMemory) return;
-        let from = previous;
-        if (from === null) {
-          const others = (yield* sessions.listForWorktree(session.worktreeId)).filter(
-            (member) => member.id !== session.id,
-          );
-          const owners = new Set(others.map((member) => member.ownerUserId));
-          const [only] = others;
-          from =
-            owners.size === 0
-              ? { userId: owner, sessionId: session.id }
-              : owners.size === 1 && only !== undefined
-                ? { userId: only.ownerUserId, sessionId: only.id }
-                : null;
-        }
-        if (from !== null && from.userId === owner && owner !== null) {
-          if (ownerRecordAllows(read.owner, owner)) return;
-        }
-        const credited =
-          from !== null && from.userId !== null && ownerRecordAllows(read.owner, from.userId)
-            ? { userId: from.userId, sessionId: from.sessionId }
-            : null;
-        if (credited !== null) {
-          const project = yield* projects.byId(session.projectId);
-          yield* creditAgentMemory(credited.userId, credited.sessionId, project.id, read).pipe(
-            Effect.mapError(
-              (error) =>
-                new SealantPlatformError({
-                  code: "AGENT_MEMORY_NOT_HANDED_OVER",
-                  status: null,
-                  message: `the previous person's memory in this worktree could not be saved for them: ${String(error)}`,
-                  cause: error,
-                }),
+        if (capture === null || session.harness !== "codex") return true;
+        const members = (yield* sessions.listForWorktree(session.worktreeId)).filter(
+          (member) => member.ownerUserId !== null && member.ownerUserId === session.ownerUserId,
+        );
+        const rows =
+          members.length === 0
+            ? []
+            : yield* processes.listForSessions(members.map((member) => member.id));
+        const own = [
+          ...new Set([
+            ...rows.flatMap((row) =>
+              row.harness === "codex" && row.providerSessionId !== null
+                ? [row.providerSessionId]
+                : [],
+            ),
+            ...carried,
+          ]),
+        ];
+        const result = yield* sealant
+          .exec(workspace, withholdCodexThreadsExec(HARNESS_HOME_MOUNT_PATH, own))
+          .pipe(
+            Effect.catch((error) =>
+              Effect.succeed({ exitCode: -1, stdout: "", stderr: error.message }),
             ),
           );
+        const mayStayOn = codexMemoryMayStayOn(result.exitCode, result.stdout);
+        if (!mayStayOn) {
+          yield* Effect.logInfo(
+            "session engine: codex memory off for this launch · other people's conversations in the home could not be withheld",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              exitCode: result.exitCode,
+              said: result.stdout.trim() || result.stderr.trim(),
+            }),
+          );
         }
-        const kept = agentMemoryHandoverKeptDir();
-        const result = yield* sealant.exec(
-          workspace,
-          handOverAgentMemoryExec(HARNESS_HOME_MOUNT_PATH, kept, owner ?? ""),
-        );
-        if (result.exitCode !== 0) {
-          return yield* new SealantPlatformError({
-            code: "AGENT_MEMORY_NOT_HANDED_OVER",
-            status: null,
-            message: `another person's memory in this worktree could not be moved aside: exit ${result.exitCode}: ${result.stderr.trim()}`,
-            cause: null,
-          });
-        }
-        yield* Effect.logInfo("session engine: agent memory · handed over").pipe(
-          Effect.annotateLogs({
-            sessionId: session.id,
-            credited: credited === null ? "nobody" : credited.sessionId,
-            kept,
-            moved: result.stdout.split("\n").filter((line) => line.startsWith("memory moved"))
-              .length,
-          }),
-        );
+        return mayStayOn;
       });
 
       /**
@@ -9794,7 +9884,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         project: Project,
         workspace: Workspace,
       ) {
-        if (session.harness !== "codex" || session.ownerUserId === null) return;
+        if (session.harness !== "codex" || session.ownerUserId === null) return [];
         const owner = session.ownerUserId;
         const stored = yield* agentMemory.forLaunch(owner, project.id);
         const summarised = yield* summarisedThreads(storedCodexDatabase(stored));
@@ -9843,9 +9933,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           live,
           now: Date.now(),
         });
-        if (plan.full.length === 0 && plan.stubs.length === 0) return;
+        if (plan.full.length === 0 && plan.stubs.length === 0) return [];
         const files = yield* prepareCarriedConversations(plan);
-        if (files.length === 0) return;
+        if (files.length === 0) return [];
         let outcomes: ReadonlyArray<{ readonly outcome: string; readonly id: string }>;
         if (capture === null) {
           outcomes = yield* materializeCarriedConversations(
@@ -9873,6 +9963,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               .map((outcome) => outcome.id)
               .join(", "),
           }),
+        );
+        return outcomes.flatMap((outcome) =>
+          outcome.outcome === "written" || outcome.outcome === "present" ? [outcome.id] : [],
         );
       });
 
@@ -9934,30 +10027,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.map((bytes) => new TextDecoder().decode(bytes)),
             Effect.orElseSucceed(() => null),
           );
-        // The owner record: absent only when the capture lists no such file. A listed one that
-        // does not read is unreadable, never absent.
-        const ownerListed = yield* listCaptureFiles(
-          manifest,
-          "workspace",
-          `harness/${path.posix.dirname(AGENT_MEMORY_OWNER)}`,
-        ).pipe(
-          Effect.provideService(BlobStore, capture.blobs),
-          Effect.map((listed) =>
-            listed.some((file) => file.path === `harness/${AGENT_MEMORY_OWNER}`),
-          ),
-          Effect.option,
-        );
-        const owner: AgentMemoryOwnerRecord = Option.isNone(ownerListed)
-          ? { kind: "unreadable" }
-          : !ownerListed.value
-            ? { kind: "absent" }
-            : yield* read(`harness/${AGENT_MEMORY_OWNER}`).pipe(
-                Effect.map((bytes) => parseAgentMemoryOwner(new TextDecoder().decode(bytes))),
-                Effect.orElseSucceed((): AgentMemoryOwnerRecord => ({ kind: "unreadable" })),
-              );
         return {
           delivered: parseAgentMemoryDelivered(yield* text(AGENT_MEMORY_DELIVERED)),
-          owner,
           files,
           skipped,
         };
@@ -10019,14 +10090,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return latest === null ? null : { userId: latest.ownerUserId, sessionId: latest.id };
       });
 
-      /** One read of a home's memory, applied to `userId`'s memory for the project. */
+      /**
+       * One read of a home's memory, applied to `userId`'s memory for the project. A read exactly
+       * like the last one credited for the same person and session is not applied again: a retried
+       * hand-over, or a late read-back of the same home, would save the home's copy over a merge
+       * the first one made (a session's later read replaces its own earlier save).
+       */
       const creditAgentMemory = Effect.fn("SessionEngine.creditAgentMemory")(function* (
         userId: string,
-        sessionId: SessionId,
+        sessionId: string,
         projectId: ProjectId,
         read: AgentMemoryRead,
       ) {
-        if (read.files.length === 0 && Object.keys(read.delivered).length === 0) return;
+        if (read.files.length === 0 && Object.keys(read.delivered).length === 0) return null;
+        const key = `${userId}\u0000${projectId}\u0000${sessionId}`;
+        const fingerprint = JSON.stringify([
+          read.files.map((file) => [file.path, agentMemoryDigest(file)]),
+          read.delivered,
+          read.skipped,
+        ]);
+        if (lastCredited.get(key) === fingerprint) {
+          return { saved: [], merged: [], deleted: [], skipped: [] };
+        }
         const report = yield* agentMemory.readBack({
           userId,
           projectId,
@@ -10054,6 +10139,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
           );
         }
+        lastCredited.set(key, fingerprint);
+        return report;
+      });
+
+      /**
+       * Whose memory a worktree's capture-mode home holds, as the server knows it: what the
+       * hand-over of the executor holding it recorded (`agent_memory_homes`), which outlives the
+       * session rows. A worktree with no such record (an executor launched before it existed):
+       * the owner of the session whose launch made `workspaceId`, if one still names it.
+       */
+      const homeOwnerOf = Effect.fn("SessionEngine.homeOwnerOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const home = yield* agentMemory.homeOf(session.worktreeId);
+        if (home !== null) return home.workspaceId === workspaceId ? home.userId : null;
+        const latest = yield* latestExecutorOf(session.worktreeId);
+        const owner = yield* memoryOwnerOfExecutor(session, workspaceId);
+        return latest !== null && latest.userId !== owner ? null : owner;
       });
 
       /**
@@ -10063,9 +10167,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        *
        * In capture mode the head is the worktree's one home, and a session that joined another
        * person's executor ran its agent there, beside theirs, in the same memory files: who wrote
-       * which line cannot be told apart. The server decides whose memory the executor holds
-       * (`memoryOwnerOfExecutor`), and only that person's session reads it back; an owner record
-       * in the home that names someone else, or does not read, withholds it from everyone.
+       * which line cannot be told apart. The server decides whose memory the home holds
+       * (`homeOwnerOf`), and only that person's sessions read it back. The home's own owner
+       * record is never consulted.
        */
       const readBackAgentMemory = Effect.fn("SessionEngine.readBackAgentMemory")(function* (
         session: Session,
@@ -10078,31 +10182,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           return yield* creditAgentMemory(session.ownerUserId, session.id, project.id, read);
         }
-        const read = yield* inOneReadPass(agentMemoryFromCapture(session));
-        if (read === null) return;
+        // Decided from the server first; the capture is read only for someone to credit.
         const owner =
           session.sealantWorkspaceId === null
             ? null
-            : yield* memoryOwnerOfExecutor(session, session.sealantWorkspaceId);
-        // The head is the worktree's latest executor's: a late read-back after another person's
-        // launch would read their home, not the one this session ran in.
-        const latest = yield* latestExecutorOf(session.worktreeId);
-        const refusal =
-          owner === null
-            ? "Mend cannot say whose executor it is"
-            : owner !== session.ownerUserId
-              ? "the executor is another person's"
-              : latest !== null && latest.userId !== owner
-                ? "the worktree's home has since been handed to another person"
-                : !ownerRecordAllows(read.owner, owner)
-                  ? "the home's owner record does not name the executor's owner"
-                  : null;
-        if (refusal !== null) {
-          yield* Effect.logInfo(`session engine: agent memory not read back · ${refusal}`).pipe(
-            Effect.annotateLogs({ sessionId: session.id }),
-          );
+            : yield* homeOwnerOf(session, session.sealantWorkspaceId);
+        if (owner !== session.ownerUserId) {
+          yield* Effect.logInfo(
+            `session engine: agent memory not read back · ${owner === null ? "Mend cannot say whose memory the worktree's home holds" : "the worktree's home holds another person's memory"}`,
+          ).pipe(Effect.annotateLogs({ sessionId: session.id }));
           return;
         }
+        const read = yield* inOneReadPass(agentMemoryFromCapture(session));
+        if (read === null) return;
         yield* creditAgentMemory(session.ownerUserId, session.id, project.id, read);
       });
 
@@ -10618,10 +10710,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // pre-provisioned skeleton whose id this session adopted. Adopt its live workspace and
         // skip the create entirely; a dead or half-stamped entry drains (keeping the worktree,
         // which the session owns) and the launch falls through to the cold path.
-        // Capture mode: whose memory the worktree's home holds, read before this launch records an
-        // executor of its own (`handOverAgentMemory`).
-        const previousMemoryOwner =
-          capture === null ? null : yield* latestExecutorOf(session.worktreeId);
         const claimedEntry =
           manifest === null && nativeImport === null ? yield* hotWorkspaces.byId(sessionId) : null;
         const adopted =
@@ -11245,17 +11333,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
-        yield* handOverAgentMemory(session, workspace, previousMemoryOwner).pipe(
-          Effect.mapError((error) =>
-            error instanceof SealantPlatformError
-              ? error
-              : new SealantPlatformError({
-                  code: "AGENT_MEMORY_NOT_HANDED_OVER",
-                  status: null,
-                  message: `the worktree's memory could not be read for its hand-over: ${error.message}`,
-                  cause: error,
-                }),
-          ),
+        yield* handOverAgentMemory(session, workspace).pipe(
           Effect.tapError((error) => abandonExecutor(workspace, error.message)),
           settleOnFailure,
         );
@@ -11266,13 +11344,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
-        yield* carryCodexConversations(session, project, workspace).pipe(
+        const carried = yield* carryCodexConversations(session, project, workspace).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("session engine: codex conversations were not carried").pipe(
               Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+              Effect.as([]),
             ),
           ),
         );
+        const codexMemoryOn = yield* withholdCodexThreads(session, workspace, carried);
         yield* deliverPiProfile(session, project, workspace).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: the pi profile was not delivered").pipe(
@@ -11341,10 +11421,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
+        const memoryShapedArgv = codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv);
         const launchedArgv =
           protocolStart === null
-            ? withHarnessBootstrap(session.harness, shapedArgv)
-            : withHarnessSetup(session.harness, shapedArgv);
+            ? withHarnessBootstrap(session.harness, memoryShapedArgv)
+            : withHarnessSetup(session.harness, memoryShapedArgv);
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
           Effect.andThen(
             sealant.openSession(
@@ -12040,10 +12121,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
             : argv;
+          const codexMemoryOn = yield* withholdCodexThreads(session, workspace, []);
+          const memoryShapedArgv = codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv);
           const launchedArgv =
             protocolStart === null
-              ? withHarnessBootstrap(session.harness, shapedArgv)
-              : withHarnessSetup(session.harness, shapedArgv);
+              ? withHarnessBootstrap(session.harness, memoryShapedArgv)
+              : withHarnessSetup(session.harness, memoryShapedArgv);
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
               sealant.openSession(

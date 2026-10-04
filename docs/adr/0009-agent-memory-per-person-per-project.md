@@ -79,26 +79,43 @@ much smaller: the memory.
    wrote is lost to another session's save.
 
    In capture mode a worktree has one home, which its sessions share over time and, when one joins
-   another person's executor (ADR 0002), at once. Amended 2026-10-05, after a review found that one
-   person's memory could be saved as another's:
-   - **The server decides whose memory an executor holds:** the owner of the session whose launch
-     made it, the only launch that delivers into it (the lease holder while it runs, as for its
-     login in ADR 0013). Only that person's sessions read it back. When the server cannot say,
-     nobody does.
-   - **The home's own record (`.mend/agent-memory-owner`) never credits anyone:** anything running
-     in the executor can write it. It only withholds: a read-back or hand-over that finds it naming
-     someone else, or unreadable, credits nobody.
-   - **A launch hands the home over before delivering:** when the worktree's last executor was
-     another person's, or nobody's the server can name, the home is first read back into that
-     person's memory, then every memory path (the memory folders, Codex's summary database, the
-     delivered record) moves aside to `.mend/agent-memory-kept/<stamp>-handover-…`, never deleted. A
-     hand-over that cannot finish fails the launch, as pi's profile does.
+   another person's executor (ADR 0002), at once. Amended 2026-10-05, after two reviews found ways
+   one person's memory could be saved as another's:
+   - **The server decides whose memory the home holds:** the person whose launch made the executor
+     holding it, the only launch that delivers into it. It records that (`agent_memory_homes`, per
+     worktree, with the executor) when the launch hands the home over, so it outlives the session
+     rows: a removed session's executor is still known as its owner's. Only that person's sessions
+     read the home back. When the server cannot say, nobody does.
+   - **The home's own record (`.mend/agent-memory-owner`) is for a person reading the home:**
+     anything running in the executor can write it, so Mend never reads it to decide anything.
+   - **A launch hands the home over before delivering:** when the server recorded the home as
+     another person's, or as nobody's it can name:
+     - the home is first read back into that person's memory. Nobody the server cannot name is
+       credited, and their memory is only moved;
+     - then every memory path (the memory folders, Codex's summary database, the delivered record,
+       files a delivery left staged) moves out of the way, and the owner record names the new
+       person, even when they have nothing stored. What the previous person's store took in full is
+       removed. Anything it could not take stays in `.mend/agent-memory-kept/<stamp>-handover-…`,
+       which is restored into every later executor of the worktree, where anyone working there can
+       read it;
+     - then the server records the home as the launcher's, before any delivery step that can fail.
+
+     A hand-over that cannot finish fails the launch, as pi's profile does. A join waits while one
+     runs. The launcher's own home costs one database write and nothing in the executor.
+
+   - **Codex never summarises another person's conversations:** before any Codex starts in a
+     worktree's home (a launch, a join, a resume), every conversation in its thread index
+     (`state_5.sqlite`) that is not the launcher's is set to `memory_mode = 'disabled'`, and the
+     launcher's own that Mend disabled earlier are given back. A mode a person chose is never
+     touched. Where that cannot be done (no node, no `node:sqlite`), that Codex starts with its
+     memory off.
    - **What a joined agent writes goes to the executor's owner:** it shares their memory files, and
-     nobody can tell its lines from theirs. Those lines are saved into the owner's memory at their
-     next read-back of that home: when their agent ends, when they launch in the worktree again, or
-     at the hand-over when someone else does. They never reach the joiner's memory. Any member with
-     access to the project can join, so this is a way to write into another person's memory without
-     their consent; the owner decides whether joins should keep it.
+     nobody can tell its lines from theirs. Lines written before the owner's agent ends are saved
+     with that read-back. Lines written after it wait for the owner's next read-back of that home:
+     when their next agent in that worktree ends, or at the hand-over when someone else launches
+     there. They never reach the joiner's memory. Any member with access to the project can join, so
+     this is a way to write into another person's memory without their consent; the owner decides
+     whether joins should keep it.
 
 4. **Import from the person's machine is the CLI's,** run from inside the repository:
    `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/`. Transcripts

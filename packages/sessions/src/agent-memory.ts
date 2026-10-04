@@ -32,37 +32,50 @@ import { shellQuote } from "./workspace-files.ts";
 /** What was delivered, path to digest, relative to the harness home. */
 export const AGENT_MEMORY_DELIVERED = ".mend/agent-memory-delivered.json";
 
+/** Where the stored files wait for the program, relative to the harness home. */
+const AGENT_MEMORY_INCOMING = ".mend/agent-memory-incoming";
+
+/** Where a delivered file Mend no longer stores goes, relative to the harness home. */
+export const AGENT_MEMORY_KEPT_DIR = ".mend/agent-memory-kept";
+
 /**
  * Whose memory the harness home holds, as the last delivery or hand-over wrote it, relative to the
- * harness home. Never what Mend credits: anything running in the executor can write it. The
- * server decides whose memory an executor holds (the person whose launch made it); this record
- * only withholds. A read-back or hand-over that finds it naming someone else credits nobody.
+ * harness home: for a person reading the home, never for Mend. Anything running in the executor
+ * can write it, so nothing reads it to decide anything; the server keeps the answer
+ * (`agent_memory_homes`).
  */
 export const AGENT_MEMORY_OWNER = ".mend/agent-memory-owner";
 
 /**
  * Everything of one person's memory in a harness home, relative to it: the memory roots, Codex's
- * summary database with its write-ahead log and shared memory, the delivered record and the owner
- * record. A hand-over moves all of it aside before another person's memory is laid down.
+ * summary database with its write-ahead log and shared memory, the delivered record, the owner
+ * record, and a delivery's staged files left behind. A hand-over moves all of it aside before
+ * another person's memory is laid down.
  */
 export const AGENT_MEMORY_HANDOVER_PATHS: ReadonlyArray<string> = [
   ...AGENT_MEMORY_ROOTS.map(({ root }) => root),
   ...AGENT_MEMORY_FILES.flatMap(({ path: file }) => [file, `${file}-wal`, `${file}-shm`]),
   AGENT_MEMORY_DELIVERED,
   AGENT_MEMORY_OWNER,
+  AGENT_MEMORY_INCOMING,
 ];
 
 /**
  * The exec that hands a capture-mode harness home over to `owner` (plain `sh`, no node): each of
- * `AGENT_MEMORY_HANDOVER_PATHS` that is there moves to `kept` (relative to the home), never
- * deleted, and the owner record then names `owner`. Prints `memory moved <path>` per path. Exits
- * non-zero the moment a path cannot be moved: the launch must not start on another person's
- * memory.
+ * `AGENT_MEMORY_HANDOVER_PATHS` that is there moves to `kept` (relative to the home), and the
+ * owner record then names `owner`, written even when nothing was there. Prints `memory moved
+ * <path>` per path. Exits non-zero the moment a path cannot be moved: the launch must not start on
+ * another person's memory.
+ *
+ * `prune`: everything moved is already in the previous person's store (the hand-over saved all of
+ * it for them), so the kept set is removed rather than restored into every later executor of the
+ * worktree, where anyone working there could read it. Without it, the set stays: nothing is lost.
  */
 export const handOverAgentMemoryExec = (
   home: string,
   kept: string,
   owner: string,
+  prune: boolean,
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
@@ -71,6 +84,7 @@ export const handOverAgentMemoryExec = (
     `for p in ${AGENT_MEMORY_HANDOVER_PATHS.map(shellQuote).join(" ")}; do`,
     `if [ -e "$home/$p" ] || [ -L "$home/$p" ]; then`,
     `mkdir -p "$kept/$(dirname "$p")" && mv "$home/$p" "$kept/$p" || exit 1; echo "memory moved $p"; fi; done;`,
+    prune ? `rm -rf "$kept"; rmdir "$home"/${shellQuote(AGENT_MEMORY_KEPT_DIR)} 2>/dev/null;` : "",
     `mkdir -p "$home/.mend" && printf %s ${shellQuote(owner)} > "$home"/${shellQuote(AGENT_MEMORY_OWNER)}`,
   ].join(" "),
 ];
@@ -81,12 +95,6 @@ export const agentMemoryHandoverKeptDir = (now: Date = new Date()): string =>
     AGENT_MEMORY_KEPT_DIR,
     `${now.toISOString().replace(/[:.]/g, "-")}-handover-${randomUUID().slice(0, 8)}`,
   );
-
-/** Where the stored files wait for the program, relative to the harness home. */
-const AGENT_MEMORY_INCOMING = ".mend/agent-memory-incoming";
-
-/** Where a delivered file Mend no longer stores goes, relative to the harness home. */
-export const AGENT_MEMORY_KEPT_DIR = ".mend/agent-memory-kept";
 
 export class AgentMemoryDeliveryError extends Schema.TaggedErrorClass<AgentMemoryDeliveryError>()(
   "AgentMemoryDeliveryError",
@@ -259,24 +267,6 @@ export const parseAgentMemoryDelivered = (raw: string | null): Readonly<Record<s
   }
 };
 
-/**
- * What a home's owner record says (`AGENT_MEMORY_OWNER`): nothing (absent or empty), an account,
- * or that it could not be read, which is never taken as "absent".
- */
-export type AgentMemoryOwnerRecord =
-  | { readonly kind: "absent" }
-  | { readonly kind: "named"; readonly userId: string }
-  | { readonly kind: "unreadable" };
-
-export const parseAgentMemoryOwner = (raw: string | null): AgentMemoryOwnerRecord => {
-  const owner = raw?.trim() ?? "";
-  return owner === "" ? { kind: "absent" } : { kind: "named", userId: owner };
-};
-
-/** Whether the owner record leaves `userId` as the home's owner: absent, or naming them. */
-export const ownerRecordAllows = (record: AgentMemoryOwnerRecord, userId: string): boolean =>
-  record.kind === "absent" || (record.kind === "named" && record.userId === userId);
-
 /** A file's bytes as a stored memory file: text when it is UTF-8 without NULs. */
 export const asMemoryFile = (filePath: string, bytes: Uint8Array): MemoryFile => {
   if (!bytes.includes(0)) {
@@ -294,14 +284,12 @@ export const asMemoryFile = (filePath: string, bytes: Uint8Array): MemoryFile =>
 };
 
 /**
- * What a read-back found: the files, what was delivered and for whom, and the paths that are there
- * but were not read (over the limit, or a database that did not open). A skipped path is not a
- * deleted one: `withoutSkipped` takes it out of `delivered`, so the stored file stays.
+ * What a read-back found: the files, what was delivered, and the paths that are there but were not
+ * read (over the limit, or a database that did not open). A skipped path is not a deleted one:
+ * `withoutSkipped` takes it out of `delivered`, so the stored file stays.
  */
 export interface AgentMemoryRead {
   readonly delivered: Readonly<Record<string, string>>;
-  /** What the home's owner record says (`AGENT_MEMORY_OWNER`); never what Mend credits. */
-  readonly owner: AgentMemoryOwnerRecord;
   readonly files: ReadonlyArray<MemoryFile>;
   readonly skipped: ReadonlyArray<string>;
 }
@@ -367,16 +355,8 @@ export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<
         (raw) => raw,
         () => null,
       );
-    const owner: AgentMemoryOwnerRecord = await fs
-      .readFile(path.join(harnessHomePath, AGENT_MEMORY_OWNER), "utf8")
-      .then(parseAgentMemoryOwner, (error: unknown) =>
-        error instanceof Error && "code" in error && error.code === "ENOENT"
-          ? { kind: "absent" as const }
-          : { kind: "unreadable" as const },
-      );
     return {
       delivered: parseAgentMemoryDelivered(delivered),
-      owner,
       files,
       skipped,
     };

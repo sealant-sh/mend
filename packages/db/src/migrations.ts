@@ -2992,6 +2992,26 @@ const agentMemoryImportBasesMigration = Effect.gen(function* () {
   yield* sql`UPDATE agent_memory_versions SET pinned = true`;
 });
 
+/**
+ * docs/adr/0009-agent-memory-per-person-per-project.md, capture mode: whose memory each worktree's
+ * one harness home holds, as the server decided it when the executor that holds it now was
+ * launched and the home was handed to its launcher. It outlives the session rows (a removed
+ * session's executor is still known as its owner's), and a home's own record, which anything
+ * running in the executor can write, is never consulted. `user_id` null: the person was removed,
+ * or nobody could be named. Numbered 0110: 0109 is taken by an open branch.
+ */
+const agentMemoryHomesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE agent_memory_homes (
+      worktree_id text PRIMARY KEY REFERENCES worktrees (id) ON DELETE CASCADE,
+      user_id text REFERENCES "user" (id) ON DELETE SET NULL,
+      session_id text,
+      workspace_id text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3101,4 +3121,5 @@ export const migrations = {
   "0106_terminal_watch_control": terminalWatchControlMigration,
   "0107_turn_payer": turnPayerMigration,
   "0108_agent_memory_import_bases": agentMemoryImportBasesMigration,
+  "0110_agent_memory_homes": agentMemoryHomesMigration,
 };
