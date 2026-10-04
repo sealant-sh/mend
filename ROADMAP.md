@@ -17,60 +17,115 @@ section goes when it ships.
 
 ## 0.36: Mend on our own box, every day
 
-Mend moves onto the Hetzner box (`yiannis-k8s-arc`: i9-9900K, 16 threads, 62 GB, 2 × 1 TB NVMe) and
-is used there full time, to find bugs by using it while it is built.
+Mend runs on the Hetzner box (`yiannis-k8s-arc`: i9-9900K, 16 threads, 62 GB, 2 × 1 TB NVMe) and is
+used there full time, to find bugs by using it while it is built. 0.36 is the first release shared
+with people outside the team, so everything it holds is listed here. State on 2026-10-05, read from
+GitHub.
 
-### Must
+### Shipped on main
 
-1. **One agent memory per person per project.** Shared by that person's sessions on the project,
-   private to them. A session starts with the agent's memory in place and saves what it learned back
-   when it ends. Proposed in [ADR 0009](docs/adr/0009-agent-memory-per-person-per-project.md): the
-   memory is carried, not the whole harness home, which would break resume and transcript discovery.
-   Every session's agent runs in `/workspace/repo`, so Claude's memory key is the same in each.
-   Claude only for now; Codex builds memory from rollouts a session does not bring.
-2. **Import on adoption,** through the CLI, from the person's own machine (owner decision
-   2026-09-28):
-   - Claude: `~/.claude/projects/<repo path>/memory/*.md`.
-   - Codex: `memories_1.sqlite`, filtered to this repository's threads by each thread's working
-     directory. Never copied whole.
-   - "Bring your previous sessions for this repo?" Yes also imports the transcripts. They are opt-in
-     because they hold pasted secrets.
-   - Never imported: goals, logins (`.credentials.json`, `auth.json`), logs, caches.
-3. **Self-host saves without the wait.** On Docker with Garage a seal takes about ten minutes today.
-   Bring it to one or two. Check what is still slow after 0.35.0's "a launch waits for a saving
-   predecessor" (#432). Notes so far: sealantd fetches a fresh URL for every upload, with no clock
-   margin when co-located.
-4. **The move.** `mend server setup` on the box, the Caddy edge in front, DNS. The Kubernetes and
-   Ceph clusters stop; their definitions stay in the repository (deployment options are product).
-   The box's Minecraft servers are the owner's call.
+Merged since 0.35.1.
 
-5. **Models, on the phone first.** The phone needs a working model choice now, and models in general
-   need UX work. Start with an audit across the phone, the web app, the CLI and the desktop: what
-   each offers, the picker, effort, per-harness defaults, and whether a session says which model it
-   runs on. Then one model picker, the same on every client.
+- **Agent memory:** one per person per project, shared by that person's sessions on it and private
+  to them ([ADR 0009](docs/adr/0009-agent-memory-per-person-per-project.md)). Claude (#461) and
+  Codex (#472). Imported on adoption with `mend memory import`.
+- **Saves without the wait** (#462, #464, #465, #473, #474, #475, #476): a Stop's save went from 118
+  s to 15–19 s on the box.
+- **The move onto the box:** CI deploys it (#497, #499, #500). Preview builds of Mend, Core and
+  sealantd branches for one box (#463). Every Mend workflow runs on Blacksmith (#468).
+- **Models:** one model picker, and the server owns the list (#454, #479).
+- **Harnesses:** pi and opencode as terminal sessions, on the connected ChatGPT login (#456, #457).
+  `mend connect pi` sends a person's pi setup to every pi session of theirs (#460).
+- **Secret files:** a person's credential files, written into every session and never captured
+  (#478, [ADR 0010](docs/adr/0010-secret-files.md)).
+- **Any project of the store, ad hoc, from inside a session** (#480,
+  [ADR 0011](docs/adr/0011-repositories-in-a-session.md)).
+- **The packaged server knows its edge and its posture** (#481). A refused worktree removal offers
+  Remove anyway, and `mend worktrees rm` (#483).
+- **The agent's pull request is recorded and shown** when its turn ends: lists, the phone and the
+  web app (#489, #490, #491). Claude workflows show while they run (#488).
+- **Fixes:**
+  - #486: a session and its run settle together.
+  - #487: the phone's Stop reads the interrupt's empty answer.
+  - #493: a resumed or followed-up ask session comes back asking.
+  - #450: the phone's Stop session asks first, behind "more".
+  - #451: AWS MicroVM sessions get the platform's 8 hours by default.
+  - #466: the server says when the Docker host refuses user namespaces, and what to run.
+  - #469: the dashboard says what each session is doing.
+  - #470: stop, rejoin and service logs take the id they are given.
+  - #471: a mode handoff starts its successor in the workspace it already has.
+  - #507: startup never waits on an executor.
+  - #514: resume takes the id it is given.
+  - #515: the bundled Sealant worker launches four workspaces at once.
+- **T3 Code gateway, phase 0** (#494, #495, [ADR 0012](docs/adr/0012-t3code-gateway.md)).
+- **Per-user steering** ([ADR 0013](docs/adr/0013-whoever-sends-a-turn-pays.md), #517): only a
+  session's owner types in its terminal (#518); every turn records whose login paid for it (#519).
+  Moved up from 0.38.
+- **Tests and docs:** #459, #477, #498; #453, #482, #484, #485.
+- **Core** (since 0.38.1): sealant#306, #307, #309 (pi in every image), #311, #312 (a stop is
+  recorded once the executor has ended), #314 (an exec is read back soon after it ends).
+- **sealantd** (since 0.19.0): sealantd#127, #128 (upload URLs bound to their bytes), #130, #131,
+  #132, #134 (ADR 0016), #135 (a restore writes files on every core).
 
-6. **pi and opencode as harnesses,** next to Claude and Codex: a session on either, with its own
-   agent home (memory, settings, login) handled the same way, since 0.36 reworks the harness homes
-   anyway. opencode starts today as a bare command; pi is new.
+### In review, part of 0.36
 
-### Should
+- **Memory:**
+  - #502: an import merges what both sides have changed, against the last import (migration 0108).
+  - #528: memory is read back only for the person whose memory a workspace holds, and a launch hands
+    the home over between people.
+- **opencode:**
+  - #503: opens on the ChatGPT login, resumes the right conversation, keeps MCP logins out of saved
+    state.
+  - #505: opencode's models in the catalog, with no default (migration 0109). Stacked on #503.
+  - sealantd#136: every harness credential stays out of saved state and is skipped on restore.
+- **Credentials:** #526 keeps one table of harness credential paths, held equal to sealantd's by a
+  test. On hold for the owner's per-person home decision.
+- **Start time:** #513 (a launch writes its files in a few execs), #516 (a relaunch waits for the
+  session's own earlier lease), sealant#313 (reading changes starts from a refreshed copy of the
+  index). Not yet measured on the box.
+- **Mobile:** #504, a pi session reads "pi", not "OpenCode".
+- **T3 Code gateway, phase 1:** #508, #509, #510, #511.
+- **Codex:** #527, Codex never starts its background server. Its copy of Codex was about 427 MB in
+  saved state.
+- **Projects:** #529, Automatic install, on or off per project (migration 0110).
+- **The `next` prerelease channel** (ADR 0015): mend#521, #522, #523, #524; sealant#318, #319;
+  sealantd#137. #523 merges only after the first Mend next build has published.
+- **sealantd image:** sealantd#138, socat comes over HTTPS and is checked against a pinned checksum.
+- **Merge order for migrations:** #502 (0108), then #505 (0109), then #529 (0110).
 
-- See and delete what the agent remembers, in the web app and on the phone.
+### Carried from the 2026-10-01 scope, no pull request yet
 
-### Already open, ships with it
-
-- sealant#307 (one pinned vitest, so CI's lockfile-free install stops splitting it) and sealant#306
-  (an idle interval's upload throughput no longer stops a MicroVM early).
-- mend#450 (the phone's Stop session asks first, behind "more") and mend#451 (AWS MicroVMs get 8
-  hours by default).
 - Mend's wording for Core's planned stop before a runtime's deadline. It reads "stopped outside
   Mend" today.
+
+### Decisions open for 0.36 (owner)
+
+- Per-person harness homes inside a shared worktree, the "split home". Recommended for 0.36.
+- opencode's database holds logins next to conversations.
+- Whether the steering login switch (sealant#315, #316, then a Mend PR) ships in 0.36.
+- A joiner's agent writes into the worktree owner's memory (#528).
+
+### Moved to 0.37
+
+- Seeing and deleting the agent's memory in the web app and on the phone. The CLI has it.
+- Doppler (ADR 0014, #501).
+- T3 Code gateway, phases 2–4.
+
+### Release chain
+
+With the next channel, a stable release promotes the next builds the box ran: sealantd 0.20.0, then
+Core 0.39.0, then Mend 0.36.0. Steps in `docs/operations/next-channel.md` (added by #522).
 
 ### Exit criteria
 
 - A week of daily use on the box, with sessions started from the CLI, the phone and the web app.
 - A session started on Monday knows what Friday's sessions on the same project learned.
-- A stop's save takes under two minutes, measured on the box.
+- A stop's save takes under two minutes, measured on the box. Observed: 15–19 s on the box,
+  2026-10-03.
+- Start time measured on the box against the baseline before #513, #516 and sealant#313: about 90 s
+  to the first output for a new session.
+- Every pull request above merged or explicitly moved out.
+- A box run of opencode, pi and secret files on the release candidate.
 
 ## 0.37: Live previews
 
