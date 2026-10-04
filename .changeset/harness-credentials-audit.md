@@ -12,9 +12,8 @@ that keep a URL's token. Mend's list of them is one table, which the platform's 
 docs page "How Mend handles your provider logins" lists in full. Leaving them out of what a remote
 workspace saves needs a Sealant runtime with sealantd#136.
 
-Codex runs with its shell snapshot off: Mend's launches pass `-c features.shell_snapshot=false`, and
-the workspace's `~/.codex/config.toml` gets `shell_snapshot = false` under `[features]` unless it
-already names the setting, so a Codex started by hand writes none either. A pi session whose owner
-has no pi profile no longer runs the profile another person's session left in the worktree: Mend
-takes it out, and its settings and packages come back out of pi's `settings.json`. A pi profile
-restored without its `mcp.json` is no longer delivered again and reinstalled at every resume.
+Codex sessions Mend starts run with its shell snapshot off (`-c features.shell_snapshot=false`), so
+the snapshot is never written. A pi session runs on its owner's freshly delivered pi profile, on
+none, or does not start: Mend moves aside the profile and settings an earlier session delivered into
+the worktree, never deleting them, then delivers the owner's. A pi profile restored without its
+`mcp.json` is no longer delivered again and reinstalled at every resume.

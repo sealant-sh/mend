@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,9 +14,8 @@ import {
   PI_PROFILE_KEPT_DIR,
   PI_PROFILE_PROGRAM,
   PI_PROFILE_SECRET_FILE,
-  PI_PROFILE_CLEARED,
-  clearPiProfile,
   materializePiProfile,
+  preparePiProfileExec,
   planPiProfile,
 } from "./pi-profile.ts";
 
@@ -118,7 +118,7 @@ describe("delivering a pi profile into a harness home", () => {
     await deliver(home, [extension]);
     const root = path.join(home, PI_PROFILE_HOME_DIR);
     write(path.join(root, extension.path), "export default () => { fixedInSession(); };\n");
-    const outcomes = await Effect.runPromise(clearPiProfile(home));
+    const outcomes = await Effect.runPromise(materializePiProfile(home, null));
     expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["kept"]);
     const kept = outcomes[0]?.detail ?? "";
     expect(kept.startsWith(`${PI_PROFILE_KEPT_DIR}/`)).toBe(true);
@@ -126,23 +126,64 @@ describe("delivering a pi profile into a harness home", () => {
       "fixedInSession",
     );
     expect(fs.existsSync(root)).toBe(false);
-    expect(fs.existsSync(path.join(home, PI_PROFILE_CLEARED))).toBe(true);
-    // The mark is where the launch program looks for it.
-    expect(PI_PROFILE_CLEARED).toBe(".pi/agent/mend/cleared");
-    // Nothing there: still marked, nothing moved.
-    const again = await Effect.runPromise(clearPiProfile(home));
+    // Nothing there: nothing moved.
+    const again = await Effect.runPromise(materializePiProfile(home, null));
     expect(again.map((outcome) => outcome.outcome)).toEqual(["absent"]);
   });
 
-  it("fails the clear when the profile cannot be moved aside", async () => {
+  it("fails when the profile there cannot be moved aside", async () => {
     const home = tempDir("mend-pi-home-");
     await deliver(home, [extension]);
     // The kept directory's parent is a file: the move cannot happen.
     write(path.join(home, ".mend"), "not a directory");
-    const cleared = await Effect.runPromise(Effect.flip(clearPiProfile(home)));
-    expect(cleared._tag).toBe("PiProfileDeliveryError");
-    expect(fs.existsSync(path.join(home, PI_PROFILE_HOME_DIR))).toBe(true);
-    expect(fs.existsSync(path.join(home, PI_PROFILE_CLEARED))).toBe(false);
+    for (const plan of [null, planPiProfile(profileOf([extension, banner]))]) {
+      const failed = await Effect.runPromise(Effect.flip(materializePiProfile(home, plan)));
+      expect(failed._tag).toBe("PiProfileDeliveryError");
+      expect(fs.existsSync(path.join(home, PI_PROFILE_HOME_DIR, extension.path))).toBe(true);
+      expect(fs.existsSync(path.join(home, PI_PROFILE_HOME_DIR, banner.path))).toBe(false);
+    }
+  });
+
+  it("takes another person's delivered settings back out before the owner's profile goes in", () => {
+    // B's profile was delivered and set up in this worktree's harness home; A launches.
+    const home = tempDir("mend-pi-home-");
+    const agent = path.join(home, ".pi/agent");
+    write(path.join(agent, "mend/profile/settings.json"), JSON.stringify({ theme: "theirs" }));
+    write(
+      path.join(agent, "settings.json"),
+      JSON.stringify({
+        theme: "theirs",
+        defaultThinkingLevel: "high",
+        packages: ["./mend/profile", "npm:theirs@1.0.0", "npm:session-own@1.0.0"],
+      }),
+    );
+    write(
+      path.join(agent, "mend/delivered-settings.json"),
+      JSON.stringify({ theme: "theirs", packages: ["./mend/profile", "npm:theirs@1.0.0"] }),
+    );
+    write(path.join(agent, "mcp.json"), '{"mcpServers":{"theirs":{}}}');
+    const mcpSha = createHash("sha256").update('{"mcpServers":{"theirs":{}}}').digest("hex");
+    write(path.join(agent, "mend/delivered-files.json"), JSON.stringify({ "mcp.json": mcpSha }));
+    const kept = ".mend/pi-profile-kept/test";
+    const [command, ...args] = preparePiProfileExec(home, kept, null);
+    const run = spawnSync(command ?? "sh", args, { encoding: "utf8" });
+    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain(`skill kept ${PI_PROFILE_HOME_DIR}`);
+    // What the session changed stays; what B's delivery put there goes.
+    expect(readJson(path.join(agent, "settings.json"))).toEqual({
+      defaultThinkingLevel: "high",
+      packages: ["npm:session-own@1.0.0"],
+    });
+    expect(fs.existsSync(path.join(agent, "mcp.json"))).toBe(false);
+    expect(fs.existsSync(path.join(agent, "mend/delivered-settings.json"))).toBe(false);
+    expect(fs.existsSync(path.join(agent, "mend/delivered-files.json"))).toBe(false);
+    // Every file it touched has a copy beside the moved profile.
+    const copy = path.join(home, kept, ".pi/agent");
+    expect((readJson(path.join(copy, "settings.json")) as { theme: string }).theme).toBe("theirs");
+    expect(fs.existsSync(path.join(copy, "mcp.json"))).toBe(true);
+    expect(fs.existsSync(path.join(copy, "mend/delivered-settings.json"))).toBe(true);
+    expect(fs.existsSync(path.join(copy, "mend/profile/settings.json"))).toBe(true);
   });
 
   it("moves a changed profile directory aside whole, never deleting it, then writes the new one", async () => {
@@ -360,59 +401,6 @@ describe("setting up a delivered pi profile before pi starts", () => {
     expect(fs.readFileSync(path.join(agent, "mcp.json"), "utf8")).toBe(
       '{"mcpServers":{"mine":{}}}',
     );
-  });
-
-  it("takes a profile that is gone back out of the settings, unless the session changed them", () => {
-    // Someone else's profile was delivered here; this session's owner has none, so Mend took the
-    // directory out before pi starts.
-    const { agent, profile, run } = setUp();
-    run();
-    const settings = path.join(agent, "settings.json");
-    const session = readJson(settings) as { packages: Array<unknown> };
-    write(
-      settings,
-      JSON.stringify({
-        ...session,
-        defaultThinkingLevel: "high",
-        defaultProvider: "anthropic",
-        packages: [...session.packages, "npm:own@1.0.0"],
-      }),
-    );
-    // Mend moved it aside and marked it (`clearPiProfileExec`).
-    fs.rmSync(profile, { recursive: true });
-    write(path.join(agent, "mend", "cleared"), "");
-    const result = run();
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("mend: no pi profile is connected for this session");
-    expect(fs.existsSync(path.join(agent, "mend", "cleared"))).toBe(false);
-    expect(readJson(settings)).toEqual({
-      // Changed in the session: the session's own.
-      defaultProvider: "anthropic",
-      defaultThinkingLevel: "high",
-      packages: ["npm:own@1.0.0"],
-    });
-    // The copied mcp.json was the profile's, unchanged: gone, with the records.
-    expect(fs.existsSync(path.join(agent, "mcp.json"))).toBe(false);
-    expect(fs.existsSync(path.join(agent, "mend", "delivered-settings.json"))).toBe(false);
-    expect(fs.existsSync(path.join(agent, "mend", "delivered-files.json"))).toBe(false);
-    // The next launch has nothing to undo.
-    const again = run();
-    expect(again.status).toBe(0);
-    expect(again.stderr).toBe("");
-  });
-
-  it("keeps what a profile delivered when a delivery failed, and says so", () => {
-    // The vacate moved the profile aside and the write failed: gone, but not cleared.
-    const { agent, profile, run } = setUp();
-    run();
-    const settings = path.join(agent, "settings.json");
-    const before = fs.readFileSync(settings, "utf8");
-    fs.rmSync(profile, { recursive: true });
-    const result = run();
-    expect(result.status).toBe(0);
-    expect(result.stderr).toContain("mend: the pi profile was not delivered to this session");
-    expect(fs.readFileSync(settings, "utf8")).toBe(before);
-    expect(fs.existsSync(path.join(agent, "mend", "delivered-settings.json"))).toBe(true);
   });
 
   it("leaves a settings.json it cannot read as it is", () => {

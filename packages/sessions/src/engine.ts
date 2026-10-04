@@ -38,7 +38,6 @@ import {
   SessionsRepo,
   AgentMemoryRepo,
   PiProfilesRepo,
-  type PiProfileWithFiles,
   SecretFilesRepo,
   SettingsRepo,
   SkillsRepo,
@@ -302,13 +301,11 @@ import {
   storePastedImage as storePastedImageOnHost,
 } from "./pasted-images.ts";
 import {
-  clearPiProfile,
-  clearPiProfileExec,
   materializePiProfile,
   piProfileFilesToWrite,
   piProfileKeptDir,
   planPiProfile,
-  vacatePiProfileExec,
+  preparePiProfileExec,
 } from "./pi-profile.ts";
 import {
   ProtocolHost,
@@ -595,12 +592,15 @@ const logAgentMemoryDelivered = (
 };
 
 /** A pi profile directory kept aside, or one that could not be cleared, is said once. */
-/** A pi profile that is not the session owner's could not be moved aside: the launch stops. */
-const piProfileNotCleared = (message: string) =>
+/**
+ * A pi session's harness home could not be made to hold its owner's profile, or none: the launch
+ * stops rather than run pi on another person's profile, or on the owner's half delivered.
+ */
+const piProfileNotDelivered = (message: string) =>
   new SealantPlatformError({
-    code: "PI_PROFILE_NOT_CLEARED",
+    code: "PI_PROFILE_NOT_DELIVERED",
     status: null,
-    message: `another person's pi profile could not be taken out of this session: ${message}`,
+    message: `the pi profile could not be set up for this session: ${message}`,
     cause: null,
   });
 
@@ -9281,80 +9281,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       );
 
       /**
-       * The owner's pi profile (`pi-profile.ts`), into a pi session's harness home, after the
-       * relocation so it lands where pi reads: beside the mounted harness home in the co-located
-       * store, through exec in capture mode. Best-effort like skills: pi starts without it.
+       * A pi session's harness home, made to hold its owner's freshly delivered profile, or none
+       * (`preparePiProfileExec`, pi-profile.ts): in capture mode the harness home is the
+       * worktree's, so the profile and settings there are whoever's session delivered last. What
+       * is there is moved aside, never deleted, then the owner's profile is written. After the
+       * relocation, so it lands where pi reads: beside the mounted harness home in the co-located
+       * store, through exec in capture mode. Not best-effort: any failure stops the launch, since
+       * pi would otherwise run on another person's profile, or on the owner's half delivered.
        */
       const deliverPiProfile = Effect.fn("SessionEngine.deliverPiProfile")(function* (
         session: Session,
         project: Project,
         workspace: Workspace,
-        saved: PiProfileWithFiles | null,
       ) {
-        // No profile of the owner's: `clearForeignPiProfile` took out the one that was there.
-        if (session.harness !== "pi" || saved === null) return;
-        const plan = planPiProfile({ digest: saved.profile.digest, files: saved.files });
+        if (session.harness !== "pi") return;
+        const saved =
+          session.ownerUserId === null ? null : yield* piProfiles.forUser(session.ownerUserId);
+        const plan =
+          saved === null
+            ? null
+            : planPiProfile({ digest: saved.profile.digest, files: saved.files });
         if (capture === null) {
           const outcomes = yield* materializePiProfile(
             harnessHomePathOf(project.storePath, session.id),
             plan,
-          );
+          ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
           yield* logPiProfileVacated(session.id, outcomes);
           return;
         }
         const home = HARNESS_HOME_MOUNT_PATH;
-        const prepared = yield* sealant.exec(
-          workspace,
-          vacatePiProfileExec(home, piProfileKeptDir(), plan),
-        );
+        const prepared = yield* sealant
+          .exec(workspace, preparePiProfileExec(home, piProfileKeptDir(), plan))
+          .pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
         const vacated = parseSkillsVacateOutcomes(prepared.stdout);
         yield* logPiProfileVacated(session.id, vacated);
         if (prepared.exitCode !== 0) {
-          return yield* new WorkspaceFileError({
-            path: home,
-            message: `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
-          });
+          return yield* piProfileNotDelivered(
+            `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
+          );
         }
+        if (plan === null) return;
         yield* writeWorkspaceFiles(
           workspace,
           piProfileFilesToWrite(plan, vacated).map((file) => ({
             path: path.posix.join(home, file.path),
             bytes: file.bytes,
           })),
-        );
-      });
-
-      /**
-       * A pi session with no profile of its owner's (none saved, or no owner) moves aside the
-       * profile its harness home holds (`clearPiProfileExec`): in capture mode that is whoever's
-       * session delivered it last, and pi would run their extensions and settings. Unlike a
-       * delivery this is not best-effort: when the profile cannot be moved, the launch stops.
-       */
-      const clearForeignPiProfile = Effect.fn("SessionEngine.clearForeignPiProfile")(function* (
-        session: Session,
-        project: Project,
-        workspace: Workspace,
-      ) {
-        if (session.harness !== "pi") return null;
-        const saved =
-          session.ownerUserId === null ? null : yield* piProfiles.forUser(session.ownerUserId);
-        if (saved !== null) return saved;
-        if (capture === null) {
-          const outcomes = yield* clearPiProfile(
-            harnessHomePathOf(project.storePath, session.id),
-          ).pipe(Effect.mapError((error) => piProfileNotCleared(error.message)));
-          yield* logPiProfileVacated(session.id, outcomes);
-          return null;
-        }
-        const cleared = yield* sealant.exec(
-          workspace,
-          clearPiProfileExec(HARNESS_HOME_MOUNT_PATH, piProfileKeptDir()),
-        );
-        yield* logPiProfileVacated(session.id, parseSkillsVacateOutcomes(cleared.stdout));
-        if (cleared.exitCode !== 0) {
-          return yield* piProfileNotCleared(`exit ${cleared.exitCode}: ${cleared.stderr.trim()}`);
-        }
-        return null;
+        ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
       });
 
       /**
@@ -10871,18 +10844,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
-        const piProfile = yield* clearForeignPiProfile(session, project, workspace).pipe(
-          Effect.tapError((error) =>
-            capture === null ? Effect.void : abandonExecutor(workspace, error.message),
-          ),
+        // Every failure stops the launch, and the workspace is reaped in both modes: its id is not
+        // on the row yet.
+        yield* deliverPiProfile(session, project, workspace).pipe(
+          Effect.tapError((error) => abandonExecutor(workspace, error.message)),
           settleOnFailure,
-        );
-        yield* deliverPiProfile(session, project, workspace, piProfile).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: the pi profile was not delivered").pipe(
-              Effect.annotateLogs({ sessionId, message: error.message }),
-            ),
-          ),
         );
         // The owner's secret files (docs/adr/0010): into the executor's own home, which no capture
         // root covers, before the harness starts.

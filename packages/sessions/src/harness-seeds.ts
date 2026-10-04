@@ -66,33 +66,8 @@ export const CLAUDE_ONBOARDING_SEED = `node -e '${CLAUDE_SEED_PROGRAM}' 2>/dev/n
  * on a line of its own even when the file does not end in a newline, so the user's last line and
  * the new table never run together.
  */
-/**
- * Codex's shell snapshot, off in the workspace's `config.toml` as well as on Mend's own launches
- * (`CODEX_SHELL_SNAPSHOT_OFF`): a Codex a person starts by hand (a shell tab, an editor's
- * takeover, a service) reads the file and writes no snapshot either. A file that already names
- * `shell_snapshot` is the person's choice and is left as it is. Otherwise the key goes into the
- * file's `[features]` table, after its header; into the root as `features.shell_snapshot` when
- * the file defines `features.` keys at the root (a `[features]` header would then redefine the
- * table); or into a new `[features]` table at the end. A file that cannot be read, or is a link to
- * nothing, is left alone. No single quotes: it rides `sh -c` inside them.
- */
-const CODEX_FEATURES_PROGRAM = [
-  `const fs=require("fs"),path=require("path"),f=require("os").homedir()+"/.codex/config.toml";`,
-  `let text="";try{text=fs.readFileSync(f,"utf8")}catch(e){if(e.code!=="ENOENT")process.exit(0);try{fs.lstatSync(f);process.exit(0)}catch{}}`,
-  `const lines=text.split("\\n");`,
-  `if(lines.some(l=>/^\\s*(features\\.)?shell_snapshot\\s*=/.test(l)))process.exit(0);`,
-  `const header=lines.findIndex(l=>/^\\s*\\[\\s*features\\s*\\]\\s*(#.*)?$/.test(l));`,
-  `const firstTable=lines.findIndex(l=>/^\\s*\\[/.test(l));`,
-  `const root=firstTable<0?lines:lines.slice(0,firstTable);`,
-  `if(header>=0)lines.splice(header+1,0,"shell_snapshot = false");`,
-  `else if(root.some(l=>/^\\s*features\\./.test(l)))lines.splice(firstTable<0?lines.length:firstTable,0,"features.shell_snapshot = false");`,
-  `else{if(lines.length>0&&lines[lines.length-1]!=="")lines.push("");lines.push("[features]","shell_snapshot = false","")}`,
-  `let real=f,mode=0o644;try{real=fs.realpathSync(f);mode=fs.statSync(real).mode&0o7777}catch{}const tmp=real+".mend-seed-"+process.pid;`,
-  `try{fs.mkdirSync(path.dirname(real),{recursive:true});fs.writeFileSync(tmp,lines.join("\\n"),{mode,flag:"wx"});fs.chmodSync(tmp,mode);fs.renameSync(tmp,real)}catch{try{fs.unlinkSync(tmp)}catch{}}`,
-].join("");
-
 export const CODEX_TRUST_SEED =
-  `mkdir -p "$HOME/.codex"; node -e '${CODEX_FEATURES_PROGRAM}' 2>/dev/null; ` +
+  `mkdir -p "$HOME/.codex"; ` +
   `grep -q 'workspace/repo' "$HOME/.codex/config.toml" 2>/dev/null || ` +
   `printf '\\n[projects."/workspace/repo"]\\ntrust_level = "trusted"\\n' >> "$HOME/.codex/config.toml"; ` +
   `exec "$@"`;

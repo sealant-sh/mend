@@ -3184,7 +3184,52 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("refuses a pi launch whose owner's profile cannot be delivered", async () => {
+    const created: CreateOptions[] = [];
+    const files = [
+      { path: "extensions/mine/index.ts", encoding: "utf8", contents: "export default 1;\n" },
+    ] as const;
+    const piProfilesLayer = piProfilesLayerOf(() =>
+      Effect.succeed({
+        profile: new PiProfile({
+          fileCount: 1,
+          bytes: files[0].contents.length,
+          extensions: ["mine"],
+          packages: [],
+          digest: piProfileDigest(files),
+          revision: 1,
+          updatedAt: new Date(0),
+        }),
+        files,
+      }),
+    );
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "pi",
+            label: null,
+            name: null,
+            ownerUserId: "owner-with-profile",
+            base: null,
+          });
+          const home = harnessHomePathOf(project.storePath, session.id);
+          plantForeignPiProfile(home);
+          fs.writeFileSync(path.join(home, ".mend"), "not a directory");
+          const failure = yield* engine.launch(session.id, ["pi"]).pipe(Effect.flip);
+          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
+          expect(platformFailure?.code).toBe("PI_PROFILE_NOT_DELIVERED");
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+        }),
+      { sealantLayer: sealantLaunchLayer(created), piProfilesLayer },
+    );
+  });
+
   it("moves aside a pi profile that is not the owner's, and refuses the launch when it cannot", async () => {
+    // A pi launch runs on its owner's freshly delivered profile, on no profile, or not at all.
     const created: CreateOptions[] = [];
     await withEngine(
       (world, tmp) =>
@@ -3205,7 +3250,6 @@ describe("SessionEngine", () => {
           plantForeignPiProfile(movedHome);
           yield* engine.launch(moved.id, ["pi"]);
           expect(fs.existsSync(path.join(movedHome, ".pi/agent/mend/profile"))).toBe(false);
-          expect(fs.existsSync(path.join(movedHome, ".pi/agent/mend/cleared"))).toBe(true);
           const kept = fs.readdirSync(path.join(movedHome, ".mend/pi-profile-kept"));
           expect(kept).toHaveLength(1);
 
@@ -3216,7 +3260,7 @@ describe("SessionEngine", () => {
           fs.writeFileSync(path.join(stuckHome, ".mend"), "not a directory");
           const failure = yield* engine.launch(stuck.id, ["pi"]).pipe(Effect.flip);
           const platformFailure = failure instanceof SealantPlatformError ? failure : null;
-          expect(platformFailure?.code).toBe("PI_PROFILE_NOT_CLEARED");
+          expect(platformFailure?.code).toBe("PI_PROFILE_NOT_DELIVERED");
           expect(world.sessions.get(stuck.id)?.status).toBe("failed");
           expect(fs.existsSync(path.join(stuckHome, ".pi/agent/mend/profile"))).toBe(true);
         }),

@@ -113,78 +113,79 @@ export const piProfileKeptDir = (now: Date = new Date()): string =>
     `${now.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
   );
 
-/** The exec that clears the way for `plan` in a workspace's harness home (`SKILLS_VACATE_PROGRAM`). */
-export const vacatePiProfileExec = (
+/**
+ * Takes an earlier delivery's settings back out of pi's agent directory (`argv[1]`), keeping a
+ * copy of everything it touches under `argv[2]` first: `settings.json`, the copied `mcp.json` and
+ * `keybindings.json`, and the delivery records (`mend/delivered-*.json`). A setting still holding
+ * the value that delivery wrote goes; one the session changed stays. The packages it delivered go;
+ * the session's own stay. A copied file the session did not change goes. A `settings.json` that
+ * cannot be read is moved aside whole. Nothing goes that is not in the copy. Exits non-zero when
+ * any of it fails. No single quotes: it rides `sh -c` inside them.
+ */
+export const PI_PROFILE_UNDO_PROGRAM = [
+  `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
+  `const [A,K]=process.argv.slice(1),M=path.join(A,"mend"),D=path.join(M,"delivered-settings.json"),F=path.join(M,"delivered-files.json");`,
+  `if(!fs.existsSync(D)&&!fs.existsSync(F))process.exit(0);`,
+  `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
+  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
+  `for(const f of ["settings.json","mcp.json","keybindings.json","mend/delivered-settings.json","mend/delivered-files.json"]){`,
+  `const from=path.join(A,f);if(!fs.existsSync(from))continue;const to=path.join(K,f);fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to)}`,
+  `const S=path.join(A,"settings.json"),cur=read(S),last=read(D)||{};`,
+  `if(cur===null)fs.renameSync(S,path.join(K,"settings.json.unreadable"));else if(fs.existsSync(S)){`,
+  `const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),has=Object.hasOwn,out=Object.assign({},cur);`,
+  `for(const k of Object.keys(last)){if(k!=="packages"&&has(cur,k)&&same(cur[k],last[k]))delete out[k]}`,
+  `const id=e=>JSON.stringify(e),before=new Set((Array.isArray(last.packages)?last.packages:[]).map(id));`,
+  `if(Array.isArray(cur.packages))out.packages=cur.packages.filter(e=>!before.has(id(e)));`,
+  `const t=S+".mend-seed-"+process.pid;fs.writeFileSync(t,JSON.stringify(out,null,2),{mode:0o600});fs.renameSync(t,S)}`,
+  `const lastFiles=read(F)||{};for(const f of ["mcp.json","keybindings.json"]){if(!lastFiles[f])continue;`,
+  `const to=path.join(A,f);let have=null;try{have=sha(fs.readFileSync(to))}catch(e){if(e.code!=="ENOENT")throw e}`,
+  `if(have===lastFiles[f])fs.rmSync(to)}`,
+  `fs.rmSync(D,{force:true});fs.rmSync(F,{force:true})`,
+].join("");
+
+/** pi's agent directory, relative to the harness home. */
+const PI_AGENT_DIR = path.posix.dirname(path.posix.dirname(PI_PROFILE_HOME_DIR));
+
+/**
+ * The exec that makes a pi session's harness home hold its owner's profile or none, before the
+ * profile's files are written (`plan`, or null when the owner has none). In capture mode the
+ * harness home is the worktree's, so what is there is whoever's session delivered last:
+ *
+ * 1. The profile directory is left as it is only when it holds exactly the profile being
+ *    delivered (`unchanged`: the same files, whoever delivered them); otherwise it is moved aside
+ *    whole to `kept` (`SKILLS_VACATE_PROGRAM`), never deleted.
+ * 2. Unless it was left as it is, what an earlier delivery put into pi's settings is taken back
+ *    out, with a copy under `kept` (`PI_PROFILE_UNDO_PROGRAM`).
+ *
+ * Prints the vacate's outcome lines. Exits non-zero when either step fails: the launch then
+ * stops, as it does when the files cannot be written. A pi launch runs on its owner's freshly
+ * delivered profile, or on no profile, or does not start.
+ */
+export const preparePiProfileExec = (
   home: string,
   kept: string,
-  plan: PiProfilePlan,
+  plan: PiProfilePlan | null,
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
   `set -e; mkdir -p "$1"/${shellQuote(path.posix.dirname(PI_PROFILE_HOME_DIR))}; ` +
-    `exec node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3"`,
+    `out=$(node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3"); printf '%s\\n' "$out"; ` +
+    `case "$out" in *"skill unchanged "*) ;; ` +
+    `*) node -e ${shellQuote(PI_PROFILE_UNDO_PROGRAM)} "$1"/${shellQuote(PI_AGENT_DIR)} ` +
+    `"$1/$2"/${shellQuote(PI_AGENT_DIR)} ;; esac`,
   "mend-pi-profile",
   home,
   kept,
-  JSON.stringify([plan.vacate]),
-];
-
-/**
- * Where a clear leaves its mark, relative to the harness home: `PI_PROFILE_PROGRAM` takes a gone
- * profile's settings back out only when Mend cleared it on purpose, never when a delivery failed
- * after the vacate moved a profile aside.
- */
-export const PI_PROFILE_CLEARED = path.posix.join(
-  path.posix.dirname(PI_PROFILE_HOME_DIR),
-  "cleared",
-);
-
-/** The vacate that moves a profile out of the way with nothing to deliver in its place. */
-const CLEAR_VACATE: SkillsVacate = {
-  dir: PI_PROFILE_HOME_DIR,
-  accept: [],
-  delivering: null,
-  skip: SESSION_BUILT,
-};
-
-/**
- * The exec that takes a delivered profile out of a pi session's harness home when the session has
- * no profile of its owner's: in capture mode the harness home is the worktree's, so the profile
- * there is whoever's session delivered it last. Moved aside whole, as a replaced profile is
- * (`.mend/pi-profile-kept/<stamp>/`, never saved with the session), never deleted, and marked
- * (`PI_PROFILE_CLEARED`) so `PI_PROFILE_PROGRAM` takes its settings back out before pi starts.
- * Exits non-zero when the profile could not be moved: the launch then stops.
- */
-export const clearPiProfileExec = (home: string, kept: string): ReadonlyArray<string> => [
-  "sh",
-  "-c",
-  `set -e; mkdir -p "$1"/${shellQuote(path.posix.dirname(PI_PROFILE_HOME_DIR))}; ` +
-    `node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3"; ` +
-    `: > "$1"/${shellQuote(PI_PROFILE_CLEARED)}`,
-  "mend-pi-profile",
-  home,
-  kept,
-  JSON.stringify([CLEAR_VACATE]),
-];
-
-/** The same on this machine: the co-located store's harness home. */
-export const clearPiProfile = (
-  harnessHomePath: string,
-): Effect.Effect<ReadonlyArray<SkillsVacateOutcome>, PiProfileDeliveryError> =>
-  Effect.try({
-    try: () => {
-      const [command, ...args] = clearPiProfileExec(harnessHomePath, piProfileKeptDir());
-      const cleared = spawnSync(command ?? "sh", args, { encoding: "utf8" });
-      if (cleared.status !== 0) {
-        throw new Error(`could not move ${PI_PROFILE_HOME_DIR} aside: ${cleared.stderr ?? ""}`);
-      }
-      return parseSkillsVacateOutcomes(cleared.stdout ?? "");
+  JSON.stringify([
+    plan?.vacate ?? {
+      dir: PI_PROFILE_HOME_DIR,
+      accept: [],
+      delivering: null,
+      skip: SESSION_BUILT,
+      skipFiles: [PI_PROFILE_SECRET_FILE],
     },
-    catch: (error) =>
-      new PiProfileDeliveryError({
-        message: `the pi profile could not be taken out of the harness home: ${String(error)}`,
-      }),
-  });
+  ]),
+];
 
 /**
  * The plan's files, unless the directory already held exactly them; then only the file the
@@ -204,36 +205,26 @@ export const piProfileFilesToWrite = (
 };
 
 /**
- * Write the profile into a session's harness home on this machine: the co-located store, where
- * that directory is the workspace's mounted harness home. Capture mode applies the same plan
- * inside the workspace through exec.
+ * Prepare a session's harness home on this machine (`preparePiProfileExec`) and write the owner's
+ * profile into it, or leave it holding none (`plan` null): the co-located store, where that
+ * directory is the workspace's mounted harness home. Capture mode runs the same exec and writes
+ * the same files inside the workspace.
  */
 export const materializePiProfile = (
   harnessHomePath: string,
-  plan: PiProfilePlan,
+  plan: PiProfilePlan | null,
 ): Effect.Effect<ReadonlyArray<SkillsVacateOutcome>, PiProfileDeliveryError> =>
   Effect.tryPromise({
     try: async () => {
       // A harness home that was never made was never mounted: nothing here would reach pi.
       await fs.access(harnessHomePath);
-      await fs.mkdir(path.join(harnessHomePath, path.dirname(PI_PROFILE_HOME_DIR)), {
-        recursive: true,
-      });
-      const vacated = spawnSync(
-        process.execPath,
-        [
-          "-e",
-          SKILLS_VACATE_PROGRAM,
-          harnessHomePath,
-          piProfileKeptDir(),
-          JSON.stringify([plan.vacate]),
-        ],
-        { encoding: "utf8" },
-      );
-      const outcomes = parseSkillsVacateOutcomes(vacated.stdout ?? "");
-      if (vacated.status !== 0) {
-        throw new Error(`could not clear ${PI_PROFILE_HOME_DIR}: ${vacated.stderr ?? ""}`);
+      const [command, ...args] = preparePiProfileExec(harnessHomePath, piProfileKeptDir(), plan);
+      const prepared = spawnSync(command ?? "sh", args, { encoding: "utf8" });
+      const outcomes = parseSkillsVacateOutcomes(prepared.stdout ?? "");
+      if (prepared.status !== 0) {
+        throw new Error(`could not clear ${PI_PROFILE_HOME_DIR}: ${prepared.stderr ?? ""}`);
       }
+      if (plan === null) return outcomes;
       // As the workspace writer does (`workspace-files.ts`): directories 0755, files 0644.
       for (const file of piProfileFilesToWrite(plan, outcomes)) {
         const filePath = path.join(harnessHomePath, file.path);
@@ -272,24 +263,14 @@ export const materializePiProfile = (
  *    The packages are the profile itself, the profile's, then any the session added.
  * 4. Copies `root/mcp.json` and `root/keybindings.json` into the agent directory, unless the
  *    session changed its copy since the last delivery.
- * 5. When Mend cleared the profile (`clearPiProfileExec`: the session has no profile of its
- *    owner's, and the one there was whoever's session delivered it) and an earlier delivery's
- *    records are there: takes its settings and packages back out of `settings.json` where the
- *    session left them as delivered, removes the copied files it did not change, and drops the
- *    records. One person's profile never runs in another person's pi. A profile that is gone
- *    without that mark is a delivery that failed: what it delivered before stays, and the terminal
- *    says so.
  *
  * What was last delivered is kept beside the profile (`mend/delivered-*.json`). No single quotes:
  * the program rides `sh -c` inside them.
  */
 export const PI_PROFILE_PROGRAM = [
   `try{const fs=require("fs"),path=require("path"),cp=require("child_process"),crypto=require("crypto");`,
-  `const A=process.argv[1],M=path.join(A,"mend"),P=path.join(M,"profile"),C=path.join(M,"cleared"),gone=!fs.existsSync(P);`,
+  `const A=process.argv[1],M=path.join(A,"mend"),P=path.join(M,"profile");if(!fs.existsSync(P))process.exit(0);`,
   `const say=m=>process.stderr.write("mend: "+m+"\\n");`,
-  `if(!gone)fs.rmSync(C,{force:true});`,
-  `else if(!fs.existsSync(path.join(M,"delivered-settings.json"))&&!fs.existsSync(path.join(M,"delivered-files.json"))){fs.rmSync(C,{force:true});process.exit(0)}`,
-  `else if(!fs.existsSync(C)){say("the pi profile was not delivered to this session, so what it delivered before stays as it is");process.exit(0)}`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
   `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
   `function put(p,v,mode){fs.mkdirSync(path.dirname(p),{recursive:true});const t=p+".mend-seed-"+process.pid;`,
@@ -325,15 +306,14 @@ export const PI_PROFILE_PROGRAM = [
   `const last=read(D)||{},same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),has=Object.hasOwn,out=Object.assign({},cur);`,
   `for(const k of Object.keys(prof)){if(k!=="packages"&&(!has(cur,k)||same(cur[k],last[k])))out[k]=prof[k]}`,
   `for(const k of Object.keys(last)){if(k!=="packages"&&!has(prof,k)&&has(cur,k)&&same(cur[k],last[k]))delete out[k]}`,
-  `const id=e=>JSON.stringify(e),delivered=gone?[]:["./${PI_PROFILE_AGENT_PATH}",...declared.filter(e=>!failed.has(src(e)))];`,
+  `const id=e=>JSON.stringify(e),delivered=["./${PI_PROFILE_AGENT_PATH}",...declared.filter(e=>!failed.has(src(e)))];`,
   `const before=new Set((Array.isArray(last.packages)?last.packages:[]).map(id)),now=new Set(delivered.map(id));`,
   `out.packages=[...delivered,...(Array.isArray(cur.packages)?cur.packages:[]).filter(e=>!before.has(id(e))&&!now.has(id(e)))];`,
-  `put(S,out,0o600);if(gone)fs.rmSync(D,{force:true});else put(D,Object.assign({},prof,{packages:delivered}))}`,
+  `put(S,out,0o600);put(D,Object.assign({},prof,{packages:delivered}))}`,
   `const F=path.join(M,"delivered-files.json"),lastFiles=read(F)||{},nextFiles={};`,
-  `for(const f of ["mcp.json","keybindings.json"]){let want;try{want=fs.readFileSync(path.join(P,"root",f))}catch{`,
-  `if(gone&&lastFiles[f]){const to=path.join(A,f);try{if(sha(fs.readFileSync(to))===lastFiles[f])fs.rmSync(to)}catch{}}continue}`,
+  `for(const f of ["mcp.json","keybindings.json"]){let want;try{want=fs.readFileSync(path.join(P,"root",f))}catch{continue}`,
   `const to=path.join(A,f);let have=null;try{have=sha(fs.readFileSync(to))}catch(e){if(e.code!=="ENOENT")continue}`,
   `if(have===null||have===lastFiles[f]||have===sha(want)){put(to,want,0o600);nextFiles[f]=sha(want)}`,
   `else{say(f+" was changed in this session, so the profile did not replace it");if(lastFiles[f])nextFiles[f]=lastFiles[f]}}`,
-  `if(gone){fs.rmSync(F,{force:true});fs.rmSync(C,{force:true});say("no pi profile is connected for this session, so the one delivered here before was taken out")}else put(F,nextFiles)}catch(e){process.stderr.write("mend: the pi profile was not set up: "+(e&&e.message)+"\\n")}`,
+  `put(F,nextFiles)}catch(e){process.stderr.write("mend: the pi profile was not set up: "+(e&&e.message)+"\\n")}`,
 ].join("");
