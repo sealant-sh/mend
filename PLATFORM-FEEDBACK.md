@@ -20,8 +20,10 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
     either. Not yet released.
   - Until it ships, Mend's opencode seed makes that file a link to `~/.mend/opencode/mcp-auth.json`
     in the executor's own home, which opencode writes through, and removes unread a plain file a
-    capture brought (`OPENCODE_MCP_AUTH_SEED`, capture mode only). Capture mode's harness-home
-    relocation, before every launch of any harness, also removes a plain one unread
+    capture brought (`OPENCODE_CAPTURED_SEED`, chosen by Mend for capture launches: the executor's
+    environment carries no capture marker, since sealantd consumes `SEALANT_CAPTURE_*` before any
+    process starts). Capture mode's harness-home relocation, before every launch of any harness,
+    also removes a plain one unread, and a link there unless it leads to that place
     (`CAPTURED_LOGIN_FILES`). An opencode started by hand in a shell is not seeded and writes the
     file into saved state until #136 ships.
   - opencode's database (`opencode.db`, saved with the harness home as the conversation) also has

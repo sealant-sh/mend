@@ -24,6 +24,7 @@ The co-located store's saved harness state no longer includes opencode's login f
 
 In a remote workspace, opencode's MCP server logins (`mcp-auth.json`) are kept out of what the
 session saves when Mend starts opencode: the file in its data directory is a link into the
-workspace's own home. A copy an earlier saved session brought is removed unread before any session
-in the worktree starts, whatever its harness. A shell resume of an opencode session whose
-conversation Mend cannot attribute opens the shell instead of refusing.
+workspace's own home, and Mend decides that for every launch it makes in a remote workspace. A copy
+an earlier saved session brought, or a link there that leads anywhere else, is removed unread before
+any session in the worktree starts, whatever its harness. A shell resume of an opencode session
+whose conversation Mend cannot attribute opens the shell instead of refusing.

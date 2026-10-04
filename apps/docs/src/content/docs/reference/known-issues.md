@@ -124,7 +124,8 @@ keeps out of what the session saves, when Mend starts opencode:
   platform leaves it out too (sealantd#136). The next session in the worktree then removes it unread
   before it starts, but the earlier saved states still hold it.
 - A session saved before this change may hold MCP sign-ins; every later session in the worktree
-  removes them unread before it starts.
+  removes them unread before it starts, and removes a link left at that file's place that leads
+  anywhere else.
 
 ## pi runs in the terminal only
 
