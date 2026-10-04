@@ -9,6 +9,7 @@ import type * as HttpClientResponse from "effect/unstable/http/HttpClientRespons
 
 import { GatewayConfig } from "./config.ts";
 import {
+  MendChangeDiff,
   MendEventPointer,
   MendItem,
   MendProject,
@@ -182,6 +183,8 @@ export class MendClient extends Context.Service<
     ) => MendRead<ReadonlyArray<MendRequest>>;
     /** `GET /api/sessions/:id`: the session, what the caller may do with it, and its change. */
     readonly sessionDetail: (deviceToken: string, sessionId: string) => MendRead<MendSessionDetail>;
+    /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
+    readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
     /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
     readonly submitTurn: (
       deviceToken: string,
@@ -222,6 +225,7 @@ const decodeTurns = Schema.decodeUnknownEffect(Schema.Array(MendTurn));
 const decodeRequests = Schema.decodeUnknownEffect(Schema.Array(MendRequest));
 const decodeItems = Schema.decodeUnknownEffect(Schema.Array(MendItem));
 const decodeSessionDetail = Schema.decodeUnknownEffect(MendSessionDetail);
+const decodeChangeDiff = Schema.decodeUnknownEffect(MendChangeDiff);
 const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
@@ -426,6 +430,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeSessionDetail,
         );
 
+      const changeDiff = (deviceToken: string, changeId: string) =>
+        read(
+          "GET /api/changes/:id/diff",
+          `/api/changes/${encodeURIComponent(changeId)}/diff`,
+          deviceToken,
+          decodeChangeDiff,
+        );
+
       const submitTurn = (deviceToken: string, sessionId: string, input: string) =>
         answered(
           command(
@@ -554,6 +566,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         listItems,
         listRequests,
         sessionDetail,
+        changeDiff,
         submitTurn,
         launchProtocol,
         interruptTurn,

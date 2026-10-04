@@ -591,6 +591,11 @@ export class FakeWorkbench {
         },
         diff: diff.diff,
         files: diff.files,
+        observation: {
+          state: "observed",
+          source: "capture",
+          label: "observed at capture 3 · seq 7",
+        },
       });
     }
     return json(404, { _tag: "NotFound" });

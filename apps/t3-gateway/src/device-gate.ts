@@ -27,6 +27,7 @@ class GatedMendClient {
   readonly listItems: DeviceCalls["listItems"];
   readonly listRequests: DeviceCalls["listRequests"];
   readonly sessionDetail: DeviceCalls["sessionDetail"];
+  readonly changeDiff: DeviceCalls["changeDiff"];
   readonly submitTurn: DeviceCalls["submitTurn"];
   readonly launchProtocol: DeviceCalls["launchProtocol"];
   readonly interruptTurn: DeviceCalls["interruptTurn"];
@@ -42,6 +43,7 @@ class GatedMendClient {
     this.listItems = calls.listItems;
     this.listRequests = calls.listRequests;
     this.sessionDetail = calls.sessionDetail;
+    this.changeDiff = calls.changeDiff;
     this.submitTurn = calls.submitTurn;
     this.launchProtocol = calls.launchProtocol;
     this.interruptTurn = calls.interruptTurn;
@@ -82,6 +84,7 @@ export const gateDeviceCalls = (
       guard(token, mend.listItems(token, sessionId, after, limit)),
     listRequests: (token, sessionId) => guard(token, mend.listRequests(token, sessionId)),
     sessionDetail: (token, sessionId) => guard(token, mend.sessionDetail(token, sessionId)),
+    changeDiff: (token, changeId) => guard(token, mend.changeDiff(token, changeId)),
     submitTurn: (token, sessionId, input) => guard(token, mend.submitTurn(token, sessionId, input)),
     launchProtocol: (token, sessionId, prompt) =>
       guard(token, mend.launchProtocol(token, sessionId, prompt)),
