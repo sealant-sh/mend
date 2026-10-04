@@ -233,6 +233,31 @@ describe("devices and late pointers", () => {
       ),
   );
 
+  it.live("a device the session check finds revoked loses its socket too", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const { rpc, client, access } = yield* pairAndConnect(mend, "SESSIONCHECK");
+        assert.deepStrictEqual(yield* rpc[WS_METHODS.serverProbe]({}), {});
+        // Revoked in Mend with no pointer: the client's own session check finds it.
+        mend.revoke(mend.claims[0]?.token ?? "");
+        const state = yield* client.auth.session({
+          headers: { authorization: `Bearer ${access.access_token}` },
+        });
+        assert.isFalse(state.authenticated);
+        yield* Effect.gen(function* () {
+          for (;;) {
+            const probe = yield* Effect.exit(
+              rpc[WS_METHODS.serverProbe]({}).pipe(Effect.timeout("1 second")),
+            );
+            if (probe._tag === "Failure") return;
+            yield* Effect.sleep("100 millis");
+          }
+        }).pipe(Effect.timeout("3 seconds"));
+      }),
+    ),
+  );
+
   it.live("revoking a person's last device stops the hub reading Mend for them", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

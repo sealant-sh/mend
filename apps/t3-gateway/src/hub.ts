@@ -619,6 +619,11 @@ export class Projections extends Context.Service<
   {
     /** The person's hub, reading with this bearer's device token among theirs. */
     readonly hub: (session: BearerSession) => Effect.Effect<PersonHub, never, Scope.Scope>;
+    /**
+     * Mend refused a device token outside any hub (the session check): the same refusal the gate
+     * makes, closing its sockets and revoking its bearers.
+     */
+    readonly refuseDevice: (userId: string, deviceToken: string) => Effect.Effect<void>;
   }
 >()("@mend/t3-gateway/Projections") {}
 
@@ -713,6 +718,9 @@ export const ProjectionsLive: Layer.Layer<Projections, never, MendClient | Gatew
           return RcMap.get(hubs, userId);
         });
 
-      return { hub };
+      const refuseDevice = (userId: string, deviceToken: string) =>
+        tokensOf(userId).refuse(deviceToken);
+
+      return { hub, refuseDevice };
     }),
   );
