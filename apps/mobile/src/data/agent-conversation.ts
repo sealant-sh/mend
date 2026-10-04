@@ -70,6 +70,14 @@ const parseTurn = (value: unknown): AgentTurnDto => {
     id: string(row, "id", "agent turn"),
     ordinal: integer(row, "ordinal", "agent turn"),
     ...(typeof origin === "string" ? { origin } : {}),
+    // Who sent it and whose login paid (docs/adr/0013); older servers send neither.
+    ...("author" in row ? { author: nullableString(row, "author", "agent turn") } : {}),
+    ...("billedUserId" in row
+      ? { billedUserId: nullableString(row, "billedUserId", "agent turn") }
+      : {}),
+    ...("billedAccountName" in row
+      ? { billedAccountName: nullableString(row, "billedAccountName", "agent turn") }
+      : {}),
     input: string(row, "input", "agent turn"),
     status: string(row, "status", "agent turn"),
     error: nullableString(row, "error", "agent turn"),

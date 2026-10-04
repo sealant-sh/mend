@@ -1,4 +1,4 @@
-import { buildAgentConversation } from "@mend/agent-conversation";
+import { buildAgentConversation, turnPayerWords } from "@mend/agent-conversation";
 import { composeProtocolArgv, ProtocolHarnessUnsupportedError } from "@mend/domain/workbench";
 import { QueryObserver } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import {
   interruptAgentTurn,
   respondAgentRequest,
   resumeSession,
+  type AgentTurnDto,
   type SessionControlEventDto,
   type SessionProcessDto,
 } from "#/lib/api";
@@ -22,6 +23,7 @@ import {
   refreshConversation,
   turnAuthorLine,
   turnEndWord,
+  turnLine,
 } from "#/lib/conversation";
 import {
   bridgeFixture,
@@ -244,6 +246,25 @@ describe("turn facts", () => {
     expect(turnAuthorLine(imported, "user-1", names, kinds)).toBe("from the terminal");
     const unknown = turnFixture({ author: null, processId: "not-listed-yet" });
     expect(turnAuthorLine(unknown, "user-1", names, kinds)).toBeNull();
+  });
+
+  it("says whose login paid for a turn someone else sent, and nothing new when the sender paid", () => {
+    const line = (turn: AgentTurnDto, viewerId: string) =>
+      turnLine(
+        turnAuthorLine(turn, viewerId, names, new Map()),
+        turnPayerWords(turn, viewerId, names),
+        turnEndWord(turn, null, viewerId, names),
+      );
+    // Maya steers Yiannis's session: until the switch, her turn runs on his login.
+    const steered = turnFixture({ author: "user-2", status: "running", endedAt: null });
+    expect(line(steered, "user-1")).toBe("sent by Maya · billed to your default · observed");
+    expect(line(steered, "user-2")).toBe("billed to Yiannis's default · observed");
+    expect(line({ ...steered, status: "failed" }, "user-2")).toBe(
+      "billed to Yiannis's default · failed · observed",
+    );
+    // The owner's own turn: nothing new.
+    expect(line(turnFixture(), "user-1")).toBeNull();
+    expect(line(turnFixture(), "user-2")).toBe("sent by Yiannis");
   });
 
   it("says who interrupted a turn when the control record names them", () => {

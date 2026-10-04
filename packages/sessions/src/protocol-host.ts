@@ -20,6 +20,7 @@ import type {
   AgentRequest,
   AgentTurn,
   SessionProcess,
+  TurnPayer,
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
@@ -48,6 +49,11 @@ export interface AttachProtocolProcessInput {
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";
   readonly hooks: ProtocolHostHooks;
+  /**
+   * Whose login the workspace launched with (docs/adr/0013-whoever-sends-a-turn-pays.md): the
+   * session owner's, or a capture-mode join's lease holder's. Null when Mend cannot say.
+   */
+  readonly launchedWithLoginOf: string | null;
 }
 
 /**
@@ -74,7 +80,31 @@ interface HostedProcess {
   readonly abort: AbortController;
   /** Non-null while a rehydrate replay is still behind its high water — dispatch waits on it. */
   readonly gate: Deferred.Deferred<void> | null;
+  /**
+   * The login the workspace holds (docs/adr/0013, "The host remembers what the workspace holds"):
+   * the one it launched with, until a switch writes another.
+   */
+  holds: TurnPayer;
 }
+
+/**
+ * The login a conversation's workspace launches with: Mend creates it with `{ claude: true }` or
+ * `{ codex: true }`, the launching person's account named `default`. Core does not report that
+ * account's id at create, so it stays unknown.
+ */
+const launchLogin = (userId: string | null): TurnPayer => ({
+  userId,
+  accountId: null,
+  accountName: userId === null ? null : "default",
+});
+
+/**
+ * Make the workspace hold the login the next turn runs on, and say whose it is (docs/adr/0013,
+ * "The switch sits in dispatch"). Until Core can write another login into a live workspace, every
+ * turn runs on the one the workspace holds; the switch replaces this with the turn's sender's.
+ */
+const loginForTurn = (entry: HostedProcess): Effect.Effect<TurnPayer> =>
+  Effect.succeed(entry.holds);
 
 /**
  * Process-local ownership of live protocol adapters. Durable turns, items, requests, and replay
@@ -162,6 +192,7 @@ export const ProtocolHostLive: Layer.Layer<
           for (;;) {
             const turn = yield* conversations.claimNextTurn(entry.process.id);
             if (turn === null) return;
+            const payer = yield* loginForTurn(entry);
             const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
             if (sent._tag === "Failure" && sent.failure._tag === "AgentTurnBusyError") {
               // The harness is in a turn of its own; that turn's end dispatches this one.
@@ -176,6 +207,7 @@ export const ProtocolHostLive: Layer.Layer<
               if (!hosted.has(entry.process.id)) return;
               continue;
             }
+            yield* conversations.setTurnPayer(turn.id, payer).pipe(Effect.orDie);
             yield* conversations.setProviderTurnId(turn.id, sent.success).pipe(Effect.orDie);
             return;
           }
@@ -207,6 +239,8 @@ export const ProtocolHostLive: Layer.Layer<
             entry.process.id,
             event.providerTurnId,
             event.reason,
+            // Nobody sent it: it runs on whatever login the workspace holds.
+            entry.holds,
           );
           if (opened === null) {
             yield* Effect.logWarning(
@@ -396,6 +430,7 @@ export const ProtocolHostLive: Layer.Layer<
         dispatchPermit: Semaphore.makeUnsafe(1),
         abort,
         gate,
+        holds: launchLogin(input.launchedWithLoginOf),
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);

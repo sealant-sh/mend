@@ -10986,6 +10986,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
               hooks: protocolHooksFor(agentProcess),
+              // The session's own workspace, created or claimed with its owner's login.
+              launchedWithLoginOf: session.ownerUserId,
             })
             .pipe(
               Effect.tapError((error) =>
@@ -11642,6 +11644,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 effort: protocolStart.effort,
                 permissionMode: protocolStart.permissionMode ?? "bypass",
                 hooks: protocolHooksFor(agentProcess),
+                // A join runs in the lease holder's workspace, on the login it launched with.
+                launchedWithLoginOf:
+                  workspaceOverride === null ? session.ownerUserId : executorOwnerUserId,
               })
               .pipe(
                 Effect.tapError((error) =>
@@ -13849,6 +13854,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Whose login a surviving protocol process's workspace launched with (docs/adr/0013): its
+       * session owner's, or in capture mode the lease holder's owner's when the process runs in
+       * the holder's executor (a join). Null when Mend cannot say.
+       */
+      const launchLoginOfProcess = Effect.fn("SessionEngine.launchLoginOfProcess")(function* (
+        protocolProcess: SessionProcess,
+      ) {
+        const session = yield* sessions
+          .byId(protocolProcess.sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null) return null;
+        if (capture === null) return session.ownerUserId;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (
+          lease === null ||
+          lease.executorId === null ||
+          lease.executorId === session.id ||
+          lease.executorId.startsWith("mend:")
+        ) {
+          return session.ownerUserId;
+        }
+        const holder = yield* sessions
+          .byId(SessionId.make(lease.executorId))
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        return holder !== null && holder.sealantWorkspaceId === protocolProcess.sealantWorkspaceId
+          ? holder.ownerUserId
+          : null;
+      });
+
+      /**
        * Restart policy v2: the pipe process survives a Mend restart (its stdio
        * terminates at the platform daemon, not at us), so re-attach a fresh
        * adapter to the surviving pipe and let it rebuild correlation state
@@ -13893,6 +13928,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               effort: options?.effort ?? undefined,
               permissionMode: options?.permissionMode ?? "bypass",
               hooks: protocolHooksFor(protocolProcess),
+              launchedWithLoginOf: yield* launchLoginOfProcess(protocolProcess),
               highWater: status.outputHighWater,
             })
             .pipe(

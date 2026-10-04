@@ -401,12 +401,14 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
           processId,
           "harness:init-1",
           'Dynamic workflow "tiny" completed',
+          { userId: null, accountId: null, accountName: null },
         );
         const again = yield* conversation.openHarnessTurn(
           sessionId,
           processId,
           "harness:init-1",
           "ignored",
+          { userId: null, accountId: null, accountName: "ignored" },
         );
         const sentBack = yield* conversation.byTurnId(claimed.id);
         const whileHarness = yield* conversation.claimNextTurn(processId);
@@ -466,6 +468,8 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
     });
     expect(result.opened?.ordinal).toBeGreaterThan(result.claimed.ordinal);
     expect(result.again?.id).toBe(result.opened?.id);
+    // A replayed open keeps the payer the first one recorded.
+    expect(result.again?.billedAccountName).toBeNull();
     expect(result.sentBack).toMatchObject({ status: "queued", startedAt: null });
     expect(result.whileHarness).toBeNull();
     expect(result.afterHarness?.id).toBe(result.claimed.id);
@@ -479,6 +483,57 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
     });
     expect(result.stopped?.seq).toBeGreaterThan(result.orphan.seq);
     expect(result.tasksEnded.running).toBe(0);
+  });
+
+  it("0107 records whose login a turn ran on, and keeps the person while a turn names them", async () => {
+    await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
+            ('u-payer', 'Yiannis', 'payer@example.com', '2026-10-01T00:00:00Z')`;
+      }),
+    );
+    const recorded = await withConversation(
+      Effect.gen(function* () {
+        const conversation = yield* AgentConversationRepo;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const turn = yield* conversation.submitTurn(sessionId, processId, "from Maria", "u-maria");
+        const unsent = yield* conversation.byTurnId(turn.id);
+        const billed = yield* conversation.setTurnPayer(turn.id, {
+          userId: "u-payer",
+          accountId: null,
+          accountName: "default",
+        });
+        const read = yield* conversation.byTurnId(turn.id);
+        return { unsent, billed, read };
+      }),
+    );
+    expect(recorded.unsent).toMatchObject({
+      billedUserId: null,
+      billedAccountId: null,
+      billedAccountName: null,
+    });
+    expect(recorded.read).toMatchObject({
+      author: "u-maria",
+      billedUserId: "u-payer",
+      billedAccountId: null,
+      billedAccountName: "default",
+    });
+    expect(recorded.billed.billedUserId).toBe("u-payer");
+    const refusals = await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return {
+          unknownPayer: yield* attempt(
+            sql`UPDATE agent_turns SET billed_user_id = 'u-nobody' WHERE id = ${recorded.read?.id ?? ""}`,
+          ),
+          deletePayer: yield* attempt(sql`DELETE FROM "user" WHERE id = 'u-payer'`),
+        };
+      }),
+    );
+    expect(refusals).toEqual({ unknownPayer: "refused", deletePayer: "refused" });
   });
 });
 

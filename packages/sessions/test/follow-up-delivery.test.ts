@@ -400,6 +400,7 @@ const testLayer = (world: TestWorld) => {
     openHarnessTurn: () => Effect.succeed(null),
     requeueClaimedTurn: () => Effect.void,
     setProviderTurnId: () => Effect.die("not in test"),
+    setTurnPayer: () => Effect.die("not in test"),
     bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: () => Effect.die("not in test"),
     setTurnIntent: () => Effect.die("not in test"),
