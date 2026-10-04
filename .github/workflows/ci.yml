@@ -42,4 +42,5 @@ jobs:
           scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs
           scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
           scripts/check-release-pins.test.mjs scripts/mend-migrations.test.mjs
+          scripts/republish.test.mjs
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml

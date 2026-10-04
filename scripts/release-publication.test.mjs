@@ -94,8 +94,8 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   assert.ok(refusal > 0);
   assert.ok(merge.indexOf("docker buildx imagetools create") > refusal);
 
-  // Run the dispatch check as written, with a stand-in `gh` that knows one tag.
-  const step = image.slice(image.indexOf("- name: A direct dispatch comes from main"));
+  // Run the commit step as written, with a stand-in `gh` that knows one tag.
+  const step = image.slice(image.indexOf("- name: Choose the commit to build"));
   const script = step
     .slice(step.indexOf("run: |") + "run: |".length, step.indexOf("- name: Resolve one version"))
     .split("\n")
@@ -106,33 +106,73 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   const { spawnSync } = await import("node:child_process");
   const bin = mkdtempSync(`${tmpdir()}/image-dispatch-`);
   t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const tagCommit = "a".repeat(40);
   writeFileSync(
     `${bin}/gh`,
-    '#!/bin/sh\ncase "$2" in */tags/v0.36.0-next.60) exit 0 ;; esac\nexit 1\n',
+    `#!/bin/sh\ncase "$2" in */commits/v0.36.0-next.60) echo ${tagCommit}; exit 0 ;; esac\nexit 1\n`,
   );
   chmodSync(`${bin}/gh`, 0o755);
-  const run = (workflow, ref, version = "") =>
-    spawnSync("bash", ["-c", script], {
+  const run = (event, workflow, ref, version = "") => {
+    const output = `${bin}/output-${Math.random()}`;
+    writeFileSync(output, "");
+    const status = spawnSync("bash", ["-c", script], {
       env: {
         PATH: `${bin}:${process.env.PATH}`,
+        GITHUB_EVENT_NAME: event,
         GITHUB_REPOSITORY: "sealant-sh/Mend",
         GITHUB_WORKFLOW_REF: `sealant-sh/Mend/.github/workflows/${workflow}@${ref}`,
         GITHUB_REF: ref,
+        GITHUB_SHA: "f".repeat(40),
+        GITHUB_OUTPUT: output,
         OVERRIDE_VERSION: version,
       },
     }).status;
+    return { status, commit: /commit=(\w+)/.exec(readFileSync(output, "utf8"))?.[1] };
+  };
   // The Version PR's pre-tag acceptance: release-acceptance.yml dispatched on its branch, calling image.yml.
-  assert.equal(run("release-acceptance.yml", "refs/heads/changeset-release/main"), 0);
-  assert.equal(run("image.yml", "refs/heads/feature"), 1);
-  assert.equal(run("image.yml", "refs/heads/main"), 0);
-  assert.equal(run("image.yml", "refs/heads/main", "0.0.0-dev.sha0123456789ab"), 0);
-  assert.equal(run("image.yml", "refs/heads/main", "0.36.0-next.60"), 0);
-  assert.equal(run("image.yml", "refs/heads/main", "0.36.0"), 1);
+  assert.deepEqual(
+    run("workflow_dispatch", "release-acceptance.yml", "refs/heads/changeset-release/main"),
+    {
+      status: 0,
+      commit: "f".repeat(40),
+    },
+  );
+  // A release tag's own run builds its commit.
+  assert.deepEqual(run("push", "release-cli.yml", "refs/tags/v0.36.0-next.60"), {
+    status: 0,
+    commit: "f".repeat(40),
+  });
+  assert.equal(run("workflow_dispatch", "image.yml", "refs/heads/feature").status, 1);
+  assert.deepEqual(run("workflow_dispatch", "image.yml", "refs/heads/main"), {
+    status: 0,
+    commit: "f".repeat(40),
+  });
+  assert.equal(
+    run("workflow_dispatch", "image.yml", "refs/heads/main", "0.0.0-dev.sha0123456789ab").status,
+    0,
+  );
+  // A dispatched tagged version builds the tag's commit, not main's head.
+  assert.deepEqual(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0-next.60"), {
+    status: 0,
+    commit: tagCommit,
+  });
+  assert.equal(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0").status, 1);
+  assert.match(image, /ref: \$\{\{ needs\.version\.outputs\.commit \}\}/);
 });
 
-test("npm's next is checked again after the approval, so it never moves back", () => {
+test("npm publishes a tarball rebuilt from npm's own reading, with no repository code", () => {
   const npm = job("npm");
-  const check = npm.indexOf('node scripts/next-version.mjs --newer "$version" "$current"');
-  assert.ok(check > 0);
-  assert.ok(npm.indexOf("publish --access public") > check);
+  // The credential job checks out nothing; building happens in npm-pack, which holds no token.
+  assert.doesNotMatch(npm, /actions\/checkout/);
+  assert.match(npm, /id-token: write/);
+  assert.doesNotMatch(job("npm-pack"), /id-token/);
+  assert.ok(dependencies("npm").includes("npm-pack"));
+  // The republish block (run against a stub registry by republish.test.mjs) does the publishing,
+  // under next re-checking the current next after the approval.
+  assert.match(npm, /# --- republish ---/);
+  assert.match(
+    npm,
+    /publish_rebuilt "\$tarball" "@sealant\/mend" "\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
+  );
+  assert.match(npm, /pacote@\d+\.\d+\.\d+/);
 });

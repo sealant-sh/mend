@@ -26,32 +26,39 @@ jobs:
     outputs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
+      commit: ${{ steps.commit.outputs.commit }}
     steps:
       # A dispatch of image.yml itself pushes ghcr.io/sealant-sh/mend:<version>, the tag
-      # `mend server setup` pulls: from main only, and only for a version that has its git tag, or a
-      # dev or acceptance build. A call from release-acceptance.yml or release-cli.yml carries its
-      # caller's event and ref, so the check reads github.workflow_ref, the top-level workflow.
-      - name: A direct dispatch comes from main, for a tagged version
-        if: github.event_name == 'workflow_dispatch'
+      # `mend server setup` pulls: from main only, and only for a version that has its git tag (built
+      # from that tag's commit, not main's head), or a dev or acceptance build. A call from
+      # release-acceptance.yml or release-cli.yml carries its caller's event and ref, so the check
+      # reads github.workflow_ref, the top-level workflow, and builds the caller's commit.
+      - name: Choose the commit to build
+        id: commit
         env:
           GH_TOKEN: ${{ github.token }}
           OVERRIDE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          [[ $GITHUB_WORKFLOW_REF == "$GITHUB_REPOSITORY/.github/workflows/image.yml@"* ]] || exit 0
-          if [[ $GITHUB_REF != refs/heads/main ]]; then
-            echo "::error::Dispatch image.yml from main only."
-            exit 1
+          commit=$GITHUB_SHA
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch &&
+            $GITHUB_WORKFLOW_REF == "$GITHUB_REPOSITORY/.github/workflows/image.yml@"* ]]; then
+            if [[ $GITHUB_REF != refs/heads/main ]]; then
+              echo "::error::Dispatch image.yml from main only."
+              exit 1
+            fi
+            case $OVERRIDE_VERSION in
+              "" | 0.0.0-dev.* | 0.0.0-acceptance.*) ;;
+              *)
+                if ! commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/v$OVERRIDE_VERSION" --jq .sha 2>/dev/null) ||
+                  [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
+                  echo "::error::No tag v$OVERRIDE_VERSION: a dispatch builds a tagged version or a dev build."
+                  exit 1
+                fi
+                ;;
+            esac
           fi
-          case $OVERRIDE_VERSION in
-            "" | 0.0.0-dev.* | 0.0.0-acceptance.*) ;;
-            *)
-              if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$OVERRIDE_VERSION" >/dev/null 2>&1; then
-                echo "::error::No tag v$OVERRIDE_VERSION: a dispatch builds a tagged version or a dev build."
-                exit 1
-              fi
-              ;;
-          esac
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - name: Resolve one version for image labels and tags
         id: resolve
         env:
@@ -89,6 +96,8 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - uses: useblacksmith/setup-docker-builder@v1
       - uses: docker/login-action@v3
         with:
@@ -179,6 +188,8 @@ jobs:
       packages: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

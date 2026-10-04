@@ -33,8 +33,12 @@ workflow run. It sorts after that commit's `next` build and before the next comm
 
 A patch release has its own next builds while only patch changesets are pending: after `v0.36.0`, a
 fix is `0.36.1-next.N`, and a server on it can upgrade to `0.36.1`. Once a minor changeset lands,
-later builds are `0.37.0-next.N` (and stay there, even if the minor is reverted); a server on one of
-those cannot take `0.36.1` (a downgrade) and waits for `0.37.0`.
+later builds are `0.37.0-next.N`, and stay there even if the minor is reverted. A server on one of
+those cannot take `0.36.1` (a downgrade) and waits for `0.37.0`. And once a `0.37.0-next.*` build
+has been handed out, no next build of `0.36.1` can follow it, so the promotion rule cannot release
+`0.36.1`: **after a reverted minor changeset, the next release is `0.37.0`** (add a minor changeset
+to say so). For the same reason sealantd's and Core's Version Packages commit then publishes
+`0.37.0-next.N`, and that is the build release step 1 means.
 
 ## What publishes when
 
@@ -47,13 +51,19 @@ those cannot take `0.36.1` (a downgrade) and waits for `0.37.0`.
 `latest`, on npm and on GHCR, moves only from a stable `vX.Y.Z` tag. In Core and sealantd:
 
 - `plan` decides first, before any build: a version already published from this commit is done; a
-  version not newer than npm's current `next` fails the run (a newer commit already published).
+  version not newer than npm's current `next` fails the run (a newer commit already published). A
+  registry error, or a 404 for a package that exists, fails the run after retries, never reads as
+  "nothing published".
 - `pack` builds, packs, and checks that every path the package's `exports`, `main` and `types` name
   is in its tarball.
-- `publish` holds the npm credential and runs no repository code. It refuses a tarball with any
-  entry outside `package/` or a second `package.json`, reads the name and version from
-  `npm publish --dry-run --json` (what npm would really publish), requires both to match, and
-  publishes with `--tag next`.
+- `publish` holds the npm credential and runs no repository code. It does not publish the tarball it
+  was given. It extracts it with pacote (npm's own reader, pinned and installed in the job),
+  rewrites `package.json` from an allowlist (no `tag`, no scripts, no `publishConfig` but `access`),
+  checks the name, the `-next.N` version and the commit on that rewritten manifest, repacks it with
+  `npm pack --ignore-scripts`, and publishes that, with `--tag next`. It checks again, right before
+  publishing, that the version is newer than the current `next`, so re-running an old failed job
+  cannot move `next` back. Afterwards, if `latest` is the new version, it moves `latest` back and
+  fails. Mend's npm job does the same, after the owner's approval.
 
 ## Cut a Mend next build
 
@@ -75,6 +85,18 @@ rather than move `next` back.
 
 Deploy it on the box with `deploy-box.yml` (`version` and the commit), or by hand with
 `scripts/preview-deploy.sh <version> <commit>`.
+
+A next tag counts as handed out the moment it exists: it raises B for every later build, and one off
+main blocks the release of its version. **Delete a tag the pins job refused, or one pushed by
+mistake,** before anything else (admins can):
+
+```sh
+git push origin --delete "v$version"
+git tag --delete "v$version"
+```
+
+If its release already published to npm, leave the tag: the version is spent, and the tag records
+it.
 
 ## Move the box onto the next channel, once
 
@@ -106,8 +128,31 @@ a downgrade. The one-time path:
      hash).
 
    It cannot see a Mend migration whose code changed under the same id and name: Mend stores no hash
-   of it. Before running this, check that every branch the box's previews carried migrations from
-   was merged unchanged.
+   of it. Before running this, check each preview the box ran. Every preview image carries its
+   commit in `org.opencontainers.image.revision`. On the box, with a Mend checkout at `~/src/mend`,
+   this prints what each preview's branch changed in Mend's migrations and whether main has exactly
+   that:
+
+   ```sh
+   git -C ~/src/mend fetch -q origin
+   git -C ~/src/mend checkout -q --detach origin/main
+   for image in $(docker image ls ghcr.io/sealant-sh/mend --format '{{.Repository}}:{{.Tag}}' | grep -- '-preview\.'); do
+     rev=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
+     git -C ~/src/mend fetch -q origin "$rev"
+     base=$(git -C ~/src/mend merge-base "$rev" origin/main)
+     echo "== $image ($rev)"
+     git -C ~/src/mend diff "$base" "$rev" -- packages/db/src/migrations.ts > /tmp/preview.diff
+     if [ ! -s /tmp/preview.diff ]; then echo "no migration changes"; continue; fi
+     # Each migration the branch added or changed must be on main as it was in the branch.
+     git -C ~/src/mend apply --check --reverse /tmp/preview.diff 2>/dev/null &&
+       echo "main has these migration changes as the preview had them" ||
+       { echo "CHECK BY HAND: the preview's migration changes differ from main's"; cat /tmp/preview.diff; }
+   done
+   ```
+
+   `git apply --check --reverse` succeeds when main's `migrations.ts` (checked out above) already
+   contains the branch's change exactly; anything else is printed for you to compare by hand.
+   Sealant's migrations need no such check: their hashes are compared.
 
 4. If it refuses: the named migrations came from a branch the box ran that main does not have (or
    has in another form). Merge that branch, cut a next build that contains it, and repeat step 3;
@@ -186,9 +231,8 @@ The `dist-tag add` is what moves `next` back; deprecating alone does not. The sa
 unpublish. Leave the images; nothing floats, so nothing pulls them unasked. Edit a withdrawn Mend
 prerelease's notes on GitHub to say which version replaces it; do not delete it. A server already on
 the bad version moves forward only, to a fixed next build. A bad Core prerelease pinned in Mend:
-revert the pin pull request. After moving `next` back by hand, the next automatic publish in Core or
-sealantd fails `plan` until a commit computes a version above the withdrawn one; that is the
-forward-only rule doing its job, and the next merge clears it.
+revert the pin pull request. After moving `next` back by hand, the next merge publishes as usual: it
+computes a version above the withdrawn one, which is above the version `next` points at now.
 
 ## Once, before the first publish
 
@@ -201,6 +245,22 @@ forward-only rule doing its job, and the next merge clears it.
   (sealant-sh/sealantd): a second trusted publisher, workflow `next.yml`, environment `next`.
 - On `main` in both repositories: require a pull request with review from code owners. CODEOWNERS
   covers `.github/`, the release scripts, the Dockerfiles, the published packages' `package.json`
-  files and the changesets config. Without the rule, anyone who can merge could change `next.yml` or
-  a package's lifecycle scripts and publish under any version or dist-tag.
+  files, the changesets config, the root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`,
+  `.pnpmfile.cjs`, `.npmrc`, and in sealantd `Cargo.toml`/`Cargo.lock`.
+- Optionally, tick **Allow npm dist-tag** on the `next` trusted publishers, so the publish job can
+  move `latest` back itself if it ever finds it on a next version; without it the job fails and
+  prints the `npm dist-tag add` command for you.
+
+What that buys, exactly:
+
+- **Without code-owner review:** the publish job only ever publishes a tarball it rebuilt from npm's
+  own reading, with an allowlisted manifest whose name, `-next.N` version and commit it checked,
+  under `--tag next`; nothing a build dependency, a pnpmfile or a crafted tarball does changes that.
+  But anyone who can merge to main can edit `next.yml` itself, the job that holds the credential,
+  and so publish any version under any dist-tag.
+- **With code-owner review:** that edit, and edits to the files that configure installs, builds and
+  packing, need the owner's review. Other paths still merge without it; they change the code inside
+  the next build (that is what a merge is), never the version, the dist-tag or the commit it
+  publishes under.
+
 - Nothing for Mend: its next builds use `release-cli.yml` and `release`, already registered.
