@@ -1,4 +1,4 @@
-import { canSteerSession } from "@mend/domain/workbench";
+import { canSteerSession, canTypeInTerminal } from "@mend/domain/workbench";
 import { queryOptions, useQuery } from "@tanstack/react-query";
 
 import {
@@ -47,13 +47,14 @@ export const useOwnerName = (session: SessionDto | null): string | null => {
 /**
  * What a session row offers this viewer, by the rules the API enforces: delete is the owner's
  * even while control is shared; steering is the owner's, or everyone's while shared; stop is
- * also an organization owner's. An unknown viewer gets a read-only row.
+ * also an organization owner's; typing in a terminal and opening a shell are the owner's alone
+ * (docs/adr/0013). An unknown viewer gets a read-only row.
  */
 export const sessionActions = (
   session: SessionDto,
   viewer: Viewer | null,
 ): Omit<SessionControlDto, "toggleSharedControl"> => {
-  if (viewer === null) return { own: false, steer: false, stop: false };
+  if (viewer === null) return { own: false, steer: false, stop: false, terminalInput: false };
   const steer = canSteerSession(
     {
       ownerUserId: session.ownerUserId,
@@ -66,6 +67,7 @@ export const sessionActions = (
     own: session.ownerUserId !== null && session.ownerUserId === viewer.userId,
     steer,
     stop: steer || viewer.role === "owner",
+    terminalInput: canTypeInTerminal(session, viewer.userId),
   };
 };
 
@@ -75,4 +77,5 @@ export const NO_CONTROL: SessionControlDto = {
   steer: false,
   stop: false,
   toggleSharedControl: false,
+  terminalInput: false,
 };

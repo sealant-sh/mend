@@ -6,7 +6,7 @@ import { queryClient } from "#/lib/queries";
 
 /** The web app's words for what turning shared control on lends (docs/adr/0003). */
 export const SHARED_CONTROL_LENDS =
-  "On lets everyone who can see this project send turns, answer approvals, interrupt, and type in the terminal, using your provider logins and Git access. Every action is recorded with who sent it.";
+  "On lets everyone who can see this project send turns, answer approvals and interrupt, using your provider logins and Git access. They can read the terminal; only you type in it. Every action is recorded with who sent it.";
 
 const useToggle = (session: SessionDto) =>
   useMutation({

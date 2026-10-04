@@ -142,6 +142,14 @@ keyboard encoding that Claude Code can switch a terminal into.
 Set `MEND_DETACH_KEY=none` when tmux, Zellij or another outer tool owns detaching. It turns the
 detach key off; `none` is the only value it reads.
 
+### Someone else's session
+
+Only a session's owner types in its terminal. When you attach to a session someone else owns and
+shares control of, the CLI prints
+`This session runs in a terminal. Only <owner> types here; they can continue it as a conversation.`,
+then streams the terminal without sending your keys. `Ctrl+]` or `Ctrl+C` detaches. See
+[Organizations](/organizations/overview/#terminals-stay-with-the-owner).
+
 ### Take a session back from the phone
 
 A session picked up on the phone runs its agent as a conversation, with no terminal behind it.

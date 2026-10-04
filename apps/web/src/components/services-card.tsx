@@ -119,12 +119,15 @@ const useCopy = (): readonly [boolean, (value: string) => void] => {
 function ServiceRow({
   service,
   actionable,
+  runs,
   pending,
   onAction,
   first,
 }: {
   readonly service: ServiceViewDto;
   readonly actionable: boolean;
+  /** Whether the viewer may run its command again: the owner's alone (docs/adr/0013). */
+  readonly runs: boolean;
   readonly pending: string | null;
   readonly onAction: (verb: ServiceVerb, service: ServiceViewDto) => void;
   readonly first: boolean;
@@ -227,7 +230,7 @@ function ServiceRow({
               {pending === `stop:${stable.id}` ? "Stopping…" : "Stop"}
             </RowAction>
           )}
-          {!live && actionable && rerunAttempt !== null && (
+          {!live && actionable && runs && rerunAttempt !== null && (
             <RowAction
               onClick={() => onAction("rerun", service)}
               disabled={pending !== null}
@@ -281,11 +284,19 @@ export function ServicesCard({
   sessionId,
   sessionLive,
   steer,
+  runs,
+  ownerName,
 }: {
   readonly sessionId: string;
   readonly sessionLive: boolean;
   /** Whether the viewer may steer the session (docs/adr/0003); otherwise the card only reads. */
   readonly steer: boolean;
+  /**
+   * Whether the viewer runs commands in the session's workspace: the owner's alone, even while
+   * control is shared (docs/adr/0013). A steerer without it restarts and stops Services only.
+   */
+  readonly runs: boolean;
+  readonly ownerName: string | null;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -300,7 +311,8 @@ export function ServicesCard({
 
   const services = serviceViews.data ?? [];
   const liveServices = services.filter(serviceIsLive);
-  const canStart = steer && (sessionLive || liveServices.length > 0);
+  const canAct = steer && (sessionLive || liveServices.length > 0);
+  const canStart = canAct && runs;
   const liveNames = new Set(liveServices.map((view) => view.service.name));
   const endedByName = new Map<string, ServiceViewDto>();
   for (const view of services.filter((item) => !serviceIsLive(item))) {
@@ -376,7 +388,8 @@ export function ServicesCard({
               <ServiceRow
                 key={service.service.id}
                 service={service}
-                actionable={canStart}
+                actionable={canAct}
+                runs={runs}
                 pending={pending}
                 onAction={act}
                 first={index === 0}
@@ -425,6 +438,11 @@ export function ServicesCard({
               </div>
             ))}
           </>
+        )}
+        {canAct && !runs && (
+          <p className="border-t border-rule-faint px-4 py-2.5 font-sans text-[12.5px] text-ink-2">
+            Only {ownerName ?? "its owner"} starts Services in this workspace.
+          </p>
         )}
         {canStart && (
           <RunServiceForm

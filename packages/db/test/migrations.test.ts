@@ -2046,3 +2046,60 @@ describe.skipIf(!reachable)("0096 notification settings", () => {
     ]);
   });
 });
+
+describe.skipIf(!reachable)("0106 terminal watch control", () => {
+  const WATCH_DB = `${SCRATCH_DB}_terminal_watch`;
+  const watchLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${WATCH_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withWatchDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(watchLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${WATCH_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${WATCH_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("lets the control log record a read-only attach beside every kind it already took", async () => {
+    const definition = await withWatchDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0105_turn_origin");
+        yield* migrations["0106_terminal_watch_control"];
+        const rows = yield* sql<{ readonly definition: string }>`
+          SELECT pg_get_constraintdef(oid) AS definition
+          FROM pg_constraint
+          WHERE conname = 'session_control_events_kind_check'`;
+        return rows[0]?.definition ?? "";
+      }),
+    );
+    for (const kind of [
+      "interrupt",
+      "terminal-attach",
+      "terminal-watch",
+      "shell-open",
+      "stop",
+      "services-stop",
+      "idle-stop",
+      "shared-control-on",
+      "shared-control-off",
+      "discard-unsaved-stop",
+    ]) {
+      expect(definition).toContain(`'${kind}'`);
+    }
+  });
+});

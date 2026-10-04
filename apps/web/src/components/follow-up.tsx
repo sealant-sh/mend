@@ -1,3 +1,4 @@
+import { canRelaunchSession, terminalOwnerOnlyLine } from "@mend/domain/workbench";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -8,6 +9,7 @@ import {
   type FollowUpDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
+import { useOwnerName } from "#/lib/viewer";
 
 const retryInput = (followUp: FollowUpDto): DeliverFollowUpInput | null =>
   followUp.reviewSliceId === null ||
@@ -36,19 +38,31 @@ export function FollowUpBanner({
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { session, currentAgent } = useSuspenseQuery(
+  const { session, currentAgent, control } = useSuspenseQuery(
     trpc.sessions.detail.queryOptions({ id: sessionId }),
   ).data;
+  const ownerName = useOwnerName(session.ownerUserId);
   const [delivering, setDelivering] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (followUp === null) return null;
+  // Delivering to a terminal session starts its agent with the comments, which is typing there:
+  // the owner's alone, even while control is shared (docs/adr/0013). A conversation takes them
+  // as a turn from any steerer.
+  const ownerDelivers = control.steer && !canRelaunchSession(control, currentAgent?.kind ?? null);
 
   const input = retryInput(followUp);
   // A follow-up needs the AGENT gone, not the workspace: shells holding it leave the session
   // `idle`, and the next agent process joins them there.
   const active = agentIsLive(session, currentAgent);
   const deliver = () => {
-    if (input === null || delivering || (active && followUp.status !== "delivering")) return;
+    if (
+      input === null ||
+      delivering ||
+      ownerDelivers ||
+      (active && followUp.status !== "delivering")
+    ) {
+      return;
+    }
     setDelivering(true);
     setError(null);
     void deliverFollowUp(sessionId, input)
@@ -75,6 +89,10 @@ export function FollowUpBanner({
       {input === null ? (
         <p className="font-mono text-xs text-faint">
           legacy bundle · recreate it from a pinned Review before delivery
+        </p>
+      ) : ownerDelivers ? (
+        <p className="text-[12.5px] leading-relaxed text-ink-2">
+          {terminalOwnerOnlyLine(ownerName ?? "its owner", "send-back")}
         </p>
       ) : active && followUp.status !== "delivering" ? (
         <p className="font-mono text-xs text-faint">

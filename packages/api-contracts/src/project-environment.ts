@@ -345,12 +345,19 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
 export class SessionControlView extends Schema.Class<SessionControlView>("SessionControlView")({
   /** Delete, rename or hand off: the owner's alone, even while control is shared. */
   own: Schema.Boolean,
-  /** Send turns, interrupt, attach, open shells, stop. */
+  /** Send turns, interrupt, attach a terminal to read it, stop. */
   steer: Schema.Boolean,
   /** Stop, which an organization owner may do even without steering. */
   stop: Schema.Boolean,
   /** Turn shared control on (owner only) or off (owner or organization owner), as it stands. */
   toggleSharedControl: Schema.Boolean,
+  /**
+   * Type in the session's terminals, start its agent in one, open shells and run commands
+   * (Services) in its workspace: the owner's alone, even while control is shared
+   * (docs/adr/0013). Everyone else who attaches reads output only. Older servers omit it and
+   * accept every steerer's keys.
+   */
+  terminalInput: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
 }) {}
 
 /**
