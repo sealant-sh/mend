@@ -2993,12 +2993,34 @@ const agentMemoryImportBasesMigration = Effect.gen(function* () {
 });
 
 /**
+ * 0109: opencode's models in the catalog (`HARNESS_MODEL_SEED.opencode`, written out here so the
+ * migration stays what it was): the Codex models through the ChatGPT login, as opencode names them,
+ * for the pickers to list. None is the default: a launch that names no model leaves the choice to
+ * opencode and the person's own opencode config (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`). A row an
+ * operator already added is kept as it is, their default with it.
+ */
+const opencodeModelsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO harness_models (harness, id, label, is_default, efforts, position) VALUES
+      ('opencode', 'openai/gpt-6.1-sol', 'GPT-6.1 Sol', false, NULL, 0),
+      ('opencode', 'openai/gpt-6-astra', 'GPT-6 Astra', false, NULL, 1),
+      ('opencode', 'openai/gpt-6-sol', 'GPT-6 Sol', false, NULL, 2),
+      ('opencode', 'openai/gpt-6-luna', 'GPT-6 Luna', false, NULL, 3),
+      ('opencode', 'openai/gpt-5.6-sol', 'GPT-5.6 Sol', false, NULL, 4),
+      ('opencode', 'openai/gpt-5.6-terra', 'GPT-5.6 Terra', false, NULL, 5),
+      ('opencode', 'openai/gpt-5.6-luna', 'GPT-5.6 Luna', false, NULL, 6),
+      ('opencode', 'openai/gpt-5.5', 'GPT-5.5', false, NULL, 7)
+    ON CONFLICT (harness, id) DO NOTHING`;
+});
+
+/**
  * docs/adr/0009-agent-memory-per-person-per-project.md, capture mode: whose memory each worktree's
  * one harness home holds, as the server decided it when the executor that holds it now was
  * launched and the home was handed to its launcher. It outlives the session rows (a removed
  * session's executor is still known as its owner's), and a home's own record, which anything
  * running in the executor can write, is never consulted. `user_id` null: the person was removed,
- * or nobody could be named. Numbered 0110: 0109 is taken by an open branch.
+ * or nobody could be named.
  */
 const agentMemoryHomesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -3121,5 +3143,6 @@ export const migrations = {
   "0106_terminal_watch_control": terminalWatchControlMigration,
   "0107_turn_payer": turnPayerMigration,
   "0108_agent_memory_import_bases": agentMemoryImportBasesMigration,
+  "0109_opencode_models": opencodeModelsMigration,
   "0110_agent_memory_homes": agentMemoryHomesMigration,
 };

@@ -25,10 +25,11 @@ In capture mode (ADR 0002) sealantd ships the workspace class from two roots (`r
 worktree at `/workspace/repo` under `tree/`, and the harness home at `/workspace/harness-home` under
 `harness/`, less the harness credential files sealantd#127 listed (`CREDENTIAL_FILES`:
 `.claude/.credentials.json`, `.codex/auth.json`). The harness home relocation
-(`relocateHarnessHomeScript`) turns `~/.claude`, `~/.codex`, `~/.pi` and `~/.local/share/opencode`
-into symlinks onto that root. The co-located harvest archives the harness's state paths from `$HOME`
-with `tar -h`, dereferencing those links. The change and every checkpoint read the worktree. Nothing
-reads the rest of `$HOME`, which is `/root` on the executor's own disk.
+(`relocateHarnessHomeScript`) turns `~/.claude`, `~/.codex`, `~/.pi`, `~/.local/share/opencode` and
+`~/.local/state/opencode` into symlinks onto that root. The co-located harvest archives the
+harness's state paths from `$HOME` with `tar -h`, dereferencing those links. The change and every
+checkpoint read the worktree. Nothing reads the rest of `$HOME`, which is `/root` on the executor's
+own disk.
 
 ### How Core writes a credential file
 
@@ -74,9 +75,9 @@ base64 (`workspace-files.ts`).
    - By refusal at save: a path equal to or under a directory the relocation moves onto the captured
      root, the one harness file the harvest takes from the home root, or Mend's markers
      (`SECRET_FILE_RESERVED_PATHS`: `.claude`, `.claude.json`, `.codex`, `.pi`,
-     `.local/share/opencode`, `.mend`) is refused with "which sessions capture". A test in
-     `@mend/sessions` holds that list against `HARNESS_STATE`, so a harness added without extending
-     it fails the build. `..`, absolute and `~` paths are refused too.
+     `.local/share/opencode`, `.local/state/opencode`, `.mend`) is refused with "which sessions
+     capture". A test in `@mend/sessions` holds that list against `HARNESS_STATE`, so a harness
+     added without extending it fails the build. `..`, absolute and `~` paths are refused too.
    - By refusal at write: the workspace proves the path is still a plain path in the home before
      writing: the home resolves outside `/workspace`, no component is a symlink, and the directory's
      physical path equals its literal one. Dotfiles that linked `~/.aws` into the worktree would

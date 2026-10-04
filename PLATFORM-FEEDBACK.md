@@ -7,6 +7,38 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-04 · sealantd 0.19 · opencode's MCP logins and in-app logins ride captures
+
+- **Needed:** no login a person makes inside a session is saved, as for every harness's own login
+  file (`CREDENTIAL_FILES`, sealantd#127). Capture mode's harness home is the worktree's, so what
+  one session's capture holds is materialised into the next session of the worktree, anyone's.
+- **Today:**
+  - `CREDENTIAL_FILES` leaves out opencode's `auth.json` but not
+    `.local/share/opencode/mcp-auth.json`, the OAuth tokens and client secrets of the MCP servers
+    opencode signs in to (opencode 1.18.34 `mcp/auth.ts`). sealantd#136 leaves it out of captures
+    and, since a capture made before still holds it, never restores a `CREDENTIAL_FILES` path
+    either. Not yet released.
+  - Until it ships, Mend's opencode seed makes that file a link to `~/.mend/opencode/mcp-auth.json`
+    in the executor's own home, which opencode writes through, and removes unread a plain file a
+    capture brought (`OPENCODE_CAPTURED_SEED`, chosen by Mend for capture launches: the executor's
+    environment carries no capture marker, since sealantd consumes `SEALANT_CAPTURE_*` before any
+    process starts). Capture mode's harness-home relocation, before every launch of any harness,
+    also removes a plain one unread, and a link there unless it leads to that place
+    (`CAPTURED_LOGIN_FILES`). An opencode started by hand in a shell is not seeded and writes the
+    file into saved state until #136 ships.
+  - opencode's database (`opencode.db`, saved with the harness home as the conversation) also has
+    `account` / `control_account` tables (an opencode console sign-in: access and refresh token) and
+    `credential` (the v2 integrations' OAuth and key values).
+    - Evidence (round-3 review of mend#503): the ChatGPT login Mend delivers goes to `auth.json`,
+      opencode's provider code reads `auth.json`, and a 1.18.34 database with an `openai` login in
+      `auth.json` has no `account` or `credential` row.
+    - Mend's logins therefore never land there. A console or integration login a person makes inside
+      opencode does, and rides the captured database to the next session in the worktree.
+- **Suggested:** sealantd#136 for `mcp-auth.json`. For the database there is no file to leave out.
+  Either sealantd learns to scrub named tables from a captured SQLite file, or Mend refuses opencode
+  logins of those kinds. Until either exists it is a known issue
+  (`apps/docs/src/content/docs/reference/known-issues.md`).
+
 ## 2026-10-03 · 0.38.1 · A live workspace cannot change whose login it holds
 
 - **Needed:** under shared control, each turn runs on its sender's login

@@ -73,7 +73,7 @@ const CODEX_UP_TO_MAX: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "x
 const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh"];
 
 /**
- * What the `harness_models` table was seeded with (migration 0101), and the words Slack recognises
+ * What the `harness_models` table was seeded with (migration 0102; opencode 0109), and the words Slack recognises
  * without a database at hand. Not a picker's list: pickers read the server's catalog
  * (`GET /harnesses/models`, `model-catalog.ts`), which an operator edits in place. The contract
  * keeps `model` free-form because harnesses accept ids no list knows yet.
@@ -102,7 +102,41 @@ export const HARNESS_MODEL_SEED: Readonly<Record<string, ReadonlyArray<HarnessMo
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", isDefault: false, efforts: CODEX_UP_TO_MAX },
     { id: "gpt-5.5", label: "GPT-5.5", isDefault: false, efforts: CODEX_UP_TO_XHIGH },
   ],
+  // opencode on the ChatGPT login (migration 0109): the Codex models above as `opencode models
+  // openai` lists them (opencode 1.18.34, 2026-10-04). No default: a launch that names none leaves
+  // the choice to opencode (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`). opencode takes no shared effort
+  // scale (`HARNESS_EFFORTS`).
+  opencode: [
+    { id: "openai/gpt-6.1-sol", label: "GPT-6.1 Sol", isDefault: false },
+    { id: "openai/gpt-6-astra", label: "GPT-6 Astra", isDefault: false },
+    { id: "openai/gpt-6-sol", label: "GPT-6 Sol", isDefault: false },
+    { id: "openai/gpt-6-luna", label: "GPT-6 Luna", isDefault: false },
+    { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", isDefault: false },
+    { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", isDefault: false },
+    { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", isDefault: false },
+    { id: "openai/gpt-5.5", label: "GPT-5.5", isDefault: false },
+  ],
 };
+
+/**
+ * The model opencode opens on when nothing else chose one: the Codex default above, through the
+ * ChatGPT login Mend writes into opencode (`harness-seeds.ts` in @mend/sessions). opencode's own
+ * fallback takes the first provider it can see, and in a workspace that is GitHub Copilot, from
+ * the `GITHUB_TOKEN` Mend gives for git: a token Copilot refuses ("The requested model is not
+ * available for integrator opencode", seen on the box 2026-10-04). Written as opencode's last
+ * used model, so `--model`, the user's config and a model picked in opencode still decide first.
+ */
+export const OPENCODE_DEFAULT_MODEL = "openai/gpt-6.1-sol";
+
+/**
+ * Harnesses whose launch names no model unless someone chose one: the catalog lists their models
+ * for a picker, but its first row is not a default, so an absent choice stays absent and the
+ * harness decides. opencode decides by its own order: `--model`, the project's and the user's
+ * opencode config, the model it last used (where `OPENCODE_DEFAULT_MODEL` is written when it has
+ * none); a catalog default sent as `--model` would beat the person's own config. A row an operator
+ * flags as the default is still the default.
+ */
+export const HARNESSES_CHOOSING_THEIR_OWN_MODEL: ReadonlySet<string> = new Set(["opencode"]);
 
 /** Harnesses whose composed argv actually carries an opening prompt. */
 export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set([

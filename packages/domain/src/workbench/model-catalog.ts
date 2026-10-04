@@ -4,6 +4,7 @@ import {
   EFFORT_LEVELS,
   FAST_CAPABLE_HARNESSES,
   HARNESS_EFFORTS,
+  HARNESSES_CHOOSING_THEIR_OWN_MODEL,
   type EffortLevel,
 } from "./harness-launch.ts";
 
@@ -28,7 +29,10 @@ export class HarnessModelCatalog extends Schema.Class<HarnessModelCatalog>("Harn
   harness: Schema.String,
   /** In the order the picker shows them; empty when the harness takes no model flag Mend knows. */
   models: Schema.Array(HarnessModel),
-  /** The model a launch runs when none is named; null when the list is empty. */
+  /**
+   * The model a launch runs when none is named; null when the list is empty, or when the harness
+   * chooses its own and no row is flagged (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`).
+   */
   defaultModel: Schema.NullOr(Schema.String),
   /** What the harness CLI accepts at all; a model may take fewer. */
   efforts: Schema.Array(Schema.Literals(EFFORT_LEVELS)),
@@ -54,7 +58,11 @@ export interface HarnessModelCatalogView {
   readonly fastCapable: boolean;
 }
 
-/** A harness's catalog from its listed models: the default is the one flagged, else the first. */
+/**
+ * A harness's catalog from its listed models: the default is the one flagged, else the first,
+ * except for a harness that chooses its own model (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`), which
+ * has a default only when one is flagged.
+ */
 export const harnessModelCatalog = (
   harness: string,
   models: ReadonlyArray<HarnessModel>,
@@ -62,7 +70,10 @@ export const harnessModelCatalog = (
   new HarnessModelCatalog({
     harness,
     models,
-    defaultModel: models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null,
+    defaultModel:
+      models.find((model) => model.isDefault)?.id ??
+      (HARNESSES_CHOOSING_THEIR_OWN_MODEL.has(harness) ? null : models[0]?.id) ??
+      null,
     efforts: HARNESS_EFFORTS[harness] ?? EFFORT_LEVELS,
     fastCapable: FAST_CAPABLE_HARNESSES.has(harness),
   });
