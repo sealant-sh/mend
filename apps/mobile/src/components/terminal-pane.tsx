@@ -4,6 +4,7 @@
 // In a pane of a wide layout, the layout avoids the keyboard for every pane and the key bar sits
 // under the surface for as long as the pane is open.
 
+import { terminalReadOnlyLine } from "@mend/domain/workbench";
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
@@ -11,8 +12,14 @@ import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-cont
 
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { usePaneEdges } from "@/components/pane";
-import { MonoText } from "@/components/typography";
-import { loadConfig, pasteSessionImage } from "@/data/live";
+import { MonoText, UiText } from "@/components/typography";
+import {
+  loadConfig,
+  pasteSessionImage,
+  terminalInputOf,
+  useOwnerName,
+  useSession,
+} from "@/data/live";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 const ACCESSORY_HEIGHT = 44;
@@ -61,6 +68,10 @@ export function TerminalPane({
 }) {
   const { colors } = useEvidenceTheme();
   const pane = usePaneEdges();
+  // Only the owner types in a session's terminals, even while control is shared (docs/adr/0013).
+  const detail = useSession(sessionId);
+  const readOnly = !terminalInputOf(detail.data?.control);
+  const ownerName = useOwnerName(detail.data?.session);
   const [base, setBase] = useState<{ url: string; token: string } | null>(null);
   // Sticky modifier (t3code's key-bar pattern): tap ctrl, then the key it
   // applies to — phone keyboards can't chord. The ref mirrors the state so
@@ -162,6 +173,7 @@ export function TerminalPane({
         token={base.token}
         sessionId={sessionId}
         {...(processId === undefined ? {} : { processId })}
+        readOnly={readOnly}
         registerSend={(send) => {
           sendRef.current = send;
         }}
@@ -172,6 +184,27 @@ export function TerminalPane({
         }}
       />
     );
+
+  if (readOnly) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.panel, paddingBottom: pane.bottom }}>
+        <View
+          style={{
+            paddingHorizontal: 14,
+            paddingVertical: 8,
+            backgroundColor: colors.sunken,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.softRule,
+          }}
+        >
+          <UiText size={12.5} tone="ink2">
+            {terminalReadOnlyLine(ownerName)}
+          </UiText>
+        </View>
+        <View style={{ flex: 1 }}>{surface}</View>
+      </View>
+    );
+  }
 
   if (!pane.sticky) {
     return (

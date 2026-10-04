@@ -9,6 +9,8 @@ export const Route = createFileRoute("/tty-embed")({
     process: typeof search["process"] === "string" ? search["process"] : undefined,
     ticket: typeof search["ticket"] === "string" ? search["ticket"] : "",
     token: typeof search["token"] === "string" ? search["token"] : "",
+    // The app that embeds the page says when its viewer only reads (docs/adr/0013).
+    readOnly: search["readOnly"] === "1" || search["readOnly"] === 1,
   }),
   component: TtyEmbed,
 });
@@ -20,7 +22,7 @@ export const Route = createFileRoute("/tty-embed")({
  * (docs/adr/0004, "Upgrade tickets"). `token` is read only for an app build older than tickets.
  */
 function TtyEmbed() {
-  const { session, process, ticket, token } = Route.useSearch();
+  const { session, process, ticket, token, readOnly } = Route.useSearch();
   if (session === "") return null;
   return (
     <div style={{ position: "fixed", inset: 0, background: "var(--sw-panel)" }}>
@@ -29,6 +31,7 @@ function TtyEmbed() {
         sessionId={session}
         {...(process === undefined ? {} : { processId: process })}
         {...(ticket === "" ? { token } : { embedTicket: ticket })}
+        readOnly={readOnly}
       />
     </div>
   );

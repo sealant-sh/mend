@@ -232,14 +232,22 @@ function Main() {
     return session === undefined || viewer === null || sessionActions(session, viewer).steer;
   };
 
+  /** A shell runs on the workspace's login: the owner's alone, even while shared (docs/adr/0013). */
+  const typesIn = (sessionId: string): boolean => {
+    const session = sessions.get(sessionId);
+    return (
+      session === undefined || viewer === null || sessionActions(session, viewer).terminalInput
+    );
+  };
+
   const requestShell = () => {
     if (focusedProjectId === null) return;
     if (focusedSessionId === null) {
       setLauncherFor(focusedProjectId);
       return;
     }
-    if (!steers(focusedSessionId)) {
-      setShellError("only this session's owner opens a shell in it, unless they share control");
+    if (!typesIn(focusedSessionId)) {
+      setShellError("only this session's owner opens a shell in it, even while control is shared");
       return;
     }
     setShellError(null);

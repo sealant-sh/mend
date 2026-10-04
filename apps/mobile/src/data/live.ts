@@ -211,6 +211,8 @@ export interface SessionDto {
   readonly captureOverdueBoundMs?: number | null;
   readonly captureDiscardedAt?: string | null;
   readonly captureDiscardedBy?: string | null;
+  /** Who started the session; null for one from before organizations, absent on older servers. */
+  readonly ownerUserId?: string | null;
 }
 
 /**
@@ -638,10 +640,40 @@ export const useSession = (id: string | null) =>
           readonly steer: boolean;
           readonly stop: boolean;
           readonly toggleSharedControl: boolean;
+          /** Type in its terminals, the owner's alone (docs/adr/0013); absent before it. */
+          readonly terminalInput?: boolean;
         };
       }>("GET", `/sessions/${id}`),
     refetchInterval: 5_000,
   });
+
+/**
+ * Whether this account types in the session's terminals: the owner's alone, even while control is
+ * shared (docs/adr/0013). A server from before it says nothing and takes every steerer's keys.
+ */
+export const terminalInputOf = (
+  control: { readonly terminalInput?: boolean } | undefined,
+): boolean => control?.terminalInput ?? true;
+
+/** The organization's members by name, for saying whose session it is. */
+export const useOrganizationMembers = () =>
+  useQuery({
+    queryKey: ["organization-members"],
+    queryFn: () =>
+      api<ReadonlyArray<{ readonly userId: string; readonly name: string }>>(
+        "GET",
+        "/organization/members",
+      ),
+    staleTime: 60_000,
+    retry: false,
+  });
+
+/** The session's owner by name, else the words every client falls back to. */
+export const useOwnerName = (session: SessionDto | undefined): string => {
+  const members = useOrganizationMembers().data ?? [];
+  const ownerUserId = session?.ownerUserId ?? null;
+  return members.find((member) => member.userId === ownerUserId)?.name ?? "its owner";
+};
 
 export interface TranscriptEventDto {
   readonly kind: string;

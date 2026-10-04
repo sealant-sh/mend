@@ -126,6 +126,16 @@ export const previewSealantdEnvironment = (environment) => {
   };
 };
 
+/**
+ * How many workspace launches (and stops) the bundled Sealant worker runs at once. Sealant's
+ * default is one, and a launch holds that slot until its executor is ready, the restore of a large
+ * capture included: on the box, where several people and agents start sessions, a session waited
+ * 33 s behind another's 32 s restore before its own began (2026-10-04). An operator's value wins.
+ */
+export const workerQueueEnvironment = (environment) => ({
+  WORKSPACE_BUILD_QUEUE_PREFETCH: environment.WORKSPACE_BUILD_QUEUE_PREFETCH?.trim() || "4",
+});
+
 const baseSpecification = (name, command, environment = {}) => ({
   name,
   command,
@@ -169,6 +179,7 @@ const startBundle = async (supervisor) => {
       DEFAULT_SSH_ENDPOINT_EXPOSURE_STRATEGY: "container-network",
       WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,
       ...previewSealantdEnvironment(process.env),
+      ...workerQueueEnvironment(process.env),
     }),
   );
   await supervisor.waitFor("Sealant API", () => httpResponds("http://127.0.0.1:4000/healthz"));

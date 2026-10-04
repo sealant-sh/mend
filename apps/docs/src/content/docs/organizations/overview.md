@@ -151,8 +151,8 @@ A session runs as its owner, the account that started it: that account's provide
 and dotfiles. Anyone who can see the project can see the session, read its record, review its change
 and draft review comments.
 
-Steering means sending turns, answering approvals, interrupting, typing in its terminal, and sending
-review comments back to it. By default only the session's owner steers. Other viewers see
+Steering means sending turns, answering approvals, interrupting, and sending review comments back to
+it. By default only the session's owner steers. Other viewers see
 `Only <owner> steers this session. You can read the record and review the change.`, and their review
 comments stay on the change until the owner sends them.
 
@@ -171,6 +171,29 @@ terminal attach and stop is recorded with the account that did it.
 
 Only the session's owner turns shared control on. The owner or an organization owner turns it off.
 Deleting, renaming or handing off the session stays with its owner even while control is shared.
+
+### Terminals stay with the owner
+
+Only the owner types in a session's terminal, opens a shell or runs a command in its workspace, even
+while control is shared. A terminal runs on whatever provider login its workspace holds, and
+keystrokes have no turn boundary at which Mend could switch that login to someone else's. The same
+holds for a command, so starting a Service is the owner's too; a steerer can restart and stop the
+Services already running.
+
+Under shared control, anyone else who can see the project attaches to the terminal to read it. Mend
+streams the output to them and drops their keystrokes and resizes. The control log records their
+attach as `terminal-watch`, the owner's as `terminal-attach`. Every client draws the terminal
+read-only for them and says:
+
+`This session runs in a terminal. Only <owner> types here; they can continue it as a conversation.`
+
+Starting the agent in a terminal with someone's words is typing too. Mend refuses a launch, a resume
+or a review follow-up from anyone but the owner when it would start a terminal. In a conversation,
+the same requests are turns, and any steerer sends them.
+
+To let others steer a Claude or Codex terminal session, the owner continues it as a conversation
+(**continue as conversation** in the desktop app, or by handing it off from the phone). The
+conversation runs in the same workspace, and others send it turns while control is shared.
 
 ## Remove a member or change a role
 

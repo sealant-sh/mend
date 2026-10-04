@@ -50,7 +50,6 @@ import {
   SessionActive,
   SessionAnnotation,
   WorktreeAnnotation,
-  SessionControlView,
   SessionDetail,
   SessionRepositoryView,
   SessionServicesStopped,
@@ -127,7 +126,6 @@ import {
   ServiceView,
   canChangeVisibility,
   canManageProject,
-  canSteerSession,
   canToggleSharedControl,
   captureDiscardAuditData,
   captureStatusLine,
@@ -137,6 +135,7 @@ import {
   gitAuthorIssue,
   normalizeGitAuthor,
   resolveLaunchOptions,
+  startsInTerminal,
   Session,
   type SessionStatus,
 } from "@mend/domain/workbench";
@@ -185,7 +184,7 @@ import {
 } from "../services/workspace-environment.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
-import { SessionSteering } from "../session-steering.ts";
+import { requireOwnerRuns, SessionSteering, sessionControlView } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
@@ -2275,7 +2274,6 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const processes = yield* SessionProcessesRepo;
         const rows = yield* processes.listForSession(params.id);
         const viewer = yield* (yield* ProjectAccess).viewer();
-        const steer = viewer !== null && canSteerSession(session, viewer.userId);
         // The repositories the session holds beside its worktree (docs/adr/0010): each a worktree
         // of another project with a change of its own, and how far that chain has moved. Only
         // the ones whose project the caller can see: a private sibling stays private.
@@ -2301,14 +2299,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
         return new SessionDetail({
           session: asLaunching((yield* SessionEngine).launchUnderWay)(session),
-          control: new SessionControlView({
-            own: viewer !== null && session.ownerUserId === viewer.userId,
-            steer,
-            stop: steer || viewer?.role === "owner",
-            toggleSharedControl:
-              viewer !== null &&
-              canToggleSharedControl(session, viewer, session.sharedControlEnabledAt === null),
-          }),
+          control: sessionControlView(session, viewer),
           checkpoints: sessionCheckpoints,
           change,
           repositories,
@@ -2337,6 +2328,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("pasteImage", ({ params, payload }) =>
       Effect.gen(function* () {
+        // Storing an image types nothing: a conversation's composer attaches it to a turn, and a
+        // terminal paste is a keystroke the terminal route drops for anyone but the owner
+        // (docs/adr/0013).
         const steering = yield* SessionSteering;
         const session = yield* steering.session(params.id);
         const bytes = Buffer.from(payload.contentsBase64, "base64");
@@ -2438,8 +2432,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("openShell", ({ params }) =>
       Effect.gen(function* () {
+        // A shell runs on whatever login the workspace holds, so it is the owner's even while
+        // control is shared (docs/adr/0013, "Shells are the owner's").
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
         const shell = yield* engine.openShell(params.id).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
@@ -2523,7 +2519,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("runService", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        // Any argv, on whatever login the workspace holds: the owner's alone (docs/adr/0013).
+        yield* requireOwnerRuns(yield* steering.session(params.id), "command");
         const engine = yield* SessionEngine;
         return yield* engine
           .runService(
@@ -2558,7 +2555,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("runServiceRecipe", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        // A recipe is a command, and the worktree's copy (which a turn may edit) wins.
+        yield* requireOwnerRuns(yield* steering.session(params.id), "command");
         const engine = yield* SessionEngine;
         return yield* engine.runServiceRecipe(params.id, payload.name).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
@@ -3051,7 +3049,21 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("resume", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        const session = yield* steering.session(params.id);
+        // A resume relaunches the agent the session ended. Only a conversation on the same
+        // harness comes back as one; anything else opens a terminal, on a prompt Mend distils when
+        // the harness changes, and a terminal is the owner's (docs/adr/0013), as the engine decides.
+        const agent = currentAgentProcess(
+          yield* (yield* SessionProcessesRepo).listForSession(session.id),
+        );
+        if (
+          startsInTerminal(
+            agent?.kind ?? null,
+            (payload.harness ?? session.harness) !== session.harness,
+          )
+        ) {
+          yield* requireOwnerRuns(session, "terminal");
+        }
         const engine = yield* SessionEngine;
         return yield* engine.resumeSession(params.id, payload.harness, payload.fresh ?? false).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
@@ -3090,6 +3102,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         const session = yield* steering.session(params.id);
+        // A terminal launch, a verbatim argv included, runs the caller's words on the
+        // workspace's login: the owner's alone (docs/adr/0013). A conversation is anyone's.
+        if (payload.mode !== "protocol") yield* requireOwnerRuns(session, "terminal");
         const caller = yield* CurrentUser;
         const start = yield* makeSessionStart;
         // Answers within the window; a longer launch goes on and the session says where it is.
@@ -3108,7 +3123,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("followUpDeliver", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        const session = yield* steering.session(params.id);
+        // A conversation takes the reviewer's follow-up as a turn. Any other session starts its
+        // terminal with it, which is typing there: the owner's alone (docs/adr/0013).
+        const agent = currentAgentProcess(
+          yield* (yield* SessionProcessesRepo).listForSession(session.id),
+        );
+        if (startsInTerminal(agent?.kind ?? null)) yield* requireOwnerRuns(session, "terminal");
         const caller = yield* CurrentUser;
         const delivery = yield* FollowUpDelivery;
         return yield* delivery
