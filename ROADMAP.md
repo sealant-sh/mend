@@ -7,12 +7,23 @@ section goes when it ships.
 ## How releases work
 
 - **A release has a scope, written here.** Pull requests merge to `main` in all three repositories
-  when they are ready. Tags wait until the release's scope is done. CI takes long enough that a
-  release per merged change, waiting on the repositories in turn, is not worth it.
-- **One release of each repository per Mend release:** sealantd, then Core, then Mend's pin of both,
-  then Mend. Not one per pull request.
+  when they are ready. Tags wait until the release's scope is done.
+- **Main publishes prereleases** ([ADR 0015](docs/adr/0015-next-channel.md)). Every merge to Core or
+  sealantd main publishes `X.Y.0-next.N`: images, and the SDK or runtime packages on npm's `next`
+  dist-tag. Mend pins those exact versions on main, so a Mend change that needs a new Core API waits
+  for Core main's CI, not for a Core release. `latest` moves only on a stable tag.
+- **Mend `next` builds are chosen.** An admin tags `vX.Y.Z-next.N` on main (the version comes from
+  `node scripts/next-version.mjs origin/main`); the release workflow publishes it to npm `next` and
+  as a GitHub prerelease, after the owner's approval. That is what goes on the box and what people
+  install with `npm install --global @sealant/mend@next`.
+- **A stable release is a promotion,** one of each repository per Mend release: sealantd tags the
+  commit Core pins; Core pins it and tags; Mend pins that Core, cuts one more `next` build and runs
+  it on the box; then Mend tags. Core refuses to release while it pins a prerelease sealantd. Mend
+  refuses a prerelease pin anywhere and any change since its newest `next` tag beyond the Version
+  Packages pull request, notes and docs.
 - **Patch releases (0.36.1 and on) are for what is broken** on the box or on alpha: a session that
-  cannot start, attach, stop or save. Nothing else gets its own tag.
+  cannot start, attach, stop or save. Nothing else gets its own tag. A patch goes through a `next`
+  build like any release.
 - **A release is done when its exit criteria hold on the box,** not when CI passes.
 
 ## 0.36: Mend on our own box, every day
