@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  lockfilePrereleases,
   newestNextTag,
   promotionAllows,
   promotionProblems,
@@ -156,4 +157,24 @@ test("a next build proves something only once npm has it", async () => {
   });
   assert.equal(await published("0.36.0-next.56", fetchImpl), true);
   assert.equal(await published("0.36.0-next.57", fetchImpl), false);
+});
+
+test("a stable release reads prerelease packages from the lockfile, wherever they were declared", () => {
+  const lockfile = [
+    "importers:",
+    "  packages/sessions:",
+    "    dependencies:",
+    "      '@sealant/sdk':",
+    "        specifier: npm:@sealant/sdk-next@0.39.0-next.12",
+    "        version: '@sealant/sdk-next@0.39.0-next.12'",
+    "packages:",
+    "  '@sealant/sdk-next@0.39.0-next.12':",
+    "  '@sealant/api-contracts-next@0.39.0-next.12':",
+    "  '@sealant/sdk@0.38.1':",
+  ].join("\n");
+  assert.deepEqual(lockfilePrereleases(lockfile), [
+    "@sealant/sdk-next@0.39.0-next.12",
+    "@sealant/api-contracts-next@0.39.0-next.12",
+  ]);
+  assert.deepEqual(lockfilePrereleases("  '@sealant/sdk@0.38.1':\n"), []);
 });

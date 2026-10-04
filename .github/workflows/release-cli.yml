@@ -24,10 +24,10 @@ jobs:
     steps:
       # Full history and every tag: N counts the whole history, B reads the next tags handed out,
       # and a stable release is compared with the next build it promotes.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
       - run: node scripts/check-release-pins.mjs "$GITHUB_REF_NAME"
@@ -51,12 +51,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       # No pnpm store cache: other jobs, running unowned code, write that cache.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
       - run: pnpm install --frozen-lockfile --ignore-scripts
@@ -80,7 +80,7 @@ jobs:
           (cd apps/cli && pnpm pack --pack-destination "$RUNNER_TEMP/tarballs")
           ls -l "$RUNNER_TEMP/tarballs"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mend-tarball
           path: ${{ runner.temp }}/tarballs/*.tgz
@@ -104,12 +104,12 @@ jobs:
       id-token: write
     steps:
       # Node 24 bundles npm >= 11.5, which trusted publishing needs.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: mend-tarball
           path: tarballs
@@ -222,7 +222,25 @@ jobs:
                 for (const field of JSON.parse(keepText)) if (field in read) manifest[field] = read[field];
                 if (read.publishConfig?.access !== undefined) manifest.publishConfig = { access: read.publishConfig.access };
                 const shape = channel === "next" ? /^\d+\.\d+\.\d+-next\.\d+$/ : /^\d+\.\d+\.\d+$/;
+                // A -next package depends on its siblings only as `npm:@sealant/<sibling>-next@<this version>`;
+                // anything else (and any alias at all outside the -next packages) is refused.
+                const isNextPackage = /^@sealant\/[a-z0-9-]+-next$/.test(String(manifest.name));
+                const dependencyProblems = ["dependencies", "peerDependencies", "optionalDependencies"].flatMap(
+                  (field) =>
+                    Object.entries(manifest[field] ?? {}).flatMap(([dependency, spec]) => {
+                      const alias = String(spec).startsWith("npm:");
+                      if (!dependency.startsWith("@sealant/")) {
+                        return alias ? [`${dependency} is an alias (${spec})`] : [];
+                      }
+                      const expected = `npm:${dependency}-next@${version}`;
+                      if (isNextPackage) return spec === expected ? [] : [`${dependency}@${spec}, not ${expected}`];
+                      return alias ? [`${dependency} is an alias (${spec})`] : [];
+                    }),
+                );
                 const problems = [
+                  channel === "next" && name !== "@sealant/mend" && !isNextPackage &&
+                    `${manifest.name} is not a -next package`,
+                  ...dependencyProblems,
                   manifest.name !== name && `name ${manifest.name}, not ${name}`,
                   manifest.version !== version && `version ${manifest.version}, not ${version}`,
                   !shape.test(String(manifest.version)) && `${manifest.version} is not a ${channel} version`,
@@ -294,7 +312,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Extract this version's changelog section
         run: |
           VERSION="${GITHUB_REF_NAME#cli-}"
@@ -380,8 +398,8 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

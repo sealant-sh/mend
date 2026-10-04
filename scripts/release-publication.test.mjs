@@ -107,9 +107,20 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   const bin = mkdtempSync(`${tmpdir()}/image-dispatch-`);
   t.after(() => rmSync(bin, { recursive: true, force: true }));
   const tagCommit = "a".repeat(40);
+  const tagObject = "b".repeat(40);
+  // A stand-in `gh`: v0.36.0-next.60 is a lightweight tag, v0.36.0-next.61 an annotated one.
   writeFileSync(
     `${bin}/gh`,
-    `#!/bin/sh\ncase "$2" in */commits/refs/tags/v0.36.0-next.60) echo ${tagCommit}; exit 0 ;; esac\nexit 1\n`,
+    [
+      "#!/bin/sh",
+      'case "$2" in',
+      `  */git/ref/tags/v0.36.0-next.60) echo "commit ${tagCommit}"; exit 0 ;;`,
+      `  */git/ref/tags/v0.36.0-next.61) echo "tag ${tagObject}"; exit 0 ;;`,
+      `  */git/tags/${tagObject}) echo ${tagCommit}; exit 0 ;;`,
+      "esac",
+      "exit 1",
+      "",
+    ].join("\n"),
   );
   chmodSync(`${bin}/gh`, 0o755);
   const run = (event, workflow, ref, version = "") => {
@@ -158,7 +169,11 @@ test("image.yml pushes a version once, and only its own dispatch is held to main
   });
   assert.equal(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0").status, 1);
   // Only a tag resolves: the lookup names refs/tags/, so a branch called v<version> never does.
-  assert.match(image, /commits\/refs\/tags\/v\$OVERRIDE_VERSION/);
+  assert.deepEqual(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0-next.61"), {
+    status: 0,
+    commit: tagCommit,
+  });
+  assert.match(image, /git\/ref\/tags\/v\$OVERRIDE_VERSION/);
   assert.match(image, /ref: \$\{\{ needs\.version\.outputs\.commit \}\}/);
 });
 

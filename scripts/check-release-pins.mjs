@@ -99,6 +99,16 @@ export const promotionProblems = ({
   return problems;
 };
 
+/**
+ * Every `-next` package the lockfile resolves. The lockfile is the authority: an alias in any
+ * package.json or a pnpm override ends up here, not only the catalog's.
+ */
+export const lockfilePrereleases = (lockfile) => [
+  ...new Set(
+    [...lockfile.matchAll(/@sealant\/[a-z0-9-]+-next@[0-9A-Za-z.-]+/g)].map((match) => match[0]),
+  ),
+];
+
 /** The highest `vX.Y.Z-next.N` tag in `tags`, optionally only those of version X.Y.Z. */
 export const newestNextTag = (tags, version) =>
   tags
@@ -156,6 +166,10 @@ const check = async (tag) => {
       problems.push(`${newest} already exists; npm's next only moves forward. Tag a newer commit.`);
     }
     return problems;
+  }
+  const prereleases = lockfilePrereleases(await readFile("pnpm-lock.yaml", "utf8"));
+  if (prereleases.length > 0) {
+    problems.push(`A stable release cannot ship a prerelease package: ${prereleases.join(", ")}.`);
   }
   const cliVersion = JSON.parse(await readFile("apps/cli/package.json", "utf8")).version;
   if (cliVersion !== version) {

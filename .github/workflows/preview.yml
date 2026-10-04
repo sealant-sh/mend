@@ -42,9 +42,9 @@ on:
         type: boolean
         default: false
 
+# Only the jobs that push hold packages: write.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   plan:
@@ -57,10 +57,10 @@ jobs:
       platforms: ${{ steps.resolve.outputs.platforms }}
     steps:
       # Full history and tags: the version is counted from the branch's merge base with main.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
       - name: Resolve the version, the upstream commits and the platforms
@@ -113,6 +113,9 @@ jobs:
   # sealantd needs no Core rebuild: the bundled Sealant worker bakes whatever image
   # SEALANT_SEALANTD_IMAGE names into workspace images (scripts/bundle-supervisor.mjs).
   sealantd:
+    permissions:
+      contents: read
+      packages: write
     needs: plan
     if: needs.plan.outputs.sealantd_sha != ''
     strategy:
@@ -121,19 +124,19 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sealant-sh/sealantd
           ref: ${{ needs.plan.outputs.sealantd_sha }}
           persist-credentials: false
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: docker/Dockerfile
@@ -151,7 +154,7 @@ jobs:
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preview-digests-sealantd--${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -159,18 +162,21 @@ jobs:
           retention-days: 1
 
   sealantd-image:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, sealantd]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       ref: ${{ steps.merge.outputs.ref }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: preview-digests-sealantd--*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -193,6 +199,9 @@ jobs:
           echo "ref=$REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
 
   core:
+    permissions:
+      contents: read
+      packages: write
     needs: plan
     if: needs.plan.outputs.sealant_sha != ''
     strategy:
@@ -202,19 +211,19 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sealant-sh/sealant
           ref: ${{ needs.plan.outputs.sealant_sha }}
           persist-credentials: false
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: apps/${{ matrix.image }}/Dockerfile
@@ -232,7 +241,7 @@ jobs:
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preview-digests-core-${{ matrix.image }}--${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -240,6 +249,9 @@ jobs:
           retention-days: 1
 
   core-images:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, core]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
@@ -247,12 +259,12 @@ jobs:
       worker: ${{ steps.merge.outputs.worker }}
       ssh_gateway: ${{ steps.merge.outputs.ssh_gateway }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: preview-digests-core-*
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -277,6 +289,9 @@ jobs:
           done
 
   mend:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, sealantd-image, core-images]
     # Runs when each upstream image was built, or was not asked for.
     if: >-
@@ -289,9 +304,9 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -330,7 +345,7 @@ jobs:
             echo "LABELS"
           } >> "$GITHUB_OUTPUT"
       - id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: Dockerfile
@@ -346,7 +361,7 @@ jobs:
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preview-digests-mend--${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -354,17 +369,20 @@ jobs:
           retention-days: 1
 
   mend-image:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, sealantd-image, core-images, mend]
     if: ${{ !cancelled() && needs.mend.result == 'success' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: preview-digests-mend--*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

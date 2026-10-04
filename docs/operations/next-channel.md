@@ -49,10 +49,14 @@ to say so). For the same reason sealantd's and Core's Version Packages commit th
 | Mend       | a `vX.Y.Z-next.N` tag (`release-cli.yml`) | `mend`, `mend-api`, `mend-web` `:<version>`; a GitHub prerelease with the setup assets; `@sealant/mend` on `next`                      |
 
 **Core's and sealantd's prereleases are separate packages and images.** The `next` trusted publisher
-is registered only on the four `-next` npm packages, and the next workflows push only to the `-next`
-image names. Even a fully compromised next job cannot publish `@sealant/sdk` or move its `latest`,
-and never writes a stable image tag. The worst it can do is a bad prerelease of a package nothing
-installs unpinned.
+is registered only on the four `-next` npm packages, so even a fully compromised next job cannot
+publish `@sealant/sdk` or move its `latest`; the worst it can do on npm is a bad prerelease of a
+package nothing installs unpinned. **Images are weaker:** the next workflows push to the `-next`
+image names, but the workflow token that does it (`packages: write`) can push the stable images too;
+GHCR cannot scope it per image. That is held down, not removed: every action in a job holding that
+token is pinned to a commit, Mend pins every Core image by digest, and Core pins sealantd as
+`tag@sha256:…`, so a moved tag reaches neither. A self-hoster who pulls `sealant-api:latest` by tag
+is not covered (ADR 0015, Known gaps).
 
 Consumers reach a prerelease through an alias: Mend's catalog says
 `"@sealant/sdk": npm:@sealant/sdk-next@0.39.0-next.N`, pinned exactly with the lockfile's integrity,
@@ -155,9 +159,16 @@ a downgrade. The one-time path:
    ```sh
    set -eu
    repo=~/src/mend
+   config="${XDG_CONFIG_HOME:-$HOME/.config}/mend"
+   command -v jq >/dev/null || { echo "CHECK BY HAND: jq is not installed"; exit 1; }
+   ls "$config"/generations/*/server.json >/dev/null 2>&1 ||
+     { echo "CHECK BY HAND: no generations under $config"; exit 1; }
+   # Collected first: a failure inside a `for` list would not stop the script.
+   versions=$(jq -r .serverVersion "$config"/generations/*/server.json | sort -u | grep -- '-preview\.' || true)
+   [ -n "$versions" ] || { echo "CHECK BY HAND: no preview found in $config/generations"; exit 1; }
    git -C "$repo" fetch -q origin
    git -C "$repo" checkout -q --detach origin/main
-   for version in $(cat ~/.config/mend/generations/*/server.json | jq -r .serverVersion | sort -u | grep -- '-preview\.'); do
+   for version in $versions; do
      image="ghcr.io/sealant-sh/mend:$version"
      echo "== $version"
      # A pruned image is pulled again; one that cannot be read is checked by hand, never skipped.
@@ -181,8 +192,9 @@ a downgrade. The one-time path:
    ```
 
    Everything that is not a clean "no migration changes" or "main has these" says `CHECK BY HAND`:
-   an image that can no longer be pulled, a missing label, an unfetchable commit, a change main does
-   not carry exactly. Sealant's migrations need no such check: their hashes are compared.
+   no `jq`, no generations (it reads `$XDG_CONFIG_HOME/mend`, or `~/.config/mend`), no preview in
+   them, an image that can no longer be pulled, a missing label, an unfetchable commit, a change
+   main does not carry exactly. Sealant's migrations need no such check: their hashes are compared.
 
 4. If it refuses: the named migrations came from a branch the box ran that main does not have (or
    has in another form). Merge that branch, cut a next build that contains it, and repeat step 3;
@@ -211,11 +223,14 @@ as its own pull request; the change that needs the new API stacks on it. Pinning
 
 ## Pin a sealantd prerelease in Core
 
-By hand, in one pull request: the image in `packages/workspaces/src/buildkit/buildkit-builder.ts`
-and `apps/cf-bridge/Dockerfile` becomes `ghcr.io/sealant-sh/sealantd-next:<version>`, and the two
-runtime packages in `packages/workspaces/package.json` become aliases,
-`"@sealant/runtime-client": "npm:@sealant/runtime-client-next@<version>"` and the same for
-`runtime-protocol`; then `pnpm install`. Core trusts the recovery boot of
+With `node tooling/scripts/pin-sealantd.mjs <version>` in Core: it reads the image's digest from
+GHCR, writes `ghcr.io/sealant-sh/sealantd-next:<version>@sha256:<digest>` (or
+`ghcr.io/sealant-sh/sealantd:<version>@sha256:<digest>` for a release; never a tag alone) into
+`packages/workspaces/src/buildkit/buildkit-builder.ts` and `apps/cf-bridge/Dockerfile`, sets the two
+runtime packages in `packages/workspaces/package.json` to exact aliases
+(`"@sealant/runtime-client": "npm:@sealant/runtime-client-next@<version>"`, the same for
+`runtime-protocol`; plain exact versions for a release), and runs `pnpm install`. Core's release
+refuses a sealantd image without its digest. Core trusts the recovery boot of
 `ghcr.io/sealant-sh/sealantd-next:X.Y.Z-next.N` as it does a release's.
 
 ## Release
@@ -281,11 +296,17 @@ for name in sdk api-contracts runtime-protocol runtime-client; do
   rm -f package.json
   npm init -y --scope=@sealant >/dev/null
   npm pkg set name="@sealant/$name-next" version=0.0.0-next.0 \
-    description="Prereleases of @sealant/$name from main. Install @sealant/$name instead." \
+    description="Prereleases of @sealant/$name from main, for exact pins and @next only. Install @sealant/$name instead." \
     license=Apache-2.0
   npm publish --access public --tag next
 done
 ```
+
+npm sends only the `next` dist-tag (checked against a stub registry); whether the registry also
+points `latest` at a package's first version was not tested, since that needs a real publish. Treat
+`latest` on a `-next` package as meaningless: it may name the empty placeholder. Install a `-next`
+package only by `@next` or by an exact version, as Mend's catalog alias does; never
+`npm install @sealant/sdk-next` bare.
 
 Then, on npmjs.com, for each of the four `-next` packages, **and only those**:
 
@@ -311,22 +332,37 @@ In sealant-sh/sealant and sealant-sh/sealantd:
 - After the first next run pushes them, make the new image packages public, once:
   `sealant-api-next`, `sealant-worker-next`, `sealant-ssh-gateway-next` and `sealantd-next`
   (Settings → Danger Zone → Change visibility, at
-  `https://github.com/orgs/sealant-sh/packages/container/<name>/settings`). Mend's pin check reads
-  them anonymously, and Mend's image build pulls them.
+  `https://github.com/orgs/sealant-sh/packages/container/<name>/settings`). **This cannot be
+  undone:** GitHub does not let a public package become private again. Mend's pin check reads them
+  anonymously, and Mend's image build pulls them.
+- Mend's image build logs in to GHCR with Mend's own token before it pulls Core's images, and a
+  logged-in token can be refused on a package not linked to its repository. Open the stable
+  `sealant-api` package's settings: if **Manage Actions access** lists `sealant-sh/mend`, add
+  `sealant-sh/mend` with the **Read** role to the three Core `-next` image packages too (and
+  `sealant-sh/sealant` to `sealantd-next` if `sealantd` lists it). This could not be checked from
+  here: reading package settings needs a token with `read:packages`.
 
 Nothing for Mend: its next builds use `release-cli.yml` and `release`, already registered.
 
 What that buys, exactly:
 
-- **The boundary, with or without code-owner review:** the `next` publisher can publish only the
-  four `-next` packages, and the next workflows push only `-next` image names. Nothing in a next
-  job, compromised or not, can publish a stable package, move its `latest`, or overwrite a stable
-  image tag. Mend pins every Core image by digest, so even a moved `-next` tag cannot reach a Mend
-  build.
-- **Inside that boundary, without code-owner review:** anyone who can merge to Core main can change
-  `next.yml` and publish anything under the `-next` packages. Prereleases are only ever consumed
-  pinned (Mend's catalog alias with lockfile integrity, Core's exact alias), so a bad one reaches
-  nothing until someone pins it by hand.
-- **With code-owner review:** that edit, and edits to what configures installs, builds and packing,
-  need your review. The republish keeps a compromised `pack` from changing the name, version,
-  dist-tag or commit a prerelease publishes under.
+- **npm, with or without code-owner review:** the `next` publisher can publish only the four `-next`
+  packages. Nothing in a next job, compromised or not, can publish a stable package or move its
+  `latest`.
+- **Images, without code-owner review:** anyone who can merge to Core or sealantd main can edit a
+  workflow that holds `packages: write` and push any image the repository can write, stable ones
+  included. Mend pins every Core image by digest and Core pins sealantd by `tag@sha256:…`, so a
+  moved tag does not reach a Mend or Sealant build; a self-hoster pulling Core's `latest` by tag is
+  not covered.
+- **Inside the `-next` boundary, without code-owner review:** anyone who can merge to Core main can
+  change `next.yml` and publish anything under the `-next` packages. Prereleases are only ever
+  consumed pinned (Mend's catalog alias with lockfile integrity, Core's exact alias), so a bad one
+  reaches nothing until someone pins it by hand.
+- **With code-owner review:** those edits, and edits to what configures installs, builds and
+  packing, need your review. The republish keeps a compromised `pack` from changing the name,
+  version, dist-tag, commit or sibling dependencies a prerelease publishes under. Every action in a
+  job holding a write token is pinned to a commit, and no such job restores a cache other jobs
+  write.
+- **To close the image gap fully** (not done here): push stable images with a separate credential
+  held in the `release` environment, and remove the repositories' Actions write access on the stable
+  packages.
