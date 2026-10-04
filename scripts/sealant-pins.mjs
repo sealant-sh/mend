@@ -179,6 +179,54 @@ export const digestProblems = async (pins, fetchImpl = fetch) => {
   return problems;
 };
 
+/**
+ * What the bundle's setup assets and supervisor say about the pinned Core version: each must name
+ * `version` where it names one, so an operator reads the version the image actually carries.
+ */
+export const assetProblems = (files, version) => {
+  const problems = [];
+  const expect = (file, ok, what) => {
+    if (!ok) problems.push(`${file} does not name Sealant ${version} ${what}.`);
+  };
+  for (const file of [
+    "deploy/docker/setup-contract.v2.json",
+    "apps/cli/test-fixtures/docker/setup-contract.v2.json",
+  ]) {
+    const contract = JSON.parse(files[file]);
+    expect(file, contract.sealantVersion === version, "as sealantVersion");
+    expect(
+      file,
+      contract.bootstrap?.sealantMigrations?.endsWith(`from sealant-api ${version}`) === true,
+      "in bootstrap.sealantMigrations",
+    );
+    expect(
+      file,
+      contract.captureStore?.workspaceNetwork?.includes(`Sealant ${version} runtime`) === true,
+      "in captureStore.workspaceNetwork",
+    );
+  }
+  for (const file of [
+    "deploy/docker/compose.v2.yaml",
+    "apps/cli/test-fixtures/docker/compose.v2.yaml",
+  ]) {
+    expect(file, files[file].includes(`Sealant ${version} API`), "in its header");
+  }
+  expect(
+    "scripts/bundle-supervisor.mjs",
+    files["scripts/bundle-supervisor.mjs"].includes(`applying Sealant ${version} migrations`),
+    "in its migration log line",
+  );
+  return problems;
+};
+
+/** Every pin file's text, by path. */
+export const readRepositoryPinFiles = async () =>
+  Object.fromEntries(
+    await Promise.all(
+      PIN_FILES.map(async (file) => [file, await readFile(path.join(root, file), "utf8")]),
+    ),
+  );
+
 export const readRepositoryPins = async () => {
   const [dockerfile, workspace] = await Promise.all([
     readFile(path.join(root, "Dockerfile"), "utf8"),

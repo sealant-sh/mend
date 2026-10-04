@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   PIN_FILES,
   SEALANT_IMAGES,
+  assetProblems,
   digestProblems,
   pinProblems,
   pinnedDigest,
@@ -166,4 +167,23 @@ test("each pinned digest must be what GHCR serves for the pinned version", async
       ([url, method]) => url.endsWith("/sealant-api/manifests/0.38.1") && method === "HEAD",
     ),
   );
+});
+
+test("the setup assets and the supervisor name the pinned Core version", async () => {
+  const pins = await repositoryPins();
+  const files = Object.fromEntries(
+    await Promise.all(PIN_FILES.map(async (file) => [file, await read(file)])),
+  );
+  assert.deepEqual(assetProblems(files, pins.sealantVersion), []);
+  const stale = {
+    ...files,
+    "deploy/docker/compose.v2.yaml": files["deploy/docker/compose.v2.yaml"].replace(
+      `Sealant ${pins.sealantVersion} API`,
+      "Sealant 0.1.0 API",
+    ),
+  };
+  assert.deepEqual(assetProblems(stale, pins.sealantVersion), [
+    `deploy/docker/compose.v2.yaml does not name Sealant ${pins.sealantVersion} in its header.`,
+  ]);
+  assert.equal(assetProblems(files, "0.39.0-next.12").length, 9);
 });

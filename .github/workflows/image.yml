@@ -34,7 +34,12 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { appendFileSync } from 'node:fs';
-          const { GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION } = process.env;
+          const { GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION } = process.env;
+          // A dispatch pushes ghcr.io/sealant-sh/mend:<version>, the tag `mend server setup` pulls:
+          // only main may do that, never a branch.
+          if (GITHUB_EVENT_NAME === 'workflow_dispatch' && GITHUB_REF !== 'refs/heads/main') {
+            throw new Error('Dispatch image.yml from main only.');
+          }
           const tagged = GITHUB_REF.startsWith('refs/tags/');
           const tagVersion = tagged ? GITHUB_REF_NAME.replace(/^v/, '') : undefined;
           if (tagged && OVERRIDE_VERSION && OVERRIDE_VERSION !== tagVersion) {
@@ -125,6 +130,14 @@ jobs:
             ${{ matrix.image.baseline && needs.version.outputs.before || needs.version.outputs.value
             }}
         run: |
+          set -euo pipefail
+          # A version is pushed once. Overwriting ghcr.io/sealant-sh/mend:<version> would change
+          # what every server pinned to it pulls. Only a commit's own dev build may be rebuilt.
+          if [[ $VERSION != 0.0.0-dev.* && $VERSION != 0.0.0-acceptance.* ]] &&
+            docker buildx imagetools inspect "$REPOSITORY:$VERSION" >/dev/null 2>&1; then
+            echo "::error::$REPOSITORY:$VERSION already exists; a version is pushed once."
+            exit 1
+          fi
           sources=()
           for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
           docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"

@@ -113,7 +113,13 @@ if (protocol !== undefined) {
 }
 
 if (args[0] === "context") out("unix:///var/run/docker.sock");
-else if (args.includes("{{.Client.APIVersion}} {{.Server.APIVersion}}")) out("1.47 1.47");
+// `mend server upgrade --from-preview` reads the target image's list of migrations.
+else if (args[2] === "run" && args.at(-1) === "/app/migrations.txt") {
+  const version = args.at(-2).split(":").at(-1);
+  const manifest = state.manifests?.[version];
+  if (manifest === undefined || !state.images[version]) fail();
+  out(manifest);
+} else if (args.includes("{{.Client.APIVersion}} {{.Server.APIVersion}}")) out("1.47 1.47");
 else if (args[2] === "info") out("Docker Engine - Community");
 else if (args.includes("compose") && args.includes("version")) out("2.35.0");
 else if (args.includes("image")) {
@@ -203,6 +209,11 @@ else if (command[0] === "down") {
     if (state.fail === "old-start" && state.version === "0.23.0") fail();
   }
   save();
+} else if (command[0] === "exec" && command.includes("psql")) {
+  // What each database applied: Mend's mend_migrations names, Sealant's drizzle "name|created_at".
+  if (!state.postgresRunning) fail();
+  const database = command.find((arg) => arg.startsWith("--dbname="))?.slice("--dbname=".length);
+  out((state.applied?.[database] ?? []).join("\n"));
 } else if (command[0] === "exec" && command.includes("garage")) {
   // The bucket init runs after `up`; `status` names the node, `bucket info` shows Mend's key.
   if (!withGarage || !state.postgresRunning) fail();

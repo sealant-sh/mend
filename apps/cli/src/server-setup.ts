@@ -1936,20 +1936,170 @@ const startInstallation = async (
   runtime.writeLine(reachableLine(installation.config));
 };
 
-const parseUpgradeOptions = (args: ReadonlyArray<string>): SetupOptions => {
-  for (let index = 0; index < args.length; index += 1) {
-    const flag = args[index];
+const parseUpgradeOptions = (
+  args: ReadonlyArray<string>,
+): SetupOptions & { readonly fromPreview: boolean } => {
+  const fromPreview = args.includes("--from-preview");
+  const rest = args.filter((arg) => arg !== "--from-preview");
+  for (let index = 0; index < rest.length; index += 1) {
+    const flag = rest[index];
     if (flag === "--offline") continue;
     if (flag !== "--version" && flag !== "--assets-dir")
       throw setupError(`Unknown server upgrade option "${flag}".`);
     index += 1;
   }
-  const options = parseSetupOptions(args);
+  const options = parseSetupOptions(rest);
   if (options.version === undefined)
     throw setupError(
       "Upgrade requires --version TARGET. Use --version latest only to request the latest release explicitly.",
     );
-  return options;
+  return { ...options, fromPreview };
+};
+
+/**
+ * Previews built before the `next` channel (ADR 0015) were numbered X.Y.Z-preview.K, which sorts
+ * above every X.Y.Z-next.N: `preview` comes after `next`. A server on one could take no next build
+ * until X.Y.Z itself. `--from-preview` moves it once, to a next build of the same X.Y.Z, after
+ * checking that the target carries every migration the server applied.
+ */
+const LEGACY_PREVIEW = /^(\d+\.\d+\.\d+)-preview\.(0|[1-9]\d*)$/;
+const NEXT_BUILD = /^(\d+\.\d+\.\d+)-next\.(0|[1-9]\d*)$/;
+
+export const isPreviewToNext = (from: string, to: string): boolean => {
+  const preview = LEGACY_PREVIEW.exec(from);
+  const next = NEXT_BUILD.exec(to);
+  return preview !== null && next !== null && preview[1] === next[1];
+};
+
+/** The applied rows of Sealant's drizzle journal: its name, or only its folder time when old. */
+interface SealantMigration {
+  readonly name: string;
+  readonly createdAt: string;
+}
+
+/** Drizzle's folder time: the first 14 digits of the folder name, read as UTC. */
+const drizzleMillis = (folder: string): string => {
+  const at = (start: number, end: number) => Number(folder.slice(start, end));
+  return String(Date.UTC(at(0, 4), at(4, 6) - 1, at(6, 8), at(8, 10), at(10, 12), at(12, 14)));
+};
+
+/**
+ * The migrations a server applied that the target image does not carry. `manifest` is the image's
+ * /app/migrations.txt: one `mend <name>` or `sealant <folder>` per line.
+ */
+export const missingMigrations = (
+  applied: {
+    readonly mend: ReadonlyArray<string>;
+    readonly sealant: ReadonlyArray<SealantMigration>;
+  },
+  manifest: string,
+): ReadonlyArray<string> => {
+  const mend = new Set<string>();
+  const sealant = new Set<string>();
+  const sealantTimes = new Set<string>();
+  for (const line of manifest.split("\n")) {
+    const [kind, name] = line.trim().split(/\s+/);
+    if (name === undefined) continue;
+    if (kind === "mend") mend.add(name);
+    if (kind === "sealant") {
+      sealant.add(name);
+      sealantTimes.add(drizzleMillis(name));
+    }
+  }
+  return [
+    ...applied.mend.filter((name) => !mend.has(name)).map((name) => `mend ${name}`),
+    ...applied.sealant
+      .filter((row) =>
+        row.name === "" ? !sealantTimes.has(row.createdAt) : !sealant.has(row.name),
+      )
+      .map((row) => `sealant ${row.name === "" ? `(created ${row.createdAt})` : row.name}`),
+  ];
+};
+
+const psqlRows = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+  database: string,
+  query: string,
+): Promise<ReadonlyArray<string>> => {
+  const output = await composeCommand(runtime, installation, [
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "--username=postgres",
+    `--dbname=${database}`,
+    "--no-align",
+    "--tuples-only",
+    "--field-separator=|",
+    "--command",
+    query,
+  ]);
+  return output.stdout.split("\n").filter((line) => line.trim().length > 0);
+};
+
+/**
+ * Before `--from-preview` touches anything: read what the server applied, from both databases, and
+ * what the target image carries. Refuses, with the names, when the target lacks any of them.
+ */
+const checkPreviewMigrations = async (
+  runtime: ServerSetupRuntime,
+  existing: ServerInstallation,
+  target: ServerConfig,
+): Promise<void> => {
+  const image = `ghcr.io/sealant-sh/mend:${target.serverVersion}`;
+  const listed = await runtime.run(
+    "docker",
+    [
+      "--context",
+      target.dockerContext,
+      "run",
+      "--rm",
+      "--entrypoint",
+      "cat",
+      image,
+      "/app/migrations.txt",
+    ],
+    { timeoutMs: serverProcessDeadlines.ordinary },
+  );
+  if (listed.status !== 0 || listed.error !== undefined || listed.stdout.trim() === "")
+    throw setupError(
+      `${image} does not list its migrations (/app/migrations.txt), so --from-preview cannot check them. Nothing was changed.`,
+    );
+  await composeCommand(runtime, existing, [
+    "up",
+    "-d",
+    "--wait",
+    "--pull",
+    "never",
+    "--no-build",
+    "postgres",
+  ]);
+  const mend = await psqlRows(
+    runtime,
+    existing,
+    "mend",
+    "select name from mend_migrations order by migration_id",
+  );
+  const sealant = (
+    await psqlRows(
+      runtime,
+      existing,
+      "sealant_control_plane",
+      "select coalesce(name, ''), created_at from drizzle.__drizzle_migrations order by id",
+    )
+  ).map((line) => {
+    const [name = "", createdAt = ""] = line.split("|");
+    return { name, createdAt };
+  });
+  const missing = missingMigrations({ mend, sealant }, listed.stdout);
+  if (missing.length > 0)
+    throw setupError(
+      `${image} does not carry ${missing.length} migration(s) this server applied: ${missing.join(", ")}. Choose a next build that contains them. Nothing was changed.`,
+    );
+  runtime.writeLine(
+    `${image} carries all ${mend.length + sealant.length} migrations this server applied.`,
+  );
 };
 
 const upgradeServer = async (
@@ -1961,9 +2111,18 @@ const upgradeServer = async (
   const options = parseUpgradeOptions(args);
   const version = await resolveServerVersion(runtime, options, existing.config);
   const order = compareServerVersions(version, existing.config.serverVersion);
-  if (order < 0)
+  const previewToNext = isPreviewToNext(existing.config.serverVersion, version);
+  if (options.fromPreview && !previewToNext)
     throw setupError(
-      `Refusing downgrade from ${existing.config.serverVersion} to ${version}. Database migrations may not be reversible.`,
+      "--from-preview moves a server on X.Y.Z-preview.K to a next build of the same version, X.Y.Z-next.N, and nothing else.",
+    );
+  if (order < 0 && !options.fromPreview)
+    throw setupError(
+      `Refusing downgrade from ${existing.config.serverVersion} to ${version}. Database migrations may not be reversible.${
+        previewToNext
+          ? ` ${existing.config.serverVersion} is a preview numbered before the next channel. To move to the next channel once, run mend server upgrade --version ${version} --from-preview; it first checks that ${version} carries every migration this server applied.`
+          : ""
+      }`,
     );
   if (order === 0) {
     runtime.writeLine(
@@ -2006,6 +2165,8 @@ const upgradeServer = async (
     options.offline ? "local" : "pull-missing",
   );
   await checkComposeImages(runtime, existing);
+  // The previous generation stays the real preview, so a failure before activation recovers it.
+  if (options.fromPreview) await checkPreviewMigrations(runtime, existing, config);
   const target = storeValue(store.prepare(files));
   const installation: ServerInstallation = { directory: target.directory, config, ...edgeImage };
   await checkComposeImages(runtime, installation);

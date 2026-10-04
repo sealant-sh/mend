@@ -86,3 +86,15 @@ test("a next build is a GitHub prerelease on npm's next dist-tag, and never move
   );
   assert.match(job("github-release"), /A \\`next\\` build of Mend from main/);
 });
+
+test("image.yml pushes a version once, and a dispatch comes from main", () => {
+  const image = readFileSync(new URL("../.github/workflows/image.yml", import.meta.url), "utf8");
+  assert.match(
+    image,
+    /GITHUB_EVENT_NAME === 'workflow_dispatch' && GITHUB_REF !== 'refs\/heads\/main'/,
+  );
+  const merge = image.slice(image.indexOf("Create and inspect the multi-arch candidate"));
+  const refusal = merge.indexOf("already exists; a version is pushed once");
+  assert.ok(refusal > 0);
+  assert.ok(merge.indexOf("docker buildx imagetools create") > refusal);
+});

@@ -9,7 +9,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { serverProcessDeadlines, type ServerProcessOptions } from "./server-runtime.ts";
-import { nodeServerRuntime, serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
+import {
+  isPreviewToNext,
+  nodeServerRuntime,
+  serverCommand,
+  type ServerSetupRuntime,
+} from "./server-setup.ts";
 import { describeUninstall, executeUninstall, planLines } from "./uninstall.ts";
 
 interface DaemonState {
@@ -32,6 +37,10 @@ interface DaemonState {
   /** The compose files the last `up` and `down` ran with, by name. */
   readonly upFiles?: ReadonlyArray<string>;
   readonly downFiles?: ReadonlyArray<string>;
+  /** Each image's /app/migrations.txt, by version. */
+  readonly manifests?: Readonly<Record<string, string>>;
+  /** The migrations each database applied, as psql prints them, by database. */
+  readonly applied?: Readonly<Record<string, ReadonlyArray<string>>>;
 }
 interface Call {
   readonly args: ReadonlyArray<string>;
@@ -400,6 +409,147 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       message: expect.stringContaining("Refusing downgrade"),
     });
     expect(f.active()).toBe(target);
+  });
+
+  describe("from a preview numbered before the next channel", () => {
+    const preview = "0.36.0-preview.17";
+    const next = "0.36.0-next.60";
+    const manifest = [
+      "mend 0001_init",
+      "mend 0107_turn_payer",
+      "sealant 20260901120000_capture_ledger",
+      "sealant 20261003093819_stop_remains_removed",
+    ].join("\n");
+    const onPreview = async (applied: Readonly<Record<string, ReadonlyArray<string>>>) => {
+      const f = await fixture();
+      f.update({
+        images: { [preview]: preview, [next]: next, "0.36.0-next.61": "0.36.0-next.61" },
+        manifests: { [next]: manifest },
+        applied,
+      });
+      expect(await f.setup(preview)).toEqual({ _tag: "ok" });
+      return f;
+    };
+    const everything = {
+      mend: ["0001_init", "0107_turn_payer"],
+      // An old row without a name is matched by its folder time (2026-09-01 12:00:00 UTC).
+      sealant_control_plane: [
+        `|${Date.UTC(2026, 8, 1, 12, 0, 0)}`,
+        "20261003093819_stop_remains_removed|1759484299000",
+      ],
+    };
+
+    it("refuses the move as a downgrade and names the one-time way", async () => {
+      const f = await onPreview(everything);
+      expect(await f.upgrade(next)).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(`mend server upgrade --version ${next} --from-preview`),
+      });
+      expect(f.state().version).toBe(preview);
+    });
+
+    it("moves once with --from-preview when the target carries every applied migration", async () => {
+      const f = await onPreview(everything);
+      const old = f.active();
+      expect(
+        await serverCommand(
+          ["upgrade", "--version", next, "--from-preview", "--assets-dir", f.assets, "--offline"],
+          f.runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      expect(f.state().version).toBe(next);
+      expect(f.active()).not.toBe(old);
+      expect(f.lines).toContain(
+        `ghcr.io/sealant-sh/mend:${next} carries all 4 migrations this server applied.`,
+      );
+      // Read before anything stops.
+      const calls = f.calls();
+      const stop = calls.findIndex((call) => call.command[0] === "stop");
+      const reads = calls.filter(
+        (call) => call.command.includes("psql") || call.args.includes("/app/migrations.txt"),
+      );
+      expect(reads).toHaveLength(3);
+      expect(calls.findIndex((call) => call.command.includes("psql"))).toBeLessThan(stop);
+      // After the move, ordinary upgrades follow the next channel.
+      expect(await f.upgrade("0.36.0-next.61")).toEqual({ _tag: "ok" });
+    });
+
+    it("refuses, naming them, when the target lacks a migration the server applied", async () => {
+      const f = await onPreview({
+        mend: ["0001_init", "0107_turn_payer", "0108_opencode_models"],
+        sealant_control_plane: [...everything.sealant_control_plane, "20261004000000_unmerged|1"],
+      });
+      const old = f.active();
+      expect(
+        await serverCommand(
+          ["upgrade", "--version", next, "--from-preview", "--assets-dir", f.assets, "--offline"],
+          f.runtime,
+        ),
+      ).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining(
+          "does not carry 2 migration(s) this server applied: mend 0108_opencode_models, sealant 20261004000000_unmerged",
+        ),
+      });
+      expect(f.active()).toBe(old);
+      expect(f.state().version).toBe(preview);
+      expect(f.calls().some((call) => call.command[0] === "stop")).toBe(false);
+    });
+
+    it("recovers the preview's own image when the backup fails", async () => {
+      const f = await onPreview(everything);
+      const old = f.active();
+      f.update({ fail: "backup" });
+      expect(
+        await serverCommand(
+          ["upgrade", "--version", next, "--from-preview", "--assets-dir", f.assets, "--offline"],
+          f.runtime,
+        ),
+      ).toMatchObject({ _tag: "error", message: expect.stringContaining("app recovered") });
+      expect(f.active()).toBe(old);
+      expect(f.state()).toMatchObject({ version: preview, appRunning: true });
+    });
+
+    it("refuses a target that does not list its migrations", async () => {
+      const f = await onPreview(everything);
+      f.update({ manifests: {} });
+      expect(
+        await serverCommand(
+          ["upgrade", "--version", next, "--from-preview", "--assets-dir", f.assets, "--offline"],
+          f.runtime,
+        ),
+      ).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("does not list its migrations"),
+      });
+      expect(f.state().version).toBe(preview);
+    });
+
+    it("refuses --from-preview for anything but X.Y.Z-preview.K to X.Y.Z-next.N", async () => {
+      const f = await fixture();
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      expect(
+        await serverCommand(
+          [
+            "upgrade",
+            "--version",
+            "0.24.0",
+            "--from-preview",
+            "--assets-dir",
+            f.assets,
+            "--offline",
+          ],
+          f.runtime,
+        ),
+      ).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("--from-preview moves a server"),
+      });
+      expect(isPreviewToNext("0.36.0-preview.17", "0.36.0-next.1")).toBe(true);
+      expect(isPreviewToNext("0.36.0-preview.17", "0.37.0-next.1")).toBe(false);
+      expect(isPreviewToNext("0.36.0-next.5.preview.17", "0.36.0-next.6")).toBe(false);
+      expect(isPreviewToNext("0.36.0", "0.36.0-next.1")).toBe(false);
+    });
   });
 
   it("resolves latest only on explicit online upgrade", async () => {

@@ -34,12 +34,12 @@ and of the images listed there. The reference is a digest, so each sealantd buil
 workspace images instead of reusing the last preview's.
 
 The version is the `next` version of the branch's merge base with main, plus the run number
-(`scripts/next-version.mjs --preview`): a branch cut from main's `0.36.0-next.56`, built by run 17,
-is `0.36.0-next.56.preview.17`. It sorts after `0.36.0-next.56` and before `0.36.0-next.57`, so the
-box moves between next builds and previews in main's order, and the release that follows (`0.36.0`)
-is higher than both. A branch cut from an older main sorts lower, and a box already past it refuses
-it: rebase the branch. Re-running a run keeps its number, and the box already pinned to that version
-does nothing: dispatch a new run instead.
+(`scripts/next-version.mjs --package apps/cli --preview`): a branch cut from main's
+`0.36.0-next.56`, built by run 17, is `0.36.0-next.56.preview.17`. It sorts after `0.36.0-next.56`
+and before `0.36.0-next.57`, so the box moves between next builds and previews in main's order, and
+the release that follows (`0.36.0`) is higher than both. A branch cut from an older main sorts
+lower, and a box already past it refuses it: rebase the branch. Re-running a run keeps its number,
+and the box already pinned to that version does nothing: dispatch a new run instead.
 
 The run's summary lists the three refs and their commits, every image it pushed, the version, and
 the deploy command. The workflow runs no packaged acceptance, so a preview takes one image build per
@@ -87,7 +87,9 @@ writes it into every generation). It ends with `mend server status`.
   box's version cannot be installed over it. Neither can a release older than the preview: a box on
   `0.36.0-next.56.preview.17` takes `0.36.0-next.57`, `0.36.0` or later.
 - Previews before ADR 0015 were numbered `0.36.0-preview.R`. `preview` sorts after `next`, so a box
-  on one of those refuses every `0.36.0-next.*` until `0.36.0` (ADR 0015, decision 7).
+  on one of those refuses every `0.36.0-next.*`. Move it once with
+  `mend server upgrade --version 0.36.0-next.N --from-preview`
+  ([The next channel](next-channel.md)).
 - A preview applies its Mend and Sealant migrations to the box's databases, and they are not
   reversed. Use a box you can rebuild.
 - Mend imports `@sealant/sdk` and `@sealant/api-contracts` from npm, and Core imports the

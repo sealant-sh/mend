@@ -171,6 +171,9 @@ test("the bundle pins published Sealant 0.38.1 artifacts and its official migrat
   }
   assert.equal(dockerfile.match(/^FROM .*sealant-sh\/sealant-/gm), null);
   assert.match(dockerfile, /dev\.sealant\.mend\.sealant-version="0\.38\.1"/);
+  // The image lists every migration it carries, for `mend server upgrade --from-preview`.
+  assert.match(dockerfile, /RUN node scripts\/mend-migrations\.mjs > \/app\/mend-migrations\.txt/);
+  assert.match(dockerfile, /> \/app\/migrations\.txt/);
   assert.match(supervisor, /applying Sealant 0\.38\.1 migrations/);
   assert.doesNotMatch(
     [dockerfile, supervisor, JSON.stringify(contract), composeTemplate].join("\n"),

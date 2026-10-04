@@ -91,7 +91,7 @@ jobs:
           # The next build of the branch's merge base with main, then the run number:
           # 0.36.0-next.56.preview.17 sorts after 0.36.0-next.56 and before 0.36.0-next.57, so a box
           # moves between next builds and previews in order (docs/adr/0015-next-channel.md).
-          version=$(node scripts/next-version.mjs --preview "$RUN_NUMBER" --main origin/main HEAD)
+          version=$(node scripts/next-version.mjs --package apps/cli --preview "$RUN_NUMBER" --main origin/main HEAD)
 
           amd64='{"arch":"amd64","runner":"blacksmith-4vcpu-ubuntu-2404"}'
           arm64='{"arch":"arm64","runner":"blacksmith-4vcpu-ubuntu-2404-arm"}'
