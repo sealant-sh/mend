@@ -221,15 +221,19 @@ describe("GET /ws", () => {
           assert.isFalse(Cause.hasDies(down.cause));
         }
 
-        // The device revoked in Mend: the 401 refuses its token, which closes the socket, and the
-        // bearer no longer gets a ticket to reconnect with.
+        // The device revoked in Mend: t3code's authorization error, which blocks the connection;
+        // the 401 refuses the token, so the socket closes and the bearer gets no new ticket.
         mend.setModelsDown(false);
         mend.revoke(mend.claims[0]?.token ?? "");
         const revoked = yield* Effect.exit(
           first(rpc[WS_METHODS.subscribeServerConfig]({})).pipe(Effect.asVoid),
         );
         assert.isTrue(Exit.isFailure(revoked));
-        if (Exit.isFailure(revoked)) assert.isFalse(Cause.hasDies(revoked.cause));
+        if (Exit.isFailure(revoked)) {
+          const error = Cause.findErrorOption(revoked.cause);
+          assert.strictEqual(Option.getOrUndefined(error)?._tag, "EnvironmentAuthorizationError");
+          assert.isFalse(Cause.hasDies(revoked.cause));
+        }
         const again = yield* Effect.exit(
           paired.client.auth.webSocketTicket({ headers: bearer(paired.access.access_token) }),
         );
