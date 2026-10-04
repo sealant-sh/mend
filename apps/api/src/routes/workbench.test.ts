@@ -27,7 +27,15 @@ import {
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
-import { AgentBridge, DeploymentConfig, MendKeys, Store, SourcePolicy } from "@mend/store";
+import {
+  AgentBridge,
+  DeploymentConfig,
+  type FileListing,
+  GitError,
+  MendKeys,
+  Store,
+  SourcePolicy,
+} from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
@@ -70,6 +78,7 @@ const project = (id: ProjectId, name: string): Project =>
     inheritUserSkills: true,
     hotSessions: 0,
     installCommand: null,
+    installEnabled: true,
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -160,6 +169,18 @@ const projectsLayer = (world: TestWorld): Layer.Layer<ProjectsRepo> =>
         ) ?? null,
       ),
     listAll: () => Effect.succeed(world.projects),
+    setInstallEnabled: (id, installEnabled) => {
+      const found = world.projects.find((candidate) => candidate.id === id);
+      return found === undefined
+        ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
+        : Effect.succeed(new Project({ ...found, installEnabled, updatedAt: NOW }));
+    },
+    setInstallCommand: (id, installCommand) => {
+      const found = world.projects.find((candidate) => candidate.id === id);
+      return found === undefined
+        ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
+        : Effect.succeed(new Project({ ...found, installCommand, updatedAt: NOW }));
+    },
   });
 
 const sessionsLayer = (world: TestWorld): Layer.Layer<SessionsRepo> =>
@@ -335,12 +356,17 @@ const makeWorld = (
   worktrees: [...worktrees, worktree(OTHER_WORKTREE_ID, OTHER_PROJECT_ID, "other")],
 });
 
-const requestProject = async (
+/** Any route of the group, answered with the raw body of a 200; `overrides` win over the mocks. */
+const requestRoute = async (
   world: TestWorld,
-  path = `/api/projects/${PROJECT_ID}`,
+  path: string,
   authorization: string | null = AUTHORIZATION,
   init: RequestInit = {},
-): Promise<{ readonly response: Response; readonly detail: ProjectDetail | null }> => {
+  overrides: Layer.Layer<JobRunner | Store> = Layer.mergeAll(
+    Layer.mock(JobRunner, {}),
+    Layer.mock(Store, {}),
+  ),
+): Promise<{ readonly response: Response; readonly body: unknown }> => {
   const projectRouteDependencies = ProjectAccessLive.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
@@ -351,6 +377,7 @@ const requestProject = async (
         servicesLayer(world),
         processesLayer,
         unusedProjectRouteLayers,
+        overrides,
       ),
     ),
   );
@@ -376,13 +403,23 @@ const requestProject = async (
       new Request(`http://api.internal${path}`, { ...init, headers }),
       requestContext,
     );
-    if (response.status !== 200) return { response, detail: null };
+    if (response.status !== 200) return { response, body: null };
     const body: unknown = await response.json();
-    return { response, detail: decodeProjectDetail(body) };
+    return { response, body };
   } finally {
     await dispose();
     await dependenciesRuntime.dispose();
   }
+};
+
+const requestProject = async (
+  world: TestWorld,
+  path = `/api/projects/${PROJECT_ID}`,
+  authorization: string | null = AUTHORIZATION,
+  init: RequestInit = {},
+): Promise<{ readonly response: Response; readonly detail: ProjectDetail | null }> => {
+  const { response, body } = await requestRoute(world, path, authorization, init);
+  return { response, detail: body === null ? null : decodeProjectDetail(body) };
 };
 
 const visibleIds = (detail: ProjectDetail): ReadonlyArray<string> =>
@@ -539,5 +576,121 @@ describe("GET /projects/:id response", () => {
     );
     expect(facts.get("held")?.liveServices).toBe(3);
     expect(facts.get("quiet")?.liveServices).toBe(0);
+  });
+});
+
+/** Every job a route queued, in order. */
+type EnqueuedJob = Parameters<JobRunner["Service"]["enqueue"]>[0];
+const recordingJobs = (enqueued: Array<EnqueuedJob>) =>
+  Layer.mock(JobRunner, {
+    enqueue: (job) =>
+      Effect.sync(() => {
+        enqueued.push(job);
+        return null;
+      }),
+  });
+const put = (body: unknown): RequestInit => ({ method: "PUT", body: JSON.stringify(body) });
+
+/** A ref the store does not know, as git answers it. */
+const unknownRef = (ref: string) =>
+  Effect.fail(new GitError({ args: ["ls-tree", ref], cwd: "/store", exitCode: 128, stderr: "" }));
+
+describe("automatic install routes", () => {
+  const withProjects = (installEnabled: boolean): TestWorld => {
+    const world = makeWorld([]);
+    return {
+      ...world,
+      projects: world.projects.map((row) => new Project({ ...row, installEnabled })),
+    };
+  };
+  for (const [before, after, queued] of [
+    [false, true, ["dependency-install"]],
+    [true, true, []],
+    [true, false, []],
+    [false, false, []],
+  ] as const) {
+    it(`PUT install-enabled ${before ? "on" : "off"} → ${after ? "on" : "off"} queues ${queued.length === 0 ? "nothing" : "the install job"}`, async () => {
+      const enqueued: Array<EnqueuedJob> = [];
+      const { response, body } = await requestRoute(
+        withProjects(before),
+        `/api/projects/${PROJECT_ID}/install-enabled`,
+        AUTHORIZATION,
+        put({ installEnabled: after }),
+        Layer.mergeAll(recordingJobs(enqueued), Layer.mock(Store, {})),
+      );
+      expect(response.status).toBe(200);
+      expect(Schema.decodeUnknownSync(Project)(body).installEnabled).toBe(after);
+      expect(enqueued.map((job) => job.name)).toEqual(queued);
+    });
+  }
+
+  it("PUT install-command keeps the old payload, and queues nothing while automatic install is off", async () => {
+    for (const installEnabled of [true, false]) {
+      const enqueued: Array<EnqueuedJob> = [];
+      const { response, body } = await requestRoute(
+        withProjects(installEnabled),
+        `/api/projects/${PROJECT_ID}/install-command`,
+        AUTHORIZATION,
+        put({ installCommand: "  pnpm install  " }),
+        Layer.mergeAll(recordingJobs(enqueued), Layer.mock(Store, {})),
+      );
+      expect(response.status).toBe(200);
+      expect(Schema.decodeUnknownSync(Project)(body).installCommand).toBe("pnpm install");
+      expect(enqueued.length).toBe(installEnabled ? 1 : 0);
+    }
+  });
+
+  const detect = async (
+    listTopLevel: (ref: string) => Effect.Effect<FileListing, GitError>,
+  ): Promise<unknown> => {
+    const { response, body } = await requestRoute(
+      makeWorld([]),
+      `/api/projects/${PROJECT_ID}/install-detection`,
+      AUTHORIZATION,
+      {},
+      Layer.mergeAll(
+        Layer.mock(JobRunner, {}),
+        Layer.mock(Store, { listTopLevel: (_dir, ref) => listTopLevel(ref) }),
+      ),
+    );
+    expect(response.status).toBe(200);
+    return body;
+  };
+  it("GET install-detection reads origin's default branch first, as a launch bases on it", async () => {
+    const asked: Array<string> = [];
+    const body = await detect((ref) =>
+      Effect.sync(() => {
+        asked.push(ref);
+        return { files: ["package.json", "pnpm-lock.yaml", "src/"], truncated: false };
+      }),
+    );
+    expect(body).toEqual({
+      ref: "origin/main",
+      read: true,
+      command: "pnpm install --frozen-lockfile",
+      from: "pnpm-lock.yaml",
+    });
+    expect(asked).toEqual(["refs/remotes/origin/main"]);
+  });
+
+  it("GET install-detection falls back to the local branch when origin's is unknown", async () => {
+    const asked: Array<string> = [];
+    const body = await detect((ref) => {
+      asked.push(ref);
+      return ref === "main"
+        ? Effect.succeed({ files: ["README.md"], truncated: false })
+        : unknownRef(ref);
+    });
+    expect(body).toEqual({ ref: "main", read: true, command: null, from: null });
+    expect(asked).toEqual(["refs/remotes/origin/main", "main"]);
+  });
+
+  it("GET install-detection says not read when no tree can be read", async () => {
+    expect(await detect(unknownRef)).toEqual({
+      ref: "main",
+      read: false,
+      command: null,
+      from: null,
+    });
   });
 });

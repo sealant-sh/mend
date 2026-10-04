@@ -3015,6 +3015,18 @@ const opencodeModelsMigration = Effect.gen(function* () {
 });
 
 /**
+ * The project's "Automatic install" setting: whether Mend runs an install command for it at all,
+ * in a session's workspace or in the install job that feeds the shared cache. Every project,
+ * existing and new, starts on, which is what Mend did before the setting existed.
+ */
+const projectInstallEnabledMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS install_enabled boolean NOT NULL DEFAULT true`;
+});
+
+/**
  * docs/adr/0009-agent-memory-per-person-per-project.md, capture mode: whose memory each worktree's
  * one harness home holds, as the server decided it when the executor that holds it now was
  * launched and the home was handed to its launcher. It outlives the session rows (a removed
@@ -3144,5 +3156,6 @@ export const migrations = {
   "0107_turn_payer": turnPayerMigration,
   "0108_agent_memory_import_bases": agentMemoryImportBasesMigration,
   "0109_opencode_models": opencodeModelsMigration,
-  "0110_agent_memory_homes": agentMemoryHomesMigration,
+  "0110_project_install_enabled": projectInstallEnabledMigration,
+  "0111_agent_memory_homes": agentMemoryHomesMigration,
 };

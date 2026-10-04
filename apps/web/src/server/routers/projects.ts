@@ -9,6 +9,7 @@ import {
   ProjectGitAuthRequest,
   ProjectHotSessionsRequest,
   ProjectInstallCommandRequest,
+  ProjectInstallEnabledRequest,
   ProjectInheritUserSkillsRequest,
   ProjectReferenceSelection,
   ProjectVisibilityRequest,
@@ -115,6 +116,16 @@ export const projectsRouter = router({
     .input(input(Schema.Struct({ id: ProjectId, request: ProjectInstallCommandRequest })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.projects.installCommand({ params: { id: i.id }, payload: i.request })),
+    ),
+  setInstallEnabled: procedure
+    .input(input(Schema.Struct({ id: ProjectId, request: ProjectInstallEnabledRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.installEnabled({ params: { id: i.id }, payload: i.request })),
+    ),
+  installDetection: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.installDetection({ params: { id: i.id } })),
     ),
   hotSessionsStatus: procedure
     .input(byId)

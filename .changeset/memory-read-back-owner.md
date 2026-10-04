@@ -10,4 +10,4 @@ in the worktree into the launcher's memory. The server now records whose memory 
 holds, and only that person's sessions read it back. A launch in a worktree another person used
 first saves that person's memory for them, then moves it out of the way. Codex starts with every
 conversation that is not the launcher's out of its memory, or with its memory off when Mend cannot
-do that. Migration 0110.
+do that. Migration 0111.

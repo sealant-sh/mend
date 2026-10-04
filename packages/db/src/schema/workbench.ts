@@ -455,6 +455,8 @@ export const projects = pgTable(
     // The command that builds the dependency tree (ADR-0002 decisions 2/9); NULL = detect it
     // from the base tree's lockfile at launch.
     installCommand: text(),
+    // Whether Mend runs an install command for this project at all (0110, "Automatic install").
+    installEnabled: boolean().notNull().default(true),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },

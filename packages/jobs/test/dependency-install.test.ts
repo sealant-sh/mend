@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 
-import { CaptureStoreRepo, OrganizationsRepo } from "@mend/db";
+import { CaptureStoreRepo, OrganizationsRepo, ProjectsRepo } from "@mend/db";
 import { OrganizationId, WorktreeId } from "@mend/domain";
-import { Organization } from "@mend/domain/workbench";
+import { Organization, Project } from "@mend/domain/workbench";
 import { CaptureRuntimeLive, dependencyCachePrefix, readDependencyCache } from "@mend/sessions";
 import { makeCaptureWorld, newWorktreeId } from "@mend/sessions/testing";
 import { BlobStore, captureKeys } from "@mend/store";
@@ -209,5 +209,41 @@ describe("dependency-install", () => {
       outcome: "skipped",
       reason: "the install session captured nothing",
     });
+  });
+
+  it("automatic install off: the job runs no install session and promotes nothing", async () => {
+    const ran: Array<string> = [];
+    const off = Layer.mock(ProjectsRepo, {
+      byId: () => Effect.succeed(new Project({ ...world.project, installEnabled: false })),
+    });
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const installer = yield* DependencyInstaller;
+        return yield* installer.install({
+          projectId: world.project.id,
+          requestedByUserId: "user-requester",
+        });
+      }).pipe(
+        Effect.provide(
+          DependencyInstallerLive.pipe(
+            Layer.provide(runtime),
+            Layer.provide(
+              Layer.succeed(InstallRunner, {
+                run: (projectId, ownerUserId) =>
+                  Effect.sync(() => {
+                    ran.push(`${projectId}:${ownerUserId}`);
+                    return { worktreeId: newWorktreeId() };
+                  }),
+              }),
+            ),
+            Layer.provide(organizations),
+            Layer.provide(off),
+            Layer.provide(world.layer),
+          ),
+        ),
+      ),
+    );
+    expect(outcome).toEqual({ outcome: "skipped", reason: "automatic install is off" });
+    expect(ran).toEqual([]);
   });
 });

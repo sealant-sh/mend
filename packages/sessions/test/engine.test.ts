@@ -1799,6 +1799,7 @@ const projectsLayer = (world: World) =>
     setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),
     setInstallCommand: () => Effect.die("not in test"),
+    setInstallEnabled: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
       return found === undefined
@@ -2612,6 +2613,7 @@ const setup = (tmp: string, world: World) => {
       inheritUserSkills: true,
       hotSessions: 0,
       installCommand: null,
+      installEnabled: true,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -2669,6 +2671,7 @@ const setupSibling = (tmp: string, world: World, name: string, fixtureOrigin: st
       inheritUserSkills: true,
       hotSessions: 0,
       installCommand: null,
+      installEnabled: true,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -8672,6 +8675,7 @@ describe("SessionEngine capture mode", () => {
               inheritUserSkills: true,
               hotSessions: 0,
               installCommand: null,
+              installEnabled: true,
               createdAt: timestamp,
               updatedAt: timestamp,
             });
@@ -20119,6 +20123,55 @@ for (const fault of [false, true]) {
   );
 }
 
+// "Automatic install": on (the default), a fresh worktree's launch runs the project's install
+// command before the harness; off, the launch runs none, saved command or detected.
+describe("automatic install", () => {
+  const INSTALL = "echo automatic-install-ran";
+  for (const installEnabled of [true, false]) {
+    it(`${installEnabled ? "on" : "off"}: a fresh launch ${installEnabled ? "runs" : "runs no"} install command`, async () => {
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const logs: string[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const project = world.projects.get(session.projectId);
+            if (project === undefined) throw new Error("project missing");
+            world.projects.set(
+              project.id,
+              new Project({ ...project, installCommand: INSTALL, installEnabled }),
+            );
+            yield* engine.launch(session.id, ["codex"]);
+            const installs = execCalls.filter(
+              (argv) => argv[0] === "sh" && argv[1] === "-lc" && argv[2] === INSTALL,
+            );
+            expect(installs).toHaveLength(installEnabled ? 1 : 0);
+            expect(
+              logs.some((line) =>
+                line.includes("dependency install skipped · automatic install off"),
+              ),
+            ).toBe(!installEnabled);
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            execCalls,
+            captureOps: {
+              exec: (argv) =>
+                (argv[2] ?? "").startsWith("uname -s; uname -m;")
+                  ? { exitCode: 0, stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n", stderr: "" }
+                  : undefined,
+            },
+          }),
+        },
+      );
+    });
+  }
+});
+
 /**
  * Review 2026-09-28 (17) #1: a cold resume rewrote Mend's note in the restored harness memory
  * files by cutting each file at the old `<!-- mend:mounts -->` marker, so whatever the user or
@@ -21458,6 +21511,7 @@ const seedStoppedBeforeRestart = (
       inheritUserSkills: true,
       hotSessions: 0,
       installCommand: null,
+      installEnabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
     }),

@@ -144,7 +144,7 @@ function ProjectSetupPage() {
             <ServicesSection projectId={projectId} />
             <DotfilesSection project={project} />
             <HotSessionsSection project={project} />
-            <InstallCommandSection project={project} />
+            <InstallCommandSection project={project} captured={mountDelivery === "sources"} />
             <GitAccessSection project={project} />
             <SessionLifecycleSection project={project} />
             <ReviewAutomationSection project={project} />
