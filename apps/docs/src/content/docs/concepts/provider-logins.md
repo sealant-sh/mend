@@ -97,44 +97,59 @@ A session's agent keeps its state in its home directory, and Mend saves that sta
 session finds its conversation again. In a remote workspace the state is saved with the worktree,
 and whoever starts the next session there gets it. Logins and tokens are never part of it: none of
 the files below is saved, and none is brought back from a session saved before it was on this list.
-A path ending in `/` is a directory and everything in it.
+A path ending in `/` is a directory and everything in it; a file's siblings named after it with a
+suffix (`auth.json.lock`, a write's temporary) are left out with it. This applies once Mend pins a
+Sealant runtime with sealantd#136, planned for Mend 0.36. An older runtime leaves out only
+`.claude/.credentials.json`, `.codex/auth.json`, and pi's and opencode's `auth.json`.
 
-| Path                                   | Agent       | Holds                                                                        |
-| -------------------------------------- | ----------- | ---------------------------------------------------------------------------- |
-| `.claude/.credentials.json`            | Claude Code | the Claude login, MCP server OAuth tokens and client secrets, plugin secrets |
-| `.claude/.device-keys.json`            | Claude Code | device private keys (Remote Control, trusted devices)                        |
-| `.claude/backups/`                     | Claude Code | copies of `~/.claude.json`: a Console API key, MCP server headers and env    |
-| `.claude/shell-snapshots/`             | Claude Code | the shell's functions and aliases, any secret written in them included       |
-| `.claude/session-env/`                 | Claude Code | what hooks export for the session                                            |
-| `.claude/ide/`                         | Claude Code | IDE connection tokens                                                        |
-| `.codex/auth.json`                     | Codex       | the ChatGPT login or API key                                                 |
-| `.codex/.credentials.json`             | Codex       | MCP server OAuth tokens, where no OS keyring is available (every workspace)  |
-| `.codex/secrets/`                      | Codex       | encrypted logins and MCP tokens (the key is in the OS keyring)               |
-| `.local/share/opencode/auth.json`      | opencode    | provider logins and API keys                                                 |
-| `.local/share/opencode/mcp-auth.json`  | opencode    | MCP server OAuth tokens and client secrets                                   |
-| `.pi/agent/auth.json`                  | pi          | provider logins and API keys                                                 |
-| `.pi/agent/mcp-auth.json`              | pi          | MCP server OAuth tokens and client secrets                                   |
-| `.pi/agent/oauth.json`                 | pi          | provider OAuth tokens (before pi moved them to `auth.json`)                  |
-| `.pi/agent/oauth.json.migrated`        | pi          | the same, kept when pi migrated them                                         |
-| `.pi/agent/mcp-oauth/`                 | pi          | MCP OAuth tokens of the pi-mcp-adapter extension                             |
-| `.pi/agent/mcp-oauth-encrypted/`       | pi          | the same, encrypted with a person's key                                      |
-| `.pi/agent/mcp.json`                   | pi          | MCP servers, with the headers, env and client secrets typed into them        |
-| `.pi/agent/mend/profile/root/mcp.json` | pi          | the same, as Mend delivered it from a person's pi profile                    |
-| `.mend/pi-profile-kept/`               | pi          | pi profiles Mend set aside, their `mcp.json` included                        |
+| Path                                   | Agent       | Holds                                                                                    |
+| -------------------------------------- | ----------- | ---------------------------------------------------------------------------------------- |
+| `.claude/.credentials.json`            | Claude Code | the Claude login, MCP server OAuth tokens and client secrets, plugin secrets             |
+| `.claude/.device-keys.json`            | Claude Code | device private keys (Remote Control, trusted devices)                                    |
+| `.claude/backups/`                     | Claude Code | copies of `~/.claude.json`: a Console API key, MCP server headers and env                |
+| `.claude/shell-snapshots/`             | Claude Code | the shell's functions and aliases, any secret written in them included                   |
+| `.claude/session-env/`                 | Claude Code | what hooks export for the session                                                        |
+| `.claude/ide/`                         | Claude Code | IDE connection tokens                                                                    |
+| `.claude/sessions/`                    | Claude Code | each running process's local messaging token                                             |
+| `.claude/file-history/`                | Claude Code | a copy of every file Claude Code edits, a secret file included                           |
+| `.claude/remote-settings.json`         | Claude Code | an organization's managed settings, `env` included                                       |
+| `.codex/auth.json`                     | Codex       | the ChatGPT login or API key                                                             |
+| `.codex/.credentials.json`             | Codex       | MCP server OAuth tokens, where no OS keyring is available (every workspace)              |
+| `.codex/secrets/`                      | Codex       | encrypted logins and MCP tokens (the key is in the OS keyring)                           |
+| `.codex/shell_snapshots/`              | Codex       | every exported environment variable with its value (a token, a dotfile's export)         |
+| `.local/share/opencode/auth.json`      | opencode    | provider logins and API keys                                                             |
+| `.local/share/opencode/mcp-auth.json`  | opencode    | MCP server OAuth tokens and client secrets                                               |
+| `.local/share/opencode/repos/`         | opencode    | reference repositories, a clone URL's credentials in their git config                    |
+| `.local/share/opencode/log/`           | opencode    | logs, a failed clone's URL with its credentials included                                 |
+| `.pi/agent/auth.json`                  | pi          | provider logins and API keys                                                             |
+| `.pi/agent/mcp-auth.json`              | pi          | MCP server OAuth tokens and client secrets                                               |
+| `.pi/agent/oauth.json`                 | pi          | provider OAuth tokens from before pi moved them to `auth.json`, and its `.migrated` copy |
+| `.pi/agent/mcp-oauth/`                 | pi          | MCP OAuth tokens of the pi-mcp-adapter extension                                         |
+| `.pi/agent/mcp-oauth-encrypted/`       | pi          | the same, encrypted with a person's key                                                  |
+| `.pi/agent/mcp.json`                   | pi          | MCP servers, with the headers, env and client secrets typed into them                    |
+| `.pi/agent/git/`                       | pi          | packages installed from git, a source URL's credentials in their git config              |
+| `.pi/agent/tmp/`                       | pi          | the same for packages a launch loads for itself                                          |
+| `.pi/agent/crashes.json`               | pi          | error messages and stacks as they were, a secret in one included                         |
+| `.pi/agent/mend/profile/root/mcp.json` | pi          | the same, as Mend delivered it from a person's pi profile                                |
+| `.mend/pi-profile-kept/`               | pi          | pi profiles Mend set aside, their `mcp.json` included                                    |
 
 pi's `mcp.json` is on the list because it can carry the keys typed into its servers' headers and
 environment. The copy from your [pi profile](../guides/pi/) is written again at every launch, so
-yours is never lost. A server you add inside a session with `pi mcp add` lasts as long as that
-session's machine; add it to your pi profile to keep it.
+yours is never lost. What a session changes in it, a server added with `pi mcp add`, one turned on
+or off with `/mcp`, or an edit to the delivered copy, lasts as long as that session's machine; put
+it in your pi profile to keep it. Claude Code's `file-history/` holds a copy of every file it edits,
+a secret file included, so a file edit made before a session moved to a new machine cannot be
+rewound there.
 
 Some settings files can hold a secret you type into them, and they are saved, because they also hold
 your settings: Codex's `config.toml`, Claude Code's `settings.json` (`env`), and pi's `models.json`
-and `settings.json`. Name a variable or a command there instead of the value (Codex:
-`bearer_token_env_var`, `env_http_headers`, `env_key`; pi: `$NAME` or `!command`). Keep a value that
-is yours in a [secret file](../guides/secret-files/), which is never saved, and one the project
-shares in a [project secret](../guides/environment-variables/). opencode keeps an opencode console
-login and its integration logins in its database, beside the conversations, and the database is
-saved: make those logins only in a worktree nobody else uses.
+and `settings.json` (a key, or a package installed from a URL with a token in it). Name a variable
+or a command there instead of the value (Codex: `bearer_token_env_var`, `env_http_headers`,
+`env_key`; pi: `$NAME` or `!command`). Keep a value that is yours in a
+[secret file](../guides/secret-files/), which is never saved, and one the project shares in a
+[project secret](../guides/environment-variables/). opencode keeps an opencode console login and its
+integration logins in its database, beside the conversations, and the database is saved: make those
+logins only in a worktree nobody else uses.
 
 ## When a login stops working
 

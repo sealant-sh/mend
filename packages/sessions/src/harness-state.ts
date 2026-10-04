@@ -31,6 +31,8 @@ import * as path from "node:path";
 
 import { Effect, Schema } from "effect";
 
+import { PI_PROFILE_HOME_DIR, PI_PROFILE_KEPT_DIR, PI_PROFILE_SECRET_FILE } from "./pi-profile.ts";
+
 export const HarnessStateManifest = Schema.Struct({
   harness: Schema.String,
   /** The harness's OWN session id — what a native resume addresses. */
@@ -227,7 +229,11 @@ const PI_SESSION = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 export interface HarnessCredential {
   /** Relative to the harness home. */
   readonly path: string;
-  /** A file, or a directory and everything under it. */
+  /**
+   * A file, with every sibling named after it with a suffix (`<path>.<suffix>`: a write's
+   * temporary such as `auth.json.mend-seed-<pid>`, a lock, a backup copy); or a directory and
+   * everything under it.
+   */
   readonly kind: "file" | "directory";
   /** What it holds, as the provider-logins docs page lists it. */
   readonly holds: string;
@@ -244,6 +250,10 @@ export interface HarnessCredential {
  * at the version workspace images install (Claude Code 2.1.289, Codex 0.160.0, opencode 1.18.34,
  * pi 1.0.2) and from what each wrote in an unprivileged container with no OS keyring. The list
  * fails open: a credential missing from it is captured.
+ *
+ * Made both from what each left after a clean exit and from what it left killed in the middle of a
+ * turn: a file a harness removes when it exits (Codex's and Claude Code's shell snapshots) is saved
+ * while it exists, and stays when the process is killed.
  *
  * Settings that can also hold a secret a person typed in (`.codex/config.toml`,
  * `.claude/settings.json`, pi's `models.json` and `settings.json`) are not listed: they are the
@@ -274,6 +284,21 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
     },
     { path: ".claude/session-env", kind: "directory", holds: "what hooks export for the session" },
     { path: ".claude/ide", kind: "directory", holds: "IDE connection tokens" },
+    {
+      path: ".claude/sessions",
+      kind: "directory",
+      holds: "each running process's local messaging token",
+    },
+    {
+      path: ".claude/file-history",
+      kind: "directory",
+      holds: "a copy of every file Claude Code edits, a secret file included",
+    },
+    {
+      path: ".claude/remote-settings.json",
+      kind: "file",
+      holds: "an organization's managed settings, `env` included",
+    },
   ],
   codex: [
     { path: ".codex/auth.json", kind: "file", holds: "the ChatGPT login or API key" },
@@ -287,6 +312,11 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
       kind: "directory",
       holds: "encrypted logins and MCP tokens (the key is in the OS keyring)",
     },
+    {
+      path: ".codex/shell_snapshots",
+      kind: "directory",
+      holds: "every exported environment variable with its value (a token, a dotfile's export)",
+    },
   ],
   opencode: [
     {
@@ -299,6 +329,16 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
       kind: "file",
       holds: "MCP server OAuth tokens and client secrets",
     },
+    {
+      path: ".local/share/opencode/repos",
+      kind: "directory",
+      holds: "reference repositories, a clone URL's credentials in their git config",
+    },
+    {
+      path: ".local/share/opencode/log",
+      kind: "directory",
+      holds: "logs, a failed clone's URL with its credentials included",
+    },
   ],
   pi: [
     { path: ".pi/agent/auth.json", kind: "file", holds: "provider logins and API keys" },
@@ -310,12 +350,8 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
     {
       path: ".pi/agent/oauth.json",
       kind: "file",
-      holds: "provider OAuth tokens (before pi moved them to `auth.json`)",
-    },
-    {
-      path: ".pi/agent/oauth.json.migrated",
-      kind: "file",
-      holds: "the same, kept when pi migrated them",
+      holds:
+        "provider OAuth tokens from before pi moved them to `auth.json`, and its `.migrated` copy",
     },
     {
       path: ".pi/agent/mcp-oauth",
@@ -333,12 +369,27 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
       holds: "MCP servers, with the headers, env and client secrets typed into them",
     },
     {
-      path: ".pi/agent/mend/profile/root/mcp.json",
+      path: ".pi/agent/git",
+      kind: "directory",
+      holds: "packages installed from git, a source URL's credentials in their git config",
+    },
+    {
+      path: ".pi/agent/tmp",
+      kind: "directory",
+      holds: "the same for packages a launch loads for itself",
+    },
+    {
+      path: ".pi/agent/crashes.json",
+      kind: "file",
+      holds: "error messages and stacks as they were, a secret in one included",
+    },
+    {
+      path: path.posix.join(PI_PROFILE_HOME_DIR, PI_PROFILE_SECRET_FILE),
       kind: "file",
       holds: "the same, as Mend delivered it from a person's pi profile",
     },
     {
-      path: ".mend/pi-profile-kept",
+      path: PI_PROFILE_KEPT_DIR,
       kind: "directory",
       holds: "pi profiles Mend set aside, their `mcp.json` included",
     },

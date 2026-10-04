@@ -3,10 +3,17 @@
 ---
 
 No session saves a login or token another person's session could pick up. An audit of Claude Code,
-Codex, opencode and pi found credentials the saved harness state still held: Codex's MCP server
-logins (`~/.codex/.credentials.json`, where Codex keeps them in every workspace, which has no
-keyring), pi's own MCP logins (`~/.pi/agent/mcp-auth.json`) and its `mcp.json`, and Claude Code's
-copies of `~/.claude.json` (`~/.claude/backups/`), device keys, shell snapshots, hook environment
-and IDE tokens. Mend's list of them is one table, which the platform's must match and the docs page
-"How Mend handles your provider logins" lists in full. Leaving them out of what a remote workspace
-saves needs a Sealant runtime with sealantd#136.
+Codex, opencode and pi, after a clean exit and killed in the middle of a turn, found credentials the
+saved harness state still held: Codex's MCP server logins (`~/.codex/.credentials.json`) and its
+shell snapshots (`~/.codex/shell_snapshots/`, every exported variable with its value), pi's own MCP
+logins (`~/.pi/agent/mcp-auth.json`) and its `mcp.json`, Claude Code's copies of `~/.claude.json`
+(`~/.claude/backups/`) and of every file it edits (`~/.claude/file-history/`), and clones and logs
+that keep a URL's token. Mend's list of them is one table, which the platform's must match and the
+docs page "How Mend handles your provider logins" lists in full. Leaving them out of what a remote
+workspace saves needs a Sealant runtime with sealantd#136.
+
+Codex sessions start with its shell snapshot off (`-c features.shell_snapshot=false`), so the
+snapshot is never written. A pi session whose owner has no pi profile no longer runs the profile
+another person's session left in the worktree: Mend takes it out, and its settings and packages come
+back out of pi's `settings.json`. A pi profile restored without its `mcp.json` is no longer
+delivered again and reinstalled at every resume.

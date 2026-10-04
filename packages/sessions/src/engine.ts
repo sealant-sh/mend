@@ -257,7 +257,7 @@ import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./de
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
-import { withHarnessSetup } from "./harness-seeds.ts";
+import { CODEX_SHELL_SNAPSHOT_OFF, withHarnessSetup } from "./harness-seeds.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
@@ -301,6 +301,8 @@ import {
   storePastedImage as storePastedImageOnHost,
 } from "./pasted-images.ts";
 import {
+  clearPiProfile,
+  clearPiProfileExec,
   materializePiProfile,
   piProfileFilesToWrite,
   piProfileKeptDir,
@@ -422,7 +424,7 @@ const promptArgv = (
       case "claude":
         return `exec claude --dangerously-skip-permissions${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
       case "codex":
-        return `exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
+        return `exec codex ${CODEX_SHELL_SNAPSHOT_OFF.join(" ")} -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
       case "opencode":
         return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode${model} --prompt "$prompt"`;
       case "pi":
@@ -9280,7 +9282,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         if (session.harness !== "pi" || session.ownerUserId === null) return;
         const saved = yield* piProfiles.forUser(session.ownerUserId);
-        if (saved === null) return;
+        if (saved === null) {
+          // No profile of the owner's: one a restored capture brought is someone else's.
+          if (capture === null) {
+            return yield* clearPiProfile(harnessHomePathOf(project.storePath, session.id));
+          }
+          const cleared = yield* sealant.exec(
+            workspace,
+            clearPiProfileExec(HARNESS_HOME_MOUNT_PATH),
+          );
+          if (cleared.exitCode !== 0) {
+            return yield* new WorkspaceFileError({
+              path: HARNESS_HOME_MOUNT_PATH,
+              message: `exit ${cleared.exitCode}: ${cleared.stderr.trim()}`,
+            });
+          }
+          return;
+        }
         const plan = planPiProfile({ digest: saved.profile.digest, files: saved.files });
         if (capture === null) {
           const outcomes = yield* materializePiProfile(

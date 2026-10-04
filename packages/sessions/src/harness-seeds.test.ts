@@ -12,6 +12,7 @@ import {
   OPENCODE_SEED,
   PI_SEED,
   withCodexMemory,
+  withoutCodexShellSnapshot,
   withHarnessSetup,
 } from "./harness-seeds.ts";
 
@@ -372,8 +373,10 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
       "resume",
       "abc",
     ]);
-    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-4)).toEqual([
+    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-6)).toEqual([
       "codex",
+      "-c",
+      "features.shell_snapshot=false",
       "-c",
       "features.memories=true",
       "app-server",
@@ -381,5 +384,20 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
     const own = ["codex", "-c", "features.memories=false"];
     expect(withCodexMemory(own)).toEqual(own);
     expect(withCodexMemory(["claude"])).toEqual(["claude"]);
+  });
+});
+
+describe("Codex's shell snapshot", () => {
+  it("is off in every Codex launch, unless the launch names it itself", () => {
+    expect(withoutCodexShellSnapshot(["codex", "resume", "abc"])).toEqual([
+      "codex",
+      "-c",
+      "features.shell_snapshot=false",
+      "resume",
+      "abc",
+    ]);
+    const own = ["codex", "-c", "features.shell_snapshot=true"];
+    expect(withoutCodexShellSnapshot(own)).toEqual(own);
+    expect(withoutCodexShellSnapshot(["claude"])).toEqual(["claude"]);
   });
 });
