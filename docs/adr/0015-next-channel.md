@@ -30,12 +30,13 @@ Each has a recommendation. The pull requests implement the recommendation; the o
    **only** on the four `-next` packages, never on a stable one. So even a fully compromised next
    job cannot publish `@sealant/sdk` or move its `latest`; the worst it can do on npm is a bad
    prerelease of a package nothing installs unpinned. Images do not get the same boundary: the image
-   jobs' `packages: write` can push the stable images too (see "What the design guarantees").
-   Consumers use exact aliases (`"@sealant/sdk": npm:@sealant/sdk-next@<version>` in Mend's catalog;
-   checked locally that pnpm 10 installs, typechecks and bundles through a catalog alias), and the
-   prerelease packages depend on each other the same way. Recommended. It replaces four rounds of
-   hardening the job that held the stable packages' publishing right: each round found a new way to
-   steer it.
+   jobs' `packages: write` can push the stable images too, and code-owner review does not stop it,
+   since any of the repository's writers can push a branch whose own workflow asks for that token
+   (see "What the design guarantees"). Consumers use exact aliases
+   (`"@sealant/sdk": npm:@sealant/sdk-next@<version>` in Mend's catalog; checked locally that pnpm
+   10 installs, typechecks and bundles through a catalog alias), and the prerelease packages depend
+   on each other the same way. Recommended. It replaces four rounds of hardening the job that held
+   the stable packages' publishing right: each round found a new way to steer it.
 4. **Action, once, before merging #319 and #137:**
    - (a) create the four `-next` npm packages with a `0.0.0-next.0` placeholder from your machine
      with 2FA (the runbook has the commands: npm adds a trusted publisher only to a package that
@@ -48,13 +49,19 @@ Each has a recommendation. The pull requests implement the recommendation; the o
      The PRs add `CODEOWNERS` for `.github/`, the release scripts, the Dockerfiles, the changesets
      config, the published packages' `package.json` files, the root `package.json`,
      `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.pnpmfile.cjs`, `.pnpmfile.mjs` (pnpm 11 loads it
-     first), `.npmrc`, and in sealantd `Cargo.toml` and `Cargo.lock`;
+     first), `.npmrc`, and in sealantd `Cargo.toml` and `Cargo.lock`. This guards what merges to
+     main; it does not stop image pushes, which need no merge;
    - (d) after the first next run, make the four `-next` GHCR packages public (this cannot be
      undone; Mend's pin check reads them anonymously and Mend's image build pulls them), and give
      `sealant-sh/mend` the same Actions read access on them that it has on the stable packages, if
-     it has any (not checked from here: reading package settings needs `read:packages`).
+     it has any (not checked from here: reading package settings needs `read:packages`);
+   - (e) in sealant-sh/mend, before the first Mend next tag: give the `release` environment a
+     **deployment tag policy of `v*.*.*`**, as Core's and sealantd's `release` environments have.
+     Today it has required reviewers and no branch or tag policy (read from the environments API on
+     2026-10-05), so a branch workflow naming `release` reaches the approval prompt; with the policy
+     only an admin's `v*.*.*` tag can deploy to it.
 
-   Recommended, all four. What each guarantees is under "What the design guarantees".
+   Recommended, all five. What each guarantees is under "What the design guarantees".
 
 5. **Mend's own next builds stay `@sealant/mend` on the `next` dist-tag,** on `release-cli.yml` and
    its `release` environment, not a `@sealant/mend-next` package. People install
@@ -251,12 +258,21 @@ would.
 code (the Docker builds), and GHCR cannot scope that token to one image: it can push every package
 the repository can write, the stable `sealant-api`, `sealant-worker`, `sealant-ssh-gateway`,
 `sealant-web` and `sealantd` included. Pushing to `-next` names is a convention of these workflows,
-not something enforced. What holds a moved stable tag away from a build is pinning by digest: Mend
-pins every Core image by digest, and Core pins sealantd as `tag@sha256:…`
-(`tooling/scripts/pin-sealantd.mjs` writes only that form; the release guard refuses anything else).
-To reduce the chance of a push at all, every action in a job holding `packages: write` or
-`id-token: write` is pinned to a commit, and no such job restores a cache other jobs write. A
-self-hoster who pulls Core's `sealant-api:latest` by tag is not covered.
+not something enforced. Code-owner review does not change that: it guards merges to main, and any of
+the repository's writers can push a branch whose own workflow asks for `packages: write` and push
+from there. npm is unaffected: the `next` publisher requires the `next` environment, which deploys
+only from main.
+
+What holds a moved stable tag away is pinning by digest, where there is one. Mend's bundle image
+(the root `Dockerfile`) pins the three Core images by digest, and Core pins sealantd as
+`tag@sha256:…` (`tooling/scripts/pin-sealantd.mjs` writes only that form; the release guard refuses
+anything else). A digest pin keeps out only a tag moved after the pin; it trusts whatever the tag
+pointed at when someone pinned it. Everything that pulls by tag is not covered: `deploy/aws`
+(`sealant-api:0.33.0`, `sealant-worker:0.33.0`), a self-hoster on Core's `sealant-api:latest`, and
+every Mend server, which pulls `ghcr.io/sealant-sh/mend:<version>` by tag on setup and upgrade (see
+Known gaps). To reduce the chance of a push at all, every action in a job holding `packages: write`
+or `id-token: write` is pinned to a commit, the BuildKit and binfmt images those jobs run privileged
+are pinned by digest, and no such job restores a cache other jobs write.
 
 **Mend: on demand.** An admin pushes `vX.Y.Z-next.N` on a main commit; `release-cli.yml` does the
 rest, as it already does for any prerelease tag: images, packaged acceptance on both architectures,
@@ -316,23 +332,26 @@ nothing. For `@sealant/mend` it matters, but the next channel cannot reach it: t
   `@sealant/mend`, or move their `latest`: the `next` publisher exists only on the `-next` packages.
   The stable publishers (`release.yml`, environment `release`, your review) run no action at a
   floating tag and restore no shared cache.
-- **Images, in every case:** a job holding `packages: write` (the next image jobs on every merge,
-  the release image jobs on a tag) can push any image the repository can write, stable ones
-  included. Digest pins keep a moved tag out of Mend's and Core's builds; a tag-pulling self-hoster
-  is exposed. Closing this needs a separate credential for stable images in the `release`
-  environment and the repositories' Actions write access removed on the stable packages (not done).
-- **Without 4(c) (code-owner review):** anyone who can merge to Core or sealantd main can edit a
-  workflow: publish anything under the `-next` packages, and push any image. Prereleases are
-  consumed only pinned (Mend's exact catalog alias with lockfile integrity; Core's exact alias), so
-  a bad one reaches nothing until someone pins it.
-- **With 4(c):** those edits, and edits to what configures installs, builds and packing, need your
-  review. A compromised `pack` (through an unowned path) still cannot steer the publish job: it
-  cannot change the name, version, dist-tag, commit or sibling dependencies a prerelease publishes
-  under; it can change the code inside the prerelease, as any merge can.
-- **Mend:** its npm job is approval-gated, checks nothing out and republishes the same way. Mend
-  main has no required review and no CODEOWNERS, so code merged there reaches a Mend build, as it
-  always has; it cannot steer the npm job itself. The stable guard reads prerelease packages from
-  `pnpm-lock.yaml`, so an alias anywhere in the workspace blocks a stable release.
+- **Images, in every case, code-owner review or not:** a job holding `packages: write` can push any
+  image the repository can write, stable ones included, and any of the repository's writers can run
+  one from a branch without a merge. Digest pins keep a tag moved after the pin out of Mend's bundle
+  image and Core's sealantd; whatever pulls by tag is exposed (`deploy/aws`, a self-hoster on
+  `latest`, every Mend server). Closing this needs a separate credential for stable images in the
+  `release` environment and the repositories' Actions write access removed on the stable packages,
+  and for Mend servers the image digests in the CLI package (neither done).
+- **Without 4(c) (code-owner review):** anyone who can merge to Core or sealantd main can edit
+  `next.yml` and publish anything under the `-next` packages. Prereleases are consumed only pinned
+  (Mend's exact catalog alias with lockfile integrity; Core's exact alias), so a bad one reaches
+  nothing until someone pins it.
+- **With 4(c):** those merges, and merges that change what configures installs, builds and packing,
+  need a code owner's review. A compromised `pack` (through an unowned path) still cannot steer the
+  publish job: it cannot change the name, version, dist-tag, commit or sibling dependencies a
+  prerelease publishes under; it can change the code inside the prerelease, as any merge can.
+- **Mend:** its npm job is approval-gated (and, with 4(e), deployable only from a `v*.*.*` tag),
+  checks nothing out and republishes the same way. Mend main has no required review and no
+  CODEOWNERS, so code merged there reaches a Mend build, as it always has; it cannot steer the npm
+  job itself. The stable guard reads prerelease packages from `pnpm-lock.yaml`, so an alias anywhere
+  in the workspace blocks a stable release.
 
 ### Dist-tags
 
@@ -528,8 +547,15 @@ Left as they are here, and why a rebuilt stable release is not byte-for-byte the
   change; a preview of an unmerged branch can still leave the box ahead of main.
 - A next image job holds `packages: write` while running repository code, and GHCR cannot scope that
   token per image: it can push the stable images too. Nothing enforces that the next workflows push
-  only `-next` names. Mend's and Core's digest pins keep a moved tag out of their builds; a
-  self-hoster pulling a tag is exposed.
+  only `-next` names, and code-owner review does not stop a push: any of the repository's writers
+  can run a branch workflow that asks for the token.
+- Digest pins protect only against a tag moved after the pin: whoever pins trusts what the tag
+  pointed at then. Mend's bundle image and Core's sealantd are pinned this way; `deploy/aws` pulls
+  `sealant-api:0.33.0` and `sealant-worker:0.33.0` by tag, as does a self-hoster on `latest`.
+- **Every Mend server pulls `ghcr.io/sealant-sh/mend:<version>` by tag** on setup and upgrade, so a
+  pushed-over Mend image reaches servers that install or upgrade after the push. Recommended
+  follow-up, not built here: put the image digests in the CLI package, so the approval-gated npm
+  publish fixes which image is pulled.
 - Mend has no CODEOWNERS and no required review on main.
 
 ## Considered
@@ -607,6 +633,10 @@ sealant#313, #315 and #316.
 - 2026-10-04: lockfile-bound installs in Core before any publish job exists.
 - 2026-10-04: preview builds stay, renumbered into main's order; the box leaves the old numbering
   with `mend server upgrade --from-preview`.
+- 2026-10-05 (sixth review): the BuildKit and binfmt images in every image-push job are pinned by
+  digest; the docs say code-owner review does not stop image pushes, digest pins keep out only a tag
+  moved after the pin, and `deploy/aws` and every Mend server pull by tag (follow-up: image digests
+  in the CLI package); Mend's `release` environment gets a `v*.*.*` tag policy (4(e)).
 - 2026-10-05 (fifth review): no job holding a write token restores a cache other jobs write, and
   every action there is pinned to a commit; images are said to have no credential boundary, held
   down by digest pins (sealantd now `tag@sha256:…`); the stable guards check aliases in the lockfile
