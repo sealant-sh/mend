@@ -12117,17 +12117,15 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   );
 
   it(
-    "a resume waits for the session's own earlier executor to end before it creates the next (alpha 2026-10-03)",
+    "a resume never creates over a lease of the session's earlier launch whose end nothing confirms (alpha 2026-10-03)",
     { timeout: 20_000 },
     async () => {
-      // Alpha 8fe91d79: a lease the session's earlier executor held, bound to that launch, was
-      // never released. Each relaunch read the session's own lease as free, and each next
-      // executor booted into `plan.get` waiting for it until the platform gave up on it. Now the
-      // launch waits before any create, until that executor's end is confirmed and its lease
-      // released.
+      // Alpha 8fe91d79: an earlier executor of the session kept its lease, bound to its launch,
+      // and each relaunch read the session's own lease as free. And the row's workspace is not
+      // that executor: a replacement that overwrote the row and then stopped says nothing of
+      // the lease's launch, which may still hold work it has not shipped (review of #516).
       const created: Array<CreateOptions> = [];
       const memory = makeMemoryCaptureStore();
-      let earlierEnded = false;
       await withEngine(
         (world, tmp) =>
           Effect.gen(function* () {
@@ -12136,53 +12134,29 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             yield* engine.stop(session.id);
             yield* until(
               () => world.sessions.get(session.id)?.status === "stopped",
-              "the session, stopped",
+              "the row's executor, stopped",
             );
-            // A later launch of the session took the next epoch, and its lease was never released:
-            // live, bound to that launch, unknown to the row.
-            const epochBefore = (memory.leases.get(session.worktreeId)?.epoch ?? 0) + 1;
+            // The lease names a launch the row does not: its end is unknown.
+            const epoch = (memory.leases.get(session.worktreeId)?.epoch ?? 0) + 1;
             memory.leases.set(session.worktreeId, {
               executorId: session.id,
-              epoch: epochBefore,
-              expiresAt: memory.clock.now() + 60_000,
-              launchId: "launch:earlier",
+              epoch,
+              expiresAt: memory.clock.now() - 1,
+              launchId: "launch:unresolved-predecessor",
             });
-
-            // A shell resume: no saved harness state needed, the same launch path.
-            const resuming = yield* engine
-              .resumeSession(session.id, "shell")
-              .pipe(Effect.forkChild({ startImmediately: true }));
-            yield* Effect.sleep(Duration.millis(500));
-            // Waiting, not refused, and no executor created over the earlier one's lease.
-            expect(resuming.pollUnsafe()).toBeUndefined();
+            const outcome = yield* engine.resumeSession(session.id, "shell").pipe(Effect.exit);
+            expect(outcome._tag).toBe("Failure");
             expect(created).toHaveLength(1);
-
-            // The earlier executor ends: the platform reports it gone and its lease lapses.
-            const realNow = memory.clock.now;
-            memory.clock.now = () => realNow() + 10 * 60 * 1000;
-            earlierEnded = true;
-            const resumed = yield* Fiber.join(resuming).pipe(
-              Effect.ensuring(Effect.sync(() => (memory.clock.now = realNow))),
-            );
-            expect(resumed.status).toBe("running");
-            expect(created).toHaveLength(2);
-            const next = memory.leases.get(session.worktreeId);
-            expect(next?.executorId).toBe(session.id);
-            expect(next?.epoch).toBe(epochBefore + 1);
-            expect(next?.launchId).not.toBe("launch:earlier");
+            const lease = memory.leases.get(session.worktreeId);
+            expect(lease?.launchId).toBe("launch:unresolved-predecessor");
+            expect(lease?.epoch).toBe(epoch);
           }),
         {
           captured: memory,
-          drainPolicy: { leaseWait: Duration.seconds(15) },
+          drainPolicy: { leaseWait: Duration.millis(300), leaseWaitInterval: Duration.millis(20) },
           sealantLayer: lifecycleLayer(created, {
-            dead: () => earlierEnded,
             captureOps: {
-              // Once stopped, the session's workspace is not live: nothing to join.
               status: (stopAsked) => (stopAsked && created.length === 1 ? "stopped" : "ready"),
-              beforeCreate: () =>
-                Effect.sync(() => {
-                  if (created.length > 1) earlierEnded = false;
-                }),
             },
           }),
         },

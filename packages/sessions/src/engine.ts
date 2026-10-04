@@ -3062,11 +3062,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The session's own earlier executor is a holder like any other: a lease bound to a launch
        * of this session other than `ownLaunch` (the create this launch asks again, if any) is
        * that executor's, and no claim takes it over until its end is confirmed and the lease
-       * released. A relaunch or a replacement has drained it, so it reads `ending` until then;
-       * one kept alive by another session's process reads `held`, and the launch joins it. Read
-       * as free, the launch went on to create an executor whose boot waited in `plan.get` for
-       * that lease (alpha 2026-10-03, 8fe91d79: four replacements in a row, each past the
-       * platform's readiness budget, `launch-retained`).
+       * released. Its end is read only through that very executor: when the lease's launch is the
+       * one the row names, through the row's workspace (a relaunch or a replacement has drained
+       * it, so it reads `ending` until it ends; one kept alive by another session's process reads
+       * `held`, and the launch joins it). A launch the row no longer names (an earlier replacement
+       * whose row was overwritten) has nothing here that can confirm its end: the launch waits,
+       * then is refused, and the lease is never released, since that executor may hold work it
+       * has not shipped. Read as free, the launch went on to create an executor whose boot waited
+       * in `plan.get` for that lease (alpha 2026-10-03, 8fe91d79: four replacements in a row, each
+       * past the platform's readiness budget, `launch-retained`).
        */
       const leaseHolderWorkspace = Effect.fn("SessionEngine.leaseHolderWorkspace")(function* (
         session: Session,
@@ -3086,6 +3090,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           lease.executorId.startsWith("mend:")
         ) {
           return { kind: "free" as const };
+        }
+        if (ownEarlierLaunch) {
+          const named = yield* sessions.executorLaunchOf(session.id);
+          if (named === null || named.launchId !== lease.launchId) {
+            return lease.live
+              ? {
+                  kind: "unreachable" as const,
+                  sessionId: lease.executorId,
+                  epoch: lease.epoch,
+                  expiresAt: lease.expiresAt?.toISOString() ?? "never",
+                }
+              : {
+                  kind: "lapsed" as const,
+                  sessionId: lease.executorId,
+                  epoch: lease.epoch,
+                  state: "unknown" as const,
+                };
+          }
         }
         const holder = yield* sessions
           .byId(SessionId.make(lease.executorId))
