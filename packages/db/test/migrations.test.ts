@@ -591,6 +591,62 @@ describe.skipIf(!reachable)("0052 project skill inheritance", () => {
   });
 });
 
+describe.skipIf(!reachable)("0110 automatic install", () => {
+  const INSTALL_DB = `${SCRATCH_DB}_install_enabled`;
+  const installUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${INSTALL_DB}`;
+    return url.toString();
+  })();
+  const installLayer = PgClient.layer({ url: Redacted.make(installUrl) });
+  const withInstallDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(installLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${INSTALL_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${INSTALL_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("turns automatic install on for existing and new projects, and keeps a saved command", async () => {
+    const rows = await withInstallDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0107_turn_payer");
+        yield* sql`
+          INSERT INTO organizations (id, name) VALUES ('org-install', 'Install')`;
+        yield* sql`
+          INSERT INTO projects (id, organization_id, name, origin_url, store_path, default_branch, install_command)
+          VALUES ('project-existing', 'org-install', 'existing', NULL, '/store/existing/repo.git', 'main', 'make deps')`;
+        yield* migrations["0110_project_install_enabled"];
+        yield* sql`
+          INSERT INTO projects (id, organization_id, name, origin_url, store_path, default_branch)
+          VALUES ('project-new', 'org-install', 'new', NULL, '/store/new/repo.git', 'main')`;
+        return yield* sql<{
+          readonly id: string;
+          readonly install_enabled: boolean;
+          readonly install_command: string | null;
+        }>`SELECT id, install_enabled, install_command FROM projects ORDER BY id`;
+      }),
+    );
+    expect(rows).toEqual([
+      { id: "project-existing", install_enabled: true, install_command: "make deps" },
+      { id: "project-new", install_enabled: true, install_command: null },
+    ]);
+  });
+});
+
 describe.skipIf(!reachable)("0046 worktree containers", () => {
   const WORKTREE_DB = `${SCRATCH_DB}_wt`;
   const worktreeUrl = (() => {

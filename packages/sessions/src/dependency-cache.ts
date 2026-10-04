@@ -193,26 +193,39 @@ export const promoteBulkToCache = (
 // ─── The install command ────────────────────────────────────────────────────
 
 /**
- * The default install command for a project, from the lockfiles at the root of its base tree.
+ * The default install command for a project, from the lockfiles at the root of its base tree,
+ * with the file that decided it (the setup page says "detected: <command> from <file>").
  * Frozen/immutable variants: an install that would rewrite the lockfile is a change, and a
  * cache must be reproducible from the tree it was built for. Null when nothing is recognised —
  * the project setting (`projects.install_command`) is the explicit answer, and an agent can
  * always install by hand.
  */
-export const detectInstallCommand = (topLevelNames: ReadonlyArray<string>): string | null => {
+export const detectInstall = (
+  topLevelNames: ReadonlyArray<string>,
+): { readonly command: string; readonly from: string } | null => {
   const names = new Set(topLevelNames);
-  if (names.has("pnpm-lock.yaml")) return "pnpm install --frozen-lockfile";
-  if (names.has("bun.lock") || names.has("bun.lockb")) return "bun install --frozen-lockfile";
-  if (names.has("yarn.lock")) return "yarn install --immutable";
-  if (names.has("package-lock.json") || names.has("npm-shrinkwrap.json")) return "npm ci";
-  if (names.has("package.json")) return "npm install";
-  if (names.has("Cargo.lock")) return "cargo fetch --locked";
-  if (names.has("Cargo.toml")) return "cargo fetch";
-  if (names.has("uv.lock")) return "uv sync --frozen";
-  if (names.has("poetry.lock")) return "poetry install";
-  if (names.has("go.sum") || names.has("go.mod")) return "go mod download";
-  return null;
+  const first = (...files: ReadonlyArray<string>) => files.find((file) => names.has(file));
+  const pick = (command: string, ...files: ReadonlyArray<string>) => {
+    const from = first(...files);
+    return from === undefined ? null : { command, from };
+  };
+  return (
+    pick("pnpm install --frozen-lockfile", "pnpm-lock.yaml") ??
+    pick("bun install --frozen-lockfile", "bun.lock", "bun.lockb") ??
+    pick("yarn install --immutable", "yarn.lock") ??
+    pick("npm ci", "package-lock.json", "npm-shrinkwrap.json") ??
+    pick("npm install", "package.json") ??
+    pick("cargo fetch --locked", "Cargo.lock") ??
+    pick("cargo fetch", "Cargo.toml") ??
+    pick("uv sync --frozen", "uv.lock") ??
+    pick("poetry install", "poetry.lock") ??
+    pick("go mod download", "go.sum", "go.mod")
+  );
 };
+
+/** `detectInstall`'s command alone: what a launch runs when the project saved none. */
+export const detectInstallCommand = (topLevelNames: ReadonlyArray<string>): string | null =>
+  detectInstall(topLevelNames)?.command ?? null;
 
 /**
  * What an executor answers to learn its platform key, in sealantd's form (`engine.rs`

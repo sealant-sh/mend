@@ -279,6 +279,29 @@ export class ProjectInstallCommandRequest extends Schema.Class<ProjectInstallCom
   ),
 }) {}
 
+/**
+ * "Automatic install": on, Mend runs the install command (the saved one, else the lockfile's)
+ * before the agent starts; off, it never runs one for this project.
+ */
+export class ProjectInstallEnabledRequest extends Schema.Class<ProjectInstallEnabledRequest>(
+  "ProjectInstallEnabledRequest",
+)({
+  installEnabled: Schema.Boolean,
+}) {}
+
+/**
+ * What a launch would run with no saved command: the command detected from the lockfile at the
+ * root of the default branch, and the file that decided it. Null when no file is recognised, or
+ * the store could not be read; a launch detects again from its own base.
+ */
+export class ProjectInstallDetection extends Schema.Class<ProjectInstallDetection>(
+  "ProjectInstallDetection",
+)({
+  ref: Schema.String,
+  command: Schema.NullOr(Schema.String),
+  from: Schema.NullOr(Schema.String),
+}) {}
+
 /** Observed pool state for the setup page: counts, plus the latest failure when one exists. */
 export class ProjectHotSessionsStatus extends Schema.Class<ProjectHotSessionsStatus>(
   "ProjectHotSessionsStatus",

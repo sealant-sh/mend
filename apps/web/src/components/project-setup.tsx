@@ -22,11 +22,13 @@ import {
   setProjectHotSessions,
   setProjectFolders,
   setProjectInstallCommand,
+  setProjectInstallEnabled,
   setProjectVisibility,
   type AutomationChoiceDto,
   type FolderDto,
   type GitAuthModeDto,
   type ProjectDto,
+  type ProjectInstallDetectionDto,
   type ReferenceDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
@@ -1255,71 +1257,136 @@ export function ReferencesSection({ projectId }: { readonly projectId: string })
 }
 
 /**
- * The install command (ADR-0002 decisions 2 and 9): what builds the dependency tree. Mend runs
- * it in a workspace whose captured tree does not match the executor's platform, and in the
- * install it launches itself to fill the project's shared cache — never an agent's tree. Empty
- * means Mend detects it from the lockfile at the root of the base tree at launch.
+ * "Automatic install" (ADR-0002 decisions 2 and 9): whether Mend runs an install command for
+ * this project. On, it runs the custom command, else the one detected from the lockfile, in a
+ * workspace whose saved state and shared cache have no dependency tree for its platform, and in
+ * the install it launches itself to fill the shared cache. Off, it runs none; a tree already
+ * saved or cached is restored either way. The custom command is kept while off.
  */
 export function InstallCommandSection({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const detection = useQuery(trpc.projects.installDetection.queryOptions({ id: project.id }));
   const [draft, setDraft] = useState(project.installCommand ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const current = project.installCommand ?? "";
   const dirty = draft.trim() !== current;
 
-  const save = () => {
-    if (busy || !dirty) return;
+  const write = (request: Promise<unknown>, failure: string) => {
     setBusy(true);
     setError(null);
-    void setProjectInstallCommand(project.id, draft.trim() === "" ? null : draft.trim())
+    void request
       .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
-      .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : "Could not save the install command."),
-      )
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : failure))
       .finally(() => setBusy(false));
+  };
+  const saveEnabled = (installEnabled: boolean) => {
+    if (busy || installEnabled === project.installEnabled) return;
+    write(
+      setProjectInstallEnabled(project.id, installEnabled),
+      "Could not save the automatic install switch.",
+    );
+  };
+  const saveCommand = () => {
+    if (busy || !dirty) return;
+    write(
+      setProjectInstallCommand(project.id, draft.trim() === "" ? null : draft.trim()),
+      "Could not save the install command.",
+    );
   };
 
   return (
     <section id="install-command" className="project-setup-card">
-      <h2 className="font-sans text-sm font-semibold">Install command</h2>
+      <h2 className="font-sans text-sm font-semibold">Automatic install</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
-        Builds the dependency tree. Mend runs it in a workspace whose captured tree was built for
-        another platform, and in the install Mend launches itself to fill this project&apos;s shared
-        cache; an agent&apos;s own tree is never shared. Empty: detected from the lockfile at the
-        root of the base tree.
+        On, Mend runs the project&apos;s install command before the agent starts when neither the
+        saved state nor this project&apos;s shared cache has the dependency tree, and runs it once
+        more to fill that cache. Off, Mend runs no install here; the agent installs when it needs
+        to. A tree already saved or cached is restored either way.
       </p>
-      <form
-        className="mt-3 flex flex-wrap items-center gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          save();
-        }}
-      >
-        <input
-          type="text"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="detected from the lockfile"
-          spellCheck={false}
-          className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
-        />
-        <button
-          type="submit"
-          disabled={busy || !dirty}
-          className="h-[26px] rounded-lg border border-border bg-card px-2.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
-        >
-          save
-        </button>
-      </form>
-      <p className="mt-2 font-mono text-xs text-ink-2">
-        {current === "" ? "detected from the lockfile at launch" : `runs · ${current}`}
-      </p>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <p className="min-w-0 truncate font-sans text-[13px] font-medium text-foreground">
+          Automatic install
+        </p>
+        <OnOffSwitch value={project.installEnabled} busy={busy} onChange={saveEnabled} />
+      </div>
+      {project.installEnabled ? (
+        <>
+          <p className="mt-2 font-mono text-xs text-ink-2">
+            {current !== "" ? (
+              <>
+                runs · {current}
+                <span className="text-faint"> · custom</span>
+              </>
+            ) : (
+              <DetectedInstall detection={detection.data} />
+            )}
+          </p>
+          <form
+            className="mt-3 flex flex-wrap items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              saveCommand();
+            }}
+          >
+            <input
+              type="text"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="custom command (optional)"
+              aria-label="Custom install command"
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+            />
+            <button
+              type="submit"
+              disabled={busy || !dirty}
+              className="h-[26px] rounded-lg border border-border bg-card px-2.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+            >
+              save
+            </button>
+          </form>
+          <p className="mt-2 text-xs leading-relaxed text-faint">
+            A custom command replaces the detected one. Empty: detected.
+          </p>
+        </>
+      ) : (
+        <p className="mt-2 font-mono text-xs text-ink-2">
+          off · no install runs, in sessions or for the shared cache
+          {current === "" ? null : <span className="text-faint"> · custom command kept</span>}
+        </p>
+      )}
       {error !== null && (
         <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
       )}
     </section>
+  );
+}
+
+/** What a launch with no custom command would run, as read from the default branch. */
+function DetectedInstall({
+  detection,
+}: {
+  readonly detection: ProjectInstallDetectionDto | undefined;
+}) {
+  if (detection === undefined) return <>detected from the lockfile at launch</>;
+  if (detection.command === null || detection.from === null) {
+    return (
+      <>
+        no lockfile recognised on {detection.ref}
+        <span className="text-faint"> · detected again at launch</span>
+      </>
+    );
+  }
+  return (
+    <>
+      detected: <span className="text-foreground">{detection.command}</span>
+      <span className="text-faint">
+        {" "}
+        from {detection.from} on {detection.ref}
+      </span>
+    </>
   );
 }
 

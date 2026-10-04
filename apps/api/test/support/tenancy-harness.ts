@@ -279,6 +279,7 @@ export const makeProject = (facts: {
     inheritUserSkills: false,
     hotSessions: 0,
     installCommand: null,
+    installEnabled: true,
     createdAt: NOW,
     updatedAt: NOW,
   });
