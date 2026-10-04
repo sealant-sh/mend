@@ -453,10 +453,13 @@ describe("importing memory from a machine", () => {
   // side removed since the base, or the merge reports it. No other exemption.
   it("never loses an incoming line without reporting it", async () => {
     const vocabulary = ["---", "name: a", "x", "x", "- [a](a.md)", "```", "````", "~~~", "", "# h"];
+    // A fixed seed and exact 32-bit arithmetic (mulberry32): the same files on every machine.
     let seed = 7;
     const next = (n: number) => {
-      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
-      return seed % n;
+      seed = (seed + 0x6d_2b_79_f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) % n;
     };
     const file = () =>
       `${next(2) === 0 ? "---\nname: a\n---\n" : ""}${Array.from(
@@ -487,7 +490,9 @@ describe("importing memory from a machine", () => {
       }
     }
     expect(unreported).toBe(0);
-  });
+    // 300 merges spawn `git merge-file` a few hundred times: under a second here, over vitest's
+    // default 5 s on a CI runner.
+  }, 60_000);
 });
 
 // Review round 3, invariant C: one function writes versions, and decides pinning itself, so no
