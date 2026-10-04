@@ -19,7 +19,6 @@ import { GatewayAuth, type AuthenticatedBearer } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal } from "./http-errors.ts";
 import { Projections } from "./hub.ts";
-import { MendClient } from "./mend-client.ts";
 import { gatewayRpcHandlersLayer } from "./rpc.ts";
 import { WebSocketTickets } from "./tickets.ts";
 
@@ -31,6 +30,9 @@ import { WebSocketTickets } from "./tickets.ts";
 
 /** The query parameter t3code's client puts the ticket in (`t3:apps/server/src/auth/EnvironmentAuth.ts`). */
 export const WEBSOCKET_TICKET_QUERY_PARAM = "wsTicket";
+
+/** How long a socket whose device was revoked stays open for in-flight refusals to arrive. */
+const REFUSED_SOCKET_GRACE = "250 millis";
 
 /** t3code's own check (`hasCompatibleOrchestrationProtocol` in t3:apps/server/src/ws.ts). */
 export const hasCompatibleOrchestrationProtocol = (url: URL): boolean =>
@@ -51,18 +53,12 @@ const protocolIncompatible = () =>
 export const WebSocketRouteLive: Layer.Layer<
   never,
   never,
-  | HttpRouter.HttpRouter
-  | GatewayAuth
-  | WebSocketTickets
-  | GatewayEnvironment
-  | MendClient
-  | Projections
+  HttpRouter.HttpRouter | GatewayAuth | WebSocketTickets | GatewayEnvironment | Projections
 > = Layer.unwrap(
   Effect.gen(function* () {
     const auth = yield* GatewayAuth;
     const tickets = yield* WebSocketTickets;
     const environment = yield* GatewayEnvironment;
-    const mend = yield* MendClient;
     const projections = yield* Projections;
 
     /**
@@ -110,16 +106,17 @@ export const WebSocketRouteLive: Layer.Layer<
           Effect.provideService(RpcServer.Protocol, protocol),
           Effect.provide(gatewayRpcHandlersLayer(bearer.session, hub)),
           Effect.provideService(GatewayEnvironment, environment),
-          Effect.provideService(MendClient, mend),
           Effect.forkScoped,
         );
         // Mend refusing the socket's device token (revoked) closes the socket, whichever token
         // the person's hub reads with.
         return yield* Effect.raceFirst(
           httpEffect,
-          hub
-            .refusal(bearer.session.deviceToken)
-            .pipe(Effect.as(HttpServerResponse.empty({ status: 401 }))),
+          hub.refusal(bearer.session.deviceToken).pipe(
+            // A moment for the typed refusal of the call that found it to reach the client.
+            Effect.delay(REFUSED_SOCKET_GRACE),
+            Effect.as(HttpServerResponse.empty({ status: 401 })),
+          ),
         );
       }).pipe(
         Effect.provide(RpcSerialization.layerJson),

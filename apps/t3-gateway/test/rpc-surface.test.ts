@@ -15,7 +15,7 @@ import { makeGatewayRpcHandlers, SERVED_METHODS, SILENT_STREAMS } from "../src/r
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 import { socketUrl } from "./support/rpc.ts";
-import { emptyHub, testBearerSession, unreachableMend } from "./support/stubs.ts";
+import { emptyHub, testBearerSession } from "./support/stubs.ts";
 
 /**
  * The whole of t3code's RPC group is registered (ADR 0012, "The surface"): a method the server
@@ -35,7 +35,6 @@ describe("the RPC surface", () => {
         host: "127.0.0.1",
         statePath: ":memory:",
       }),
-      mend: unreachableMend,
       session: testBearerSession,
       hub: emptyHub,
     });

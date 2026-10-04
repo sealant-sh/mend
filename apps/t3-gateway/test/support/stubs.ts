@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
 import { BEARER_TTL_MS, GRANTED_SCOPES } from "../../src/auth.ts";
+import { gateDeviceCalls } from "../../src/device-gate.ts";
 import type { PersonHub } from "../../src/hub.ts";
 import { MendUnavailable, type MendClient } from "../../src/mend-client.ts";
 import { EMPTY_SHELL_SNAPSHOT } from "../../src/shell.ts";
@@ -33,6 +34,7 @@ export const emptyHub: PersonHub = {
   subscribeShell: Effect.succeed({ snapshot: EMPTY_SHELL_SNAPSHOT, changes: Stream.never }),
   isRefused: () => false,
   refusal: () => Effect.never,
+  mend: gateDeviceCalls(unreachableMend, () => Effect.void),
 };
 
 export const testBearerSession: BearerSession = {

@@ -233,6 +233,31 @@ describe("devices and late pointers", () => {
       ),
   );
 
+  it.live("revoking a person's last device stops the hub reading Mend for them", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { workbench } = mend;
+        workbench.addProject("project-1", "mend");
+        const only = yield* pairAndConnect(mend, "ONLYDEVICE");
+        const shell = yield* feed(only.rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        yield* shell.next(isKind("snapshot"));
+        assert.strictEqual(workbench.eventStreams, 1);
+
+        // Mend keeps the event stream open on a revocation (it closes it only when the account
+        // goes); the gateway closes it itself.
+        mend.revoke(mend.claims[0]?.token ?? "");
+        workbench.emit({ type: "user", userId: "user-1", facet: "devices" });
+        yield* Effect.gen(function* () {
+          while (workbench.eventStreams > 0) yield* Effect.sleep("100 millis");
+        }).pipe(Effect.timeout("5 seconds"));
+        const reads = workbench.calls.length;
+        yield* Effect.sleep("1500 millis");
+        assert.strictEqual(workbench.eventStreams, 0);
+        assert.strictEqual(workbench.calls.length, reads);
+      }),
+    ),
+  );
+
   it.live("a pointer that arrives during the first full read is applied after it", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

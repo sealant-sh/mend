@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
@@ -16,6 +17,7 @@ import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import {
   MendClient,
@@ -73,6 +75,8 @@ export interface PersonHub {
   readonly isRefused: (token: string) => boolean;
   /** Completes once Mend refuses this device token; a socket holding it closes then. */
   readonly refusal: (token: string) => Effect.Effect<void>;
+  /** Mend's client for this person's calls, gated: a 401 refuses the token used. */
+  readonly mend: GatedMend;
 }
 
 /**
@@ -89,6 +93,8 @@ export interface PersonTokens {
   readonly isRefused: (token: string) => boolean;
   /** Completes once the token is refused. */
   readonly refusal: (token: string) => Effect.Effect<void>;
+  /** Completes once every token of the person the gateway holds was refused. */
+  readonly noneLeft: Effect.Effect<void>;
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -177,8 +183,11 @@ const entryOf = (detail: {
 });
 
 export const makePersonHub = (input: {
-  readonly mend: MendClient["Service"];
+  /** The only way the hub reaches Mend (`device-gate.ts`). */
+  readonly mend: GatedMend;
   readonly tokens: PersonTokens;
+  /** Lets go of the hub in the registry, once it has torn itself down. */
+  readonly dispose?: Effect.Effect<void>;
 }): Effect.Effect<PersonHub, never, Scope.Scope> =>
   Effect.gen(function* () {
     const { mend, tokens } = input;
@@ -192,6 +201,8 @@ export const makePersonHub = (input: {
     /** Every read of state and every publication happens under it, in order. */
     const lock = Semaphore.makeUnsafe(1);
     const locked = lock.withPermits(1);
+    /** Set once every device of the person was refused: nothing reads Mend for them any more. */
+    let dead = false;
 
     /** Calls Mend with one of the person's tokens, and with another when Mend refuses it. */
     const asPerson = <A, E>(
@@ -202,15 +213,13 @@ export const makePersonHub = (input: {
         if (token === null) {
           return Effect.fail(new MendDeviceRefused({ operation: "every paired device" }));
         }
+        // The gate refused the token on a 401; another of the person's devices may still read.
         return call(token).pipe(
-          Effect.catch((error) => {
-            if (!(error instanceof MendDeviceRefused)) return Effect.fail(error);
-            return tokens
-              .refuse(token)
-              .pipe(
-                Effect.andThen(tokens.current() === null ? Effect.fail(error) : asPerson(call)),
-              );
-          }),
+          Effect.catch((error) =>
+            error instanceof MendDeviceRefused && tokens.current() !== null
+              ? asPerson(call)
+              : Effect.fail(error),
+          ),
         );
       });
 
@@ -444,7 +453,13 @@ export const makePersonHub = (input: {
     const loadLock = Semaphore.makeUnsafe(1);
     /** The first full read, made once by whoever needs it first; a failure is theirs to see. */
     const ensureLoaded = loadLock.withPermits(1)(
-      Effect.suspend(() => (loaded ? Effect.void : refreshAll.pipe(Effect.tap(() => markLoaded)))),
+      Effect.suspend(() =>
+        dead
+          ? Effect.fail(new MendDeviceRefused({ operation: "every paired device" }))
+          : loaded
+            ? Effect.void
+            : refreshAll.pipe(Effect.tap(() => markLoaded)),
+      ),
     );
 
     // ─── Refreshing ────────────────────────────────────────────────────────
@@ -458,9 +473,7 @@ export const makePersonHub = (input: {
         tokens.live(),
         (token) =>
           mend.checkDevice(token).pipe(
-            Effect.flatMap((verdict) =>
-              verdict === "refused" ? tokens.refuse(token) : Effect.void,
-            ),
+            Effect.asVoid,
             Effect.catch((error) =>
               Effect.logWarning("t3 gateway could not check a device with Mend", {
                 cause: error.message,
@@ -493,7 +506,7 @@ export const makePersonHub = (input: {
       return Effect.void;
     };
 
-    yield* Effect.forever(
+    const worker = yield* Effect.forever(
       Queue.take(keys).pipe(
         Effect.flatMap((key) =>
           Effect.suspend(() => {
@@ -536,7 +549,7 @@ export const makePersonHub = (input: {
       return key === null ? Effect.void : requestRefresh(key);
     };
 
-    yield* Effect.gen(function* () {
+    const sse = yield* Effect.gen(function* () {
       let failures = 0;
       for (let attempt = 0; ; attempt++) {
         // A reconnect may have missed pointers: read everything again.
@@ -555,11 +568,27 @@ export const makePersonHub = (input: {
       }
     }).pipe(Effect.forkScoped);
 
-    yield* requestRefresh("devices").pipe(
+    const deviceChecks = yield* requestRefresh("devices").pipe(
       Effect.delay(DEVICE_CHECK_INTERVAL),
       Effect.forever,
       Effect.forkScoped,
     );
+
+    // ─── Teardown ──────────────────────────────────────────────────────────
+
+    /** What else must end with the hub (set by later parts: the queue). */
+    let onTeardown: Effect.Effect<void> = Effect.void;
+    /**
+     * Every device of the person was revoked: Mend keeps the event stream open (it closes it only
+     * when the account goes), so the hub stops it itself, stops reading, and lets go of itself.
+     */
+    const teardown = Effect.gen(function* () {
+      dead = true;
+      yield* Fiber.interruptAll([sse, worker, deviceChecks]);
+      yield* Effect.suspend(() => onTeardown);
+      yield* input.dispose ?? Effect.void;
+    });
+    yield* tokens.noneLeft.pipe(Effect.andThen(teardown), Effect.forkScoped);
 
     // ─── The hub ───────────────────────────────────────────────────────────
 
@@ -578,6 +607,7 @@ export const makePersonHub = (input: {
       subscribeShell,
       isRefused: tokens.isRefused,
       refusal: tokens.refusal,
+      mend,
     };
   });
 
@@ -616,6 +646,17 @@ export const ProjectionsLive: Layer.Layer<Projections, never, MendClient | Gatew
         const refusal = refusals.get(token);
         return refusal !== undefined && Deferred.isDoneUnsafe(refusal);
       };
+      /** Mend user id → completed once every token of theirs the gateway holds was refused. */
+      const exhausted = new Map<string, Deferred.Deferred<void>>();
+      const exhaustedOf = (userId: string) => {
+        const existing = exhausted.get(userId);
+        if (existing !== undefined) return existing;
+        const created = Deferred.makeUnsafe<void>();
+        exhausted.set(userId, created);
+        return created;
+      };
+      const liveOf = (userId: string) =>
+        Array.from(known.get(userId) ?? []).filter((token) => !isRefused(token));
 
       const tokensOf = (userId: string): PersonTokens => ({
         current: () => {
@@ -624,11 +665,13 @@ export const ProjectionsLive: Layer.Layer<Projections, never, MendClient | Gatew
           }
           return null;
         },
-        live: () => Array.from(known.get(userId) ?? []).filter((token) => !isRefused(token)),
+        live: () => liveOf(userId),
         refuse: (token) =>
           Effect.suspend(() => {
             if (isRefused(token)) return Effect.void;
             Deferred.doneUnsafe(refusalOf(token), Exit.void);
+            // The last device of the person: their hub tears itself down.
+            if (liveOf(userId).length === 0) Deferred.doneUnsafe(exhaustedOf(userId), Exit.void);
             // The bearers standing for the device stop authenticating too.
             return state.revokeSessionsForDevice(token, Date.now()).pipe(
               Effect.catch((error) =>
@@ -640,19 +683,34 @@ export const ProjectionsLive: Layer.Layer<Projections, never, MendClient | Gatew
           }),
         isRefused,
         refusal: (token) => Deferred.await(refusalOf(token)),
+        noneLeft: Deferred.await(exhaustedOf(userId)),
       });
 
-      const hubs = yield* RcMap.make({
-        lookup: (userId: string) => makePersonHub({ mend, tokens: tokensOf(userId) }),
+      const hubs: RcMap.RcMap<string, PersonHub> = yield* RcMap.make({
+        lookup: (userId: string) => {
+          const tokens = tokensOf(userId);
+          return makePersonHub({
+            // Every call the hub makes with a device token goes through the gate.
+            mend: gateDeviceCalls(mend, tokens.refuse),
+            tokens,
+            dispose: RcMap.invalidate(hubs, userId),
+          });
+        },
         idleTimeToLive: HUB_IDLE_TTL,
       });
 
       const hub = (session: BearerSession) =>
         Effect.suspend(() => {
-          const tokens = known.get(session.mendUser.id) ?? new Set<string>();
+          const userId = session.mendUser.id;
+          const tokens = known.get(userId) ?? new Set<string>();
           tokens.add(session.deviceToken);
-          known.set(session.mendUser.id, tokens);
-          return RcMap.get(hubs, session.mendUser.id);
+          known.set(userId, tokens);
+          // A person who pairs again after every device was revoked gets a fresh hub.
+          const done = exhausted.get(userId);
+          if (done !== undefined && Deferred.isDoneUnsafe(done) && liveOf(userId).length > 0) {
+            exhausted.delete(userId);
+          }
+          return RcMap.get(hubs, userId);
         });
 
       return { hub };

@@ -49,7 +49,6 @@ import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { GatewayEnvironment } from "./environment.ts";
 import type { HubReadError, PersonHub } from "./hub.ts";
-import { MendClient } from "./mend-client.ts";
 import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
 
@@ -174,7 +173,6 @@ const unknownThread = (threadId: ThreadId) =>
 
 export interface GatewayRpcInput {
   readonly environment: GatewayEnvironment["Service"];
-  readonly mend: MendClient["Service"];
   /** The paired person behind this socket; every Mend call is theirs. */
   readonly session: BearerSession;
   /** The person's projection of Mend, shared with their other sockets. */
@@ -204,7 +202,9 @@ const shellReadFailure = (error: HubReadError) =>
       })
     : new OrchestrationV2GetShellSnapshotError({ message: error.message, cause: error });
 
-export const makeGatewayRpcHandlers = ({ environment, mend, session, hub }: GatewayRpcInput) => {
+export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpcInput) => {
+  // Mend only through the person's gate: a 401 on any call refuses this socket's token.
+  const { mend } = hub;
   const { descriptor, paths } = environment;
 
   /** The socket's own device token, checked on every call, then the scope it needs. */
@@ -687,11 +687,10 @@ export type GatewayRpcHandlers = ReturnType<typeof makeGatewayRpcHandlers>;
 export const gatewayRpcHandlersLayer = (
   session: BearerSession,
   hub: PersonHub,
-): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | MendClient> =>
+): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
-      const mend = yield* MendClient;
-      return makeGatewayRpcHandlers({ environment, mend, session, hub });
+      return makeGatewayRpcHandlers({ environment, session, hub });
     }),
   );

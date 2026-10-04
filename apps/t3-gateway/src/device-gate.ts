@@ -1,0 +1,79 @@
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+
+import { MendDeviceRefused, type MendClient } from "./mend-client.ts";
+
+/**
+ * The one way a person's hub (and their sockets) reach Mend with a device token. Every call that
+ * carries a token goes through `gateDeviceCalls`: when Mend answers 401 (`MendDeviceRefused`: the
+ * device was revoked or its person deactivated), the token is refused, which closes its sockets
+ * and revokes its bearers, whatever path made the call. A 403 is not a revocation in Mend: it is
+ * `SessionNotSteerable` (the person may not steer that session) and stays the command's refusal.
+ *
+ * `GatedMend` is nominal (a private field), and only `gateDeviceCalls` builds one, so a hub cannot
+ * be handed Mend's raw client.
+ */
+
+/** Mend's client minus pairing, which carries no device token. */
+export type DeviceCalls = Omit<MendClient["Service"], "claimPairing">;
+
+class GatedMendClient {
+  readonly #gated = true;
+  readonly checkDevice: DeviceCalls["checkDevice"];
+  readonly listHarnessModels: DeviceCalls["listHarnessModels"];
+  readonly listProjects: DeviceCalls["listProjects"];
+  readonly projectDetail: DeviceCalls["projectDetail"];
+  readonly listTurns: DeviceCalls["listTurns"];
+  readonly listRequests: DeviceCalls["listRequests"];
+  readonly events: DeviceCalls["events"];
+
+  constructor(calls: DeviceCalls) {
+    this.checkDevice = calls.checkDevice;
+    this.listHarnessModels = calls.listHarnessModels;
+    this.listProjects = calls.listProjects;
+    this.projectDetail = calls.projectDetail;
+    this.listTurns = calls.listTurns;
+    this.listRequests = calls.listRequests;
+    this.events = calls.events;
+  }
+
+  /** Whether this client came through the gate; always true, for tests. */
+  get gated(): boolean {
+    return this.#gated;
+  }
+}
+
+export type GatedMend = GatedMendClient;
+
+/** Wraps every token-carrying call of Mend's client so a refused token is reported once seen. */
+export const gateDeviceCalls = (
+  mend: MendClient["Service"],
+  onRefused: (token: string) => Effect.Effect<void>,
+): GatedMend => {
+  const guard = <A, E>(token: string, call: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+    call.pipe(
+      Effect.tapError((error) =>
+        error instanceof MendDeviceRefused ? onRefused(token) : Effect.void,
+      ),
+    );
+
+  return new GatedMendClient({
+    checkDevice: (token) =>
+      mend
+        .checkDevice(token)
+        .pipe(Effect.tap((verdict) => (verdict === "refused" ? onRefused(token) : Effect.void))),
+    listHarnessModels: (token) => guard(token, mend.listHarnessModels(token)),
+    listProjects: (token) => guard(token, mend.listProjects(token)),
+    projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),
+    listTurns: (token, sessionId) => guard(token, mend.listTurns(token, sessionId)),
+    listRequests: (token, sessionId) => guard(token, mend.listRequests(token, sessionId)),
+    events: (token) =>
+      mend
+        .events(token)
+        .pipe(
+          Stream.tapError((error) =>
+            error instanceof MendDeviceRefused ? onRefused(token) : Effect.void,
+          ),
+        ),
+  });
+};
