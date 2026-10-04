@@ -396,6 +396,61 @@ describe("Mend's items as turn items", () => {
     );
   });
 
+  it("names what a claude permission request touches", () => {
+    const projection = threadProjectionOf(
+      {
+        project,
+        session,
+        agent,
+        changeId: null,
+        turns: [
+          {
+            id: "turn-1",
+            sessionId: "session-1",
+            ordinal: 0,
+            author: "user-1",
+            origin: "request",
+            input: "Write it",
+            status: "running",
+            error: null,
+            createdAt: "2026-10-04T09:00:00.000Z",
+            startedAt: "2026-10-04T09:00:00.000Z",
+            endedAt: null,
+          },
+        ],
+        requests: [
+          {
+            id: "request-1",
+            turnId: "turn-1",
+            kind: "tool-permission",
+            title: "Write",
+            // As the live box recorded it (2026-10-04).
+            detail: {
+              input: { content: "hello", file_path: "/workspace/repo/t3.txt" },
+              toolName: "Write",
+              suggestions: [{ mode: "acceptEdits", type: "setMode", destination: "session" }],
+            },
+            questions: null,
+            status: "pending",
+            decision: null,
+            answers: null,
+            createdAt: "2026-10-04T09:00:01.000Z",
+            decidedAt: null,
+          },
+        ],
+        runIds: new Map(),
+        messageIds: new Map(),
+      },
+      [],
+    );
+    const approval = projection.turnItems.find((entry) => entry.type === "approval_request");
+    assert.isTrue(
+      approval?.type === "approval_request" &&
+        approval.prompt === "Write\nWrite /workspace/repo/t3.txt" &&
+        approval.requestKind === "permission",
+    );
+  });
+
   it("says why a turn failed, after what it did", () => {
     const { turnItems } = projectionWith([], "failed", "usage limit reached");
     const last = turnItems.at(-1);

@@ -206,6 +206,12 @@ const detailText = (detail: unknown): string | undefined => {
   if (typeof detail === "string") return text(detail);
   const command = commandText(at(detail, "command")) ?? commandText(at(detail, "input", "command"));
   if (command !== undefined) return command;
+  // Claude's permission request: the tool and what it touches (`{ toolName, input }`).
+  const path = text(at(detail, "input", "file_path")) ?? text(at(detail, "input", "path"));
+  const tool = text(at(detail, "toolName"));
+  if (path !== undefined) return tool === undefined ? path : `${tool} ${path}`;
+  const url = text(at(detail, "input", "url"));
+  if (url !== undefined) return tool === undefined ? url : `${tool} ${url}`;
   const reason = text(at(detail, "reason"));
   if (reason !== undefined) return reason;
   return truncate(JSON.stringify(detail), 2_000);
