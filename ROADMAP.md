@@ -9,25 +9,28 @@ section goes when it ships.
 - **A release has a scope, written here.** Pull requests merge to `main` in all three repositories
   when they are ready. Tags wait until the release's scope is done.
 - **Main publishes prereleases** ([ADR 0015](docs/adr/0015-next-channel.md)). Every merge to Core or
-  sealantd main publishes `B-next.N`, where B is what the next Version Packages pull request would
-  release: images, and the SDK or runtime packages on npm's `next` dist-tag. Mend pins those exact
-  versions on main, so a Mend change that needs a new Core API waits for Core main's CI, not for a
-  Core release. `latest` moves only on a stable tag.
+  sealantd main publishes `B-next.N`: images, and the SDK or runtime packages on npm's `next`
+  dist-tag. N is the commit's whole history and B never falls below a base already published, so
+  each build is higher than the last. Mend pins those exact versions on main, so a Mend change that
+  needs a new Core API waits for Core main's CI, not for a Core release. `latest` moves only on a
+  stable tag.
 - **Mend `next` builds are chosen.** An admin tags `vX.Y.Z-next.N` on main (the version comes from
   `node scripts/next-version.mjs --package apps/cli origin/main`); the release workflow publishes it
   to npm `next` and as a GitHub prerelease, after the owner's approval. That is what goes on the box
   and what people install with `npm install --global @sealant/mend@next`.
-- **A stable release is a promotion,** one of each repository per Mend release: sealantd tags the
-  commit Core pins; Core pins it and tags; Mend pins that Core, cuts one more next build of the
-  release's version and runs it on the box; then Mend tags. Core and sealantd tag right after their
-  Version Packages merge. Core refuses to release while it pins a prerelease sealantd. Mend refuses
-  a prerelease pin anywhere, a next build of the version it would leave out, and any change since
-  its newest published next build beyond the Version Packages pull request, notes and docs.
+- **A stable release is a promotion,** one of each repository per Mend release, in one order
+  (`docs/operations/next-channel.md`): sealantd merges its Version Packages pull request and freezes
+  main; Core pins that build; sealantd tags it; Core pins the release, merges its own Version
+  Packages pull request and freezes main; Core tags after Mend has run that build; Mend pins Core's
+  release, cuts a next build and runs it on the box; then Mend tags. The releases refuse a tag that
+  leaves out one of its own next builds (a merge during a freeze), Core refuses a prerelease
+  sealantd, and Mend refuses a prerelease pin anywhere and any change since its newest published
+  next build beyond the Version Packages pull request, notes and docs.
 - **Patch releases (0.36.1 and on) are for what is broken** on the box or on alpha: a session that
   cannot start, attach, stop or save. Nothing else gets its own tag. While only patch changesets are
   pending, next builds are `0.36.1-next.N`, so the box proves the patch as the version it ships as.
-  Once a minor changeset lands, builds become `0.37.0-next.N`, and a server on one of those skips
-  `0.36.1`.
+  Once a minor changeset lands, builds become `0.37.0-next.N` (and stay there if it is reverted),
+  and a server on one of those skips `0.36.1`.
 - **A release is done when its exit criteria hold on the box,** not when CI passes.
 
 ## 0.36: Mend on our own box, every day
