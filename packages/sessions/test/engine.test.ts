@@ -3363,8 +3363,11 @@ describe("SessionEngine", () => {
 
           expect(openedOptions).toEqual([{ mode: "pipe" }]);
           // Codex's memory is on in every Codex session Mend starts (docs/adr/0009, "Codex").
-          expect(spawned[0]?.slice(-4)).toEqual([
+          // Its background server is off: it copies Codex's release into the harness home.
+          expect(spawned[0]?.slice(-6)).toEqual([
             "codex",
+            "-c",
+            "features.daemon_auto_start=false",
             "-c",
             "features.memories=true",
             "app-server",
@@ -4485,7 +4488,7 @@ describe("SessionEngine", () => {
           const transportArgv = deliveryProcess?.argv ?? [];
           expect(transportArgv.slice(0, 2)).toEqual(["sh", "-c"]);
           expect(transportArgv[2]).toContain(
-            "exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
+            "exec codex -c features.daemon_auto_start=false -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
           );
           expect(Buffer.from(transportArgv.slice(4).join(""), "base64").toString("utf8")).toBe(
             instruction,

@@ -257,7 +257,7 @@ import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./de
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
-import { withHarnessSetup } from "./harness-seeds.ts";
+import { CODEX_DAEMON_OFF, withHarnessSetup } from "./harness-seeds.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
@@ -422,7 +422,7 @@ const promptArgv = (
       case "claude":
         return `exec claude --dangerously-skip-permissions${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
       case "codex":
-        return `exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
+        return `exec codex ${CODEX_DAEMON_OFF.join(" ")} -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
       case "opencode":
         return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode${model} --prompt "$prompt"`;
       case "pi":
