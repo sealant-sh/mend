@@ -6767,12 +6767,13 @@ const writtenFiles = (execCalls: ReadonlyArray<ReadonlyArray<string>>): Map<stri
         const bytes = gunzipped(list().join(""));
         for (const target of paths) files.set(target, bytes);
       } else if (op === "s" || op === "a") {
-        const target = ops[index++] ?? "";
+        const staging = ops[index++] ?? "";
         const text = list().join("");
-        staged.set(target, (op === "a" ? (staged.get(target) ?? "") : "") + text);
+        staged.set(staging, (op === "a" ? (staged.get(staging) ?? "") : "") + text);
       } else if (op === "f") {
+        const staging = ops[index++] ?? "";
         const paths = list();
-        const bytes = gunzipped(staged.get(paths[0] ?? "") ?? "");
+        const bytes = gunzipped(staged.get(staging) ?? "");
         for (const target of paths) files.set(target, bytes);
       } else {
         throw new Error(`unknown write operation ${op ?? ""}`);

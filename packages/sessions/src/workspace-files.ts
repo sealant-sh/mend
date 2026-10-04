@@ -17,6 +17,8 @@
  * parameters, like the bytes: nothing is interpolated into the script.
  */
 
+import { randomBytes } from "node:crypto";
+import * as path from "node:path";
 import { gzipSync } from "node:zlib";
 
 import { Schema } from "effect";
@@ -45,30 +47,31 @@ export interface WorkspaceFile {
  * The writer: a sequence of operations over its arguments.
  * - `w <n> <path>… <k> <chunk>…`: the gzipped base64 in the k chunks, written to each of the n
  *   paths;
- * - `s <path> <k> <chunk>…`, `a <path> <k> <chunk>…`: start or append the staging file
- *   (`<path>.mend-gz64`) of a content too large for one exec;
- * - `f <n> <path>…`: the content staged beside the first path, written to each path; the staging
- *   file is removed.
- * Each path's directory is made and set 0755; the file is written beside it as `.mend-part`, set
- * 0644 and renamed into place.
+ * - `s <staging> <k> <chunk>…`, `a <staging> <k> <chunk>…`: create (exclusively) or append the
+ *   staging file of a content too large for one exec;
+ * - `f <staging> <n> <path>…`: the staged content written to each path; the staging file removed.
+ * Each path's directory is made and set 0755; the file is written beside it under a name of its
+ * own, created exclusively (never a payload's name, never one already there), set 0644 and renamed
+ * into place. Once every operation ran, each path it wrote must be a file, or the exec fails.
  */
 const WRITE_PROGRAM = [
-  'const fs=require("fs"),path=require("path"),zlib=require("zlib");',
-  "const a=process.argv.slice(1);let i=0;",
+  'const fs=require("fs"),path=require("path"),zlib=require("zlib"),crypto=require("crypto");',
+  "const a=process.argv.slice(1);let i=0;const done=[];",
   "const list=()=>{const n=Number(a[i++]);const out=a.slice(i,i+n);i+=n;return out;};",
   'const bytes=(text)=>zlib.gunzipSync(Buffer.from(text,"base64"));',
   "const put=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true});",
-  'fs.chmodSync(d,0o755);const t=p+".mend-part";fs.writeFileSync(t,b);fs.chmodSync(t,0o644);',
-  "fs.renameSync(t,p);};",
-  'const staged=(p)=>p+".mend-gz64";',
+  'fs.chmodSync(d,0o755);const t=path.join(d,".mend-part-"+crypto.randomBytes(8).toString("hex"));',
+  'fs.writeFileSync(t,b,{flag:"wx",mode:0o600});fs.chmodSync(t,0o644);fs.renameSync(t,p);done.push(p);};',
   "while(i<a.length){const op=a[i++];",
   'if(op==="w"){const ps=list();const b=bytes(list().join(""));for(const p of ps)put(p,b);}',
-  'else if(op==="s"||op==="a"){const p=a[i++];const text=list().join("");',
-  "fs.mkdirSync(path.dirname(p),{recursive:true});",
-  'if(op==="s")fs.writeFileSync(staged(p),text);else fs.appendFileSync(staged(p),text);}',
-  'else if(op==="f"){const ps=list();const b=bytes(fs.readFileSync(staged(ps[0]),"utf8"));',
-  "for(const p of ps)put(p,b);fs.rmSync(staged(ps[0]),{force:true});}",
+  'else if(op==="s"||op==="a"){const t=a[i++];const text=list().join("");',
+  "fs.mkdirSync(path.dirname(t),{recursive:true});",
+  'if(op==="s")fs.writeFileSync(t,text,{flag:"wx",mode:0o600});else fs.appendFileSync(t,text);}',
+  'else if(op==="f"){const t=a[i++];const ps=list();const b=bytes(fs.readFileSync(t,"utf8"));',
+  "for(const p of ps)put(p,b);fs.rmSync(t,{force:true});}",
   'else{process.stderr.write("mend-write: unknown operation "+op+"\\n");process.exit(2);}}',
+  "const missing=done.filter((p)=>{try{return !fs.statSync(p).isFile();}catch{return true;}});",
+  'if(missing.length>0){process.stderr.write("mend-write: not written: "+missing.join(", ")+"\\n");process.exit(3);}',
 ].join("");
 
 /** `$0` names the exec in the record; `--` keeps node from reading an argument as its option. */
@@ -136,16 +139,19 @@ export const writeFilesExecs = (
       ops.push("w", ...paths, String(chunks.length), ...chunks);
       continue;
     }
-    // Too large for one exec: staged beside the first path across several, and written by the
-    // last of them.
+    // Too large for one exec: staged beside the first path across several, under a name of its
+    // own, and written by the last of them.
     flush();
-    const first = content.paths[0] ?? "";
+    const staging = path.posix.join(
+      path.posix.dirname(content.paths[0] ?? "/"),
+      `.mend-stage-${randomBytes(12).toString("hex")}`,
+    );
     for (let index = 0; index < chunks.length; index += perExec) {
       flush();
       const part = chunks.slice(index, index + perExec);
-      ops.push(index === 0 ? "s" : "a", first, String(part.length), ...part);
+      ops.push(index === 0 ? "s" : "a", staging, String(part.length), ...part);
     }
-    ops.push("f", ...paths);
+    ops.push("f", staging, ...paths);
   }
   flush();
   return execs;

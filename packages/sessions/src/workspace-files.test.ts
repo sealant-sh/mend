@@ -117,6 +117,23 @@ describe("writeFilesExecs", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("writes a payload named like a staging file and its neighbour alike (review of #513)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-files-"));
+    const names = ["data.mend-part", "data", "big.mend-gz64", "big", ".mend-part-0000000000000000"];
+    const files = names.map((name, index) => ({
+      path: path.join(root, "skill", name),
+      bytes: index === 3 ? randomOf(1_600_000) : new TextEncoder().encode(`${name}\n`),
+    }));
+    const execs = writeFilesExecs(files);
+    runAll(execs);
+    for (const file of files) {
+      expect(fs.readFileSync(file.path).equals(file.bytes)).toBe(true);
+    }
+    // Nothing of the writer's own is left beside them.
+    expect(fs.readdirSync(path.join(root, "skill")).toSorted()).toEqual(names.toSorted());
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("starts a new exec when the next content would not fit", () => {
     const files = [0, 1, 2].map((index) => ({
       path: `/workspace/harness-home/f${index}`,
