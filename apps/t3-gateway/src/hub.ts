@@ -255,7 +255,7 @@ interface ThreadQueue {
 const SETTLED_KEPT = 20;
 
 /** A refusal Mend gave a command, in the words t3code shows. */
-const refusalOf = (error: MendCommandRefused | MendNotFound): ThreadCommandRefused =>
+const commandRefusalOf = (error: MendCommandRefused | MendNotFound): ThreadCommandRefused =>
   error._tag === "MendNotFound"
     ? new ThreadCommandRefused({ reason: error.message, authorization: false })
     : new ThreadCommandRefused({
@@ -1312,8 +1312,8 @@ export const makePersonHub = (input: {
         }
         yield* mend.interruptTurn(command.session.deviceToken, target.turn.id).pipe(
           Effect.catchTags({
-            MendCommandRefused: (e) => Effect.fail(refusalOf(e)),
-            MendNotFound: (e) => Effect.fail(refusalOf(e)),
+            MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
+            MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
           }),
           Effect.tapError(() =>
             locked(
@@ -1354,8 +1354,8 @@ export const makePersonHub = (input: {
           .respondRequest(command.session.deviceToken, command.requestId, command.response)
           .pipe(
             Effect.catchTags({
-              MendCommandRefused: (e) => Effect.fail(refusalOf(e)),
-              MendNotFound: (e) => Effect.fail(refusalOf(e)),
+              MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
+              MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
             }),
           );
         yield* requestRefresh(`conversation:${command.threadId}`);
