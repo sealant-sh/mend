@@ -78,6 +78,7 @@ import {
   LAUNCH_BOOTING,
   LAUNCH_PREPARING,
   leaseWaitWords,
+  reservedSecretFileRoot,
   withoutLaunchPhase,
 } from "@mend/domain/workbench";
 import {
@@ -124,6 +125,7 @@ import {
   type CaptureReading,
   captureDrainStep,
   captureBehindReason,
+  CAPTURE_HEALTH_UNREPORTED,
   captureCaughtUp,
   captureHarvestReady,
   captureIncompleteReasonOf,
@@ -270,6 +272,7 @@ import {
   readHarnessStateManifest,
   extractTranscript,
   hasLiveHarnessState,
+  hasLiveConversation,
   CARRIED_TRANSCRIPTS,
   harvestHarnessStateScript,
   locateLiveTranscript,
@@ -294,6 +297,17 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
+import {
+  type OpencodeConversation,
+  opencodeConversationOf,
+  opencodeSpanOf,
+  readOpencodeLaunchSnapshot,
+  snapshotOpencodeHome,
+  writeOpencodeLaunchSnapshot,
+  OPENCODE_DATABASE,
+  readOpencodeConversations,
+  readOpencodeHome,
+} from "./opencode-state.ts";
 import {
   checkPastedImage,
   PastedImageError,
@@ -336,6 +350,8 @@ import {
   secretFilesExecs,
   secretFilesRecordExec,
   secretFilesRemoveExec,
+  secretFilesSetAsideExec,
+  SECRET_FILES_SET_ASIDE,
   type SecretFileOutcome,
   type SecretFilesRecord,
 } from "./secret-files.ts";
@@ -405,6 +421,58 @@ const shellWord = (value: string): string => `'${value.replaceAll("'", "'\\''")}
  * reports, not on whatever the harness would pick today. Flags the harness does not take are left
  * out, as `composeLaunchArgv` leaves them out.
  */
+/**
+ * opencode's database in a capture: absent, torn (sealantd read it changing every time), or
+ * the conversations it lists (null: it does not open as opencode's).
+ */
+const capturedOpencode = (
+  manifest: Parameters<typeof listCaptureFiles>[0],
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly entry: { readonly kind: string; readonly torn?: boolean };
+  }>,
+) =>
+  Effect.gen(function* () {
+    const stateFile = `harness/${OPENCODE_DATABASE}`;
+    const database = files.find((file) => file.path === stateFile);
+    if (database === undefined || database.entry.kind !== "file") {
+      return { state: "absent" } as const;
+    }
+    const wal = files.find((file) => file.path === `${stateFile}-wal`);
+    if (database.entry.torn === true || wal?.entry.torn === true) {
+      return { state: "torn" } as const;
+    }
+    const bytes = yield* readCaptureFileBytes(manifest, "workspace", stateFile);
+    // A log that is there but cannot be read fails the read: the database without it can be
+    // missing conversations, and a snapshot short of them would hand them to the next process.
+    if (wal !== undefined && wal.entry.kind !== "file") {
+      return yield* Effect.fail(new Error(`${wal.path} is not a file`));
+    }
+    const walBytes =
+      wal === undefined ? null : yield* readCaptureFileBytes(manifest, "workspace", wal.path);
+    return {
+      state: "read",
+      conversations: yield* readOpencodeConversations(bytes, walBytes),
+    } as const;
+  });
+
+/**
+ * The session line when an opencode launch could not read what its database held before it
+ * started (`opencodeLaunchSnapshot`): nothing it starts can be told apart from what was there, so
+ * resuming its conversation will be refused.
+ */
+const OPENCODE_SNAPSHOT_MISSING =
+  "opencode · could not read its conversations before it started · this session's conversation may not be resumable";
+
+/** Why a launch stops before the harness home relocation (`evictReservedSecretFiles`). */
+const secretFilesNotSetAside = (why: string) =>
+  new SealantPlatformError({
+    code: "secret_files_not_set_aside",
+    status: null,
+    message: `a secret file under a directory sessions now save could not be taken out of it (${why}); the harness home was not moved, so nothing of it is saved`,
+    cause: null,
+  });
+
 const promptArgv = (
   harness: string,
   prompt: string,
@@ -567,7 +635,9 @@ const withPermissionDefaults = (
 const withHarnessBootstrap = (
   harness: string,
   argv: ReadonlyArray<string>,
-): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
+  options: { readonly captured?: boolean } = {},
+): ReadonlyArray<string> =>
+  withHarnessSetup(harness, withPermissionDefaults(harness, argv), options);
 
 /** What one memory delivery did, counted; a file it could not place is said by name. */
 const logAgentMemoryDelivered = (
@@ -6521,6 +6591,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
         });
 
+        if (shape.liveTranscript === null && shape.stateFile !== undefined) {
+          // No transcript file (opencode): the conversation this process held is read out of the
+          // database in the durable home the workspace mounts, and the manifest names it. None
+          // that can be told is no saved state: a resume is refused rather than open a guess.
+          const listed = yield* readOpencodeHome(harnessHomePathOf(project.storePath, session.id));
+          const held =
+            listed === null ? null : yield* opencodeConversationFor(session, agentProcess, listed);
+          if (held === null) {
+            return yield* new HarnessStateCommandError({
+              sessionId,
+              harness,
+              operation: "identify-session",
+              exitCode: 0,
+              stderr: "",
+              message: `No ${harness} conversation in the harness home is session ${sessionId}'s.`,
+            });
+          }
+          yield* commitConversationState(session, project, agentProcess, held);
+          return;
+        }
+
         const located = yield* sealant.exec(workspace, ["sh", "-c", shape.latestTranscript]);
         const transcriptFile = located.stdout.trim().split("\n")[0] ?? "";
         let providerSessionId: string | null = null;
@@ -6660,6 +6751,128 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           : withCaptureReadPass(self).pipe(Effect.provideService(BlobStore, capture.blobs));
 
       /**
+       * The opencode conversation `agent` held, out of the conversations its database lists
+       * (`opencodeConversationOf`): the other opencode processes that open the same database are
+       * what could have started one of them instead. Null when it cannot be told.
+       */
+      const opencodeConversationFor = Effect.fn("SessionEngine.opencodeConversationFor")(function* (
+        session: Session,
+        agent: SessionProcess,
+        listed: ReadonlyArray<OpencodeConversation>,
+      ) {
+        const project = yield* projects.byId(session.projectId);
+        // The processes that open the same database: in capture mode the harness home rides the
+        // worktree's captures, so every session of the worktree; co-located, each session has a
+        // home of its own (`harnessHomePathOf`), so only this session's.
+        const sharing =
+          capture === null ? [session] : yield* sessions.listForWorktree(session.worktreeId);
+        const rows = yield* processes.listForSessions(sharing.map((row) => row.id));
+        const spanOf = (row: SessionProcess) =>
+          readOpencodeLaunchSnapshot(
+            processStatePathOf(project.storePath, row.sessionId, row.id),
+          ).pipe(Effect.map((atLaunch) => opencodeSpanOf(row, atLaunch)));
+        const others = yield* Effect.forEach(
+          rows.filter(
+            (row) =>
+              row.id !== agent.id && row.harness === "opencode" && isAgentProcessKind(row.kind),
+          ),
+          spanOf,
+        );
+        return opencodeConversationOf(listed, yield* spanOf(agent), others, Date.now());
+      });
+
+      /**
+       * The conversations an opencode launch starts beside (`OpencodeAgentSpan.atLaunch`), read
+       * before the harness starts from the database it is about to open. Co-located, that is the
+       * session's durable home. In capture mode, a fresh executor opens what it materialised from
+       * the head capture; a live one (a retained executor, or another session's it joins) holds
+       * whatever it wrote since its last capture, so it is flushed first and the head read once it
+       * has caught up with it. Null when that cannot be read, which leaves the launch's own
+       * conversations unknown; none on a first launch, with no database yet.
+       */
+      const opencodeLaunchSnapshot = Effect.fn("SessionEngine.opencodeLaunchSnapshot")(function* (
+        session: Session,
+        storePath: string,
+        liveExecutor: Workspace | null,
+      ) {
+        if (capture === null)
+          return yield* snapshotOpencodeHome(harnessHomePathOf(storePath, session.id));
+        if (liveExecutor !== null) {
+          // Caught up means the snapshot the flush followed was taken and holds everything: not
+          // only nothing pending, but no small snap failing, no quota refusal, no unreadable path.
+          // An answer that does not report snapshot health (SDK 0.37.2) is taken on its queue.
+          // One wait (`CHECKPOINT_FLUSH_TIMEOUT`), then no snapshot: the launch says so on its
+          // session line (`OPENCODE_SNAPSHOT_MISSING`) rather than wait twice as long.
+          const caughtUp = observeCaptureFlush(
+            session,
+            liveExecutor,
+            "opencode launch snapshot",
+            CHECKPOINT_FLUSH_TIMEOUT,
+            "suspend",
+          ).pipe(
+            Effect.map((reading) => {
+              if (reading === null) return false;
+              const behind = captureBehindReason(reading);
+              return behind === null || behind === CAPTURE_HEALTH_UNREPORTED;
+            }),
+          );
+          if (!(yield* caughtUp)) return null;
+        }
+        const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
+        if (head === null) return [];
+        const manifest = yield* capture.blobs
+          .get(head.manifestKey)
+          .pipe(Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)));
+        const blobs = capture.blobs;
+        const found = yield* withCaptureReadPass(
+          Effect.gen(function* () {
+            const files = yield* listCaptureFiles(manifest, "workspace", "harness");
+            return yield* capturedOpencode(manifest, files);
+          }),
+        ).pipe(Effect.provideService(BlobStore, blobs));
+        if (found.state === "absent") return [];
+        if (found.state === "torn" || found.conversations === null) return null;
+        return found.conversations.map((conversation) => conversation.id);
+      });
+
+      /**
+       * Commit a transcript-less harness's state (opencode) for `agent`: the manifest naming the
+       * conversation it held, which a resume opens by id, and the id on the process and session.
+       */
+      const commitConversationState = Effect.fn("SessionEngine.commitConversationState")(function* (
+        session: Session,
+        project: { readonly storePath: string },
+        agent: SessionProcess,
+        providerSessionId: string,
+      ) {
+        const harness = agent.harness ?? session.harness;
+        const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+        const manifestPath = path.join(stateDir, "manifest.json");
+        const manifest: HarnessStateManifest = {
+          harness,
+          providerSessionId,
+          capturedAt: new Date().toISOString(),
+        };
+        yield* Effect.tryPromise({
+          try: async () => {
+            await fs.mkdir(stateDir, { recursive: true });
+            await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+          },
+          catch: (cause) =>
+            new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "write-manifest",
+              path: manifestPath,
+              message: `Could not commit saved harness state for session ${session.id}.`,
+              cause,
+            }),
+        });
+        yield* processes.setProviderSessionId(agent.id, providerSessionId);
+        yield* sessions.setProviderSessionId(session.id, providerSessionId);
+        return { stateDir, manifest } satisfies LocatedHarnessState;
+      });
+
+      /**
        * One harvest of an agent at a time: a deferred harvest left running past its limit and a
        * recovery sweep's harvest of the same agent would each clear and rewrite the other's
        * manifest (Astra review, 2026-10-03).
@@ -6678,7 +6891,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture === null) return null;
         const harness = agent.harness ?? session.harness;
         const shape = HARNESS_STATE[harness];
-        if (shape === undefined || shape.liveTranscript === null) return null;
+        if (shape === undefined) return null;
+        if (shape.liveTranscript === null && shape.stateFile === undefined) return null;
         const project = yield* projects.byId(session.projectId);
         const chain = yield* capture.repo.headOf(session.worktreeId);
         const head = chain?.head ?? null;
@@ -6749,6 +6963,83 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         const pattern = shape.liveTranscript;
+        if (pattern === null) {
+          // A harness with no transcript file (opencode): its database in the capture holds the
+          // conversations, and the one this process held is read out of it by id. The capture
+          // itself is what a resume materialises; the manifest names the conversation to open.
+          const stateFile = `harness/${shape.stateFile}`;
+          const found = yield* capturedOpencode(manifest, files).pipe(
+            Effect.provideService(BlobStore, blobs),
+            Effect.mapError(
+              (cause) =>
+                new HarnessStateIOError({
+                  sessionId: session.id,
+                  operation: "read-transcript",
+                  path: stateFile,
+                  message: `Could not read the captured ${harness} database for session ${session.id}.`,
+                  cause,
+                }),
+            ),
+          );
+          if (found.state === "absent") return null;
+          // sealantd marks a database (or its log) that changed under every read as torn: what
+          // it holds is no answer either way, so the session is left unclassified, not a dead end.
+          if (found.state === "torn") {
+            return yield* new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "read-transcript",
+              path: stateFile,
+              message: `The captured ${harness} database for session ${session.id} was torn.`,
+              cause: null,
+            });
+          }
+          // Only a database with no conversation at all is a clean absence. One that does not
+          // open, or whose conversations Mend cannot tell are this process's, is no answer: the
+          // session is left unclassified (shown, resumable never by guess), as a torn one is.
+          const unknown = (message: string) =>
+            new HarnessStateIOError({
+              sessionId: session.id,
+              operation: "read-transcript",
+              path: stateFile,
+              message,
+              cause: null,
+            });
+          const listed = found.conversations;
+          if (listed === null) {
+            return yield* unknown(
+              `The captured ${harness} database for session ${session.id} does not open.`,
+            );
+          }
+          if (listed.length === 0) return null;
+          const providerSessionId = yield* opencodeConversationFor(session, agent, listed);
+          if (providerSessionId === null) {
+            // A process that named no conversation, and whose launch snapshot holds every one
+            // the database lists, started none: a provable absence, not an unknown.
+            const atLaunch = yield* readOpencodeLaunchSnapshot(
+              processStatePathOf(project.storePath, session.id, agent.id),
+            );
+            if (
+              agent.providerSessionId === null &&
+              atLaunch !== null &&
+              listed.every((conversation) => atLaunch.includes(conversation.id))
+            ) {
+              return null;
+            }
+            return yield* unknown(
+              `opencode left no conversation Mend can tell is session ${session.id}'s; refusing to open another one.`,
+            );
+          }
+          const located = yield* commitConversationState(
+            session,
+            project,
+            agent,
+            providerSessionId,
+          );
+          yield* Effect.logInfo("session engine: harness state observed at capture").pipe(
+            Effect.annotateLogs({ sessionId: session.id, captureN: head.n, seq: String(head.seq) }),
+          );
+          return located;
+        }
         // Never a conversation Mend carried in from another session (docs/adr/0009, "Codex"),
         // and the newest of the rest: a resumed session's home holds several of its own.
         const carried = parseCarriedTranscripts(
@@ -6850,6 +7141,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (agent === null) return null;
         if (capture !== null) return yield* inOneReadPass(harvestFromCapture(session, agent));
         const harnessHome = harnessHomePathOf(project.storePath, session.id);
+        if (HARNESS_STATE[harness]?.liveTranscript === null) {
+          // No transcript file (opencode): the database in the durable home holds the
+          // conversations; the one this process held is read out of it by id.
+          const listed = yield* readOpencodeHome(harnessHome);
+          if (listed === null) return null;
+          const providerSessionId = yield* opencodeConversationFor(session, agent, listed);
+          if (providerSessionId === null) return null;
+          return yield* commitConversationState(session, project, agent, providerSessionId);
+        }
         const live = yield* locateLiveTranscript(harnessHome, harness);
         if (live === null) return null;
         const native = yield* Effect.tryPromise({
@@ -7178,11 +7478,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return;
           }
           const project = yield* projects.byId(session.projectId);
-          const live = yield* locateLiveTranscript(
+          const live = yield* hasLiveConversation(
             harnessHomePathOf(project.storePath, session.id),
             harness,
           );
-          yield* sessions.setHasTranscript(session.id, live !== null);
+          yield* sessions.setHasTranscript(session.id, live);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: transcript classification failed").pipe(
@@ -9227,6 +9527,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "-c",
           relocateHarnessHomeScript(HARNESS_HOME_MOUNT_PATH, {
             keepStoreReadable: capture === null,
+            // A capture made before sealantd left opencode's MCP logins out may still hold one.
+            dropCapturedLogins: capture !== null,
           }),
         ]);
         if (result.exitCode === 0) return;
@@ -9524,6 +9826,89 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
       });
+
+      /**
+       * Before the harness home relocation runs over a home a secret file was delivered into: a
+       * file at a path that has been reserved since (`.local/state/opencode` became a captured
+       * directory on 2026-10-04) would otherwise move into the captured root with its directory,
+       * and secret files are never captured. The home's own record names what Mend delivered
+       * there. Each such file is removed while it still holds the bytes Mend wrote on a plain path;
+       * anything else there (edited since, reached through a link) is moved whole to
+       * `~/.mend/secret-files-set-aside/` in the executor's own home, never deleted, and the
+       * session line says where. The record forgets each one that is gone from the path.
+       *
+       * Fails, and the caller refuses the relocation, when the record cannot be read or a file
+       * cannot be taken out: starting anyway could capture a secret. A record that is another
+       * workspace's names nothing here. Nothing to do on a fresh home, which has no record.
+       */
+      const evictReservedSecretFiles = Effect.fn("SessionEngine.evictReservedSecretFiles")(
+        function* (session: Session, workspace: Workspace) {
+          const read = yield* sealant
+            .exec(workspace, secretFilesDeliveredExec)
+            .pipe(
+              Effect.mapError((error) =>
+                secretFilesNotSetAside(`the home's record: ${error.message}`),
+              ),
+            );
+          if (read.exitCode !== 0)
+            return yield* secretFilesNotSetAside(`the home's record: exit ${read.exitCode}`);
+          const recordText = read.stdout.trim();
+          if (recordText === "") return;
+          const json = yield* secretCipher
+            .decrypt(recordText)
+            .pipe(
+              Effect.mapError(() => secretFilesNotSetAside("the home's record does not unseal")),
+            );
+          const record = decodeSecretFilesRecord(json, workspace.id);
+          if (record === null) return;
+          const reserved = record.files.filter(
+            (file) => reservedSecretFileRoot(file.path) !== null,
+          );
+          if (reserved.length === 0) return;
+          const stamp = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+          const result = yield* sealant
+            .exec(workspace, secretFilesSetAsideExec(reserved, stamp))
+            .pipe(Effect.mapError((error) => secretFilesNotSetAside(error.message)));
+          const outcomes = parseSecretFileOutcomes(result.stdout);
+          const done = new Map(
+            outcomes
+              .filter(
+                (outcome) =>
+                  outcome.outcome === "removed" ||
+                  outcome.outcome === "absent" ||
+                  outcome.outcome === "moved",
+              )
+              .map((outcome) => [outcome.path, outcome] as const),
+          );
+          const next = record.files.filter((file) => !done.has(file.path));
+          const nextRecord =
+            next.length === 0
+              ? null
+              : yield* secretCipher
+                  .encrypt(encodeSecretFilesRecord({ workspaceId: workspace.id, files: next }))
+                  .pipe(Effect.orElseSucceed(() => null));
+          yield* sealant.exec(workspace, secretFilesRecordExec(nextRecord)).pipe(Effect.ignore);
+          for (const outcome of done.values()) {
+            if (outcome.outcome !== "moved") continue;
+            const words = `secret file ~/${outcome.path} · under a directory sessions now save · moved to ${outcome.movedTo ?? `~/${SECRET_FILES_SET_ASIDE}`}`;
+            yield* Effect.logWarning(`session engine: ${words}`).pipe(
+              Effect.annotateLogs({ sessionId: session.id, path: `~/${outcome.path}` }),
+            );
+            yield* noteLaunchWords(session.id, words).pipe(Effect.ignore);
+          }
+          const left = reserved.filter((file) => !done.has(file.path));
+          if (result.exitCode !== 0 || left.length > 0) {
+            const failed = outcomes.filter((outcome) => outcome.outcome === "failed");
+            return yield* secretFilesNotSetAside(
+              failed.length > 0
+                ? failed
+                    .map((outcome) => `~/${outcome.path}: ${outcome.reason ?? "failed"}`)
+                    .join("; ")
+                : `exit ${result.exitCode}: ${left.map((file) => `~/${file.path}`).join(", ")}`,
+            );
+          }
+        },
+      );
 
       /**
        * The owner's secret files (docs/adr/0010-secret-files.md, `secret-files.ts`), into the
@@ -10964,6 +11349,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // native imports write into $HOME first; this step moves them into the durable root and
         // replaces each harness directory with a symlink before the process starts. Capture mode's
         // root is local to sealantd, so it does not need the co-located permission keeper.
+        // A secret file delivered at a path reserved since goes before its directory is captured,
+        // or the launch stops here: relocating anyway could save it.
+        yield* evictReservedSecretFiles(session, workspace).pipe(
+          Effect.tapError((error) =>
+            capture === null ? Effect.void : abandonExecutor(workspace, error.message),
+          ),
+          settleOnFailure,
+        );
         const relocation = relocateHarnessHome(session, workspace);
         if (capture === null) {
           // Keep the established co-located policy: report a failed mount relocation but let the
@@ -11072,10 +11465,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
+        // opencode's conversations as they stand before it starts: what it starts afterwards is its
+        // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
+        const opencodeAtLaunch =
+          session.harness === "opencode" && !interactiveShell && protocolStart === null
+            ? yield* opencodeLaunchSnapshot(session, project.storePath, null).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("session engine: opencode launch snapshot not read").pipe(
+                    Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                    Effect.as(null),
+                  ),
+                ),
+              )
+            : null;
         const launchedArgv =
           protocolStart === null
-            ? withHarnessBootstrap(session.harness, shapedArgv)
-            : withHarnessSetup(session.harness, shapedArgv);
+            ? withHarnessBootstrap(session.harness, shapedArgv, { captured: capture !== null })
+            : withHarnessSetup(session.harness, shapedArgv, { captured: capture !== null });
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
           Effect.andThen(
             sealant.openSession(
@@ -11154,6 +11560,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label: session.harness,
           argv: shapedArgv,
         });
+        if (opencodeAtLaunch !== null) {
+          yield* writeOpencodeLaunchSnapshot(
+            processStatePathOf(project.storePath, sessionId, agentProcess.id),
+            opencodeAtLaunch,
+          ).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: opencode launch snapshot not kept").pipe(
+                Effect.annotateLogs({ sessionId, error: String(error) }),
+              ),
+            ),
+          );
+        }
         if (protocolStart !== null) {
           yield* protocolHost
             .attach({
@@ -11197,6 +11615,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
         yield* clearStaleStartSummary(sessionId);
+        // After the stale words go, as the setup line does: said before, it went with them.
+        if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
+          yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+        }
         if (setupSkippedFrom !== null) {
           yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
         }
@@ -11714,6 +12136,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
+          // A secret file delivered at a path reserved since goes before its directory is captured,
+          // or the resume stops here: relocating anyway could save it.
+          yield* evictReservedSecretFiles(session, workspace).pipe(
+            Effect.tapError((error) =>
+              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
+                Effect.ignore,
+              ),
+            ),
+          );
           const relocation = relocateHarnessHome(session, workspace);
           if (capture === null) {
             yield* relocation.pipe(
@@ -11771,10 +12202,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
             : argv;
+          // opencode's conversations as they stand before it starts: what it starts afterwards is its
+          // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
+          const opencodeAtLaunch =
+            session.harness === "opencode" && !interactiveShell && protocolStart === null
+              ? yield* opencodeLaunchSnapshot(session, project.storePath, workspace).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("session engine: opencode launch snapshot not read").pipe(
+                      Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                      Effect.as(null),
+                    ),
+                  ),
+                )
+              : null;
           const launchedArgv =
             protocolStart === null
-              ? withHarnessBootstrap(session.harness, shapedArgv)
-              : withHarnessSetup(session.harness, shapedArgv);
+              ? withHarnessBootstrap(session.harness, shapedArgv, { captured: capture !== null })
+              : withHarnessSetup(session.harness, shapedArgv, { captured: capture !== null });
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
               sealant.openSession(
@@ -11843,6 +12287,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             label: session.harness,
             argv: shapedArgv,
           });
+          if (opencodeAtLaunch !== null) {
+            yield* writeOpencodeLaunchSnapshot(
+              processStatePathOf(project.storePath, sessionId, agentProcess.id),
+              opencodeAtLaunch,
+            ).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: opencode launch snapshot not kept").pipe(
+                  Effect.annotateLogs({ sessionId, error: String(error) }),
+                ),
+              ),
+            );
+          }
           if (protocolStart !== null) {
             yield* protocolHost
               .attach({
@@ -11880,6 +12336,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The retained executor answered and started this process: what an earlier look at it
           // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
           yield* clearStaleStartSummary(sessionId);
+          if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
+            yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+          }
           // As at a cold launch, on the machine that is already up (`agentStartingWords`).
           const startingWords =
             protocolStart === null && !interactiveShell
@@ -12150,8 +12609,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // launchInternal lays the conversation down for every supported
         // harness, so either agent opens it natively from inside the shell.
         if (target === "shell") {
+          // A shell opens no conversation: saved state it cannot read, or a conversation Mend
+          // cannot tell is the session's (opencode, review 2026-10-04 round 4), is no state here,
+          // never a refusal.
           const located = yield* harnessStateFor(session).pipe(
-            Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
+            Effect.catchTags({
+              HarnessStateNotFoundError: () => Effect.succeed(null),
+              HarnessStateIOError: () => Effect.succeed(null),
+              HarnessStateInvalidError: () => Effect.succeed(null),
+            }),
           );
           yield* sessions.reopen(sessionId, "running");
           return yield* retainCurrentWorkspace
@@ -12168,14 +12634,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
 
-        // Resume addresses the LATEST agent process's capture (its provider session id).
-        const located = yield* harnessStateFor(session);
+        // Resume addresses the LATEST agent process's capture (its provider session id). opencode
+        // keeps no file to find: what is missing is a conversation Mend can tell is this
+        // session's, and the refusal says so.
+        const located = yield* harnessStateFor(session).pipe(
+          Effect.mapError((error) =>
+            error._tag === "HarnessStateNotFoundError" && session.harness === "opencode"
+              ? new HarnessStateInvalidError({
+                  sessionId,
+                  path: error.path,
+                  message: `opencode left no conversation Mend can tell is session ${sessionId}'s; refusing to open another one.`,
+                  cause: error,
+                })
+              : error,
+          ),
+        );
         const { stateDir, manifest } = located;
         let argv = defaultArgv;
         let nativeImport: ConvertedNativeSession | null = null;
         if (
           manifest.harness === target &&
-          (target === "claude" || target === "codex") &&
+          (target === "claude" || target === "codex" || target === "opencode") &&
           manifest.providerSessionId === null
         ) {
           return yield* new HarnessStateInvalidError({
@@ -14232,11 +14711,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // barrier. Checkpoint and manual flushes also register same-epoch final captures.
             continue;
           }
-          const live = yield* locateLiveTranscript(
+          const live = yield* hasLiveConversation(
             harnessHomePathOf(project.storePath, session.id),
             session.harness,
           );
-          yield* sessions.setHasTranscript(session.id, live !== null);
+          yield* sessions.setHasTranscript(session.id, live);
         }
       });
       // Boot runs with no request context, and the platform answers for nobody: every piece of

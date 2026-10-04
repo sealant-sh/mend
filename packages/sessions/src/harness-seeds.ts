@@ -1,3 +1,5 @@
+import { OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
+
 import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
 
 /**
@@ -107,15 +109,74 @@ const CHATGPT_LOGIN_PROGRAM = [
 ].join("");
 
 /**
+ * The model opencode opens on when nothing chose one (`OPENCODE_DEFAULT_MODEL`), written as its
+ * last used model: `model.json` in its state directory, `{recent: [{providerID, modelID}], …}`,
+ * the list opencode reads after `--model` and the `model` of its config and before falling back
+ * to the first provider it sees (opencode 1.18.34, `tui/src/context/local.tsx`). That fallback is
+ * GitHub Copilot in a workspace, from the git token, and Copilot refuses it.
+ *
+ * Written only when opencode holds an `openai` login (the one `CHATGPT_LOGIN_PROGRAM` wrote, or the
+ * user's own) and the file names no recent model: a model picked in opencode stays, and every
+ * other key in the file is kept. A file that is not a JSON object is left alone.
+ *
+ * `argv[1]` is opencode's `auth.json`, `argv[2]` its `model.json`, `argv[3]` the model.
+ */
+const OPENCODE_MODEL_PROGRAM = [
+  `const fs=require("fs"),path=require("path"),[authFile,file,model]=process.argv.slice(1);`,
+  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
+  `const auth=read(authFile);if(!auth||!auth.openai)process.exit(0);`,
+  `const state=read(file);if(state===null||(Array.isArray(state.recent)&&state.recent.length>0))process.exit(0);`,
+  `const slash=model.indexOf("/");if(slash<1)process.exit(0);`,
+  `state.recent=[{providerID:model.slice(0,slash),modelID:model.slice(slash+1)}];`,
+  `fs.mkdirSync(path.dirname(file),{recursive:true});const tmp=file+".mend-seed-"+process.pid;`,
+  `fs.writeFileSync(tmp,JSON.stringify(state));fs.renameSync(tmp,file);`,
+].join("");
+
+/**
+ * Where opencode keeps the logins of the MCP servers it connects to (`mcp-auth.json`, tokens and
+ * client secrets), kept out of saved state in capture mode: its data directory is the harness home
+ * a capture saves and the next session in the worktree, anyone's, materialises. Until sealantd
+ * leaves the file out of captures, as it does opencode's `auth.json` (sealantd#136,
+ * PLATFORM-FEEDBACK.md), the file there is a link to `~/.mend/opencode/mcp-auth.json` in the
+ * executor's own home, which opencode writes through (it writes the file in place,
+ * `core/src/fs-util.ts` `writeJson`). A plain file found there came from a capture, maybe another
+ * person's, and is removed unread (as capture mode's relocation also does before any launch,
+ * `CAPTURED_LOGIN_FILES`); a link that leads anywhere else is replaced. A home where the link
+ * cannot be made stops the launch rather than let the logins be saved. Two launches into one
+ * executor at once both end with the same link.
+ *
+ * Part of the seed only for a capture launch, which Mend knows (`withHarnessSetup`'s
+ * `captured`): the executor's environment does not say, since sealantd consumes its capture
+ * variables before any process starts. A co-located session's harness home is its own and leaves
+ * the file out of what it saves, so the person's MCP logins stay there across relaunches.
+ */
+export const OPENCODE_MCP_AUTH_SEED =
+  `d="\${XDG_DATA_HOME:-$HOME/.local/share}/opencode"; f="$d/mcp-auth.json"; k="$HOME/.mend/opencode"; ` +
+  `if [ -e "$f" ] && [ ! -L "$f" ]; then rm -rf "$f"; fi; ` +
+  `kp=$( (umask 077; mkdir -p "$k") 2>/dev/null && cd "$k" 2>/dev/null && pwd -P) || kp=""; ` +
+  `case "$kp" in ""|/workspace|/workspace/*) rm -f "$f"; ` +
+  `echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1;; esac; ` +
+  `[ "$(readlink "$f" 2>/dev/null)" = "$kp/mcp-auth.json" ] || ` +
+  `{ mkdir -p "$d" && { ln -sfn "$kp/mcp-auth.json" "$f" 2>/dev/null || [ "$(readlink "$f" 2>/dev/null)" = "$kp/mcp-auth.json" ]; }; } || ` +
+  `{ echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1; }; `;
+
+/** opencode's seed up to its MCP logins, which a capture launch adds (`OPENCODE_CAPTURED_SEED`). */
+const OPENCODE_SEED_HEAD =
+  `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" openai "" 2>/dev/null; ` +
+  `node -e '${OPENCODE_MODEL_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" "\${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json" '${OPENCODE_DEFAULT_MODEL}' 2>/dev/null; `;
+
+/**
  * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the
  * launch's environment, pi's project trust its `--approve`). Each writes the ChatGPT login it runs
  * on (`CHATGPT_LOGIN_PROGRAM`) and turns off its own update check, which a workspace's image owns:
- * Core installs each harness at build time. pi's first sets up the person's pi profile, when one
+ * Core installs each harness at build time. opencode's then names the model it opens on when
+ * nothing else does (`OPENCODE_MODEL_PROGRAM`), and in capture mode keeps its MCP logins out of
+ * saved state (`OPENCODE_CAPTURED_SEED`). pi's first sets up the person's pi profile, when one
  * was delivered (`PI_PROFILE_PROGRAM`), so the login's default provider defers to theirs.
  */
-export const OPENCODE_SEED =
-  `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" openai "" 2>/dev/null; ` +
-  `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
+export const OPENCODE_SEED = OPENCODE_SEED_HEAD + `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
+export const OPENCODE_CAPTURED_SEED =
+  OPENCODE_SEED_HEAD + OPENCODE_MCP_AUTH_SEED + `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
 export const PI_SEED =
   `node -e '${PI_PROFILE_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; ` +
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" openai-codex "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json" 2>/dev/null; ` +
@@ -167,16 +228,24 @@ export const withoutCodexDaemon = (argv: ReadonlyArray<string>): ReadonlyArray<s
   return [head, ...CODEX_DAEMON_OFF, ...rest];
 };
 
-/** `argv` behind its harness's seed; a harness without one runs as it is. */
+/**
+ * `argv` behind its harness's seed; a harness without one runs as it is. `captured`: a capture
+ * launch, whose harness home the next session in the worktree materialises (opencode keeps its MCP
+ * logins out of it then, `OPENCODE_CAPTURED_SEED`).
+ */
 export const withHarnessSetup = (
   harness: string,
   argv: ReadonlyArray<string>,
+  options: { readonly captured?: boolean } = {},
 ): ReadonlyArray<string> => {
   if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
   if (harness === "codex") {
     return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...withoutCodexDaemon(withCodexMemory(argv))];
   }
-  if (harness === "opencode") return ["sh", "-c", OPENCODE_SEED, "sh", ...argv];
+  if (harness === "opencode") {
+    const seed = options.captured === true ? OPENCODE_CAPTURED_SEED : OPENCODE_SEED;
+    return ["sh", "-c", seed, "sh", ...argv];
+  }
   if (harness === "pi") return ["sh", "-c", PI_SEED, "sh", ...argv];
   return argv;
 };

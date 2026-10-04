@@ -3,12 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   CLAUDE_ONBOARDING_SEED,
   CODEX_TRUST_SEED,
   COPY_REFRESH_TOKEN,
+  OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
   PI_SEED,
   withCodexMemory,
@@ -270,7 +272,7 @@ const codexCopy = (home: string, exp: number, account = "acct-1") => {
 /** Run pi's or opencode's seed with no XDG or pi overrides, so each reads its default paths. */
 const runToolSeed = (seed: string, home: string) => {
   const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
-  for (const name of ["XDG_DATA_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
+  for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
   const result = spawnSync("sh", ["-c", seed, "sh", "sh", "-c", "echo ran"], {
     encoding: "utf8",
     env,
@@ -361,6 +363,69 @@ describe("pi and opencode seeds: the ChatGPT login from the Codex copy", () => {
     expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
     expect(fs.existsSync(path.join(home, ".pi", "agent", "auth.json"))).toBe(false);
     expect(fs.existsSync(path.join(home, ".local", "share", "opencode", "auth.json"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".local", "state", "opencode", "model.json"))).toBe(false);
+  });
+});
+
+const modelFile = (home: string) => path.join(home, ".local", "state", "opencode", "model.json");
+
+describe("opencode's seed: the model it opens on", () => {
+  const [providerID, modelID] = OPENCODE_DEFAULT_MODEL.split("/");
+
+  it("names the ChatGPT login's model as the last used one, so the git token's Copilot is not opencode's pick", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
+    expect(readJson(modelFile(home))).toEqual({ recent: [{ providerID, modelID }] });
+  });
+
+  it("fills an empty list and keeps every other key opencode wrote", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    write(
+      modelFile(home),
+      JSON.stringify({
+        recent: [],
+        favorite: [{ providerID: "openai", modelID: "gpt-5.5" }],
+        variant: { "github-copilot/claude-sonnet-4.6": "default" },
+      }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(readJson(modelFile(home))).toEqual({
+      recent: [{ providerID, modelID }],
+      favorite: [{ providerID: "openai", modelID: "gpt-5.5" }],
+      variant: { "github-copilot/claude-sonnet-4.6": "default" },
+    });
+  });
+
+  it("keeps a model picked in opencode, and a file it cannot read as an object", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    const picked = JSON.stringify({ recent: [{ providerID: "anthropic", modelID: "opus" }] });
+    write(modelFile(home), picked);
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.readFileSync(modelFile(home), "utf8")).toBe(picked);
+    write(modelFile(home), "[not an object");
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.readFileSync(modelFile(home), "utf8")).toBe("[not an object");
+  });
+
+  it("names the model over the user's own openai login too, and names none without one", () => {
+    const home = makeHome();
+    write(
+      path.join(home, ".local", "share", "opencode", "auth.json"),
+      JSON.stringify({ anthropic: { type: "api", key: "sk-ant" } }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.existsSync(modelFile(home))).toBe(false);
+    write(
+      path.join(home, ".local", "share", "opencode", "auth.json"),
+      JSON.stringify({
+        openai: { type: "oauth", access: "mine", refresh: "real", expires: 1, accountId: "x" },
+      }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(readJson(modelFile(home))).toEqual({ recent: [{ providerID, modelID }] });
   });
 });
 
@@ -384,6 +449,107 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
     const own = ["codex", "-c", "features.memories=false"];
     expect(withCodexMemory(own)).toEqual(own);
     expect(withCodexMemory(["claude"])).toEqual(["claude"]);
+  });
+});
+
+const mcpAuth = (home: string) => path.join(home, ".local", "share", "opencode", "mcp-auth.json");
+const kept = (home: string) => path.join(home, ".mend", "opencode", "mcp-auth.json");
+
+/**
+ * The opencode seed a launch gets (`withHarnessSetup`): a capture launch's, or a co-located one's.
+ * The environment carries nothing about the mode, as an executor's does not (sealantd consumes
+ * its capture variables before any process starts): every `SEALANT_` variable is left out.
+ */
+const runOpencodeSeed = (home: string, options: { readonly captured?: boolean } = {}) => {
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries({ ...process.env, HOME: home }).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" &&
+        !entry[0].startsWith("SEALANT_") &&
+        !entry[0].startsWith("XDG_"),
+    ),
+  );
+  const argv = withHarnessSetup("opencode", ["sh", "-c", "echo ran"], {
+    captured: options.captured !== false,
+  });
+  return spawnSync(argv[0] ?? "sh", argv.slice(1), { encoding: "utf8", env });
+};
+
+describe("opencode's seed: MCP logins stay out of saved state", () => {
+  it("is a capture launch's alone, decided by Mend: the co-located seed has no MCP block", () => {
+    expect(OPENCODE_CAPTURED_SEED).toContain("mcp-auth.json");
+    expect(OPENCODE_SEED).not.toContain("mcp-auth.json");
+    expect(OPENCODE_CAPTURED_SEED).not.toContain("SEALANT_");
+    expect(withHarnessSetup("opencode", ["opencode"], { captured: true })[2]).toBe(
+      OPENCODE_CAPTURED_SEED,
+    );
+    expect(withHarnessSetup("opencode", ["opencode"])[2]).toBe(OPENCODE_SEED);
+  });
+
+  it("links mcp-auth.json to the executor's own home, which opencode writes through", () => {
+    const home = makeHome();
+    expect(runOpencodeSeed(home).stdout).toBe("ran\n");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(mcpAuth(home))).toBe(
+      fs.realpathSync(path.join(home, ".mend", "opencode")) + "/mcp-auth.json",
+    );
+    // opencode writes the file in place: the tokens land outside the saved data directory.
+    fs.writeFileSync(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SYNTHETIC-MCP"}}}');
+    expect(fs.readFileSync(kept(home), "utf8")).toContain("SYNTHETIC-MCP");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    // A second launch keeps its own link and the logins behind it.
+    runOpencodeSeed(home);
+    expect(fs.readFileSync(kept(home), "utf8")).toContain("SYNTHETIC-MCP");
+  });
+
+  it("removes, unread, a plain mcp-auth.json a capture brought, maybe another person's", () => {
+    const home = makeHome();
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SOMEONE-ELSES"}}}');
+    runOpencodeSeed(home);
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(kept(home))).toBe(false);
+  });
+
+  it("leaves a co-located session's own MCP logins where they are", () => {
+    const home = makeHome();
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"MINE"}}}');
+    expect(runOpencodeSeed(home, { captured: false }).stdout).toBe("ran\n");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(mcpAuth(home), "utf8")).toContain("MINE");
+    expect(fs.existsSync(path.join(home, ".mend"))).toBe(false);
+  });
+
+  it("two launches into one executor at once both start, on the same link", () => {
+    const home = makeHome();
+    const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
+    for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME"]) delete env[name];
+    for (let round = 0; round < 5; round++) {
+      fs.rmSync(path.join(home, ".local"), { recursive: true, force: true });
+      const result = spawnSync(
+        "sh",
+        [
+          "-c",
+          's="$1"; shift; for i in 1 2 3 4; do sh -c "$s" sh sh -c "echo ran" & done; wait',
+          "sh",
+          OPENCODE_CAPTURED_SEED,
+        ],
+        { encoding: "utf8", env },
+      );
+      expect(result.stdout, result.stderr).toBe("ran\nran\nran\nran\n");
+      expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  it("does not start opencode when the logins cannot be kept out of saved state", () => {
+    const home = makeHome();
+    // `~/.mend` a file: no place in the executor's own home to keep them.
+    fs.writeFileSync(path.join(home, ".mend"), "");
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SOMEONE-ELSES"}}}');
+    const result = runOpencodeSeed(home);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("cannot be kept out of saved state");
+    expect(fs.existsSync(mcpAuth(home))).toBe(false);
   });
 });
 

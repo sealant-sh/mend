@@ -155,7 +155,8 @@ after turns it runs itself, so an agent attached to a terminal lands on its own 
 session is picked up on the phone. From the terminal, land it with `mend land`.
 
 Codex uses model, effort, permission, and speed options. Claude uses model, effort, and permission
-options. OpenCode currently uses only the prompt; the other harness flags are accepted but ignored.
+options. OpenCode uses model and permission options; its models are named `provider/model`, and
+without one it opens on `openai/gpt-6.1-sol` through your ChatGPT login.
 
 ### Models
 

@@ -6,12 +6,16 @@ import * as path from "node:path";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { writeOpencodeDatabase } from "../test/opencode-db.ts";
 import {
+  CAPTURED_LOGIN_FILES,
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
   distillOpeningPrompt,
   extractTranscript,
+  hasLiveConversation,
   hasLiveHarnessState,
+  harvestHarnessStateScript,
   locateLiveTranscript,
   HARNESS_HOME_CREDENTIALS,
   nativeResumeArgv,
@@ -161,7 +165,43 @@ describe("transcript adapters", () => {
 
   it("leaves launches without resumable native state unchanged", () => {
     expect(nativeResumeArgv("codex", null, ["codex"])).toEqual(["codex"]);
-    expect(nativeResumeArgv("opencode", "session-id", ["opencode"])).toEqual(["opencode"]);
+  });
+
+  it("opens opencode's own conversation by id, and never guesses one", () => {
+    expect(nativeResumeArgv("opencode", "ses_a", ["opencode"])).toEqual([
+      "opencode",
+      "--session",
+      "ses_a",
+    ]);
+    expect(nativeResumeArgv("opencode", "ses_a", ["opencode", "--model", "openai/x"])).toEqual([
+      "opencode",
+      "--session",
+      "ses_a",
+      "--model",
+      "openai/x",
+    ]);
+    // No id is no resume: never `--continue`, which opens whichever conversation is newest.
+    expect(nativeResumeArgv("opencode", null, ["opencode"])).toEqual(["opencode"]);
+    // A launch that names a conversation, or brings a prompt (submitted only from opencode's home
+    // screen, which opening a conversation skips), stays as it is; so does one in a shell.
+    for (const argv of [
+      ["opencode", "--continue"],
+      ["opencode", "-c"],
+      ["opencode", "--session", "ses_1"],
+      ["opencode", "-s", "ses_1"],
+      ["opencode", "--prompt", "fix the test"],
+      ["sh", "-c", "exec opencode", "sh"],
+    ]) {
+      expect(nativeResumeArgv("opencode", "ses_a", argv)).toEqual(argv);
+    }
+  });
+
+  it("relocates opencode's state directory beside its data, and knows its database", () => {
+    expect(HARNESS_STATE["opencode"]?.homeDirs).toEqual([
+      ".local/share/opencode",
+      ".local/state/opencode",
+    ]);
+    expect(HARNESS_STATE["opencode"]?.stateFile).toBe(".local/share/opencode/opencode.db");
   });
 });
 
@@ -422,7 +462,7 @@ describe("harness home", () => {
       ).toBe("new\n");
       expect(fs.statSync(path.join(captured, ".codex")).mode & 0o777).toBe(0o700);
       expect(fs.readFileSync(path.join(captured, ".codex/auth.json"), "utf8")).toBe("codex\n");
-      for (const dir of [".claude", ".codex", ".local/share/opencode"]) {
+      for (const dir of [".claude", ".codex", ".local/share/opencode", ".local/state/opencode"]) {
         expect(fs.realpathSync(path.join(home, dir))).toBe(path.join(captured, dir));
       }
       // A rerun over the links changes nothing.
@@ -474,5 +514,157 @@ describe("harness home", () => {
     expect(
       await Effect.runPromise(locateLiveTranscript(path.join(home, "missing"), "codex")),
     ).toBeNull();
+  });
+
+  it("counts opencode's database as a conversation only when it opens and lists one", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harness-home-"));
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    const db = path.join(home, ".local", "share", "opencode", "opencode.db");
+    fs.mkdirSync(path.dirname(db), { recursive: true });
+    // A link where the database belongs leads anywhere; it is not the harness's state.
+    fs.symlinkSync("/etc/hostname", db);
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    fs.rmSync(db);
+    // Zero bytes, a header and nothing else, and a real database with no conversation: none.
+    fs.writeFileSync(db, "");
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    fs.writeFileSync(db, "SQLite format 3\0");
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    fs.rmSync(db);
+    writeOpencodeDatabase(db, []);
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(false);
+    writeOpencodeDatabase(db, [{ id: "ses_1", createdAt: 1 }]);
+    expect(await Effect.runPromise(hasLiveConversation(home, "opencode"))).toBe(true);
+    // A harness with a transcript answers by its transcript; one with neither, false.
+    expect(await Effect.runPromise(hasLiveConversation(home, "claude"))).toBe(false);
+    const projectDir = path.join(home, ".claude", "projects", "-workspace-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(path.join(projectDir, "0f9a2c3d-1111-2222-3333-444455556666.jsonl"), "{}\n");
+    expect(await Effect.runPromise(hasLiveConversation(home, "claude"))).toBe(true);
+    expect(await Effect.runPromise(hasLiveConversation(home, "unknown"))).toBe(false);
+  });
+});
+
+describe("the co-located harvest keeps no login", () => {
+  it("archives opencode's data and state without its login files, and no harness's login", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-harvest-logins-"));
+    const home = path.join(root, "home");
+    const put = (relative: string, text: string) => {
+      fs.mkdirSync(path.dirname(path.join(home, relative)), { recursive: true });
+      fs.writeFileSync(path.join(home, relative), text);
+    };
+    for (const credential of HARNESS_HOME_CREDENTIALS) {
+      put(credential, `{"access":"SYNTHETIC-LOGIN-${credential}"}`);
+    }
+    put(".local/share/opencode/opencode.db", "the conversations");
+    put(".local/share/opencode/snapshot/x", "a snapshot");
+    put(".local/state/opencode/model.json", '{"recent":[]}');
+    put(".claude/projects/-workspace-repo/s.jsonl", "{}\n");
+    put(".pi/agent/settings.json", "{}");
+    for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
+      const packed = spawnSync(
+        "sh",
+        ["-c", harvestHarnessStateScript(shape.paths, path.join(root, "no-mount"))],
+        { env: { ...process.env, HOME: home, TMPDIR: root }, encoding: "utf8" },
+      );
+      if (packed.status === 3) continue;
+      expect(packed.status, `${harness}: ${packed.stderr}`).toBe(0);
+      const archive = path.join(root, `${harness}.tgz`);
+      fs.writeFileSync(archive, Buffer.from(packed.stdout.trim(), "base64"));
+      const listed = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" }).stdout;
+      for (const credential of HARNESS_HOME_CREDENTIALS) {
+        expect(listed, `${harness}: ${credential}`).not.toContain(credential);
+      }
+      const unpacked = path.join(root, `unpacked-${harness}`);
+      fs.mkdirSync(unpacked);
+      spawnSync("tar", ["-xzf", archive, "-C", unpacked]);
+      const bytes = execFileSync("sh", ["-c", 'find "$1" -type f -exec cat {} +', "sh", unpacked], {
+        encoding: "utf8",
+      });
+      expect(bytes, harness).not.toContain("SYNTHETIC-LOGIN");
+      if (harness === "opencode") {
+        expect(listed).toContain(".local/share/opencode/opencode.db");
+        expect(listed).toContain(".local/share/opencode/snapshot/x");
+        expect(listed).toContain(".local/state/opencode/model.json");
+      }
+    }
+    expect(HARNESS_HOME_CREDENTIALS).toContain(".local/share/opencode/mcp-auth.json");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+const relocateWithLogins = (home: string, root: string, dropCapturedLogins: boolean) => {
+  const run = spawnSync(
+    "sh",
+    ["-c", relocateHarnessHomeScript(root, { keepStoreReadable: false, dropCapturedLogins })],
+    { env: { ...process.env, HOME: home }, encoding: "utf8" },
+  );
+  expect(run.stderr).toBe("");
+  expect(run.status).toBe(0);
+};
+describe("a login an older capture brought (review 2026-10-04, round 4)", () => {
+  it("capture mode removes a plain mcp-auth.json unread before any harness starts; co-located keeps its own", () => {
+    for (const dropCapturedLogins of [true, false]) {
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-captured-login-"));
+      const home = path.join(scratch, "home");
+      const root = path.join(scratch, "harness");
+      // What a materialised head brought: the earlier person's MCP logins beside the database.
+      const data = path.join(root, ".local", "share", "opencode");
+      fs.mkdirSync(data, { recursive: true });
+      fs.mkdirSync(home);
+      fs.writeFileSync(
+        path.join(data, "mcp-auth.json"),
+        '{"s":{"tokens":{"accessToken":"ALICE"}}}',
+      );
+      fs.writeFileSync(path.join(data, "opencode.db"), "the conversations");
+      relocateWithLogins(home, root, dropCapturedLogins);
+      const login = path.join(home, ".local", "share", "opencode", "mcp-auth.json");
+      expect(fs.existsSync(login), String(dropCapturedLogins)).toBe(!dropCapturedLogins);
+      expect(fs.existsSync(path.join(home, ".local", "share", "opencode", "opencode.db"))).toBe(
+        true,
+      );
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the link the opencode seed made, and the logins behind it", () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-captured-login-"));
+    const home = path.join(scratch, "home");
+    const root = path.join(scratch, "harness");
+    const data = path.join(root, ".local", "share", "opencode");
+    fs.mkdirSync(data, { recursive: true });
+    fs.mkdirSync(path.join(home, ".mend", "opencode"), { recursive: true });
+    const kept = path.join(home, ".mend", "opencode", "mcp-auth.json");
+    fs.writeFileSync(kept, "mine");
+    fs.symlinkSync(kept, path.join(data, "mcp-auth.json"));
+    relocateWithLogins(home, root, true);
+    expect(fs.lstatSync(path.join(data, "mcp-auth.json")).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(kept, "utf8")).toBe("mine");
+    expect(CAPTURED_LOGIN_FILES.map((file) => file.path)).toEqual([
+      ".local/share/opencode/mcp-auth.json",
+    ]);
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("removes a link planted at mcp-auth.json that leads anywhere but the executor's own home", () => {
+    // Alice links the file into the worktree from her shell; the next person's opencode would
+    // write their MCP logins through it into the change.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-captured-login-"));
+    const home = path.join(scratch, "home");
+    const root = path.join(scratch, "harness");
+    const worktree = path.join(scratch, "repo");
+    const data = path.join(root, ".local", "share", "opencode");
+    fs.mkdirSync(data, { recursive: true });
+    fs.mkdirSync(home);
+    fs.mkdirSync(worktree);
+    fs.symlinkSync(path.join(worktree, ".planted"), path.join(data, "mcp-auth.json"));
+    relocateWithLogins(home, root, true);
+    expect(fs.existsSync(path.join(data, "mcp-auth.json"))).toBe(false);
+    expect(() => fs.lstatSync(path.join(data, "mcp-auth.json"))).toThrow();
+    // Co-located, the session's home is its own: nothing is removed.
+    fs.symlinkSync(path.join(worktree, ".planted"), path.join(data, "mcp-auth.json"));
+    relocateWithLogins(home, root, false);
+    expect(fs.lstatSync(path.join(data, "mcp-auth.json")).isSymbolicLink()).toBe(true);
+    fs.rmSync(scratch, { recursive: true, force: true });
   });
 });
