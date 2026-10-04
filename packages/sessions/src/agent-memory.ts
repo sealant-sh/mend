@@ -25,12 +25,20 @@ import { shellQuote } from "./workspace-files.ts";
  * One program delivers in both stores (`AGENT_MEMORY_DELIVER_PROGRAM`): the stored files are first
  * staged under `.mend/agent-memory-incoming/`, then the program puts each in place unless the
  * session changed it since the last delivery, moves aside (never deletes) a file Mend delivered and
- * no longer stores, and records what it delivered in `AGENT_MEMORY_DELIVERED`. The read-back
- * compares against that record.
+ * no longer stores, and records what it delivered in `AGENT_MEMORY_DELIVERED` and whose memory
+ * it is in `AGENT_MEMORY_OWNER`. The read-back compares against that record.
  */
 
 /** What was delivered, path to digest, relative to the harness home. */
 export const AGENT_MEMORY_DELIVERED = ".mend/agent-memory-delivered.json";
+
+/**
+ * Whose memory the harness home holds: the account the last delivery was for, relative to the
+ * harness home. In capture mode one home serves every session of a worktree, and a session that
+ * joins another person's executor runs its agent in that person's home (ADR 0002): the read-back
+ * credits what the home holds only to this account.
+ */
+export const AGENT_MEMORY_OWNER = ".mend/agent-memory-owner";
 
 /** Where the stored files wait for the program, relative to the harness home. */
 const AGENT_MEMORY_INCOMING = ".mend/agent-memory-incoming";
@@ -51,15 +59,17 @@ type MemoryFile = {
 
 /**
  * Puts the staged memory in place (`node -e`, argv: home, the incoming directory and a fresh kept
- * directory relative to it, and the stored files as `[{path, digest}]` JSON). Prints one
+ * directory relative to it, the stored files as `[{path, digest}]` JSON, and the account they are
+ * for, written to `AGENT_MEMORY_OWNER` before any file moves; "" writes none). Prints one
  * `memory <outcome> <path>` line per file: `written`, `unchanged` (already exactly the stored
  * file), `left` (the session changed it since the last delivery and Mend has not read it back),
  * `kept` (Mend no longer stores it; moved aside) or `error`. Exits 1 after any `error`.
  */
 export const AGENT_MEMORY_DELIVER_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
-  `const [home,incoming,kept,list]=process.argv.slice(1),store=JSON.parse(list);`,
+  `const [home,incoming,kept,list,owner]=process.argv.slice(1),store=JSON.parse(list);`,
   `const M=path.join(home,${JSON.stringify(AGENT_MEMORY_DELIVERED)});`,
+  `if(owner){const O=path.join(home,${JSON.stringify(AGENT_MEMORY_OWNER)});fs.mkdirSync(path.dirname(O),{recursive:true});fs.writeFileSync(O,owner)}`,
   `let before={};try{const v=JSON.parse(fs.readFileSync(M,"utf8"));if(v&&typeof v==="object")before=v}catch{}`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
   `const digestOf=p=>{try{const st=fs.lstatSync(p);if(!st.isFile())return "not-a-file";return sha(fs.readFileSync(p))}catch(e){if(e.code==="ENOENT")return null;throw e}};`,
@@ -130,25 +140,31 @@ export const planAgentMemory = (
   };
 };
 
-/** The exec that delivers `plan` into a workspace's harness home, once its files are staged. */
+/**
+ * The exec that delivers `plan`, `owner`'s memory, into a workspace's harness home, once its files
+ * are staged.
+ */
 export const deliverAgentMemoryExec = (
   home: string,
   plan: AgentMemoryPlan,
+  owner: string,
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
-  `exec node -e ${shellQuote(AGENT_MEMORY_DELIVER_PROGRAM)} "$1" "$2" "$3" "$4"`,
+  `exec node -e ${shellQuote(AGENT_MEMORY_DELIVER_PROGRAM)} "$1" "$2" "$3" "$4" "$5"`,
   "mend-agent-memory",
   home,
   AGENT_MEMORY_INCOMING,
   plan.kept,
   plan.list,
+  owner,
 ];
 
 /** Deliver into a harness home on this machine: the co-located store's mounted home. */
 export const materializeAgentMemory = (
   harnessHomePath: string,
   plan: AgentMemoryPlan,
+  owner: string,
 ): Effect.Effect<ReadonlyArray<AgentMemoryOutcome>, AgentMemoryDeliveryError> =>
   Effect.tryPromise({
     try: async () => {
@@ -168,6 +184,7 @@ export const materializeAgentMemory = (
           AGENT_MEMORY_INCOMING,
           plan.kept,
           plan.list,
+          owner,
         ],
         { encoding: "utf8" },
       );
@@ -200,6 +217,12 @@ export const parseAgentMemoryDelivered = (raw: string | null): Readonly<Record<s
   }
 };
 
+/** The owner record's account; anything empty or unreadable is "nobody said". */
+export const parseAgentMemoryOwner = (raw: string | null): string | null => {
+  const owner = raw?.trim() ?? "";
+  return owner === "" ? null : owner;
+};
+
 /** A file's bytes as a stored memory file: text when it is UTF-8 without NULs. */
 export const asMemoryFile = (filePath: string, bytes: Uint8Array): MemoryFile => {
   if (!bytes.includes(0)) {
@@ -217,12 +240,14 @@ export const asMemoryFile = (filePath: string, bytes: Uint8Array): MemoryFile =>
 };
 
 /**
- * What a read-back found: the files, what was delivered, and the paths that are there but were not
- * read (over the limit, or a database that did not open). A skipped path is not a deleted one:
- * `withoutSkipped` takes it out of `delivered`, so the stored file stays.
+ * What a read-back found: the files, what was delivered and for whom, and the paths that are there
+ * but were not read (over the limit, or a database that did not open). A skipped path is not a
+ * deleted one: `withoutSkipped` takes it out of `delivered`, so the stored file stays.
  */
 export interface AgentMemoryRead {
   readonly delivered: Readonly<Record<string, string>>;
+  /** Whose memory the home holds (`AGENT_MEMORY_OWNER`); null when it does not say. */
+  readonly owner: string | null;
   readonly files: ReadonlyArray<MemoryFile>;
   readonly skipped: ReadonlyArray<string>;
 }
@@ -282,13 +307,17 @@ export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<
       }
       files.push(asMemoryFile(file, consolidated));
     }
-    const delivered = await fs
-      .readFile(path.join(harnessHomePath, AGENT_MEMORY_DELIVERED), "utf8")
-      .then(
+    const readText = (file: string) =>
+      fs.readFile(path.join(harnessHomePath, file), "utf8").then(
         (raw) => raw,
         () => null,
       );
-    return { delivered: parseAgentMemoryDelivered(delivered), files, skipped };
+    return {
+      delivered: parseAgentMemoryDelivered(await readText(AGENT_MEMORY_DELIVERED)),
+      owner: parseAgentMemoryOwner(await readText(AGENT_MEMORY_OWNER)),
+      files,
+      skipped,
+    };
   });
 
 /**

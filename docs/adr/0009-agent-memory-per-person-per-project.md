@@ -78,6 +78,16 @@ much smaller: the memory.
    Every version Mend replaces or deletes is kept (the last twenty per file), so nothing an agent
    wrote is lost to another session's save.
 
+   In capture mode the head is the worktree's one home, and a session that joins another person's
+   executor (ADR 0002) runs its agent in that person's home, writing the same memory files. So
+   delivery also records whose memory the home holds (`.mend/agent-memory-owner`), even when nothing
+   is stored, and the read-back credits the home only to that person. A home whose owner was never
+   recorded counts as the owner of the worktree's first session. Any other session reads back
+   nothing. What a joined agent learned stays in the worktree's capture and goes into the executor
+   owner's memory with their read-back, as a turn under shared control does. It does not reach the
+   joiner's memory. (Amended 2026-10-05: the joiner's read-back used to store the holder's memory as
+   the joiner's.)
+
 4. **Import from the person's machine is the CLI's,** run from inside the repository:
    `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/`. Transcripts
    ("bring your previous sessions") are a later step: a transcript needs its paths rewritten for

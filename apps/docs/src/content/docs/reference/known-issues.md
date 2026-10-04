@@ -137,6 +137,13 @@ not before, so a session started meanwhile does not see what that one has learne
 When two of your sessions changed the same memory file, both sides' lines are kept, so a line both
 of them wrote can appear twice. The agent tidies its memory as it goes.
 
+## A session that joins someone else's executor uses their memory
+
+On a server, a worktree has one executor. A session you start in a worktree where another person's
+session is already running joins their executor, and its agent shares their harness home. It reads
+their memory, not yours, and what it learns there is saved to their memory when their agent ends,
+not to yours. Start your session in a worktree of your own to work from your memory.
+
 ## Codex memory builds slowly, and on your login
 
 Codex makes memory from a conversation only once it has been quiet for six hours, and only two at

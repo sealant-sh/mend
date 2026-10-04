@@ -9127,6 +9127,111 @@ describe("SessionEngine capture mode", () => {
     },
   );
 
+  it.each([
+    ["recorded as the holder's", true],
+    ["delivered before owners were recorded", false],
+  ])(
+    "agent memory in a joined executor is read back only for the person whose memory the home holds (%s; docs/adr/0009)",
+    { timeout: 20_000 },
+    async (_label, recorded) => {
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const logs: Array<string> = [];
+      const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
+      const learned = ".claude/projects/-workspace-repo/memory/learned.md";
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const holder = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(holder.id, ["claude"]);
+            const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-maria",
+            });
+            yield* engine.launch(joined.id, ["claude"]);
+            // One executor: Maria's agent runs in the holder's home.
+            expect(created).toHaveLength(1);
+            // Only the launch that made the executor delivers, and it records whose memory it is.
+            const deliveries = execCalls.filter((argv) => argv[3] === "mend-agent-memory");
+            expect(deliveries.map((argv) => argv.at(-1))).toEqual(["user-fixture"]);
+
+            // The worktree's one home as the executor saves it: what the agents there learned,
+            // in the one memory directory they share.
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            const executorRoot = path.join(tmp, "memory-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            fs.mkdirSync(path.join(home, path.dirname(learned)), { recursive: true });
+            fs.writeFileSync(path.join(home, learned), "the API listens on 3101\n");
+            if (recorded) {
+              fs.mkdirSync(path.join(home, ".mend"), { recursive: true });
+              fs.writeFileSync(path.join(home, ".mend/agent-memory-owner"), "user-fixture");
+            }
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              holder.worktreeId,
+              memory.leases.get(holder.worktreeId)?.epoch ?? 0,
+              request,
+              executorRoot,
+            );
+
+            // Maria's agent ends: none of it is stored as hers.
+            yield* engine.stop(joined.id);
+            yield* until(
+              () =>
+                readBacks.length > 0 ||
+                logs.some((line) => line.includes("agent memory not read back")),
+              "the joined session's read-back",
+            );
+            expect(readBacks.map((input) => input.userId)).toEqual([]);
+
+            // The holder's agent ends: the home's memory reaches its owner.
+            yield* engine.stop(holder.id);
+            yield* until(() => readBacks.length > 0, "the holder's read-back");
+            expect(readBacks.map((input) => [input.userId, input.sessionId])).toEqual([
+              ["user-fixture", holder.id],
+            ]);
+            expect(readBacks[0]?.session.map((file) => file.path)).toEqual([learned]);
+          }),
+        {
+          captured: memory,
+          logs,
+          agentMemoryLayer: agentMemoryLayerOf({
+            readBack: (input) =>
+              Effect.sync(() => {
+                readBacks.push(input);
+                return { saved: [], merged: [], deleted: [], skipped: [] };
+              }),
+          }),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            execCalls,
+          ),
+        },
+      );
+    },
+  );
+
   it("resume is lease-aware: a live lease attaches; an expired lease with a dead executor is a pickup that harvests from the head capture — and asks nothing of the dead executor", async () => {
     const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];

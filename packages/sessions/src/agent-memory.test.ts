@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   AGENT_MEMORY_DELIVERED,
   AGENT_MEMORY_KEPT_DIR,
+  AGENT_MEMORY_OWNER,
   materializeAgentMemory,
   mergeTextUnion,
   planAgentMemory,
@@ -30,8 +31,8 @@ const stored = (name: string, contents: string): StoredMemoryFile => {
   const file = { path: `${ROOT}/${name}`, encoding: "utf8" as const, contents };
   return { ...file, digest: agentMemoryDigest(file), updatedBySession: null };
 };
-const deliver = (home: string, files: ReadonlyArray<StoredMemoryFile>) =>
-  Effect.runPromise(materializeAgentMemory(home, planAgentMemory(files)));
+const deliver = (home: string, files: ReadonlyArray<StoredMemoryFile>, owner = "user-anna") =>
+  Effect.runPromise(materializeAgentMemory(home, planAgentMemory(files), owner));
 const inHome = (home: string, name: string) => path.join(home, ROOT, name);
 
 describe("delivering agent memory into a harness home", () => {
@@ -96,6 +97,17 @@ describe("delivering agent memory into a harness home", () => {
       `${ROOT}/learned.md`,
     ]);
     expect(read.delivered).toEqual({ [`${ROOT}/MEMORY.md`]: stored("MEMORY.md", "v1\n").digest });
+    expect(read.owner).toBe("user-anna");
+  });
+
+  it("records whose memory the home holds, with nothing stored too, and the next person's over it", async () => {
+    const home = makeHome();
+    await deliver(home, [], "user-anna");
+    expect(fs.readFileSync(path.join(home, AGENT_MEMORY_OWNER), "utf8")).toBe("user-anna");
+    await deliver(home, [stored("MEMORY.md", "v1\n")], "user-maria");
+    expect((await Effect.runPromise(readAgentMemoryFromHome(home))).owner).toBe("user-maria");
+    // A home no delivery recorded an owner in says nobody.
+    expect((await Effect.runPromise(readAgentMemoryFromHome(makeHome()))).owner).toBeNull();
   });
 });
 
@@ -146,6 +158,7 @@ describe("a memory file the read-back could not read", () => {
     expect(
       withoutSkipped({
         delivered: { a: "1", ".codex/memories_1.sqlite": "2" },
+        owner: null,
         files: [],
         skipped: [".codex/memories_1.sqlite"],
       }),

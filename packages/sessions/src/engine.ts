@@ -212,12 +212,14 @@ import * as Semaphore from "effect/Semaphore";
 
 import {
   AGENT_MEMORY_DELIVERED,
+  AGENT_MEMORY_OWNER,
   asMemoryFile,
   deliverAgentMemoryExec,
   materializeAgentMemory,
   mergeTextUnion,
   parseAgentMemoryDelivered,
   parseAgentMemoryOutcomes,
+  parseAgentMemoryOwner,
   planAgentMemory,
   readAgentMemoryFromHome,
   withoutSkipped,
@@ -9478,6 +9480,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The owner's agent memory for the project (`agent-memory.ts`, docs/adr/0009), into the
        * session's harness home after the relocation: host-side in the co-located store, through
        * exec in capture mode. Best-effort: an agent without it still starts.
+       *
+       * In capture mode the delivery runs even with nothing stored: it records the owner as whose
+       * memory the worktree's home now holds (`AGENT_MEMORY_OWNER`), which is what lets the
+       * read-back tell the executor's owner from a session that joined it.
        */
       const deliverAgentMemory = Effect.fn("SessionEngine.deliverAgentMemory")(function* (
         session: Session,
@@ -9497,17 +9503,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           if (stored.length === 0 && !deliveredBefore) return;
-          yield* logAgentMemoryDelivered(session.id, yield* materializeAgentMemory(home, plan));
+          yield* logAgentMemoryDelivered(
+            session.id,
+            yield* materializeAgentMemory(home, plan, session.ownerUserId),
+          );
           return;
         }
         const home = HARNESS_HOME_MOUNT_PATH;
-        if (stored.length === 0) {
-          const before = yield* sealant.exec(workspace, [
-            "cat",
-            path.posix.join(home, AGENT_MEMORY_DELIVERED),
-          ]);
-          if (before.exitCode !== 0) return;
-        }
         yield* writeWorkspaceFiles(
           workspace,
           plan.staged.map((file) => ({
@@ -9515,7 +9517,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             bytes: file.bytes,
           })),
         );
-        const delivered = yield* sealant.exec(workspace, deliverAgentMemoryExec(home, plan));
+        const delivered = yield* sealant.exec(
+          workspace,
+          deliverAgentMemoryExec(home, plan, session.ownerUserId),
+        );
         yield* logAgentMemoryDelivered(session.id, parseAgentMemoryOutcomes(delivered.stdout));
         if (delivered.exitCode !== 0) {
           return yield* new WorkspaceFileError({
@@ -9803,17 +9808,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           files.push(asMemoryFile(relative, consolidated));
         }
-        const record = yield* read(`harness/${AGENT_MEMORY_DELIVERED}`).pipe(
-          Effect.map((bytes) => new TextDecoder().decode(bytes)),
-          Effect.orElseSucceed(() => null),
-        );
-        return { delivered: parseAgentMemoryDelivered(record), files, skipped };
+        const text = (relative: string) =>
+          read(`harness/${relative}`).pipe(
+            Effect.map((bytes) => new TextDecoder().decode(bytes)),
+            Effect.orElseSucceed(() => null),
+          );
+        return {
+          delivered: parseAgentMemoryDelivered(yield* text(AGENT_MEMORY_DELIVERED)),
+          owner: parseAgentMemoryOwner(yield* text(AGENT_MEMORY_OWNER)),
+          files,
+          skipped,
+        };
+      });
+
+      /** The owner of the worktree's first session: whose launch made the executor others join. */
+      const firstSessionOwnerOf = Effect.fn("SessionEngine.firstSessionOwnerOf")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        const members = yield* sessions.listForWorktree(worktreeId);
+        const first = members.toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+        return first?.ownerUserId ?? null;
       });
 
       /**
        * What the session's agent learned, read back into the owner's memory for the project when
        * the agent ends (docs/adr/0009, decision 3): from the harness home in the co-located store,
        * from the flushed head capture in capture mode.
+       *
+       * In capture mode the head is the worktree's one home, and a session that joined another
+       * person's executor ran its agent there, beside theirs, in the same memory files: who wrote
+       * which line cannot be told apart. The home is credited only to the person whose memory was
+       * delivered into it (`AGENT_MEMORY_OWNER`); every other session reads back nothing. What a
+       * joined session's agent learned there stays in the worktree's capture and reaches the
+       * executor owner's memory with their read-back, as a turn under shared control writes the
+       * owner's memory; it does not reach the joiner's.
        */
       const readBackAgentMemory = Effect.fn("SessionEngine.readBackAgentMemory")(function* (
         session: Session,
@@ -9825,6 +9853,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? yield* readAgentMemoryFromHome(harnessHomePathOf(project.storePath, session.id))
             : yield* inOneReadPass(agentMemoryFromCapture(session));
         if (read === null) return;
+        if (capture !== null) {
+          // A home delivered before the owner was recorded says nobody: it is the first session's
+          // owner's, whose launch made the executor the later sessions joined.
+          const credited = read.owner ?? (yield* firstSessionOwnerOf(session.worktreeId));
+          if (credited !== session.ownerUserId) {
+            yield* Effect.logInfo(
+              "session engine: agent memory not read back · the harness home holds another person's memory",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, recorded: read.owner !== null }));
+            return;
+          }
+        }
         if (read.files.length === 0 && Object.keys(read.delivered).length === 0) return;
         const report = yield* agentMemory.readBack({
           userId: session.ownerUserId,
