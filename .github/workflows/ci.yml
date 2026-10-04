@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Checks read the repository and write nothing.
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: blacksmith-8vcpu-ubuntu-2404
