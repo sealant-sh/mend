@@ -3014,6 +3014,18 @@ const opencodeModelsMigration = Effect.gen(function* () {
     ON CONFLICT (harness, id) DO NOTHING`;
 });
 
+/**
+ * The project's "Automatic install" setting: whether Mend runs an install command for it at all,
+ * in a session's workspace or in the install job that feeds the shared cache. Every project,
+ * existing and new, starts on, which is what Mend did before the setting existed.
+ */
+const projectInstallEnabledMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS install_enabled boolean NOT NULL DEFAULT true`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3124,4 +3136,5 @@ export const migrations = {
   "0107_turn_payer": turnPayerMigration,
   "0108_agent_memory_import_bases": agentMemoryImportBasesMigration,
   "0109_opencode_models": opencodeModelsMigration,
+  "0110_project_install_enabled": projectInstallEnabledMigration,
 };

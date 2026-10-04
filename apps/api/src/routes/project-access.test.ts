@@ -400,6 +400,10 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage", "PUT", "/install-command", { installCommand: null })(
     "projects.installCommand",
   ),
+  project("project-manage", "PUT", "/install-enabled", { installEnabled: false })(
+    "projects.installEnabled",
+  ),
+  project("project-read", "GET", "/install-detection")("projects.installDetection"),
   project("project-read", "GET", "/hot-sessions")("projects.hotSessionsStatus"),
   project("project-read", "GET", "/branches")("projects.branches"),
   project("project-read", "POST", "/refresh")("projects.refresh"),

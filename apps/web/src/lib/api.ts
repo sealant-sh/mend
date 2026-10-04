@@ -54,6 +54,7 @@ export type MachineDto = Outputs["platform"]["machine"];
 export type InstanceDto = Outputs["platform"]["instance"];
 
 export type ProjectDto = Outputs["projects"]["list"][number];
+export type ProjectInstallDetectionDto = Outputs["projects"]["installDetection"];
 export type WorkspaceImageDto = NonNullable<ProjectDto["workspaceImage"]>;
 export type AutomationChoiceDto = ProjectDto["autoTour"];
 export type GitAuthModeDto = ProjectDto["gitAuthMode"];
@@ -277,6 +278,11 @@ export const setProjectHotSessions = (projectId: string, hotSessions: number) =>
 export const setProjectInstallCommand = (projectId: string, installCommand: string | null) =>
   orLogin(
     trpcClient.projects.setInstallCommand.mutate({ id: projectId, request: { installCommand } }),
+  );
+/** "Automatic install": whether Mend runs an install command for this project at all. */
+export const setProjectInstallEnabled = (projectId: string, installEnabled: boolean) =>
+  orLogin(
+    trpcClient.projects.setInstallEnabled.mutate({ id: projectId, request: { installEnabled } }),
   );
 export const listProjectBranches = (projectId: string) =>
   orLogin(trpcClient.projects.branches.query({ id: projectId }));

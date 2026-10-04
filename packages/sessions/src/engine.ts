@@ -2003,10 +2003,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * only on a fresh worktree (no head) or when no tree for this platform was restored:
        * sealantd carries the restored `bulk` forward into every capture it registers after the
        * restore, so a later head still names it.
+       *
+       * "Automatic install" off: no install command runs, detected or saved. This decides only
+       * what runs here; the tree the executor restored from the head or the shared cache (its
+       * plan, before this launch) is laid down either way.
        */
       const installDependenciesIfNeeded = Effect.fn("SessionEngine.installDependenciesIfNeeded")(
         function* (session: Session, project: Project, workspace: Workspace) {
           if (capture === null) return null;
+          if (!project.installEnabled) {
+            yield* Effect.logInfo(
+              "session engine: dependency install skipped · automatic install off",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, projectId: project.id }));
+            return null;
+          }
           const probe = yield* sealant.exec(workspace, ["sh", "-c", PLATFORM_PROBE_SCRIPT]);
           const platform = platformKeyOf(probe.stdout);
           if (platform === null) {

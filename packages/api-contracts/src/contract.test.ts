@@ -11,6 +11,8 @@ import {
   ProjectBranch,
   ProjectDefaultShellProfileRequest,
   ProjectInheritUserSkillsRequest,
+  ProjectInstallCommandRequest,
+  ProjectInstallEnabledRequest,
 } from "./index.ts";
 
 const conversationEndpointNames = new Set(["submitTurn", "interruptTurn", "respondAgentRequest"]);
@@ -140,6 +142,29 @@ describe("typed HTTP error contracts", () => {
         .inheritUserSkills,
     ).toBe(false);
     expect(() => Schema.decodeUnknownSync(ProjectInheritUserSkillsRequest)({})).toThrow();
+  });
+
+  it("exposes the automatic install switch beside the install command it keeps", () => {
+    const endpoints = new Set<string>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint }) => {
+        if (group.identifier === "projects") endpoints.add(endpoint.name);
+      },
+    });
+    expect(endpoints.has("installEnabled")).toBe(true);
+    expect(endpoints.has("installDetection")).toBe(true);
+    expect(endpoints.has("installCommand")).toBe(true);
+    expect(
+      Schema.decodeUnknownSync(ProjectInstallEnabledRequest)({ installEnabled: false })
+        .installEnabled,
+    ).toBe(false);
+    expect(() => Schema.decodeUnknownSync(ProjectInstallEnabledRequest)({})).toThrow();
+    // The old payload still decodes: the custom command is set on its own route.
+    expect(
+      Schema.decodeUnknownSync(ProjectInstallCommandRequest)({ installCommand: null })
+        .installCommand,
+    ).toBeNull();
   });
 
   it("exposes the project default-shell-profile switch", () => {
