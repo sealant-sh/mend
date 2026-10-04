@@ -2755,6 +2755,8 @@ const withEngine = <A, E>(
     /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
     readonly verifier?: Layer.Layer<CaptureGitVerifier>;
     readonly transformBlobs?: (base: Layer.Layer<BlobStore>) => Layer.Layer<BlobStore>;
+    /** Aborted, the run is interrupted (the engine's build included) and the world cleaned up. */
+    readonly signal?: AbortSignal;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2903,6 +2905,7 @@ const withEngine = <A, E>(
       ),
       Effect.orDie,
     ),
+    options.signal === undefined ? undefined : { signal: options.signal },
   );
 };
 
@@ -8268,6 +8271,15 @@ describe("SessionEngine capture mode", () => {
         (world) =>
           Effect.gen(function* () {
             yield* SessionEngine;
+            // The classification runs forked, after the boot: a reading is waited for; an absent
+            // one is given the same time to land before it is read as absent.
+            if (expected === null) yield* Effect.sleep(Duration.millis(200));
+            else {
+              yield* until(
+                () => world.sessions.get(sessionId)?.hasTranscript === expected,
+                "the restart transcript classification",
+              );
+            }
             expect(world.sessions.get(sessionId)?.hasTranscript).toBe(expected);
           }),
         {
@@ -19901,16 +19913,21 @@ describe("SessionEngine a session and its run settle together (2026-10-03)", () 
  * The platform as the dispatching client serves it on an install (`SealantClients.forPrincipal`):
  * a workspace lookup made with no principal fails `NO_PRINCIPAL`, as every call does. The launch
  * fake beneath answers the rest. A boot fiber that forgot to run as the session's owner reads the
- * workspace `unknown` here, as it does on the box.
+ * workspace `unknown` here, as it does on the box. Every lookup's principal lands in `seen`
+ * (`none`, or the user id), so a test can say whose the calls were.
  */
-const principalRequired = (inner: Layer.Layer<SealantClient>): Layer.Layer<SealantClient> =>
+const principalRequired = (
+  inner: Layer.Layer<SealantClient>,
+  seen: Array<string>,
+): Layer.Layer<SealantClient> =>
   Layer.effect(
     SealantClient,
     Effect.map(SealantClient, (client) => ({
       ...client,
       getWorkspace: (id) =>
-        Effect.flatMap(SealantPrincipal, (principal) =>
-          principal.kind === "none"
+        Effect.flatMap(SealantPrincipal, (principal) => {
+          seen.push(principal.kind === "none" ? "none" : principal.userId);
+          return principal.kind === "none"
             ? Effect.fail(
                 new SealantPlatformError({
                   code: "NO_PRINCIPAL",
@@ -19919,8 +19936,8 @@ const principalRequired = (inner: Layer.Layer<SealantClient>): Layer.Layer<Seala
                   cause: null,
                 }),
               )
-            : client.getWorkspace(id),
-        ),
+            : client.getWorkspace(id);
+        }),
     })),
   ).pipe(Layer.provide(inner));
 
@@ -20085,77 +20102,83 @@ describe("SessionEngine startup never waits on an executor (2026-10-03)", () => 
   const runId = SealantRunId.make("run-stopped-before-restart");
   const workspaceId = SealantWorkspaceId.make("workspace-1");
 
-  it("finishes while a folded session's executor is still to be drained: the row settles inline, the workspace is the leftover sweep's, forked and as the owner", async () => {
+  it("finishes while a folded session's executor is still to be drained: the row settles inline, its tail runs forked as the owner", async () => {
     const created: Array<CreateOptions> = [];
     const flushed: string[] = [];
+    const flushKinds: CaptureFlushKind[] = [];
+    const seen: Array<string> = [];
     const logs: Array<string> = [];
     const startedAt = Date.now();
-    let bound: ReturnType<typeof setTimeout> | undefined;
-    const built = withEngine(
-      (world) =>
-        Effect.gen(function* () {
-          // The engine stands: the fold ran, and nothing waited on the executor.
-          expect(Date.now() - startedAt).toBeLessThan(5_000);
-          const settled = world.sessions.get(sessionId);
-          expect(settled?.status).toBe("stopped");
-          expect(settled?.settledAt).not.toBeNull();
-          // The workspace is drained after the boot, as the owner: the executor is asked to flush
-          // within moments, which a fiber with no principal could never do.
-          yield* eventually(
-            "the leftover sweep asked the executor to flush",
-            Duration.seconds(3),
-            () => flushed.includes(`flush:${workspaceId}`),
-          );
-          expect(logs.some((line) => line.includes("reaping leftover workspace"))).toBe(true);
-        }),
-      {
-        logs,
-        captured: makeMemoryCaptureStore(),
-        prepareWorld: (world, tmp) =>
-          seedStoppedBeforeRestart(world, tmp, {
-            sessionId,
-            runId,
-            workspaceId,
-            processLive: false,
-          }),
-        sealantLayer: principalRequired(
-          sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            { flushed },
-          ),
-        ),
-      },
-    );
-    const withinBound = new Promise<never>((_, reject) => {
-      bound = setTimeout(
-        () =>
-          reject(
-            new Error(
-              "the engine did not finish construction within 5 s · startup waited on a session's executor",
-            ),
-          ),
-        5_000,
-      );
-    });
+    // The bound: a build still running at five seconds is the hang, interrupted here so the
+    // world is cleaned up and nothing polls on behind the verdict.
+    const bound = new AbortController();
+    const timer = setTimeout(() => bound.abort(), 5_000);
     try {
-      await Promise.race([built, withinBound]);
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            // The engine stands: the fold ran, and nothing waited on the executor.
+            expect(Date.now() - startedAt).toBeLessThan(5_000);
+            const settled = world.sessions.get(sessionId);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.settledAt).not.toBeNull();
+            // The tail runs after the boot, as the owner: the executor is asked to flush, then
+            // asked for its final flush by the drain, within moments — which a fiber with no
+            // principal could never do, as it is refused the lookup that comes first.
+            yield* eventually(
+              "the forked tail drained the executor",
+              Duration.seconds(3),
+              () => flushed.includes(`flush:${workspaceId}`) && flushKinds.includes("final"),
+            );
+            expect(seen.length).toBeGreaterThan(0);
+            expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
+            // Nobody else swept it: the boot pass owns this session's tail.
+            expect(logs.some((line) => line.includes("reaping leftover workspace"))).toBe(false);
+          }),
+        {
+          logs,
+          signal: bound.signal,
+          captured: makeMemoryCaptureStore(),
+          prepareWorld: (world, tmp) =>
+            seedStoppedBeforeRestart(world, tmp, {
+              sessionId,
+              runId,
+              workspaceId,
+              processLive: false,
+            }),
+          sealantLayer: principalRequired(
+            sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              { flushed, flushKinds },
+            ),
+            seen,
+          ),
+        },
+      ).catch((error: unknown) => {
+        throw bound.signal.aborted
+          ? new Error(
+              "the engine did not finish construction within 5 s · startup waited on a session's executor",
+            )
+          : error;
+      });
     } finally {
-      clearTimeout(bound);
+      clearTimeout(timer);
     }
   }, 10_000);
 
   it("re-forks the watcher of a live agent process as the session's owner: its exit after the restart settles the session", async () => {
     const created: Array<CreateOptions> = [];
+    const seen: Array<string> = [];
     const ptyStates = new Map<string, InteractiveSessionStatus>();
     await withEngine(
       (world) =>
@@ -20167,7 +20190,13 @@ describe("SessionEngine startup never waits on an executor (2026-10-03)", () => 
             const session = world.sessions.get(sessionId);
             return session !== undefined && session.settledAt !== null;
           });
-          expect(world.processes.get("agent-boot")?.exitedAt).not.toBeNull();
+          const agent = world.processes.get("agent-boot");
+          expect(agent).toBeDefined();
+          expect(agent?.status).toBe("exited");
+          expect(agent?.exitCode).toBe(0);
+          expect(agent?.exitedAt).not.toBeNull();
+          expect(seen.length).toBeGreaterThan(0);
+          expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -20191,6 +20220,7 @@ describe("SessionEngine startup never waits on an executor (2026-10-03)", () => 
             undefined,
             [],
           ),
+          seen,
         ),
       },
     );
