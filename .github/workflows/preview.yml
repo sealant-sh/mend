@@ -439,8 +439,10 @@ jobs:
   # to a fork's workflow) and asks the VM's `deploy` user, whose forced command runs the same
   # deploy script an operator runs by hand. Only a dispatch that asked for it deploys.
   deploy:
-    needs: [plan, mend]
-    if: ${{ !cancelled() && needs.mend.result == 'success' && inputs.deploy }}
+    # After `mend-image`, which pushes the versioned tag the box pulls: the first proof pulled
+    # before the tag existed (2026-10-03).
+    needs: [plan, mend, mend-image]
+    if: ${{ !cancelled() && needs.mend-image.result == 'success' && inputs.deploy }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:

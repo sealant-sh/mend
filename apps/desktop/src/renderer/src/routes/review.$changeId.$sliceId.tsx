@@ -1,4 +1,4 @@
-import { pullRequestBase } from "@mend/domain/workbench";
+import { canRelaunchSession, pullRequestBase, terminalOwnerOnlyLine } from "@mend/domain/workbench";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -40,6 +40,7 @@ import {
   reviewFileStatus,
   terminalEvidenceExcerpt,
 } from "#/lib/review";
+import { useOwnerName } from "#/lib/viewer";
 
 export const Route = createFileRoute("/review/$changeId/$sliceId")({
   component: ReviewRoute,
@@ -104,6 +105,22 @@ function ReviewPage({
   const sessionControl = useQuery({ ...sessionDetailQuery(sessionId), enabled: sessionId !== "" });
   const steer: boolean | null =
     sessionControl.data?.control.steer ?? (sessionControl.isError ? true : null);
+  // Delivering to a terminal session starts its agent with the comments, which is typing there:
+  // the owner's alone, even while control is shared (docs/adr/0013). A conversation takes them as
+  // a turn from any steerer. Null when the viewer may deliver, or the server has not said.
+  const ownerName = useOwnerName(sessionControl.data?.session ?? null);
+  const ownerDelivers =
+    sessionControl.data !== undefined &&
+    sessionControl.data.control.steer &&
+    !canRelaunchSession(
+      {
+        steer: true,
+        terminalInput: sessionControl.data.control.terminalInput !== false,
+      },
+      sessionControl.data.currentAgent?.kind ?? null,
+    )
+      ? terminalOwnerOnlyLine(ownerName ?? "its owner", "send-back")
+      : null;
   // Landing the change (docs/adr/0007-landing.md): the web shows its Land panel on the change's
   // review, so Review offers the same sheet the session's terminal does.
   const landingsRead = useQuery({ ...sessionLandingsQuery(sessionId), enabled: sessionId !== "" });
@@ -433,6 +450,7 @@ function ReviewPage({
             sliceId={sliceId}
             sessionId={sessionId}
             steer={steer}
+            ownerDelivers={ownerDelivers}
             file={selectedFile}
             comments={currentComments}
             openComments={openComments}
@@ -716,6 +734,7 @@ function ReviewInspector({
   sliceId,
   sessionId,
   steer,
+  ownerDelivers,
   file,
   comments,
   openComments,
@@ -741,6 +760,11 @@ function ReviewInspector({
   readonly sessionId: string;
   /** Whether the viewer steers the session, so may deliver to it; null until the server says. */
   readonly steer: boolean | null;
+  /**
+   * Why only the session's owner delivers to it, though the viewer steers: it runs in a terminal
+   * (docs/adr/0013). Null when the viewer may deliver.
+   */
+  readonly ownerDelivers: string | null;
   readonly file: ReviewDiffFileDto | null;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly openComments: ReadonlyArray<ReviewCommentDto>;
@@ -977,7 +1001,7 @@ function ReviewInspector({
             }}
           />
           <div className="mt-2 flex items-center gap-2">
-            {steer === true && (
+            {steer === true && ownerDelivers === null && (
               <button
                 type="button"
                 disabled={
@@ -1026,9 +1050,11 @@ function ReviewInspector({
             </p>
           )}
           <p className="mt-2 font-sans text-[10.5px] leading-relaxed text-label">
-            {steer === false
-              ? "Only this session's owner delivers to it, unless they share control. Copy the instruction to hand it over."
-              : "Comments become sent only after Mend persists the accepted process membership."}
+            {ownerDelivers !== null
+              ? `${ownerDelivers} Copy the instruction to hand it over.`
+              : steer === false
+                ? "Only this session's owner delivers to it, unless they share control. Copy the instruction to hand it over."
+                : "Comments become sent only after Mend persists the accepted process membership."}
           </p>
         </section>
       </div>

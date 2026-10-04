@@ -346,6 +346,11 @@ Still to come:
 
 ## Decision log
 
+- 2026-10-03: typing in a terminal and opening a shell gate on `control.terminalInput`, not
+  `control.steer` (docs/adr/0013): only the owner types, even while control is shared. A steerer
+  attaches the live terminal read-only, with the sentence the other clients show under the header;
+  someone who does not steer still reads the record. An older server omits the flag and accepts
+  every steerer's keys, so the pane reads a missing flag as typing.
 - 2026-09-24: the Land surface gates on the landing record's `land`, not on `control.own`. ADR 0007
   says the change's owner lands (the owner of the worktree's first session), and the server answers
   exactly that as `land`; `control.own` is the session's owner, which differs for a teammate's

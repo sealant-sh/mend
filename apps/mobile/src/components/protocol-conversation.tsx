@@ -17,6 +17,7 @@ import {
   requestName,
   requestOutcome,
   toggleChoice,
+  turnPayerLine,
   type AgentItemDto,
   type AgentRequestDto,
   type AgentRequestResponse,
@@ -48,7 +49,7 @@ import {
 import { findLastMatching } from "@/data/collections";
 import { composerReadiness, readinessHint, storedImages, type Attachment } from "@/data/composer";
 import { useComposerAttachments } from "@/data/image-attach";
-import { useSession } from "@/data/live";
+import { useOrganizationMembers, useSession } from "@/data/live";
 import { hasUnrecordedSend, reconcileConversation, type TurnView } from "@/data/pending-turns";
 import {
   pullRequestCards,
@@ -72,6 +73,18 @@ const TurnRow = memo(function TurnRow({
 }) {
   const { colors } = useEvidenceTheme();
   const { clientId } = view;
+  const members = useOrganizationMembers().data;
+  // Whose login paid, when it was not the sender's (docs/adr/0013).
+  const payerLine = useMemo(
+    () =>
+      view.turn === null
+        ? null
+        : turnPayerLine(
+            view.turn,
+            new Map((members ?? []).map((member) => [member.userId, member.name])),
+          ),
+    [view.turn, members],
+  );
   if (view.turn !== null && isHarnessTurn(view.turn)) {
     // Nobody sent this one: the agent opened it to answer a background task that ended.
     return (
@@ -121,6 +134,11 @@ const TurnRow = memo(function TurnRow({
           sending…
         </MonoText>
       ) : null}
+      {payerLine === null ? null : (
+        <MonoText tone="faint" size={10.5}>
+          {payerLine}
+        </MonoText>
+      )}
       {view.delivery === "failed" && clientId !== null ? (
         <View style={{ alignItems: "flex-end", gap: 2 }}>
           <MonoText tone="danger" size={10.5} numberOfLines={3}>

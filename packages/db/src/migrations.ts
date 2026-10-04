@@ -2931,6 +2931,38 @@ const turnOriginMigration = Effect.gen(function* () {
       ADD CONSTRAINT agent_turns_origin_check CHECK (origin IN ('request', 'harness'))`;
 });
 
+/**
+ * docs/adr/0013-whoever-sends-a-turn-pays.md, "Terminal sessions: only the owner types": an attach
+ * by anyone but the owner streams output and drops input, and the control log says so.
+ */
+const terminalWatchControlMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE session_control_events
+      DROP CONSTRAINT IF EXISTS session_control_events_kind_check`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      ADD CONSTRAINT session_control_events_kind_check CHECK (kind IN (
+        'interrupt', 'terminal-attach', 'terminal-watch', 'shell-open', 'stop', 'services-stop',
+        'idle-stop', 'shared-control-on', 'shared-control-off', 'discard-unsaved-stop'
+      ))`;
+});
+
+/**
+ * docs/adr/0013-whoever-sends-a-turn-pays.md, "Every turn records its payer": the person and the
+ * connected account a turn ran on, with the account's name as it was then. Null on turns sent
+ * before it, and on turns Mend could not say of. A payer, like every other actor Mend records, is
+ * never deleted from under the record.
+ */
+const turnPayerMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_turns
+      ADD COLUMN billed_user_id text REFERENCES "user" (id) ON DELETE RESTRICT,
+      ADD COLUMN billed_account_id text,
+      ADD COLUMN billed_account_name text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3037,4 +3069,6 @@ export const migrations = {
   "0103_session_repositories": sessionRepositoriesMigration,
   "0104_landing_pull_request_title": landingPullRequestTitleMigration,
   "0105_turn_origin": turnOriginMigration,
+  "0106_terminal_watch_control": terminalWatchControlMigration,
+  "0107_turn_payer": turnPayerMigration,
 };

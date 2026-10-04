@@ -1,6 +1,7 @@
 import {
   canRemoveProject,
   canSteerSession,
+  canTypeInTerminal,
   type ProjectTenancy,
   type SessionOrigin,
   type SteeringFacts,
@@ -48,18 +49,36 @@ export const useInheritedSettings = () => {
 
 /**
  * What a session row offers this viewer. Unknown viewers get read-only rows. Deleting stays the
- * owner's even while control is shared.
+ * owner's even while control is shared, and so does anything that types in its terminal
+ * (docs/adr/0013).
  */
 export const sessionActions = (
   session: SteeringFacts,
   viewer: Viewer | null,
-): { readonly own: boolean; readonly steer: boolean; readonly stop: boolean } => {
+): {
+  readonly own: boolean;
+  readonly steer: boolean;
+  readonly stop: boolean;
+  readonly terminalInput: boolean;
+} => {
   const steer = viewer !== null && canSteerSession(session, viewer.userId);
   return {
     own: viewer !== null && session.ownerUserId === viewer.userId,
     steer,
     stop: steer || viewer?.role === "owner",
+    terminalInput: viewer !== null && canTypeInTerminal(session, viewer.userId),
   };
+};
+
+/**
+ * The session owner's name from the organization's roster, for saying whose a session is; "its
+ * owner" when the roster does not name them, null for a session nobody owns.
+ */
+export const useOwnerName = (ownerUserId: string | null): string | null => {
+  const trpc = useTRPC();
+  const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));
+  if (ownerUserId === null) return null;
+  return members.data?.find((member) => member.userId === ownerUserId)?.name ?? "its owner";
 };
 
 export const canRemove = (project: ProjectTenancy, viewer: Viewer | null): boolean =>
