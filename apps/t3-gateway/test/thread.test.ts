@@ -211,6 +211,48 @@ describe("a thread", () => {
     ),
   );
 
+  it.live("catches up a watched thread's items after Mend's stream drops", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { workbench } = mend;
+        workbench.addProject("project-1", "mend");
+        workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const turn = workbench.addTurn("session-1", "Explain it");
+        const answer = workbench.addItem(turn, {
+          kind: "assistant-message",
+          text: "Partial",
+          status: "in-progress",
+        });
+        const { rpc } = yield* pairAndConnect(mend, "CATCHUP");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+
+        // The final answer lands while the gateway is not listening.
+        workbench.dropStreams();
+        workbench.updateItem(answer, { text: "The whole answer.", status: "completed" });
+        workbench.setTurn(turn, "completed");
+
+        const caught = yield* thread.next(
+          turnItemEvent(
+            (item) => item.type === "assistant_message" && item.id === answer.id && !item.streaming,
+          ),
+          "10 seconds",
+        );
+        assert.isTrue(
+          caught.event.type === "turn-item.updated" &&
+            caught.event.payload.type === "assistant_message" &&
+            caught.event.payload.text === "The whole answer.",
+        );
+      }),
+    ),
+  );
+
   it.live("answers a thread the person does not have with t3code's typed refusals", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

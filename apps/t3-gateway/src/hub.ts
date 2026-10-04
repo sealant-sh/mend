@@ -22,7 +22,6 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
@@ -101,7 +100,8 @@ export type ThreadChange =
 
 export interface ThreadSubscription {
   readonly snapshot: ThreadSnapshot;
-  readonly changes: Stream.Stream<ThreadChange>;
+  /** Fails with `SubscriberFellBehind` when the subscriber cannot keep up (`fanout.ts`). */
+  readonly changes: Stream.Stream<ThreadChange, SubscriberFellBehind>;
 }
 
 export interface PersonHub {
@@ -380,7 +380,7 @@ export const makePersonHub = (input: {
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const shellChanges = makeFanout<ShellDelta>();
     const watches = new Map<string, Watch>();
-    const threadChanges = yield* PubSub.unbounded<{
+    const threadChanges = makeFanout<{
       readonly threadId: string;
       readonly change: ThreadChange;
     }>();
@@ -536,19 +536,21 @@ export const makePersonHub = (input: {
           if (watch?.prints !== null && watch?.thread !== null && watch !== undefined) {
             const base = eventBase();
             const thread = watch.thread;
-            yield* PubSub.publish(threadChanges, {
-              threadId: sessionId,
-              change: {
-                kind: "event",
-                sequence,
-                event: {
-                  ...base,
-                  threadId: thread.id,
-                  type: "thread.deleted",
-                  payload: { ...thread, deletedAt: base.occurredAt },
+            yield* threadChanges.publish([
+              {
+                threadId: sessionId,
+                change: {
+                  kind: "event",
+                  sequence,
+                  event: {
+                    ...base,
+                    threadId: thread.id,
+                    type: "thread.deleted",
+                    payload: { ...thread, deletedAt: base.occurredAt },
+                  },
                 },
               },
-            });
+            ]);
             watch.prints = null;
             watch.thread = null;
           }
@@ -564,14 +566,16 @@ export const makePersonHub = (input: {
 
         // Something the client holds went away: a fresh snapshot replaces it.
         if (Array.from(previous.keys()).some((key) => !prints.has(key))) {
-          yield* PubSub.publish(threadChanges, {
-            threadId: sessionId,
-            change: {
-              kind: "snapshot",
-              snapshotSequence: ++sequence,
-              projection: built.projection,
+          yield* threadChanges.publish([
+            {
+              threadId: sessionId,
+              change: {
+                kind: "snapshot",
+                snapshotSequence: ++sequence,
+                projection: built.projection,
+              },
             },
-          });
+          ]);
           return built.projection;
         }
         const changes: Array<{ readonly threadId: string; readonly change: ThreadChange }> = [];
@@ -587,7 +591,7 @@ export const makePersonHub = (input: {
             },
           });
         }
-        if (changes.length > 0) yield* PubSub.publishAll(threadChanges, changes);
+        if (changes.length > 0) yield* threadChanges.publish(changes);
         return built.projection;
       });
 
@@ -662,6 +666,15 @@ export const makePersonHub = (input: {
       );
       const entries = details.filter((entry): entry is ProjectEntry => entry !== null);
       const read = yield* readConversations(entries.flatMap(projectableSessionIds));
+      // A watched thread's items that moved while pointers could be missed (a reconnect).
+      const caughtUp = yield* Effect.forEach(
+        Array.from(watches, ([sessionId, watch]) => [sessionId, watch.cursor] as const),
+        ([sessionId, cursor]) =>
+          readItemsAfter(sessionId, cursor).pipe(
+            Effect.map((items) => [sessionId, items] as const),
+          ),
+        { concurrency: 4 },
+      );
       yield* locked(
         Effect.gen(function* () {
           projects.clear();
@@ -669,6 +682,10 @@ export const makePersonHub = (input: {
           conversations.clear();
           for (const [sessionId, conversation] of read) {
             if (conversation !== null) conversations.set(sessionId, conversation);
+          }
+          for (const [sessionId, items] of caughtUp) {
+            const watch = watches.get(sessionId);
+            if (watch !== undefined) mergeItems(watch, items);
           }
           yield* publishAll;
         }),
@@ -954,7 +971,8 @@ export const makePersonHub = (input: {
         );
         const read = yield* readItemsAfter(threadId, watch.cursor);
         // Subscribed before the snapshot is taken: nothing published after it is missed.
-        const subscription = yield* PubSub.subscribe(threadChanges);
+        // Only this thread's changes are buffered for it.
+        const published = yield* threadChanges.subscribe((change) => change.threadId === threadId);
         const projection = yield* locked(
           Effect.gen(function* () {
             mergeItems(watch, read);
@@ -963,10 +981,7 @@ export const makePersonHub = (input: {
         );
         if (projection === null) return null;
         const snapshot: ThreadSnapshot = { snapshotSequence: sequence, projection };
-        const changes = Stream.fromSubscription(subscription).pipe(
-          Stream.filter((published) => published.threadId === threadId),
-          Stream.map((published) => published.change),
-        );
+        const changes = published.pipe(Stream.map((change) => change.change));
         const subscribed: ThreadSubscription = { snapshot, changes };
         return subscribed;
       });

@@ -385,7 +385,17 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
                 ? Stream.make({ kind: "synchronized" as const })
                 : Stream.empty,
             ),
-            Stream.concat(changes),
+            Stream.concat(
+              changes.pipe(
+                Stream.mapError(
+                  (error) =>
+                    new OrchestrationV2GetThreadProjectionError({
+                      threadId: input.threadId,
+                      message: error.message,
+                    }),
+                ),
+              ),
+            ),
           );
         }),
       ),
