@@ -3,7 +3,11 @@
 // items, and agent-to-human requests. Older PTY sessions keep their transcript projection and raw
 // TTY composer.
 
-import { terminalReadOnlyLine } from "@mend/domain/workbench";
+import {
+  canRelaunchSession,
+  terminalOwnerOnlyLine,
+  terminalReadOnlyLine,
+} from "@mend/domain/workbench";
 import { useRouter } from "expo-router";
 import {
   ClipboardCheck,
@@ -85,6 +89,9 @@ export function SessionPane({
   // So are its terminals and shells (docs/adr/0013): a steerer reads them.
   const terminalInput = terminalInputOf(detail.data?.control);
   const ownerName = useOwnerName(session);
+  // Resuming a terminal session, or delivering a follow-up to it, starts its agent in a terminal:
+  // the owner's too (docs/adr/0013). A steerer relaunches a conversation, and nothing else.
+  const relaunches = canRelaunchSession({ steer, terminalInput }, currentAgent?.kind ?? null);
   const canOpenShell =
     session !== undefined && ["running", "waiting", "idle"].includes(session.status);
   const protocol =
@@ -169,7 +176,15 @@ export function SessionPane({
         active={agentActive}
         summary={session.summary}
         typing={terminalInput}
-        readOnlyLine={steer && !terminalInput ? terminalReadOnlyLine(ownerName) : null}
+        readOnlyLine={
+          !steer || terminalInput
+            ? null
+            : agentActive
+              ? terminalReadOnlyLine(ownerName)
+              : relaunches
+                ? null
+                : terminalOwnerOnlyLine(ownerName, "resume")
+        }
         {...(canPickUp
           ? {
               pickUp: {
@@ -198,7 +213,7 @@ export function SessionPane({
         ? resume.error.message
         : String(resume.error);
   const actions: Array<HeaderAction> = [];
-  if (session !== undefined && steer && !agentActive) {
+  if (session !== undefined && relaunches && !agentActive) {
     if (followUp !== null && canDeliverFollowUp(followUp)) {
       actions.push({
         key: "deliver",

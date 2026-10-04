@@ -135,6 +135,7 @@ import {
   gitAuthorIssue,
   normalizeGitAuthor,
   resolveLaunchOptions,
+  startsInTerminal,
   Session,
   type SessionStatus,
 } from "@mend/domain/workbench";
@@ -3056,8 +3057,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           yield* (yield* SessionProcessesRepo).listForSession(session.id),
         );
         if (
-          agent?.kind !== "agent-protocol" ||
-          (payload.harness ?? session.harness) !== session.harness
+          startsInTerminal(
+            agent?.kind ?? null,
+            (payload.harness ?? session.harness) !== session.harness,
+          )
         ) {
           yield* requireOwnerRuns(session, "terminal");
         }
@@ -3126,7 +3129,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const agent = currentAgentProcess(
           yield* (yield* SessionProcessesRepo).listForSession(session.id),
         );
-        if (agent?.kind !== "agent-protocol") yield* requireOwnerRuns(session, "terminal");
+        if (startsInTerminal(agent?.kind ?? null)) yield* requireOwnerRuns(session, "terminal");
         const caller = yield* CurrentUser;
         const delivery = yield* FollowUpDelivery;
         return yield* delivery

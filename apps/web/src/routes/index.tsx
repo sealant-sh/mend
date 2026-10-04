@@ -1,3 +1,4 @@
+import { canRelaunchSession } from "@mend/domain/workbench";
 import { useContextMenu } from "@mend/ui/context-menu";
 import {
   useQuery,
@@ -21,7 +22,7 @@ import {
   type WorkbenchEventDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
-import { useViewer } from "#/lib/viewer";
+import { sessionActions, useViewer } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { LIVE_STATES, projectMenu, sessionMenu, worktreeDisplayName } from "#/lib/workbench-menus";
 
@@ -330,6 +331,15 @@ function HomePage() {
                         const annotation = detail?.annotations.find(
                           (row) => row.sessionId === session.id,
                         );
+                        // A resume that opens a terminal is the owner's alone, even while
+                        // control is shared (docs/adr/0013). Until the viewer is known, the
+                        // server decides.
+                        const resumes =
+                          viewer === null ||
+                          canRelaunchSession(
+                            sessionActions(session, viewer),
+                            annotation?.currentAgent?.kind ?? null,
+                          );
                         return (
                           <div
                             key={session.id}
@@ -376,14 +386,16 @@ function HomePage() {
                                 Review
                               </Link>
                             )}
-                            <button
-                              type="button"
-                              disabled={busy === session.id}
-                              onClick={() => rejoin(session)}
-                              className="shrink-0 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-                            >
-                              {busy === session.id ? "resuming…" : "Resume"}
-                            </button>
+                            {resumes && (
+                              <button
+                                type="button"
+                                disabled={busy === session.id}
+                                onClick={() => rejoin(session)}
+                                className="shrink-0 rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+                              >
+                                {busy === session.id ? "resuming…" : "Resume"}
+                              </button>
+                            )}
                           </div>
                         );
                       })

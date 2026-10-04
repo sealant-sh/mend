@@ -109,7 +109,10 @@ export function PtyConversation({
    * shared (docs/adr/0013). Without it there is no composer.
    */
   readonly typing?: boolean;
-  /** Shown where the composer would be, for a steerer who does not type here. */
+  /**
+   * Shown where the composer would be, for a steerer who does not type here: why, and, once the
+   * agent has ended, why they do not resume it either (docs/adr/0013).
+   */
   readonly readOnlyLine?: string | null;
   /**
    * Cross-mode pickup (claude and codex): the composer IS the pickup — the
@@ -198,7 +201,7 @@ export function PtyConversation({
   }));
   // The composer types into the terminal: the owner's, or the pickup that hands it off.
   const composing = pickUp !== undefined || (active && typing);
-  const docked = composing || (active && readOnlyLine !== null);
+  const docked = composing || readOnlyLine !== null;
   const bottomPad = pane.sticky
     ? (keyboard.isVisible ? keyboard.height : pane.bottom) +
       (docked ? composerHeight + spacing.xs : spacing.md)

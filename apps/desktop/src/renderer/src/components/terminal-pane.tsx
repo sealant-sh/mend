@@ -1,4 +1,10 @@
-import { agentStartingFacts, pullRequestBase, terminalReadOnlyLine } from "@mend/domain/workbench";
+import {
+  agentStartingFacts,
+  canRelaunchSession,
+  pullRequestBase,
+  terminalOwnerOnlyLine,
+  terminalReadOnlyLine,
+} from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -243,10 +249,20 @@ export function TerminalPane({
   const conversation =
     session !== null &&
     agentRunsAsConversation(currentAgent ?? listedAgent, launchModeOf(tab.sessionId));
+  // Only the owner types in a terminal, even while control is shared (docs/adr/0013). An older
+  // server's control omits the flag and takes every steerer's keys.
+  const terminalInput = control.terminalInput !== false;
   // Resume rejoins a settled session in the mode its agent last ran in; a handoff continues the
   // same provider session in the other mode, and is the owner's alone even while control is
-  // shared (the server's rule, docs/adr/0003).
-  const canResume = session !== null && !live && control.steer && detail.data !== undefined;
+  // shared (the server's rule, docs/adr/0003). A resume that opens a terminal is the owner's alone
+  // too (docs/adr/0013): a steerer resumes a conversation, and is told why nothing else.
+  const resumeAllowed = canRelaunchSession(
+    { steer: control.steer, terminalInput },
+    currentAgent?.kind ?? null,
+  );
+  const settled = session !== null && !live && detail.data !== undefined;
+  const canResume = settled && resumeAllowed;
+  const ownerResumes = settled && isSessionTab && control.steer && !resumeAllowed;
   const handoffTo: AgentLaunchModeDto | null =
     session !== null &&
     control.own &&
@@ -265,10 +281,7 @@ export function TerminalPane({
     mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
     onSuccess: (opened) => onReview(opened.slice.changeId, opened.slice.id),
   });
-  // Only the owner types in a terminal, even while control is shared (docs/adr/0013): a steerer
-  // reads the live terminal, and is told whose it is. An older server's control omits the flag
-  // and takes every steerer's keys.
-  const terminalInput = control.terminalInput !== false;
+  // A steerer reads the live terminal, and is told whose it is.
   const readsTerminal =
     session !== null &&
     control.steer &&
@@ -476,10 +489,12 @@ export function TerminalPane({
       {session !== null && tab.kind !== "logs" && (
         <SharedControlFact session={session} control={control} ownerName={ownerName} />
       )}
-      {readsTerminal && (
+      {(readsTerminal || ownerResumes) && (
         <div className="flex h-7 shrink-0 items-center border-b border-rule-faint bg-background px-3">
           <span className="truncate font-sans text-[12.5px] text-ink-2">
-            {terminalReadOnlyLine(ownerName ?? "its owner")}
+            {readsTerminal
+              ? terminalReadOnlyLine(ownerName ?? "its owner")
+              : terminalOwnerOnlyLine(ownerName ?? "its owner", "resume")}
           </span>
         </div>
       )}
