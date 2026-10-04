@@ -592,7 +592,7 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
 /**
  * The server-owned model catalog (docs/models-audit.md): one row per harness and model id, in the
  * order pickers show them. `efforts` null means the harness's own; one `is_default` per harness.
- * Seeded by migration 0101 from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
+ * Seeded by migrations 0102 and 0109 (opencode) from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
  */
 export const harnessModels = pgTable(
   "harness_models",

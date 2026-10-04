@@ -317,6 +317,28 @@ describe("SessionStart.startAs", () => {
     expect(launchedAt).toBe(recorded + 1);
   });
 
+  it("sends opencode no model nobody chose, so the person's own opencode config decides", async () => {
+    // The catalog lists opencode's models, none the default: `--model` from Mend would beat a
+    // model named in the project's or the user's opencode config.
+    const launch = async (launchRequest: LaunchRequest) => {
+      const world = startWorld();
+      const session = new Session({ ...provisioned("alice"), harness: "opencode" });
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const start = yield* SessionStart;
+          return yield* start.launchAs("alice", session, launchRequest);
+        }).pipe(Effect.provide(world.layer), Effect.result),
+      );
+      expect(result._tag).toBe("Success");
+      return world.effects;
+    };
+    const bare = await launch(new LaunchRequest({ prompt: "fix the test" }));
+    expect(bare).toContain(`engine.launch:${SESSION}:opencode --prompt fix the test`);
+    expect(bare).toContain(`sessions.setLaunchOptions:${SESSION}:null:null`);
+    const chosen = await launch(new LaunchRequest({ model: "openai/gpt-6-astra" }));
+    expect(chosen).toContain(`engine.launch:${SESSION}:opencode --model openai/gpt-6-astra`);
+  });
+
   it("records nothing when the account's launch slots refuse the launch", async () => {
     const gate = Effect.runSync(Deferred.make<void>());
     const world = startWorld({ limits: { accountLaunchesInFlight: 1 }, launchGate: gate });
