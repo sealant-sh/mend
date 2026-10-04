@@ -290,5 +290,6 @@ to build it.
   valid, strictly newer revision, or at the same revision with the same words. A missing row, a
   revision that is not an integer, or a database that does not open is not held; two databases with
   one conversation at one revision in other words are not merged, as one row cannot keep both.
-  Migration 0106 pins every version kept before it: nothing recorded which were the only copy of a
-  line, and memory versions are small.
+  Migration 0108 (0106 when written; renumbered after main took 0106 and 0107) pins every version
+  kept before it: nothing recorded which were the only copy of a line, and memory versions are
+  small.

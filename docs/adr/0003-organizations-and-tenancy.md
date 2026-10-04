@@ -164,6 +164,9 @@ The owner may turn on **shared control** for one session. While it is on:
 Rejected: letting anyone with project access steer by default. That delegates someone else's
 credentials and spend without their consent.
 
+**Amended by [ADR 0013](0013-whoever-sends-a-turn-pays.md):** a steerer's turn runs on the steerer's
+own login, not the owner's, and in a terminal session only the owner types or opens a shell.
+
 ### Removing a member
 
 1. New requests are refused immediately. Open WebSocket, SSE and terminal connections are closed. No

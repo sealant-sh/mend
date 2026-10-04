@@ -190,6 +190,24 @@ test("the bundle pins published Sealant 0.38.1 artifacts and its official migrat
   assert.doesNotMatch(dockerfile, /Core-volume-mounts|COPY .*Core/);
 });
 
+test("the Sealant worker runs four launches at once unless the operator says otherwise", async () => {
+  const [supervisor, { workerQueueEnvironment }] = await Promise.all([
+    readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
+    import("./bundle-supervisor.mjs"),
+  ]);
+  assert.match(
+    supervisor,
+    /\.\.\.previewSealantdEnvironment\(process\.env\),\n\s+\.\.\.workerQueueEnvironment\(process\.env\),/,
+  );
+  assert.deepEqual(workerQueueEnvironment({}), { WORKSPACE_BUILD_QUEUE_PREFETCH: "4" });
+  assert.deepEqual(workerQueueEnvironment({ WORKSPACE_BUILD_QUEUE_PREFETCH: " " }), {
+    WORKSPACE_BUILD_QUEUE_PREFETCH: "4",
+  });
+  assert.deepEqual(workerQueueEnvironment({ WORKSPACE_BUILD_QUEUE_PREFETCH: "2" }), {
+    WORKSPACE_BUILD_QUEUE_PREFETCH: "2",
+  });
+});
+
 test("a preview sealantd image reaches only the Sealant worker, and a release adds nothing", async () => {
   const [dockerfile, supervisor, { previewSealantdEnvironment }] = await Promise.all([
     readFile(path.join(root, "Dockerfile"), "utf8"),

@@ -634,9 +634,9 @@ const importing = (
   holdsDatabase: () => Effect.succeed(false),
 });
 
-// Review round 4, finding 2 (reproduced by reading 0106): the column came in as `false` on every
+// Review round 4, finding 2 (reproduced by reading the migration): the column came in as `false` on every
 // existing version, so a version that was the only copy of some lines before the upgrade could be
-// pruned by later saves. 0106 pins them all.
+// pruned by later saves. 0108 pins them all.
 const UPGRADE_DB = `mend_agent_memory_upgrade_${process.pid}_${Date.now()}`;
 const upgradeLayer = PgClient.layer({
   url: Redacted.make(
@@ -648,7 +648,7 @@ const upgradeLayer = PgClient.layer({
   ),
 });
 
-describe.skipIf(!reachable)("upgrading to 0106", () => {
+describe.skipIf(!reachable)("upgrading to 0108", () => {
   afterAll(async () => {
     await withAdmin(
       Effect.gen(function* () {
@@ -669,8 +669,8 @@ describe.skipIf(!reachable)("upgrading to 0106", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
-        const before = ordered.filter(([name]) => name < "0106");
-        const upgrade = ordered.filter(([name]) => name >= "0106");
+        const before = ordered.filter(([name]) => name < "0108");
+        const upgrade = ordered.filter(([name]) => name >= "0108");
         yield* Effect.forEach(before, ([, migration]) => migration, { discard: true });
         yield* sql`
           INSERT INTO "user" ("id", "name", "email", "createdAt")

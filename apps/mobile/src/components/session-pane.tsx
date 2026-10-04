@@ -3,6 +3,11 @@
 // items, and agent-to-human requests. Older PTY sessions keep their transcript projection and raw
 // TTY composer.
 
+import {
+  canRelaunchSession,
+  terminalOwnerOnlyLine,
+  terminalReadOnlyLine,
+} from "@mend/domain/workbench";
 import { useRouter } from "expo-router";
 import {
   ClipboardCheck,
@@ -27,7 +32,9 @@ import {
   agentIsActive,
   canDeliverFollowUp,
   statusLineOf,
+  terminalInputOf,
   toneOf,
+  useOwnerName,
   usePendingFollowUp,
   useSession,
   useSessionActions,
@@ -79,6 +86,12 @@ export function SessionPane({
   const canStop = detail.data?.control?.stop ?? true;
   // Handing a session off is the owner's even while control is shared.
   const own = detail.data?.control?.own ?? true;
+  // So are its terminals and shells (docs/adr/0013): a steerer reads them.
+  const terminalInput = terminalInputOf(detail.data?.control);
+  const ownerName = useOwnerName(session);
+  // Resuming a terminal session, or delivering a follow-up to it, starts its agent in a terminal:
+  // the owner's too (docs/adr/0013). A steerer relaunches a conversation, and nothing else.
+  const relaunches = canRelaunchSession({ steer, terminalInput }, currentAgent?.kind ?? null);
   const canOpenShell =
     session !== undefined && ["running", "waiting", "idle"].includes(session.status);
   const protocol =
@@ -162,6 +175,16 @@ export function SessionPane({
         sessionId={session.id}
         active={agentActive}
         summary={session.summary}
+        typing={terminalInput}
+        readOnlyLine={
+          !steer || terminalInput
+            ? null
+            : agentActive
+              ? terminalReadOnlyLine(ownerName)
+              : relaunches
+                ? null
+                : terminalOwnerOnlyLine(ownerName, "resume")
+        }
         {...(canPickUp
           ? {
               pickUp: {
@@ -190,7 +213,7 @@ export function SessionPane({
         ? resume.error.message
         : String(resume.error);
   const actions: Array<HeaderAction> = [];
-  if (session !== undefined && steer && !agentActive) {
+  if (session !== undefined && relaunches && !agentActive) {
     if (followUp !== null && canDeliverFollowUp(followUp)) {
       actions.push({
         key: "deliver",
@@ -225,7 +248,7 @@ export function SessionPane({
       onPress: () => openDiff(change.id),
     });
   }
-  if (steer && canOpenShell) {
+  if (terminalInput && steer && canOpenShell) {
     actions.push({
       key: "shell",
       label: companion?.open === "terminal" ? "Hide the shell" : "Shell",

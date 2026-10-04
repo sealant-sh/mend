@@ -4,6 +4,7 @@
 // assemble into a follow-up instruction the reviewer edits before sending.
 // The web review (routes/changes.$changeId.tsx) is the parity reference.
 
+import { canRelaunchSession, terminalOwnerOnlyLine } from "@mend/domain/workbench";
 import { useQuery } from "@tanstack/react-query";
 import { Stack, useLocalSearchParams } from "expo-router";
 import type { ReactNode } from "react";
@@ -33,6 +34,8 @@ import { BodyText, MonoText, UiText, useTextScale } from "@/components/typograph
 import {
   agentIsActive,
   canDeliverFollowUp,
+  terminalInputOf,
+  useOwnerName,
   usePendingFollowUp,
   useSession,
   useSessionActions,
@@ -577,6 +580,19 @@ export default function ReviewScreen() {
   const sessionDetail = useSession(sessionId).data;
   const session = sessionDetail?.session;
   const sessionActive = agentIsActive(session, sessionDetail?.currentAgent ?? null);
+  // Sending comments to a terminal session starts its agent with them, which is typing there: the
+  // owner's alone, even while control is shared (docs/adr/0013). A conversation takes them as a
+  // turn from any steerer. Null when the viewer may send, or before the session is read.
+  const ownerName = useOwnerName(session);
+  const ownerSends =
+    sessionDetail !== undefined &&
+    (sessionDetail.control?.steer ?? true) &&
+    !canRelaunchSession(
+      { steer: true, terminalInput: terminalInputOf(sessionDetail.control) },
+      sessionDetail.currentAgent?.kind ?? null,
+    )
+      ? terminalOwnerOnlyLine(ownerName, "send-back")
+      : null;
   const followUp = usePendingFollowUp(sessionId ?? undefined).data ?? null;
   const { deliverFollowUp } = useSessionActions();
 
@@ -779,13 +795,21 @@ export default function ReviewScreen() {
           }
           onPress={() => queuePass.mutate("read")}
         />
-        <EvButton
-          size="sm"
-          label="Send review"
-          disabled={openUnsent.length === 0}
-          onPress={() => setSendOpen(true)}
-        />
+        {ownerSends === null && (
+          <EvButton
+            size="sm"
+            label="Send review"
+            disabled={openUnsent.length === 0}
+            onPress={() => setSendOpen(true)}
+          />
+        )}
       </View>
+
+      {ownerSends !== null && (
+        <UiText size={13} tone="ink2" style={{ lineHeight: 18 }}>
+          Comments stay here. {ownerSends}
+        </UiText>
+      )}
 
       {queuePass.isError && (
         <MonoText size={10.5} tone="danger">
@@ -823,7 +847,11 @@ export default function ReviewScreen() {
                   {deliverFollowUp.error.message}
                 </MonoText>
               ) : null}
-              {session !== undefined && !sessionActive && canDeliverFollowUp(followUp) ? (
+              {ownerSends !== null ? (
+                <UiText size={13} tone="ink2" style={{ lineHeight: 18 }}>
+                  {ownerSends}
+                </UiText>
+              ) : session !== undefined && !sessionActive && canDeliverFollowUp(followUp) ? (
                 <View style={{ flexDirection: "row" }}>
                   <EvButton
                     size="sm"
