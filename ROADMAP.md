@@ -9,10 +9,12 @@ section goes when it ships.
 - **A release has a scope, written here.** Pull requests merge to `main` in all three repositories
   when they are ready. Tags wait until the release's scope is done.
 - **Main publishes prereleases** ([ADR 0015](docs/adr/0015-next-channel.md)). Every merge to Core or
-  sealantd main publishes `B-next.N`: images, and the SDK or runtime packages on npm's `next`
-  dist-tag. N is the commit's whole history and B never falls below a base already published, so
-  each build is higher than the last. Mend pins those exact versions on main, so a Mend change that
-  needs a new Core API waits for Core main's CI, not for a Core release. `latest` moves only on a
+  sealantd main publishes `B-next.N` under separate names: `-next` images and the `@sealant/*-next`
+  npm packages, which are the only packages that workflow can publish. N is the commit's whole
+  history and B never falls below a base already published, so each build is higher than the last.
+  Mend pins those exact versions on main through aliases
+  (`"@sealant/sdk": npm:@sealant/sdk-next@…`), so a Mend change that needs a new Core API waits for
+  Core main's CI, not for a Core release. The stable packages and their `latest` move only on a
   stable tag.
 - **Mend `next` builds are chosen.** An admin tags `vX.Y.Z-next.N` on main (the version comes from
   `node scripts/next-version.mjs --package apps/cli origin/main`); the release workflow publishes it
