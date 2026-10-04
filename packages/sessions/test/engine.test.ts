@@ -780,6 +780,7 @@ const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
   openHarnessTurn: () => Effect.succeed(null),
   requeueClaimedTurn: () => Effect.void,
   setProviderTurnId: () => Effect.die("not in test"),
+  setTurnPayer: () => Effect.die("not in test"),
   bindRunningProviderTurn: () => Effect.succeed(null),
   failTurn: () => Effect.die("not in test"),
   setTurnIntent: () => Effect.die("not in test"),
@@ -824,16 +825,20 @@ const recordingProtocolHostLayer = (
   submitted: string[],
   authors: Array<string | null> = [],
   permissionModes: Array<"bypass" | "ask"> = [],
+  /** Whose login each attached process's workspace launched with (docs/adr/0013). */
+  launchLogins: Array<string | null> = [],
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
         permissionModes.push(input.permissionMode);
+        launchLogins.push(input.launchedWithLoginOf);
       }),
     rehydrate: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
+        launchLogins.push(input.launchedWithLoginOf);
       }),
     submitTurn: (sessionId, input, author) =>
       Effect.sync(() => {
@@ -9006,6 +9011,74 @@ describe("SessionEngine capture mode", () => {
             spawned,
             () => holderDead,
           ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a joined session's later conversation runs in the holder's executor, on the holder's login",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+      const launchLogins: Array<string | null> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const first = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(first.id, ["codex"]);
+            // The holder's shell keeps its executor retained between the joined session's runs.
+            yield* engine.openShell(first.id);
+
+            const second = yield* engine.provisionSessionIn(first.worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: "user-maria",
+            });
+            const converse = () =>
+              engine.launchProtocol(
+                second.id,
+                { mode: "protocol", permissionMode: "bypass" },
+                "user-maria",
+              );
+            yield* converse();
+            expect(world.sessions.get(second.id)?.sealantWorkspaceId).toBe("workspace-1");
+
+            // Its next conversation reuses the executor its row now names: still the holder's.
+            yield* engine.stop(second.id);
+            yield* converse();
+            expect(created).toHaveLength(1);
+            expect(attached).toHaveLength(2);
+            expect(attached.map(({ process }) => process.sealantWorkspaceId)).toEqual([
+              "workspace-1",
+              "workspace-1",
+            ]);
+            expect(launchLogins).toEqual(["user-fixture", "user-fixture"]);
+
+            // Once the lease names no session, nothing says whose login that executor holds.
+            const lease = memory.leases.get(first.worktreeId);
+            if (lease === undefined) return yield* Effect.die("the worktree holds no lease");
+            memory.leases.set(first.worktreeId, { ...lease, executorId: null });
+            yield* engine.stop(second.id);
+            yield* converse();
+            expect(attached.at(-1)?.process.sealantWorkspaceId).toBe("workspace-1");
+            expect(launchLogins.at(-1)).toBeNull();
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(created),
+          protocolHostLayer: recordingProtocolHostLayer(attached, [], [], [], launchLogins),
         },
       );
     },

@@ -120,7 +120,7 @@ const makeConversationWorld = () => {
           ? null
           : update(queued.id, { status: "running", startedAt: now() });
       }),
-    openHarnessTurn: (_session, _process, providerTurnId, reason) =>
+    openHarnessTurn: (_session, _process, providerTurnId, reason, payer) =>
       admission.beforeHarnessTurn.pipe(
         Effect.andThen(
           Effect.sync(() => {
@@ -145,6 +145,9 @@ const makeConversationWorld = () => {
               providerTurnId,
               error: null,
               usage: null,
+              billedUserId: payer.userId,
+              billedAccountId: payer.accountId,
+              billedAccountName: payer.accountName,
               createdAt: now(),
               startedAt: now(),
               endedAt: null,
@@ -162,6 +165,14 @@ const makeConversationWorld = () => {
         }
       }),
     setProviderTurnId: (id, providerTurnId) => Effect.sync(() => update(id, { providerTurnId })),
+    setTurnPayer: (id, payer) =>
+      Effect.sync(() =>
+        update(id, {
+          billedUserId: payer.userId,
+          billedAccountId: payer.accountId,
+          billedAccountName: payer.accountName,
+        }),
+      ),
     bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: (id, error) =>
       Effect.sync(() => update(id, { status: "failed", error, endedAt: now() })),
@@ -485,6 +496,7 @@ describe("ProtocolHost", () => {
         pipe,
         cwd: "/workspace/repo",
         permissionMode: "bypass",
+        launchedWithLoginOf: "owner-1",
         hooks: {
           onRequestChanged: () => Effect.void,
           onTurnCompleted: (turn) => Effect.sync(() => void completed.push(turn.id)),
@@ -495,6 +507,15 @@ describe("ProtocolHost", () => {
       expect(world.turns.get(first.id)?.error).toContain("model unavailable");
       expect(world.turns.get(second.id)?.status).toBe("running");
       expect(completed).toEqual([first.id]);
+      // The accepted turn records the login it ran on: the one the workspace launched with, its
+      // account named and its id unknown. A turn the harness refused ran on nobody's.
+      expect(world.turns.get(second.id)).toMatchObject({
+        author: "user-1",
+        billedUserId: "owner-1",
+        billedAccountId: null,
+        billedAccountName: "default",
+      });
+      expect(world.turns.get(first.id)?.billedUserId).toBeNull();
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
@@ -521,6 +542,8 @@ describe("ProtocolHost", () => {
           pipe,
           cwd: "/workspace/repo",
           permissionMode: "bypass" as const,
+          // Mend cannot say whose workspace it is: the turns it sends say no payer.
+          launchedWithLoginOf: null,
           hooks: {
             onRequestChanged: () => Effect.void,
             onTurnCompleted: (turn: AgentTurn) => Effect.sync(() => void completed.push(turn.id)),
@@ -539,6 +562,10 @@ describe("ProtocolHost", () => {
         // and the queued turn reaches the surviving harness.
         yield* waitUntil(() => world.turns.get(queued.id)?.providerTurnId === "turn-b");
         expect(world.turns.get(queued.id)?.status).toBe("running");
+        expect(world.turns.get(queued.id)).toMatchObject({
+          billedUserId: null,
+          billedAccountName: null,
+        });
         // A second rehydrate of a hosted process is a no-op.
         yield* host.rehydrate(input);
         expect(yield* host.has(processId)).toBe(true);
@@ -561,6 +588,7 @@ describe("ProtocolHost", () => {
           pipe,
           cwd: "/workspace/repo",
           permissionMode: "bypass",
+          launchedWithLoginOf: "owner-1",
           hooks: {
             onRequestChanged: () => Effect.void,
             onTurnCompleted: () => Effect.void,
@@ -599,6 +627,7 @@ describe("ProtocolHost", () => {
           pipe: claude.pipe,
           cwd: "/workspace/repo",
           permissionMode: "bypass",
+          launchedWithLoginOf: "owner-1",
           hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
         });
         yield* waitUntil(() => world.turns.get(asked.id)?.providerTurnId !== null);
@@ -643,6 +672,9 @@ describe("ProtocolHost", () => {
           origin: "harness",
           author: null,
           input: 'Dynamic workflow "two tiny agents" completed',
+          // Nobody sent it; it ran on the login the workspace holds.
+          billedUserId: "owner-1",
+          billedAccountName: "default",
         });
         claude.push({
           type: "assistant",
@@ -671,6 +703,7 @@ describe("ProtocolHost", () => {
         pipe,
         cwd: "/workspace/repo",
         permissionMode: "bypass",
+        launchedWithLoginOf: "owner-1",
         hooks: {
           onRequestChanged: () => Effect.void,
           onTurnCompleted: () => Effect.void,

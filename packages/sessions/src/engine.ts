@@ -10986,6 +10986,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
               hooks: protocolHooksFor(agentProcess),
+              // The session's own workspace, created or claimed with its owner's login.
+              launchedWithLoginOf: session.ownerUserId,
             })
             .pipe(
               Effect.tapError((error) =>
@@ -11462,6 +11464,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /**
+       * Whose login a workspace launched with (docs/adr/0013), decided from the workspace a
+       * process runs in, never from how the launch reached it. Outside capture mode a session's
+       * workspace is its own: its owner's. In capture mode the worktree's one executor is the
+       * lease holder's, launched on its owner's login, whichever session's process runs in it: the
+       * holder's, a join, or a later run of a joined session. Null when the lease names no
+       * session, or one whose workspace is not this one: Mend cannot say whose login it holds.
+       */
+      const launchLoginOfWorkspace = Effect.fn("SessionEngine.launchLoginOfWorkspace")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        if (capture === null) return session.ownerUserId;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (lease === null || lease.executorId === null || lease.executorId.startsWith("mend:")) {
+          return null;
+        }
+        const holder = yield* sessions
+          .byId(SessionId.make(lease.executorId))
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        return holder !== null && holder.sealantWorkspaceId === workspaceId
+          ? holder.ownerUserId
+          : null;
+      });
+
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */
       const launchInRetainedWorkspace = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
         function* (
@@ -11493,6 +11520,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.fail(new SessionNotLiveError({ sessionId })),
               ),
             ));
+          // Read before this launch writes the workspace onto the session's row: a session that
+          // joined another person's executor keeps running there on that person's login.
+          const launchedWithLoginOf =
+            protocolStart === null
+              ? null
+              : yield* launchLoginOfWorkspace(session, SealantWorkspaceId.make(workspace.id));
           if (nativeImport !== null) {
             yield* placeConvertedFiles(
               session,
@@ -11642,6 +11675,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 effort: protocolStart.effort,
                 permissionMode: protocolStart.permissionMode ?? "bypass",
                 hooks: protocolHooksFor(agentProcess),
+                launchedWithLoginOf,
               })
               .pipe(
                 Effect.tapError((error) =>
@@ -13848,6 +13882,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      /** Whose login a surviving protocol process's workspace launched with (docs/adr/0013). */
+      const launchLoginOfProcess = Effect.fn("SessionEngine.launchLoginOfProcess")(function* (
+        protocolProcess: SessionProcess,
+      ) {
+        const session = yield* sessions
+          .byId(protocolProcess.sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null) return null;
+        return yield* launchLoginOfWorkspace(session, protocolProcess.sealantWorkspaceId);
+      });
+
       /**
        * Restart policy v2: the pipe process survives a Mend restart (its stdio
        * terminates at the platform daemon, not at us), so re-attach a fresh
@@ -13893,6 +13938,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               effort: options?.effort ?? undefined,
               permissionMode: options?.permissionMode ?? "bypass",
               hooks: protocolHooksFor(protocolProcess),
+              launchedWithLoginOf: yield* launchLoginOfProcess(protocolProcess),
               highWater: status.outputHighWater,
             })
             .pipe(
