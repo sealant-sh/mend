@@ -406,9 +406,18 @@ export const readHarnessFileScript = (mountPath: string = HARNESS_HOME_MOUNT_PAT
   physicalRootFunction(mountPath) +
   'physical_root "$rel" || { echo "a symlink is on the way to $1" >&2; exit 4; }; cat "$R/$rel"';
 
+/**
+ * Login files a capture made before the platform left them out may still hold, under the harness
+ * home: opencode's MCP server logins (`mcp-auth.json`, until sealantd#136). Capture mode's
+ * relocation removes a plain one unread before any harness or shell starts, so one person's login
+ * a materialised head brought never reaches the next person's session. The opencode seed keeps the
+ * file a link into the executor's own home afterwards (`OPENCODE_MCP_AUTH_SEED`).
+ */
+export const CAPTURED_LOGIN_FILES: ReadonlyArray<string> = [".local/share/opencode/mcp-auth.json"];
+
 export const relocateHarnessHomeScript = (
   mountPath: string = HARNESS_HOME_MOUNT_PATH,
-  options: { readonly keepStoreReadable?: boolean } = {},
+  options: { readonly keepStoreReadable?: boolean; readonly dropCapturedLogins?: boolean } = {},
 ): string => {
   const dirs = [...new Set(Object.values(HARNESS_STATE).flatMap((shape) => shape.homeDirs))];
   // The parents of each harness directory are created when missing; the harness directory itself
@@ -490,9 +499,17 @@ export const relocateHarnessHomeScript = (
     `${tightenCredentials(mountPath)}; done' ` +
     `>/dev/null 2>&1 & fi; ` +
     `chmod -R go+rX "${mountPath}" 2>/dev/null || true; ${tightenCredentials(mountPath)}`;
-  return [...preflight, ...perDir, ...(options.keepStoreReadable === false ? [] : [keeper])].join(
-    "; ",
+  const dropLogins = CAPTURED_LOGIN_FILES.map(
+    (file) =>
+      `if [ -e "${mountPath}/${file}" ] && [ ! -L "${mountPath}/${file}" ]; then ` +
+      `rm -rf "${mountPath}/${file}" || fail "remove a captured login: ${file}"; fi`,
   );
+  return [
+    ...preflight,
+    ...perDir,
+    ...(options.dropCapturedLogins === true ? dropLogins : []),
+    ...(options.keepStoreReadable === false ? [] : [keeper]),
+  ].join("; ");
 };
 
 /**

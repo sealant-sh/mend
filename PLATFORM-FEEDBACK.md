@@ -15,10 +15,15 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 - **Today:**
   - `CREDENTIAL_FILES` leaves out opencode's `auth.json` but not
     `.local/share/opencode/mcp-auth.json`, the OAuth tokens and client secrets of the MCP servers
-    opencode signs in to (opencode 1.18.34 `mcp/auth.ts`). Fixed in sealantd#136, not yet released.
+    opencode signs in to (opencode 1.18.34 `mcp/auth.ts`). sealantd#136 leaves it out of captures
+    and, since a capture made before still holds it, never restores a `CREDENTIAL_FILES` path
+    either. Not yet released.
   - Until it ships, Mend's opencode seed makes that file a link to `~/.mend/opencode/mcp-auth.json`
     in the executor's own home, which opencode writes through, and removes unread a plain file a
-    capture brought (`OPENCODE_MCP_AUTH_SEED`).
+    capture brought (`OPENCODE_MCP_AUTH_SEED`, capture mode only). Capture mode's harness-home
+    relocation, before every launch of any harness, also removes a plain one unread
+    (`CAPTURED_LOGIN_FILES`). An opencode started by hand in a shell is not seeded and writes the
+    file into saved state until #136 ships.
   - opencode's database (`opencode.db`, saved with the harness home as the conversation) also has
     `account` / `control_account` tables (an opencode console sign-in: access and refresh token) and
     `credential` (the v2 integrations' OAuth and key values).
