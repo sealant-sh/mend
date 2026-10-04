@@ -162,10 +162,15 @@ export const userMessageIdOf = (source: ThreadSource, turn: MendTurn): MessageId
 // ─── Entities ────────────────────────────────────────────────────────────────
 
 /** Mend's run statuses are t3code's; a running turn its agent is waiting on a person for is `waiting`. */
-const runStatusOf = (turn: MendTurn, pending: boolean): OrchestrationV2RunStatus => {
+const runStatusOf = (
+  turn: MendTurn,
+  pending: boolean,
+  sentByGateway: boolean,
+): OrchestrationV2RunStatus => {
   switch (turn.status) {
+    // A turn the gateway sent only when nothing was open is about to run, not waiting in line.
     case "queued":
-      return "queued";
+      return sentByGateway ? "starting" : "queued";
     case "running":
       return pending ? "waiting" : "running";
     case "completed":
@@ -273,7 +278,7 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
       userMessageId: userMessageIdOf(source, turn),
       rootNodeId: null,
       activeAttemptId: null,
-      status: runStatusOf(turn, pending.has(turn.id)),
+      status: runStatusOf(turn, pending.has(turn.id), source.runIds.has(turn.id)),
       requestedAt: utc(turn.createdAt),
       startedAt: turn.startedAt === null ? null : utc(turn.startedAt),
       completedAt: turn.endedAt === null ? null : utc(turn.endedAt),

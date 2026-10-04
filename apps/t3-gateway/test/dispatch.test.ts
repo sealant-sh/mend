@@ -150,7 +150,7 @@ describe("message.dispatch", () => {
       ),
   );
 
-  it.live("launches a stopped session again with the message, naming no options", () =>
+  it.live("launches a stopped session again with the message, on its recorded options", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         setup(mend, { ask: true });
@@ -174,10 +174,12 @@ describe("message.dispatch", () => {
           runEvent((run) => run.userMessageId === "message-c" && run.status === "preparing"),
         );
         yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
-        // Mend reuses what the agent last recorded (ask stays ask): the gateway names nothing.
+        // The relaunch names what the agent last recorded: ask stays ask.
         assert.deepStrictEqual(posts(mend, "/launch")[0]?.body, {
           mode: "protocol",
           prompt: "Pick it up again",
+          model: "gpt-6.1-sol",
+          permissionMode: "ask",
         });
         assert.strictEqual(posts(mend, "/turns").length, 0);
         // The launch's opening turn is the message: same run, same message, now running.

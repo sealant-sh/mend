@@ -37,6 +37,7 @@ import {
   MendClient,
   MendDeviceRefused,
   type MendCommandRefused,
+  type MendLaunchOptions,
   type MendRequestResponse,
   type MendNotFound,
   type MendUnavailable,
@@ -149,7 +150,7 @@ export interface ThreadCommands {
   /**
    * A message for the thread. The gateway queues it and sends it once no turn is open: as a turn
    * of the live agent, or, when the agent has stopped (the idle stop), as the opening turn of a
-   * protocol launch that names no options, so the session comes back as it was recorded.
+   * protocol launch on the options the session last recorded, so it comes back as it was.
    */
   readonly send: (input: {
     readonly session: BearerSession;
@@ -241,6 +242,8 @@ interface QueueEntry {
   launched: boolean;
   /** The newest turn ordinal before it was sent; its turn comes after. */
   afterOrdinal: number;
+  /** What a relaunch names: the options the session's last protocol agent recorded. */
+  launchOptions: MendLaunchOptions;
 }
 
 interface ThreadQueue {
@@ -1154,7 +1157,7 @@ export const makePersonHub = (input: {
           );
         }
         const launched = yield* mend
-          .launchProtocol(entry.token, sessionId, entry.text)
+          .launchProtocol(entry.token, sessionId, entry.text, entry.launchOptions)
           .pipe(Effect.result);
         if (launched._tag === "Failure") {
           return yield* refuseEntry(sessionId, entry, launched.failure.message);
@@ -1188,6 +1191,17 @@ export const makePersonHub = (input: {
         const source = sourceOf(sessionId);
         if (next === undefined || source === null) return;
         const live = source.agent.exitedAt === null;
+        // The recorded options, named on the relaunch: an ask session comes back asking even on a
+        // Mend from before the resume fix (mend#493), which reuses them on its own.
+        const recorded = source.agent.protocolOptions;
+        next.launchOptions =
+          recorded === null
+            ? {}
+            : {
+                ...(recorded.model === null ? {} : { model: recorded.model }),
+                ...(recorded.effort === null ? {} : { effort: recorded.effort }),
+                permissionMode: recorded.permissionMode,
+              };
         next.state = live ? "starting" : "preparing";
         next.afterOrdinal = turns.reduce((highest, turn) => Math.max(highest, turn.ordinal), -1);
         yield* Effect.forkIn(submit(sessionId, next, live), hubScope);
@@ -1236,6 +1250,7 @@ export const makePersonHub = (input: {
               token: command.session.deviceToken,
               launched: false,
               afterOrdinal: -1,
+              launchOptions: {},
             });
             yield* publishAll;
             return sequence;
