@@ -415,7 +415,20 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
   Effect.gen(function* () {
     const db = yield* MendDB;
     /** Keep `stored` as a version, and only the newest few of its path. */
-    const keepVersion = (tx: Tx, userId: string, projectId: ProjectId, stored: StoredMemoryFile) =>
+    /**
+     * Keep `stored` as a version, and only the newest `VERSIONS_KEPT` unpinned ones of its path. A
+     * pinned version holds lines no stored file does (a machine's file in a conflict, or one a
+     * merge did not keep whole, or a stored file a read-back could not merge), so the cap never
+     * takes it: it is the only copy. Pinning sticks once set, whatever later saves of the same
+     * contents ask.
+     */
+    const keepVersion = (
+      tx: Tx,
+      userId: string,
+      projectId: ProjectId,
+      stored: StoredMemoryFile,
+      pinned = false,
+    ) =>
       Effect.gen(function* () {
         yield* tx
           .insert(agentMemoryVersions)
@@ -426,6 +439,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
             digest: stored.digest,
             encoding: stored.encoding,
             contents: stored.contents,
+            pinned,
           })
           .onConflictDoUpdate({
             target: [
@@ -434,19 +448,22 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
               agentMemoryVersions.path,
               agentMemoryVersions.digest,
             ],
-            set: { savedAt: new Date() },
+            set: { savedAt: new Date(), pinned: sql`agent_memory_versions.pinned or ${pinned}` },
           })
           .pipe(Effect.orDie);
         yield* tx
           .execute(
             sql`delete from agent_memory_versions where user_id = ${userId} and project_id = ${projectId}
-              and path = ${stored.path} and digest not in (
+              and path = ${stored.path} and not pinned and digest not in (
                 select digest from agent_memory_versions where user_id = ${userId}
-                  and project_id = ${projectId} and path = ${stored.path}
+                  and project_id = ${projectId} and path = ${stored.path} and not pinned
                 order by saved_at desc limit ${VERSIONS_KEPT})`,
           )
           .pipe(Effect.orDie);
       });
+    /** A version that is the only copy of some lines: never taken by the cap. */
+    const pinVersion = (tx: Tx, userId: string, projectId: ProjectId, stored: StoredMemoryFile) =>
+      keepVersion(tx, userId, projectId, stored, true);
 
     const write = (
       tx: Tx,
@@ -618,16 +635,18 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                 note: mergeNote(`session ${sessionId.slice(0, 8)}`, new Date()),
                 merge: input.merge,
               });
-              yield* keepVersion(tx, userId, projectId, step.stored);
               if (outcome.kind === "unmergeable") {
-                // As for a file that is not text: the session's, with the stored one kept.
+                // As for a file that is not text: the session's, with the stored one kept, pinned:
+                // its lines are in no stored file now.
+                yield* pinVersion(tx, userId, projectId, step.stored);
                 yield* write(tx, userId, projectId, step.file, sessionId);
                 saved.push(step.file.path);
                 continue;
               }
+              yield* keepVersion(tx, userId, projectId, step.stored);
               if (outcome.missing.length > 0) {
                 // The merge does not hold every line the session wrote: its file is kept whole.
-                yield* keepVersion(tx, userId, projectId, {
+                yield* pinVersion(tx, userId, projectId, {
                   ...step.file,
                   digest: agentMemoryDigest(step.file),
                   updatedBySession: sessionId,
@@ -750,22 +769,29 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
             const conflict = (file: DigestedFile) =>
               Effect.gen(function* () {
                 yield* apply(
-                  keepVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
+                  pinVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
                 );
                 report.conflicting.push(file.path);
               });
-            /** Both sides' contents become `merged`; each is kept as a version. */
+            /**
+             * Both sides' contents become `merged`; each is kept as a version, the machine's
+             * pinned when `merged` does not hold all of it.
+             */
             const replaceMerged = (
               step: { file: DigestedFile; stored: StoredMemoryFile },
               merged: MemoryFile,
+              incomplete: boolean,
             ) =>
               apply(
                 Effect.gen(function* () {
                   yield* keepVersion(tx, userId, projectId, step.stored);
-                  yield* keepVersion(tx, userId, projectId, {
-                    ...step.file,
-                    updatedBySession: null,
-                  });
+                  yield* keepVersion(
+                    tx,
+                    userId,
+                    projectId,
+                    { ...step.file, updatedBySession: null },
+                    incomplete,
+                  );
                   yield* write(tx, userId, projectId, merged, null);
                 }),
               );
@@ -821,10 +847,11 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                     yield* conflict(file);
                     break;
                   }
-                  if (merged.contents !== step.stored.contents) yield* replaceMerged(step, merged);
-                  else if (outcome.missing.length > 0) {
+                  if (merged.contents !== step.stored.contents) {
+                    yield* replaceMerged(step, merged, outcome.missing.length > 0);
+                  } else if (outcome.missing.length > 0) {
                     yield* apply(
-                      keepVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
+                      pinVersion(tx, userId, projectId, { ...file, updatedBySession: null }),
                     );
                   }
                   // A merge that does not hold every line this machine sent keeps its file as a
@@ -855,7 +882,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                     yield* conflict(file);
                     break;
                   }
-                  yield* replaceMerged(step, merged);
+                  yield* replaceMerged(step, merged, false);
                   yield* recordBase(file);
                   report.merged.push({ path: file.path, against: "summaries", missingLines: 0 });
                   break;

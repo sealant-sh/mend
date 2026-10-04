@@ -147,6 +147,15 @@ const crlfNote = (description: string) =>
 const distinctLines = (side: string, pad: number) =>
   `${Array.from({ length: 2001 }, (_, i) => `${side} ${"x".repeat(pad)} ${i}`).join("\n")}\n`;
 
+/** How often each line of `contents` occurs. */
+const lineCounts = (contents: string) => {
+  const out = new Map<string, number>();
+  for (const line of contents.replace(/\n$/, "").split("\n")) {
+    out.set(line, (out.get(line) ?? 0) + 1);
+  }
+  return out;
+};
+
 /** A merge that keeps only Mend's side: stands in for any merge that loses a line. */
 const keepsOurs: MergeText = ({ ours }) => Effect.succeed(ours);
 
@@ -367,6 +376,88 @@ describe("importing memory from a machine", () => {
       with: keepsOurs,
     });
     expect(result).toEqual({ kind: "merged", contents: "a\n", missing: ["b"] });
+  });
+
+  // Review round 2, finding 1 (reproduced): a ``` line inside a four-backtick block ended the
+  // block for the dedupe, which then took a repeated entry inside it and reported nothing missing.
+  it("keeps every entry inside a code block of a merged index, however it is fenced", async () => {
+    const entry = "- [Build](build.md) — pnpm";
+    for (const block of [
+      ["````md", "```sh", entry, "```", entry, "````"],
+      ["~~~", entry, "```", entry, "~~~"],
+      ["```", entry, entry],
+    ]) {
+      const theirs = `# Memory\n${block.join("\n")}\n`;
+      const merged = await merge({
+        path: `${ROOT}/MEMORY.md`,
+        ours: `# Memory\n${entry}\n`,
+        theirs,
+        base: null,
+      });
+      // Every copy inside the block stays; Mend's own copy may line up with one of them.
+      const copies = merged.split("\n").filter((line) => line === entry).length;
+      expect(copies).toBeGreaterThanOrEqual(block.filter((line) => line === entry).length);
+      for (const line of block) expect(merged).toContain(line);
+    }
+  });
+
+  // Review round 2, finding 2 (reproduced): frontmatter on one side only took the whole-file
+  // path, where a repeated line was lost the same way.
+  it("keeps a repeated line when only one side has frontmatter", async () => {
+    const entry = "- [Build](build.md) — pnpm";
+    const session = `\`\`\`\`md\n\`\`\`\n${entry}\n\`\`\`\n${entry}\n\`\`\`\`\n`;
+    for (const [ours, theirs] of [
+      [`---\nname: index\n---\n${entry}\n`, session],
+      [session, `---\nname: index\n---\n${entry}\n`],
+    ] as const) {
+      const result = await outcome({ path: `${ROOT}/MEMORY.md`, ours, theirs, base: null });
+      if (result.kind !== "merged") throw new Error("merges");
+      expect(result.missing).toEqual([]);
+      for (const line of theirs.split("\n")) expect(result.contents).toContain(line);
+      const want = (contents: string) =>
+        contents.split("\n").filter((line) => line === entry).length;
+      expect(want(result.contents)).toBeGreaterThanOrEqual(want(theirs));
+    }
+  });
+
+  // Review round 2: the check runs on the final text after every step. Over random files from a
+  // vocabulary of fences, delimiters, frontmatter keys and entries, merged with the real three-way
+  // merge, a line of the incoming side is either in the result as often as it was (less what Mend
+  // removed since the base; an index entry outside code needs one copy at most) or reported.
+  it("never loses an incoming line without reporting it", async () => {
+    const vocabulary = ["---", "name: a", "x", "x", "- [a](a.md)", "```", "````", "~~~", "", "# h"];
+    let seed = 7;
+    const next = (n: number) => {
+      seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+      return seed % n;
+    };
+    const file = () =>
+      `${next(2) === 0 ? "---\nname: a\n---\n" : ""}${Array.from(
+        { length: next(9) },
+        () => vocabulary[next(vocabulary.length)],
+      ).join("\n")}\n`;
+    let unreported = 0;
+    for (let round = 0; round < 300; round += 1) {
+      const base = next(3) === 0 ? null : file();
+      const ours = file();
+      const theirs = file();
+      for (const path of [`${ROOT}/notes.md`, `${ROOT}/MEMORY.md`]) {
+        const result = await outcome({ path, ours, theirs, base });
+        if (result.kind !== "merged" || result.missing.length > 0) continue;
+        const have = lineCounts(result.contents);
+        const kept = lineCounts(ours);
+        const shared = base === null ? new Map<string, number>() : lineCounts(base);
+        for (const [line, count] of lineCounts(theirs)) {
+          const removed = Math.max(0, (shared.get(line) ?? 0) - (kept.get(line) ?? 0));
+          const floor = path.endsWith("MEMORY.md") && line.startsWith("- [") ? 1 : count;
+          const noted = [...have.keys()].some(
+            (h) => h.startsWith("# from") && h.endsWith(`: ${line}`),
+          );
+          if ((have.get(line) ?? 0) < Math.min(floor, count) - removed && !noted) unreported += 1;
+        }
+      }
+    }
+    expect(unreported).toBe(0);
   });
 });
 
@@ -792,7 +883,7 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
           merge: keepsOurs,
         });
         const versions = yield* sql<{ contents: string }>`
-          SELECT contents FROM agent_memory_versions WHERE path = ${session.path}`;
+          SELECT contents FROM agent_memory_versions WHERE path = ${session.path} AND pinned`;
         expect(versions.map((row) => row.contents)).toContain(session.contents);
       }),
     );
@@ -835,6 +926,78 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         expect(
           yield* (yield* AgentMemoryRepo).read("anna", project, `${ROOT}/twice.md`),
         ).toBeNull();
+      }),
+    );
+  });
+
+  // Review round 2, finding 2, through the store: a read-back whose merge loses a line keeps the
+  // session's file, pinned, with frontmatter on one side only.
+  it("keeps a session's file when a one-sided-frontmatter read-back loses a line", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const index = text("one-sided/MEMORY.md", "---\nname: index\n---\n- [a](a.md)\n");
+        yield* repo.importFiles(importing([index], { source: null }));
+        const session = text("one-sided/MEMORY.md", "- [a](a.md)\n```\n- [b](b.md)\n- [b](b.md)\n");
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-one-sided",
+          delivered: {},
+          session: [session],
+          merge: keepsOurs,
+        });
+        const merged = (yield* repo.read("anna", project, session.path))?.file.contents ?? "";
+        // Merged with no shared version: every line of the session's is there.
+        for (const line of session.contents.split("\n")) expect(merged).toContain(line);
+        expect(merged.split("\n").filter((line) => line === "- [b](b.md)")).toHaveLength(2);
+        expect(merged.startsWith("---\nname: index\n---\n")).toBe(true);
+        const kept = yield* sql<{ contents: string }>`
+          SELECT contents FROM agent_memory_versions WHERE path = ${session.path}`;
+        expect(kept.map((row) => row.contents)).toContain(index.contents);
+      }),
+    );
+  });
+
+  // Review round 2, finding 3 (reproduced by reading the prune): the cap of twenty versions per
+  // file took the oldest first, so twenty later saves evicted the machine's file a lossy merge
+  // had kept, the only copy of its lines.
+  it("never lets the version cap take a version that is the only copy of some lines", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const v1 = text("capped.md", "a\n");
+        yield* repo.importFiles(importing([v1]));
+        yield* repo.readBack({
+          userId: "anna",
+          projectId: project,
+          sessionId: "s-capped",
+          delivered: {},
+          session: [text("capped.md", "a\nmend\n")],
+          merge: unionMerge,
+        });
+        const laptop = text("capped.md", "a\nlaptop\n");
+        const report = yield* repo.importFiles(importing([laptop], { merge: keepsOurs }));
+        expect(report.merged[0]?.missingLines).toBe(1);
+        // Twenty-five later saves by one session, each replacing the last.
+        for (let n = 0; n < 25; n += 1) {
+          yield* repo.readBack({
+            userId: "anna",
+            projectId: project,
+            sessionId: "s-capped",
+            delivered: {},
+            session: [text("capped.md", `a\nmend\nsave ${n}\n`)],
+            merge: unionMerge,
+          });
+        }
+        const versions = yield* sql<{ contents: string; pinned: boolean }>`
+          SELECT contents, pinned FROM agent_memory_versions WHERE path = ${laptop.path}`;
+        expect(versions.filter((row) => row.pinned).map((row) => row.contents)).toEqual([
+          laptop.contents,
+        ]);
+        expect(versions.filter((row) => !row.pinned)).toHaveLength(20);
       }),
     );
   });

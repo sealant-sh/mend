@@ -7,8 +7,40 @@ import {
   missingLines,
   splitFrontmatter,
   unionLines,
+  fencedLines,
   withoutRepeatedEntries,
 } from "./agent-memory-merge.ts";
+
+const ENTRY = "- [Build](build.md) — pnpm";
+
+// Review round 2, finding 1: the fence detector toggled on every ``` line, so a ``` inside a
+// four-backtick block ended "code" early and a repeated entry inside the block was deduped away.
+describe("code blocks, read after CommonMark", () => {
+  it("keeps a four-backtick block open across a ``` line inside it", () => {
+    const lines = ["````md", "```sh", ENTRY, "```", ENTRY, "````", ENTRY];
+    expect(fencedLines(lines)).toEqual([true, true, true, true, true, true, false]);
+    expect(withoutRepeatedEntries(`${lines.join("\n")}\n`)).toBe(`${lines.join("\n")}\n`);
+  });
+
+  it("closes a ~~~ block only on ~~~, never on backticks", () => {
+    const lines = ["~~~", ENTRY, "```", ENTRY, "~~~~", ENTRY, ENTRY];
+    expect(fencedLines(lines)).toEqual([true, true, true, true, true, false, false]);
+    expect(withoutRepeatedEntries(`${lines.join("\n")}\n`)).toBe(
+      `${lines.slice(0, 6).join("\n")}\n`,
+    );
+  });
+
+  it("reads an unclosed block as code to the end", () => {
+    const lines = [ENTRY, "```", ENTRY, ENTRY];
+    expect(fencedLines(lines)).toEqual([false, true, true, true]);
+    expect(withoutRepeatedEntries(`${lines.join("\n")}\n`)).toBe(`${lines.join("\n")}\n`);
+  });
+
+  it("does not close on a fence with an info string, and does not open on backticks in one", () => {
+    expect(fencedLines(["```", "```sh", "```"])).toEqual([true, true, true]);
+    expect(fencedLines(["``` a`b", ENTRY])).toEqual([false, false]);
+  });
+});
 
 /** 2,001 distinct lines, about 19 KB: past the alignment limit against another such file. */
 const file = (side: string) =>
@@ -202,9 +234,9 @@ describe("what a merge did not keep", () => {
     expect(
       missingLines({
         path,
-        merged: "name: a\n# from laptop, 2026-10-01: name: b\n",
-        theirs: "name: b\n",
-        ours: "name: a\n",
+        merged: "---\nname: a\n# from laptop, 2026-10-01: name: b\n---\n",
+        theirs: "---\nname: b\n---\n",
+        ours: "---\nname: a\n---\n",
         base: null,
       }),
     ).toEqual([]);
@@ -229,5 +261,46 @@ describe("what a merge did not keep", () => {
         base: null,
       }),
     ).toEqual([]);
+  });
+
+  // Review round 2: the check is the last line of defence, on the final text with the same
+  // parser as the dedupe, so a copy inside a code block is always needed.
+  it("needs every copy of an entry inside a code block, however the block is fenced", () => {
+    const theirs = ["````md", "```", ENTRY, "```", ENTRY, "````", ""].join("\n");
+    const lost = ["````md", "```", ENTRY, "```", "````", ""].join("\n");
+    expect(missingLines({ path: "MEMORY.md", merged: lost, theirs, ours: "", base: null })).toEqual(
+      [ENTRY],
+    );
+    const unclosed = `~~~\n${ENTRY}\n${ENTRY}\n`;
+    expect(
+      missingLines({
+        path: "MEMORY.md",
+        merged: `~~~\n${ENTRY}\n`,
+        theirs: unclosed,
+        ours: "",
+        base: null,
+      }),
+    ).toEqual([ENTRY]);
+  });
+
+  it("counts blank lines, and credits a noted line only in the merged frontmatter", () => {
+    expect(
+      missingLines({
+        path: "notes.md",
+        merged: "a\nb\n",
+        theirs: "a\n\nb\n",
+        ours: "",
+        base: null,
+      }),
+    ).toEqual([""]);
+    expect(
+      missingLines({
+        path: "notes.md",
+        merged: "body\n# from laptop, 2026-10-04: name: b\n",
+        theirs: "name: b\n",
+        ours: "",
+        base: null,
+      }),
+    ).toEqual(["name: b"]);
   });
 });

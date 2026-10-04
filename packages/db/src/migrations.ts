@@ -2935,6 +2935,7 @@ const turnOriginMigration = Effect.gen(function* () {
  * 0106: what `mend memory import` last imported from each checkout on each machine
  * (docs/adr/0009, decision 4), so the next import from there merges three-way against it instead
  * of with no shared version. A text file's contents are kept; a binary one's digest is enough.
+ * And which kept versions are pinned beyond the cap.
  */
 const agentMemoryImportBasesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -2950,6 +2951,10 @@ const agentMemoryImportBasesMigration = Effect.gen(function* () {
       imported_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (user_id, project_id, source, path)
     )`;
+  // A version that is the only copy of some lines (a machine's file in a conflict, one a merge
+  // did not keep whole, a stored file a read-back could not merge) is pinned: the cap of twenty
+  // versions per file never takes it.
+  yield* sql`ALTER TABLE agent_memory_versions ADD COLUMN pinned boolean NOT NULL DEFAULT false`;
 });
 
 export const migrations = {

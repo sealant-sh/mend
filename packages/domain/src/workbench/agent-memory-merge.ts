@@ -111,26 +111,62 @@ export const isAgentMemoryIndex = (filePath: string): boolean =>
 
 /** One index entry: a list item that opens with a link, `- [Title](file.md) — hook`. */
 const INDEX_ENTRY = /^\s*[-*+]\s+\[[^\]]*\]\([^)\s]+\)/;
-/** A Markdown code fence: everything between two of them is code, never an entry. */
-const FENCE = /^\s*(```|~~~)/;
+/** A line that can open a code fence: three or more backticks or tildes, and an info string. */
+const FENCE_OPEN = /^\s*(`{3,}|~{3,})(.*)$/;
+/** A line that can close one: only the fence characters, then whitespace. */
+const FENCE_CLOSE = /^\s*(`{3,}|~{3,})[ \t]*$/;
+
+/**
+ * For each line, whether it belongs to a fenced code block, its fence lines included, after
+ * CommonMark: a block opens with three or more backticks or tildes (a backtick fence's info string
+ * has no backtick), and closes only on a line of the same character, at least as long, with
+ * nothing after it; an unclosed block runs to the end of the text. Indentation is not limited to
+ * three spaces as CommonMark limits it, so a fence inside a list item counts too: reading more of
+ * the text as code only ever means comparing fewer lines as entries.
+ */
+export const fencedLines = (lines: ReadonlyArray<string>): ReadonlyArray<boolean> => {
+  const out: Array<boolean> = [];
+  let open: { readonly char: string; readonly length: number } | null = null;
+  for (const line of lines) {
+    if (open === null) {
+      const opening = FENCE_OPEN.exec(line);
+      const fence = opening?.[1];
+      const info = opening?.[2] ?? "";
+      if (fence !== undefined && !(fence.startsWith("`") && info.includes("`"))) {
+        open = { char: fence.charAt(0), length: fence.length };
+        out.push(true);
+      } else out.push(false);
+      continue;
+    }
+    const closing = FENCE_CLOSE.exec(line)?.[1];
+    if (closing !== undefined && closing.charAt(0) === open.char && closing.length >= open.length) {
+      open = null;
+    }
+    out.push(true);
+  }
+  return out;
+};
+
+/** Each line's index-entry text when it is one outside a code block, else null. */
+const entriesOutsideFences = (lines: ReadonlyArray<string>): ReadonlyArray<string | null> => {
+  const fenced = fencedLines(lines);
+  return lines.map((line, i) => (fenced[i] !== true && INDEX_ENTRY.test(line) ? line : null));
+};
 
 /**
  * Each index entry once, at its first place: what an index merge leaves. Only entry lines outside
- * code fences are compared; every other line (headings, blank lines, fences, delimiters, prose)
- * stays as it is, however often it repeats.
+ * code blocks (`fencedLines`) are compared; every other line (headings, blank lines, fences,
+ * delimiters, prose, anything in a code block) stays as it is, however often it repeats.
  */
 export const withoutRepeatedEntries = (text: string): string => {
   const { lines, trailingNewline } = linesOf(text);
+  const entries = entriesOutsideFences(lines);
   const seen = new Set<string>();
-  let fenced = false;
-  const kept = lines.filter((line) => {
-    if (FENCE.test(line)) {
-      fenced = !fenced;
-      return true;
-    }
-    if (fenced || !INDEX_ENTRY.test(line)) return true;
-    if (seen.has(line)) return false;
-    seen.add(line);
+  const kept = lines.filter((_, i) => {
+    const entry = entries[i] ?? null;
+    if (entry === null) return true;
+    if (seen.has(entry)) return false;
+    seen.add(entry);
     return true;
   });
   return textOf(kept, trailingNewline);
@@ -261,9 +297,15 @@ const counts = (lines: ReadonlyArray<string>): Map<string, number> => {
 };
 
 /**
- * The non-blank lines of `theirs` that `merged` does not hold, counted: as they are, or noted by a
- * frontmatter merge. With a `base`, a line `ours` removed since it is not missing: a three-way
- * merge drops it on purpose. In an index, an entry only has to be there once.
+ * The lines of `theirs`, as received, that the final `merged` text does not hold, compared as
+ * multisets, blank lines included: the last check before a merge is stored, run on the output of
+ * every step (union, three-way, frontmatter, index), so no step can drop a line unseen. A line is
+ * held when it is in `merged` as often as in `theirs`, a frontmatter line also when the merged
+ * frontmatter notes it (`# from <who>, <date>: <line>`). The only lines that need not be held:
+ * - with a `base`, as many copies of a line as `ours` removed since it (a three-way merge drops
+ *   them on purpose);
+ * - in an index, repeated copies of one entry outside code blocks, read by the same `fencedLines`
+ *   the dedupe reads: one copy is needed, and every copy inside a code block.
  */
 export const missingLines = (input: {
   readonly path: string;
@@ -273,22 +315,24 @@ export const missingLines = (input: {
   readonly base: string | null;
 }): ReadonlyArray<string> => {
   const mergedLines = linesOf(input.merged).lines;
-  const have = counts([
-    ...mergedLines,
-    ...mergedLines.flatMap((line) => {
-      const noted = NOTED.exec(line)?.[1];
-      return noted === undefined ? [] : [noted];
-    }),
-  ]);
+  const noted = (splitFrontmatter(input.merged)?.lines ?? []).flatMap((line) => {
+    const kept = NOTED.exec(line)?.[1];
+    return kept === undefined ? [] : [kept];
+  });
+  const have = counts([...mergedLines, ...noted]);
   const ours = counts(linesOf(input.ours).lines);
   const base = input.base === null ? new Map<string, number>() : counts(linesOf(input.base).lines);
-  const index = isAgentMemoryIndex(input.path);
+  const theirs = linesOf(input.theirs).lines;
+  // In an index, the copies of each entry outside code blocks, which only need to be there once.
+  const repeatable = isAgentMemoryIndex(input.path)
+    ? counts(entriesOutsideFences(theirs).flatMap((entry) => (entry === null ? [] : [entry])))
+    : new Map<string, number>();
   const missing: Array<string> = [];
-  for (const [line, count] of counts(linesOf(input.theirs).lines)) {
-    if (line.trim() === "") continue;
+  for (const [line, count] of counts(theirs)) {
     const removedByOurs = Math.max(0, (base.get(line) ?? 0) - (ours.get(line) ?? 0));
-    const needed = Math.max(0, (index && INDEX_ENTRY.test(line) ? 1 : count) - removedByOurs);
-    if ((have.get(line) ?? 0) < needed) missing.push(line);
+    const outside = repeatable.get(line) ?? 0;
+    const wanted = outside > 1 ? count - outside + 1 : count;
+    if ((have.get(line) ?? 0) < wanted - removedByOurs) missing.push(line);
   }
   return missing;
 };

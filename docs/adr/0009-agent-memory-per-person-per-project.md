@@ -104,11 +104,16 @@ much smaller: the memory.
        that subset (a quoted key, a block scalar, a nested map, a key written twice) that differs is
        not merged. Line endings are compared as LF; the result keeps the store's.
      - An index (`MEMORY.md`) keeps each index entry (`- [Title](file.md) …`) once. Every other
-       line, and anything inside a code fence, stays however often it repeats.
+       line, and anything inside a code block, stays however often it repeats. Code blocks are read
+       after CommonMark: a block closes only on a fence of its own character, at least as long, with
+       nothing after it, and an unclosed block runs to the end.
      - Codex's summary database keeps every conversation's newer summary from either side.
-     - A merge that does not hold every line the machine sent (a line the store removed since the
-       last import aside) keeps the machine's file whole as a version, says how many lines, and
-       leaves the base where it was, so the next import merges it and says so again.
+     - The last step of every merge compares the machine's lines, as received, with the final text,
+       as multisets. A line need not be there only when the store removed it since the last import
+       (as many copies as it removed), or when it is a repeated index entry outside a code block,
+       read by the same parser as the dedupe. A merge that misses any other line keeps the machine's
+       file whole as a version, says how many lines, and leaves the base where it was, so the next
+       import merges it and says so again.
      - Anything else (not text, frontmatter not merged, too different to align), or a merge over the
        size limit, keeps the store's file. The machine's is kept as a version, and the next import
        reports it again.
@@ -117,6 +122,10 @@ much smaller: the memory.
    - Every version an import replaces is kept, the machine's own copy of a merged file too, as for a
      read-back. `--dry-run` asks the server for the same plan and writes nothing, on the machine
      either: it makes no machine id.
+   - A kept version that is the only copy of some lines is pinned, and the cap of twenty versions
+     per file never takes it: the machine's file in a conflict or in a merge that missed a line, a
+     session's file in a read-back merge that missed a line, and a stored file a read-back could not
+     merge.
 
    The same rules apply to a read-back merge. A read-back merge with no shared version (a file the
    session made itself, or a delivered version no longer kept) keeps each shared line once instead
@@ -260,3 +269,9 @@ to build it.
   simple subset (no YAML parser is in the tree, and guessing at the rest wrote keys twice or lost a
   block scalar's lines); files too different to align are a conflict rather than a lossy union; and
   any merge that still misses a line keeps the incoming file as a version and holds the base.
+- 2026-10-04, second review: the missing-line check is the last step, on the final text, with two
+  named exceptions only; code blocks are read after CommonMark (a ``` line inside a four-backtick
+  block, a ~~~ block, an unclosed block); and versions that are the only copy of some lines are
+  pinned rather than counted in the cap. Pinning, rather than raising the cap or counting pinned
+  versions in it, because any finite cap would still evict the only copy after enough saves, and
+  these versions are rare: one per conflict or lossy merge, and a repeated one is the same row.

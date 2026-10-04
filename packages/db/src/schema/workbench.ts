@@ -659,6 +659,8 @@ export const agentMemoryVersions = pgTable(
     encoding: text().$type<"utf8" | "base64">().notNull(),
     contents: text().notNull(),
     savedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** The only copy of some lines: the cap of twenty per file never takes it (0106). */
+    pinned: boolean().notNull().default(false),
   },
   (table) => [primaryKey({ columns: [table.userId, table.projectId, table.path, table.digest] })],
 );
