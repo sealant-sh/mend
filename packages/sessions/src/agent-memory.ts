@@ -33,12 +33,54 @@ import { shellQuote } from "./workspace-files.ts";
 export const AGENT_MEMORY_DELIVERED = ".mend/agent-memory-delivered.json";
 
 /**
- * Whose memory the harness home holds: the account the last delivery was for, relative to the
- * harness home. In capture mode one home serves every session of a worktree, and a session that
- * joins another person's executor runs its agent in that person's home (ADR 0002): the read-back
- * credits what the home holds only to this account.
+ * Whose memory the harness home holds, as the last delivery or hand-over wrote it, relative to the
+ * harness home. Never what Mend credits: anything running in the executor can write it. The
+ * server decides whose memory an executor holds (the person whose launch made it); this record
+ * only withholds. A read-back or hand-over that finds it naming someone else credits nobody.
  */
 export const AGENT_MEMORY_OWNER = ".mend/agent-memory-owner";
+
+/**
+ * Everything of one person's memory in a harness home, relative to it: the memory roots, Codex's
+ * summary database with its write-ahead log and shared memory, the delivered record and the owner
+ * record. A hand-over moves all of it aside before another person's memory is laid down.
+ */
+export const AGENT_MEMORY_HANDOVER_PATHS: ReadonlyArray<string> = [
+  ...AGENT_MEMORY_ROOTS.map(({ root }) => root),
+  ...AGENT_MEMORY_FILES.flatMap(({ path: file }) => [file, `${file}-wal`, `${file}-shm`]),
+  AGENT_MEMORY_DELIVERED,
+  AGENT_MEMORY_OWNER,
+];
+
+/**
+ * The exec that hands a capture-mode harness home over to `owner` (plain `sh`, no node): each of
+ * `AGENT_MEMORY_HANDOVER_PATHS` that is there moves to `kept` (relative to the home), never
+ * deleted, and the owner record then names `owner`. Prints `memory moved <path>` per path. Exits
+ * non-zero the moment a path cannot be moved: the launch must not start on another person's
+ * memory.
+ */
+export const handOverAgentMemoryExec = (
+  home: string,
+  kept: string,
+  owner: string,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  [
+    `home=${shellQuote(home)}; kept="$home"/${shellQuote(kept)};`,
+    `for p in ${AGENT_MEMORY_HANDOVER_PATHS.map(shellQuote).join(" ")}; do`,
+    `if [ -e "$home/$p" ] || [ -L "$home/$p" ]; then`,
+    `mkdir -p "$kept/$(dirname "$p")" && mv "$home/$p" "$kept/$p" || exit 1; echo "memory moved $p"; fi; done;`,
+    `mkdir -p "$home/.mend" && printf %s ${shellQuote(owner)} > "$home"/${shellQuote(AGENT_MEMORY_OWNER)}`,
+  ].join(" "),
+];
+
+/** A fresh kept directory for one hand-over, relative to the harness home. */
+export const agentMemoryHandoverKeptDir = (now: Date = new Date()): string =>
+  path.posix.join(
+    AGENT_MEMORY_KEPT_DIR,
+    `${now.toISOString().replace(/[:.]/g, "-")}-handover-${randomUUID().slice(0, 8)}`,
+  );
 
 /** Where the stored files wait for the program, relative to the harness home. */
 const AGENT_MEMORY_INCOMING = ".mend/agent-memory-incoming";
@@ -217,11 +259,23 @@ export const parseAgentMemoryDelivered = (raw: string | null): Readonly<Record<s
   }
 };
 
-/** The owner record's account; anything empty or unreadable is "nobody said". */
-export const parseAgentMemoryOwner = (raw: string | null): string | null => {
+/**
+ * What a home's owner record says (`AGENT_MEMORY_OWNER`): nothing (absent or empty), an account,
+ * or that it could not be read, which is never taken as "absent".
+ */
+export type AgentMemoryOwnerRecord =
+  | { readonly kind: "absent" }
+  | { readonly kind: "named"; readonly userId: string }
+  | { readonly kind: "unreadable" };
+
+export const parseAgentMemoryOwner = (raw: string | null): AgentMemoryOwnerRecord => {
   const owner = raw?.trim() ?? "";
-  return owner === "" ? null : owner;
+  return owner === "" ? { kind: "absent" } : { kind: "named", userId: owner };
 };
+
+/** Whether the owner record leaves `userId` as the home's owner: absent, or naming them. */
+export const ownerRecordAllows = (record: AgentMemoryOwnerRecord, userId: string): boolean =>
+  record.kind === "absent" || (record.kind === "named" && record.userId === userId);
 
 /** A file's bytes as a stored memory file: text when it is UTF-8 without NULs. */
 export const asMemoryFile = (filePath: string, bytes: Uint8Array): MemoryFile => {
@@ -246,8 +300,8 @@ export const asMemoryFile = (filePath: string, bytes: Uint8Array): MemoryFile =>
  */
 export interface AgentMemoryRead {
   readonly delivered: Readonly<Record<string, string>>;
-  /** Whose memory the home holds (`AGENT_MEMORY_OWNER`); null when it does not say. */
-  readonly owner: string | null;
+  /** What the home's owner record says (`AGENT_MEMORY_OWNER`); never what Mend credits. */
+  readonly owner: AgentMemoryOwnerRecord;
   readonly files: ReadonlyArray<MemoryFile>;
   readonly skipped: ReadonlyArray<string>;
 }
@@ -307,14 +361,22 @@ export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<
       }
       files.push(asMemoryFile(file, consolidated));
     }
-    const readText = (file: string) =>
-      fs.readFile(path.join(harnessHomePath, file), "utf8").then(
+    const delivered = await fs
+      .readFile(path.join(harnessHomePath, AGENT_MEMORY_DELIVERED), "utf8")
+      .then(
         (raw) => raw,
         () => null,
       );
+    const owner: AgentMemoryOwnerRecord = await fs
+      .readFile(path.join(harnessHomePath, AGENT_MEMORY_OWNER), "utf8")
+      .then(parseAgentMemoryOwner, (error: unknown) =>
+        error instanceof Error && "code" in error && error.code === "ENOENT"
+          ? { kind: "absent" as const }
+          : { kind: "unreadable" as const },
+      );
     return {
-      delivered: parseAgentMemoryDelivered(await readText(AGENT_MEMORY_DELIVERED)),
-      owner: parseAgentMemoryOwner(await readText(AGENT_MEMORY_OWNER)),
+      delivered: parseAgentMemoryDelivered(delivered),
+      owner,
       files,
       skipped,
     };

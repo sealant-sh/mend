@@ -141,8 +141,15 @@ of them wrote can appear twice. The agent tidies its memory as it goes.
 
 On a server, a worktree has one executor. A session you start in a worktree where another person's
 session is already running joins their executor, and its agent shares their harness home. It reads
-their memory, not yours, and what it learns there is saved to their memory when their agent ends,
-not to yours. Start your session in a worktree of your own to work from your memory.
+their memory, not yours. What it learns there is saved to their memory, not yours: when their agent
+ends, when they next work in that worktree, or when someone else next starts there. Start your
+session in a worktree of your own to work from your memory.
+
+A session started in a worktree someone else used before you, once their executor has ended, starts
+from your memory. Theirs is saved for them first and moved aside in `.mend/agent-memory-kept/`. An
+executor started before this release is still judged by who started it until it ends: if someone
+started it after another person had used the worktree, their sessions there can still save that
+person's earlier memory as their own.
 
 ## Codex memory builds slowly, and on your login
 
