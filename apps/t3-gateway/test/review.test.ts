@@ -6,7 +6,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import { splitPatch } from "../src/review.ts";
+import { splitPatch, unquoteGitPath } from "../src/review.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
@@ -137,6 +137,63 @@ describe("review", () => {
           rpc[WS_METHODS.reviewGetDiffPreview]({ cwd: "/home/someone/else" }),
         );
         assert.strictEqual(failureTag(elsewhere), "VcsUnsupportedOperationError");
+      }),
+    ),
+  );
+});
+
+describe("git-quoted paths", () => {
+  const QUOTED = [
+    'diff --git "a/caf\\303\\251.txt" "b/caf\\303\\251.txt"',
+    "new file mode 100644",
+    "index 0000000..4444444",
+    "--- /dev/null",
+    '+++ "b/caf\\303\\251.txt"',
+    "@@ -0,0 +1 @@",
+    "+bonjour",
+    "",
+  ].join("\n");
+
+  it("unquotes C escapes and decodes octal bytes as UTF-8", () => {
+    assert.strictEqual(unquoteGitPath('"b/caf\\303\\251.txt"'), "b/café.txt");
+    assert.strictEqual(unquoteGitPath('"tab\\there \\"q\\""'), 'tab\there "q"');
+    assert.strictEqual(unquoteGitPath("plain.txt"), "plain.txt");
+    assert.deepStrictEqual(
+      splitPatch(QUOTED).map((file) => [file.oldPath, file.newPath]),
+      [[null, "café.txt"]],
+    );
+  });
+
+  it.live("previews and rebuilds a non-ASCII file by its real name", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({
+          id: "session-1",
+          projectId: "project-1",
+          changeId: "change-1",
+        });
+        mend.workbench.diffs.set("change-1", {
+          diff: QUOTED,
+          files: [{ path: "café.txt", additions: 1, deletions: 0 }],
+        });
+        const { rpc } = yield* pairAndConnect(mend, "QUOTED");
+        const cwd = "/var/lib/mend/store/project-1/worktrees/wt-session-1";
+        const one = yield* rpc[WS_METHODS.reviewGetDiffPreview]({
+          cwd,
+          file: { path: "café.txt", previousPath: null, sourceKind: "branch-range" },
+        });
+        assert.strictEqual(one.sources[0]?.diff, QUOTED);
+        const contents = yield* rpc[WS_METHODS.reviewGetDiffFileContents]({
+          cwd,
+          sourceKind: "branch-range",
+          changeType: "new",
+          baseRef: null,
+          headRef: null,
+          oldPath: "café.txt",
+          newPath: "café.txt",
+        });
+        assert.deepStrictEqual(contents, { oldContents: "", newContents: "bonjour\n" });
       }),
     ),
   );

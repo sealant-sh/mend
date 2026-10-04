@@ -34,10 +34,87 @@ export interface PatchFile {
   readonly patch: string;
 }
 
+const C_ESCAPES: Readonly<Record<string, number>> = {
+  a: 7,
+  b: 8,
+  t: 9,
+  n: 10,
+  v: 11,
+  f: 12,
+  r: 13,
+  '"': 34,
+  "\\": 92,
+};
+
+/**
+ * A path as git prints it: bare, or (for names with control or non-ASCII bytes, with
+ * `core.quotePath` on, the default) in double quotes with C escapes and octal bytes, which are
+ * UTF-8. `"b/caf\303\251.txt"` is `b/café.txt`.
+ */
+export const unquoteGitPath = (raw: string): string => {
+  if (!(raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"'))) return raw;
+  const body = raw.slice(1, -1);
+  const bytes: Array<number> = [];
+  const encoder = new TextEncoder();
+  for (let index = 0; index < body.length; index++) {
+    const char = body[index] ?? "";
+    if (char !== "\\") {
+      bytes.push(...encoder.encode(char));
+      continue;
+    }
+    const next = body[index + 1] ?? "";
+    const octal = /^[0-7]{3}/.exec(body.slice(index + 1));
+    if (octal !== null) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += 3;
+    } else if (next in C_ESCAPES) {
+      bytes.push(C_ESCAPES[next] ?? 0);
+      index += 1;
+    } else {
+      bytes.push(...encoder.encode(char));
+    }
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+};
+
+const withoutSide = (path: string): string => path.replace(/^[ab]\//, "");
+
 const pathOf = (line: string, prefix: "--- " | "+++ "): string | null => {
-  const raw = line.slice(prefix.length).trim();
+  // git ends a name that has spaces with a tab on these lines.
+  const raw = line.slice(prefix.length).replace(/\t$/, "").trim();
   if (raw === "/dev/null") return null;
-  return raw.replace(/^[ab]\//, "");
+  return withoutSide(unquoteGitPath(raw));
+};
+
+/** The two paths of a `diff --git` header, each bare or quoted. */
+const headerPaths = (line: string): readonly [string | null, string | null] => {
+  const rest = line.slice("diff --git ".length);
+  if (!rest.includes('"')) {
+    const bare = /^a\/(.+) b\/(.+)$/.exec(rest);
+    return [bare?.[1] ?? null, bare?.[2] ?? null];
+  }
+  const tokens: Array<string> = [];
+  let index = 0;
+  while (index < rest.length && tokens.length < 2) {
+    if (rest[index] === " ") {
+      index += 1;
+      continue;
+    }
+    if (rest[index] === '"') {
+      let end = index + 1;
+      while (end < rest.length && rest[end] !== '"') end += rest[end] === "\\" ? 2 : 1;
+      tokens.push(unquoteGitPath(rest.slice(index, end + 1)));
+      index = end + 1;
+    } else {
+      const end = rest.indexOf(" ", index);
+      tokens.push(rest.slice(index, end === -1 ? undefined : end));
+      index = end === -1 ? rest.length : end;
+    }
+  }
+  return [
+    tokens[0] === undefined ? null : withoutSide(tokens[0]),
+    tokens[1] === undefined ? null : withoutSide(tokens[1]),
+  ];
 };
 
 /** Splits a unified git diff into its files. */
@@ -48,9 +125,7 @@ export const splitPatch = (diff: string): ReadonlyArray<PatchFile> => {
     .filter((section) => section.startsWith("diff --git "));
   for (const patch of sections) {
     const lines = patch.split("\n");
-    const header = /^diff --git a\/(.+) b\/(.+)$/.exec(lines[0] ?? "");
-    let oldPath: string | null = header?.[1] ?? null;
-    let newPath: string | null = header?.[2] ?? null;
+    let [oldPath, newPath] = headerPaths(lines[0] ?? "");
     for (const line of lines) {
       if (line.startsWith("--- ")) oldPath = pathOf(line, "--- ");
       if (line.startsWith("+++ ")) {
