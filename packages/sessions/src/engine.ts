@@ -38,6 +38,7 @@ import {
   SessionsRepo,
   AgentMemoryRepo,
   PiProfilesRepo,
+  type PiProfileWithFiles,
   SecretFilesRepo,
   SettingsRepo,
   SkillsRepo,
@@ -594,6 +595,15 @@ const logAgentMemoryDelivered = (
 };
 
 /** A pi profile directory kept aside, or one that could not be cleared, is said once. */
+/** A pi profile that is not the session owner's could not be moved aside: the launch stops. */
+const piProfileNotCleared = (message: string) =>
+  new SealantPlatformError({
+    code: "PI_PROFILE_NOT_CLEARED",
+    status: null,
+    message: `another person's pi profile could not be taken out of this session: ${message}`,
+    cause: null,
+  });
+
 const logPiProfileVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
   Effect.forEach(
     outcomes,
@@ -9279,26 +9289,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         project: Project,
         workspace: Workspace,
+        saved: PiProfileWithFiles | null,
       ) {
-        if (session.harness !== "pi" || session.ownerUserId === null) return;
-        const saved = yield* piProfiles.forUser(session.ownerUserId);
-        if (saved === null) {
-          // No profile of the owner's: one a restored capture brought is someone else's.
-          if (capture === null) {
-            return yield* clearPiProfile(harnessHomePathOf(project.storePath, session.id));
-          }
-          const cleared = yield* sealant.exec(
-            workspace,
-            clearPiProfileExec(HARNESS_HOME_MOUNT_PATH),
-          );
-          if (cleared.exitCode !== 0) {
-            return yield* new WorkspaceFileError({
-              path: HARNESS_HOME_MOUNT_PATH,
-              message: `exit ${cleared.exitCode}: ${cleared.stderr.trim()}`,
-            });
-          }
-          return;
-        }
+        // No profile of the owner's: `clearForeignPiProfile` took out the one that was there.
+        if (session.harness !== "pi" || saved === null) return;
         const plan = planPiProfile({ digest: saved.profile.digest, files: saved.files });
         if (capture === null) {
           const outcomes = yield* materializePiProfile(
@@ -9328,6 +9322,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             bytes: file.bytes,
           })),
         );
+      });
+
+      /**
+       * A pi session with no profile of its owner's (none saved, or no owner) moves aside the
+       * profile its harness home holds (`clearPiProfileExec`): in capture mode that is whoever's
+       * session delivered it last, and pi would run their extensions and settings. Unlike a
+       * delivery this is not best-effort: when the profile cannot be moved, the launch stops.
+       */
+      const clearForeignPiProfile = Effect.fn("SessionEngine.clearForeignPiProfile")(function* (
+        session: Session,
+        project: Project,
+        workspace: Workspace,
+      ) {
+        if (session.harness !== "pi") return null;
+        const saved =
+          session.ownerUserId === null ? null : yield* piProfiles.forUser(session.ownerUserId);
+        if (saved !== null) return saved;
+        if (capture === null) {
+          const outcomes = yield* clearPiProfile(
+            harnessHomePathOf(project.storePath, session.id),
+          ).pipe(Effect.mapError((error) => piProfileNotCleared(error.message)));
+          yield* logPiProfileVacated(session.id, outcomes);
+          return null;
+        }
+        const cleared = yield* sealant.exec(
+          workspace,
+          clearPiProfileExec(HARNESS_HOME_MOUNT_PATH, piProfileKeptDir()),
+        );
+        yield* logPiProfileVacated(session.id, parseSkillsVacateOutcomes(cleared.stdout));
+        if (cleared.exitCode !== 0) {
+          return yield* piProfileNotCleared(`exit ${cleared.exitCode}: ${cleared.stderr.trim()}`);
+        }
+        return null;
       });
 
       /**
@@ -10844,7 +10871,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
-        yield* deliverPiProfile(session, project, workspace).pipe(
+        const piProfile = yield* clearForeignPiProfile(session, project, workspace).pipe(
+          Effect.tapError((error) =>
+            capture === null ? Effect.void : abandonExecutor(workspace, error.message),
+          ),
+          settleOnFailure,
+        );
+        yield* deliverPiProfile(session, project, workspace, piProfile).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: the pi profile was not delivered").pipe(
               Effect.annotateLogs({ sessionId, message: error.message }),

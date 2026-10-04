@@ -130,27 +130,56 @@ export const vacatePiProfileExec = (
 ];
 
 /**
- * The exec that takes a delivered profile out of a pi session's harness home when the session's
- * owner has no profile: in capture mode the harness home is the worktree's, so the profile there
- * is whoever's session delivered it last. `PI_PROFILE_PROGRAM` then takes its settings back out
- * before pi starts. Removed rather than kept aside: it is a copy of a saved profile, and kept
- * aside it would still be in this person's workspace.
+ * Where a clear leaves its mark, relative to the harness home: `PI_PROFILE_PROGRAM` takes a gone
+ * profile's settings back out only when Mend cleared it on purpose, never when a delivery failed
+ * after the vacate moved a profile aside.
  */
-export const clearPiProfileExec = (home: string): ReadonlyArray<string> => [
+export const PI_PROFILE_CLEARED = path.posix.join(
+  path.posix.dirname(PI_PROFILE_HOME_DIR),
+  "cleared",
+);
+
+/** The vacate that moves a profile out of the way with nothing to deliver in its place. */
+const CLEAR_VACATE: SkillsVacate = {
+  dir: PI_PROFILE_HOME_DIR,
+  accept: [],
+  delivering: null,
+  skip: SESSION_BUILT,
+};
+
+/**
+ * The exec that takes a delivered profile out of a pi session's harness home when the session has
+ * no profile of its owner's: in capture mode the harness home is the worktree's, so the profile
+ * there is whoever's session delivered it last. Moved aside whole, as a replaced profile is
+ * (`.mend/pi-profile-kept/<stamp>/`, never saved with the session), never deleted, and marked
+ * (`PI_PROFILE_CLEARED`) so `PI_PROFILE_PROGRAM` takes its settings back out before pi starts.
+ * Exits non-zero when the profile could not be moved: the launch then stops.
+ */
+export const clearPiProfileExec = (home: string, kept: string): ReadonlyArray<string> => [
   "sh",
   "-c",
-  `rm -rf "$1"/${shellQuote(PI_PROFILE_HOME_DIR)}`,
+  `set -e; mkdir -p "$1"/${shellQuote(path.posix.dirname(PI_PROFILE_HOME_DIR))}; ` +
+    `node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3"; ` +
+    `: > "$1"/${shellQuote(PI_PROFILE_CLEARED)}`,
   "mend-pi-profile",
   home,
+  kept,
+  JSON.stringify([CLEAR_VACATE]),
 ];
 
 /** The same on this machine: the co-located store's harness home. */
 export const clearPiProfile = (
   harnessHomePath: string,
-): Effect.Effect<void, PiProfileDeliveryError> =>
-  Effect.tryPromise({
-    try: () =>
-      fs.rm(path.join(harnessHomePath, PI_PROFILE_HOME_DIR), { recursive: true, force: true }),
+): Effect.Effect<ReadonlyArray<SkillsVacateOutcome>, PiProfileDeliveryError> =>
+  Effect.try({
+    try: () => {
+      const [command, ...args] = clearPiProfileExec(harnessHomePath, piProfileKeptDir());
+      const cleared = spawnSync(command ?? "sh", args, { encoding: "utf8" });
+      if (cleared.status !== 0) {
+        throw new Error(`could not move ${PI_PROFILE_HOME_DIR} aside: ${cleared.stderr ?? ""}`);
+      }
+      return parseSkillsVacateOutcomes(cleared.stdout ?? "");
+    },
     catch: (error) =>
       new PiProfileDeliveryError({
         message: `the pi profile could not be taken out of the harness home: ${String(error)}`,
@@ -243,20 +272,24 @@ export const materializePiProfile = (
  *    The packages are the profile itself, the profile's, then any the session added.
  * 4. Copies `root/mcp.json` and `root/keybindings.json` into the agent directory, unless the
  *    session changed its copy since the last delivery.
- * 5. When the profile directory is gone but an earlier delivery's records are there (the
- *    session's owner has no profile, and Mend took out the one a restored capture brought,
- *    `clearPiProfileExec`): takes its settings and packages back out of `settings.json` where the
+ * 5. When Mend cleared the profile (`clearPiProfileExec`: the session has no profile of its
+ *    owner's, and the one there was whoever's session delivered it) and an earlier delivery's
+ *    records are there: takes its settings and packages back out of `settings.json` where the
  *    session left them as delivered, removes the copied files it did not change, and drops the
- *    records. One person's profile never runs in another person's pi.
+ *    records. One person's profile never runs in another person's pi. A profile that is gone
+ *    without that mark is a delivery that failed: what it delivered before stays, and the terminal
+ *    says so.
  *
  * What was last delivered is kept beside the profile (`mend/delivered-*.json`). No single quotes:
  * the program rides `sh -c` inside them.
  */
 export const PI_PROFILE_PROGRAM = [
   `try{const fs=require("fs"),path=require("path"),cp=require("child_process"),crypto=require("crypto");`,
-  `const A=process.argv[1],M=path.join(A,"mend"),P=path.join(M,"profile"),gone=!fs.existsSync(P);`,
-  `if(gone&&!fs.existsSync(path.join(M,"delivered-settings.json"))&&!fs.existsSync(path.join(M,"delivered-files.json")))process.exit(0);`,
+  `const A=process.argv[1],M=path.join(A,"mend"),P=path.join(M,"profile"),C=path.join(M,"cleared"),gone=!fs.existsSync(P);`,
   `const say=m=>process.stderr.write("mend: "+m+"\\n");`,
+  `if(!gone)fs.rmSync(C,{force:true});`,
+  `else if(!fs.existsSync(path.join(M,"delivered-settings.json"))&&!fs.existsSync(path.join(M,"delivered-files.json"))){fs.rmSync(C,{force:true});process.exit(0)}`,
+  `else if(!fs.existsSync(C)){say("the pi profile was not delivered to this session, so what it delivered before stays as it is");process.exit(0)}`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
   `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
   `function put(p,v,mode){fs.mkdirSync(path.dirname(p),{recursive:true});const t=p+".mend-seed-"+process.pid;`,
@@ -302,5 +335,5 @@ export const PI_PROFILE_PROGRAM = [
   `const to=path.join(A,f);let have=null;try{have=sha(fs.readFileSync(to))}catch(e){if(e.code!=="ENOENT")continue}`,
   `if(have===null||have===lastFiles[f]||have===sha(want)){put(to,want,0o600);nextFiles[f]=sha(want)}`,
   `else{say(f+" was changed in this session, so the profile did not replace it");if(lastFiles[f])nextFiles[f]=lastFiles[f]}}`,
-  `if(gone){fs.rmSync(F,{force:true});say("no pi profile is connected for this session, so the one delivered here before was taken out")}else put(F,nextFiles)}catch(e){process.stderr.write("mend: the pi profile was not set up: "+(e&&e.message)+"\\n")}`,
+  `if(gone){fs.rmSync(F,{force:true});fs.rmSync(C,{force:true});say("no pi profile is connected for this session, so the one delivered here before was taken out")}else put(F,nextFiles)}catch(e){process.stderr.write("mend: the pi profile was not set up: "+(e&&e.message)+"\\n")}`,
 ].join("");

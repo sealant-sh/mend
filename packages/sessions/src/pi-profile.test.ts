@@ -13,8 +13,8 @@ import {
   PI_PROFILE_KEPT_DIR,
   PI_PROFILE_PROGRAM,
   PI_PROFILE_SECRET_FILE,
+  PI_PROFILE_CLEARED,
   clearPiProfile,
-  clearPiProfileExec,
   materializePiProfile,
   planPiProfile,
 } from "./pi-profile.ts";
@@ -113,17 +113,36 @@ describe("delivering a pi profile into a harness home", () => {
     expect(fs.readFileSync(path.join(root, PI_PROFILE_SECRET_FILE), "utf8")).toBe(edited.contents);
   });
 
-  it("takes out a profile when the session's owner has none", async () => {
+  it("moves a profile aside, never deleting it, when the session has none of its owner's", async () => {
     const home = tempDir("mend-pi-home-");
     await deliver(home, [extension]);
-    await Effect.runPromise(clearPiProfile(home));
-    expect(fs.existsSync(path.join(home, PI_PROFILE_HOME_DIR))).toBe(false);
-    // In a workspace, through exec.
+    const root = path.join(home, PI_PROFILE_HOME_DIR);
+    write(path.join(root, extension.path), "export default () => { fixedInSession(); };\n");
+    const outcomes = await Effect.runPromise(clearPiProfile(home));
+    expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["kept"]);
+    const kept = outcomes[0]?.detail ?? "";
+    expect(kept.startsWith(`${PI_PROFILE_KEPT_DIR}/`)).toBe(true);
+    expect(fs.readFileSync(path.join(home, kept, extension.path), "utf8")).toContain(
+      "fixedInSession",
+    );
+    expect(fs.existsSync(root)).toBe(false);
+    expect(fs.existsSync(path.join(home, PI_PROFILE_CLEARED))).toBe(true);
+    // The mark is where the launch program looks for it.
+    expect(PI_PROFILE_CLEARED).toBe(".pi/agent/mend/cleared");
+    // Nothing there: still marked, nothing moved.
+    const again = await Effect.runPromise(clearPiProfile(home));
+    expect(again.map((outcome) => outcome.outcome)).toEqual(["absent"]);
+  });
+
+  it("fails the clear when the profile cannot be moved aside", async () => {
+    const home = tempDir("mend-pi-home-");
     await deliver(home, [extension]);
-    const [command, ...args] = clearPiProfileExec(home);
-    expect(spawnSync(command ?? "", args).status).toBe(0);
-    expect(fs.existsSync(path.join(home, PI_PROFILE_HOME_DIR))).toBe(false);
-    expect(fs.existsSync(path.join(home, ".pi/agent"))).toBe(true);
+    // The kept directory's parent is a file: the move cannot happen.
+    write(path.join(home, ".mend"), "not a directory");
+    const cleared = await Effect.runPromise(Effect.flip(clearPiProfile(home)));
+    expect(cleared._tag).toBe("PiProfileDeliveryError");
+    expect(fs.existsSync(path.join(home, PI_PROFILE_HOME_DIR))).toBe(true);
+    expect(fs.existsSync(path.join(home, PI_PROFILE_CLEARED))).toBe(false);
   });
 
   it("moves a changed profile directory aside whole, never deleting it, then writes the new one", async () => {
@@ -359,10 +378,13 @@ describe("setting up a delivered pi profile before pi starts", () => {
         packages: [...session.packages, "npm:own@1.0.0"],
       }),
     );
+    // Mend moved it aside and marked it (`clearPiProfileExec`).
     fs.rmSync(profile, { recursive: true });
+    write(path.join(agent, "mend", "cleared"), "");
     const result = run();
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("mend: no pi profile is connected for this session");
+    expect(fs.existsSync(path.join(agent, "mend", "cleared"))).toBe(false);
     expect(readJson(settings)).toEqual({
       // Changed in the session: the session's own.
       defaultProvider: "anthropic",
@@ -377,6 +399,20 @@ describe("setting up a delivered pi profile before pi starts", () => {
     const again = run();
     expect(again.status).toBe(0);
     expect(again.stderr).toBe("");
+  });
+
+  it("keeps what a profile delivered when a delivery failed, and says so", () => {
+    // The vacate moved the profile aside and the write failed: gone, but not cleared.
+    const { agent, profile, run } = setUp();
+    run();
+    const settings = path.join(agent, "settings.json");
+    const before = fs.readFileSync(settings, "utf8");
+    fs.rmSync(profile, { recursive: true });
+    const result = run();
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("mend: the pi profile was not delivered to this session");
+    expect(fs.readFileSync(settings, "utf8")).toBe(before);
+    expect(fs.existsSync(path.join(agent, "mend", "delivered-settings.json"))).toBe(true);
   });
 
   it("leaves a settings.json it cannot read as it is", () => {

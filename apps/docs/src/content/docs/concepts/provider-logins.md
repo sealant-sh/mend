@@ -102,36 +102,35 @@ suffix (`auth.json.lock`, a write's temporary) are left out with it. This applie
 Sealant runtime with sealantd#136, planned for Mend 0.36. An older runtime leaves out only
 `.claude/.credentials.json`, `.codex/auth.json`, and pi's and opencode's `auth.json`.
 
-| Path                                   | Agent       | Holds                                                                                    |
-| -------------------------------------- | ----------- | ---------------------------------------------------------------------------------------- |
-| `.claude/.credentials.json`            | Claude Code | the Claude login, MCP server OAuth tokens and client secrets, plugin secrets             |
-| `.claude/.device-keys.json`            | Claude Code | device private keys (Remote Control, trusted devices)                                    |
-| `.claude/backups/`                     | Claude Code | copies of `~/.claude.json`: a Console API key, MCP server headers and env                |
-| `.claude/shell-snapshots/`             | Claude Code | the shell's functions and aliases, any secret written in them included                   |
-| `.claude/session-env/`                 | Claude Code | what hooks export for the session                                                        |
-| `.claude/ide/`                         | Claude Code | IDE connection tokens                                                                    |
-| `.claude/sessions/`                    | Claude Code | each running process's local messaging token                                             |
-| `.claude/file-history/`                | Claude Code | a copy of every file Claude Code edits, a secret file included                           |
-| `.claude/remote-settings.json`         | Claude Code | an organization's managed settings, `env` included                                       |
-| `.codex/auth.json`                     | Codex       | the ChatGPT login or API key                                                             |
-| `.codex/.credentials.json`             | Codex       | MCP server OAuth tokens, where no OS keyring is available (every workspace)              |
-| `.codex/secrets/`                      | Codex       | encrypted logins and MCP tokens (the key is in the OS keyring)                           |
-| `.codex/shell_snapshots/`              | Codex       | every exported environment variable with its value (a token, a dotfile's export)         |
-| `.local/share/opencode/auth.json`      | opencode    | provider logins and API keys                                                             |
-| `.local/share/opencode/mcp-auth.json`  | opencode    | MCP server OAuth tokens and client secrets                                               |
-| `.local/share/opencode/repos/`         | opencode    | reference repositories, a clone URL's credentials in their git config                    |
-| `.local/share/opencode/log/`           | opencode    | logs, a failed clone's URL with its credentials included                                 |
-| `.pi/agent/auth.json`                  | pi          | provider logins and API keys                                                             |
-| `.pi/agent/mcp-auth.json`              | pi          | MCP server OAuth tokens and client secrets                                               |
-| `.pi/agent/oauth.json`                 | pi          | provider OAuth tokens from before pi moved them to `auth.json`, and its `.migrated` copy |
-| `.pi/agent/mcp-oauth/`                 | pi          | MCP OAuth tokens of the pi-mcp-adapter extension                                         |
-| `.pi/agent/mcp-oauth-encrypted/`       | pi          | the same, encrypted with a person's key                                                  |
-| `.pi/agent/mcp.json`                   | pi          | MCP servers, with the headers, env and client secrets typed into them                    |
-| `.pi/agent/git/`                       | pi          | packages installed from git, a source URL's credentials in their git config              |
-| `.pi/agent/tmp/`                       | pi          | the same for packages a launch loads for itself                                          |
-| `.pi/agent/crashes.json`               | pi          | error messages and stacks as they were, a secret in one included                         |
-| `.pi/agent/mend/profile/root/mcp.json` | pi          | the same, as Mend delivered it from a person's pi profile                                |
-| `.mend/pi-profile-kept/`               | pi          | pi profiles Mend set aside, their `mcp.json` included                                    |
+| Path                                   | Agent       | Holds                                                                                       |
+| -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `.claude/.credentials.json`            | Claude Code | the Claude login, MCP server OAuth tokens and client secrets, plugin secrets                |
+| `.claude/.device-keys.json`            | Claude Code | device private keys (Remote Control, trusted devices)                                       |
+| `.claude/backups/`                     | Claude Code | copies of `~/.claude.json`: a Console API key, MCP server headers and env                   |
+| `.claude/shell-snapshots/`             | Claude Code | the shell's functions and aliases, any secret written in them included                      |
+| `.claude/session-env/`                 | Claude Code | what hooks export for the session                                                           |
+| `.claude/ide/`                         | Claude Code | IDE connection tokens                                                                       |
+| `.claude/sessions/`                    | Claude Code | each running process's local messaging token                                                |
+| `.claude/file-history/`                | Claude Code | a copy of every file Claude Code edits, a secret file included                              |
+| `.claude/remote-settings.json`         | Claude Code | an organization's managed settings, `env` included                                          |
+| `.codex/auth.json`                     | Codex       | the ChatGPT login or API key                                                                |
+| `.codex/.credentials.json`             | Codex       | MCP server OAuth tokens, where no OS keyring is available (every workspace)                 |
+| `.codex/secrets/`                      | Codex       | encrypted logins and MCP tokens (the key is in the OS keyring)                              |
+| `.codex/shell_snapshots/`              | Codex       | every exported environment variable with its value (a token, a dotfile's export)            |
+| `.local/share/opencode/auth.json`      | opencode    | provider logins and API keys                                                                |
+| `.local/share/opencode/mcp-auth.json`  | opencode    | MCP server OAuth tokens and client secrets                                                  |
+| `.local/share/opencode/repos/`         | opencode    | reference repositories, a clone URL's credentials in their git config                       |
+| `.local/share/opencode/log/`           | opencode    | logs, a failed clone's URL with its credentials included                                    |
+| `.pi/agent/auth.json`                  | pi          | provider logins and API keys                                                                |
+| `.pi/agent/mcp-auth.json`              | pi          | MCP server OAuth tokens and client secrets                                                  |
+| `.pi/agent/oauth.json`                 | pi          | provider OAuth tokens from before pi moved them to `auth.json`, and its `.migrated` copy    |
+| `.pi/agent/mcp-oauth/`                 | pi          | MCP OAuth tokens of the pi-mcp-adapter extension                                            |
+| `.pi/agent/mcp-oauth-encrypted/`       | pi          | the same, encrypted with a person's key                                                     |
+| `.pi/agent/mcp.json`                   | pi          | MCP servers, with the headers, env and client secrets typed into them                       |
+| `.pi/agent/tmp/`                       | pi          | packages a launch loads for itself from git, a source URL's credentials in their git config |
+| `.pi/agent/crashes.json`               | pi          | error messages and stacks as they were, a secret in one included                            |
+| `.pi/agent/mend/profile/root/mcp.json` | pi          | the same, as Mend delivered it from a person's pi profile                                   |
+| `.mend/pi-profile-kept/`               | pi          | pi profiles Mend set aside, their `mcp.json` included                                       |
 
 pi's `mcp.json` is on the list because it can carry the keys typed into its servers' headers and
 environment. The copy from your [pi profile](../guides/pi/) is written again at every launch, so

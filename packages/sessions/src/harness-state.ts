@@ -369,14 +369,10 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
       holds: "MCP servers, with the headers, env and client secrets typed into them",
     },
     {
-      path: ".pi/agent/git",
-      kind: "directory",
-      holds: "packages installed from git, a source URL's credentials in their git config",
-    },
-    {
       path: ".pi/agent/tmp",
       kind: "directory",
-      holds: "the same for packages a launch loads for itself",
+      holds:
+        "packages a launch loads for itself from git, a source URL's credentials in their git config",
     },
     {
       path: ".pi/agent/crashes.json",
@@ -405,20 +401,19 @@ export const HARNESS_HOME_CREDENTIALS: ReadonlyArray<string> = Object.values(
   HARNESS_CREDENTIALS,
 ).flatMap((credentials) => credentials.map((credential) => credential.path));
 
-/** `chmod go-rwx` over every credential that exists, quiet about the ones that do not. */
-const tightenCredentials = (mountPath: string): string =>
+/**
+ * `chmod go-rwx` over every credential that exists and, as the table's rule has it, every sibling
+ * named after it with a suffix (`oauth.json.migrated`, a seed's `auth.json.mend-seed-<pid>`); quiet
+ * about the ones that do not exist. A directory entry's siblings are tightened too: tightening a
+ * path that holds nothing secret only narrows who reads it.
+ */
+export const tightenCredentials = (mountPath: string): string =>
   `for c in ${HARNESS_HOME_CREDENTIALS.map((file) => `"${file}"`).join(" ")}; ` +
-  `do chmod go-rwx "${mountPath}/$c" 2>/dev/null || true; done`;
+  `do chmod go-rwx "${mountPath}/$c" "${mountPath}/$c".* 2>/dev/null || true; done`;
 
 export const HARNESS_STATE: Record<string, HarnessStateShape> = {
   claude: {
-    paths: [
-      ".claude/projects",
-      ".claude/todos",
-      ".claude/sessions",
-      ".claude/settings.json",
-      ".claude.json",
-    ],
+    paths: [".claude/projects", ".claude/todos", ".claude/settings.json", ".claude.json"],
     homeDirs: [".claude"],
     latestTranscript: 'ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1',
     liveTranscript: /^\.claude\/projects\/[^/]+\/[^/]+\.jsonl$/,

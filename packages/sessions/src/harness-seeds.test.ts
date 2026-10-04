@@ -248,6 +248,37 @@ describe("codex trust seed", () => {
     runSeed(CODEX_TRUST_SEED, home);
     expect(fs.readFileSync(config, "utf8")).toBe(text);
   });
+
+  it("turns Codex's shell snapshot off in config.toml, for a Codex started by hand too", () => {
+    const home = makeHome();
+    const config = path.join(home, ".codex", "config.toml");
+    // No file: a [features] table of its own.
+    runSeed(CODEX_TRUST_SEED, home);
+    expect(fs.readFileSync(config, "utf8")).toContain("[features]\nshell_snapshot = false\n");
+    // A [features] table of the person's: the key goes into it, the rest is kept, and the mode.
+    write(config, 'model = "gpt-6"\n\n[features]\nmemories = true\n\n[tui]\ntheme = "x"\n');
+    fs.chmodSync(config, 0o600);
+    runSeed(CODEX_TRUST_SEED, home);
+    const text = fs.readFileSync(config, "utf8");
+    expect(
+      text.startsWith('model = "gpt-6"\n\n[features]\nshell_snapshot = false\nmemories = true\n'),
+    ).toBe(true);
+    expect(text.match(/\[features\]/g)).toHaveLength(1);
+    expect(fs.statSync(config).mode & 0o777).toBe(0o600);
+    // Root-level dotted keys: a dotted key, never a second definition of the table.
+    write(config, 'features.memories = true\n\n[tui]\ntheme = "x"\n');
+    runSeed(CODEX_TRUST_SEED, home);
+    expect(fs.readFileSync(config, "utf8")).toContain(
+      "features.memories = true\n\nfeatures.shell_snapshot = false\n[tui]",
+    );
+    expect(fs.readFileSync(config, "utf8")).not.toContain("[features]");
+    // The person chose: left as it is.
+    write(config, "[features]\nshell_snapshot = true\n");
+    runSeed(CODEX_TRUST_SEED, home);
+    expect(fs.readFileSync(config, "utf8").startsWith("[features]\nshell_snapshot = true\n")).toBe(
+      true,
+    );
+  });
 });
 
 /** A Codex login copy as the platform injects it: an access token whose payload carries `exp`. */
@@ -399,5 +430,13 @@ describe("Codex's shell snapshot", () => {
     const own = ["codex", "-c", "features.shell_snapshot=true"];
     expect(withoutCodexShellSnapshot(own)).toEqual(own);
     expect(withoutCodexShellSnapshot(["claude"])).toEqual(["claude"]);
+    // Another feature whose name starts the same is not this one.
+    expect(withoutCodexShellSnapshot(["codex", "-c", "features.shell_snapshot_v2=true"])).toEqual([
+      "codex",
+      "-c",
+      "features.shell_snapshot=false",
+      "-c",
+      "features.shell_snapshot_v2=true",
+    ]);
   });
 });

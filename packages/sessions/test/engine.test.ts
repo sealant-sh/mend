@@ -929,6 +929,13 @@ const skillsStubLayer = Layer.succeed(SkillsRepo, {
 });
 
 /** The owner's pi profile; none unless a test brings one. */
+/** Another person's pi profile, as a restored harness home brings it. */
+const plantForeignPiProfile = (home: string) => {
+  const file = path.join(home, ".pi/agent/mend/profile/extensions/theirs/index.ts");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "export default () => {};\n");
+};
+
 const piProfilesLayerOf = (
   saved: PiProfilesRepo["Service"]["forUser"] = () => Effect.succeed(null),
 ): Layer.Layer<PiProfilesRepo> =>
@@ -3174,6 +3181,46 @@ describe("SessionEngine", () => {
           expect(asked).toEqual(["owner-pi"]);
         }),
       { sealantLayer: sealantLaunchLayer(created), piProfilesLayer },
+    );
+  });
+
+  it("moves aside a pi profile that is not the owner's, and refuses the launch when it cannot", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const start = () =>
+            engine.provision({
+              projectId: project.id,
+              harness: "pi",
+              label: null,
+              name: null,
+              ownerUserId: "owner-without-profile",
+              base: null,
+            });
+          const moved = yield* start();
+          const movedHome = harnessHomePathOf(project.storePath, moved.id);
+          plantForeignPiProfile(movedHome);
+          yield* engine.launch(moved.id, ["pi"]);
+          expect(fs.existsSync(path.join(movedHome, ".pi/agent/mend/profile"))).toBe(false);
+          expect(fs.existsSync(path.join(movedHome, ".pi/agent/mend/cleared"))).toBe(true);
+          const kept = fs.readdirSync(path.join(movedHome, ".mend/pi-profile-kept"));
+          expect(kept).toHaveLength(1);
+
+          // The profile cannot be moved: the session fails instead of running it.
+          const stuck = yield* start();
+          const stuckHome = harnessHomePathOf(project.storePath, stuck.id);
+          plantForeignPiProfile(stuckHome);
+          fs.writeFileSync(path.join(stuckHome, ".mend"), "not a directory");
+          const failure = yield* engine.launch(stuck.id, ["pi"]).pipe(Effect.flip);
+          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
+          expect(platformFailure?.code).toBe("PI_PROFILE_NOT_CLEARED");
+          expect(world.sessions.get(stuck.id)?.status).toBe("failed");
+          expect(fs.existsSync(path.join(stuckHome, ".pi/agent/mend/profile"))).toBe(true);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 

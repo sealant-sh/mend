@@ -14,6 +14,7 @@ import {
   extractTranscript,
   hasLiveHarnessState,
   locateLiveTranscript,
+  tightenCredentials,
   HARNESS_HOME_CREDENTIALS,
   nativeResumeArgv,
   relocateHarnessHomeScript,
@@ -48,7 +49,6 @@ const SEALANTD_HARNESS_CREDENTIALS = [
   ".pi/agent/mcp-oauth/",
   ".pi/agent/mcp-oauth-encrypted/",
   ".pi/agent/mcp.json",
-  ".pi/agent/git/",
   ".pi/agent/tmp/",
   ".pi/agent/crashes.json",
   ".pi/agent/mend/profile/root/mcp.json",
@@ -81,6 +81,36 @@ describe("harness credentials", () => {
 
   it("names exactly what sealantd keeps out of captures", () => {
     expect(credentialEntries.map(shownPath)).toEqual(SEALANTD_HARNESS_CREDENTIALS);
+  });
+
+  it("are closed to group and other by the mode keeper, with their suffixed siblings", () => {
+    const mount = fs.mkdtempSync(path.join(os.tmpdir(), "mend-tighten-"));
+    try {
+      const files = [
+        ".pi/agent/oauth.json.migrated",
+        ".pi/agent/auth.json.mend-seed-42",
+        ".local/share/opencode/auth.json",
+        ".codex/shell_snapshots/thread.1.sh",
+        ".pi/agent/settings.json",
+      ];
+      for (const file of files) {
+        fs.mkdirSync(path.dirname(path.join(mount, file)), { recursive: true });
+        fs.writeFileSync(path.join(mount, file), "x", { mode: 0o644 });
+        fs.chmodSync(path.join(mount, file), 0o644);
+      }
+      fs.chmodSync(path.join(mount, ".codex/shell_snapshots"), 0o755);
+      const run = spawnSync("sh", ["-c", tightenCredentials(mount)], { encoding: "utf8" });
+      expect(run.status).toBe(0);
+      const mode = (file: string) => fs.statSync(path.join(mount, file)).mode & 0o777;
+      expect(mode(".pi/agent/oauth.json.migrated")).toBe(0o600);
+      expect(mode(".pi/agent/auth.json.mend-seed-42")).toBe(0o600);
+      expect(mode(".local/share/opencode/auth.json")).toBe(0o600);
+      expect(mode(".codex/shell_snapshots")).toBe(0o700);
+      // Not a credential: left as it was.
+      expect(mode(".pi/agent/settings.json")).toBe(0o644);
+    } finally {
+      fs.rmSync(mount, { recursive: true, force: true });
+    }
   });
 
   it("are all listed on the provider-logins docs page", () => {
