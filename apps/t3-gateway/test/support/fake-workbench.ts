@@ -142,6 +142,9 @@ export class FakeWorkbench {
    * session reads `starting`, and the agent comes up `launchLiveDelayMs` later.
    */
   launchRefusal: string | null = null;
+  /** How long `POST /launch` takes to answer, and a status it then refuses with (null: it launches). */
+  launchAnswerDelayMs = 0;
+  launchFailStatus: number | null = null;
 
   get eventStreams(): number {
     return this.streams.size;
@@ -493,6 +496,21 @@ export class FakeWorkbench {
           .toSorted((left, right) => left.seq - right.seq)
           .slice(0, limit);
         return json(200, changed);
+      }
+      if (method === "POST" && sub === "launch" && this.launchAnswerDelayMs > 0) {
+        return body().then((value) => {
+          record(value);
+          return new Promise<boolean>((resolve) =>
+            setTimeout(() => {
+              const status = this.launchFailStatus;
+              resolve(
+                status === null
+                  ? this.command(sub, session, value, json)
+                  : json(status, { _tag: "StoreFailure", message: "launch refused" }),
+              );
+            }, this.launchAnswerDelayMs),
+          );
+        });
       }
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
         return body().then((value) => {

@@ -17,7 +17,10 @@ import type { PendingRun } from "./shell.ts";
  * - A `POST /turns` answered "not live" while the row still reads the agent running (an idle stop
  *   finishing, Mend restarting, a launch answered before its agent attached) is sent again only
  *   after a backoff and a fresh read of the session, never in the same pass; after `sendDeadlineMs`
- *   the message fails with Mend's refusal.
+ *   the message fails with Mend's refusal. A relaunch starts that count again: a new agent.
+ * - A settled message (taken back, failed) is never rewritten by a late answer.
+ *
+ * Deadlines and retry times are on a monotonic clock (`performance.now()`), never wall time.
  *
  * - `queued`: waiting behind an open turn, for its turn in the queue, or for a retry.
  * - `launching`: the session is being launched again; sent once the agent is live.
@@ -40,7 +43,7 @@ export interface QueueEntry {
   launches: number;
   /** While `launching`: the session's `updatedAt` as the launch answered it (Mend's clock). */
   launchAnsweredAt: string | null;
-  /** While `launching`: when the gateway gives up waiting for a live agent (its own clock). */
+  /** While `launching`: when the gateway gives up waiting for a live agent (monotonic clock). */
   launchDeadline: number | null;
   /** After a "not live" answer: not before this, and only after a read newer than `retryEvidence`. */
   retryAt: number | null;
@@ -160,8 +163,12 @@ const tidy = (queue: ThreadQueue) => {
   if (surplus.size > 0) queue.entries = queue.entries.filter((entry) => !surplus.has(entry));
 };
 
-/** Ends a message Mend did not take; one taken back is just cancelled. */
+/**
+ * Ends a message Mend did not take; one taken back is just cancelled. A message already settled
+ * (taken back, or failed for another reason) stays as it is: a late answer never rewrites it.
+ */
 export const fail = (queue: ThreadQueue, entry: QueueEntry, reason: string) => {
+  if (!canProgress(entry)) return;
   entry.state = entry.takenBack ? "cancelled" : "failed";
   entry.error = entry.takenBack ? null : reason;
   entry.takenBack = false;
@@ -231,6 +238,7 @@ export const notLive = (
     readonly timings: QueueTimings;
   },
 ) => {
+  if (!canProgress(entry)) return;
   if (entry.takenBack) {
     fail(queue, entry, "");
     return;
@@ -316,6 +324,10 @@ export const nextStep = (
   next.launches += 1;
   next.launchAnsweredAt = null;
   next.launchDeadline = now + timings.launchDeadlineMs;
+  // A new agent: the 409s the last one gave (and their deadline and backoff) say nothing about it.
+  next.sendDeadline = null;
+  next.notLiveAnswers = 0;
+  next.lastRefusal = null;
   return { kind: "launch", entry: next };
 };
 

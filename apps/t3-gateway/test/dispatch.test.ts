@@ -771,6 +771,102 @@ describe("review round 3", () => {
   );
 });
 
+describe("review round 4", () => {
+  // Reproduction from the round-4 review (repro-deadline-carry.test.ts), kept as a regression test.
+  it.live(
+    "a relaunch starts the send deadline and backoff again for the new agent",
+    () =>
+      withGateway(
+        (mend) =>
+          Effect.gen(function* () {
+            const { workbench } = mend;
+            setup(mend);
+            const { rpc } = yield* pairAndConnect(mend, "CARRY");
+            const thread = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                threadId: ThreadId.make("session-1"),
+              }),
+            );
+            yield* thread.next(
+              (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+            );
+            // The idle stop has claimed the session: 409s while the row still reads running.
+            workbench.turnsNotLive = true;
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              message("session-1", "message-carry", "hello"),
+            );
+            yield* Effect.sleep("400 millis");
+            // The stop finishes and the gateway relaunches; the new agent outlasts the send deadline.
+            workbench.turnsNotLive = false;
+            workbench.launchLiveDelayMs = 2_500;
+            workbench.stopAgent("session-1");
+            yield* eventually(() => posts(mend, "/launch").length === 1, "the relaunch");
+            // Its row reads running a moment before its protocol host attaches: one more 409.
+            yield* Effect.sleep("2400 millis");
+            workbench.turnsNotLive = true;
+            yield* Effect.sleep("600 millis");
+            workbench.turnsNotLive = false;
+            yield* thread.next(
+              runEvent((run) => run.userMessageId === "message-carry" && run.status === "running"),
+              "5 seconds",
+            );
+            assert.strictEqual(workbench.turns.get("session-1")?.length ?? 0, 1);
+          }),
+        undefined,
+        { queueTimings: { retryBaseMs: 100, retryMaxMs: 200, sendDeadlineMs: 2_000 } },
+      ),
+    20_000,
+  );
+
+  // Reproduction from the round-4 review (repro-cancel-flip.test.ts), kept as a regression test.
+  it.live(
+    "a message taken back while its launch is in flight stays cancelled when the launch fails",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const { workbench } = mend;
+          setup(mend);
+          workbench.stopAgent("session-1");
+          workbench.launchAnswerDelayMs = 800;
+          workbench.launchFailStatus = 500;
+          const { rpc } = yield* pairAndConnect(mend, "FLIP");
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: ThreadId.make("session-1"),
+            }),
+          );
+          yield* thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            message("session-1", "message-flip", "hello"),
+          );
+          const preparing = yield* thread.next(
+            runEvent((run) => run.userMessageId === "message-flip" && run.status === "preparing"),
+          );
+          const runId =
+            preparing.event.type === "run.updated"
+              ? preparing.event.payload.id
+              : RunId.make("none");
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            type: "run.interrupt",
+            commandId: commandId(),
+            threadId: ThreadId.make("session-1"),
+            runId,
+            holdQueue: false,
+          });
+          yield* thread.next(runEvent((run) => run.id === runId && run.status === "cancelled"));
+          // The launch answers 500 after the take-back: the run is not rewritten.
+          const after = yield* thread
+            .next(runEvent((run) => run.id === runId))
+            .pipe(Effect.timeout("2 seconds"), Effect.option);
+          assert.isTrue(after._tag === "None", "the cancelled run changed again");
+          assert.strictEqual(posts(mend, "/launch").length, 1);
+        }),
+      ),
+  );
+});
+
 describe("run.interrupt and the queue", () => {
   it.live(
     "interrupts the turn, holds the queue until it is resumed, and cancels a queued run",

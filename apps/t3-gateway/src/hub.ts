@@ -1134,7 +1134,7 @@ export const makePersonHub = (input: {
               // Mend says the agent is not live though the row may still read it running: retry
               // only after a backoff and a fresh read, until the send deadline.
               Queueing.notLive(queue, entry, {
-                now: Date.now(),
+                now: performance.now(),
                 evidence: evidence.get(sessionId) ?? 0,
                 refusal: sent.failure.message,
                 timings,
@@ -1206,7 +1206,7 @@ export const makePersonHub = (input: {
         if (at === null || (scheduled !== undefined && scheduled <= at)) return Effect.void;
         wakes.set(sessionId, at);
         const projectId = sourceOf(sessionId)?.project.id;
-        return Effect.sleep(Math.max(0, at - Date.now())).pipe(
+        return Effect.sleep(Math.max(0, at - performance.now())).pipe(
           Effect.andThen(
             Effect.sync(() => {
               if (wakes.get(sessionId) === at) wakes.delete(sessionId);
@@ -1227,7 +1227,7 @@ export const makePersonHub = (input: {
         ([sessionId, queue]) => {
           // Before the first full read, nothing is known of any session yet.
           if (!loaded) return Effect.void;
-          const step = Queueing.nextStep(queue, viewOf(sessionId), Date.now(), timings);
+          const step = Queueing.nextStep(queue, viewOf(sessionId), performance.now(), timings);
           const work =
             step === null
               ? Effect.void
