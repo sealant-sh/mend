@@ -182,7 +182,7 @@ export interface GatewayRpcInput {
 }
 
 /** The orchestration read scope t3code requires for the served reads, checked as t3code does. */
-const authorize = (session: BearerSession, requiredScope: AuthEnvironmentScope) =>
+const scopeCheck = (session: BearerSession, requiredScope: AuthEnvironmentScope) =>
   session.scopes.includes(requiredScope)
     ? Effect.void
     : Effect.fail(
@@ -206,6 +206,17 @@ const shellReadFailure = (error: HubReadError) =>
 
 export const makeGatewayRpcHandlers = ({ environment, mend, session, hub }: GatewayRpcInput) => {
   const { descriptor, paths } = environment;
+
+  /** The socket's own device token, checked on every call, then the scope it needs. */
+  const authorize = (bearer: BearerSession, requiredScope: AuthEnvironmentScope) =>
+    hub.isRefused(bearer.deviceToken)
+      ? Effect.fail(
+          new EnvironmentAuthorizationError({
+            message: "Mend no longer accepts this device. Pair again from Mend.",
+            requiredScope,
+          }),
+        )
+      : scopeCheck(bearer, requiredScope);
 
   /**
    * The person's config. Mend's catalog is read with their device token; a revoked device
@@ -300,7 +311,14 @@ export const makeGatewayRpcHandlers = ({ environment, mend, session, hub }: Gate
                 ? Stream.make({ kind: "synchronized" as const })
                 : Stream.empty,
             ),
-            Stream.concat(changes),
+            // A subscriber that fell behind fails typed; t3code resubscribes for a fresh snapshot.
+            Stream.concat(
+              changes.pipe(
+                Stream.mapError(
+                  (error) => new OrchestrationV2GetShellSnapshotError({ message: error.message }),
+                ),
+              ),
+            ),
           );
         }),
       ),

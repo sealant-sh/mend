@@ -130,5 +130,7 @@ export const MendEventPointer = Schema.Struct({
   type: Schema.String,
   projectId: Schema.optional(Schema.String),
   sessionId: Schema.optional(Schema.String),
+  /** `user` pointers: which of the account's facts moved (`devices`, `access`, …). */
+  facet: Schema.optional(Schema.String),
 });
 export type MendEventPointer = typeof MendEventPointer.Type;

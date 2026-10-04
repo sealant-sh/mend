@@ -31,6 +31,8 @@ export const unreachableMend: MendClient["Service"] = {
 export const emptyHub: PersonHub = {
   shellSnapshot: Effect.succeed(EMPTY_SHELL_SNAPSHOT),
   subscribeShell: Effect.succeed({ snapshot: EMPTY_SHELL_SNAPSHOT, changes: Stream.never }),
+  isRefused: () => false,
+  refusal: () => Effect.never,
 };
 
 export const testBearerSession: BearerSession = {

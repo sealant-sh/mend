@@ -113,7 +113,14 @@ export const WebSocketRouteLive: Layer.Layer<
           Effect.provideService(MendClient, mend),
           Effect.forkScoped,
         );
-        return yield* httpEffect;
+        // Mend refusing the socket's device token (revoked) closes the socket, whichever token
+        // the person's hub reads with.
+        return yield* Effect.raceFirst(
+          httpEffect,
+          hub
+            .refusal(bearer.session.deviceToken)
+            .pipe(Effect.as(HttpServerResponse.empty({ status: 401 }))),
+        );
       }).pipe(
         Effect.provide(RpcSerialization.layerJson),
         Effect.catchTags({

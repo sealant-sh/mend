@@ -3,6 +3,7 @@ import {
   ORCHESTRATION_PROTOCOL_HEADER,
   ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   ORCHESTRATION_V2_WS_METHODS,
+  WS_METHODS,
   type OrchestrationV2ShellStreamItem,
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
@@ -177,6 +178,87 @@ describe("the shell", () => {
   );
 });
 
+describe("devices and late pointers", () => {
+  it.live(
+    "a device revoked in Mend loses its socket while the person's other device keeps reading",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const { workbench } = mend;
+          workbench.addProject("project-1", "mend");
+          const laptop = yield* pairAndConnect(mend, "LAPTOP");
+          const tablet = yield* pairAndConnect(mend, "TABLET");
+          const laptopShell = yield* feed(
+            laptop.rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}),
+          );
+          yield* laptopShell.next(isKind("snapshot"));
+          const tabletShell = yield* feed(
+            tablet.rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}),
+          );
+          yield* tabletShell.next(isKind("snapshot"));
+
+          // The tablet is revoked in Mend; Mend tells the person's stream their devices moved.
+          mend.revoke(mend.claims[1]?.token ?? "");
+          workbench.emit({ type: "user", userId: "user-1", facet: "devices" });
+
+          // Its socket closes: nothing more answers on it.
+          yield* Effect.gen(function* () {
+            for (;;) {
+              const probe = yield* Effect.exit(
+                tablet.rpc[WS_METHODS.serverProbe]({}).pipe(Effect.timeout("1 second")),
+              );
+              if (probe._tag === "Failure") return;
+              yield* Effect.sleep("100 millis");
+            }
+          }).pipe(Effect.timeout("5 seconds"));
+          // Its bearer no longer authenticates over HTTP either.
+          const viaHttp = yield* Effect.exit(
+            tablet.client.orchestration.shellSnapshot({
+              headers: {
+                authorization: `Bearer ${tablet.access.access_token}`,
+                [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+              },
+            }),
+          );
+          assert.isTrue(viaHttp._tag === "Failure");
+
+          // The laptop still follows Mend.
+          workbench.addSession({ id: "session-after", projectId: "project-1" });
+          yield* laptopShell.next(
+            (item): item is Extract<Item, { kind: "thread.updated" }> =>
+              item.kind === "thread.updated" && item.thread.id === "session-after",
+          );
+          assert.deepStrictEqual(yield* laptop.rpc[WS_METHODS.serverProbe]({}), {});
+        }),
+      ),
+  );
+
+  it.live("a pointer that arrives during the first full read is applied after it", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { workbench } = mend;
+        workbench.addProject("project-1", "mend");
+        workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const turn = workbench.addTurn("session-1", "A turn that ends during the read");
+        const { rpc } = yield* pairAndConnect(mend, "LATEPOINTER");
+        // The read holds on requests after it read the turn as running; the turn ends meanwhile.
+        workbench.requestsDelayMs = 800;
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        yield* Effect.sleep("300 millis");
+        workbench.setTurn(turn, "completed");
+        const { snapshot } = yield* shell.next(isKind("snapshot"));
+        workbench.requestsDelayMs = 0;
+        assert.strictEqual(snapshot.threads[0]?.status, "running");
+        const caught = yield* shell.next(
+          (item): item is Extract<Item, { kind: "thread.updated" }> =>
+            item.kind === "thread.updated" && item.thread.status === "completed",
+        );
+        assert.strictEqual(caught.thread.id, "session-1");
+      }),
+    ),
+  );
+});
+
 describe("Mend's pointers", () => {
   it("reads SSE data lines and skips heartbeats", () => {
     assert.deepStrictEqual(
@@ -198,6 +280,9 @@ describe("Mend's pointers", () => {
       "conversation:s",
     );
     assert.strictEqual(refreshKeyOf({ type: "resync" }), "all");
+    assert.strictEqual(refreshKeyOf({ type: "user", facet: "devices" }), "devices");
+    assert.strictEqual(refreshKeyOf({ type: "user", facet: "access" }), "all");
+    assert.isNull(refreshKeyOf({ type: "user", facet: "git-access" }));
     assert.isNull(refreshKeyOf({ type: "session-progress", sessionId: "s", projectId: "p" }));
   });
 });

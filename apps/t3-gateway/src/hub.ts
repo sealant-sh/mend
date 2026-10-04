@@ -5,10 +5,10 @@ import {
   type OrchestrationV2ShellStreamItem,
 } from "@mend/t3-contracts";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
-import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
@@ -16,6 +16,7 @@ import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import {
   MendClient,
   MendDeviceRefused,
@@ -37,7 +38,7 @@ import {
   threadShellOf,
   type ThreadSource,
 } from "./shell.ts";
-import type { BearerSession } from "./state.ts";
+import { GatewayState, type BearerSession } from "./state.ts";
 
 /**
  * The projection hub (ADR 0012, "Projection"): one per paired person, shared by every socket and
@@ -59,7 +60,8 @@ export type HubReadError = MendDeviceRefused | MendUnavailable;
 export interface ShellSubscription {
   /** The shell as of subscribing; every later change arrives in `changes`, sequenced after it. */
   readonly snapshot: OrchestrationV2ShellSnapshot;
-  readonly changes: Stream.Stream<ShellDelta>;
+  /** Fails with `SubscriberFellBehind` when the subscriber cannot keep up (`fanout.ts`). */
+  readonly changes: Stream.Stream<ShellDelta, SubscriberFellBehind>;
 }
 
 export interface PersonHub {
@@ -67,14 +69,26 @@ export interface PersonHub {
   readonly shellSnapshot: Effect.Effect<OrchestrationV2ShellSnapshot, HubReadError>;
   /** The shell now and its changes from here, for as long as the scope lasts. */
   readonly subscribeShell: Effect.Effect<ShellSubscription, HubReadError, Scope.Scope>;
+  /** Whether Mend has refused this device token: the device was revoked. */
+  readonly isRefused: (token: string) => boolean;
+  /** Completes once Mend refuses this device token; a socket holding it closes then. */
+  readonly refusal: (token: string) => Effect.Effect<void>;
 }
 
-/** The person's device tokens the hub reads with: any of them speaks for the same person. */
+/**
+ * The person's device tokens the hub reads with: any of them speaks for the same person. A token
+ * Mend refuses (a 401, or a revocation the hub checks for) ends everything held with it.
+ */
 export interface PersonTokens {
   /** A token Mend has not refused yet, or null when every known one was refused. */
   readonly current: () => string | null;
-  /** Mend answered 401 to this token: the device was revoked. */
-  readonly refuse: (token: string) => void;
+  /** Every token of the person the gateway holds and Mend has not refused. */
+  readonly live: () => ReadonlyArray<string>;
+  /** Mend refused this token: the device was revoked. Ends its sockets and bearer sessions. */
+  readonly refuse: (token: string) => Effect.Effect<void>;
+  readonly isRefused: (token: string) => boolean;
+  /** Completes once the token is refused. */
+  readonly refusal: (token: string) => Effect.Effect<void>;
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -125,8 +139,10 @@ export const refreshKeyOf = (pointer: MendEventPointer): string | null => {
       return pointer.projectId === undefined ? null : `project:${pointer.projectId}`;
     case "agent-conversation":
       return pointer.sessionId === undefined ? null : `conversation:${pointer.sessionId}`;
-    case "organization":
+    // A device revoked, or the account removed from its organization.
     case "user":
+      return pointer.facet === "devices" ? "devices" : pointer.facet === "access" ? "all" : null;
+    case "organization":
     case "resync":
       return "all";
     default:
@@ -136,6 +152,8 @@ export const refreshKeyOf = (pointer: MendEventPointer): string | null => {
 
 const RECONNECT_BASE_MS = 500;
 const RECONNECT_MAX_MS = 15_000;
+/** How often every device token of the person is checked against Mend, pointer or not. */
+const DEVICE_CHECK_INTERVAL = "60 seconds";
 /** How long a failed full read waits before it is tried again. */
 const FULL_READ_RETRY = "3 seconds";
 /** A stream that lasted this long resets the backoff: it was a drop, not a refusal loop. */
@@ -170,7 +188,7 @@ export const makePersonHub = (input: {
     let sequence = 0;
     let shellProjects = new Map<string, Printed<OrchestrationProjectShell>>();
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
-    const shellChanges = yield* PubSub.unbounded<ShellDelta>();
+    const shellChanges = makeFanout<ShellDelta>();
     /** Every read of state and every publication happens under it, in order. */
     const lock = Semaphore.makeUnsafe(1);
     const locked = lock.withPermits(1);
@@ -187,8 +205,11 @@ export const makePersonHub = (input: {
         return call(token).pipe(
           Effect.catch((error) => {
             if (!(error instanceof MendDeviceRefused)) return Effect.fail(error);
-            tokens.refuse(token);
-            return tokens.current() === null ? Effect.fail(error) : asPerson(call);
+            return tokens
+              .refuse(token)
+              .pipe(
+                Effect.andThen(tokens.current() === null ? Effect.fail(error) : asPerson(call)),
+              );
           }),
         );
       });
@@ -285,7 +306,7 @@ export const makePersonHub = (input: {
       }
       shellProjects = nextProjects;
       shellThreads = nextThreads;
-      if (deltas.length > 0) yield* PubSub.publishAll(shellChanges, deltas);
+      if (deltas.length > 0) yield* shellChanges.publish(deltas);
     });
 
     const currentShell = (): OrchestrationV2ShellSnapshot => ({
@@ -411,23 +432,44 @@ export const makePersonHub = (input: {
       });
 
     let loaded = false;
+    /** Refreshes asked for before the first full read finished: run once it has. */
+    const deferredKeys = new Set<string>();
+    /** The first full read is done: what arrived during it is read again. */
+    const markLoaded = Effect.suspend(() => {
+      loaded = true;
+      const keys = Array.from(deferredKeys);
+      deferredKeys.clear();
+      return Effect.forEach(keys, (key) => requestRefresh(key), { discard: true });
+    });
     const loadLock = Semaphore.makeUnsafe(1);
     /** The first full read, made once by whoever needs it first; a failure is theirs to see. */
     const ensureLoaded = loadLock.withPermits(1)(
-      Effect.suspend(() =>
-        loaded
-          ? Effect.void
-          : refreshAll.pipe(
-              Effect.tap(() =>
-                Effect.sync(() => {
-                  loaded = true;
-                }),
-              ),
-            ),
-      ),
+      Effect.suspend(() => (loaded ? Effect.void : refreshAll.pipe(Effect.tap(() => markLoaded)))),
     );
 
     // ─── Refreshing ────────────────────────────────────────────────────────
+
+    /**
+     * Every device token of the person, checked against Mend: one it refuses (revoked) ends its
+     * sockets, even while the hub reads with another device's token.
+     */
+    const checkDevices = Effect.suspend(() =>
+      Effect.forEach(
+        tokens.live(),
+        (token) =>
+          mend.checkDevice(token).pipe(
+            Effect.flatMap((verdict) =>
+              verdict === "refused" ? tokens.refuse(token) : Effect.void,
+            ),
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not check a device with Mend", {
+                cause: error.message,
+              }),
+            ),
+          ),
+        { concurrency: 4, discard: true },
+      ),
+    );
 
     /** Pending refreshes, each queued once: a burst of pointers for one key is one read. */
     const pendingKeys = new Set<string>();
@@ -441,20 +483,13 @@ export const makePersonHub = (input: {
 
     const refreshOf = (key: string): Effect.Effect<void, HubReadError> => {
       if (key === "all") {
-        return loadLock.withPermits(1)(
-          refreshAll.pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                loaded = true;
-              }),
-            ),
-          ),
-        );
+        return loadLock.withPermits(1)(refreshAll.pipe(Effect.tap(() => markLoaded)));
       }
       if (key.startsWith("project:")) return refreshProject(key.slice("project:".length));
       if (key.startsWith("conversation:")) {
         return refreshConversation(key.slice("conversation:".length));
       }
+      if (key === "devices") return checkDevices;
       return Effect.void;
     };
 
@@ -463,8 +498,12 @@ export const makePersonHub = (input: {
         Effect.flatMap((key) =>
           Effect.suspend(() => {
             pendingKeys.delete(key);
-            // Nothing to keep current before the first read: it reads everything.
-            if (!loaded) return Effect.void;
+            // Before the first full read ends, a pointer may concern what it already read: keep
+            // it for after. Device checks need nothing loaded.
+            if (!loaded && key !== "devices") {
+              deferredKeys.add(key);
+              return Effect.void;
+            }
             return refreshOf(key).pipe(
               Effect.catch((error) =>
                 Effect.logWarning("t3 gateway could not refresh from Mend", {
@@ -516,6 +555,12 @@ export const makePersonHub = (input: {
       }
     }).pipe(Effect.forkScoped);
 
+    yield* requestRefresh("devices").pipe(
+      Effect.delay(DEVICE_CHECK_INTERVAL),
+      Effect.forever,
+      Effect.forkScoped,
+    );
+
     // ─── The hub ───────────────────────────────────────────────────────────
 
     const shellSnapshot = ensureLoaded.pipe(Effect.andThen(locked(Effect.sync(currentShell))));
@@ -523,12 +568,17 @@ export const makePersonHub = (input: {
     const subscribeShell = Effect.gen(function* () {
       yield* ensureLoaded;
       // Subscribed before the snapshot is taken: nothing published after it is missed.
-      const subscription = yield* PubSub.subscribe(shellChanges);
+      const changes = yield* shellChanges.subscribe(() => true);
       const snapshot = yield* locked(Effect.sync(currentShell));
-      return { snapshot, changes: Stream.fromSubscription(subscription) };
+      return { snapshot, changes };
     });
 
-    return { shellSnapshot, subscribeShell };
+    return {
+      shellSnapshot,
+      subscribeShell,
+      isRefused: tokens.isRefused,
+      refusal: tokens.refusal,
+    };
   });
 
 // ─── The registry ────────────────────────────────────────────────────────────
@@ -545,39 +595,66 @@ export class Projections extends Context.Service<
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";
 
-export const ProjectionsLive: Layer.Layer<Projections, never, MendClient> = Layer.effect(
-  Projections,
-  Effect.gen(function* () {
-    const mend = yield* MendClient;
-    /** Mend user id → the device tokens of theirs the gateway holds, in pairing order. */
-    const known = new Map<string, Set<string>>();
-    const refused = new Set<string>();
+export const ProjectionsLive: Layer.Layer<Projections, never, MendClient | GatewayState> =
+  Layer.effect(
+    Projections,
+    Effect.gen(function* () {
+      const mend = yield* MendClient;
+      const state = yield* GatewayState;
+      /** Mend user id → the device tokens of theirs the gateway holds, in pairing order. */
+      const known = new Map<string, Set<string>>();
+      /** Device token → completed once Mend refuses it. */
+      const refusals = new Map<string, Deferred.Deferred<void>>();
+      const refusalOf = (token: string) => {
+        const existing = refusals.get(token);
+        if (existing !== undefined) return existing;
+        const created = Deferred.makeUnsafe<void>();
+        refusals.set(token, created);
+        return created;
+      };
+      const isRefused = (token: string) => {
+        const refusal = refusals.get(token);
+        return refusal !== undefined && Deferred.isDoneUnsafe(refusal);
+      };
 
-    const tokensOf = (userId: string): PersonTokens => ({
-      current: () => {
-        for (const token of known.get(userId) ?? []) {
-          if (!refused.has(token)) return token;
-        }
-        return null;
-      },
-      refuse: (token) => {
-        refused.add(token);
-      },
-    });
-
-    const hubs = yield* RcMap.make({
-      lookup: (userId: string) => makePersonHub({ mend, tokens: tokensOf(userId) }),
-      idleTimeToLive: HUB_IDLE_TTL,
-    });
-
-    const hub = (session: BearerSession) =>
-      Effect.suspend(() => {
-        const tokens = known.get(session.mendUser.id) ?? new Set<string>();
-        tokens.add(session.deviceToken);
-        known.set(session.mendUser.id, tokens);
-        return RcMap.get(hubs, session.mendUser.id);
+      const tokensOf = (userId: string): PersonTokens => ({
+        current: () => {
+          for (const token of known.get(userId) ?? []) {
+            if (!isRefused(token)) return token;
+          }
+          return null;
+        },
+        live: () => Array.from(known.get(userId) ?? []).filter((token) => !isRefused(token)),
+        refuse: (token) =>
+          Effect.suspend(() => {
+            if (isRefused(token)) return Effect.void;
+            Deferred.doneUnsafe(refusalOf(token), Exit.void);
+            // The bearers standing for the device stop authenticating too.
+            return state.revokeSessionsForDevice(token, Date.now()).pipe(
+              Effect.catch((error) =>
+                Effect.logError("t3 gateway could not revoke a refused device's bearers", {
+                  cause: error.message,
+                }),
+              ),
+            );
+          }),
+        isRefused,
+        refusal: (token) => Deferred.await(refusalOf(token)),
       });
 
-    return { hub };
-  }),
-);
+      const hubs = yield* RcMap.make({
+        lookup: (userId: string) => makePersonHub({ mend, tokens: tokensOf(userId) }),
+        idleTimeToLive: HUB_IDLE_TTL,
+      });
+
+      const hub = (session: BearerSession) =>
+        Effect.suspend(() => {
+          const tokens = known.get(session.mendUser.id) ?? new Set<string>();
+          tokens.add(session.deviceToken);
+          known.set(session.mendUser.id, tokens);
+          return RcMap.get(hubs, session.mendUser.id);
+        });
+
+      return { hub };
+    }),
+  );

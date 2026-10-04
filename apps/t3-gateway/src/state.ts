@@ -73,6 +73,11 @@ export class GatewayState extends Context.Service<
       sessionId: AuthSessionId,
       at: number,
     ) => Effect.Effect<void, GatewayStateError>;
+    /** Revokes every bearer standing for a Mend device token Mend refused. */
+    readonly revokeSessionsForDevice: (
+      deviceToken: string,
+      at: number,
+    ) => Effect.Effect<void, GatewayStateError>;
   }
 >()("@mend/t3-gateway/GatewayState") {}
 
@@ -279,7 +284,23 @@ export const openGatewayState = (
           .run(at, sessionId);
       });
 
-    return { environmentId, insertSession, findSession, findSessionById, revokeSession };
+    const revokeSessionsForDevice = (deviceToken: string, at: number) =>
+      run("revokeSessionsForDevice", () => {
+        database
+          .prepare(
+            "UPDATE bearer_sessions SET revoked_at = ? WHERE device_token = ? AND revoked_at IS NULL",
+          )
+          .run(at, deviceToken);
+      });
+
+    return {
+      environmentId,
+      insertSession,
+      findSession,
+      findSessionById,
+      revokeSession,
+      revokeSessionsForDevice,
+    };
   });
 
 /** The state file at the configured path. */

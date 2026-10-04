@@ -123,6 +123,8 @@ export class FakeWorkbench {
   private readonly streams = new Set<ServerResponse>();
   private seq = 0;
   private ids = 0;
+  /** How long `GET /api/sessions/:id/requests` takes, to hold a read in flight. */
+  requestsDelayMs = 0;
   /** `GET /api/projects` answers 502, as Mend does while it comes back from a restart. */
   projectsDown = false;
   /** What `POST /api/sessions/:id/launch` does after it answers: open the prompt's turn. */
@@ -448,7 +450,13 @@ export class FakeWorkbench {
         });
       }
       if (method === "GET" && sub === "turns") return json(200, this.turns.get(id) ?? []);
-      if (method === "GET" && sub === "requests") return json(200, this.requests.get(id) ?? []);
+      if (method === "GET" && sub === "requests") {
+        const answer = this.requests.get(id) ?? [];
+        if (this.requestsDelayMs === 0) return json(200, answer);
+        return new Promise<boolean>((resolve) =>
+          setTimeout(() => resolve(json(200, answer)), this.requestsDelayMs),
+        );
+      }
       if (method === "GET" && sub === "items") {
         const after = Number(url.searchParams.get("after") ?? "0");
         const limit = Number(url.searchParams.get("limit") ?? "200");
