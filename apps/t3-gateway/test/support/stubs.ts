@@ -23,6 +23,7 @@ export const unreachableMend: MendClient["Service"] = {
   listProjects: () => unavailable("GET /api/projects"),
   projectDetail: () => unavailable("GET /api/projects/:id"),
   listTurns: () => unavailable("GET /api/sessions/:id/turns"),
+  listItems: () => unavailable("GET /api/sessions/:id/items"),
   listRequests: () => unavailable("GET /api/sessions/:id/requests"),
   events: () =>
     Stream.fail(new MendUnavailable({ operation: "GET /api/events", status: null, cause: null })),
@@ -35,6 +36,8 @@ export const emptyHub: PersonHub = {
   isRefused: () => false,
   refusal: () => Effect.never,
   mend: gateDeviceCalls(unreachableMend, () => Effect.void),
+  threadSnapshot: () => Effect.succeed(null),
+  subscribeThread: () => Effect.succeed(null),
 };
 
 export const testBearerSession: BearerSession = {

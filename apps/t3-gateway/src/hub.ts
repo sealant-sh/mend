@@ -1,10 +1,22 @@
 import {
+  EventId,
   OrchestrationProjectShell,
+  OrchestrationV2AppThread,
+  OrchestrationV2ConversationMessage,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2ProviderThread,
+  OrchestrationV2Run,
+  OrchestrationV2RuntimeRequest,
   OrchestrationV2ThreadShell,
+  OrchestrationV2TurnItem,
+  ThreadId,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
+  type OrchestrationV2ThreadProjection,
 } from "@mend/t3-contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -27,6 +39,7 @@ import {
 } from "./mend-client.ts";
 import type {
   MendEventPointer,
+  MendItem,
   MendProject,
   MendRequest,
   MendSession,
@@ -41,6 +54,7 @@ import {
   type ThreadSource,
 } from "./shell.ts";
 import { GatewayState, type BearerSession } from "./state.ts";
+import { threadProjectionOf } from "./thread-projection.ts";
 
 /**
  * The projection hub (ADR 0012, "Projection"): one per paired person, shared by every socket and
@@ -66,6 +80,30 @@ export interface ShellSubscription {
   readonly changes: Stream.Stream<ShellDelta, SubscriberFellBehind>;
 }
 
+/** One thread as of a sequence. */
+export interface ThreadSnapshot {
+  readonly snapshotSequence: number;
+  readonly projection: OrchestrationV2ThreadProjection;
+}
+
+/**
+ * A thread change after the snapshot: an entity upsert, or a fresh snapshot when something the
+ * client holds went away (a snapshot is a legal reset).
+ */
+export type ThreadChange =
+  | {
+      readonly kind: "event";
+      readonly sequence: number;
+      readonly event: OrchestrationV2DomainEvent;
+    }
+  | ({ readonly kind: "snapshot" } & ThreadSnapshot);
+
+export interface ThreadSubscription {
+  readonly snapshot: ThreadSnapshot;
+  /** Fails with `SubscriberFellBehind` when the subscriber cannot keep up (`fanout.ts`). */
+  readonly changes: Stream.Stream<ThreadChange, SubscriberFellBehind>;
+}
+
 export interface PersonHub {
   /** The shell now, once the hub has read Mend at least once. */
   readonly shellSnapshot: Effect.Effect<OrchestrationV2ShellSnapshot, HubReadError>;
@@ -77,6 +115,15 @@ export interface PersonHub {
   readonly refusal: (token: string) => Effect.Effect<void>;
   /** Mend's client for this person's calls, gated: a 401 refuses the token used. */
   readonly mend: GatedMend;
+  /** One thread in full, or null when the person has no such thread. */
+  readonly threadSnapshot: (threadId: string) => Effect.Effect<ThreadSnapshot | null, HubReadError>;
+  /**
+   * One thread in full and its changes from here; the hub keeps its items current while any
+   * subscription lasts. Null when the person has no such thread.
+   */
+  readonly subscribeThread: (
+    threadId: string,
+  ) => Effect.Effect<ThreadSubscription | null, HubReadError, Scope.Scope>;
 }
 
 /**
@@ -116,6 +163,21 @@ interface Printed<A> {
   readonly print: string;
 }
 
+/** A thread someone is watching: its items, kept current, and what was last sent of it. */
+interface Watch {
+  count: number;
+  readonly items: Map<string, MendItem>;
+  /** The highest item change-feed cursor read so far. */
+  cursor: number;
+  /** Entity key → its print as last sent; null until the first subscriber's snapshot. */
+  prints: Map<string, string> | null;
+  /** The thread as last sent, for the `thread.deleted` event if it goes. */
+  thread: OrchestrationV2AppThread | null;
+}
+
+/** How many items one `GET /api/sessions/:id/items` page asks for. */
+const ITEM_PAGE = 500;
+
 const EMPTY_CONVERSATION: Conversation = { turns: [], requests: [] };
 const NO_IDS: ReadonlyMap<string, string> = new Map();
 
@@ -129,6 +191,117 @@ const printer = <S extends Schema.Codec<unknown, unknown>>(schema: S) => {
 };
 const printProject = printer(OrchestrationProjectShell);
 const printThreadShell = printer(OrchestrationV2ThreadShell);
+const printAppThread = printer(OrchestrationV2AppThread);
+const printRun = printer(OrchestrationV2Run);
+const printRequest = printer(OrchestrationV2RuntimeRequest);
+const printMessage = printer(OrchestrationV2ConversationMessage);
+const printTurnItem = printer(OrchestrationV2TurnItem);
+const printProviderSession = printer(OrchestrationV2ProviderSession);
+const printProviderThread = printer(OrchestrationV2ProviderThread);
+
+/** One entity of a thread projection, the event that upserts it, and its print. */
+interface ThreadEntity {
+  readonly key: string;
+  readonly print: string;
+  readonly event: (base: {
+    readonly id: EventId;
+    readonly threadId: ThreadId;
+    readonly occurredAt: DateTime.Utc;
+  }) => OrchestrationV2DomainEvent;
+}
+
+/**
+ * A projection's entities, each encoded through its vendored schema. One that does not encode is
+ * logged and left out, of the events and of the snapshot alike: a mapping bug never reaches a
+ * client as a defect.
+ */
+const printProjection = (
+  projection: OrchestrationV2ThreadProjection,
+): Effect.Effect<{
+  readonly projection: OrchestrationV2ThreadProjection;
+  readonly entities: ReadonlyArray<ThreadEntity>;
+}> =>
+  Effect.gen(function* () {
+    const entities: Array<ThreadEntity> = [];
+    const failed = new Set<string>();
+    const add = (key: string, print: string | Error, event: ThreadEntity["event"]) => {
+      if (print instanceof Error) {
+        failed.add(key);
+        return Effect.logError("t3 gateway could not encode a thread entity", {
+          threadId: projection.thread.id,
+          key,
+          cause: print.message,
+        });
+      }
+      entities.push({ key, print, event });
+      return Effect.void;
+    };
+    const thread = projection.thread;
+    yield* add("thread", printAppThread(thread), (base) => ({
+      ...base,
+      type: "thread.metadata-updated",
+      payload: thread,
+    }));
+    for (const session of projection.providerSessions) {
+      yield* add(`provider-session:${session.id}`, printProviderSession(session), (base) => ({
+        ...base,
+        type: "provider-session.updated",
+        payload: session,
+      }));
+    }
+    for (const providerThread of projection.providerThreads) {
+      yield* add(
+        `provider-thread:${providerThread.id}`,
+        printProviderThread(providerThread),
+        (base) => ({ ...base, type: "provider-thread.updated", payload: providerThread }),
+      );
+    }
+    for (const run of projection.runs) {
+      yield* add(`run:${run.id}`, printRun(run), (base) => ({
+        ...base,
+        runId: run.id,
+        type: "run.updated",
+        payload: run,
+      }));
+    }
+    for (const request of projection.runtimeRequests) {
+      yield* add(`request:${request.id}`, printRequest(request), (base) => ({
+        ...base,
+        type: "runtime-request.updated",
+        payload: request,
+      }));
+    }
+    for (const message of projection.messages) {
+      yield* add(`message:${message.id}`, printMessage(message), (base) => ({
+        ...base,
+        type: "message.updated",
+        payload: message,
+      }));
+    }
+    for (const item of projection.turnItems) {
+      yield* add(`item:${item.id}`, printTurnItem(item), (base) => ({
+        ...base,
+        type: "turn-item.updated",
+        payload: item,
+      }));
+    }
+    if (failed.size === 0) return { projection, entities };
+    const kept = <A extends { readonly id: string }>(prefix: string, values: ReadonlyArray<A>) =>
+      values.filter((value) => !failed.has(`${prefix}:${value.id}`));
+    return {
+      projection: {
+        ...projection,
+        runs: kept("run", projection.runs),
+        runtimeRequests: kept("request", projection.runtimeRequests),
+        messages: kept("message", projection.messages),
+        turnItems: kept("item", projection.turnItems),
+        visibleTurnItems: projection.visibleTurnItems
+          .filter((row) => !failed.has(`item:${row.item.id}`))
+          .map((row, position) => ({ ...row, position })),
+      },
+      entities,
+    };
+  });
 
 /**
  * Which pointers move what (`MendEvent` in @mend/db). Record lines (`session-progress`) and
@@ -182,6 +355,14 @@ const entryOf = (detail: {
   annotations: new Map(detail.annotations.map((annotation) => [annotation.sessionId, annotation])),
 });
 
+const mergeItems = (watch: Watch, read: ReadonlyArray<MendItem>) => {
+  for (const item of read) {
+    const known = watch.items.get(item.id);
+    if (known === undefined || known.seq <= item.seq) watch.items.set(item.id, item);
+    watch.cursor = Math.max(watch.cursor, item.seq);
+  }
+};
+
 export const makePersonHub = (input: {
   /** The only way the hub reaches Mend (`device-gate.ts`). */
   readonly mend: GatedMend;
@@ -198,6 +379,11 @@ export const makePersonHub = (input: {
     let shellProjects = new Map<string, Printed<OrchestrationProjectShell>>();
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const shellChanges = makeFanout<ShellDelta>();
+    const watches = new Map<string, Watch>();
+    const threadChanges = makeFanout<{
+      readonly threadId: string;
+      readonly change: ThreadChange;
+    }>();
     /** Every read of state and every publication happens under it, in order. */
     const lock = Semaphore.makeUnsafe(1);
     const locked = lock.withPermits(1);
@@ -247,6 +433,12 @@ export const makePersonHub = (input: {
       }
       return sources;
     };
+
+    const sourceOf = (sessionId: string): ThreadSource | null =>
+      threadSources().find((source) => source.session.id === sessionId) ?? null;
+
+    const itemsOf = (sessionId: string): ReadonlyArray<MendItem> =>
+      Array.from(watches.get(sessionId)?.items.values() ?? []);
 
     // ─── Publishing ────────────────────────────────────────────────────────
 
@@ -326,7 +518,111 @@ export const makePersonHub = (input: {
       archivedThreads: [],
     });
 
+    const eventBase = () => ({
+      id: EventId.make(`event:${++sequence}`),
+      occurredAt: DateTime.makeUnsafe(Date.now()),
+    });
+
+    /**
+     * Diffs one watched thread against what was last sent and publishes its changes, sequenced.
+     * The first time, nothing has been sent: what is built is the baseline the first subscriber's
+     * snapshot shows. Returns the thread as it stands, or null once it is gone.
+     */
+    const publishThread = (sessionId: string) =>
+      Effect.gen(function* () {
+        const watch = watches.get(sessionId);
+        const source = sourceOf(sessionId);
+        if (source === null) {
+          if (watch?.prints !== null && watch?.thread !== null && watch !== undefined) {
+            const base = eventBase();
+            const thread = watch.thread;
+            yield* threadChanges.publish([
+              {
+                threadId: sessionId,
+                change: {
+                  kind: "event",
+                  sequence,
+                  event: {
+                    ...base,
+                    threadId: thread.id,
+                    type: "thread.deleted",
+                    payload: { ...thread, deletedAt: base.occurredAt },
+                  },
+                },
+              },
+            ]);
+            watch.prints = null;
+            watch.thread = null;
+          }
+          return null;
+        }
+        const built = yield* printProjection(threadProjectionOf(source, itemsOf(sessionId)));
+        if (watch === undefined) return built.projection;
+        const previous = watch.prints;
+        const prints = new Map(built.entities.map((entity) => [entity.key, entity.print]));
+        watch.prints = prints;
+        watch.thread = built.projection.thread;
+        if (previous === null) return built.projection;
+
+        // Something the client holds went away: a fresh snapshot replaces it.
+        if (Array.from(previous.keys()).some((key) => !prints.has(key))) {
+          yield* threadChanges.publish([
+            {
+              threadId: sessionId,
+              change: {
+                kind: "snapshot",
+                snapshotSequence: ++sequence,
+                projection: built.projection,
+              },
+            },
+          ]);
+          return built.projection;
+        }
+        const changes: Array<{ readonly threadId: string; readonly change: ThreadChange }> = [];
+        for (const entity of built.entities) {
+          if (previous.get(entity.key) === entity.print) continue;
+          const base = eventBase();
+          changes.push({
+            threadId: sessionId,
+            change: {
+              kind: "event",
+              sequence,
+              event: entity.event({ ...base, threadId: built.projection.thread.id }),
+            },
+          });
+        }
+        if (changes.length > 0) yield* threadChanges.publish(changes);
+        return built.projection;
+      });
+
+    /** Every watched thread, after a read that may have moved any of them. */
+    const publishThreads = Effect.suspend(() =>
+      Effect.forEach(Array.from(watches.keys()), publishThread, { discard: true }),
+    );
+
+    const publishAll = Effect.andThen(publishShell, publishThreads);
+
     // ─── Reading Mend ──────────────────────────────────────────────────────
+
+    /** Every item whose change-feed cursor is past `after`, page by page. */
+    const readItemsAfter = (sessionId: string, after: number) =>
+      Effect.gen(function* () {
+        const read: Array<MendItem> = [];
+        let cursor = after;
+        for (;;) {
+          const page = yield* asPerson((token) =>
+            mend.listItems(token, sessionId, cursor, ITEM_PAGE),
+          );
+          read.push(...page);
+          if (page.length < ITEM_PAGE) return read;
+          cursor = page.reduce((highest, item) => Math.max(highest, item.seq), cursor);
+        }
+      }).pipe(
+        Effect.catchTag(
+          "MendNotFound",
+          (): Effect.Effect<ReadonlyArray<MendItem>> => Effect.succeed([]),
+        ),
+      );
 
     const readConversation = (sessionId: string) =>
       Effect.all(
@@ -370,6 +666,15 @@ export const makePersonHub = (input: {
       );
       const entries = details.filter((entry): entry is ProjectEntry => entry !== null);
       const read = yield* readConversations(entries.flatMap(projectableSessionIds));
+      // A watched thread's items that moved while pointers could be missed (a reconnect).
+      const caughtUp = yield* Effect.forEach(
+        Array.from(watches, ([sessionId, watch]) => [sessionId, watch.cursor] as const),
+        ([sessionId, cursor]) =>
+          readItemsAfter(sessionId, cursor).pipe(
+            Effect.map((items) => [sessionId, items] as const),
+          ),
+        { concurrency: 4 },
+      );
       yield* locked(
         Effect.gen(function* () {
           projects.clear();
@@ -378,7 +683,11 @@ export const makePersonHub = (input: {
           for (const [sessionId, conversation] of read) {
             if (conversation !== null) conversations.set(sessionId, conversation);
           }
-          yield* publishShell;
+          for (const [sessionId, items] of caughtUp) {
+            const watch = watches.get(sessionId);
+            if (watch !== undefined) mergeItems(watch, items);
+          }
+          yield* publishAll;
         }),
       );
     });
@@ -410,7 +719,7 @@ export const makePersonHub = (input: {
             for (const [sessionId, conversation] of read) {
               if (conversation !== null) conversations.set(sessionId, conversation);
             }
-            yield* publishShell;
+            yield* publishAll;
           }),
         );
       });
@@ -422,12 +731,19 @@ export const makePersonHub = (input: {
       return false;
     };
 
-    /** One thread's turns and requests again. */
+    /** One thread's turns and requests again, and its new items while someone watches it. */
     const refreshConversation = (sessionId: string): Effect.Effect<void, HubReadError> =>
       Effect.gen(function* () {
         // A session that is not a thread yet becomes one through its project's read.
         if (!isKnownThread(sessionId)) return;
-        const conversation = yield* readConversation(sessionId);
+        const watch = watches.get(sessionId);
+        const [conversation, items] = yield* Effect.all(
+          [
+            readConversation(sessionId),
+            watch === undefined ? Effect.succeed([]) : readItemsAfter(sessionId, watch.cursor),
+          ],
+          { concurrency: 2 },
+        );
         yield* locked(
           Effect.gen(function* () {
             if (conversation === null) {
@@ -435,7 +751,9 @@ export const makePersonHub = (input: {
             } else if (isKnownThread(sessionId)) {
               conversations.set(sessionId, conversation);
             }
-            yield* publishShell;
+            const current = watches.get(sessionId);
+            if (current !== undefined) mergeItems(current, items);
+            yield* publishAll;
           }),
         );
       });
@@ -602,9 +920,77 @@ export const makePersonHub = (input: {
       return { snapshot, changes };
     });
 
+    const threadSnapshot = (threadId: string) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const watched = watches.has(threadId);
+        if (!watched && !(yield* locked(Effect.sync(() => isKnownThread(threadId))))) return null;
+        // An unwatched thread's items are read for this snapshot alone.
+        const items = watched ? null : yield* readItemsAfter(threadId, 0);
+        return yield* locked(
+          Effect.gen(function* () {
+            const source = sourceOf(threadId);
+            if (source === null) return null;
+            const built =
+              items === null
+                ? yield* publishThread(threadId)
+                : (yield* printProjection(threadProjectionOf(source, items))).projection;
+            if (built === null) return null;
+            const snapshot: ThreadSnapshot = { snapshotSequence: sequence, projection: built };
+            return snapshot;
+          }),
+        );
+      });
+
+    const subscribeThread = (threadId: string) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        if (!(yield* locked(Effect.sync(() => isKnownThread(threadId))))) return null;
+        const watch = yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const existing = watches.get(threadId);
+            if (existing !== undefined) {
+              existing.count += 1;
+              return existing;
+            }
+            const fresh: Watch = {
+              count: 1,
+              items: new Map(),
+              cursor: 0,
+              prints: null,
+              thread: null,
+            };
+            watches.set(threadId, fresh);
+            return fresh;
+          }),
+          (held) =>
+            Effect.sync(() => {
+              held.count -= 1;
+              if (held.count === 0 && watches.get(threadId) === held) watches.delete(threadId);
+            }),
+        );
+        const read = yield* readItemsAfter(threadId, watch.cursor);
+        // Subscribed before the snapshot is taken: nothing published after it is missed.
+        // Only this thread's changes are buffered for it.
+        const published = yield* threadChanges.subscribe((change) => change.threadId === threadId);
+        const projection = yield* locked(
+          Effect.gen(function* () {
+            mergeItems(watch, read);
+            return yield* publishThread(threadId);
+          }),
+        );
+        if (projection === null) return null;
+        const snapshot: ThreadSnapshot = { snapshotSequence: sequence, projection };
+        const changes = published.pipe(Stream.map((change) => change.change));
+        const subscribed: ThreadSubscription = { snapshot, changes };
+        return subscribed;
+      });
+
     return {
       shellSnapshot,
       subscribeShell,
+      threadSnapshot,
+      subscribeThread,
       isRefused: tokens.isRefused,
       refusal: tokens.refusal,
       mend,

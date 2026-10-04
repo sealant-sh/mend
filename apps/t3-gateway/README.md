@@ -70,6 +70,28 @@ always a legal reset for a t3code client, so a restarted gateway starts its sequ
 
 PTY and shell sessions, and harnesses t3code has no driver for, are not threads.
 
+### Threads
+
+`orchestration.subscribeThread`, `orchestration.getThreadProjection` and the HTTP thread routes
+serve one thread in full (`src/thread-projection.ts`). While anyone subscribes to a thread, the hub
+keeps its items current: an `agent-conversation` pointer re-reads its turns and requests and the
+items past the last change-feed cursor (`GET /api/sessions/:id/items?after=`). Each entity that
+changed is one upsert event (`run.updated`, `turn-item.updated`, `message.updated`,
+`runtime-request.updated`, …); one that went away sends a fresh snapshot; a session that is no
+longer a thread sends `thread.deleted`. A subscription always opens with a full snapshot, whatever
+sequence the client resumes after: replay after a sequence is phase 2.
+
+| t3code                                     | From Mend                                                                                                   |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| user message                               | the turn's input; a turn the agent opened on its own is a system message                                    |
+| assistant message, reasoning               | `assistant-message` and `reasoning` items, `streaming` while in progress                                    |
+| command, file change, web search           | read from the harness's own item in `data` (codex app-server items, claude `tool_use` blocks)               |
+| other tool calls, plans, background tasks  | a tool row named by the harness                                                                             |
+| error                                      | `error` items, and a failed turn's error after everything it did                                            |
+| runtime request, approval or question item | the agent's request; answered through Mend while its agent is live                                          |
+| ordinals                                   | each turn owns a block of 100 000, its input first, then items and requests in the order Mend recorded them |
+| `GET …/threads/:id/bounded`                | the whole thread as one window: no cursor, nothing older                                                    |
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:

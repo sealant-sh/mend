@@ -10,6 +10,7 @@ import type * as HttpClientResponse from "effect/unstable/http/HttpClientRespons
 import { GatewayConfig } from "./config.ts";
 import {
   MendEventPointer,
+  MendItem,
   MendProject,
   MendProjectDetail,
   MendRequest,
@@ -132,6 +133,16 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
     ) => MendRead<ReadonlyArray<MendTurn>>;
+    /**
+     * `GET /api/sessions/:id/items?after=&limit=`: the items whose change-feed cursor is past
+     * `after`, in cursor order, at most `limit` of them.
+     */
+    readonly listItems: (
+      deviceToken: string,
+      sessionId: string,
+      after: number,
+      limit: number,
+    ) => MendRead<ReadonlyArray<MendItem>>;
     /** `GET /api/sessions/:id/requests`: what its agent asked, answered or not. */
     readonly listRequests: (
       deviceToken: string,
@@ -151,6 +162,7 @@ const decodeProjects = Schema.decodeUnknownEffect(Schema.Array(MendProject));
 const decodeProjectDetail = Schema.decodeUnknownEffect(MendProjectDetail);
 const decodeTurns = Schema.decodeUnknownEffect(Schema.Array(MendTurn));
 const decodeRequests = Schema.decodeUnknownEffect(Schema.Array(MendRequest));
+const decodeItems = Schema.decodeUnknownEffect(Schema.Array(MendItem));
 const decodePointer = Schema.decodeUnknownOption(Schema.fromJsonString(MendEventPointer));
 
 /** The pointer an SSE `data:` line carries, or null for a heartbeat, a blank or a stray line. */
@@ -305,6 +317,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeTurns,
         );
 
+      const listItems = (deviceToken: string, sessionId: string, after: number, limit: number) =>
+        read(
+          "GET /api/sessions/:id/items",
+          `/api/sessions/${encodeURIComponent(sessionId)}/items?after=${after}&limit=${limit}`,
+          deviceToken,
+          decodeItems,
+        );
+
       const listRequests = (deviceToken: string, sessionId: string) =>
         read(
           "GET /api/sessions/:id/requests",
@@ -353,6 +373,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         listProjects,
         projectDetail,
         listTurns,
+        listItems,
         listRequests,
         events,
       };
