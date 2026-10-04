@@ -393,6 +393,36 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
 };
 
 /**
+ * A harness's own state that belongs to the machine it ran on, not to the work: never saved with
+ * the session, though none of it is a credential, and so kept apart from `HARNESS_CREDENTIALS`
+ * (the mode keeper leaves it alone). A `codex` typed by hand in a shell unpacks its runtime into
+ * `.codex/packages/` (about 427 MB) and starts an app-server daemon that keeps its state and
+ * control socket beside it; saved, every later executor of the worktree would restore the runtime
+ * and a dead daemon's state. Codex rebuilds each when it next needs it. sealantd's
+ * `HARNESS_MACHINE_STATE` keeps them out of captures and restores; a test holds this table to a
+ * copy of it, and the provider-logins docs page lists it.
+ */
+export const HARNESS_MACHINE_STATE: Readonly<Record<string, ReadonlyArray<HarnessCredential>>> = {
+  codex: [
+    {
+      path: ".codex/packages",
+      kind: "directory",
+      holds: "the Codex runtime a hand-run `codex` unpacks (about 427 MB)",
+    },
+    {
+      path: ".codex/app-server-daemon",
+      kind: "directory",
+      holds: "the state of an app-server daemon running on that machine",
+    },
+    {
+      path: ".codex/app-server-control",
+      kind: "directory",
+      holds: "that daemon's control socket",
+    },
+  ],
+};
+
+/**
  * Every path in `HARNESS_CREDENTIALS`, relative to the harness home: the one thing the mode keeper
  * must not open up (ADR 0005). Paths, not globs: a guess here would either miss a credential or
  * tighten a transcript.

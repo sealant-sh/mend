@@ -12,6 +12,10 @@ that keep a URL's token. Mend's list of them is one table, which the platform's 
 docs page "How Mend handles your provider logins" lists in full. Leaving them out of what a remote
 workspace saves needs a Sealant runtime with sealantd#136.
 
+Codex's machine state is never saved either, listed apart since none of it is a login:
+`~/.codex/packages/` (the runtime a `codex` typed by hand unpacks, about 427 MB) and the
+`app-server-daemon/` and `app-server-control/` directories its background server leaves.
+
 Codex sessions Mend starts run with its shell snapshot off (`-c features.shell_snapshot=false`), so
 the snapshot is never written. A pi session Mend starts runs on its owner's freshly delivered pi
 profile, on none, or does not start, whether it launches fresh or joins, resumes or follows up in a

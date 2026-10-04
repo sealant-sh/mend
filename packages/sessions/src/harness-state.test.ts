@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   HARNESS_CREDENTIALS,
   HARNESS_HOME_MOUNT_PATH,
+  HARNESS_MACHINE_STATE,
   HARNESS_STATE,
   distillOpeningPrompt,
   extractTranscript,
@@ -55,11 +56,28 @@ const SEALANTD_HARNESS_CREDENTIALS = [
   ".mend/pi-profile-kept/",
 ];
 
+/** sealantd's `HARNESS_MACHINE_STATE`, the same way: never saved, and not credentials. */
+const SEALANTD_HARNESS_MACHINE_STATE = [
+  ".codex/packages/",
+  ".codex/app-server-daemon/",
+  ".codex/app-server-control/",
+];
+
+const machineStateEntries = Object.entries(HARNESS_MACHINE_STATE).flatMap(([harness, entries]) =>
+  entries.map((entry) => ({ harness, ...entry })),
+);
 const credentialEntries = Object.entries(HARNESS_CREDENTIALS).flatMap(([harness, credentials]) =>
   credentials.map((credential) => ({ harness, ...credential })),
 );
 const shownPath = (credential: { readonly path: string; readonly kind: string }) =>
   credential.kind === "directory" ? `${credential.path}/` : credential.path;
+
+/** The first cell of each table row in a piece of markdown, without its backticks. */
+const tableRows = (text: string) =>
+  text
+    .split("\n")
+    .filter((line) => line.startsWith("| `"))
+    .map((line) => line.split("`")[1]);
 
 describe("harness credentials", () => {
   it("lists every harness Mend runs, and only those", () => {
@@ -81,6 +99,18 @@ describe("harness credentials", () => {
 
   it("names exactly what sealantd keeps out of captures", () => {
     expect(credentialEntries.map(shownPath)).toEqual(SEALANTD_HARNESS_CREDENTIALS);
+    expect(machineStateEntries.map(shownPath)).toEqual(SEALANTD_HARNESS_MACHINE_STATE);
+  });
+
+  it("keeps machine state apart from the credentials, inside the harness's own directories", () => {
+    for (const entry of machineStateEntries) {
+      const roots = HARNESS_STATE[entry.harness]?.homeDirs ?? [];
+      expect(
+        roots.some((root) => entry.path.startsWith(`${root}/`)),
+        entry.path,
+      ).toBe(true);
+      expect(HARNESS_HOME_CREDENTIALS).not.toContain(entry.path);
+    }
   });
 
   it("are closed to group and other by the mode keeper, with their suffixed siblings", () => {
@@ -121,12 +151,10 @@ describe("harness credentials", () => {
       ),
       "utf8",
     );
-    const table = page.split("## What a session never saves")[1]?.split("\n## ")[0] ?? "";
-    const documented = table
-      .split("\n")
-      .filter((line) => line.startsWith("| `"))
-      .map((line) => line.split("`")[1]);
-    expect(documented).toEqual(credentialEntries.map(shownPath));
+    const section = page.split("## What a session never saves")[1]?.split("\n## ")[0] ?? "";
+    const [credentials = "", machine = ""] = section.split("### Never saved, and not logins");
+    expect(tableRows(credentials)).toEqual(credentialEntries.map(shownPath));
+    expect(tableRows(machine)).toEqual(machineStateEntries.map(shownPath));
   });
 });
 

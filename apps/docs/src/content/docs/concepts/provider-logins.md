@@ -150,6 +150,19 @@ or a command there instead of the value (Codex: `bearer_token_env_var`, `env_htt
 integration logins in its database, beside the conversations, and the database is saved: make those
 logins only in a worktree nobody else uses.
 
+### Never saved, and not logins
+
+These are not logins either, but they belong to the machine a session ran on rather than to its
+work, and are never saved for the same reasons. A `codex` you type in a session's terminal unpacks
+its own copy of Codex and starts a background server; Codex makes them again when it next needs
+them.
+
+| Path                         | Agent | Holds                                                       |
+| ---------------------------- | ----- | ----------------------------------------------------------- |
+| `.codex/packages/`           | Codex | the Codex runtime a hand-run `codex` unpacks (about 427 MB) |
+| `.codex/app-server-daemon/`  | Codex | the state of an app-server daemon running on that machine   |
+| `.codex/app-server-control/` | Codex | that daemon's control socket                                |
+
 ## When a login stops working
 
 A provider can end a login on its own: you signed out of that session elsewhere, changed your
