@@ -12165,6 +12165,59 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   );
 
   it(
+    "another session's lease of a launch its row no longer names is a hold: no launch, no release, no removal (review of #516)",
+    { timeout: 20_000 },
+    async () => {
+      // A/B: session one's lease is bound to launch A, whose end nothing confirms, while its row
+      // names a later executor B that has stopped. B's end says nothing of A: a sibling's launch
+      // waits and is refused, and a removal is held, with A's lease kept.
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.status === "stopped",
+              "executor B, stopped",
+            );
+            const epoch = (memory.leases.get(session.worktreeId)?.epoch ?? 0) + 1;
+            memory.leases.set(session.worktreeId, {
+              executorId: session.id,
+              epoch,
+              expiresAt: memory.clock.now() - 1,
+              launchId: "launch:a-unconfirmed",
+            });
+            const sibling = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const refused = yield* engine.launch(sibling.id, ["claude"]).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe("worktree_leased");
+            expect(created).toHaveLength(1);
+            const holds = yield* engine.captureHolds(session.worktreeId);
+            expect(holds).toContainEqual({ sessionId: session.id, kind: "lease" });
+            const lease = memory.leases.get(session.worktreeId);
+            expect(lease?.launchId).toBe("launch:a-unconfirmed");
+            expect(lease?.epoch).toBe(epoch);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { leaseWait: Duration.millis(300), leaseWaitInterval: Duration.millis(20) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              status: (stopAsked) => (stopAsked && created.length === 1 ? "stopped" : "ready"),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
     "a launch waiting for the worktree's previous executor launches nothing once its owner stops it",
     { timeout: 20_000 },
     async () => {

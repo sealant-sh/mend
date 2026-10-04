@@ -3046,6 +3046,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const creatingExecutors = new Set<SessionId>();
 
       /**
+       * The workspace of the executor a lease is bound to, as its holder's row names it: a lease
+       * bound to a launch is that launch's executor, and the row speaks for it only while it
+       * records that very launch with its workspace. A lease bound to no launch (an older one)
+       * is the row's workspace's, as before. Null: nothing here addresses that executor, so
+       * nothing here can confirm its end — its lease is held, never released (review of #516:
+       * a later replacement's end was taken for an earlier executor's, whose unsaved work its
+       * released lease fenced off).
+       */
+      const leaseExecutorWorkspace = Effect.fn("SessionEngine.leaseExecutorWorkspace")(function* (
+        holder: Session,
+        lease: { readonly launchId?: string | null },
+      ) {
+        if ((lease.launchId ?? null) === null) return holder.sealantWorkspaceId;
+        const named = yield* sessions.executorLaunchOf(holder.id);
+        return named !== null && named.launchId === lease.launchId ? named.workspaceId : null;
+      });
+
+      /**
        * Who holds a worktree in capture mode, for a session that is not the holder:
        * - `free`: nobody (never claimed, released after its holder ended, or Mend's own short
        *   claim), or a holder whose end the platform confirmed — its lapsed lease is released here
@@ -3091,28 +3109,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           return { kind: "free" as const };
         }
-        if (ownEarlierLaunch) {
-          const named = yield* sessions.executorLaunchOf(session.id);
-          if (named === null || named.launchId !== lease.launchId) {
-            return lease.live
-              ? {
-                  kind: "unreachable" as const,
-                  sessionId: lease.executorId,
-                  epoch: lease.epoch,
-                  expiresAt: lease.expiresAt?.toISOString() ?? "never",
-                }
-              : {
-                  kind: "lapsed" as const,
-                  sessionId: lease.executorId,
-                  epoch: lease.epoch,
-                  state: "unknown" as const,
-                };
-          }
-        }
         const holder = yield* sessions
           .byId(SessionId.make(lease.executorId))
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        const workspaceId = holder?.sealantWorkspaceId ?? null;
+        // The lease's own executor, never whatever the holder's row names now.
+        const workspaceId = holder === null ? null : yield* leaseExecutorWorkspace(holder, lease);
         if (!lease.live) {
           // No row means nothing of that executor can register any more: its channel identity is
           // the row. A row with no workspace is a launch cut short around its create
@@ -3715,16 +3716,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The holder asked for an executor whose answer is not on its row: the lease may be that
         // executor's, whatever ended here.
         if (yield* createUnanswered(SessionId.make(lease.executorId))) return;
-        if (lease.executorId !== session.id) {
-          const holder = yield* sessions
-            .byId(SessionId.make(lease.executorId))
-            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if (holder === null || holder.sealantWorkspaceId !== workspaceId) return;
-        } else if ((lease.launchId ?? null) !== null) {
-          const own = yield* sessions.executorLaunchOf(session.id);
-          if (own === null || own.workspaceId !== workspaceId || own.launchId !== lease.launchId) {
-            return;
-          }
+        const holder =
+          lease.executorId === session.id
+            ? session
+            : yield* sessions
+                .byId(SessionId.make(lease.executorId))
+                .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (holder === null || (yield* leaseExecutorWorkspace(holder, lease)) !== workspaceId) {
+          return;
         }
         yield* owedBeforeRelease(workspaceId);
         const released = yield* capture.repo.release(session.worktreeId, lease.epoch);
@@ -4800,9 +4799,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           !holds.some((hold) => hold.sessionId === lease.executorId)
         ) {
           const holder = members.find((member) => member.id === lease.executorId) ?? null;
-          const workspaceId = holder?.sealantWorkspaceId ?? null;
-          // A holder with no workspace on its row is a launch cut short around its create
-          // (`launchUnresolved`): its executor may exist and hold work — a hold, never an end.
+          // The lease's own executor (`leaseExecutorWorkspace`): none addressable, or a holder
+          // with no workspace on its row (a launch cut short around its create,
+          // `launchUnresolved`), may exist and hold work — a hold, never an end.
+          const workspaceId = holder === null ? null : yield* leaseExecutorWorkspace(holder, lease);
           const ended =
             holder === null ||
             (workspaceId !== null &&
@@ -4919,7 +4919,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const previousEnded =
                 session.sealantWorkspaceId === null ||
                 (yield* workspaceState(session.sealantWorkspaceId)) === "dead";
-              if (lease !== null && lease.executorId === sessionId && previousEnded) {
+              // The lease is this create's (bound to its key, and nothing was made) or the row's
+              // own executor's, whose end was just read; another launch's is not this one to free.
+              const leaseOfTheseExecutors =
+                lease !== null &&
+                (lease.launchId === key ||
+                  (lease.launchId ?? null) === null ||
+                  (session.sealantWorkspaceId !== null &&
+                    (yield* leaseExecutorWorkspace(session, lease)) ===
+                      session.sealantWorkspaceId));
+              if (
+                lease !== null &&
+                lease.executorId === sessionId &&
+                leaseOfTheseExecutors &&
+                previousEnded
+              ) {
                 if (session.sealantWorkspaceId !== null) {
                   yield* owedBeforeRelease(session.sealantWorkspaceId);
                 }
