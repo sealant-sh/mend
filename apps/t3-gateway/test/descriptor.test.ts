@@ -30,7 +30,7 @@ describe("GET /.well-known/t3/environment", () => {
         assert.strictEqual(descriptor.orchestrationProtocolVersion, 2);
         assert.strictEqual(descriptor.orchestrationProtocolVersion, ORCHESTRATION_PROTOCOL_VERSION);
         assert.isNull(orchestrationProtocolCompatibilityError(descriptor));
-        assert.strictEqual(descriptor.serverVersion, `${pin.tag}+mend.1`);
+        assert.strictEqual(descriptor.serverVersion, `${pin.tag}+mend.2`);
         assert.strictEqual(descriptor.serverVersion, SERVER_VERSION);
         assert.strictEqual(descriptor.label, "Mend under test");
 

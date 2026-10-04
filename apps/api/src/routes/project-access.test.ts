@@ -409,6 +409,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-read", "GET", "/memory/file?path=x")("agentMemory.file"),
   project("project-read", "DELETE", "/memory/file?path=x")("agentMemory.remove"),
   project("project-read", "POST", "/memory/import", { files: [] })("agentMemory.import"),
+  project("project-read", "POST", "/memory/import/plan", { files: [] })("agentMemory.importPlan"),
   project("project-read", "GET", "/skills")("skills.forProject"),
 
   // ── Project configuration ──

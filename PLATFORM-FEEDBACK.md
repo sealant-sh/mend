@@ -428,11 +428,13 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
   terminal (up to 8 MB), and the owner's skills before the harness starts. Mend has to put bytes at
   a path inside the live workspace.
 - **Today:** `workspace.exec(argv, { cwd })` takes argv only: no stdin, no env, and no file write,
-  and every exec is recorded as a run. Mend base64-encodes the bytes into argv, at most 90 000
-  characters per exec, decodes them with `base64 -d`, appends large files chunk by chunk into a part
-  file and renames it (`packages/sessions/src/workspace-files.ts`). An 8 MB image is about 125 execs
-  and as many recorded runs; a typical screenshot is a handful. Skills are one exec for the manifest
-  read, one to prepare the directories, and a few batched writes.
+  and every exec is recorded as a run. Mend gzips the bytes, base64-encodes them into argv (at most
+  90 000 characters per argument and 1 000 000 per exec) and writes them with a small `node`
+  program; a content too large for one exec is staged across several and renamed into place by the
+  last (`packages/sessions/src/workspace-files.ts`). An 8 MB image is about 11 execs; a skills
+  library of 1.9 MB in three harness directories is one (2026-10-04: it was 103 execs, 55 s of a
+  launch, when each file rode argv uncompressed at 90 000 characters per exec). Every exec still
+  costs a round trip of 0.4-0.5 s on the Docker box, and a run that diffs the whole worktree.
 - **Suggested:** `workspace.writeFile(path, bytes, { mode })` (or `files.put` for several at once),
   or an `exec` option for stdin so a single `sh -c 'cat > "$1"'` carries the bytes. Either should be
   able to skip the run record: a file placement is not evidence.

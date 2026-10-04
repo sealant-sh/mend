@@ -19,7 +19,8 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 import { GatewayAuth, type GatewayCredentialInvalid } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal, notFound, requestInvalid, scopeRequired } from "./http-errors.ts";
-import { EMPTY_SHELL_SNAPSHOT } from "./shell.ts";
+import { Projections } from "./hub.ts";
+import { latestLocalTurnOrdinalOf } from "./thread-projection.ts";
 import { WebSocketTickets } from "./tickets.ts";
 import { WebSocketRouteLive } from "./ws.ts";
 
@@ -158,28 +159,105 @@ export const AuthGroupLive = HttpApiBuilder.group(GatewayHttpApi, "auth", (handl
 );
 
 /**
- * The shell over HTTP, as a client loads it before it subscribes. Empty until phase 1 projects
- * Mend's projects and sessions into it; so every thread a client names is not here.
+ * The shell over HTTP, as a client loads it before it subscribes: the person's projection hub,
+ * the same one their sockets read (ADR 0012, "Projection").
  */
 export const OrchestrationGroupLive = HttpApiBuilder.group(
   GatewayHttpApi,
   "orchestration",
   (handlers) =>
-    Effect.succeed(
-      handlers
-        .handle("shellSnapshot", () =>
-          Effect.gen(function* () {
-            const principal = yield* EnvironmentAuthenticatedPrincipal;
-            if (!principal.scopes.has(AuthOrchestrationReadScope)) {
-              return yield* scopeRequired(AuthOrchestrationReadScope);
-            }
-            return EMPTY_SHELL_SNAPSHOT;
-          }),
-        )
-        .handle("threadSnapshot", () => notFound("thread_not_found"))
-        .handle("threadBoundedSnapshot", () => notFound("thread_not_found"))
-        .handle("threadHistoryPage", () => notFound("thread_not_found")),
-    ),
+    Effect.gen(function* () {
+      const auth = yield* GatewayAuth;
+      const projections = yield* Projections;
+
+      /**
+       * The caller's hub, held for the request's scope, once they may read orchestration. The
+       * middleware authenticated the bearer; its session is read again for the device token.
+       */
+      const callerHub = Effect.gen(function* () {
+        const principal = yield* EnvironmentAuthenticatedPrincipal;
+        if (!principal.scopes.has(AuthOrchestrationReadScope)) {
+          return yield* scopeRequired(AuthOrchestrationReadScope);
+        }
+        const bearer = yield* auth
+          .authenticateSession(principal.sessionId)
+          .pipe(Effect.catch((error) => internal("internal_error", error)));
+        return yield* projections.hub(bearer.session);
+      });
+
+      return (
+        handlers
+          .handle("shellSnapshot", () =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                // Mend unreachable, or every device of the person refused: t3code retries either.
+                return yield* hub.shellSnapshot.pipe(
+                  Effect.catch((error) => internal("orchestration_snapshot_failed", error)),
+                );
+              }),
+            ),
+          )
+          .handle("threadSnapshot", ({ params }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                const snapshot = yield* hub
+                  .threadSnapshot(params.threadId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      internal("orchestration_thread_snapshot_failed", error),
+                    ),
+                  );
+                if (snapshot === null) return yield* notFound("thread_not_found");
+                return snapshot;
+              }),
+            ),
+          )
+          // The whole thread, as one window with nothing older: Mend's threads are read in full.
+          .handle("threadBoundedSnapshot", ({ params }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                const snapshot = yield* hub
+                  .threadSnapshot(params.threadId)
+                  .pipe(
+                    Effect.catch((error) =>
+                      internal("orchestration_thread_bounded_snapshot_failed", error),
+                    ),
+                  );
+                if (snapshot === null) return yield* notFound("thread_not_found");
+                return {
+                  ...snapshot,
+                  historyCursor: null,
+                  hasMoreHistory: false,
+                  latestLocalTurnOrdinal: latestLocalTurnOrdinalOf(snapshot.projection),
+                };
+              }),
+            ),
+          )
+          // No cursor is ever handed out, so there is never an older page.
+          .handle("threadHistoryPage", ({ params }) =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                const hub = yield* callerHub;
+                const snapshot = yield* hub
+                  .threadSnapshot(params.threadId)
+                  .pipe(
+                    Effect.catch((error) => internal("orchestration_thread_history_failed", error)),
+                  );
+                if (snapshot === null) return yield* notFound("thread_not_found");
+                return {
+                  snapshotSequence: snapshot.snapshotSequence,
+                  items: [],
+                  nextCursor: null,
+                  hasMoreHistory: false,
+                };
+              }),
+            ),
+          )
+      );
+    }),
 );
 
 // ─── Router ──────────────────────────────────────────────────────────────────

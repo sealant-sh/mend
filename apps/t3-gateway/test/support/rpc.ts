@@ -12,6 +12,8 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { WEBSOCKET_TICKET_QUERY_PARAM } from "../../src/ws.ts";
+import type { FakeMend, FakeMendUser } from "./fake-mend.ts";
+import { bearer, PERSON, t3Client, tokenRequest } from "./gateway.ts";
 
 /**
  * The gateway's `/ws` URL as t3code's client builds it: the WebSocket origin of the HTTP base,
@@ -57,4 +59,20 @@ export const connectWsRpc = (url: string) =>
       ),
     );
     return yield* RpcClient.make(WsRpcGroup).pipe(Effect.provide(protocol));
+  });
+
+/**
+ * Pairs a person with a fresh code and opens a socket for them, as a t3code client does on
+ * connect: the bearer, a ticket, then `/ws`.
+ */
+export const pairAndConnect = (mend: FakeMend, code: string, person: FakeMendUser = PERSON) =>
+  Effect.gen(function* () {
+    mend.addPairingCode(code, person);
+    const client = yield* t3Client;
+    const access = yield* client.auth.token(
+      tokenRequest(code, { client_label: "Ada's MacBook", client_device_type: "desktop" }),
+    );
+    const ticket = yield* client.auth.webSocketTicket({ headers: bearer(access.access_token) });
+    const rpc = yield* connectWsRpc(yield* socketUrl(ticket.ticket));
+    return { client, access, rpc };
   });

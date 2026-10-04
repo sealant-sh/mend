@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { GatewayEnvironment } from "./environment.ts";
+import { Projections } from "./hub.ts";
 import { MendClient, type MendDevicePlatform, type MendUnavailable } from "./mend-client.ts";
 import { GatewayState, type BearerSession, type GatewayStateError } from "./state.ts";
 
@@ -151,13 +152,14 @@ export const mendDeviceNameFor = (client: TokenExchangeInput["client"]): string 
 export const GatewayAuthLive: Layer.Layer<
   GatewayAuth,
   never,
-  GatewayState | MendClient | GatewayEnvironment
+  GatewayState | MendClient | GatewayEnvironment | Projections
 > = Layer.effect(
   GatewayAuth,
   Effect.gen(function* () {
     const state = yield* GatewayState;
     const mend = yield* MendClient;
     const environment = yield* GatewayEnvironment;
+    const projections = yield* Projections;
 
     const exchange = Effect.fn("GatewayAuth.exchange")(function* (input: TokenExchangeInput) {
       const requested =
@@ -265,8 +267,8 @@ export const GatewayAuthLive: Layer.Layer<
 
       const verdict = yield* mend.checkDevice(session.deviceToken);
       if (verdict === "refused") {
-        const now = yield* Clock.currentTimeMillis;
-        yield* state.revokeSession(session.sessionId, now);
+        // As the device gate refuses a token: its bearers are revoked and its sockets close.
+        yield* projections.refuseDevice(session.mendUser.id, session.deviceToken);
         return unauthenticated;
       }
       const authenticated: AuthSessionState = {

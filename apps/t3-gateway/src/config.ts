@@ -3,8 +3,11 @@ import { join } from "node:path";
 
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+
+import type { QueueTimings } from "./queue.ts";
 
 /**
  * Where the gateway listens, which Mend it speaks for, and where it keeps its own state. Nothing in
@@ -20,6 +23,10 @@ export interface GatewayConfigShape {
   readonly statePath: string;
   /** What t3code shows for this environment. */
   readonly label: string;
+  /** How long a person's hub outlives their last socket; two minutes when unset. */
+  readonly hubIdleTimeToLive?: Duration.Input;
+  /** The queue's waits (`queue.ts`), each Mend-sized by default; tests shorten them. */
+  readonly queueTimings?: Partial<QueueTimings>;
 }
 
 export class GatewayConfig extends Context.Service<GatewayConfig, GatewayConfigShape>()(

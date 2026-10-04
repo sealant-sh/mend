@@ -5,10 +5,13 @@ import type { AddressInfo } from "node:net";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
+import { FakeWorkbench } from "./fake-workbench.ts";
+
 /**
- * A stand-in for Mend's API, speaking the routes the gateway calls in phase 0 with Mend's shapes:
+ * A stand-in for Mend's API, speaking the routes the gateway calls with Mend's shapes:
  * `POST /api/pair` (`pairGroup.claim` in @mend/api-contracts), `GET /api/me/devices`
- * (`userDevicesGroup.list`) and `GET /api/harnesses/models` (`harnessModelsGroup.list`).
+ * (`userDevicesGroup.list`), `GET /api/harnesses/models` (`harnessModelsGroup.list`), and the
+ * workbench routes and event stream of `workbench` (`fake-workbench.ts`).
  */
 export interface FakeMend {
   readonly url: URL;
@@ -28,6 +31,8 @@ export interface FakeMend {
   readonly modelReads: ReadonlyArray<string | undefined>;
   /** Make `GET /api/harnesses/models` answer 503 until set back. */
   readonly setModelsDown: (down: boolean) => void;
+  /** Projects, sessions and their conversations, and the SSE stream that reports them. */
+  readonly workbench: FakeWorkbench;
 }
 
 /**
@@ -99,6 +104,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   const modelReads: Array<string | undefined> = [];
   let modelsDown = false;
   let devices = 0;
+  const workbench = new FakeWorkbench();
 
   const accepted = (authorization: string | undefined) => {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
@@ -144,6 +150,16 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         if (modelsDown) return json(503, { _tag: "ServiceUnavailable" });
         return json(200, MEND_MODEL_CATALOG);
       }
+      const routed = await workbench.route(
+        request,
+        response,
+        async () => {
+          const text = await readBody(request);
+          return text === "" ? undefined : JSON.parse(text);
+        },
+        accepted(request.headers.authorization),
+      );
+      if (routed) return;
       return json(404, { _tag: "RouteNotFound" });
     })();
   });
@@ -154,6 +170,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     }),
     () =>
       Effect.callback<void>((resume) => {
+        workbench.dropStreams();
         server.closeAllConnections();
         server.close(() => resume(Effect.void));
       }),
@@ -176,5 +193,6 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     setModelsDown: (down) => {
       modelsDown = down;
     },
+    workbench,
   };
 });

@@ -243,6 +243,7 @@ import {
 import { CaptureSeals } from "./capture-seals.ts";
 import {
   carryConversationsExec,
+  codexDatabaseHolds,
   consolidateCodexDatabase,
   materializeCarriedConversations,
   parseCarryOutcomes,
@@ -259,7 +260,7 @@ import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./de
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
-import { withHarnessSetup } from "./harness-seeds.ts";
+import { CODEX_DAEMON_OFF, withHarnessSetup } from "./harness-seeds.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
@@ -490,7 +491,7 @@ const promptArgv = (
       case "claude":
         return `exec claude --dangerously-skip-permissions${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
       case "codex":
-        return `exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
+        return `exec codex ${CODEX_DAEMON_OFF.join(" ")} -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
       case "opencode":
         return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode${model} --prompt "$prompt"`;
       case "pi":
@@ -777,6 +778,8 @@ const executorCreateKeyFor = (sessionId: SessionId, askedAt: Date) =>
  * is never provisioned twice.
  */
 const standbyLaunchIdOf = (entryId: string) => `standby:${entryId}`;
+/** A platform lookup that failed answers nothing: the caller reads that as undecided. */
+const noAnswer = () => Effect.succeed(null);
 
 /** When a create under `key` was asked (`executorCreateKeyFor`); null for any other key. */
 const createAskedAtOf = (key: string): Date | null => {
@@ -2795,14 +2798,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // row with no workspace is a launch cut short around its create, whose executor may
           // still hold work (`launchUnresolved`); otherwise only the platform's word that it
           // ended says so.
-          if (holder === null) return "none" satisfies CaptureFlushObservation;
-          if (holder.sealantWorkspaceId === null || (yield* createUnanswered(holder.id))) {
-            return "incomplete" satisfies CaptureFlushObservation;
-          }
-          const state = yield* workspaceState(holder.sealantWorkspaceId).pipe(
-            asSealantUser(holder.ownerUserId),
-          );
-          return (state === "dead" ? "none" : "incomplete") satisfies CaptureFlushObservation;
+          const judged = yield* judgeLapsedLease(holder, lease, null);
+          return (
+            judged.state === "dead" ? "none" : "incomplete"
+          ) satisfies CaptureFlushObservation;
         }
         if (holder === null || holder.sealantWorkspaceId === null) {
           return "incomplete" satisfies CaptureFlushObservation;
@@ -3099,7 +3098,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return false;
         }
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
-        return lease !== null && lease.executorId === session.id;
+        if (lease === null || lease.executorId !== session.id) return false;
+        // A lapsed one is resolved by the one judge: a launch the platform fenced made nothing,
+        // and an executor confirmed gone holds nothing.
+        if (lease.live) return true;
+        return (yield* judgeLapsedLease(session, lease, null)).state !== "dead";
       });
 
       /**
@@ -3116,6 +3119,111 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const creatingExecutors = new Set<SessionId>();
 
       /**
+       * The workspace of the executor a lease is bound to, as its holder's row names it: a lease
+       * bound to a launch is that launch's executor, and the row speaks for it only while it
+       * records that very launch with its workspace. A lease bound to no launch (an older one)
+       * is the row's workspace's, as before. Null: nothing here addresses that executor, so
+       * nothing here can confirm its end — its lease is held, never released (review of #516:
+       * a later replacement's end was taken for an earlier executor's, whose unsaved work its
+       * released lease fenced off).
+       */
+      const leaseExecutorWorkspace = Effect.fn("SessionEngine.leaseExecutorWorkspace")(function* (
+        holder: Session,
+        lease: { readonly launchId?: string | null },
+      ) {
+        if ((lease.launchId ?? null) === null) return holder.sealantWorkspaceId;
+        const named = yield* sessions.executorLaunchOf(holder.id);
+        return named !== null && named.launchId === lease.launchId ? named.workspaceId : null;
+      });
+
+      /**
+       * The executor a lapsed lease is bound to, resolved on the platform's word when the holder's
+       * row no longer names its launch: a launch id is the create's idempotency key, so Core
+       * finds the workspace the create made (`found`: that workspace's state decides), or fences
+       * the key (`none`: nothing was made under it, nor ever will be — Mend's own launch cut
+       * short between its claim and its create, by a restart, leaves exactly this). `unknown`
+       * while it cannot be decided: a live lease (a launch under way may still create under its
+       * key), an unbound one with no workspace, a create of the holder's not yet answered, a
+       * launch of the holder's under way in this process other than the one asking, or a
+       * platform that does not answer.
+       */
+      const resolveLeaseExecutor = Effect.fn("SessionEngine.resolveLeaseExecutor")(function* (
+        holder: Session,
+        lease: { readonly launchId?: string | null; readonly live: boolean },
+        asking: SessionId | null,
+      ) {
+        const named = yield* leaseExecutorWorkspace(holder, lease);
+        if (named !== null) return { kind: "workspace" as const, workspaceId: named };
+        const launch = lease.launchId ?? null;
+        const unknown = { kind: "unknown" as const };
+        if (
+          capture === null ||
+          launch === null ||
+          lease.live ||
+          creatingExecutors.has(holder.id) ||
+          (holder.id !== asking && launchGate.underWay(holder.id)) ||
+          (yield* createUnanswered(holder.id))
+        ) {
+          return unknown;
+        }
+        const found = yield* sealant
+          .findWorkspaceByKey(launch)
+          .pipe(asSealantUser(holder.ownerUserId), Effect.catch(noAnswer));
+        if (found === null) return unknown;
+        if (found.kind === "found") {
+          return {
+            kind: "workspace" as const,
+            workspaceId: SealantWorkspaceId.make(found.workspaceId),
+          };
+        }
+        if (found.kind === "cancelled") return { kind: "none" as const };
+        if (found.kind !== "none") return unknown;
+        const fence = yield* sealant
+          .fenceWorkspaceCreate(launch)
+          .pipe(asSealantUser(holder.ownerUserId), Effect.catch(noAnswer));
+        if (fence?.kind === "found") {
+          return {
+            kind: "workspace" as const,
+            workspaceId: SealantWorkspaceId.make(fence.workspaceId),
+          };
+        }
+        if (fence?.kind === "cancelled") {
+          yield* Effect.logInfo(
+            "session engine: capture mode · the lease's launch made no executor · its create is fenced",
+          ).pipe(Effect.annotateLogs({ holderSessionId: holder.id, launch }));
+          return { kind: "none" as const };
+        }
+        return unknown;
+      });
+
+      /**
+       * The one judge of a lapsed lease: what is known of the executor it is bound to. Every path
+       * that decides whether a lapsed lease is held or ended asks here — the launch wait, removal
+       * holds, the flush before a checkpoint or a landing, an interrupted launch's ownership, the
+       * reaper — so none judges it by whatever the holder's row names now (three review rounds
+       * found one that did). `dead`: no row (nothing of that executor can register any more), a
+       * launch the platform fenced (nothing was made), or its own workspace confirmed gone.
+       * `workspaceId` is that executor's when known. Only for a lease that is not live.
+       */
+      const judgeLapsedLease = Effect.fn("SessionEngine.judgeLapsedLease")(function* (
+        holder: Session | null,
+        lease: { readonly launchId?: string | null; readonly live: boolean },
+        asking: SessionId | null,
+      ) {
+        if (holder === null) return { state: "dead" as const, workspaceId: null };
+        const resolved = yield* resolveLeaseExecutor(holder, lease, asking);
+        if (resolved.kind === "none") return { state: "dead" as const, workspaceId: null };
+        if (resolved.kind === "unknown") return { state: "unknown" as const, workspaceId: null };
+        if (yield* createUnanswered(holder.id)) {
+          return { state: "unknown" as const, workspaceId: resolved.workspaceId };
+        }
+        const state = yield* workspaceState(resolved.workspaceId).pipe(
+          asSealantUser(holder.ownerUserId),
+        );
+        return { state, workspaceId: resolved.workspaceId };
+      });
+
+      /**
        * Who holds a worktree in capture mode, for a session that is not the holder:
        * - `free`: nobody (never claimed, released after its holder ended, or Mend's own short
        *   claim), or a holder whose end the platform confirmed — its lapsed lease is released here
@@ -3128,16 +3236,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * - `lapsed`: another executor's lease lapsed without a release (a partition) and the
        *   platform does not say it ended: it may still hold work it has not shipped, so no new
        *   epoch is granted over it (ADR-0002 "Replacement and pickup").
+       *
+       * The session's own earlier executor is a holder like any other: a lease bound to a launch
+       * of this session other than `ownLaunch` (the create this launch asks again, if any) is
+       * that executor's, and no claim takes it over until its end is confirmed and the lease
+       * released. Its end is read only through that very executor: when the lease's launch is the
+       * one the row names, through the row's workspace (a relaunch or a replacement has drained
+       * it, so it reads `ending` until it ends; one kept alive by another session's process reads
+       * `held`, and the launch joins it). A launch the row no longer names (an earlier replacement
+       * whose row was overwritten) has nothing here that can confirm its end: the launch waits,
+       * then is refused, and the lease is never released, since that executor may hold work it
+       * has not shipped. Read as free, the launch went on to create an executor whose boot waited
+       * in `plan.get` for that lease (alpha 2026-10-03, 8fe91d79: four replacements in a row, each
+       * past the platform's readiness budget, `launch-retained`).
        */
       const leaseHolderWorkspace = Effect.fn("SessionEngine.leaseHolderWorkspace")(function* (
         session: Session,
+        ownLaunch: string | null,
       ) {
         if (capture === null) return { kind: "free" as const };
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        const ownEarlierLaunch =
+          lease !== null &&
+          lease.executorId === session.id &&
+          (lease.launchId ?? null) !== null &&
+          lease.launchId !== ownLaunch;
         if (
           lease === null ||
           lease.executorId === null ||
-          lease.executorId === session.id ||
+          (lease.executorId === session.id && !ownEarlierLaunch) ||
           lease.executorId.startsWith("mend:")
         ) {
           return { kind: "free" as const };
@@ -3145,18 +3272,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const holder = yield* sessions
           .byId(SessionId.make(lease.executorId))
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        const workspaceId = holder?.sealantWorkspaceId ?? null;
-        if (!lease.live) {
-          // No row means nothing of that executor can register any more: its channel identity is
-          // the row. A row with no workspace is a launch cut short around its create
-          // (`launchUnresolved`): an executor may exist, unaddressed — never read as ended.
-          // Otherwise only a positively ended executor is released.
-          const state =
-            holder === null
-              ? ("dead" as const)
-              : workspaceId === null || (yield* createUnanswered(holder.id))
-                ? ("unknown" as const)
-                : yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId));
+        // A lapsed lease is judged by `judgeLapsedLease` alone; a live one's executor, to join or
+        // to wait on, is the lease's own (`leaseExecutorWorkspace`), never the row's current one.
+        const judged = lease.live ? null : yield* judgeLapsedLease(holder, lease, session.id);
+        const workspaceId =
+          judged !== null
+            ? judged.workspaceId
+            : holder === null
+              ? null
+              : yield* leaseExecutorWorkspace(holder, lease);
+        if (judged !== null) {
+          // Only a positively ended executor is released (`judgeLapsedLease`).
+          const state = judged.state;
           if (state === "dead") {
             // Work its Stop put off is still owed: the holder is ending, not free. The drain that
             // ends it runs that work and releases the lease; this launch's own wait keeps its
@@ -3258,11 +3385,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * `leaseWait` the last reading is answered, and the caller refuses it as before.
        */
       const awaitWorktreeHolder = Effect.fn("SessionEngine.awaitWorktreeHolder")(
-        function* (session: Session) {
+        function* (session: Session, ownLaunch: string | null) {
           const deadline = Date.now() + Duration.toMillis(drainPolicy.leaseWait);
           let said: string | null = null;
           while (true) {
-            const holder = yield* leaseHolderWorkspace(session);
+            const holder = yield* leaseHolderWorkspace(session, ownLaunch);
             if (stoppedWhileWaiting.has(session.id)) {
               return yield* new SealantPlatformError({
                 code: "launch_cancelled",
@@ -3297,7 +3424,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.sleep(drainPolicy.leaseWaitInterval);
           }
         },
-        (effect, session) =>
+        (effect, session, _ownLaunch) =>
           Effect.suspend(() => {
             waitingLaunches.add(session.id);
             return effect;
@@ -3730,7 +3857,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return lookup.kind !== "gone";
       });
 
-      /** Release the worktree lease when its holder is the executor in `workspaceId`. */
+      /**
+       * Release the worktree lease when its holder is the executor in `workspaceId`. A lease of
+       * this session bound to a launch is that launch's: released for `workspaceId` only while
+       * the row names that executor under that very launch, never for an earlier executor of the
+       * session whose end is observed after a later one took the worktree.
+       */
       const releaseLeaseOfWorkspace = Effect.fn("SessionEngine.releaseLeaseOfWorkspace")(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
@@ -3743,11 +3875,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The holder asked for an executor whose answer is not on its row: the lease may be that
         // executor's, whatever ended here.
         if (yield* createUnanswered(SessionId.make(lease.executorId))) return;
-        if (lease.executorId !== session.id) {
-          const holder = yield* sessions
-            .byId(SessionId.make(lease.executorId))
-            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if (holder === null || holder.sealantWorkspaceId !== workspaceId) return;
+        const holder =
+          lease.executorId === session.id
+            ? session
+            : yield* sessions
+                .byId(SessionId.make(lease.executorId))
+                .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (holder === null || (yield* leaseExecutorWorkspace(holder, lease)) !== workspaceId) {
+          return;
         }
         yield* owedBeforeRelease(workspaceId);
         const released = yield* capture.repo.release(session.worktreeId, lease.epoch);
@@ -4823,16 +4958,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           !holds.some((hold) => hold.sessionId === lease.executorId)
         ) {
           const holder = members.find((member) => member.id === lease.executorId) ?? null;
-          const workspaceId = holder?.sealantWorkspaceId ?? null;
-          // A holder with no workspace on its row is a launch cut short around its create
-          // (`launchUnresolved`): its executor may exist and hold work — a hold, never an end.
-          const ended =
-            holder === null ||
-            (workspaceId !== null &&
-              !lease.live &&
-              !(yield* createUnanswered(holder.id)) &&
-              (yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId))) ===
-                "dead");
+          // The lease's own executor (`leaseExecutorWorkspace`): none addressable, or a holder
+          // with no workspace on its row (a launch cut short around its create,
+          // `launchUnresolved`), may exist and hold work — a hold, never an end.
+          const judged = lease.live ? null : yield* judgeLapsedLease(holder, lease, null);
+          const workspaceId = judged?.workspaceId ?? null;
+          const ended = holder === null || judged?.state === "dead";
           if (ended) {
             if (!lease.live) {
               if (workspaceId !== null) yield* owedBeforeRelease(workspaceId);
@@ -4939,17 +5070,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             } else if (fence.kind === "cancelled") {
               yield* sessions.clearExecutorCreate(sessionId, key);
               const lease = yield* capture.repo.leaseOf(session.worktreeId);
+              // A lease bound to this very key is this create's, and the fence says nothing was
+              // or will be made under it: released whatever the previous executor reads. The row's
+              // own executor's lease (or an unbound one) only once that executor's end is read;
+              // another launch's is not this one to free.
+              const ofThisCreate = lease !== null && lease.launchId === key;
+              const ofTheRowsExecutor =
+                lease !== null &&
+                !ofThisCreate &&
+                ((lease.launchId ?? null) === null ||
+                  (session.sealantWorkspaceId !== null &&
+                    (yield* leaseExecutorWorkspace(session, lease)) ===
+                      session.sealantWorkspaceId));
               const previousEnded =
+                !ofTheRowsExecutor ||
                 session.sealantWorkspaceId === null ||
                 (yield* workspaceState(session.sealantWorkspaceId)) === "dead";
-              if (lease !== null && lease.executorId === sessionId && previousEnded) {
-                if (session.sealantWorkspaceId !== null) {
+              const releasable =
+                lease !== null &&
+                lease.executorId === sessionId &&
+                (ofThisCreate || (ofTheRowsExecutor && previousEnded));
+              if (releasable) {
+                if (ofTheRowsExecutor && session.sealantWorkspaceId !== null) {
                   yield* owedBeforeRelease(session.sealantWorkspaceId);
                 }
                 yield* capture.repo.release(session.worktreeId, lease.epoch);
               }
               yield* Effect.logInfo(
-                "session engine: capture mode · executor create · fenced · none was made · lease released",
+                releasable
+                  ? "session engine: capture mode · executor create · fenced · none was made · lease released"
+                  : "session engine: capture mode · executor create · fenced · none was made · the lease stays · its holder's end is not confirmed",
               ).pipe(Effect.annotateLogs({ sessionId, key, epoch: lease?.epoch ?? null }));
               // Found by the reaper, with no launch asking again (a launch resolves its own key
               // with `drain: false` and goes on): a session left `starting` with no executor has
@@ -5464,9 +5614,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             continue;
           }
           if (lease.expiresAt === null) continue;
-          const state = yield* workspaceState(session.sealantWorkspaceId).pipe(
-            asSealantUser(session.ownerUserId),
-          );
+          const judged = yield* judgeLapsedLease(session, lease, null);
+          if (judged.workspaceId !== session.sealantWorkspaceId) {
+            // The lease is an earlier launch's, not the row's executor's: nothing of the row's is
+            // picked up over it. Released only once that launch's own executor is judged ended.
+            if (judged.state === "dead") {
+              // Work put off for that executor runs first, as at every other release.
+              if (judged.workspaceId !== null) yield* owedBeforeRelease(judged.workspaceId);
+              yield* capture.repo.release(session.worktreeId, lease.epoch);
+              yield* Effect.logInfo(
+                "session engine: capture mode · a lapsed lease of an earlier launch · its executor ended · released",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id, epoch: lease.epoch }));
+            }
+            continue;
+          }
+          const state = judged.state;
           if (state === "kept") {
             // Ended on its runtime, kept by the platform for recovery (e2e run 5): not dead, not
             // picked up. Its lease and its token stay; the stop drain asks Core what it is and
@@ -10057,6 +10219,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           delivered: withoutSkipped(read),
           session: read.files,
           merge: mergeTextUnion,
+          holdsDatabase: codexDatabaseHolds,
         });
         if (
           report.saved.length +
@@ -10595,13 +10758,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           claimedEntry !== null && claimedEntry.status === "claimed"
             ? yield* adoptClaimedWorkspace(claimedEntry)
             : null;
+        // An unusable standby (dead, half-stamped) was never replanned: nothing of the session's
+        // is on it, so its claim is released at once rather than waited out by the cold path.
+        if (capture !== null && claimedEntry !== null && adopted === null) {
+          const lease = yield* capture.repo.leaseOf(session.worktreeId);
+          if (
+            lease !== null &&
+            lease.executorId === sessionId &&
+            lease.launchId === standbyLaunchIdOf(claimedEntry.id)
+          ) {
+            yield* capture.repo.release(session.worktreeId, lease.epoch);
+            yield* Effect.logInfo(
+              "session engine: capture mode · claimed standby unusable · its claim released · cold launch",
+            ).pipe(Effect.annotateLogs({ sessionId, epoch: lease.epoch }));
+          }
+        }
         // Capture mode: one executor per worktree (ADR-0002 "The key is the worktree"). A join,
         // a sibling shell or a phone pickup runs as another process inside the lease holder's
         // executor; a launch that would need a second executor for a leased worktree is refused
         // with `worktree_leased`.
         if (capture !== null && adopted === null) {
           const waitStartedAt = Date.now();
-          const holder = yield* awaitWorktreeHolder(session);
+          const holder = yield* awaitWorktreeHolder(session, reusedCreateKey);
           if (holder.kind === "held") {
             yield* Effect.logInfo("session engine: capture mode · joining the lease holder").pipe(
               Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }),

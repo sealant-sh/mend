@@ -2202,7 +2202,7 @@ describe.skipIf(!reachable)("0109 opencode models", () => {
     const rows = await withModelsDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* upTo("0107_turn_payer");
+        yield* upTo("0108_agent_memory_import_bases");
         // An operator added opencode rows by hand before this migration: theirs stay as they are,
         // and their default stays the only one.
         yield* sql`

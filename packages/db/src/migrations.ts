@@ -2964,6 +2964,35 @@ const turnPayerMigration = Effect.gen(function* () {
 });
 
 /**
+ * 0108: what `mend memory import` last imported from each checkout on each machine
+ * (docs/adr/0009, decision 4), so the next import from there merges three-way against it instead
+ * of with no shared version. A text file's contents are kept; a binary one's digest is enough.
+ * And which kept versions are pinned beyond the cap.
+ */
+const agentMemoryImportBasesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE agent_memory_import_bases (
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      source text NOT NULL,
+      path text NOT NULL,
+      digest text NOT NULL,
+      encoding text NOT NULL,
+      contents text,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, project_id, source, path)
+    )`;
+  // A version that is the only copy of some lines (a machine's file in a conflict, one a merge
+  // did not keep whole, a stored file a read-back could not merge) is pinned: the cap of twenty
+  // versions per file never takes it.
+  yield* sql`ALTER TABLE agent_memory_versions ADD COLUMN pinned boolean NOT NULL DEFAULT false`;
+  // Every version kept before this one may be the only copy of some lines, and nothing recorded
+  // which: all of them are pinned. Memory versions are small text, and few.
+  yield* sql`UPDATE agent_memory_versions SET pinned = true`;
+});
+
+/**
  * 0109: opencode's models in the catalog (`HARNESS_MODEL_SEED.opencode`, written out here so the
  * migration stays what it was): the Codex models through the ChatGPT login, as opencode names them,
  * for the pickers to list. None is the default: a launch that names no model leaves the choice to
@@ -3093,5 +3122,6 @@ export const migrations = {
   "0105_turn_origin": turnOriginMigration,
   "0106_terminal_watch_control": terminalWatchControlMigration,
   "0107_turn_payer": turnPayerMigration,
+  "0108_agent_memory_import_bases": agentMemoryImportBasesMigration,
   "0109_opencode_models": opencodeModelsMigration,
 };
