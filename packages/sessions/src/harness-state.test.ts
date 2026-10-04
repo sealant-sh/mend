@@ -7,6 +7,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  HARNESS_CREDENTIALS,
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
   distillOpeningPrompt,
@@ -17,6 +18,79 @@ import {
   nativeResumeArgv,
   relocateHarnessHomeScript,
 } from "./harness-state.ts";
+
+/**
+ * sealantd's `HARNESS_CREDENTIALS` (`crates/sealant-capture/src/index.rs`, sealantd#136), which
+ * keeps these paths out of captures and restores; a directory ends in `/`. Mend's table must name
+ * the same paths: change both together, and pin a sealantd that has the change.
+ */
+const SEALANTD_HARNESS_CREDENTIALS = [
+  ".claude/.credentials.json",
+  ".claude/.device-keys.json",
+  ".claude/backups/",
+  ".claude/shell-snapshots/",
+  ".claude/session-env/",
+  ".claude/ide/",
+  ".codex/auth.json",
+  ".codex/.credentials.json",
+  ".codex/secrets/",
+  ".local/share/opencode/auth.json",
+  ".local/share/opencode/mcp-auth.json",
+  ".pi/agent/auth.json",
+  ".pi/agent/mcp-auth.json",
+  ".pi/agent/oauth.json",
+  ".pi/agent/oauth.json.migrated",
+  ".pi/agent/mcp-oauth/",
+  ".pi/agent/mcp-oauth-encrypted/",
+  ".pi/agent/mcp.json",
+  ".pi/agent/mend/profile/root/mcp.json",
+  ".mend/pi-profile-kept/",
+];
+
+const credentialEntries = Object.entries(HARNESS_CREDENTIALS).flatMap(([harness, credentials]) =>
+  credentials.map((credential) => ({ harness, ...credential })),
+);
+const shownPath = (credential: { readonly path: string; readonly kind: string }) =>
+  credential.kind === "directory" ? `${credential.path}/` : credential.path;
+
+describe("harness credentials", () => {
+  it("lists every harness Mend runs, and only those", () => {
+    expect(Object.keys(HARNESS_CREDENTIALS).toSorted()).toEqual(
+      Object.keys(HARNESS_STATE).toSorted(),
+    );
+  });
+
+  it("names paths in the harness home: under the harness's own directories, or Mend's", () => {
+    for (const credential of credentialEntries) {
+      const roots = [...(HARNESS_STATE[credential.harness]?.homeDirs ?? []), ".mend"];
+      expect(
+        roots.some((root) => credential.path.startsWith(`${root}/`)),
+        credential.path,
+      ).toBe(true);
+    }
+    expect(new Set(HARNESS_HOME_CREDENTIALS).size).toBe(HARNESS_HOME_CREDENTIALS.length);
+  });
+
+  it("names exactly what sealantd keeps out of captures", () => {
+    expect(credentialEntries.map(shownPath)).toEqual(SEALANTD_HARNESS_CREDENTIALS);
+  });
+
+  it("are all listed on the provider-logins docs page", () => {
+    const page = fs.readFileSync(
+      path.join(
+        import.meta.dirname,
+        "../../../apps/docs/src/content/docs/concepts/provider-logins.md",
+      ),
+      "utf8",
+    );
+    const table = page.split("## What a session never saves")[1]?.split("\n## ")[0] ?? "";
+    const documented = table
+      .split("\n")
+      .filter((line) => line.startsWith("| `"))
+      .map((line) => line.split("`")[1]);
+    expect(documented).toEqual(credentialEntries.map(shownPath));
+  });
+});
 
 const claudeJsonl = [
   JSON.stringify({ type: "summary", summary: "ignored" }),
@@ -202,7 +276,8 @@ describe("harness home", () => {
     // Credentials are exempt from the widening, in the loop and on the first pass: the harness
     // home holds the injected provider credential, and `go+rX` made a refresh token
     // world-readable on the store (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
-    expect(script).toContain('for c in ".claude/.credentials.json" ".codex/auth.json"');
+    expect(script).toContain('for c in ".claude/.credentials.json" ');
+    for (const credential of HARNESS_HOME_CREDENTIALS) expect(script).toContain(`"${credential}"`);
     expect(script).toContain("chmod go-rwx");
     const widens = script.split("chmod -R go+rX").length - 1;
     const tightens = script.split("chmod go-rwx").length - 1;

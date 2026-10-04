@@ -91,6 +91,51 @@ session.
 A Claude subscription cannot be used this way: Anthropic does not allow a Claude Pro or Max login in
 third-party agents. Use an Anthropic API key with pi or opencode instead.
 
+## What a session never saves
+
+A session's agent keeps its state in its home directory, and Mend saves that state so a resumed
+session finds its conversation again. In a remote workspace the state is saved with the worktree,
+and whoever starts the next session there gets it. Logins and tokens are never part of it: none of
+the files below is saved, and none is brought back from a session saved before it was on this list.
+A path ending in `/` is a directory and everything in it.
+
+| Path                                   | Agent       | Holds                                                                        |
+| -------------------------------------- | ----------- | ---------------------------------------------------------------------------- |
+| `.claude/.credentials.json`            | Claude Code | the Claude login, MCP server OAuth tokens and client secrets, plugin secrets |
+| `.claude/.device-keys.json`            | Claude Code | device private keys (Remote Control, trusted devices)                        |
+| `.claude/backups/`                     | Claude Code | copies of `~/.claude.json`: a Console API key, MCP server headers and env    |
+| `.claude/shell-snapshots/`             | Claude Code | the shell's functions and aliases, any secret written in them included       |
+| `.claude/session-env/`                 | Claude Code | what hooks export for the session                                            |
+| `.claude/ide/`                         | Claude Code | IDE connection tokens                                                        |
+| `.codex/auth.json`                     | Codex       | the ChatGPT login or API key                                                 |
+| `.codex/.credentials.json`             | Codex       | MCP server OAuth tokens, where no OS keyring is available (every workspace)  |
+| `.codex/secrets/`                      | Codex       | encrypted logins and MCP tokens (the key is in the OS keyring)               |
+| `.local/share/opencode/auth.json`      | opencode    | provider logins and API keys                                                 |
+| `.local/share/opencode/mcp-auth.json`  | opencode    | MCP server OAuth tokens and client secrets                                   |
+| `.pi/agent/auth.json`                  | pi          | provider logins and API keys                                                 |
+| `.pi/agent/mcp-auth.json`              | pi          | MCP server OAuth tokens and client secrets                                   |
+| `.pi/agent/oauth.json`                 | pi          | provider OAuth tokens (before pi moved them to `auth.json`)                  |
+| `.pi/agent/oauth.json.migrated`        | pi          | the same, kept when pi migrated them                                         |
+| `.pi/agent/mcp-oauth/`                 | pi          | MCP OAuth tokens of the pi-mcp-adapter extension                             |
+| `.pi/agent/mcp-oauth-encrypted/`       | pi          | the same, encrypted with a person's key                                      |
+| `.pi/agent/mcp.json`                   | pi          | MCP servers, with the headers, env and client secrets typed into them        |
+| `.pi/agent/mend/profile/root/mcp.json` | pi          | the same, as Mend delivered it from a person's pi profile                    |
+| `.mend/pi-profile-kept/`               | pi          | pi profiles Mend set aside, their `mcp.json` included                        |
+
+pi's `mcp.json` is on the list because it can carry the keys typed into its servers' headers and
+environment. The copy from your [pi profile](../guides/pi/) is written again at every launch, so
+yours is never lost. A server you add inside a session with `pi mcp add` lasts as long as that
+session's machine; add it to your pi profile to keep it.
+
+Some settings files can hold a secret you type into them, and they are saved, because they also hold
+your settings: Codex's `config.toml`, Claude Code's `settings.json` (`env`), and pi's `models.json`
+and `settings.json`. Name a variable or a command there instead of the value (Codex:
+`bearer_token_env_var`, `env_http_headers`, `env_key`; pi: `$NAME` or `!command`). Keep a value that
+is yours in a [secret file](../guides/secret-files/), which is never saved, and one the project
+shares in a [project secret](../guides/environment-variables/). opencode keeps an opencode console
+login and its integration logins in its database, beside the conversations, and the database is
+saved: make those logins only in a worktree nobody else uses.
+
 ## When a login stops working
 
 A provider can end a login on its own: you signed out of that session elsewhere, changed your
