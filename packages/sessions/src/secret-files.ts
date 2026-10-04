@@ -1,4 +1,4 @@
-import { validateSecretFilePath } from "@mend/domain/workbench";
+import { validateSecretFilePath, validateSecretFilePathSyntax } from "@mend/domain/workbench";
 
 import { WORKSPACE_EXEC_ARG_CHARS } from "./workspace-files.ts";
 
@@ -220,7 +220,10 @@ export const encodeSecretFilesRecord = (record: SecretFilesRecord): string =>
 
 /**
  * The record `json` holds, when it is well-formed and `workspaceId`'s own; null otherwise. Every
- * path must still validate and every digest be SHA-256 hex.
+ * path must be a well-formed home-relative path and every digest SHA-256 hex. A path reserved
+ * since it was delivered still decodes: the record is what lets Mend remove that file before its
+ * directory joins the captured root (`evictReservedSecretFiles` in the engine), and a record that
+ * stopped decoding would lose track of it.
  */
 export const decodeSecretFilesRecord = (
   json: string,
@@ -241,7 +244,7 @@ export const decodeSecretFilesRecord = (
     const file: Partial<Record<string, unknown>> = { ...entry };
     const path = file["path"];
     const sha256 = file["sha256"];
-    if (typeof path !== "string" || validateSecretFilePath(path) !== null) return null;
+    if (typeof path !== "string" || validateSecretFilePathSyntax(path) !== null) return null;
     if (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) return null;
     files.push({ path, sha256 });
   }

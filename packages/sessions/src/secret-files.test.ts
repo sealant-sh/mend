@@ -4,7 +4,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { SECRET_FILE_RESERVED_PATHS, validateSecretFilePath } from "@mend/domain/workbench";
+import {
+  SECRET_FILE_RESERVED_PATHS,
+  reservedSecretFileRoot,
+  validateSecretFilePath,
+} from "@mend/domain/workbench";
 import { BlobStore, BlobStoreFsLive, captureKeys, listCaptureFiles } from "@mend/store";
 import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { Effect } from "effect";
@@ -14,6 +18,7 @@ import {
   HARNESS_STATE,
   harvestHarnessStateScript,
   readHarnessFileScript,
+  relocateHarnessHomeScript,
 } from "./harness-state.ts";
 import {
   SECRET_FILE_PART_PREFIX,
@@ -323,7 +328,7 @@ describe("writing secret files into a workspace home", () => {
       decodeSecretFilesRecord(
         JSON.stringify({
           workspaceId: "ws-1",
-          files: [{ path: ".claude/x", sha256: sha256("x") }],
+          files: [{ path: "../x", sha256: sha256("x") }],
         }),
         "ws-1",
       ),
@@ -337,6 +342,73 @@ describe("writing secret files into a workspace home", () => {
     expect(
       decodeSecretFilesRecord(JSON.stringify({ workspaceId: "ws-1", files: [] }), "ws-1"),
     ).toEqual({ workspaceId: "ws-1", files: [] });
+  });
+
+  it("still reads a record naming a path reserved since its delivery, so the file can be cleaned up", () => {
+    // `.local/state/opencode` was a valid destination until opencode's state joined the harness
+    // home (2026-10-04); a home delivered into before that keeps a record naming it.
+    const record = {
+      workspaceId: "ws-1",
+      files: [
+        { path: ".local/state/opencode/token", sha256: sha256("x") },
+        { path: ".claude/x", sha256: sha256("y") },
+        { path: ".aws/credentials", sha256: sha256("z") },
+      ],
+    };
+    expect(decodeSecretFilesRecord(encodeSecretFilesRecord(record), "ws-1")).toEqual(record);
+    // A path that was never a home path stays refused.
+    for (const bad of ["../.aws/credentials", "/root/.npmrc", "~/.npmrc", "a//b"]) {
+      expect(
+        decodeSecretFilesRecord(
+          JSON.stringify({ workspaceId: "ws-1", files: [{ path: bad, sha256: sha256("x") }] }),
+          "ws-1",
+        ),
+        bad,
+      ).toBeNull();
+    }
+  });
+
+  it("removes a file delivered under opencode's state before the relocation moves that directory into the captured root", () => {
+    const scratch = tempDir("mend-secret-evict-");
+    const home = path.join(scratch, "home");
+    const harnessHome = path.join(scratch, "harness-home");
+    fs.mkdirSync(home);
+    fs.mkdirSync(harnessHome);
+    // Delivered before the path was reserved: a plain file in a plain directory of the home.
+    fs.mkdirSync(path.join(home, ".local", "state", "opencode"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".local", "state", "opencode", "token"), "SECRET-TOKEN");
+    fs.writeFileSync(path.join(home, ".local", "state", "opencode", "model.json"), "{}");
+    // What the engine runs first (`evictReservedSecretFiles`): the record's reserved entries.
+    const record = decodeSecretFilesRecord(
+      encodeSecretFilesRecord({
+        workspaceId: "ws-1",
+        files: [
+          { path: ".local/state/opencode/token", sha256: sha256("SECRET-TOKEN") },
+          { path: ".aws/credentials", sha256: sha256("kept") },
+        ],
+      }),
+      "ws-1",
+    );
+    const reserved = (record?.files ?? []).filter(
+      (file) => reservedSecretFileRoot(file.path) !== null,
+    );
+    expect(reserved.map((file) => file.path)).toEqual([".local/state/opencode/token"]);
+    expect(parseSecretFileOutcomes(run(home, secretFilesRemoveExec(reserved)))).toEqual([
+      { path: ".local/state/opencode/token", outcome: "removed" },
+    ]);
+    // Then the relocation: opencode's state moves into the captured root without the secret.
+    const relocated = spawnSync(
+      "sh",
+      ["-c", relocateHarnessHomeScript(harnessHome, { keepStoreReadable: false })],
+      { env: { ...process.env, HOME: home }, encoding: "utf8" },
+    );
+    expect(relocated.status, relocated.stderr).toBe(0);
+    expect(filesUnder(path.join(harnessHome, ".local", "state", "opencode"))).toEqual([
+      "model.json",
+    ]);
+    expect(fs.realpathSync(path.join(home, ".local", "state", "opencode"))).toBe(
+      path.join(harnessHome, ".local", "state", "opencode"),
+    );
   });
 
   it("leaves out a stored path that no longer validates, and says so", () => {

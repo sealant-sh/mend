@@ -78,6 +78,7 @@ import {
   LAUNCH_BOOTING,
   LAUNCH_PREPARING,
   leaseWaitWords,
+  reservedSecretFileRoot,
   withoutLaunchPhase,
 } from "@mend/domain/workbench";
 import {
@@ -9515,6 +9516,63 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Before the harness home relocation runs over a home a secret file was delivered into: a
+       * file at a path that has been reserved since (`.local/state/opencode` became a captured
+       * directory on 2026-10-04) would otherwise move into the captured root with its directory.
+       * The home's own record names what Mend delivered there; each such file is removed while it
+       * still holds the bytes Mend wrote, while its directory is still a plain one, and the record
+       * forgets it. One that holds other bytes now, or sits behind a link, is not removed out from
+       * under anyone, and the log names it. Nothing to do on a fresh home, which has no record.
+       */
+      const evictReservedSecretFiles = Effect.fn("SessionEngine.evictReservedSecretFiles")(
+        function* (session: Session, workspace: Workspace) {
+          const recordText = (yield* sealant.exec(
+            workspace,
+            secretFilesDeliveredExec,
+          )).stdout.trim();
+          if (recordText === "") return;
+          const record = yield* secretCipher.decrypt(recordText).pipe(
+            Effect.map((json) => decodeSecretFilesRecord(json, workspace.id)),
+            Effect.orElseSucceed(() => null),
+          );
+          if (record === null) return;
+          const reserved = record.files.filter(
+            (file) => reservedSecretFileRoot(file.path) !== null,
+          );
+          if (reserved.length === 0) return;
+          const removed = yield* sealant.exec(workspace, secretFilesRemoveExec(reserved));
+          const gone = new Set(
+            parseSecretFileOutcomes(removed.stdout)
+              .filter((outcome) => outcome.outcome === "removed" || outcome.outcome === "absent")
+              .map((outcome) => outcome.path),
+          );
+          const next = record.files.filter((file) => !gone.has(file.path));
+          const nextRecord =
+            next.length === 0
+              ? null
+              : yield* secretCipher
+                  .encrypt(encodeSecretFilesRecord({ workspaceId: workspace.id, files: next }))
+                  .pipe(Effect.orElseSucceed(() => null));
+          yield* sealant.exec(workspace, secretFilesRecordExec(nextRecord)).pipe(Effect.ignore);
+          for (const file of reserved) {
+            yield* (
+              gone.has(file.path)
+                ? Effect.logInfo("session engine: secret file · removed from a captured directory")
+                : Effect.logWarning(
+                    "session engine: secret file · under a captured directory and not removed",
+                  )
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                path: `~/${file.path}`,
+                under: reservedSecretFileRoot(file.path) ?? "",
+              }),
+            );
+          }
+        },
+      );
+
+      /**
        * The owner's secret files (docs/adr/0010-secret-files.md, `secret-files.ts`), into the
        * workspace's own `$HOME` after the relocation and before the harness starts, in both
        * stores through exec: the home is the executor's disk, which no capture root covers. The
@@ -10937,6 +10995,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // native imports write into $HOME first; this step moves them into the durable root and
         // replaces each harness directory with a symlink before the process starts. Capture mode's
         // root is local to sealantd, so it does not need the co-located permission keeper.
+        // A secret file delivered at a path reserved since goes before its directory is captured.
+        yield* evictReservedSecretFiles(session, workspace).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: reserved secret files were not checked").pipe(
+              Effect.annotateLogs({ sessionId, error: String(error) }),
+            ),
+          ),
+        );
         const relocation = relocateHarnessHome(session, workspace);
         if (capture === null) {
           // Keep the established co-located policy: report a failed mount relocation but let the
@@ -11654,6 +11720,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
+          // A secret file delivered at a path reserved since goes before its directory is captured.
+          yield* evictReservedSecretFiles(session, workspace).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: reserved secret files were not checked").pipe(
+                Effect.annotateLogs({ sessionId, error: String(error) }),
+              ),
+            ),
+          );
           const relocation = relocateHarnessHome(session, workspace);
           if (capture === null) {
             yield* relocation.pipe(

@@ -96,9 +96,12 @@ the files go quiet, and at least every 10 seconds while they keep changing.
 
 opencode sessions run as terminals, as pi sessions do: attach from the CLI, the web app, the desktop
 app or VS Code. The phone and Slack cannot start or steer them. opencode keeps its conversations in
-a database rather than a file, and Mend does not read it: a stopped opencode session resumes on its
-newest conversation (`opencode --continue`), but Mend shows no transcript for it and cannot resume
-it on another harness. opencode has no shared effort scale, so `--effort` does not apply to it.
+a database rather than a file. A stopped opencode session resumes on the conversation it started
+(`opencode --session <id>`), which Mend reads out of that database when the session stops, but Mend
+shows no transcript for it and cannot resume it on another harness. Two opencode sessions running at
+the same time in one worktree can leave Mend unable to tell whose a conversation is; resuming either
+is then refused rather than opening the wrong one. opencode has no shared effort scale, so
+`--effort` does not apply to it.
 
 When a repository has a `.opencode` directory, opencode installs its own plugin package there at
 startup, and a lockfile committed in it can change. That edit shows up in the session's change like
