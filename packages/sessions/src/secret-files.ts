@@ -273,6 +273,46 @@ export const secretFilesRemoveExec = (
   ...files.flatMap((file) => [file.path, file.sha256]),
 ];
 
+/** Where secret files found under a directory sessions now capture are set aside, under `$HOME`. */
+export const SECRET_FILES_SET_ASIDE = ".mend/secret-files-set-aside";
+
+/**
+ * The exec that takes delivered secret files out of a directory sessions capture now, before that
+ * directory joins the captured root (`evictReservedSecretFiles` in the engine), as (path, sha256)
+ * pairs. Nothing at a path is `absent`. A file still holding the bytes Mend wrote, on a plain path,
+ * is `removed`: the stored secret file is its source. Anything else there (bytes edited since, a
+ * file reached through a linked directory, a link, a directory) is never deleted: it is `moved`,
+ * whole, to `~/.mend/secret-files-set-aside/<stamp>/<path>` in the executor's own home, which no
+ * capture covers, and the line says where. A move that cannot be made, or leaves anything at the
+ * path, is `failed` with the reason, and the exec exits 1: the caller must not relocate then. The
+ * home itself inside `/workspace`, or a set-aside directory that is physically somewhere else (a
+ * linked `~/.mend`), fails everything.
+ */
+export const secretFilesSetAsideExec = (
+  files: ReadonlyArray<{ readonly path: string; readonly sha256: string }>,
+  stamp: string,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  PATH_FUNCTION +
+    `A="${SECRET_FILES_SET_ASIDE}/${stampOf(stamp)}"; st=0; ` +
+    'while [ "$#" -gt 1 ]; do rel=$1; sum=$2; shift 2; ' +
+    `HH=$(cd "$HOME" 2>/dev/null && pwd -P) || { printf 'failed\\t%s\\tno home directory\\n' "$rel"; st=1; continue; }; ` +
+    `case "$HH" in /workspace|/workspace/*) printf 'failed\\t%s\\tthe home directory is inside the workspace\\n' "$rel"; st=1; continue;; esac; ` +
+    'L="$HH/$rel"; ' +
+    `if [ ! -e "$L" ] && [ ! -L "$L" ]; then printf 'absent\\t%s\\n' "$rel"; continue; fi; ` +
+    `if secret_path "$rel" >/dev/null && [ -f "$T" ] && [ "$(sha256sum < "$T" | cut -d" " -f1)" = "$sum" ]; then ` +
+    `if rm -f "$T" && [ ! -e "$T" ]; then printf 'removed\\t%s\\n' "$rel"; else printf 'failed\\t%s\\tcould not remove it\\n' "$rel"; st=1; fi; continue; fi; ` +
+    'D="$HH/$A/$rel"; DD=${D%/*}; ' +
+    `if ! (umask 077; mkdir -p "$DD") 2>/dev/null; then printf 'failed\\t%s\\tcould not make a place for it under ~/%s\\n' "$rel" "$A"; st=1; continue; fi; ` +
+    `ph=$(cd "$DD" 2>/dev/null && pwd -P) || { printf 'failed\\t%s\\tcould not enter ~/%s\\n' "$rel" "$A"; st=1; continue; }; ` +
+    `if [ "$ph" != "$DD" ]; then printf 'failed\\t%s\\t~/%s is really %s\\n' "$rel" "$A" "$ph"; st=1; continue; fi; ` +
+    `if mv -f -- "$L" "$D" 2>/dev/null && [ ! -e "$L" ] && [ ! -L "$L" ]; then printf 'moved\\t%s\\t~/%s/%s\\n' "$rel" "$A" "$rel"; ` +
+    `else printf 'failed\\t%s\\tcould not move it to ~/%s\\n' "$rel" "$A"; st=1; fi; done; exit $st`,
+  "mend-secret-files",
+  ...files.flatMap((file) => [file.path, file.sha256]),
+];
+
 /**
  * The exec that prints the home's sealed record, when `~/.mend` and the record are plain entries;
  * a link in either place, or no record, prints nothing.
@@ -304,9 +344,11 @@ export const secretFilesRecordExec = (sealed: string | null): ReadonlyArray<stri
 export interface SecretFileOutcome {
   /** The HOME-relative path, as given. */
   readonly path: string;
-  readonly outcome: "written" | "refused" | "removed" | "absent" | "kept";
-  /** Why, for a refusal. */
+  readonly outcome: "written" | "refused" | "removed" | "absent" | "kept" | "moved" | "failed";
+  /** Why, for a refusal or a failure. */
   readonly reason?: string;
+  /** Where it went, home-relative with `~/`, for a file set aside (`secretFilesSetAsideExec`). */
+  readonly movedTo?: string;
 }
 
 /**
@@ -333,8 +375,9 @@ export const parseSecretFileOutcomes = (stdout: string): ReadonlyArray<SecretFil
     if (kind === "written" || kind === "removed" || kind === "absent" || kind === "kept") {
       return [{ path, outcome: kind }];
     }
-    if (kind === "refused") {
-      return [{ path, outcome: "refused", reason: rest.join("\t") || "refused" }];
+    if (kind === "refused" || kind === "failed") {
+      return [{ path, outcome: kind, reason: rest.join("\t") || kind }];
     }
+    if (kind === "moved") return [{ path, outcome: "moved", movedTo: rest.join("\t") }];
     return [];
   });

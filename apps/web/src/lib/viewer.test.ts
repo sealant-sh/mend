@@ -12,14 +12,31 @@ const fromSlack = { ...owned, origin: "slack" as const };
 
 describe("session rows", () => {
   it("offer steering to the owner, or anyone while control is shared, and stop to owners", () => {
-    expect(sessionActions(owned, alice)).toEqual({ own: true, steer: true, stop: true });
-    expect(sessionActions(owned, bob)).toEqual({ own: false, steer: false, stop: true });
+    expect(sessionActions(owned, alice)).toEqual({
+      own: true,
+      steer: true,
+      stop: true,
+      terminalInput: true,
+    });
+    expect(sessionActions(owned, bob)).toEqual({
+      own: false,
+      steer: false,
+      stop: true,
+      terminalInput: false,
+    });
     expect(sessionActions(shared, { ...bob, userId: "carol", role: "member" })).toEqual({
       own: false,
       steer: true,
       stop: true,
+      terminalInput: false,
     });
-    expect(sessionActions(owned, null)).toEqual({ own: false, steer: false, stop: false });
+    expect(sessionActions(shared, alice).terminalInput).toBe(true);
+    expect(sessionActions(owned, null)).toEqual({
+      own: false,
+      steer: false,
+      stop: false,
+      terminalInput: false,
+    });
   });
 
   it("say whose credentials a session runs on", () => {

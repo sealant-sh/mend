@@ -26,6 +26,14 @@ export const readOnlyActions = (
   actions: ReadonlyArray<ServiceAction>,
 ): ReadonlyArray<ServiceAction> => actions.filter((action) => !STEERING.has(action));
 
+/**
+ * What a steerer who is not the owner is left with: everything but running a command again,
+ * which is the owner's alone even while control is shared (docs/adr/0013).
+ */
+export const steererActions = (
+  actions: ReadonlyArray<ServiceAction>,
+): ReadonlyArray<ServiceAction> => actions.filter((action) => action !== "run-again");
+
 export interface ServiceFact {
   readonly word: string;
   readonly tone: Tone;

@@ -20,6 +20,7 @@ import {
   type AgentTurnUsage,
   type RequestIntentReading,
   type TurnLanding,
+  type TurnPayer,
 } from "@mend/domain/workbench";
 import {
   and,
@@ -161,12 +162,22 @@ export class AgentConversationRepo extends Context.Service<
       processId: SessionProcessId,
       providerTurnId: string,
       reason: string,
+      /** Whose login the workspace held when the harness opened it. */
+      payer: TurnPayer,
     ) => Effect.Effect<AgentTurn | null>;
     /** Put back a claimed turn the harness would not take yet (it was busy in its own turn). */
     readonly requeueClaimedTurn: (id: AgentTurnId) => Effect.Effect<void>;
     readonly setProviderTurnId: (
       id: AgentTurnId,
       providerTurnId: string,
+    ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
+    /**
+     * Record whose login a sent turn ran on (docs/adr/0013, "Every turn records its payer"),
+     * replacing what a previous send of the same turn recorded.
+     */
+    readonly setTurnPayer: (
+      id: AgentTurnId,
+      payer: TurnPayer,
     ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
     /** Correlate a provider notification with the one running Mend turn. */
     readonly bindRunningProviderTurn: (
@@ -504,6 +515,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       processId: SessionProcessId,
       providerTurnId: string,
       reason: string,
+      payer: TurnPayer,
     ) {
       const opened = yield* db
         .transaction((tx) =>
@@ -560,6 +572,9 @@ export const AgentConversationRepoLive: Layer.Layer<
                 input: reason,
                 status: "running",
                 providerTurnId,
+                billedUserId: payer.userId,
+                billedAccountId: payer.accountId,
+                billedAccountName: payer.accountName,
                 startedAt: new Date(),
               })
               .returning();
@@ -612,6 +627,25 @@ export const AgentConversationRepoLive: Layer.Layer<
       const [row] = yield* db
         .update(agentTurns)
         .set({ providerTurnId })
+        .where(eq(agentTurns.id, id))
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
+      yield* notify(row.sessionId);
+      return toTurn(row);
+    });
+
+    const setTurnPayer = Effect.fn("AgentConversationRepo.setTurnPayer")(function* (
+      id: AgentTurnId,
+      payer: TurnPayer,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({
+          billedUserId: payer.userId,
+          billedAccountId: payer.accountId,
+          billedAccountName: payer.accountName,
+        })
         .where(eq(agentTurns.id, id))
         .returning()
         .pipe(Effect.orDie);
@@ -1317,6 +1351,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       requeueClaimedTurn,
       taskActivity,
       setProviderTurnId,
+      setTurnPayer,
       bindRunningProviderTurn,
       failTurn,
       setTurnIntent,

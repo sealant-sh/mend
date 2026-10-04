@@ -592,7 +592,7 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
 /**
  * The server-owned model catalog (docs/models-audit.md): one row per harness and model id, in the
  * order pickers show them. `efforts` null means the harness's own; one `is_default` per harness.
- * Seeded by migration 0101 from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
+ * Seeded by migrations 0102 and 0109 (opencode) from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
  */
 export const harnessModels = pgTable(
   "harness_models",
@@ -1544,6 +1544,11 @@ export const agentTurns = pgTable(
     landingClaimedAt: timestamp({ mode: "date", withTimezone: true }),
     landing: text().$type<TurnLanding>(),
     landingId: text().$type<ChangeLandingId>(),
+    // Whose login the turn ran on (0107, docs/adr/0013-whoever-sends-a-turn-pays.md).
+    // `billedUserId` is a FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    billedUserId: text(),
+    billedAccountId: text(),
+    billedAccountName: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ mode: "date", withTimezone: true }),
     endedAt: timestamp({ mode: "date", withTimezone: true }),

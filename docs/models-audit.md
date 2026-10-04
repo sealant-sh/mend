@@ -68,7 +68,7 @@ phone names a model.
    `packages/db/src/migrations.ts`), one row per harness and model id: label, whether it is the
    harness's default, the efforts it takes when fewer than the harness's, and its position. Seeded
    from what the harness adapters supported on 2026-10-03, the former `HARNESS_MODELS`; opencode's
-   rows (the Codex models as `openai/<id>`, through the ChatGPT login) came in 0107, with no default
+   rows (the Codex models as `openai/<id>`, through the ChatGPT login) came in 0109, with no default
    (see 3). One default per harness is a partial unique index. Editable by SQL today; no write
    endpoint yet.
 2. **One endpoint.** `GET /api/harnesses/models` returns every harness's catalog: its models, the

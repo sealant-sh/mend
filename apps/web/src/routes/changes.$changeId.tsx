@@ -1,3 +1,4 @@
+import { canRelaunchSession, terminalOwnerOnlyLine } from "@mend/domain/workbench";
 import { queryOptions, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -22,6 +23,7 @@ import {
   type SessionChangeDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
+import { useOwnerName } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 /**
@@ -125,6 +127,14 @@ function ChangeReview({
     trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
   const sessionDetail = useQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
+  // Sending comments to a terminal session starts its agent with them, which is typing there: the
+  // owner's alone, even while control is shared (docs/adr/0013). A conversation takes them as a
+  // turn from any steerer.
+  const ownerSends =
+    sessionDetail !== undefined &&
+    sessionDetail.control.steer &&
+    !canRelaunchSession(sessionDetail.control, sessionDetail.currentAgent?.kind ?? null);
+  const ownerName = useOwnerName(sessionDetail?.session.ownerUserId ?? null);
   const projectDetail = useQuery({
     ...trpc.projects.detail.queryOptions({ id: sessionDetail?.session.projectId ?? "" }),
     enabled: sessionDetail !== undefined,
@@ -236,7 +246,7 @@ function ChangeReview({
               pass={passOf("suggest")}
             />
             <ReadChangeButton changeId={changeId} pass={passOf("read")} />
-            {sessionDetail?.control.steer === false ? null : (
+            {sessionDetail?.control.steer === false || ownerSends ? null : (
               <button
                 type="button"
                 disabled={openUnsent.length === 0}
@@ -303,6 +313,11 @@ function ChangeReview({
           <p className="mt-2 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
             Comments stay here; only the session&apos;s owner can send them to the session, unless
             they share control.
+          </p>
+        ) : null}
+        {ownerSends ? (
+          <p className="mt-2 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
+            Comments stay here. {terminalOwnerOnlyLine(ownerName ?? "its owner", "send-back")}
           </p>
         ) : null}
         {review.worktreeChangedSinceSnapshot && (

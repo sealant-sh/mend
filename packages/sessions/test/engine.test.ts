@@ -124,6 +124,7 @@ import {
   type CaptureFlushKind,
   SealantClient,
   SealantPlatformError,
+  SealantPrincipal,
   type WorkspaceByKey,
   type WorkspaceCreateFence,
   type WorkspaceStopOptions,
@@ -167,6 +168,7 @@ import {
   WORKSPACE_MEND_TOML,
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
+  secretFilesDeliveredExec,
 } from "@mend/sessions";
 import {
   AgentBridge,
@@ -737,6 +739,11 @@ const sealantLaunchLayer = (
         if (execCalls !== undefined) {
           return Effect.succeed({ exitCode: 0, stdout: "", stderr: "", run: fakeExecRun });
         }
+        // A test executor's home holds no record of delivered secret files: the read every launch
+        // makes before the harness home relocation (`evictReservedSecretFiles`) finds none.
+        if (argv.join(" ") === secretFilesDeliveredExec.join(" ")) {
+          return Effect.succeed({ exitCode: 0, stdout: "", stderr: "", run: fakeExecRun });
+        }
         return Effect.fail(
           new SealantPlatformError({
             code: "exec-not-in-test",
@@ -780,6 +787,7 @@ const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
   openHarnessTurn: () => Effect.succeed(null),
   requeueClaimedTurn: () => Effect.void,
   setProviderTurnId: () => Effect.die("not in test"),
+  setTurnPayer: () => Effect.die("not in test"),
   bindRunningProviderTurn: () => Effect.succeed(null),
   failTurn: () => Effect.die("not in test"),
   setTurnIntent: () => Effect.die("not in test"),
@@ -824,16 +832,20 @@ const recordingProtocolHostLayer = (
   submitted: string[],
   authors: Array<string | null> = [],
   permissionModes: Array<"bypass" | "ask"> = [],
+  /** Whose login each attached process's workspace launched with (docs/adr/0013). */
+  launchLogins: Array<string | null> = [],
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
         permissionModes.push(input.permissionMode);
+        launchLogins.push(input.launchedWithLoginOf);
       }),
     rehydrate: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
+        launchLogins.push(input.launchedWithLoginOf);
       }),
     submitTurn: (sessionId, input, author) =>
       Effect.sync(() => {
@@ -2755,6 +2767,8 @@ const withEngine = <A, E>(
     /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
     readonly verifier?: Layer.Layer<CaptureGitVerifier>;
     readonly transformBlobs?: (base: Layer.Layer<BlobStore>) => Layer.Layer<BlobStore>;
+    /** Aborted, the run is interrupted (the engine's build included) and the world cleaned up. */
+    readonly signal?: AbortSignal;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2903,6 +2917,7 @@ const withEngine = <A, E>(
       ),
       Effect.orDie,
     ),
+    options.signal === undefined ? undefined : { signal: options.signal },
   );
 };
 
@@ -4516,6 +4531,15 @@ describe("SessionEngine", () => {
           expect(live).toEqual([]);
 
           const settledBeforeRetry = world.sessions.get(session.id);
+          // Someone else's follow-up never starts the terminal: only the owner types there
+          // (docs/adr/0013).
+          const teammate = yield* engine
+            .launchFollowUp(session.id, "Carol's words.", "follow-up:teammate", "user-2")
+            .pipe(Effect.flip);
+          expect(teammate).toMatchObject({
+            _tag: "SealantPlatformError",
+            code: "terminal_owner_only",
+          });
           const failure = yield* engine
             .launchFollowUp(
               session.id,
@@ -7896,9 +7920,9 @@ describe("SessionEngine capture mode", () => {
 
   /**
    * An opencode session in capture mode: its harness home rides the worktree's captures, so the
-   * database the harvest reads may hold other sessions' conversations too. `own` starts one of
-   * its own beside an older one that was updated last (the one `--continue` would have opened);
-   * `none` starts nothing, so only the older one is there.
+   * database the harvest reads may hold other sessions' conversations too, and what is its own is
+   * what the database did not hold when it launched (the launch snapshot). `own` starts a
+   * conversation; `none` leaves an empty database.
    */
   const verifyOpencodeHarvest = (kind: "own" | "none") => async () => {
     const created: Array<CreateOptions> = [];
@@ -7995,6 +8019,21 @@ describe("SessionEngine capture mode", () => {
           expect(resumedAgent?.argv).toEqual(["opencode", "--session", "ses_own"]);
           expect(resumedAgent?.providerSessionId).toBe("ses_own");
           expect(opens).toBe(2);
+          // Both launches kept what the database held as they started: nothing the first time, the
+          // first process's conversation (read from the head capture) the second.
+          const kept = (processId: string) =>
+            JSON.parse(
+              fs.readFileSync(
+                path.join(
+                  processStatePathOf(project.storePath, session.id, processId),
+                  "opencode-launch.json",
+                ),
+                "utf8",
+              ),
+            );
+          expect(kept(agent.id)).toEqual([]);
+          if (resumedAgent === undefined) throw new Error("no resumed agent");
+          expect(kept(resumedAgent.id)).toEqual(["ses_own"]);
         }),
       {
         captured: memory,
@@ -8033,12 +8072,10 @@ describe("SessionEngine capture mode", () => {
             beforeOpen: () => {
               opens += 1;
               if (opens === 1) {
-                const openedAt = Date.now();
-                writeOpencodeDatabase(databaseOf(), [
-                  // Another session's, from long before this launch, updated last.
-                  { id: "ses_old", createdAt: openedAt - 3_600_000, updatedAt: openedAt + 60_000 },
-                  ...(kind === "own" ? [{ id: "ses_own", createdAt: openedAt }] : []),
-                ]);
+                writeOpencodeDatabase(
+                  databaseOf(),
+                  kind === "own" ? [{ id: "ses_own", createdAt: Date.now() }] : [],
+                );
                 return;
               }
               // The pickup opens on the materialised database.
@@ -8455,6 +8492,15 @@ describe("SessionEngine capture mode", () => {
         (world) =>
           Effect.gen(function* () {
             yield* SessionEngine;
+            // The classification runs forked, after the boot: a reading is waited for; an absent
+            // one is given the same time to land before it is read as absent.
+            if (expected === null) yield* Effect.sleep(Duration.millis(200));
+            else {
+              yield* until(
+                () => world.sessions.get(sessionId)?.hasTranscript === expected,
+                "the restart transcript classification",
+              );
+            }
             expect(world.sessions.get(sessionId)?.hasTranscript).toBe(expected);
           }),
         {
@@ -9172,6 +9218,74 @@ describe("SessionEngine capture mode", () => {
             spawned,
             () => holderDead,
           ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a joined session's later conversation runs in the holder's executor, on the holder's login",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+      const launchLogins: Array<string | null> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const first = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(first.id, ["codex"]);
+            // The holder's shell keeps its executor retained between the joined session's runs.
+            yield* engine.openShell(first.id);
+
+            const second = yield* engine.provisionSessionIn(first.worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: "user-maria",
+            });
+            const converse = () =>
+              engine.launchProtocol(
+                second.id,
+                { mode: "protocol", permissionMode: "bypass" },
+                "user-maria",
+              );
+            yield* converse();
+            expect(world.sessions.get(second.id)?.sealantWorkspaceId).toBe("workspace-1");
+
+            // Its next conversation reuses the executor its row now names: still the holder's.
+            yield* engine.stop(second.id);
+            yield* converse();
+            expect(created).toHaveLength(1);
+            expect(attached).toHaveLength(2);
+            expect(attached.map(({ process }) => process.sealantWorkspaceId)).toEqual([
+              "workspace-1",
+              "workspace-1",
+            ]);
+            expect(launchLogins).toEqual(["user-fixture", "user-fixture"]);
+
+            // Once the lease names no session, nothing says whose login that executor holds.
+            const lease = memory.leases.get(first.worktreeId);
+            if (lease === undefined) return yield* Effect.die("the worktree holds no lease");
+            memory.leases.set(first.worktreeId, { ...lease, executorId: null });
+            yield* engine.stop(second.id);
+            yield* converse();
+            expect(attached.at(-1)?.process.sealantWorkspaceId).toBe("workspace-1");
+            expect(launchLogins.at(-1)).toBeNull();
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(created),
+          protocolHostLayer: recordingProtocolHostLayer(attached, [], [], [], launchLogins),
         },
       );
     },
@@ -19512,6 +19626,65 @@ const outputEntry = (sequence: bigint, occurredAt: string, byteCount: string): T
  * first time. The launch reads them once in the background while the rest of its setup runs, and
  * the session line says the agent is starting until its record carries output.
  */
+describe("secret files under a directory sessions now save (review 2026-10-04)", () => {
+  it("refuses the launch, before the harness home moves, when the home's record of secret files cannot be read", async () => {
+    for (const answer of ["exits", "fails"] as const) {
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      let opened = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "opencode",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const refusal = yield* engine.launch(session.id, ["opencode"]).pipe(Effect.flip);
+            expect(String(refusal.message), answer).toContain(
+              "a secret file under a directory sessions now save could not be taken out of it",
+            );
+            // Nothing moved the harness home, and no agent started.
+            expect(
+              execCalls.some((argv) => String(argv[2]).includes("harness-home relocation")),
+            ).toBe(false);
+            expect(opened).toBe(0);
+            expect(world.sessions.get(session.id)?.status).toBe("failed");
+            expect(world.sessions.get(session.id)?.summary ?? "").toContain("launch failed:");
+          }),
+        {
+          sealantLayer: lifecycleLayer(created, {
+            execCalls,
+            captureOps: {
+              execEffect: (argv) =>
+                argv.join(" ") === secretFilesDeliveredExec.join(" ")
+                  ? answer === "exits"
+                    ? Effect.succeed({ exitCode: 1, stdout: "", stderr: "unreadable" })
+                    : Effect.fail(
+                        new SealantPlatformError({
+                          code: "exec-failed",
+                          status: null,
+                          message: "the workspace did not answer",
+                          cause: null,
+                        }),
+                      )
+                  : undefined,
+              beforeOpen: () => {
+                opened += 1;
+              },
+            },
+          }),
+        },
+      );
+    }
+  });
+});
+
 describe("an agent's first screen (alpha 2026-09-30)", () => {
   it("a launch warms the harness's files in the background: asked before the agent starts, never waited for", async () => {
     const created: Array<CreateOptions> = [];
@@ -20082,4 +20255,322 @@ describe("SessionEngine a session and its run settle together (2026-10-03)", () 
       { logs, sealantLayer: sealantLaunchLayer(created) },
     );
   });
+});
+
+/**
+ * The platform as the dispatching client serves it on an install (`SealantClients.forPrincipal`):
+ * a workspace lookup made with no principal fails `NO_PRINCIPAL`, as every call does. The launch
+ * fake beneath answers the rest. A boot fiber that forgot to run as the session's owner reads the
+ * workspace `unknown` here, as it does on the box. Every lookup's principal lands in `seen`
+ * (`none`, or the user id), so a test can say whose the calls were.
+ */
+const principalRequired = (
+  inner: Layer.Layer<SealantClient>,
+  seen: Array<string>,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => ({
+      ...client,
+      getWorkspace: (id) =>
+        Effect.flatMap(SealantPrincipal, (principal) => {
+          seen.push(principal.kind === "none" ? "none" : principal.userId);
+          return principal.kind === "none"
+            ? Effect.fail(
+                new SealantPlatformError({
+                  code: "NO_PRINCIPAL",
+                  status: null,
+                  message: "Sealant call made without a principal (docs/SEALANT-IDENTITY.md)",
+                  cause: null,
+                }),
+              )
+            : client.getWorkspace(id);
+        }),
+    })),
+  ).pipe(Layer.provide(inner));
+
+/**
+ * A capture-mode session as the owner's box had it on 2026-10-03 at 23:00: stopped and resumed
+ * seconds before a deploy, so its row reads `running` and unsettled (`resumeSession` reopens it
+ * before the relaunch), its agent process ended, its run settled, and its old executor still up
+ * and waiting to be drained when Mend was killed.
+ */
+const seedStoppedBeforeRestart = (
+  world: World,
+  tmp: string,
+  input: {
+    readonly sessionId: SessionId;
+    readonly runId: SealantRunId;
+    readonly workspaceId: SealantWorkspaceId;
+    readonly processLive: boolean;
+  },
+) => {
+  const { sessionId, runId, workspaceId } = input;
+  const projectId = ProjectId.make("proj-boot");
+  const timestamp = now();
+  world.projects.set(
+    projectId,
+    new Project({
+      id: projectId,
+      name: "boot",
+      organizationId: OrganizationId.make("org-test"),
+      visibility: "shared",
+      createdByUserId: null,
+      originUrl: RepositoryCloneUrl.make("https://example.invalid/boot.git"),
+      storePath: path.join(tmp, "store", "boot"),
+      defaultBranch: "main",
+      adoptedSha: Sha.make("0000000000000000000000000000000000000000"),
+      autoTour: "inherit",
+      autoName: "inherit",
+      autoLand: "inherit",
+      autoSuggest: "inherit",
+      backgroundSessions: "inherit",
+      gitAuthMode: "ambient",
+      workspaceImage: null,
+      applyDotfiles: true,
+      defaultShellProfile: true,
+      inheritUserSkills: true,
+      hotSessions: 0,
+      installCommand: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+  world.sessions.set(
+    sessionId,
+    new Session({
+      id: sessionId,
+      projectId,
+      worktreeId: WorktreeId.make("wt-boot"),
+      harness: "codex",
+      providerSessionId: null,
+      label: null,
+      worktree: "session-boot",
+      branch: "mend/session-boot",
+      baseSha: Sha.make("0000000000000000000000000000000000000000"),
+      baseRef: "main",
+      contextSnapshotId: null,
+      referenceMounts: [],
+      extraMounts: [],
+      sealantRunId: runId,
+      sealantWorkspaceId: workspaceId,
+      sealantSessionId: "pty-1",
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
+      workspaceImage: null,
+      dotfiles: null,
+      ownerUserId: "user-fixture",
+      hasTranscript: null,
+      status: "running",
+      summary: null,
+      lastSeenSequence: 0n,
+      recordHistoryComplete: false,
+      startedAt: timestamp,
+      settledAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+  world.processes.set(
+    "agent-boot",
+    new SessionProcess({
+      id: SessionProcessId.make("agent-boot"),
+      sessionId,
+      sealantWorkspaceId: workspaceId,
+      sealantSessionId: "pty-1",
+      sealantRunId: runId,
+      launchCorrelationId: null,
+      serviceId: null,
+      attemptOrdinal: null,
+      kind: "agent-pty",
+      harness: "codex",
+      providerSessionId: null,
+      protocolOptions: null,
+      label: "codex",
+      argv: ["codex"],
+      status: input.processLive ? "running" : "stopped",
+      exitCode: null,
+      workspacePort: null,
+      protocol: "tcp",
+      hostPort: null,
+      createdAt: timestamp,
+      exitedAt: input.processLive ? null : timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+  world.sessionRuns.set(
+    runId,
+    new SessionRun({
+      sealantRunId: runId,
+      sessionId,
+      ordinal: 1,
+      harness: "codex",
+      sealantWorkspaceId: workspaceId,
+      sealantSessionId: "pty-1",
+      status: input.processLive ? "running" : "stopped",
+      summary: null,
+      lastSeenSequence: 0n,
+      environmentRevision: null,
+      environmentVariableNames: null,
+      secretRevision: null,
+      secretNames: null,
+      clusterBindingRevision: null,
+      clusterBindingNames: null,
+      clusterServiceAccount: null,
+      startedAt: timestamp,
+      settledAt: input.processLive ? null : timestamp,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }),
+  );
+};
+
+/** `condition` holds within `within`, polled every 20 ms; else the test fails with `what`. */
+const eventually = (what: string, within: Duration.Duration, condition: () => boolean) =>
+  Effect.suspend(() =>
+    condition() ? Effect.void : Effect.fail(new Error(`not yet: ${what}`)),
+  ).pipe(
+    Effect.retry({
+      times: Math.ceil(Duration.toMillis(within) / 20),
+      schedule: Schedule.spaced(Duration.millis(20)),
+    }),
+  );
+
+describe("SessionEngine startup never waits on an executor (2026-10-03)", () => {
+  // Observed on the owner's box: 0.36.0-preview.13 was deployed over a running preview 11 forty
+  // seconds after one session was stopped and resumed. The resume had reopened the row to
+  // `running`, settled the old run and begun draining the old executor when the deploy killed the
+  // process. The new process re-attached five live sessions, then went silent for four minutes
+  // and was restarted by the bundle's health check: `resume` had folded that session and gone on
+  // to drain its workspace inline, with no principal, so every lookup read `unknown` and the drain
+  // idled until its ten-minute stall window. Nothing listened on 3101 meanwhile.
+  const sessionId = SessionId.make("session-stopped-before-restart");
+  const runId = SealantRunId.make("run-stopped-before-restart");
+  const workspaceId = SealantWorkspaceId.make("workspace-1");
+
+  it("finishes while a folded session's executor is still to be drained: the row settles inline, its tail runs forked as the owner", async () => {
+    const created: Array<CreateOptions> = [];
+    const flushed: string[] = [];
+    const flushKinds: CaptureFlushKind[] = [];
+    const seen: Array<string> = [];
+    const logs: Array<string> = [];
+    const startedAt = Date.now();
+    // The bound: a build still running at five seconds is the hang, interrupted here so the
+    // world is cleaned up and nothing polls on behind the verdict.
+    const bound = new AbortController();
+    const timer = setTimeout(() => bound.abort(), 5_000);
+    try {
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            // The engine stands: the fold ran, and nothing waited on the executor.
+            expect(Date.now() - startedAt).toBeLessThan(5_000);
+            const settled = world.sessions.get(sessionId);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.settledAt).not.toBeNull();
+            // The tail runs after the boot, as the owner: the executor is asked to flush, then
+            // asked for its final flush by the drain, within moments — which a fiber with no
+            // principal could never do, as it is refused the lookup that comes first.
+            yield* eventually(
+              "the forked tail drained the executor",
+              Duration.seconds(3),
+              () => flushed.includes(`flush:${workspaceId}`) && flushKinds.includes("final"),
+            );
+            expect(seen.length).toBeGreaterThan(0);
+            expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
+            // Nobody else swept it: the boot pass owns this session's tail.
+            expect(logs.some((line) => line.includes("reaping leftover workspace"))).toBe(false);
+          }),
+        {
+          logs,
+          signal: bound.signal,
+          captured: makeMemoryCaptureStore(),
+          prepareWorld: (world, tmp) =>
+            seedStoppedBeforeRestart(world, tmp, {
+              sessionId,
+              runId,
+              workspaceId,
+              processLive: false,
+            }),
+          sealantLayer: principalRequired(
+            sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              { flushed, flushKinds },
+            ),
+            seen,
+          ),
+        },
+      ).catch((error: unknown) => {
+        throw bound.signal.aborted
+          ? new Error(
+              "the engine did not finish construction within 5 s · startup waited on a session's executor",
+            )
+          : error;
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }, 10_000);
+
+  it("re-forks the watcher of a live agent process as the session's owner: its exit after the restart settles the session", async () => {
+    const created: Array<CreateOptions> = [];
+    const seen: Array<string> = [];
+    const ptyStates = new Map<string, InteractiveSessionStatus>();
+    await withEngine(
+      (world) =>
+        Effect.gen(function* () {
+          expect(world.sessions.get(sessionId)?.settledAt).toBeNull();
+          // The agent exits after the restart; the boot watcher polls its PTY every two seconds.
+          ptyStates.set("pty-1", { status: "exited", exitCode: 0, outputHighWater: 0n });
+          yield* eventually("the session settled on its agent's exit", Duration.seconds(8), () => {
+            const session = world.sessions.get(sessionId);
+            return session !== undefined && session.settledAt !== null;
+          });
+          const agent = world.processes.get("agent-boot");
+          expect(agent).toBeDefined();
+          expect(agent?.status).toBe("exited");
+          expect(agent?.exitCode).toBe(0);
+          expect(agent?.exitedAt).not.toBeNull();
+          expect(seen.length).toBeGreaterThan(0);
+          expect(seen.every((principal) => principal === "user-fixture")).toBe(true);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world, tmp) =>
+          seedStoppedBeforeRestart(world, tmp, {
+            sessionId,
+            runId,
+            workspaceId,
+            processLive: true,
+          }),
+        sealantLayer: principalRequired(
+          sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            [],
+          ),
+          seen,
+        ),
+      },
+    );
+  }, 15_000);
 });

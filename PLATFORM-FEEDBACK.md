@@ -7,6 +7,24 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-03 · 0.38.1 · A live workspace cannot change whose login it holds
+
+- **Needed:** under shared control, each turn runs on its sender's login
+  (docs/adr/0013-whoever-sends-a-turn-pays.md). Before a turn from someone other than the person
+  whose login the workspace holds, Mend names that person and their account, and the platform writes
+  that login into the running workspace. When the turn ends, the owner's goes back.
+- **Today:** credentials are fixed at `workspaces.create`; there is no update, attach or rebind
+  call, and `restartWorkspace` rebuilds them from the recorded spec. Core already writes logins into
+  running workspaces (`writeCredentialFiles` over the control connection, used by the refresh push),
+  but only the same account's refreshed copy, to instances launched with it. A Claude setup token is
+  injected as `CLAUDE_CODE_OAUTH_TOKEN`, which takes precedence over the file and cannot change in a
+  running process.
+- **Suggested:** `POST /v1/workspaces/:id/credentials { onBehalfOf, claude?, codex? }` (SDK:
+  `workspace.setCredentials(...)`), answering the accounts now injected. It writes a copy without a
+  refresh token, records the instance's current injections so refresh pushes follow the switch, and
+  leaves the recorded spec alone. Separately, inject Claude setup tokens as a credentials file so
+  every Claude login can be switched.
+
 ## 2026-10-03 · 0.38.1 · A caller cannot carry a file into the workspace at launch
 
 - **Needed:** secret files (docs/adr/0010-secret-files.md): a person's `~/.aws/credentials`, a

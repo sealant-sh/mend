@@ -14,8 +14,10 @@ hidden as "ended without a transcript", and resuming it opens that conversation
 (`opencode --session <id>`), never another session's in the same worktree. When Mend cannot tell
 which conversation is the session's, the resume is refused and says so. opencode's state directory
 (`~/.local/state/opencode`: the model it last used and its prompt history) moves into the harness
-home beside its data, so it survives a resume as well. A secret file may no longer be kept under it,
-and one delivered there before is removed from the workspace before that directory is saved.
+home beside its data, so it survives a resume as well. A secret file may no longer be kept under it.
+One delivered there before is taken out of the workspace's copy before that directory is saved:
+removed while it holds what Mend wrote, otherwise moved whole to `~/.mend/secret-files-set-aside/`
+(the session line says where). When that cannot be done, the launch stops instead of saving it.
 
 The co-located store's saved harness state no longer includes opencode's login files (`auth.json`,
 `mcp-auth.json`).
