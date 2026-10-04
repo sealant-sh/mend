@@ -623,7 +623,7 @@ describe.skipIf(!reachable)("0110 automatic install", () => {
     const rows = await withInstallDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* upTo("0107_turn_payer");
+        yield* upTo("0108_agent_memory_import_bases");
         yield* sql`
           INSERT INTO organizations (id, name) VALUES ('org-install', 'Install')`;
         yield* sql`
