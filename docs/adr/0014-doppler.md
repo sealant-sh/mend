@@ -1,9 +1,10 @@
 # Doppler: a project's secrets from Doppler, read at launch, delivered as secret environment
 
-Status: proposed 2026-10-04. Nothing is built. The owner asked for Doppler support beside
-[secret files](0010-secret-files.md); the decisions below are recommendations, and the ones the
-owner has to take are listed under "Decisions for the owner". Read against Mend `6abd2ab9f`,
-`@sealant/sdk` 0.38.1 and the Doppler CLI v3.76.1.
+Status: proposed 2026-10-04 as ADR 0014 (first drafted as 0013, a number
+[whoever sends a turn pays](0013-whoever-sends-a-turn-pays.md) took). Nothing is built. The owner
+asked for Doppler support beside [secret files](0010-secret-files.md); the decisions below are
+recommendations, and the ones the owner has to take are listed under "Decisions for the owner". Read
+against Mend `6abd2ab9f`, `@sealant/sdk` 0.38.1 and the Doppler CLI v3.76.1.
 
 ## Context
 
@@ -103,8 +104,13 @@ endpoint.
 - **Provider logins** ([ADR 0008](0008-one-refresher-for-provider-logins.md)): Claude, Codex and
   GitHub are the platform's connected accounts, a closed set of providers the platform's worker
   resolves itself. A login belongs to one Mend account and is spent only on that account's sessions
-  and the inference its own requests cause. Shared control is the one path where another member's
-  action runs on the owner's login, and the owner turns it on.
+  and the inference its own requests cause.
+- **Whoever sends a turn pays** ([ADR 0013](0013-whoever-sends-a-turn-pays.md), proposed): under
+  shared control a steerer's turn runs on the steerer's own login. Before dispatch Mend asks Core to
+  write the sender's credential file into the owner's workspace and writes the owner's back when the
+  turn ends. Claude Code rereads the file per request; Codex is restarted in the same workspace.
+  Terminal sessions, shells and commands become the owner's only. The switch moves credential files
+  only; the workspace's environment stays as it was created.
 - **Per organization**, Mend keeps defaults (`organization_settings`: image, automatic passes,
   background sessions), not environment. There is no per-person environment today.
 
@@ -161,13 +167,32 @@ none. Then, by name, highest first:
 
 The launch records which source applied and, per name, where it came from.
 
-**Whose credential is spent.** The session owner's, always. A launch is the owner's; a Slack `@mend`
-that starts a session starts it as the linked person. Shared control changes nothing: a steerer's
-turn runs in the owner's workspace, which already holds the owner's values. The shared control
-setting says so ("others who steer run with your Doppler values and secret files"). In capture mode
-a session that joins a worktree runs in the holder's executor and so with the holder's values; the
-join line says whose Doppler source the executor carries. This is the same exception ADR 0010
-accepted for provider logins and secret files, and Doppler does not widen it.
+**Whose Doppler values a session has.** The session owner's. A launch is the owner's; a Slack
+`@mend` that starts a session starts it as the linked person.
+
+**Shared control, after [ADR 0013](0013-whoever-sends-a-turn-pays.md).** ADR 0013 decides that a
+steerer's turn runs on the steerer's login. Doppler values do not follow the turn's payer, and this
+ADR recommends they stay with the session owner:
+
+- **They cannot follow today.** The values are workspace environment, fixed at create and inherited
+  by the harness process. ADR 0013's switch writes credential files; Claude Code keeps running
+  through a switch, so its environment never changes, and the platform has no per-process secret env
+  for the restarted Codex either (Platform feedback, below).
+- **A Doppler read is not a spend.** ADR 0013 exists because a login is a subscription one person
+  pays for and may not lend. A Doppler source costs its owner nothing per turn: one read per
+  workspace, against a per-token rate limit. What a steerer's turn gets from the owner's source is
+  access to data, not use of a paid account.
+- **The project source has the same audience as the session.** A steerer can see the shared project,
+  and every session in it receives the project source anyway. Nothing crosses.
+- **The person source is the real question.** A session launched on the owner's person source
+  (`dev_yiannis`) carries those values, and a steerer's turn runs with them in its environment. The
+  shared control setting says so when the owner turns it on, naming the source ("people who steer
+  run with your Doppler source `backend/dev_yiannis` and your secret files"). The steerer's own
+  person source never applies to someone else's session.
+
+In capture mode a session that joins a worktree runs in the holder's executor and so with the
+holder's values; the join line says whose Doppler source the executor carries. ADR 0013 refuses its
+login switch there for now, and secret files (ADR 0010) accepted the same exception.
 
 ### 2. Which tokens: read-only service tokens first
 
@@ -409,8 +434,9 @@ implementation:
 
 - **Secret environment per session process.** `SessionOptions` takes `env` "not for secrets" and no
   `secretEnv`. A per-process secret env (same channel, same masking) would let a resumed session's
-  next process start with values read at resume, and a joiner's process run without the holder's
-  person source.
+  next process start with values read at resume, a joiner's process run without the holder's person
+  source, and, if the owner wants it, a Codex restarted by ADR 0013's switch run with the payer's
+  Doppler source.
 - **Larger secret environment.** 4 KiB per value, 128 entries and 32 KiB in all, against Doppler's
   50 KiB per value and 1,200 per config. Service-account JSON and certificates do not fit. A larger
   bound for `secretEnv`, or a secret file in the same channel (asked 2026-10-03), covers it. Filed
@@ -443,8 +469,18 @@ About 2.5 weeks for one person, slice 1 usable on its own.
    break a saved source every day; the recommendation is no expiry, a recognisable name
    (`mend-<host>-<project>`) so it can be revoked in Doppler, and `--max-age` for anyone who wants
    one.
+9. Under shared control, now that ADR 0013 makes a steerer's turn run on the steerer's login, do
+   Doppler values stay with the session owner (recommended, said on the shared control setting)? The
+   alternatives: a session launched on a person source refuses shared control, or it relaunches on
+   the project source when control is shared; or Doppler follows the turn's payer, which needs a
+   per-process secret env from the platform and would still reach only Codex, since Claude Code is
+   not restarted on a switch.
 
 ## Decision log
 
 - 2026-10-04: proposed. Read and delivered by Mend's server through the platform's existing
   `secretEnv`, so no platform change is needed to start.
+- 2026-10-04: renumbered 0013 → 0014; ADR 0013 (whoever sends a turn pays) took the number. Doppler
+  values stay with the session owner under shared control, since a read is data access, not a spend,
+  and environment cannot follow the turn's payer; the person-source case is left to the owner
+  (question 9).
