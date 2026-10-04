@@ -410,10 +410,15 @@ export const readHarnessFileScript = (mountPath: string = HARNESS_HOME_MOUNT_PAT
  * Login files a capture made before the platform left them out may still hold, under the harness
  * home: opencode's MCP server logins (`mcp-auth.json`, until sealantd#136). Capture mode's
  * relocation removes a plain one unread before any harness or shell starts, so one person's login
- * a materialised head brought never reaches the next person's session. The opencode seed keeps the
- * file a link into the executor's own home afterwards (`OPENCODE_MCP_AUTH_SEED`).
+ * a materialised head brought never reaches the next person's session, and removes a link there
+ * unless it leads to the one place the opencode seed links it to, `keptAt` in the executor's own
+ * home (`OPENCODE_MCP_AUTH_SEED`): a link planted into the worktree would have the next person's
+ * opencode write their logins into the change.
  */
-export const CAPTURED_LOGIN_FILES: ReadonlyArray<string> = [".local/share/opencode/mcp-auth.json"];
+export const CAPTURED_LOGIN_FILES: ReadonlyArray<{
+  readonly path: string;
+  readonly keptAt: string;
+}> = [{ path: ".local/share/opencode/mcp-auth.json", keptAt: ".mend/opencode/mcp-auth.json" }];
 
 export const relocateHarnessHomeScript = (
   mountPath: string = HARNESS_HOME_MOUNT_PATH,
@@ -499,11 +504,18 @@ export const relocateHarnessHomeScript = (
     `${tightenCredentials(mountPath)}; done' ` +
     `>/dev/null 2>&1 & fi; ` +
     `chmod -R go+rX "${mountPath}" 2>/dev/null || true; ${tightenCredentials(mountPath)}`;
-  const dropLogins = CAPTURED_LOGIN_FILES.map(
-    (file) =>
-      `if [ -e "${mountPath}/${file}" ] && [ ! -L "${mountPath}/${file}" ]; then ` +
-      `rm -rf "${mountPath}/${file}" || fail "remove a captured login: ${file}"; fi`,
-  );
+  const dropLogins = CAPTURED_LOGIN_FILES.map(({ path: file, keptAt }) => {
+    const keptDir = keptAt.split("/").slice(0, -1).join("/");
+    const keptName = keptAt.split("/").at(-1) ?? "";
+    return (
+      `if [ -L "${mountPath}/${file}" ]; then lt=$(readlink "${mountPath}/${file}"); ` +
+      `lk=$(cd "$HOME/${keptDir}" 2>/dev/null && pwd -P) || lk="$HOME/${keptDir}"; ` +
+      `if [ "$lt" != "$lk/${keptName}" ] && [ "$lt" != "$HOME/${keptAt}" ]; then ` +
+      `rm -f "${mountPath}/${file}" || fail "remove a captured login link: ${file}"; fi; ` +
+      `elif [ -e "${mountPath}/${file}" ]; then ` +
+      `rm -rf "${mountPath}/${file}" || fail "remove a captured login: ${file}"; fi`
+    );
+  });
   return [
     ...preflight,
     ...perDir,

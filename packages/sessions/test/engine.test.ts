@@ -226,6 +226,7 @@ import {
   type Scope,
 } from "effect";
 
+import { OPENCODE_CAPTURED_SEED, OPENCODE_SEED } from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
 import { writeOpencodeDatabase } from "./opencode-db.ts";
@@ -4106,6 +4107,47 @@ describe("SessionEngine", () => {
       );
     },
   );
+
+  it("launches opencode co-located behind its plain seed, with no MCP link, and says when it could not read what was there", async () => {
+    // Co-located: the session's own home keeps its MCP logins (no link, no removal). Its launch
+    // snapshot reads that home; a database there that does not open leaves the snapshot unknown,
+    // and the session line says the conversation may not be resumable, once the agent runs.
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "opencode",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const db = path.join(
+            harnessHomePathOf(project.storePath, session.id),
+            ".local",
+            "share",
+            "opencode",
+            "opencode.db",
+          );
+          fs.mkdirSync(path.dirname(db), { recursive: true });
+          fs.writeFileSync(db, "not a database");
+          yield* engine.launch(session.id, ["opencode"]);
+
+          const argv = spawned.at(-1) ?? [];
+          expect(argv.slice(0, 3)).toEqual(["sh", "-c", OPENCODE_SEED]);
+          expect(argv.join(" ")).not.toContain("mcp-auth.json");
+          expect(world.sessions.get(session.id)?.summary ?? "").toContain(
+            "could not read its conversations before it started",
+          );
+        }),
+      { sealantLayer: lifecycleLayer(created, { spawned }) },
+    );
+  });
 
   it("a cold launch says where it stands while the platform builds the image and boots the executor, and answers once it runs", async () => {
     // Alpha 2026-09-30: the first launch after an image recipe change waited ~8 min for the
@@ -8053,6 +8095,11 @@ describe("SessionEngine capture mode", () => {
               (process) => process.kind === "agent-pty" && process.exitedAt === null,
             );
             expect(resumedAgent?.argv).toEqual(["opencode", "--session", "ses_own"]);
+            // Both capture launches run behind the seed that keeps MCP logins out of saved state:
+            // decided by Mend, not by an environment sealantd never passes on.
+            expect(spawned.length).toBe(2);
+            for (const argv of spawned)
+              expect(argv.slice(0, 3)).toEqual(["sh", "-c", OPENCODE_CAPTURED_SEED]);
             expect(resumedAgent?.providerSessionId).toBe("ses_own");
             expect(opens).toBe(2);
             // Both launches kept what the database held as they started: nothing the first time, the

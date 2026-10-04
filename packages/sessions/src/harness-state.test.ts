@@ -640,7 +640,31 @@ describe("a login an older capture brought (review 2026-10-04, round 4)", () => 
     relocateWithLogins(home, root, true);
     expect(fs.lstatSync(path.join(data, "mcp-auth.json")).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(kept, "utf8")).toBe("mine");
-    expect(CAPTURED_LOGIN_FILES).toEqual([".local/share/opencode/mcp-auth.json"]);
+    expect(CAPTURED_LOGIN_FILES.map((file) => file.path)).toEqual([
+      ".local/share/opencode/mcp-auth.json",
+    ]);
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it("removes a link planted at mcp-auth.json that leads anywhere but the executor's own home", () => {
+    // Alice links the file into the worktree from her shell; the next person's opencode would
+    // write their MCP logins through it into the change.
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-captured-login-"));
+    const home = path.join(scratch, "home");
+    const root = path.join(scratch, "harness");
+    const worktree = path.join(scratch, "repo");
+    const data = path.join(root, ".local", "share", "opencode");
+    fs.mkdirSync(data, { recursive: true });
+    fs.mkdirSync(home);
+    fs.mkdirSync(worktree);
+    fs.symlinkSync(path.join(worktree, ".planted"), path.join(data, "mcp-auth.json"));
+    relocateWithLogins(home, root, true);
+    expect(fs.existsSync(path.join(data, "mcp-auth.json"))).toBe(false);
+    expect(() => fs.lstatSync(path.join(data, "mcp-auth.json"))).toThrow();
+    // Co-located, the session's home is its own: nothing is removed.
+    fs.symlinkSync(path.join(worktree, ".planted"), path.join(data, "mcp-auth.json"));
+    relocateWithLogins(home, root, false);
+    expect(fs.lstatSync(path.join(data, "mcp-auth.json")).isSymbolicLink()).toBe(true);
     fs.rmSync(scratch, { recursive: true, force: true });
   });
 });

@@ -634,7 +634,9 @@ const withPermissionDefaults = (
 const withHarnessBootstrap = (
   harness: string,
   argv: ReadonlyArray<string>,
-): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
+  options: { readonly captured?: boolean } = {},
+): ReadonlyArray<string> =>
+  withHarnessSetup(harness, withPermissionDefaults(harness, argv), options);
 
 /** What one memory delivery did, counted; a file it could not place is said by name. */
 const logAgentMemoryDelivered = (
@@ -6637,7 +6639,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Caught up means the snapshot the flush followed was taken and holds everything: not
           // only nothing pending, but no small snap failing, no quota refusal, no unreadable path.
           // An answer that does not report snapshot health (SDK 0.37.2) is taken on its queue.
-          // One retry, then no snapshot: the launch says so (`OPENCODE_SNAPSHOT_MISSING`).
+          // One wait (`CHECKPOINT_FLUSH_TIMEOUT`), then no snapshot: the launch says so on its
+          // session line (`OPENCODE_SNAPSHOT_MISSING`) rather than wait twice as long.
           const caughtUp = observeCaptureFlush(
             session,
             liveExecutor,
@@ -6651,7 +6654,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return behind === null || behind === CAPTURE_HEALTH_UNREPORTED;
             }),
           );
-          if (!(yield* caughtUp) && !(yield* caughtUp)) return null;
+          if (!(yield* caughtUp)) return null;
         }
         const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
         if (head === null) return [];
@@ -11297,13 +11300,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
               )
             : null;
-        if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
-          yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
-        }
         const launchedArgv =
           protocolStart === null
-            ? withHarnessBootstrap(session.harness, shapedArgv)
-            : withHarnessSetup(session.harness, shapedArgv);
+            ? withHarnessBootstrap(session.harness, shapedArgv, { captured: capture !== null })
+            : withHarnessSetup(session.harness, shapedArgv, { captured: capture !== null });
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
           Effect.andThen(
             sealant.openSession(
@@ -11437,6 +11437,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
         yield* clearStaleStartSummary(sessionId);
+        // After the stale words go, as the setup line does: said before, it went with them.
+        if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
+          yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+        }
         if (setupSkippedFrom !== null) {
           yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
         }
@@ -12033,13 +12037,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
                 )
               : null;
-          if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
-            yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
-          }
           const launchedArgv =
             protocolStart === null
-              ? withHarnessBootstrap(session.harness, shapedArgv)
-              : withHarnessSetup(session.harness, shapedArgv);
+              ? withHarnessBootstrap(session.harness, shapedArgv, { captured: capture !== null })
+              : withHarnessSetup(session.harness, shapedArgv, { captured: capture !== null });
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
               sealant.openSession(
@@ -12157,6 +12158,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The retained executor answered and started this process: what an earlier look at it
           // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
           yield* clearStaleStartSummary(sessionId);
+          if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
+            yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+          }
           // As at a cold launch, on the machine that is already up (`agentStartingWords`).
           const startingWords =
             protocolStart === null && !interactiveShell

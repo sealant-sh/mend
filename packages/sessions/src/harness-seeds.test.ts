@@ -10,6 +10,7 @@ import {
   CLAUDE_ONBOARDING_SEED,
   CODEX_TRUST_SEED,
   COPY_REFRESH_TOKEN,
+  OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
   PI_SEED,
   withCodexMemory,
@@ -451,20 +452,37 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
 const mcpAuth = (home: string) => path.join(home, ".local", "share", "opencode", "mcp-auth.json");
 const kept = (home: string) => path.join(home, ".mend", "opencode", "mcp-auth.json");
 
-/** The opencode seed as a capture executor runs it (`SEALANT_CAPTURE_HARNESS_HOME` set), or not. */
+/**
+ * The opencode seed a launch gets (`withHarnessSetup`): a capture launch's, or a co-located one's.
+ * The environment carries nothing about the mode, as an executor's does not (sealantd consumes
+ * its capture variables before any process starts): every `SEALANT_` variable is left out.
+ */
 const runOpencodeSeed = (home: string, options: { readonly captured?: boolean } = {}) => {
-  const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
-  for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME", "SEALANT_CAPTURE_HARNESS_HOME"]) {
-    delete env[name];
-  }
-  if (options.captured !== false) env["SEALANT_CAPTURE_HARNESS_HOME"] = "/workspace/harness-home";
-  return spawnSync("sh", ["-c", OPENCODE_SEED, "sh", "sh", "-c", "echo ran"], {
-    encoding: "utf8",
-    env,
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries({ ...process.env, HOME: home }).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" &&
+        !entry[0].startsWith("SEALANT_") &&
+        !entry[0].startsWith("XDG_"),
+    ),
+  );
+  const argv = withHarnessSetup("opencode", ["sh", "-c", "echo ran"], {
+    captured: options.captured !== false,
   });
+  return spawnSync(argv[0] ?? "sh", argv.slice(1), { encoding: "utf8", env });
 };
 
 describe("opencode's seed: MCP logins stay out of saved state", () => {
+  it("is a capture launch's alone, decided by Mend: the co-located seed has no MCP block", () => {
+    expect(OPENCODE_CAPTURED_SEED).toContain("mcp-auth.json");
+    expect(OPENCODE_SEED).not.toContain("mcp-auth.json");
+    expect(OPENCODE_CAPTURED_SEED).not.toContain("SEALANT_");
+    expect(withHarnessSetup("opencode", ["opencode"], { captured: true })[2]).toBe(
+      OPENCODE_CAPTURED_SEED,
+    );
+    expect(withHarnessSetup("opencode", ["opencode"])[2]).toBe(OPENCODE_SEED);
+  });
+
   it("links mcp-auth.json to the executor's own home, which opencode writes through", () => {
     const home = makeHome();
     expect(runOpencodeSeed(home).stdout).toBe("ran\n");
@@ -500,11 +518,7 @@ describe("opencode's seed: MCP logins stay out of saved state", () => {
 
   it("two launches into one executor at once both start, on the same link", () => {
     const home = makeHome();
-    const env: Record<string, string> = {
-      ...process.env,
-      HOME: home,
-      SEALANT_CAPTURE_HARNESS_HOME: "/workspace/harness-home",
-    } as Record<string, string>;
+    const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
     for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME"]) delete env[name];
     for (let round = 0; round < 5; round++) {
       fs.rmSync(path.join(home, ".local"), { recursive: true, force: true });
@@ -514,7 +528,7 @@ describe("opencode's seed: MCP logins stay out of saved state", () => {
           "-c",
           's="$1"; shift; for i in 1 2 3 4; do sh -c "$s" sh sh -c "echo ran" & done; wait',
           "sh",
-          OPENCODE_SEED,
+          OPENCODE_CAPTURED_SEED,
         ],
         { encoding: "utf8", env },
       );
