@@ -9375,6 +9375,63 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
+  it("a claimed standby found dead gives up its claim at once: the cold launch does not wait it out (review round 4)", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    let standbyDead = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(memory.leases.get(session.worktreeId)?.launchId).toBe(`standby:${session.id}`);
+          // The standby's container died between the claim and the launch.
+          standbyDead = true;
+          const launched = yield* engine.launch(session.id, ["codex"]);
+          expect(launched.status).toBe("running");
+          const lease = memory.leases.get(session.worktreeId);
+          expect(lease?.executorId).toBe(session.id);
+          expect(lease?.launchId).not.toBe(`standby:${session.id}`);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            status: () => (standbyDead ? "stopped" : "ready"),
+            beforeCreate: () =>
+              Effect.sync(() => {
+                if (standbyDead) standbyDead = false;
+              }),
+          },
+        ),
+        hotWorkspacesLayer: pool.layer,
+      },
+    );
+  });
+
   it("keeps the pool per owner: one standby for each recent owner who may run here, never for anyone else, and another owner's session goes cold", async () => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
@@ -12340,6 +12397,59 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             expect(world.executorCreates.has(session.id)).toBe(false);
             expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
           }),
+      );
+    },
+  );
+
+  it(
+    "a relaunch's claim cut short by a restart does not hold up a landing: the flush asks the platform",
+    { timeout: 20_000 },
+    async () => {
+      await unnamedLaunchLease(
+        {
+          findByKey: () => ({ kind: "none" }),
+          fenceCreate: () => ({ kind: "cancelled" }),
+        },
+        ({ engine, session }) =>
+          Effect.gen(function* () {
+            // Nothing holds anything more: the registered head is everything (review round 4).
+            expect(yield* engine.flushCaptures(session.id, "landing")).toBe("none");
+            const taken = yield* engine.landingCheckpoint(session.id, "user-mark");
+            expect(taken.checkpoint).toBeDefined();
+          }),
+      );
+    },
+  );
+
+  it(
+    "removing a session whose first launch was cut short after its claim goes once the platform fences the launch",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            // Never launched: its row names no workspace, and its claim lapsed.
+            memory.leases.set(session.worktreeId, {
+              executorId: session.id,
+              epoch: (memory.leases.get(session.worktreeId)?.epoch ?? 0) + 1,
+              expiresAt: memory.clock.now() - 1,
+              launchId: `launch:${session.id}:1791000000000:interrupted`,
+            });
+            expect(yield* engine.removeWhenStopped(session.id)).toBe("removed");
+            expect(world.sessions.has(session.id)).toBe(false);
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              findByKey: () => ({ kind: "none" }),
+              fenceCreate: () => ({ kind: "cancelled" }),
+            },
+          }),
+        },
       );
     },
   );
