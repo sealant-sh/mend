@@ -134,6 +134,39 @@ export const withCodexMemory = (argv: ReadonlyArray<string>): ReadonlyArray<stri
   return [head, ...CODEX_MEMORY_FLAG, ...rest];
 };
 
+/**
+ * Codex's background server, never started by a Codex session Mend starts. Codex 0.160's TUI
+ * starts a shared app-server daemon by default (`features.daemon_auto_start`), and the daemon first
+ * copies Codex's own release into `.codex/packages/app-server-daemon/`: about 427 MB in the harness
+ * home, which every capture then saves and every later executor of the worktree restores. Mend
+ * runs one agent per process and has no use for the shared server.
+ *
+ * Today's launches stay off the daemon only by accident: Codex refuses the shared server when a
+ * `-c` override names a setting it cannot forward, and `features.memories` is one. The flag makes
+ * it explicit, on every path: the app-server, the terminal, a prompt, a resume, a handoff, a join
+ * and a claimed standby all pass through `withHarnessSetup` or `promptArgv`. Observed 2026-10-05
+ * with Codex 0.160.0: with only this flag, no daemon starts, nothing is copied, and a turn runs as
+ * before; without any `-c`, the TUI copies 427 MB. A launch that names the setting itself, or
+ * passes `--no-daemon`, is left as it is.
+ */
+export const CODEX_DAEMON_OFF = ["-c", "features.daemon_auto_start=false"] as const;
+
+export const withoutCodexDaemon = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const [head, ...rest] = argv;
+  if (
+    head !== "codex" ||
+    argv.some(
+      (arg) =>
+        arg === "--no-daemon" ||
+        arg === "daemon_auto_start" ||
+        /^features\.daemon_auto_start(=|$)/.test(arg),
+    )
+  ) {
+    return argv;
+  }
+  return [head, ...CODEX_DAEMON_OFF, ...rest];
+};
+
 /** `argv` behind its harness's seed; a harness without one runs as it is. */
 export const withHarnessSetup = (
   harness: string,
@@ -141,7 +174,7 @@ export const withHarnessSetup = (
 ): ReadonlyArray<string> => {
   if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
   if (harness === "codex") {
-    return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...withCodexMemory(argv)];
+    return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...withoutCodexDaemon(withCodexMemory(argv))];
   }
   if (harness === "opencode") return ["sh", "-c", OPENCODE_SEED, "sh", ...argv];
   if (harness === "pi") return ["sh", "-c", PI_SEED, "sh", ...argv];

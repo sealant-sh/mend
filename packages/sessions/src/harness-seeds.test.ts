@@ -13,6 +13,7 @@ import {
   PI_SEED,
   withCodexMemory,
   withHarnessSetup,
+  withoutCodexDaemon,
 } from "./harness-seeds.ts";
 
 const homes: Array<string> = [];
@@ -372,8 +373,10 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
       "resume",
       "abc",
     ]);
-    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-4)).toEqual([
+    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-6)).toEqual([
       "codex",
+      "-c",
+      "features.daemon_auto_start=false",
       "-c",
       "features.memories=true",
       "app-server",
@@ -381,5 +384,40 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
     const own = ["codex", "-c", "features.memories=false"];
     expect(withCodexMemory(own)).toEqual(own);
     expect(withCodexMemory(["claude"])).toEqual(["claude"]);
+  });
+});
+
+describe("Codex's background server", () => {
+  it("is never started by a Codex launch: terminal, resume or app-server", () => {
+    const flags = ["-c", "features.daemon_auto_start=false", "-c", "features.memories=true"];
+    for (const tail of [[], ["resume", "abc"], ["app-server"]]) {
+      expect(withHarnessSetup("codex", ["codex", ...tail]).slice(4)).toEqual([
+        "codex",
+        ...flags,
+        ...tail,
+      ]);
+    }
+  });
+
+  it("is left alone when the launch says it itself, and only Codex gets the flag", () => {
+    for (const own of [
+      ["codex", "-c", "features.daemon_auto_start=true"],
+      ["codex", "--no-daemon"],
+      ["codex", "--enable", "daemon_auto_start"],
+    ]) {
+      expect(withoutCodexDaemon(own)).toEqual(own);
+    }
+    expect(withoutCodexDaemon(["claude"])).toEqual(["claude"]);
+    expect(withHarnessSetup("claude", ["claude"])).not.toContain(
+      "features.daemon_auto_start=false",
+    );
+    // A setting whose name starts the same is not this one.
+    expect(withoutCodexDaemon(["codex", "-c", "features.daemon_auto_start_v2=true"])).toEqual([
+      "codex",
+      "-c",
+      "features.daemon_auto_start=false",
+      "-c",
+      "features.daemon_auto_start_v2=true",
+    ]);
   });
 });
