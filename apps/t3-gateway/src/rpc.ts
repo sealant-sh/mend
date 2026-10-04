@@ -48,9 +48,8 @@ import type * as Rpc from "effect/unstable/rpc/Rpc";
 import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { GatewayEnvironment } from "./environment.ts";
-import { MendClient } from "./mend-client.ts";
+import type { HubReadError, PersonHub } from "./hub.ts";
 import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
-import { EMPTY_SHELL_SNAPSHOT } from "./shell.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
@@ -58,8 +57,9 @@ import type { BearerSession } from "./state.ts";
  * surface"). A method the server does not register answers with a defect, and a client's durable
  * subscription dies on a defect without retrying, so nothing here is left out.
  *
- * Phase 0 serves the connection itself: the config snapshot, the lifecycle welcome, the probe and
- * an empty shell. Every other method answers as the feature it names is not offered:
+ * Phase 0 serves the connection itself: the config snapshot, the lifecycle welcome and the probe.
+ * Phase 1 serves the shell from the person's projection hub (`hub.ts`). Every other method answers
+ * as the feature it names is not offered:
  *
  * - A command or a read fails with a typed error from its own contract. Where the contract has an
  *   error whose fields can be filled truthfully, that error; otherwise
@@ -75,7 +75,7 @@ import type { BearerSession } from "./state.ts";
 type WsRpc = RpcGroup.Rpcs<typeof WsRpcGroup>;
 export type WsRpcMethod = WsRpc["_tag"];
 
-/** The methods phase 0 answers for real. */
+/** The methods the gateway answers for real. */
 export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.serverProbe,
   WS_METHODS.serverGetConfig,
@@ -173,13 +173,14 @@ const unknownThread = (threadId: ThreadId) =>
 
 export interface GatewayRpcInput {
   readonly environment: GatewayEnvironment["Service"];
-  readonly mend: MendClient["Service"];
   /** The paired person behind this socket; every Mend call is theirs. */
   readonly session: BearerSession;
+  /** The person's projection of Mend, shared with their other sockets. */
+  readonly hub: PersonHub;
 }
 
 /** The orchestration read scope t3code requires for the served reads, checked as t3code does. */
-const authorize = (session: BearerSession, requiredScope: AuthEnvironmentScope) =>
+const scopeCheck = (session: BearerSession, requiredScope: AuthEnvironmentScope) =>
   session.scopes.includes(requiredScope)
     ? Effect.void
     : Effect.fail(
@@ -192,8 +193,30 @@ const authorize = (session: BearerSession, requiredScope: AuthEnvironmentScope) 
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
 const encodeServerConfig = Schema.encodeEffect(Schema.toCodecJson(ServerConfig));
 
-export const makeGatewayRpcHandlers = ({ environment, mend, session }: GatewayRpcInput) => {
+/** A device Mend refused blocks the connection; Mend not answering is a failure t3code retries. */
+const shellReadFailure = (error: HubReadError) =>
+  error._tag === "MendDeviceRefused"
+    ? new EnvironmentAuthorizationError({
+        message: "Mend no longer accepts this device. Pair again from Mend.",
+        requiredScope: READ,
+      })
+    : new OrchestrationV2GetShellSnapshotError({ message: error.message, cause: error });
+
+export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpcInput) => {
+  // Mend only through the person's gate: a 401 on any call refuses this socket's token.
+  const { mend } = hub;
   const { descriptor, paths } = environment;
+
+  /** The socket's own device token, checked on every call, then the scope it needs. */
+  const authorize = (bearer: BearerSession, requiredScope: AuthEnvironmentScope) =>
+    hub.isRefused(bearer.deviceToken)
+      ? Effect.fail(
+          new EnvironmentAuthorizationError({
+            message: "Mend no longer accepts this device. Pair again from Mend.",
+            requiredScope,
+          }),
+        )
+      : scopeCheck(bearer, requiredScope);
 
   /**
    * The person's config. Mend's catalog is read with their device token; a revoked device
@@ -273,19 +296,31 @@ export const makeGatewayRpcHandlers = ({ environment, mend, session }: GatewayRp
           }),
         ),
       ).pipe(Stream.concat(Stream.never)),
-    // The empty shell, the optional catch-up marker, then open.
+    // A fresh snapshot whatever sequence the client resumes after (a snapshot is always a legal
+    // reset), the catch-up marker when asked, then every change as the hub publishes it.
     [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
-      Stream.fromEffect(
-        authorize(session, READ).pipe(
-          Effect.as({ kind: "snapshot" as const, snapshot: EMPTY_SHELL_SNAPSHOT }),
-        ),
-      ).pipe(
-        Stream.concat(
-          input.requestCompletionMarker === true
-            ? Stream.make({ kind: "synchronized" as const })
-            : Stream.empty,
-        ),
-        Stream.concat(Stream.never),
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* authorize(session, READ);
+          const { snapshot, changes } = yield* hub.subscribeShell.pipe(
+            Effect.mapError(shellReadFailure),
+          );
+          return Stream.make({ kind: "snapshot" as const, snapshot }).pipe(
+            Stream.concat(
+              input.requestCompletionMarker === true
+                ? Stream.make({ kind: "synchronized" as const })
+                : Stream.empty,
+            ),
+            // A subscriber that fell behind fails typed; t3code resubscribes for a fresh snapshot.
+            Stream.concat(
+              changes.pipe(
+                Stream.mapError(
+                  (error) => new OrchestrationV2GetShellSnapshotError({ message: error.message }),
+                ),
+              ),
+            ),
+          );
+        }),
       ),
 
     // ── Orchestration (phase 1 and later) ───────────────────────────────────
@@ -651,11 +686,11 @@ export type GatewayRpcHandlers = ReturnType<typeof makeGatewayRpcHandlers>;
 /** One socket's handlers, for the person its ticket was issued to. */
 export const gatewayRpcHandlersLayer = (
   session: BearerSession,
-): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | MendClient> =>
+  hub: PersonHub,
+): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
-      const mend = yield* MendClient;
-      return makeGatewayRpcHandlers({ environment, mend, session });
+      return makeGatewayRpcHandlers({ environment, session, hub });
     }),
   );
