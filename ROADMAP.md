@@ -29,8 +29,8 @@ section goes when it ships.
 - **Patch releases (0.36.1 and on) are for what is broken** on the box or on alpha: a session that
   cannot start, attach, stop or save. Nothing else gets its own tag. While only patch changesets are
   pending, next builds are `0.36.1-next.N`, so the box proves the patch as the version it ships as.
-  Once a minor changeset lands, builds become `0.37.0-next.N` (and stay there if it is reverted),
-  and a server on one of those skips `0.36.1`.
+  Once a minor changeset lands, builds become `0.37.0-next.N` and stay there if it is reverted: a
+  server on one of those skips `0.36.1`, and the next release is `0.37.0`.
 - **A release is done when its exit criteria hold on the box,** not when CI passes.
 
 ## 0.36: Mend on our own box, every day
