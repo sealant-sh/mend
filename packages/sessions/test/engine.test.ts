@@ -12217,6 +12217,157 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
     },
   );
 
+  /**
+   * A stopped session whose worktree lease is bound to `launchId`, a launch its row does not
+   * name, lapsed: what Mend's own launch leaves when a restart cuts it between its claim and its
+   * create (review round 3, F4), or an earlier executor whose row was overwritten.
+   */
+  const unnamedLaunchLease = (
+    captureOps: Parameters<typeof sealantLaunchLayer>[11],
+    body: (at: {
+      readonly world: World;
+      readonly engine: SessionEngine["Service"];
+      readonly session: Session;
+      readonly memory: MemoryCaptureStore;
+      readonly created: Array<CreateOptions>;
+      readonly epoch: number;
+      readonly launchId: string;
+    }) => Effect.Effect<void, unknown, SessionEngine>,
+    dead: () => boolean = () => false,
+  ) => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    return withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.stop(session.id);
+          yield* until(() => world.sessions.get(session.id)?.status === "stopped", "stopped");
+          const epoch = (memory.leases.get(session.worktreeId)?.epoch ?? 0) + 1;
+          const launchId = `launch:${session.id}:1791000000000:interrupted`;
+          memory.leases.set(session.worktreeId, {
+            executorId: session.id,
+            epoch,
+            expiresAt: memory.clock.now() - 1,
+            launchId,
+          });
+          yield* body({ world, engine, session, memory, created, epoch, launchId });
+        }),
+      {
+        captured: memory,
+        drainPolicy: { leaseWait: Duration.millis(300), leaseWaitInterval: Duration.millis(20) },
+        sealantLayer: lifecycleLayer(created, {
+          dead,
+          captureOps: {
+            status: (stopAsked) => (stopAsked && created.length === 1 ? "stopped" : "ready"),
+            ...captureOps,
+          },
+        }),
+      },
+    );
+  };
+
+  it(
+    "a restart between a launch's claim and its create leaves a lease the platform resolves: the next resume goes on",
+    { timeout: 20_000 },
+    async () => {
+      const fenced: string[] = [];
+      await unnamedLaunchLease(
+        {
+          findByKey: () => ({ kind: "none" }),
+          fenceCreate: (key) => {
+            fenced.push(key);
+            return { kind: "cancelled" };
+          },
+        },
+        ({ engine, session, memory, created, epoch, launchId }) =>
+          Effect.gen(function* () {
+            const resumed = yield* engine.resumeSession(session.id, "shell");
+            expect(resumed.status).toBe("running");
+            // Fenced on the platform first: nothing is ever made under that key.
+            expect(fenced).toEqual([launchId]);
+            expect(created).toHaveLength(2);
+            const lease = memory.leases.get(session.worktreeId);
+            expect(lease?.epoch).toBe(epoch + 1);
+            expect(lease?.launchId).not.toBe(launchId);
+          }),
+      );
+    },
+  );
+
+  it(
+    "an unnamed launch the platform finds ended is released, and its worktree can be removed",
+    { timeout: 20_000 },
+    async () => {
+      const looked: string[] = [];
+      await unnamedLaunchLease(
+        {
+          // The key finds the stopped workspace that launch made.
+          findByKey: (key) => {
+            looked.push(key);
+            return { kind: "found", workspaceId: "workspace-1" };
+          },
+        },
+        ({ engine, session, memory, launchId }) =>
+          Effect.gen(function* () {
+            expect(yield* engine.captureHolds(session.worktreeId)).toEqual([]);
+            expect(looked).toEqual([launchId]);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
+          }),
+      );
+    },
+  );
+
+  it(
+    "a fenced create's own lease is released even while the previous executor cannot be read",
+    { timeout: 20_000 },
+    async () => {
+      let unreachable = false;
+      await unnamedLaunchLease(
+        {
+          findByKey: () => ({ kind: "none" }),
+          fenceCreate: () => ({ kind: "cancelled" }),
+          unreachablePlatform: () => unreachable,
+        },
+        ({ world, engine, session, memory, launchId }) =>
+          Effect.gen(function* () {
+            // The create was asked under the lease's key and its answer lost; the platform then
+            // stops answering for the previous executor.
+            world.executorCreates.set(session.id, launchId);
+            unreachable = true;
+            yield* engine.reapCaptureLeases();
+            expect(world.executorCreates.has(session.id)).toBe(false);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
+          }),
+      );
+    },
+  );
+
+  it(
+    "an unnamed launch the platform cannot resolve stays held: nothing created, nothing released",
+    { timeout: 20_000 },
+    async () => {
+      await unnamedLaunchLease(
+        {
+          findByKey: () => ({ kind: "none" }),
+          fenceCreate: () => ({ kind: "open", state: "pending" }),
+        },
+        ({ engine, session, memory, created, epoch, launchId }) =>
+          Effect.gen(function* () {
+            const outcome = yield* engine.resumeSession(session.id, "shell").pipe(Effect.exit);
+            expect(outcome._tag).toBe("Failure");
+            expect(created).toHaveLength(1);
+            expect(memory.leases.get(session.worktreeId)).toMatchObject({ epoch, launchId });
+            expect(yield* engine.captureHolds(session.worktreeId)).toContainEqual({
+              sessionId: session.id,
+              kind: "lease",
+            });
+          }),
+      );
+    },
+  );
+
   it(
     "a launch waiting for the worktree's previous executor launches nothing once its owner stops it",
     { timeout: 20_000 },
