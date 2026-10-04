@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 import {
+  WS_METHODS,
   CommandId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
@@ -152,46 +153,46 @@ describe("message.dispatch", () => {
       ),
   );
 
-  it.live("launches a stopped session again with the message, naming no options", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        setup(mend, { ask: true });
-        // The 15-minute idle stop ended the agent.
-        mend.workbench.stopAgent("session-1");
-        const { rpc } = yield* pairAndConnect(mend, "RELAUNCH");
-        const thread = yield* feed(
-          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
-            threadId: ThreadId.make("session-1"),
-          }),
-        );
-        const snapshot = yield* thread.next(
-          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
-        );
-        assert.strictEqual(snapshot.projection.providerSessions[0]?.status, "stopped");
+  it.live(
+    "launches a stopped session again with the message, bringing the agent up, then sending the message as a turn",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend, { ask: true });
+          // The 15-minute idle stop ended the agent.
+          mend.workbench.stopAgent("session-1");
+          const { rpc } = yield* pairAndConnect(mend, "RELAUNCH");
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: ThreadId.make("session-1"),
+            }),
+          );
+          const snapshot = yield* thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          assert.strictEqual(snapshot.projection.providerSessions[0]?.status, "stopped");
 
-        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
-          message("session-1", "message-c", "Pick it up again"),
-        );
-        yield* thread.next(
-          runEvent((run) => run.userMessageId === "message-c" && run.status === "preparing"),
-        );
-        yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
-        // The relaunch names no options: Mend reuses what the agent last recorded (mend#493),
-        // so nothing the gateway cached can turn ask back into bypass.
-        assert.deepStrictEqual(posts(mend, "/launch")[0]?.body, {
-          mode: "protocol",
-          prompt: "Pick it up again",
-        });
-        assert.strictEqual(posts(mend, "/turns").length, 0);
-        // The launch's opening turn is the message: same run, same message, now running.
-        const adopted = yield* thread.next(
-          runEvent((run) => run.userMessageId === "message-c" && run.status === "running"),
-        );
-        assert.isTrue(
-          adopted.event.type === "run.updated" && adopted.event.payload.id.startsWith("t3-run:"),
-        );
-      }),
-    ),
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            message("session-1", "message-c", "Pick it up again"),
+          );
+          yield* thread.next(
+            runEvent((run) => run.userMessageId === "message-c" && run.status === "preparing"),
+          );
+          yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
+          // No prompt and no options: the launch only brings the agent up, on what it last
+          // recorded (mend#493), so ask stays ask and nothing the gateway cached can go stale.
+          assert.deepStrictEqual(posts(mend, "/launch")[0]?.body, { mode: "protocol" });
+          // Once Mend reports the agent live, the message goes out as a turn, whose id Mend answers.
+          yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Pick it up again" });
+          const adopted = yield* thread.next(
+            runEvent((run) => run.userMessageId === "message-c" && run.status === "running"),
+          );
+          assert.isTrue(
+            adopted.event.type === "run.updated" && adopted.event.payload.id.startsWith("t3-run:"),
+          );
+        }),
+      ),
   );
 
   it.live("refuses a session the person may not steer, with t3code's authorization error", () =>
@@ -271,7 +272,7 @@ describe("review round 1", () => {
       Effect.gen(function* () {
         setup(mend);
         mend.workbench.stopAgent("session-1");
-        mend.workbench.launchOpensTurn = false;
+        mend.workbench.launchBringsAgentUp = false;
         const { rpc } = yield* pairAndConnect(mend, "LAUNCHFAILS");
         const thread = yield* feed(
           rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
@@ -303,22 +304,24 @@ describe("review round 1", () => {
             failure.event.payload.failure.message ===
               "launch failed: Transport error (POST /v1/users)",
         );
+        assert.strictEqual(posts(mend, "/turns").length, 0);
         // The queue is not blocked: the next message launches again.
-        mend.workbench.launchOpensTurn = true;
+        mend.workbench.launchBringsAgentUp = true;
         yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
           message("session-1", "message-again", "Try again"),
         );
         yield* eventually(() => posts(mend, "/launch").length === 2, "the second launch");
+        yield* eventually(() => posts(mend, "/turns").length === 1, "its turn");
       }),
     ),
   );
 
-  it.live("a message on its way can be taken back, and its turn is interrupted when it opens", () =>
+  it.live("a message taken back while the session launches never goes out", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         setup(mend);
         mend.workbench.stopAgent("session-1");
-        mend.workbench.launchTurnDelayMs = 1_000;
+        mend.workbench.launchLiveDelayMs = 800;
         const { rpc } = yield* pairAndConnect(mend, "TAKEBACK");
         const thread = yield* feed(
           rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
@@ -344,12 +347,10 @@ describe("review round 1", () => {
           holdQueue: true,
         });
         yield* thread.next(runEvent((run) => run.id === runId && run.status === "cancelled"));
-        // Mend opens the launch's turn; the gateway interrupts it.
-        yield* eventually(
-          () => posts(mend, "/interrupt").length === 1,
-          "the interrupt of the opened turn",
-        );
-        yield* thread.next(runEvent((run) => run.id === runId && run.status === "interrupted"));
+        // The agent comes up; nothing is sent, and no turn is interrupted.
+        yield* Effect.sleep("1500 millis");
+        assert.strictEqual(posts(mend, "/turns").length, 0);
+        assert.strictEqual(posts(mend, "/interrupt").length, 0);
       }),
     ),
   );
@@ -371,6 +372,220 @@ describe("review round 1", () => {
         yield* Effect.sleep("300 millis");
         assert.strictEqual(posts(mend, "/turns").length, 1);
       }),
+    ),
+  );
+});
+
+describe("review round 2", () => {
+  it.live("a 401 on a message's own send refuses its device and closes its socket", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "SEND401");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        mend.workbench.turnsUnauthorized = true;
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-401", "Sent by a revoked device"),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the send");
+        // The socket closes without waiting for the device poll.
+        yield* Effect.gen(function* () {
+          for (;;) {
+            const probe = yield* Effect.exit(
+              rpc[WS_METHODS.serverProbe]({}).pipe(Effect.timeout("1 second")),
+            );
+            if (probe._tag === "Failure") return;
+            yield* Effect.sleep("100 millis");
+          }
+        }).pipe(Effect.timeout("3 seconds"));
+      }),
+    ),
+  );
+
+  it.live(
+    "revoking the last device fails what was queued, releases the lease, and stops reading",
+    () =>
+      withGateway(
+        (mend) =>
+          Effect.gen(function* () {
+            setup(mend);
+            mend.workbench.addTurn("session-1", "A long job");
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const { rpc } = yield* pairAndConnect(mend, "LASTDEVICE");
+                yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                  message("session-1", "message-queued", "Behind it"),
+                );
+                mend.revoke(mend.claims[0]?.token ?? "");
+                mend.workbench.emit({ type: "user", userId: "user-1", facet: "devices" });
+              }),
+            );
+            // The hub stops Mend's stream and is not held by the queue it failed.
+            yield* eventually(() => mend.workbench.eventStreams === 0, "the stream to close");
+            const reads = mend.workbench.calls.length;
+            yield* Effect.sleep("1 second");
+            assert.strictEqual(mend.workbench.calls.length, reads);
+            assert.strictEqual(posts(mend, "/turns").length, 0);
+          }),
+        undefined,
+        { hubIdleTimeToLive: "200 millis" },
+      ),
+  );
+
+  it.live("interrupting a message on its way honours holdQueue", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.workbench.stopAgent("session-1");
+        mend.workbench.launchLiveDelayMs = 600;
+        const { rpc } = yield* pairAndConnect(mend, "HOLDONWAY");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-1", "First"),
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-2", "Second"),
+        );
+        const first = yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-1" && run.status === "preparing"),
+        );
+        const runId =
+          first.event.type === "run.updated" ? first.event.payload.id : RunId.make("none");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "run.interrupt",
+          commandId: commandId(),
+          threadId: ThreadId.make("session-1"),
+          runId,
+          holdQueue: true,
+        });
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-2" && run.queueHeld === true),
+        );
+        // The agent comes up: the second message stays held.
+        yield* Effect.sleep("1200 millis");
+        assert.strictEqual(posts(mend, "/turns").length, 0);
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "queue.resume",
+          commandId: commandId(),
+          threadId: ThreadId.make("session-1"),
+        });
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed message");
+        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Second" });
+      }),
+    ),
+  );
+
+  it.live("a session that had failed before the relaunch does not fail the message", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        // An earlier launch failed; the session reads failed when the follow-up arrives.
+        mend.workbench.failSession("session-1", "launch failed: an earlier attempt");
+        const { rpc } = yield* pairAndConnect(mend, "STALEFAIL");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-ok", "Works now"),
+        );
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-ok" && run.status === "running"),
+        );
+        assert.strictEqual(posts(mend, "/turns").length, 1);
+      }),
+    ),
+  );
+
+  it.live("another client's turn with the same text is never taken for the message", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.workbench.stopAgent("session-1");
+        mend.workbench.launchLiveDelayMs = 600;
+        const { rpc } = yield* pairAndConnect(mend, "SAMETEXT");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-mine", "Run the tests"),
+        );
+        yield* eventually(() => posts(mend, "/launch").length === 1, "the launch");
+        // Someone else's turn with the same words lands while the agent comes up.
+        const theirs = mend.workbench.addTurn("session-1", "Run the tests", "completed");
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the message's own turn");
+        const mine = yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-mine" && run.status !== "preparing"),
+        );
+        // Theirs keeps its own id and message; ours is the turn POST /turns answered.
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: ThreadId.make("session-1"),
+        });
+        const theirRun = projection.runs.find((run) => run.id === theirs.id);
+        assert.isDefined(theirRun);
+        assert.notStrictEqual(theirRun?.userMessageId, "message-mine");
+        assert.isTrue(mine.event.type === "run.updated" && mine.event.payload.id !== theirs.id);
+      }),
+    ),
+  );
+
+  it.live("a session removed with queued work fails it and lets the hub go", () =>
+    withGateway(
+      (mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          mend.workbench.addTurn("session-1", "A long job");
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const { rpc } = yield* pairAndConnect(mend, "REMOVED");
+              const thread = yield* feed(
+                rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+                  threadId: ThreadId.make("session-1"),
+                }),
+              );
+              yield* thread.next(
+                (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+              );
+              yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                message("session-1", "message-orphan", "Behind it"),
+              );
+              const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+              mend.workbench.removeSession("session-1");
+              yield* shell.next(
+                (item): item is Extract<typeof item, { kind: "thread.removed" }> =>
+                  item.kind === "thread.removed",
+              );
+            }),
+          );
+          // No client and nothing that can progress: the hub goes, and its stream with it.
+          yield* eventually(() => mend.workbench.eventStreams === 0, "the hub to go");
+          assert.strictEqual(posts(mend, "/turns").length, 0);
+        }),
+      undefined,
+      { hubIdleTimeToLive: "200 millis" },
     ),
   );
 });

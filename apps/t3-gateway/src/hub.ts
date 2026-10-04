@@ -51,12 +51,12 @@ import type {
   MendSessionAnnotation,
   MendTurn,
 } from "./mend-workbench.ts";
+import * as Queueing from "./queue.ts";
 import {
   isProjectable,
   PROJECTION_SCHEMA_VERSION,
   projectShellOf,
   threadShellOf,
-  type PendingRun,
   type ThreadSource,
 } from "./shell.ts";
 import { GatewayState, type BearerSession, type TurnIds } from "./state.ts";
@@ -228,43 +228,6 @@ interface Watch {
   thread: OrchestrationV2AppThread | null;
 }
 
-/** One queued message, and what the gateway knows of its way into Mend. */
-interface QueueEntry {
-  readonly runId: string;
-  readonly messageId: string;
-  readonly text: string;
-  readonly requestedAt: string;
-  state: PendingRun["state"];
-  error: string | null;
-  /** The sender's device token: their message is sent as them. */
-  readonly token: string;
-  /** A launch with this message as its prompt was accepted; its turn is still to appear. */
-  launched: boolean;
-  /**
-   * The session's `updatedAt` as the launch answered it (Mend's clock): a later terminal status
-   * with no opening turn means provisioning failed after the answer window.
-   */
-  launchedSessionAt: string | null;
-  /**
-   * Taken back while on its way (`starting` or `preparing`): the turn Mend opens for it is
-   * adopted and interrupted, and the queue waits for that.
-   */
-  awaitingTurn: boolean;
-  /** The newest turn ordinal before it was sent; its turn comes after. */
-  afterOrdinal: number;
-}
-
-interface ThreadQueue {
-  entries: Array<QueueEntry>;
-  held: boolean;
-}
-
-/** Session statuses that mean a launch ended: provisioning failed or the agent went away. */
-const LAUNCH_ENDED: ReadonlySet<string> = new Set(["failed", "stopped", "completed"]);
-
-/** How many settled (failed or cancelled) messages a thread keeps showing. */
-const SETTLED_KEPT = 20;
-
 /** A refusal Mend gave a command, in the words t3code shows. */
 const commandRefusalOf = (error: MendCommandRefused | MendNotFound): ThreadCommandRefused =>
   error._tag === "MendNotFound"
@@ -273,6 +236,12 @@ const commandRefusalOf = (error: MendCommandRefused | MendNotFound): ThreadComma
         reason: error.message,
         authorization: error.status === 403,
       });
+
+/** What a message is told when Mend refused the call that carried it. */
+const reasonOf = (error: { readonly _tag: string; readonly message: string }) =>
+  error._tag === "MendDeviceRefused"
+    ? "Mend no longer accepts the device that sent this message."
+    : error.message;
 
 /** How many items one `GET /api/sessions/:id/items` page asks for. */
 const ITEM_PAGE = 500;
@@ -502,7 +471,7 @@ export const makePersonHub = (input: {
       )) {
       rememberIds(ids);
     }
-    const queues = new Map<string, ThreadQueue>();
+    const queues = new Map<string, Queueing.ThreadQueue>();
     const handledCommands = new Set<string>();
 
     const projects = new Map<string, ProjectEntry>();
@@ -562,16 +531,14 @@ export const makePersonHub = (input: {
             requests: conversation.requests,
             runIds: ids?.runIds ?? NO_IDS,
             messageIds: ids?.messageIds ?? NO_IDS,
-            pending: (queue?.entries ?? []).map(
-              (queued): PendingRun => ({
-                runId: queued.runId,
-                messageId: queued.messageId,
-                text: queued.text,
-                requestedAt: queued.requestedAt,
-                state: queued.state,
-                error: queued.error,
-              }),
-            ),
+            pending: (queue?.entries ?? []).map((queued) => ({
+              runId: queued.runId,
+              messageId: queued.messageId,
+              text: queued.text,
+              requestedAt: queued.requestedAt,
+              state: Queueing.pendingStateOf(queued),
+              error: queued.error,
+            })),
             queueHeld: queue?.held ?? false,
           });
         }
@@ -747,18 +714,10 @@ export const makePersonHub = (input: {
 
     /** Moves every queue on after a read (set below, once the queue's machinery exists). */
     let settleQueues: Effect.Effect<void> = Effect.void;
-    /** Whether a message the gateway accepted is still queued or on its way into Mend. */
+    /** Whether a message the gateway accepted can still reach Mend: what holds the hub alive. */
     let busy = false;
     const holdWhileBusy = Effect.suspend(() => {
-      const now = Array.from(queues.values()).some((queue) =>
-        queue.entries.some(
-          (entry) =>
-            entry.state === "queued" ||
-            entry.state === "starting" ||
-            entry.state === "preparing" ||
-            entry.awaitingTurn,
-        ),
-      );
+      const now = !dead && Queueing.anyProgress(queues.values());
       if (now === busy) return Effect.void;
       busy = now;
       return retain(now);
@@ -1076,39 +1035,40 @@ export const makePersonHub = (input: {
     yield* tokens.noneLeft.pipe(Effect.andThen(teardown), Effect.forkScoped);
     // ─── The queue ─────────────────────────────────────────────────────────
 
-    const queueOf = (sessionId: string): ThreadQueue => {
+    const queueOf = (sessionId: string): Queueing.ThreadQueue => {
       const existing = queues.get(sessionId);
       if (existing !== undefined) return existing;
-      const created: ThreadQueue = { entries: [], held: false };
+      const created = Queueing.emptyQueue();
       queues.set(sessionId, created);
       return created;
     };
 
-    /** Drops a message from the queue; an empty queue is not held. */
-    const dropEntry = (sessionId: string, entry: QueueEntry) => {
-      const queue = queueOf(sessionId);
-      queue.entries = queue.entries.filter((candidate) => candidate !== entry);
-      if (!queue.entries.some((candidate) => candidate.state === "queued")) queue.held = false;
+    /** What Mend says of the session now, for the queue's rules (`queue.ts`). */
+    const viewOf = (sessionId: string): Queueing.SessionView => {
+      const source = sourceOf(sessionId);
+      if (source === null) {
+        return {
+          known: false,
+          agentLive: false,
+          turnOpen: false,
+          status: null,
+          updatedAt: null,
+          summary: null,
+        };
+      }
+      const turns = conversations.get(sessionId)?.turns ?? [];
+      return {
+        known: true,
+        agentLive: source.agent.exitedAt === null && source.agent.status === "running",
+        turnOpen: turns.some((turn) => turn.status === "queued" || turn.status === "running"),
+        status: source.session.status,
+        updatedAt: source.session.updatedAt,
+        summary: source.session.summary ?? null,
+      };
     };
 
-    /** Keeps only the newest settled messages, so a thread does not grow without end. */
-    const settle = (
-      sessionId: string,
-      entry: QueueEntry,
-      outcome: "failed" | "cancelled",
-      error: string | null,
-    ) => {
-      entry.state = outcome;
-      entry.error = error;
-      const queue = queueOf(sessionId);
-      const settled = queue.entries.filter((e) => e.state === "failed" || e.state === "cancelled");
-      const surplus = new Set(settled.slice(0, Math.max(0, settled.length - SETTLED_KEPT)));
-      queue.entries = queue.entries.filter((candidate) => !surplus.has(candidate));
-      if (!queue.entries.some((candidate) => candidate.state === "queued")) queue.held = false;
-    };
-
-    /** A Mend turn is the message the gateway sent: it keeps the message's t3code ids from now on. */
-    const adopt = (sessionId: string, entry: QueueEntry, turn: MendTurn) =>
+    /** The message is its Mend turn, by the id `POST /turns` answered; it keeps the client's ids. */
+    const adopt = (sessionId: string, entry: Queueing.QueueEntry, turn: MendTurn) =>
       Effect.gen(function* () {
         const ids: TurnIds = {
           sessionId,
@@ -1117,7 +1077,7 @@ export const makePersonHub = (input: {
           messageId: entry.messageId,
         };
         rememberIds(ids);
-        dropEntry(sessionId, entry);
+        Queueing.adopted(queueOf(sessionId), entry);
         const conversation = conversations.get(sessionId) ?? EMPTY_CONVERSATION;
         if (!conversation.turns.some((known) => known.id === turn.id)) {
           conversations.set(sessionId, { ...conversation, turns: [...conversation.turns, turn] });
@@ -1129,9 +1089,8 @@ export const makePersonHub = (input: {
               Effect.logError("t3 gateway could not record a turn's ids", { cause: error.message }),
             ),
           );
-        // Taken back while it was on its way: the turn Mend opened for it is interrupted.
-        if (entry.awaitingTurn) {
-          entry.awaitingTurn = false;
+        // Taken back while it was being sent: its own turn, by id, is interrupted.
+        if (entry.takenBack) {
           yield* Effect.forkIn(
             mend.interruptTurn(entry.token, turn.id).pipe(
               Effect.catch((error) =>
@@ -1145,141 +1104,82 @@ export const makePersonHub = (input: {
         }
       });
 
-    /**
-     * A launch's opening turn: the first turn after the launch whose input is the message and that
-     * no other message claimed.
-     */
-    const correlate = (sessionId: string) =>
+    /** `POST /turns` with the message: Mend answers its turn. */
+    const sendTurn = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const queue = queues.get(sessionId);
-        if (queue === undefined) return;
-        const claimed = turnIds.get(sessionId)?.runIds ?? NO_IDS;
-        const session = sourceOf(sessionId)?.session;
-        for (const entry of queue.entries) {
-          const waiting = entry.state === "preparing" || entry.awaitingTurn;
-          if (!waiting || !entry.launched) continue;
-          const turn = (conversations.get(sessionId)?.turns ?? []).find(
-            (candidate) =>
-              candidate.ordinal > entry.afterOrdinal &&
-              !claimed.has(candidate.id) &&
-              candidate.input.trim() === entry.text.trim(),
-          );
-          if (turn !== undefined) {
-            yield* adopt(sessionId, entry, turn);
-            continue;
-          }
-          // The launch answered, then provisioning ended without the opening turn: the session
-          // settled after the answer (Mend's own clock), so the message failed for Mend's reason.
-          if (
-            session !== undefined &&
-            LAUNCH_ENDED.has(session.status) &&
-            entry.launchedSessionAt !== null &&
-            Date.parse(session.updatedAt) > Date.parse(entry.launchedSessionAt)
-          ) {
-            entry.awaitingTurn = false;
-            if (entry.state === "preparing") {
-              settle(
-                sessionId,
-                entry,
-                "failed",
-                session.summary ?? `The session ${session.status} before it took the message.`,
-              );
-            }
-          }
-        }
-      });
-
-    /** A message Mend did not take: the run fails, and says why (a taken-back one stays so). */
-    const refuseEntry = (sessionId: string, entry: QueueEntry, reason: string) =>
-      locked(
-        Effect.gen(function* () {
-          entry.awaitingTurn = false;
-          if (entry.state !== "cancelled") settle(sessionId, entry, "failed", reason);
-          yield* publishAll;
-        }),
-      );
-
-    /** Sends one message: a turn of the live agent, or the opening turn of a launch. */
-    const submit = (sessionId: string, entry: QueueEntry, live: boolean): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        if (live) {
-          const sent = yield* mend
-            .submitTurn(entry.token, sessionId, entry.text)
-            .pipe(Effect.result);
-          if (sent._tag === "Success") {
-            yield* locked(
-              Effect.gen(function* () {
-                yield* adopt(sessionId, entry, sent.success);
-                yield* publishAll;
-              }),
-            );
-            yield* requestRefresh(`conversation:${sessionId}`);
-            return;
-          }
-          const notLive =
-            sent.failure._tag === "MendCommandRefused" &&
-            sent.failure.tag === "ProtocolSessionNotLive";
-          if (!notLive) return yield* refuseEntry(sessionId, entry, sent.failure.message);
-          // The agent stopped between the read and the send: launch it with the message instead.
-          yield* locked(
-            Effect.gen(function* () {
-              if (entry.state === "starting") entry.state = "preparing";
-              yield* publishAll;
-            }),
-          );
-        }
-        // Names no options: Mend reuses what the session's last protocol agent recorded
-        // (mend#493), so an ask session comes back asking. Nothing cached here can go stale.
-        const launched = yield* mend
-          .launchProtocol(entry.token, sessionId, entry.text)
-          .pipe(Effect.result);
-        if (launched._tag === "Failure") {
-          return yield* refuseEntry(sessionId, entry, launched.failure.message);
-        }
+        const sent = yield* mend.submitTurn(entry.token, sessionId, entry.text).pipe(Effect.result);
         yield* locked(
           Effect.gen(function* () {
-            entry.launched = true;
-            entry.launchedSessionAt = launched.success.updatedAt;
+            const queue = queueOf(sessionId);
+            if (sent._tag === "Success") {
+              yield* adopt(sessionId, entry, sent.success);
+            } else if (
+              sent.failure._tag === "MendCommandRefused" &&
+              sent.failure.tag === "ProtocolSessionNotLive"
+            ) {
+              Queueing.notLive(queue, entry);
+            } else {
+              Queueing.fail(queue, entry, reasonOf(sent.failure));
+            }
             yield* publishAll;
           }),
         );
-        yield* requestRefresh(`project:${launched.success.projectId}`);
         yield* requestRefresh(`conversation:${sessionId}`);
       });
 
     /**
-     * Sends the thread's next queued message once nothing is open: no Mend turn queued or running
-     * and no message of the gateway's on its way. Runs under the lock; the send itself is forked.
+     * Launches the stopped session again with no prompt: the message goes out by `POST /turns`
+     * once Mend reports the agent live. Naming no options, Mend reuses what the session's last
+     * protocol agent recorded (mend#493), so an ask session comes back asking.
      */
-    const pump = (sessionId: string) =>
+    const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const queue = queues.get(sessionId);
-        if (queue === undefined || queue.held) return;
-        if (
-          queue.entries.some(
-            (entry) =>
-              entry.state === "starting" || entry.state === "preparing" || entry.awaitingTurn,
-          )
-        ) {
-          return;
+        const launched = yield* mend.launchProtocol(entry.token, sessionId, "").pipe(Effect.result);
+        yield* locked(
+          Effect.gen(function* () {
+            if (launched._tag === "Failure") {
+              Queueing.fail(queueOf(sessionId), entry, reasonOf(launched.failure));
+            } else {
+              entry.launchAnsweredAt = launched.success.updatedAt;
+            }
+            yield* publishAll;
+          }),
+        );
+        if (launched._tag === "Success") {
+          yield* requestRefresh(`project:${launched.success.projectId}`);
         }
-        const turns = conversations.get(sessionId)?.turns ?? [];
-        if (turns.some((turn) => turn.status === "queued" || turn.status === "running")) return;
-        const next = queue.entries.find((entry) => entry.state === "queued");
-        const source = sourceOf(sessionId);
-        if (next === undefined || source === null) return;
-        const live = source.agent.exitedAt === null;
-        next.state = live ? "starting" : "preparing";
-        next.afterOrdinal = turns.reduce((highest, turn) => Math.max(highest, turn.ordinal), -1);
-        yield* Effect.forkIn(submit(sessionId, next, live), hubScope);
       });
 
+    /** Each thread's next step, after any read (`queue.ts` decides; this carries it out). */
     settleQueues = Effect.suspend(() =>
       Effect.forEach(
-        Array.from(queues.keys()),
-        (sessionId) => Effect.andThen(correlate(sessionId), pump(sessionId)),
+        Array.from(queues),
+        ([sessionId, queue]) => {
+          // Before the first full read, nothing is known of any session yet.
+          if (!loaded) return Effect.void;
+          const step = Queueing.nextStep(queue, viewOf(sessionId));
+          if (step === null) return Effect.void;
+          const work =
+            step.kind === "send"
+              ? sendTurn(sessionId, step.entry)
+              : launchAgain(sessionId, step.entry);
+          return Effect.forkIn(work, hubScope).pipe(Effect.asVoid);
+        },
         { discard: true },
       ),
+    );
+
+    /** Every device of the person was revoked: what was queued for them fails, the lease goes. */
+    onTeardown = locked(
+      Effect.gen(function* () {
+        for (const queue of queues.values()) {
+          Queueing.failAll(queue, "Every device of this person was revoked in Mend.");
+        }
+        yield* publishShell;
+        yield* publishThreads;
+        busy = false;
+        yield* retain(false);
+      }),
     );
 
     const refused = (reason: string, authorization = false) =>
@@ -1303,12 +1203,7 @@ export const makePersonHub = (input: {
         // Mend's steering rule, read as the sender: only those who may steer queue a message.
         const detail = yield* mend
           .sessionDetail(command.session.deviceToken, command.threadId)
-          .pipe(
-            Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
-            Effect.tapErrorTag("MendDeviceRefused", () =>
-              tokens.refuse(command.session.deviceToken),
-            ),
-          );
+          .pipe(Effect.catchTag("MendNotFound", () => Effect.succeed(null)));
         if (detail === null)
           return yield* refused(`Thread ${command.threadId} is not in this environment.`);
         if (detail.control?.steer === false) {
@@ -1327,13 +1222,12 @@ export const makePersonHub = (input: {
               messageId: command.messageId,
               text: command.text,
               requestedAt: new Date().toISOString(),
+              token: command.session.deviceToken,
               state: "queued",
               error: null,
-              token: command.session.deviceToken,
-              launched: false,
-              launchedSessionAt: null,
-              awaitingTurn: false,
-              afterOrdinal: -1,
+              launchAnsweredAt: null,
+              launches: 0,
+              takenBack: false,
             });
             yield* publishAll;
             return sequence;
@@ -1351,49 +1245,43 @@ export const makePersonHub = (input: {
       return conversations.get(sessionId)?.turns.find((turn) => turn.id === turnId) ?? null;
     };
 
-    const cancelQueued: ThreadCommands["cancelQueued"] = (threadId, runId) =>
+    /** Takes a message back wherever it is on its way, holding the queue if asked. */
+    const takeBack = (threadId: string, runId: string, holdQueue: boolean) =>
       locked(
         Effect.gen(function* () {
-          const entry = queues
-            .get(threadId)
-            ?.entries.find((candidate) => candidate.runId === runId);
-          if (entry === undefined) return yield* refused("That message is not queued any more.");
-          if (entry.state === "starting" || entry.state === "preparing") {
-            // On its way: the turn Mend opens for it is interrupted once it appears.
-            entry.awaitingTurn = true;
-          } else if (entry.state !== "queued") {
+          if (!Queueing.takeBack(queueOf(threadId), runId, holdQueue)) {
             return yield* refused("That message is not queued any more.");
           }
-          settle(threadId, entry, "cancelled", null);
           yield* publishAll;
           return sequence;
         }),
       );
 
+    const cancelQueued: ThreadCommands["cancelQueued"] = (threadId, runId) =>
+      takeBack(threadId, runId, false);
+
     const interrupt: ThreadCommands["interrupt"] = (command) =>
       Effect.gen(function* () {
         const target = yield* locked(
           Effect.gen(function* () {
-            const entry = queues
-              .get(command.threadId)
-              ?.entries.find((candidate) => candidate.runId === command.runId);
-            if (entry !== undefined) return { kind: "queued" as const, entry };
+            const queue = queueOf(command.threadId);
+            if (queue.entries.some((entry) => entry.runId === command.runId)) {
+              return { kind: "queued" as const };
+            }
             const turn = turnOfRun(command.threadId, command.runId);
             if (turn === null) return yield* refused(`Run ${command.runId} is not in this thread.`);
-            const queue = queues.get(command.threadId);
-            const wasHeld = queue?.held ?? false;
+            const wasHeld = queue.held;
             // Held before the turn ends, so the next message does not go out behind it.
-            if (command.holdQueue && queue?.entries.some((e) => e.state === "queued") === true) {
-              queue.held = true;
-              yield* publishAll;
-            }
+            Queueing.holdIfQueued(queue, command.holdQueue);
+            yield* publishAll;
             return { kind: "turn" as const, turn, wasHeld };
           }),
         );
-        // Queued or still on its way: taken back (and interrupted once Mend opens its turn).
-        if (target.kind === "queued") return yield* cancelQueued(command.threadId, command.runId);
+        // A message still in the queue or on its way: taken back, honouring holdQueue too.
+        if (target.kind === "queued") {
+          return yield* takeBack(command.threadId, command.runId, command.holdQueue);
+        }
         yield* mend.interruptTurn(command.session.deviceToken, target.turn.id).pipe(
-          Effect.tapErrorTag("MendDeviceRefused", () => tokens.refuse(command.session.deviceToken)),
           Effect.catchTags({
             MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
             MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
@@ -1401,8 +1289,7 @@ export const makePersonHub = (input: {
           Effect.tapError(() =>
             locked(
               Effect.gen(function* () {
-                const queue = queues.get(command.threadId);
-                if (queue !== undefined) queue.held = target.wasHeld;
+                queueOf(command.threadId).held = target.wasHeld;
                 yield* publishAll;
               }),
             ),
@@ -1415,8 +1302,7 @@ export const makePersonHub = (input: {
     const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
       locked(
         Effect.gen(function* () {
-          const queue = queues.get(threadId);
-          if (queue !== undefined) queue.held = false;
+          Queueing.resume(queueOf(threadId));
           yield* publishAll;
           return sequence;
         }),
@@ -1436,9 +1322,6 @@ export const makePersonHub = (input: {
         yield* mend
           .respondRequest(command.session.deviceToken, command.requestId, command.response)
           .pipe(
-            Effect.tapErrorTag("MendDeviceRefused", () =>
-              tokens.refuse(command.session.deviceToken),
-            ),
             Effect.catchTags({
               MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
               MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),

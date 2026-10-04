@@ -189,9 +189,9 @@ export class MendClient extends Context.Service<
       input: string,
     ) => MendCommand<MendTurn>;
     /**
-     * `POST /api/sessions/:id/launch` in protocol mode with the prompt as its opening turn. Naming
-     * no model, effort or permission mode, the launch runs on what the session's last protocol
-     * agent recorded (mend#493).
+     * `POST /api/sessions/:id/launch` in protocol mode, with the prompt as its opening turn or, for
+     * an empty prompt, none. Naming no model, effort or permission mode, the launch runs on what
+     * the session's last protocol agent recorded (mend#493).
      */
     readonly launchProtocol: (
       deviceToken: string,
@@ -444,7 +444,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             "POST /api/sessions/:id/launch",
             `/api/sessions/${encodeURIComponent(sessionId)}/launch`,
             deviceToken,
-            { mode: "protocol", prompt },
+            // No prompt is a launch that only brings the agent up (the gateway's relaunch).
+            prompt === "" ? { mode: "protocol" } : { mode: "protocol", prompt },
             decodeSession,
           ),
           "POST /api/sessions/:id/launch",
