@@ -1298,12 +1298,12 @@ export function InstallCommandSection({ project }: { readonly project: ProjectDt
 
   return (
     <section id="install-command" className="project-setup-card">
-      <h2 className="font-sans text-sm font-semibold">Automatic install</h2>
+      <h2 className="font-sans text-sm font-semibold">Dependencies</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
-        On, Mend runs the project&apos;s install command before the agent starts when neither the
-        saved state nor this project&apos;s shared cache has the dependency tree, and runs it once
-        more to fill that cache. Off, Mend runs no install here; the agent installs when it needs
-        to. A tree already saved or cached is restored either way.
+        On, Mend installs dependencies before the agent starts when neither the saved state nor this
+        project&apos;s shared cache has them, and fills the shared cache the same way. Off, Mend
+        runs no install; the agent installs when it needs to. A tree already saved or cached is
+        restored either way.
       </p>
       <div className="mt-3 flex items-center justify-between gap-3">
         <p className="min-w-0 truncate font-sans text-[13px] font-medium text-foreground">
