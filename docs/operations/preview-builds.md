@@ -87,9 +87,9 @@ writes it into every generation). It ends with `mend server status`.
   box's version cannot be installed over it. Neither can a release older than the preview: a box on
   `0.36.0-next.56.preview.17` takes `0.36.0-next.57`, `0.36.0` or later.
 - Previews before ADR 0015 were numbered `0.36.0-preview.R`. `preview` sorts after `next`, so a box
-  on one of those refuses every `0.36.0-next.*`. Move it once with
-  `mend server upgrade --version 0.36.0-next.N --from-preview`
-  ([The next channel](next-channel.md)).
+  on one of those refuses every `0.36.0-next.*`, new-style previews included. Move it once with
+  `mend server upgrade --version <version> --from-preview` (steps in
+  [The next channel](next-channel.md)); after that this deploy script works as usual.
 - A preview applies its Mend and Sealant migrations to the box's databases, and they are not
   reversed. Use a box you can rebuild.
 - Mend imports `@sealant/sdk` and `@sealant/api-contracts` from npm, and Core imports the

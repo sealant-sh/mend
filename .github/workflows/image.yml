@@ -27,6 +27,31 @@ jobs:
       value: ${{ steps.resolve.outputs.version }}
       before: ${{ steps.resolve.outputs.before }}
     steps:
+      # A dispatch of image.yml itself pushes ghcr.io/sealant-sh/mend:<version>, the tag
+      # `mend server setup` pulls: from main only, and only for a version that has its git tag, or a
+      # dev or acceptance build. A call from release-acceptance.yml or release-cli.yml carries its
+      # caller's event and ref, so the check reads github.workflow_ref, the top-level workflow.
+      - name: A direct dispatch comes from main, for a tagged version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ $GITHUB_WORKFLOW_REF == "$GITHUB_REPOSITORY/.github/workflows/image.yml@"* ]] || exit 0
+          if [[ $GITHUB_REF != refs/heads/main ]]; then
+            echo "::error::Dispatch image.yml from main only."
+            exit 1
+          fi
+          case $OVERRIDE_VERSION in
+            "" | 0.0.0-dev.* | 0.0.0-acceptance.*) ;;
+            *)
+              if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$OVERRIDE_VERSION" >/dev/null 2>&1; then
+                echo "::error::No tag v$OVERRIDE_VERSION: a dispatch builds a tagged version or a dev build."
+                exit 1
+              fi
+              ;;
+          esac
       - name: Resolve one version for image labels and tags
         id: resolve
         env:
@@ -34,12 +59,7 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { appendFileSync } from 'node:fs';
-          const { GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION } = process.env;
-          // A dispatch pushes ghcr.io/sealant-sh/mend:<version>, the tag `mend server setup` pulls:
-          // only main may do that, never a branch.
-          if (GITHUB_EVENT_NAME === 'workflow_dispatch' && GITHUB_REF !== 'refs/heads/main') {
-            throw new Error('Dispatch image.yml from main only.');
-          }
+          const { GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_OUTPUT, OVERRIDE_VERSION } = process.env;
           const tagged = GITHUB_REF.startsWith('refs/tags/');
           const tagVersion = tagged ? GITHUB_REF_NAME.replace(/^v/, '') : undefined;
           if (tagged && OVERRIDE_VERSION && OVERRIDE_VERSION !== tagVersion) {

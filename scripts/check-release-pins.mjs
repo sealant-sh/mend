@@ -22,9 +22,8 @@ import {
   compareCore,
   compareNext,
   isNextVersion,
-  nextBuildsOf,
   nextVersionOf,
-  strayNextBuilds,
+  strayBuildsOf,
 } from "./next-version.mjs";
 import {
   SEMVER,
@@ -144,7 +143,11 @@ const check = async (tag) => {
       problems.push(`A prerelease is a next build, vX.Y.Z-next.N; "${tag}" is not one.`);
       return problems;
     }
-    const expected = nextVersionOf("HEAD", RELEASED_PACKAGE);
+    // Every other next build counts as handed out; the tag being checked does not vouch for itself.
+    const handedOut = allNextTags
+      .map((other) => other.slice(1))
+      .filter((other) => isNextVersion(other) && other !== version);
+    const expected = nextVersionOf("HEAD", RELEASED_PACKAGE, handedOut);
     if (version !== expected) {
       problems.push(`This commit's next version is ${expected}, not ${version}.`);
     }
@@ -160,18 +163,7 @@ const check = async (tag) => {
       `apps/cli/package.json carries ${cliVersion}. Merge the Version Packages pull request, then tag its commit.`,
     );
   }
-  for (const build of strayNextBuilds({
-    version,
-    builds: await nextBuildsOf(version),
-    isAncestor: (commit) => {
-      try {
-        git(["merge-base", "--is-ancestor", commit, "HEAD"]);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-  })) {
+  for (const build of await strayBuildsOf(version, "HEAD")) {
     problems.push(
       `v${build.version} was built from ${build.commit}, which this release does not contain: a server on it would lose that work by upgrading to ${version}. Release from a commit that contains it.`,
     );

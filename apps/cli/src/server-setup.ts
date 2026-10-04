@@ -1958,12 +1958,12 @@ const parseUpgradeOptions = (
 
 /**
  * Previews built before the `next` channel (ADR 0015) were numbered X.Y.Z-preview.K, which sorts
- * above every X.Y.Z-next.N: `preview` comes after `next`. A server on one could take no next build
- * until X.Y.Z itself. `--from-preview` moves it once, to a next build of the same X.Y.Z, after
- * checking that the target carries every migration the server applied.
+ * above every X.Y.Z-next.N and every new-style X.Y.Z-next.N.preview.R: `preview` comes after
+ * `next`. A server on one could take neither until X.Y.Z itself. `--from-preview` moves it once, to
+ * either, of the same X.Y.Z, after checking the target against every migration the server applied.
  */
 const LEGACY_PREVIEW = /^(\d+\.\d+\.\d+)-preview\.(0|[1-9]\d*)$/;
-const NEXT_BUILD = /^(\d+\.\d+\.\d+)-next\.(0|[1-9]\d*)$/;
+const NEXT_BUILD = /^(\d+\.\d+\.\d+)-next\.(0|[1-9]\d*)(\.preview\.[1-9]\d*)?$/;
 
 export const isPreviewToNext = (from: string, to: string): boolean => {
   const preview = LEGACY_PREVIEW.exec(from);
@@ -1971,10 +1971,20 @@ export const isPreviewToNext = (from: string, to: string): boolean => {
   return preview !== null && next !== null && preview[1] === next[1];
 };
 
-/** The applied rows of Sealant's drizzle journal: its name, or only its folder time when old. */
+/**
+ * A Mend migration as Effect's migrator stores it: the record key `0107_turn_payer` becomes
+ * migration_id 107 and name `turn_payer` in `mend_migrations`.
+ */
+interface MendMigration {
+  readonly id: number;
+  readonly name: string;
+}
+
+/** A row of Sealant's drizzle journal: its folder name (empty on old rows), folder time and hash. */
 interface SealantMigration {
   readonly name: string;
   readonly createdAt: string;
+  readonly hash: string;
 }
 
 /** Drizzle's folder time: the first 14 digits of the folder name, read as UTC. */
@@ -1983,37 +1993,65 @@ const drizzleMillis = (folder: string): string => {
   return String(Date.UTC(at(0, 4), at(4, 6) - 1, at(6, 8), at(8, 10), at(10, 12), at(12, 14)));
 };
 
+const mendKey = (migration: MendMigration): string =>
+  `${String(migration.id).padStart(4, "0")}_${migration.name}`;
+
 /**
- * The migrations a server applied that the target image does not carry. `manifest` is the image's
- * /app/migrations.txt: one `mend <name>` or `sealant <folder>` per line.
+ * Why the target image cannot take this server's databases, one line per migration. `manifest` is
+ * the image's /app/migrations.txt: `mend <id>_<name>` and `sealant <folder> <sha256>` lines.
+ *
+ * - A Mend migration the server applied that the target lacks, by id and name.
+ * - A Mend migration the target has at or below the highest id applied that the server never ran:
+ *   Effect's migrator runs only ids above the highest applied, so it would be skipped for good.
+ * - A Sealant migration the server applied that the target lacks (by folder, or by folder time on
+ *   an old row without a name), or whose SQL changed since (drizzle's hash).
+ *
+ * Not detectable: a Mend migration whose code changed under the same id and name. Mend stores no
+ * hash of it.
  */
-export const missingMigrations = (
+export const migrationProblems = (
   applied: {
-    readonly mend: ReadonlyArray<string>;
+    readonly mend: ReadonlyArray<MendMigration>;
     readonly sealant: ReadonlyArray<SealantMigration>;
   },
   manifest: string,
 ): ReadonlyArray<string> => {
-  const mend = new Set<string>();
-  const sealant = new Set<string>();
-  const sealantTimes = new Set<string>();
+  const mend = new Map<number, string>();
+  const sealant = new Map<string, string>();
+  const sealantTimes = new Map<string, string>();
   for (const line of manifest.split("\n")) {
-    const [kind, name] = line.trim().split(/\s+/);
-    if (name === undefined) continue;
-    if (kind === "mend") mend.add(name);
+    const [kind, entry, hash = ""] = line.trim().split(/\s+/);
+    if (entry === undefined) continue;
+    if (kind === "mend") {
+      const match = /^(\d+)_(.+)$/.exec(entry);
+      if (match?.[1] !== undefined && match[2] !== undefined) mend.set(Number(match[1]), match[2]);
+    }
     if (kind === "sealant") {
-      sealant.add(name);
-      sealantTimes.add(drizzleMillis(name));
+      sealant.set(entry, hash);
+      sealantTimes.set(drizzleMillis(entry), hash);
     }
   }
-  return [
-    ...applied.mend.filter((name) => !mend.has(name)).map((name) => `mend ${name}`),
-    ...applied.sealant
-      .filter((row) =>
-        row.name === "" ? !sealantTimes.has(row.createdAt) : !sealant.has(row.name),
-      )
-      .map((row) => `sealant ${row.name === "" ? `(created ${row.createdAt})` : row.name}`),
-  ];
+  const problems: Array<string> = [];
+  for (const migration of applied.mend) {
+    if (mend.get(migration.id) !== migration.name)
+      problems.push(`mend ${mendKey(migration)} is applied here and not in the target`);
+  }
+  const appliedIds = new Set(applied.mend.map((migration) => migration.id));
+  const highest = Math.max(0, ...appliedIds);
+  for (const [id, name] of [...mend].toSorted(([a], [b]) => a - b)) {
+    if (id <= highest && !appliedIds.has(id))
+      problems.push(
+        `mend ${mendKey({ id, name })} would never run: this server already applied ${highest}`,
+      );
+  }
+  for (const row of applied.sealant) {
+    const label = row.name === "" ? `(created ${row.createdAt})` : row.name;
+    const hash = row.name === "" ? sealantTimes.get(row.createdAt) : sealant.get(row.name);
+    if (hash === undefined) problems.push(`sealant ${label} is applied here and not in the target`);
+    else if (hash !== row.hash)
+      problems.push(`sealant ${label} changed after this server applied it`);
+  }
+  return problems;
 };
 
 const psqlRows = async (
@@ -2075,27 +2113,32 @@ const checkPreviewMigrations = async (
     "--no-build",
     "postgres",
   ]);
-  const mend = await psqlRows(
-    runtime,
-    existing,
-    "mend",
-    "select name from mend_migrations order by migration_id",
-  );
+  const mend = (
+    await psqlRows(
+      runtime,
+      existing,
+      "mend",
+      "select migration_id, name from mend_migrations order by migration_id",
+    )
+  ).map((line) => {
+    const [id = "", name = ""] = line.split("|");
+    return { id: Number(id), name };
+  });
   const sealant = (
     await psqlRows(
       runtime,
       existing,
       "sealant_control_plane",
-      "select coalesce(name, ''), created_at from drizzle.__drizzle_migrations order by id",
+      "select coalesce(name, ''), created_at, hash from drizzle.__drizzle_migrations order by id",
     )
   ).map((line) => {
-    const [name = "", createdAt = ""] = line.split("|");
-    return { name, createdAt };
+    const [name = "", createdAt = "", hash = ""] = line.split("|");
+    return { name, createdAt, hash };
   });
-  const missing = missingMigrations({ mend, sealant }, listed.stdout);
-  if (missing.length > 0)
+  const problems = migrationProblems({ mend, sealant }, listed.stdout);
+  if (problems.length > 0)
     throw setupError(
-      `${image} does not carry ${missing.length} migration(s) this server applied: ${missing.join(", ")}. Choose a next build that contains them. Nothing was changed.`,
+      `${image} cannot take this server's databases (${problems.length}): ${problems.join("; ")}. Choose a build that contains every migration this server applied. Nothing was changed.`,
     );
   runtime.writeLine(
     `${image} carries all ${mend.length + sealant.length} migrations this server applied.`,
@@ -2114,7 +2157,7 @@ const upgradeServer = async (
   const previewToNext = isPreviewToNext(existing.config.serverVersion, version);
   if (options.fromPreview && !previewToNext)
     throw setupError(
-      "--from-preview moves a server on X.Y.Z-preview.K to a next build of the same version, X.Y.Z-next.N, and nothing else.",
+      "--from-preview moves a server on X.Y.Z-preview.K to a next build or a new-style preview of the same version (X.Y.Z-next.N, X.Y.Z-next.N.preview.R), and nothing else.",
     );
   if (order < 0 && !options.fromPreview)
     throw setupError(

@@ -67,12 +67,15 @@ COPY --from=sealant-worker /app/node_modules /opt/sealant/worker/node_modules
 COPY --from=sealant-worker /app/microvm-image /opt/sealant/worker/microvm-image
 COPY --from=sealant-ssh-gateway /app/dist /opt/sealant/ssh-gateway/dist
 COPY --from=sealant-ssh-gateway /app/node_modules /opt/sealant/ssh-gateway/node_modules
-# Every migration this image carries, Mend's and Sealant's: `mend server upgrade --from-preview`
-# reads it to refuse a target that lacks one a server already applied.
+# Every migration this image carries: Mend's as `mend <id>_<name>`, Sealant's as
+# `sealant <folder> <sha256 of migration.sql>` (drizzle's hash). `mend server upgrade --from-preview`
+# reads it to refuse a target that lacks, changed or would skip one a server already applied.
 COPY --from=mend-build /app/mend-migrations.txt /tmp/mend-migrations.txt
 RUN { sed 's/^/mend /' /tmp/mend-migrations.txt; \
     for folder in /opt/sealant/api/drizzle/*/; do \
-      if [ -f "${folder}migration.sql" ]; then echo "sealant $(basename "$folder")"; fi; \
+      if [ -f "${folder}migration.sql" ]; then \
+        echo "sealant $(basename "$folder") $(sha256sum "${folder}migration.sql" | cut -d ' ' -f 1)"; \
+      fi; \
     done; } > /app/migrations.txt \
   && rm /tmp/mend-migrations.txt \
   && grep -q '^mend ' /app/migrations.txt && grep -q '^sealant ' /app/migrations.txt

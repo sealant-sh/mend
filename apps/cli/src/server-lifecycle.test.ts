@@ -414,11 +414,13 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
   describe("from a preview numbered before the next channel", () => {
     const preview = "0.36.0-preview.17";
     const next = "0.36.0-next.60";
+    const ledgerHash = "a".repeat(64);
+    const stopHash = "b".repeat(64);
     const manifest = [
       "mend 0001_init",
       "mend 0107_turn_payer",
-      "sealant 20260901120000_capture_ledger",
-      "sealant 20261003093819_stop_remains_removed",
+      `sealant 20260901120000_capture_ledger ${ledgerHash}`,
+      `sealant 20261003093819_stop_remains_removed ${stopHash}`,
     ].join("\n");
     const onPreview = async (applied: Readonly<Record<string, ReadonlyArray<string>>>) => {
       const f = await fixture();
@@ -430,12 +432,14 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       expect(await f.setup(preview)).toEqual({ _tag: "ok" });
       return f;
     };
+    // As psql prints the real tables: Effect's mend_migrations keeps the id and the name apart
+    // (key 0107_turn_payer is stored as 107 | turn_payer); drizzle keeps name, time and hash.
     const everything = {
-      mend: ["0001_init", "0107_turn_payer"],
-      // An old row without a name is matched by its folder time (2026-09-01 12:00:00 UTC).
+      mend: ["1|init", "107|turn_payer"],
+      // An old drizzle row without a name is matched by its folder time (2026-09-01 12:00:00 UTC).
       sealant_control_plane: [
-        `|${Date.UTC(2026, 8, 1, 12, 0, 0)}`,
-        "20261003093819_stop_remains_removed|1759484299000",
+        `|${Date.UTC(2026, 8, 1, 12, 0, 0)}|${ledgerHash}`,
+        `20261003093819_stop_remains_removed|1759484299000|${stopHash}`,
       ],
     };
 
@@ -476,8 +480,11 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
 
     it("refuses, naming them, when the target lacks a migration the server applied", async () => {
       const f = await onPreview({
-        mend: ["0001_init", "0107_turn_payer", "0108_opencode_models"],
-        sealant_control_plane: [...everything.sealant_control_plane, "20261004000000_unmerged|1"],
+        mend: ["1|init", "107|turn_payer", "108|opencode_models"],
+        sealant_control_plane: [
+          ...everything.sealant_control_plane,
+          `20261004000000_unmerged|1|${"c".repeat(64)}`,
+        ],
       });
       const old = f.active();
       expect(
@@ -488,7 +495,7 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       ).toMatchObject({
         _tag: "error",
         message: expect.stringContaining(
-          "does not carry 2 migration(s) this server applied: mend 0108_opencode_models, sealant 20261004000000_unmerged",
+          "cannot take this server's databases (2): mend 0108_opencode_models is applied here and not in the target; sealant 20261004000000_unmerged is applied here and not in the target",
         ),
       });
       expect(f.active()).toBe(old);
@@ -546,6 +553,8 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
         message: expect.stringContaining("--from-preview moves a server"),
       });
       expect(isPreviewToNext("0.36.0-preview.17", "0.36.0-next.1")).toBe(true);
+      // A new-style preview is a way off the old numbering too.
+      expect(isPreviewToNext("0.36.0-preview.17", "0.36.0-next.584.preview.40")).toBe(true);
       expect(isPreviewToNext("0.36.0-preview.17", "0.37.0-next.1")).toBe(false);
       expect(isPreviewToNext("0.36.0-next.5.preview.17", "0.36.0-next.6")).toBe(false);
       expect(isPreviewToNext("0.36.0", "0.36.0-next.1")).toBe(false);

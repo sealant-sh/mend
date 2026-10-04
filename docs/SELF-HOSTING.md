@@ -290,10 +290,13 @@ Offline upgrades accept `--assets-dir DIR --offline` with the target images prel
 are refused. A same-version upgrade does not restart the app; use `start` or `restart` instead.
 
 A server on a preview numbered before the next channel (`0.36.0-preview.K`) sorts above every next
-build of that version, so a plain upgrade to `0.36.0-next.N` is refused as a downgrade. Add
-`--from-preview` to move it once: before anything stops, the upgrade compares the migrations Mend's
-and Sealant's databases applied with the target image's `/app/migrations.txt`, and refuses, naming
-them, if the target lacks any. A failure before the target starts recovers the preview's image.
+build and new-style preview of that version, so a plain upgrade to `0.36.0-next.N` is refused as a
+downgrade. Add `--from-preview` to move it once. Before anything stops, the upgrade compares the
+migrations Mend's and Sealant's databases applied with the target image's `/app/migrations.txt` and
+refuses, naming them, if the target lacks one, changed one (Sealant, by drizzle's hash), or would
+skip one (a Mend migration below the highest id applied). It cannot detect a Mend migration changed
+under the same id and name. A failure before the target starts recovers the preview's image. The
+exact steps for a box are in `docs/operations/next-channel.md`.
 
 An installation created by an older CLI uses the `mend-docker-v1` bundle, which ran RabbitMQ and a
 loopback workspace registry. Upgrade moves it to `mend-docker-v2`, which has neither: the saved

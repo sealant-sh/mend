@@ -78,6 +78,15 @@ jobs:
           version="${version#v}"
           channel=latest
           if [[ "$version" == *-* ]]; then channel=next; fi
+          # Checked again here, after the approval: two next tags approved in the wrong order must
+          # not move `next` back. The pins job only saw the tags as they were when the run started.
+          if [[ $channel == next ]]; then
+            current=$(npm view @sealant/mend dist-tags.next 2>/dev/null || true)
+            if [[ -n $current ]] && ! node scripts/next-version.mjs --newer "$version" "$current"; then
+              echo "::error::npm's next is already $current, not older than $version. Nothing was published."
+              exit 1
+            fi
+          fi
           pnpm --filter "@sealant/mend" publish --access public --no-git-checks --provenance --tag "$channel"
 
   # Attach setup assets at the canonical /releases/download/vVERSION URLs.
