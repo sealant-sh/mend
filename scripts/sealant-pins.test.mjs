@@ -12,6 +12,7 @@ import {
   pinProblems,
   pinnedDigest,
   readPins,
+  repositoryFor,
   rewritePins,
 } from "./sealant-pins.mjs";
 
@@ -26,7 +27,10 @@ test("the checked-in pins are one exact Core version, by digest, with no preview
   const pins = await repositoryPins();
   assert.deepEqual(pinProblems(pins, { stable: pins.sealantVersion.includes("-") === false }), []);
   for (const { argument, repository } of SEALANT_IMAGES) {
-    assert.ok(pinnedDigest(pins.images[argument], repository), argument);
+    assert.ok(
+      pinnedDigest(pins.images[argument], repositoryFor(repository, pins.sealantVersion)),
+      argument,
+    );
   }
 });
 
