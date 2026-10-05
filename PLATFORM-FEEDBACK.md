@@ -24,8 +24,12 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   for its life (409 `home-held` for another person); GitHub written as
   `<home>/.config/gh/hosts.yml`; push, POST and DELETE for a home under one row lock. Its switch
   semantics (`restorePrevious`, the per-switch compare-and-set) are not needed. Then
-  `workspaces.create({ credentialsHome })` with no login in the environment, `DELETE … { home }` and
-  `GET` listing the homes for reconciliation.
+  `workspaces.create({ credentialsHome })` with no login in the environment, `DELETE … { home }`
+  that removes the login files and the record, and `GET` listing the homes for reconciliation.
+  Credential sync-back reads each record's home, not `$HOME`.
+- **Later:** the SSH gateway admits only the workspace's owner ("ACL extension deferred"). When it
+  admits others, set `HOME` for the session from the per-home record of the authenticated principal,
+  so Remote-SSH runs as the person who connected.
 - **sealantd:** apply `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE` under each `people/<id>/` of
   the harness home as well as at its root; and, later, scrub opencode's `account`, `control_account`
   and `credential` tables from captured databases.

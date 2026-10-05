@@ -7,10 +7,11 @@ under shared control a steerer's turn no longer spends the owner's login. Read a
 
 Amended 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md): ships in 0.36, no longer held
 until the SDK. The mechanism changes: a steerer's turn runs in an agent process started as the
-steerer, with their whole home (logins, settings, MCP servers, memory, git identity), continuing the
-owner's conversation. A payer change restarts the agent at a quiescent point. There is no login swap
-inside a running process and no switch back; Core puts each person's login into their own home and
-never switches a home to another person.
+steerer, with their whole home (logins, settings, MCP servers, git identity, and for Claude their
+memory), continuing the owner's conversation; a gate before it is built tests that each provider
+accepts the conversation's history under another account. A payer change restarts the agent at a
+quiescent point. There is no login swap inside a running process and no switch back; Core puts each
+person's login into their own home and never switches a home to another person.
 
 ## Context
 

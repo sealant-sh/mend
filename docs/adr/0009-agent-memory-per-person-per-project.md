@@ -57,8 +57,8 @@ much smaller: the memory.
    by account, project and the file's path in the harness home. Today that is Claude Code's memory
    directory. The person is the session's owner; a turn someone else steers under shared control
    writes the owner's memory, as it spends the owner's login. Amended 2026-10-05 by ADR 0016: the
-   person is the one the agent process runs as; a steered turn runs in a process started as the
-   steerer and writes the steerer's memory.
+   person is the one the agent process runs as; a steered Claude turn runs in a process started as
+   the steerer and writes the steerer's memory, and a steered Codex turn runs with memory off.
 
 2. **Every session receives it at launch,** after the harness home is relocated, in both stores
    (host-side in the co-located store, through exec in capture mode), as skills are:
