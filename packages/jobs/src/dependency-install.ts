@@ -87,6 +87,10 @@ export const DependencyInstallerLive: Layer.Layer<
         .byId(job.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return { outcome: "skipped", reason: "the project is gone" } as const;
+      // "Automatic install" off: Mend runs no install for this project, here or in a session.
+      if (!project.installEnabled) {
+        return { outcome: "skipped", reason: "automatic install is off" } as const;
+      }
       // The session runs as an account that may still run here (docs/adr/0003): whoever asked,
       // else the project's creator. Nobody else's credentials stand in.
       let ownerUserId: string | null = null;

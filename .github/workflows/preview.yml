@@ -42,9 +42,9 @@ on:
         type: boolean
         default: false
 
+# Only the jobs that push hold packages: write.
 permissions:
   contents: read
-  packages: write
 
 jobs:
   plan:
@@ -56,7 +56,13 @@ jobs:
       sealantd_sha: ${{ steps.resolve.outputs.sealantd_sha }}
       platforms: ${{ steps.resolve.outputs.platforms }}
     steps:
-      - uses: actions/checkout@v4
+      # Full history and tags: the version is counted from the branch's merge base with main.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
       - name: Resolve the version, the upstream commits and the platforms
         id: resolve
         env:
@@ -64,6 +70,7 @@ jobs:
           SEALANT_REF: ${{ inputs.sealant_ref }}
           SEALANTD_REF: ${{ inputs.sealantd_ref }}
           PLATFORMS: ${{ inputs.platforms }}
+          DEPLOY: ${{ inputs.deploy }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
@@ -82,14 +89,10 @@ jobs:
           sealant_sha=$(resolve sealant-sh/sealant "$SEALANT_REF")
           sealantd_sha=$(resolve sealant-sh/sealantd "$SEALANTD_REF")
 
-          # The next minor of the CLI version, so a preview always upgrades from the release it
-          # follows, and the run number, so each preview upgrades from the one before it.
-          cli_version=$(jq -r .version apps/cli/package.json)
-          [[ $cli_version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\. ]] || {
-            echo "::error::apps/cli/package.json has no usable version (\"$cli_version\")."
-            exit 1
-          }
-          version="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).0-preview.$RUN_NUMBER"
+          # The next build of the branch's merge base with main, then the run number:
+          # 0.36.0-next.56.preview.17 sorts after 0.36.0-next.56 and before 0.36.0-next.57, so a box
+          # moves between next builds and previews in order (docs/adr/0015-next-channel.md).
+          version=$(node scripts/next-version.mjs --package apps/cli --preview "$RUN_NUMBER" --main origin/main HEAD)
 
           amd64='{"arch":"amd64","runner":"blacksmith-4vcpu-ubuntu-2404"}'
           arm64='{"arch":"arm64","runner":"blacksmith-4vcpu-ubuntu-2404-arm"}'
@@ -99,6 +102,11 @@ jobs:
             linux/amd64,linux/arm64) platforms="[$amd64,$arm64]" ;;
             *) echo "::error::Unknown platforms \"$PLATFORMS\"."; exit 1 ;;
           esac
+          # The box is amd64: an arm64-only image would pull there and never start.
+          if [[ $DEPLOY == true && $PLATFORMS != *linux/amd64* ]]; then
+            echo "::error::deploy: true needs linux/amd64 in platforms: the box is amd64."
+            exit 1
+          fi
 
           {
             echo "version=$version"
@@ -111,6 +119,9 @@ jobs:
   # sealantd needs no Core rebuild: the bundled Sealant worker bakes whatever image
   # SEALANT_SEALANTD_IMAGE names into workspace images (scripts/bundle-supervisor.mjs).
   sealantd:
+    permissions:
+      contents: read
+      packages: write
     needs: plan
     if: needs.plan.outputs.sealantd_sha != ''
     strategy:
@@ -119,19 +130,22 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sealant-sh/sealantd
           ref: ${{ needs.plan.outputs.sealantd_sha }}
           persist-credentials: false
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      # BuildKit at a fixed digest: it runs privileged and performs the push.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: docker/Dockerfile
@@ -149,7 +163,7 @@ jobs:
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preview-digests-sealantd--${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -157,18 +171,20 @@ jobs:
           retention-days: 1
 
   sealantd-image:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, sealantd]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       ref: ${{ steps.merge.outputs.ref }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: preview-digests-sealantd--*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -191,6 +207,9 @@ jobs:
           echo "ref=$REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
 
   core:
+    permissions:
+      contents: read
+      packages: write
     needs: plan
     if: needs.plan.outputs.sealant_sha != ''
     strategy:
@@ -200,19 +219,22 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: sealant-sh/sealant
           ref: ${{ needs.plan.outputs.sealant_sha }}
           persist-credentials: false
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      # BuildKit at a fixed digest: it runs privileged and performs the push.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: apps/${{ matrix.image }}/Dockerfile
@@ -230,7 +252,7 @@ jobs:
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preview-digests-core-${{ matrix.image }}--${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -238,6 +260,9 @@ jobs:
           retention-days: 1
 
   core-images:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, core]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
@@ -245,12 +270,11 @@ jobs:
       worker: ${{ steps.merge.outputs.worker }}
       ssh_gateway: ${{ steps.merge.outputs.ssh_gateway }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: preview-digests-core-*
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -275,6 +299,9 @@ jobs:
           done
 
   mend:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, sealantd-image, core-images]
     # Runs when each upstream image was built, or was not asked for.
     if: >-
@@ -287,9 +314,12 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
-      - uses: useblacksmith/setup-docker-builder@v1
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # BuildKit at a fixed digest: it runs privileged and performs the push.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: image=moby/buildkit:v0.33.1@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -328,7 +358,7 @@ jobs:
             echo "LABELS"
           } >> "$GITHUB_OUTPUT"
       - id: build
-        uses: useblacksmith/build-push-action@v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: Dockerfile
@@ -344,7 +374,7 @@ jobs:
         run: |
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: preview-digests-mend--${{ matrix.platform.arch }}
           path: /tmp/digests/*
@@ -352,17 +382,19 @@ jobs:
           retention-days: 1
 
   mend-image:
+    permissions:
+      contents: read
+      packages: write
     needs: [plan, sealantd-image, core-images, mend]
     if: ${{ !cancelled() && needs.mend.result == 'success' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: preview-digests-mend--*
           merge-multiple: true
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -435,9 +467,11 @@ jobs:
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # The box updates itself: a hosted runner holds the deploy key (a repository secret, never given
-  # to a fork's workflow) and asks the VM's `deploy` user, whose forced command runs the same
-  # deploy script an operator runs by hand. Only a dispatch that asked for it deploys.
+  # The box updates itself: a hosted runner holds the deploy key (in the `box-deploy` environment,
+  # which only main and tags may use) and asks the VM's `deploy` user, whose forced command runs the
+  # same deploy script an operator runs by hand. Only a dispatch that asked for it deploys, and only
+  # code on main: the script and the image run as root on the box. A branch's preview is deployed by
+  # hand (docs/operations/preview-builds.md).
   deploy:
     # After `mend-image`, which pushes the versioned tag the box pulls: the first proof pulled
     # before the tag existed (2026-10-03).
@@ -445,7 +479,28 @@ jobs:
     if: ${{ !cancelled() && needs.mend-image.result == 'success' && inputs.deploy }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
+    environment: box-deploy
     steps:
+      - name: Check that every commit is on its main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEALANT_SHA: ${{ needs.plan.outputs.sealant_sha }}
+          SEALANTD_SHA: ${{ needs.plan.outputs.sealantd_sha }}
+        run: |
+          set -euo pipefail
+          # The environment's branch rule says the same; this holds while the environment is new.
+          [[ $GITHUB_REF == refs/heads/main || $GITHUB_REF == refs/tags/* ]] ||
+            { echo "::error::deploy: true runs from main or a tag, not $GITHUB_REF. Deploy a branch's preview by hand."; exit 1; }
+          # A branch's commit, or a fork's that GitHub serves by sha, compares as "ahead" or "diverged".
+          on_main() {
+            local status
+            status=$(gh api "repos/$1/compare/main...$2" --jq .status)
+            [[ $status == behind || $status == identical ]] ||
+              { echo "::error::$1@$2 is not on main ($status): only code on main deploys on the box."; exit 1; }
+          }
+          on_main "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          if [[ -n $SEALANT_SHA ]]; then on_main sealant-sh/sealant "$SEALANT_SHA"; fi
+          if [[ -n $SEALANTD_SHA ]]; then on_main sealant-sh/sealantd "$SEALANTD_SHA"; fi
       - name: Deploy the preview on the box
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -462,4 +517,4 @@ jobs:
           # The `deploy` user's forced command accepts exactly this and nothing else.
           ssh -p 2223 -i deploy_key -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=yes \
             -o BatchMode=yes -o ConnectTimeout=20 deploy@49.12.133.97 \
-            deploy "$VERSION" "$COMMIT" $EVEN_IF_LIVE
+            deploy "$VERSION" "$COMMIT" ${EVEN_IF_LIVE:+"$EVEN_IF_LIVE"}

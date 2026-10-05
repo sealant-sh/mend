@@ -25,6 +25,7 @@ import {
   ProjectEnvironmentMutationResult,
   ProjectFileListing,
   ProjectHotSessionsStatus,
+  ProjectInstallDetection,
   ProjectPullRequests,
   ProjectSecretMutationResult,
   ClusterBindingDuplicate,
@@ -144,6 +145,7 @@ import { asSealantUser, SealantClient } from "@mend/sealant";
 import {
   CaptureRuntime,
   captureHoldWords,
+  detectInstall,
   DotfilesCloner,
   FollowUpDelivery,
   RECIPE_NAME,
@@ -863,14 +865,66 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .setInstallCommand(params.id, payload.installCommand?.trim() ?? null)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // The shared cache is fed only by the Mend-controlled install (ADR-0002 decision 9):
-        // a changed command re-runs it; the key dedups a run already queued.
-        yield* jobs
-          .enqueue({
-            name: "dependency-install",
-            payload: { projectId: project.id, requestedByUserId: caller.user.id },
-            idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
-          })
-          .pipe(Effect.ignore);
+        // a changed command re-runs it, unless automatic install is off; the key dedups a run
+        // already queued.
+        if (project.installEnabled) {
+          yield* jobs
+            .enqueue({
+              name: "dependency-install",
+              payload: { projectId: project.id, requestedByUserId: caller.user.id },
+              idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
+            })
+            .pipe(Effect.ignore);
+        }
+        return project;
+      }),
+    )
+    .handle("installDetection", ({ params }) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const project = yield* (yield* ProjectAccess).project(params.id);
+        const branch = project.defaultBranch;
+        // The ref a launch bases on (`resolveBase`): origin's branch as last fetched, else the
+        // local one. A read never fetches; an unreadable store answers "not read".
+        const read = (ref: string, shown: string) =>
+          store
+            .listTopLevel(project.storePath, ref, FILE_LISTING_LIMIT)
+            .pipe(
+              Effect.map((listing) => ({ ref: shown, detected: detectInstall(listing.files) })),
+            );
+        const answer = yield* read(`refs/remotes/origin/${branch}`, `origin/${branch}`).pipe(
+          Effect.catch(() => read(branch, branch)),
+          Effect.catch(() => Effect.succeed(null)),
+        );
+        return new ProjectInstallDetection({
+          ref: answer?.ref ?? branch,
+          read: answer !== null,
+          command: answer?.detected?.command ?? null,
+          from: answer?.detected?.from ?? null,
+        });
+      }),
+    )
+    .handle("installEnabled", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const before = yield* (yield* ProjectAccess).manageProject(params.id);
+        const caller = yield* CurrentUser;
+        const projects = yield* ProjectsRepo;
+        const jobs = yield* JobRunner;
+        const project = yield* projects
+          .setInstallEnabled(params.id, payload.installEnabled)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Turned on from off, the install job fills the shared cache as a changed command would.
+        // A repeated "on" queues nothing; turned off, nothing is queued, and a job already queued
+        // finds it off and runs nothing.
+        if (!before.installEnabled && project.installEnabled) {
+          yield* jobs
+            .enqueue({
+              name: "dependency-install",
+              payload: { projectId: project.id, requestedByUserId: caller.user.id },
+              idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
+            })
+            .pipe(Effect.ignore);
+        }
         return project;
       }),
     )

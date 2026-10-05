@@ -68,3 +68,132 @@ test("stable latest promotion waits for npm and the GitHub release", () => {
   assert.ok(promotion.indexOf("docker buildx imagetools create") > prereleaseGuard);
   assert.ok(promotion.indexOf("gh release edit") > prereleaseGuard);
 });
+
+test("nothing builds or publishes before the pins are checked", () => {
+  const pins = job("pins");
+  assert.match(pins, /fetch-depth: 0/);
+  assert.match(pins, /node scripts\/check-release-pins\.mjs "\$GITHUB_REF_NAME"/);
+  assert.ok(dependencies("images").includes("pins"));
+  // npm, the GitHub release and the latest promotion all wait on images, so on the pins too.
+  assert.ok(dependencies("github-release").includes("images"));
+});
+
+test("a next build is a GitHub prerelease on npm's next dist-tag, and never moves latest", () => {
+  assert.match(job("npm"), /if \[\[ "\$version" == \*-\* \]\]; then channel=next; fi/);
+  assert.match(
+    job("github-release"),
+    /if \[\[ "\$VERSION" == \*-\* \]\]; then flags\+=\(--prerelease\); fi/,
+  );
+  assert.match(job("github-release"), /A \\`next\\` build of Mend from main/);
+});
+
+test("image.yml pushes a version once, and only its own dispatch is held to main", async (t) => {
+  const image = readFileSync(new URL("../.github/workflows/image.yml", import.meta.url), "utf8");
+  const merge = image.slice(image.indexOf("Create and inspect the multi-arch candidate"));
+  const refusal = merge.indexOf("already exists; a version is pushed once");
+  assert.ok(refusal > 0);
+  assert.ok(merge.indexOf("docker buildx imagetools create") > refusal);
+
+  // Run the commit step as written, with a stand-in `gh` that knows one tag.
+  const step = image.slice(image.indexOf("- name: Choose the commit to build"));
+  const script = step
+    .slice(step.indexOf("run: |") + "run: |".length, step.indexOf("- name: Resolve one version"))
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+  const { mkdtempSync, writeFileSync, chmodSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { spawnSync } = await import("node:child_process");
+  const bin = mkdtempSync(`${tmpdir()}/image-dispatch-`);
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const tagCommit = "a".repeat(40);
+  const tagObject = "b".repeat(40);
+  // A stand-in `gh`: v0.36.0-next.60 is a lightweight tag, v0.36.0-next.61 an annotated one.
+  writeFileSync(
+    `${bin}/gh`,
+    [
+      "#!/bin/sh",
+      'case "$2" in',
+      `  */git/ref/tags/v0.36.0-next.60) echo "commit ${tagCommit}"; exit 0 ;;`,
+      `  */git/ref/tags/v0.36.0-next.61) echo "tag ${tagObject}"; exit 0 ;;`,
+      `  */git/tags/${tagObject}) echo ${tagCommit}; exit 0 ;;`,
+      "esac",
+      "exit 1",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(`${bin}/gh`, 0o755);
+  const run = (event, workflow, ref, version = "") => {
+    const output = `${bin}/output-${Math.random()}`;
+    writeFileSync(output, "");
+    const status = spawnSync("bash", ["-c", script], {
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        GITHUB_EVENT_NAME: event,
+        GITHUB_REPOSITORY: "sealant-sh/Mend",
+        GITHUB_WORKFLOW_REF: `sealant-sh/Mend/.github/workflows/${workflow}@${ref}`,
+        GITHUB_REF: ref,
+        GITHUB_SHA: "f".repeat(40),
+        GITHUB_OUTPUT: output,
+        OVERRIDE_VERSION: version,
+      },
+    }).status;
+    return { status, commit: /commit=(\w+)/.exec(readFileSync(output, "utf8"))?.[1] };
+  };
+  // The Version PR's pre-tag acceptance: release-acceptance.yml dispatched on its branch, calling image.yml.
+  assert.deepEqual(
+    run("workflow_dispatch", "release-acceptance.yml", "refs/heads/changeset-release/main"),
+    {
+      status: 0,
+      commit: "f".repeat(40),
+    },
+  );
+  // A release tag's own run builds its commit.
+  assert.deepEqual(run("push", "release-cli.yml", "refs/tags/v0.36.0-next.60"), {
+    status: 0,
+    commit: "f".repeat(40),
+  });
+  assert.equal(run("workflow_dispatch", "image.yml", "refs/heads/feature").status, 1);
+  assert.deepEqual(run("workflow_dispatch", "image.yml", "refs/heads/main"), {
+    status: 0,
+    commit: "f".repeat(40),
+  });
+  assert.equal(
+    run("workflow_dispatch", "image.yml", "refs/heads/main", "0.0.0-dev.sha0123456789ab").status,
+    0,
+  );
+  // A dispatched tagged version builds the tag's commit, not main's head.
+  assert.deepEqual(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0-next.60"), {
+    status: 0,
+    commit: tagCommit,
+  });
+  assert.equal(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0").status, 1);
+  // Only a tag resolves: the lookup names refs/tags/, so a branch called v<version> never does.
+  assert.deepEqual(run("workflow_dispatch", "image.yml", "refs/heads/main", "0.36.0-next.61"), {
+    status: 0,
+    commit: tagCommit,
+  });
+  assert.match(image, /git\/ref\/tags\/v\$OVERRIDE_VERSION/);
+  assert.match(image, /ref: \$\{\{ needs\.version\.outputs\.commit \}\}/);
+});
+
+test("npm publishes a tarball rebuilt from npm's own reading, with no repository code", () => {
+  const npm = job("npm");
+  // The credential job checks out nothing; building happens in npm-pack, which holds no token.
+  assert.doesNotMatch(npm, /actions\/checkout/);
+  assert.match(npm, /id-token: write/);
+  assert.doesNotMatch(job("npm-pack"), /id-token/);
+  assert.ok(dependencies("npm").includes("npm-pack"));
+  // The republish block (run against a stub registry by republish.test.mjs) does the publishing,
+  // under next re-checking the current next after the approval.
+  assert.match(npm, /# --- republish ---/);
+  assert.match(npm, /check_artifacts "\$artifacts" "\$tarball"/);
+  assert.match(npm, /cd "\$\(mktemp -d\)"/);
+  assert.match(
+    npm,
+    /publish_rebuilt "\$artifacts\/\$tarball" "@sealant\/mend" "\$version" "\$GITHUB_SHA" "\$channel" --provenance/,
+  );
+  // npm's own pacote, nothing installed: no unpinned code loads beside the credential.
+  assert.doesNotMatch(npm, /npm install|pacote@/);
+  assert.doesNotMatch(job("npm-pack"), /cache: pnpm/);
+});

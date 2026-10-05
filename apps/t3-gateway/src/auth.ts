@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { GatewayEnvironment } from "./environment.ts";
+import { Projections } from "./hub.ts";
 import { MendClient, type MendDevicePlatform, type MendUnavailable } from "./mend-client.ts";
 import { GatewayState, type BearerSession, type GatewayStateError } from "./state.ts";
 
@@ -89,9 +90,30 @@ export interface AuthenticatedBearer {
   readonly expiresAt: DateTime.Utc;
 }
 
+/**
+ * Mend is refusing pairing claims from this client's address for now: too many failed codes. The
+ * code may be right and is not spent; the client is told it is rate limited, and may retry.
+ */
+export class GatewayPairingRateLimited extends Schema.TaggedError<GatewayPairingRateLimited>()(
+  "GatewayPairingRateLimited",
+  {
+    retryAfterSeconds: Schema.NullOr(Schema.Int),
+  },
+) {
+  override get message(): string {
+    return "Mend is refusing pairing claims from this client's address for now (too many failed codes).";
+  }
+}
+
 export interface TokenExchangeInput {
   readonly credential: string;
   readonly scope: string | undefined;
+  /**
+   * The `x-forwarded-for` to send Mend with the claim: the request's own header, if any, then the
+   * address the gateway saw. Mend believes entries only through hops it trusts (loopback, or
+   * `MEND_TRUSTED_PROXIES`), the same rule as for any other proxy in front of it.
+   */
+  readonly forwardedFor: string | undefined;
   /** Whether the request carried a DPoP proof. The gateway issues bearer tokens only. */
   readonly dpop: boolean;
   readonly client: {
@@ -109,7 +131,11 @@ export class GatewayAuth extends Context.Service<
       input: TokenExchangeInput,
     ) => Effect.Effect<
       AuthAccessTokenResult,
-      GatewayCredentialInvalid | GatewayRequestInvalid | GatewayStateError | MendUnavailable
+      | GatewayCredentialInvalid
+      | GatewayPairingRateLimited
+      | GatewayRequestInvalid
+      | GatewayStateError
+      | MendUnavailable
     >;
     /** The bearer behind an `authorization` header, from the gateway's own state. */
     readonly authenticate: (
@@ -151,13 +177,14 @@ export const mendDeviceNameFor = (client: TokenExchangeInput["client"]): string 
 export const GatewayAuthLive: Layer.Layer<
   GatewayAuth,
   never,
-  GatewayState | MendClient | GatewayEnvironment
+  GatewayState | MendClient | GatewayEnvironment | Projections
 > = Layer.effect(
   GatewayAuth,
   Effect.gen(function* () {
     const state = yield* GatewayState;
     const mend = yield* MendClient;
     const environment = yield* GatewayEnvironment;
+    const projections = yield* Projections;
 
     const exchange = Effect.fn("GatewayAuth.exchange")(function* (input: TokenExchangeInput) {
       const requested =
@@ -176,12 +203,16 @@ export const GatewayAuthLive: Layer.Layer<
           code: input.credential,
           name: mendDeviceNameFor(input.client),
           platform: mendPlatformFor(input.client),
+          forwardedFor: input.forwardedFor,
         })
         .pipe(
-          // Unknown, spent or rate-limited: to t3code, the pairing credential is not accepted.
-          Effect.catchTag("MendPairingRefused", () =>
-            Effect.fail(new GatewayCredentialInvalid({})),
-          ),
+          // Unknown or spent: to t3code, the pairing credential is not accepted. Rate limited says
+          // nothing about the code, so it is not reported as a wrong one.
+          Effect.catchTags({
+            MendPairingRefused: () => Effect.fail(new GatewayCredentialInvalid({})),
+            MendPairingRateLimited: ({ retryAfterSeconds }) =>
+              Effect.fail(new GatewayPairingRateLimited({ retryAfterSeconds })),
+          }),
         );
 
       const now = yield* Clock.currentTimeMillis;
@@ -265,8 +296,8 @@ export const GatewayAuthLive: Layer.Layer<
 
       const verdict = yield* mend.checkDevice(session.deviceToken);
       if (verdict === "refused") {
-        const now = yield* Clock.currentTimeMillis;
-        yield* state.revokeSession(session.sessionId, now);
+        // As the device gate refuses a token: its bearers are revoked and its sockets close.
+        yield* projections.refuseDevice(session.mendUser.id, session.deviceToken);
         return unauthenticated;
       }
       const authenticated: AuthSessionState = {

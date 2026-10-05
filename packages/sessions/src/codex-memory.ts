@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
 
+import type { HoldsDatabase, MergeDatabase } from "@mend/db";
 import { CODEX_MEMORY_DATABASE } from "@mend/domain/workbench";
 import { Effect } from "effect";
 
@@ -13,8 +14,8 @@ import { CARRIED_TRANSCRIPTS, parseCarriedTranscripts } from "./harness-state.ts
 /**
  * Codex memory, carried between one person's sessions on a project (docs/adr/0009, "Codex").
  *
- * Codex builds memory from past conversations when a session starts: up to two a start, each quiet
- * for six hours and under ten days old, summarised by the model and consolidated into
+ * Codex builds memory from past conversations when a session starts, and in 0.160 at every turn's
+ * start: up to two at a time, each quiet for six hours and under ten days old, summarised by the model and consolidated into
  * `.codex/memories/`. It merges only summaries whose conversation its state database lists, and a
  * fresh home lists only the rollouts in it. So each launch lays down, for the person's own Codex
  * conversations on the project:
@@ -245,6 +246,178 @@ export const consolidateCodexDatabase = (
         check.close();
       }
       return new Uint8Array(await fs.readFile(out));
+    } catch {
+      return null;
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+/**
+ * Two of Codex's summary databases as one (docs/adr/0009, decision 4): `ours` with every summary
+ * `theirs` holds of a conversation `ours` has not summarised, or has summarised at an older
+ * revision. Everything else (Codex's jobs, its consolidation state) stays `ours`'. Null, and the
+ * caller keeps `ours` and the machine's whole, when the two do not open as databases, their
+ * `stage1_outputs` columns differ (another Codex version), a revision is not an integer, or both
+ * hold one conversation at the same revision with other words, which one row cannot keep.
+ */
+export const mergeCodexDatabases: MergeDatabase = ({ ours, theirs }) =>
+  Effect.promise(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mend-codex-merge-"));
+    try {
+      const mine = path.join(dir, "ours.sqlite");
+      const other = path.join(dir, "theirs.sqlite");
+      const out = path.join(dir, "merged.sqlite");
+      await fs.writeFile(mine, ours);
+      await fs.writeFile(other, theirs);
+      const db = new DatabaseSync(mine);
+      try {
+        db.exec(`attach database '${other.replaceAll("'", "''")}' as theirs`);
+        const columns = (schema: string) =>
+          db
+            .prepare("select name from pragma_table_info('stage1_outputs', ?) order by cid")
+            .all(schema)
+            .map((row) => String(row["name"]))
+            .join(",");
+        const own = columns("main");
+        if (own === "" || own !== columns("theirs") || !own.split(",").includes("thread_id")) {
+          return null;
+        }
+        const count = (query: string) => Number(db.prepare(query).get()?.["n"] ?? 1);
+        // A revision that is not an integer cannot say which summary is newer: not merged.
+        for (const schema of ["main", "theirs"]) {
+          if (
+            count(
+              `select count(*) as n from ${schema}.stage1_outputs where typeof(source_updated_at) != 'integer'`,
+            ) > 0
+          ) {
+            return null;
+          }
+        }
+        // The same conversation at the same revision with other words: one row cannot keep both,
+        // so the two are not merged (a conflict, with the machine's database kept, pinned).
+        const content = own
+          .split(",")
+          .filter((column) => !SUMMARY_KEY_AND_USE.has(column))
+          .map((column) => `"${column.replaceAll('"', '""')}"`);
+        if (
+          content.length > 0 &&
+          count(`select count(*) as n from theirs.stage1_outputs t
+            join main.stage1_outputs m on m.thread_id = t.thread_id
+            where t.source_updated_at = m.source_updated_at
+              and (${content.map((column) => `t.${column} is not m.${column}`).join(" or ")})`) > 0
+        ) {
+          return null;
+        }
+        db.exec(`delete from main.stage1_outputs where thread_id in (
+          select t.thread_id from theirs.stage1_outputs t
+          join main.stage1_outputs m on m.thread_id = t.thread_id
+          where t.source_updated_at > m.source_updated_at)`);
+        db.exec("insert or ignore into main.stage1_outputs select * from theirs.stage1_outputs");
+        db.exec("detach database theirs");
+        db.exec(`vacuum into '${out.replaceAll("'", "''")}'`);
+      } finally {
+        db.close();
+      }
+      const check = new DatabaseSync(out, { readOnly: true });
+      try {
+        if (check.prepare("pragma integrity_check").get()?.["integrity_check"] !== "ok")
+          return null;
+      } finally {
+        check.close();
+      }
+      return new Uint8Array(await fs.readFile(out));
+    } catch {
+      return null;
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+/**
+ * Whether summary database `current` holds every summary `version` holds, at the same revision or
+ * a newer one (docs/adr/0009): when it does, a replaced `version` is not the only copy of anything
+ * and need not be pinned. False when either does not open as a summary database.
+ */
+export const codexDatabaseHolds: HoldsDatabase = ({ current, version }) =>
+  Effect.gen(function* () {
+    if (Buffer.from(current).equals(Buffer.from(version))) return true;
+    const [now, then] = yield* Effect.all([summaryRows(current), summaryRows(version)]);
+    // A database that does not open as a summary database holds nothing anyone can check.
+    if (now === null || then === null) return false;
+    for (const [thread, row] of then) {
+      const held = now.get(thread);
+      // Held only by the same thread, at a valid revision: a newer one, or the same one saying
+      // exactly the same. A missing row, an invalid revision or other words at the same revision
+      // is not held.
+      if (held === undefined || held.revision === null || row.revision === null) return false;
+      if (held.revision > row.revision) continue;
+      if (held.revision === row.revision && held.content === row.content) continue;
+      return false;
+    }
+    return true;
+  });
+
+/**
+ * Columns Codex changes as it uses a summary, or that key it: not part of what the summary says.
+ * Everything else in a row (`raw_memory`, `rollout_summary`, …) is its content.
+ */
+const SUMMARY_KEY_AND_USE = new Set([
+  "thread_id",
+  "source_updated_at",
+  "usage_count",
+  "last_usage",
+  "selected_for_phase2",
+  "selected_for_phase2_source_updated_at",
+]);
+
+/** One SQLite value as text that tells every value apart. */
+const valueText = (value: unknown): string =>
+  value === null
+    ? "n"
+    : typeof value === "string"
+      ? `s${value}`
+      : value instanceof Uint8Array
+        ? `b${Buffer.from(value).toString("base64")}`
+        : `v${String(value)}`;
+
+/**
+ * Each summary in a database, by thread: its revision (null unless a finite integer) and what it
+ * says (its content columns, as text). Null when the bytes do not open as a database with
+ * `stage1_outputs`.
+ */
+const summaryRows = (
+  database: Uint8Array,
+): Effect.Effect<ReadonlyMap<
+  string,
+  { readonly revision: number | null; readonly content: string }
+> | null> =>
+  Effect.promise(async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mend-codex-rows-"));
+    try {
+      const file = path.join(dir, "memories_1.sqlite");
+      await fs.writeFile(file, database);
+      const db = new DatabaseSync(file, { readOnly: true });
+      try {
+        const rows = db.prepare("select * from stage1_outputs").all();
+        const out = new Map<string, { revision: number | null; content: string }>();
+        for (const row of rows) {
+          const thread = row["thread_id"];
+          if (typeof thread !== "string") return null;
+          const revision = row["source_updated_at"];
+          const content = Object.entries(row)
+            .filter(([column]) => !SUMMARY_KEY_AND_USE.has(column))
+            .map(([column, value]) => `${column}=${valueText(value)}`);
+          out.set(thread, {
+            revision:
+              typeof revision === "number" && Number.isSafeInteger(revision) ? revision : null,
+            content: JSON.stringify(content),
+          });
+        }
+        return out;
+      } finally {
+        db.close();
+      }
     } catch {
       return null;
     } finally {
@@ -519,3 +692,70 @@ export const storedCodexThreadLines = (
       return line === "" ? [] : [[match[1], line] as const];
     }),
   );
+
+/** Codex's thread index in a harness home: every conversation it knows, with its memory mode. */
+export const CODEX_STATE_DATABASE = ".codex/state_5.sqlite";
+
+/** The threads Mend took out of Codex's memory in a home, so it gives back only those. */
+export const CODEX_MEMORY_WITHHELD = ".mend/codex-memory-withheld.json";
+
+/**
+ * Takes every conversation that is not the launcher's out of Codex's memory before a Codex starts
+ * in a capture-mode home (docs/adr/0009, "Codex"; `node -e`, argv: the harness home and the
+ * launcher's own thread ids as JSON). Codex summarises, at every start, any idle conversation its
+ * state database lists with `memory_mode = 'enabled'`, whoever had it (codex-rs
+ * `state/src/runtime/memories.rs`, `claim_stage1_jobs_for_startup`), and a worktree's home holds
+ * every person's conversations there. So each thread that is not the launcher's and is enabled is
+ * set `disabled` and listed in `CODEX_MEMORY_WITHHELD`; each of the launcher's that Mend withheld
+ * earlier is given back. A mode the person chose themselves is never touched. One transaction,
+ * waiting up to five seconds for a Codex that holds the database (a joined executor's), through
+ * SQLite's own locking and write-ahead log.
+ *
+ * With no state database yet, Codex will list every rollout in the home the first time it opens
+ * it, all enabled: then it prints `memory-off` when a rollout there is not the launcher's. A state
+ * database under any other name (a Codex that moved to `state_6.sqlite` would build it from the
+ * rollouts, every thread enabled) prints `memory-off` too. Prints
+ * `withheld <n> restored <n>`, `clean`, or `memory-off <why>`. Exits 3 when the runtime has no
+ * `node:sqlite`.
+ */
+export const CODEX_WITHHOLD_PROGRAM = [
+  `const fs=require("fs"),path=require("path");let S;try{S=require("node:sqlite")}catch{process.exit(3)}`,
+  `const [home,ownJson]=process.argv.slice(1),own=new Set(JSON.parse(ownJson));`,
+  `const D=path.join(home,${JSON.stringify(CODEX_STATE_DATABASE)}),W=path.join(home,${JSON.stringify(CODEX_MEMORY_WITHHELD)});`,
+  `let names=[];try{names=fs.readdirSync(path.join(home,".codex"))}catch{}`,
+  `if(names.some(n=>/^state_[0-9]+\\.sqlite$/.test(n)&&n!==path.basename(D))){console.log("memory-off another state database is in the home");process.exit(0)}`,
+  `if(!fs.existsSync(D)){const ids=[];const walk=d=>{let es;try{es=fs.readdirSync(d,{withFileTypes:true})}catch{return}`,
+  `for(const e of es){const p=path.join(d,e.name);if(e.isDirectory())walk(p);else{const m=/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\.jsonl(\\.zst)?$/.exec(e.name);if(m)ids.push(m[1])}}};`,
+  `walk(path.join(home,".codex","sessions"));walk(path.join(home,".codex","archived_sessions"));`,
+  `console.log(ids.some(id=>!own.has(id))?"memory-off another person's conversation is in the home":"clean");process.exit(0)}`,
+  `let withheld=new Set();try{const v=JSON.parse(fs.readFileSync(W,"utf8"));if(Array.isArray(v))withheld=new Set(v.filter(x=>typeof x==="string"))}catch{}`,
+  `const db=new S.DatabaseSync(D);db.exec("PRAGMA busy_timeout=5000");`,
+  `if(!db.prepare("PRAGMA table_info(threads)").all().some(c=>c.name==="memory_mode")){console.log("memory-off this Codex keeps no memory mode");process.exit(0)}`,
+  `let off=0,on=0;db.exec("BEGIN IMMEDIATE");try{const set=db.prepare("UPDATE threads SET memory_mode=? WHERE id=?");`,
+  `for(const r of db.prepare("SELECT id,memory_mode FROM threads").all()){`,
+  `if(!own.has(r.id)&&r.memory_mode==="enabled"){set.run("disabled",r.id);withheld.add(r.id);off++}`,
+  `else if(own.has(r.id)&&r.memory_mode==="disabled"&&withheld.has(r.id)){set.run("enabled",r.id);withheld.delete(r.id);on++}}`,
+  `db.exec("COMMIT")}catch(e){try{db.exec("ROLLBACK")}catch{}throw e}db.close();`,
+  `fs.mkdirSync(path.dirname(W),{recursive:true});fs.writeFileSync(W+".mend-part",JSON.stringify([...withheld]));fs.renameSync(W+".mend-part",W);`,
+  `console.log("withheld "+off+" restored "+on)`,
+].join("");
+
+/**
+ * The exec that runs `CODEX_WITHHOLD_PROGRAM`: on runtimes that need it, again with
+ * `--experimental-sqlite`. Exit 127: no node; 3: no `node:sqlite`.
+ */
+export const withholdCodexThreadsExec = (
+  home: string,
+  own: ReadonlyArray<string>,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `node --no-warnings -e "$0" "$1" "$2"; rc=$?; if [ "$rc" = 3 ]; then node --no-warnings --experimental-sqlite -e "$0" "$1" "$2" 2>/dev/null || exit 3; else exit "$rc"; fi`,
+  CODEX_WITHHOLD_PROGRAM,
+  home,
+  JSON.stringify(own),
+];
+
+/** What a withholding said: Codex may keep its memory on, or must start with it off. */
+export const codexMemoryMayStayOn = (exitCode: number, stdout: string): boolean =>
+  exitCode === 0 && /^(withheld \d+ restored \d+|clean)$/m.test(stdout);

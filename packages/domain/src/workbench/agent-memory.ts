@@ -82,17 +82,76 @@ export class AgentMemoryFileView extends Schema.Class<AgentMemoryFileView>("Agen
   contents: Schema.String,
 }) {}
 
-/** `POST /projects/:id/memory/import`: files from the person's own machine. */
-export class AgentMemoryImport extends Schema.Class<AgentMemoryImport>("AgentMemoryImport")({
-  files: Schema.Array(AgentMemoryFile),
+/**
+ * Where an import came from: one checkout on one machine. Mend records what it last imported from
+ * each, so the next import from there merges against it (docs/adr/0009, decision 4).
+ */
+export class AgentMemoryImportSource extends Schema.Class<AgentMemoryImportSource>(
+  "AgentMemoryImportSource",
+)({
+  /** Stable for that checkout on that machine: the CLI's machine id and the checkout's path. */
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024)),
+  /** What a merge calls the machine where it has to say so: its host name. */
+  label: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
 }) {}
 
-/** What an import did, path by path. */
+/**
+ * `POST /projects/:id/memory/import`: files from the person's own machine.
+ * `POST /projects/:id/memory/import/plan` takes the same and writes nothing.
+ */
+export class AgentMemoryImport extends Schema.Class<AgentMemoryImport>("AgentMemoryImport")({
+  files: Schema.Array(AgentMemoryFile),
+  /** Absent from an older CLI: nothing is recorded then, and no merge has a shared version. */
+  source: Schema.optional(AgentMemoryImportSource),
+}) {}
+
+/** One file both sides changed, merged. */
+export class AgentMemoryImportMerge extends Schema.Class<AgentMemoryImportMerge>(
+  "AgentMemoryImportMerge",
+)({
+  path: Schema.String,
+  /**
+   * - `last-import`: text, three-way against what this machine sent the last time;
+   * - `no-shared-version`: text, both sides' lines with no version to diff against;
+   * - `summaries`: Codex's summary database, each conversation's newer summary from either.
+   */
+  against: Schema.Literals(["last-import", "no-shared-version", "summaries"]),
+  /**
+   * How many of this machine's lines the result does not hold (a line Mend removed since the last
+   * import is not counted). When any, this machine's file is kept whole as a version, and the next
+   * import from there merges it again.
+   */
+  missingLines: Schema.Int,
+  /**
+   * How many of Mend's lines the result does not hold (a line this machine removed since its last
+   * import is not counted). Mend's file is always kept as a version, pinned when it is the only
+   * copy of a line.
+   */
+  storeMissingLines: Schema.Int,
+}) {}
+
+/** What an import did, or would do, path by path. */
 export class AgentMemoryImported extends Schema.Class<AgentMemoryImported>("AgentMemoryImported")({
+  /** Not in Mend: stored as this machine has it. */
   added: Schema.Array(Schema.String),
+  /** The same on both sides. */
   unchanged: Schema.Array(Schema.String),
-  /** Already stored with other contents: left as stored. */
+  /** Unchanged in Mend since this machine's last import: replaced by this machine's. */
+  updated: Schema.Array(Schema.String),
+  /** Changed on both sides: merged, keeping both sides' lines. */
+  merged: Schema.Array(AgentMemoryImportMerge),
+  /** Unchanged on this machine since its last import and changed in Mend: Mend's stays. */
+  keptStored: Schema.Array(Schema.String),
+  /** Removed in Mend since this machine's last import, unchanged here: not added again. */
+  removedInMend: Schema.Array(Schema.String),
+  /**
+   * Changed on both sides and not mergeable: not text, frontmatter that differs outside the subset
+   * merged by key, too different to align with no earlier import, or merged over the size limit.
+   * Mend's stays, this machine's is kept as a version, and the next import reports it again.
+   */
   conflicting: Schema.Array(Schema.String),
+  /** Outside the limits (path, size or count): not stored. */
+  skipped: Schema.Array(Schema.String),
 }) {}
 
 /** `DELETE /projects/:id/memory/file`: whether there was one to remove. */

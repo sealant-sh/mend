@@ -103,6 +103,37 @@ describe("resolveLaunchOptions", () => {
       effort: null,
     });
   });
+
+  it("leaves opencode's model to opencode when nobody chose one, though its catalog lists models", () => {
+    // A launch that named a default would send `--model` over the person's own opencode config.
+    const opencode = seeded("opencode");
+    expect(opencode.models.length).toBeGreaterThan(0);
+    expect(opencode.defaultModel).toBeNull();
+    expect(resolveLaunchOptions(opencode, {})).toEqual({ model: null, effort: null });
+    expect(resolveLaunchOptions(opencode, { model: "openai/gpt-6-astra" })).toEqual({
+      model: "openai/gpt-6-astra",
+      effort: null,
+    });
+    const picker = modelPicker(opencode, { model: null, effort: null });
+    expect(picker.hasModels).toBe(true);
+    expect(picker.model).toBeNull();
+    expect(picker.models.some((entry) => entry.isDefault || entry.selected)).toBe(false);
+    expect(pickerLaunchFields(picker)).toEqual({});
+    // An operator who flags one makes it the default, for opencode too.
+    const flagged = harnessModelCatalog(
+      "opencode",
+      opencode.models.map(
+        (model) => new HarnessModel({ ...model, isDefault: model.id === "openai/gpt-5.5" }),
+      ),
+    );
+    expect(resolveLaunchOptions(flagged, {}).model).toBe("openai/gpt-5.5");
+    // Every other harness keeps its first row as the default when none is flagged.
+    const codex = harnessModelCatalog(
+      "codex",
+      seeded("codex").models.map((model) => new HarnessModel({ ...model, isDefault: false })),
+    );
+    expect(codex.defaultModel).toBe("gpt-6.1-sol");
+  });
 });
 
 describe("modelPicker", () => {

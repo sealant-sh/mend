@@ -29,7 +29,9 @@ core            /workspace/repos/core         mend/fix-login            ready ·
 ```
 
 `mend repo projects` lists what can be added: the projects of your organization you can see, less
-this session's own project and the ones already here. `mend repo list` shows the session's
+this session's own project and the ones already here. A private project is listed only in a session
+of another private project of yours: a repository is saved with the session's worktree, and anyone
+who can see the session's project can open that worktree. `mend repo list` shows the session's
 repositories with their state. Name the directory with `--as <name>` and the worktree with
 `--worktree <name>` when the defaults, the project's name and the session's own worktree name, are
 not what you want.
@@ -80,6 +82,8 @@ Mend says why, in these words:
 
 - the session's own project: it is already at `/workspace/repo`
 - a project you cannot see, or none by that name: `mend repo projects` lists what can be added
+- a private project, in a session of a shared project: every member could open the worktree and read
+  its files and history
 - a name already used in the session, or one that is not a plain directory name
 - a worktree of that name already in the other project: pick another with `--worktree`
 - a project with no origin to clone from

@@ -15,7 +15,9 @@ learned.
 
 Your memory is yours. Other people's sessions on the same project never receive it, and yours never
 receive theirs. When someone steers your session under shared control, what the agent learns goes
-into your memory, as it runs on your login.
+into your memory, as it runs on your login. On a server, sharing a worktree with someone has
+exceptions: see
+[Known issues](/reference/known-issues/#a-session-that-joins-someone-elses-executor-uses-their-memory).
 
 ## Bring what your machine already knows
 
@@ -23,13 +25,33 @@ Claude Code on your laptop has probably learned about the repository already. Fr
 checkout:
 
 ```sh
-mend memory import --dry-run   # list what would be imported
+mend memory import --dry-run   # show what the import would do, and write nothing
 mend memory import             # import it
 ```
 
-Each file Mend does not have yet is added. A file Mend already has with other contents is left as
-Mend has it, and the output says which. Only the memory is read: never transcripts, logins or
-settings.
+Only the memory is read: never transcripts, logins or settings. Mend combines your machine's memory
+with its own, and the output names each file and what happened to it:
+
+- **added**: a file Mend did not have.
+- **merged**: a file both sides have with other contents. Both sides' lines are kept, each line the
+  two share once. A line both sides wrote at different places stays twice. A note's frontmatter is
+  merged key by key. Where the two give a key different values, Mend's value stays and your
+  machine's is kept under it as a comment (`# from <host>, <date>: description: …`), which the agent
+  reads and can fold in. If the result does not hold every line your machine sent, the output says
+  how many, and your machine's file is kept as a version.
+- **updated**: a file Mend has not changed since your last import from this checkout, which your
+  machine has. Your machine's replaces it.
+- **kept**: a file Mend changed since your last import, and your machine did not.
+- **not added**: a file Mend removed since your last import, and your machine did not change.
+- **conflict**: a file both sides changed that Mend does not merge: not text (an image), frontmatter
+  that differs beyond plain `key: value` lines and comments, or two files too different to line up
+  with no earlier import. Mend's stays, your machine's is kept as a version, and the next import
+  names it again.
+
+Mend remembers what it imported from each checkout on each machine, so the next import from there
+merges against it: only what both sides changed since is merged. A second laptop starts with no
+earlier import, and its first import keeps both sides' lines. A file Mend has and your machine no
+longer has stays in Mend. Every version an import replaces is kept on the server.
 
 `mend adopt`, run inside a checkout, says how many memory files Claude keeps for it on your machine.
 

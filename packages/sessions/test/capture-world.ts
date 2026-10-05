@@ -192,6 +192,7 @@ export const projectFor = (storePath: string, baseSha: string) =>
     inheritUserSkills: true,
     hotSessions: 0,
     installCommand: null,
+    installEnabled: true,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -209,6 +210,7 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
     setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),
     setInstallCommand: () => Effect.die("not in test"),
+    setInstallEnabled: () => Effect.die("not in test"),
     byId: (id) =>
       id === project.id
         ? Effect.succeed(project)

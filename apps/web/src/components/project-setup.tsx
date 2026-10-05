@@ -2,7 +2,9 @@ import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-quer
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
+import { AutomaticInstallView } from "#/components/automatic-install";
 import { GitKeyCard } from "#/components/git-key-card";
+import { OnOffSwitch } from "#/components/on-off-switch";
 import {
   addProjectLink,
   addProjectMount,
@@ -22,6 +24,7 @@ import {
   setProjectHotSessions,
   setProjectFolders,
   setProjectInstallCommand,
+  setProjectInstallEnabled,
   setProjectVisibility,
   type AutomationChoiceDto,
   type FolderDto,
@@ -166,37 +169,6 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
         </div>
       )}
     </section>
-  );
-}
-
-/** An on/off pair for a project switch; the current value is the lit one. */
-function OnOffSwitch({
-  value,
-  busy,
-  onChange,
-}: {
-  readonly value: boolean;
-  readonly busy: boolean;
-  readonly onChange: (value: boolean) => void;
-}) {
-  return (
-    <div className="flex shrink-0 gap-1">
-      {([true, false] as const).map((option) => (
-        <button
-          key={String(option)}
-          type="button"
-          disabled={busy}
-          onClick={() => onChange(option)}
-          className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
-            value === option
-              ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
-              : "border-border bg-card text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          {option ? "on" : "off"}
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -1254,72 +1226,54 @@ export function ReferencesSection({ projectId }: { readonly projectId: string })
   );
 }
 
-/**
- * The install command (ADR-0002 decisions 2 and 9): what builds the dependency tree. Mend runs
- * it in a workspace whose captured tree does not match the executor's platform, and in the
- * install it launches itself to fill the project's shared cache — never an agent's tree. Empty
- * means Mend detects it from the lockfile at the root of the base tree at launch.
- */
-export function InstallCommandSection({ project }: { readonly project: ProjectDto }) {
+/** The "Dependencies" card, wired: its view is `AutomaticInstallView`. */
+export function InstallCommandSection({
+  project,
+  captured,
+}: {
+  readonly project: ProjectDto;
+  readonly captured: boolean;
+}) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const detection = useQuery(trpc.projects.installDetection.queryOptions({ id: project.id }));
   const [draft, setDraft] = useState(project.installCommand ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const current = project.installCommand ?? "";
-  const dirty = draft.trim() !== current;
 
-  const save = () => {
-    if (busy || !dirty) return;
+  const write = (request: Promise<unknown>, failure: string) => {
     setBusy(true);
     setError(null);
-    void setProjectInstallCommand(project.id, draft.trim() === "" ? null : draft.trim())
+    void request
       .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
-      .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : "Could not save the install command."),
-      )
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : failure))
       .finally(() => setBusy(false));
   };
 
   return (
-    <section id="install-command" className="project-setup-card">
-      <h2 className="font-sans text-sm font-semibold">Install command</h2>
-      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
-        Builds the dependency tree. Mend runs it in a workspace whose captured tree was built for
-        another platform, and in the install Mend launches itself to fill this project&apos;s shared
-        cache; an agent&apos;s own tree is never shared. Empty: detected from the lockfile at the
-        root of the base tree.
-      </p>
-      <form
-        className="mt-3 flex flex-wrap items-center gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          save();
-        }}
-      >
-        <input
-          type="text"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder="detected from the lockfile"
-          spellCheck={false}
-          className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
-        />
-        <button
-          type="submit"
-          disabled={busy || !dirty}
-          className="h-[26px] rounded-lg border border-border bg-card px-2.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
-        >
-          save
-        </button>
-      </form>
-      <p className="mt-2 font-mono text-xs text-ink-2">
-        {current === "" ? "detected from the lockfile at launch" : `runs · ${current}`}
-      </p>
-      {error !== null && (
-        <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
-      )}
-    </section>
+    <AutomaticInstallView
+      installEnabled={project.installEnabled}
+      installCommand={project.installCommand}
+      captured={captured}
+      detection={detection.data}
+      draft={draft}
+      busy={busy}
+      error={error}
+      onEnabled={(installEnabled) => {
+        if (busy || installEnabled === project.installEnabled) return;
+        write(
+          setProjectInstallEnabled(project.id, installEnabled),
+          "Could not save the automatic install switch.",
+        );
+      }}
+      onDraft={setDraft}
+      onSave={() =>
+        write(
+          setProjectInstallCommand(project.id, draft.trim() === "" ? null : draft.trim()),
+          "Could not save the install command.",
+        )
+      }
+    />
   );
 }
 

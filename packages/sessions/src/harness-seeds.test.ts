@@ -3,17 +3,23 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   CLAUDE_ONBOARDING_SEED,
   CODEX_TRUST_SEED,
   COPY_REFRESH_TOKEN,
+  HARNESS_UPDATES_OFF_ENV,
+  OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
   PI_SEED,
   withCodexMemory,
+  launchesCodex,
+  withCodexMemoryOff,
   withoutCodexShellSnapshot,
   withHarnessSetup,
+  withoutCodexDaemon,
 } from "./harness-seeds.ts";
 
 const homes: Array<string> = [];
@@ -66,6 +72,26 @@ describe("claude onboarding seed", () => {
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       skipDangerousModePermissionPrompt: true,
       model: "fable",
+    });
+  });
+
+  it("turns Claude Code's self-updater off for the process it execs", () => {
+    // 2026-10-05: a Claude that updated itself inside a workspace left `bin/claude.exe` a stub, and
+    // every later `claude` there failed to start. DISABLE_AUTOUPDATER is the switch 2.1.x reads.
+    const home = makeHome();
+    const result = spawnSync(
+      "sh",
+      ["-c", CLAUDE_ONBOARDING_SEED, "sh", "sh", "-c", 'echo "updater off: $DISABLE_AUTOUPDATER"'],
+      { encoding: "utf8", env: { ...process.env, HOME: home, DISABLE_AUTOUPDATER: "" } },
+    );
+    expect(result.stdout).toBe("updater off: 1\n");
+  });
+
+  it("names every harness's own update switch for the workspace's environment", () => {
+    expect(HARNESS_UPDATES_OFF_ENV).toEqual({
+      DISABLE_AUTOUPDATER: "1",
+      OPENCODE_DISABLE_AUTOUPDATE: "1",
+      PI_SKIP_VERSION_CHECK: "1",
     });
   });
 
@@ -270,7 +296,7 @@ const codexCopy = (home: string, exp: number, account = "acct-1") => {
 /** Run pi's or opencode's seed with no XDG or pi overrides, so each reads its default paths. */
 const runToolSeed = (seed: string, home: string) => {
   const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
-  for (const name of ["XDG_DATA_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
+  for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
   const result = spawnSync("sh", ["-c", seed, "sh", "sh", "-c", "echo ran"], {
     encoding: "utf8",
     env,
@@ -361,6 +387,69 @@ describe("pi and opencode seeds: the ChatGPT login from the Codex copy", () => {
     expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
     expect(fs.existsSync(path.join(home, ".pi", "agent", "auth.json"))).toBe(false);
     expect(fs.existsSync(path.join(home, ".local", "share", "opencode", "auth.json"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".local", "state", "opencode", "model.json"))).toBe(false);
+  });
+});
+
+const modelFile = (home: string) => path.join(home, ".local", "state", "opencode", "model.json");
+
+describe("opencode's seed: the model it opens on", () => {
+  const [providerID, modelID] = OPENCODE_DEFAULT_MODEL.split("/");
+
+  it("names the ChatGPT login's model as the last used one, so the git token's Copilot is not opencode's pick", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
+    expect(readJson(modelFile(home))).toEqual({ recent: [{ providerID, modelID }] });
+  });
+
+  it("fills an empty list and keeps every other key opencode wrote", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    write(
+      modelFile(home),
+      JSON.stringify({
+        recent: [],
+        favorite: [{ providerID: "openai", modelID: "gpt-5.5" }],
+        variant: { "github-copilot/claude-sonnet-4.6": "default" },
+      }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(readJson(modelFile(home))).toEqual({
+      recent: [{ providerID, modelID }],
+      favorite: [{ providerID: "openai", modelID: "gpt-5.5" }],
+      variant: { "github-copilot/claude-sonnet-4.6": "default" },
+    });
+  });
+
+  it("keeps a model picked in opencode, and a file it cannot read as an object", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    const picked = JSON.stringify({ recent: [{ providerID: "anthropic", modelID: "opus" }] });
+    write(modelFile(home), picked);
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.readFileSync(modelFile(home), "utf8")).toBe(picked);
+    write(modelFile(home), "[not an object");
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.readFileSync(modelFile(home), "utf8")).toBe("[not an object");
+  });
+
+  it("names the model over the user's own openai login too, and names none without one", () => {
+    const home = makeHome();
+    write(
+      path.join(home, ".local", "share", "opencode", "auth.json"),
+      JSON.stringify({ anthropic: { type: "api", key: "sk-ant" } }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(fs.existsSync(modelFile(home))).toBe(false);
+    write(
+      path.join(home, ".local", "share", "opencode", "auth.json"),
+      JSON.stringify({
+        openai: { type: "oauth", access: "mine", refresh: "real", expires: 1, accountId: "x" },
+      }),
+    );
+    runToolSeed(OPENCODE_SEED, home);
+    expect(readJson(modelFile(home))).toEqual({ recent: [{ providerID, modelID }] });
   });
 });
 
@@ -373,10 +462,12 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
       "resume",
       "abc",
     ]);
-    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-6)).toEqual([
+    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-8)).toEqual([
       "codex",
       "-c",
       "features.shell_snapshot=false",
+      "-c",
+      "features.daemon_auto_start=false",
       "-c",
       "features.memories=true",
       "app-server",
@@ -407,5 +498,239 @@ describe("Codex's shell snapshot", () => {
       "-c",
       "features.shell_snapshot_v2=true",
     ]);
+  });
+});
+const mcpAuth = (home: string) => path.join(home, ".local", "share", "opencode", "mcp-auth.json");
+const kept = (home: string) => path.join(home, ".mend", "opencode", "mcp-auth.json");
+
+/**
+ * The opencode seed a launch gets (`withHarnessSetup`): a capture launch's, or a co-located one's.
+ * The environment carries nothing about the mode, as an executor's does not (sealantd consumes
+ * its capture variables before any process starts): every `SEALANT_` variable is left out.
+ */
+const runOpencodeSeed = (home: string, options: { readonly captured?: boolean } = {}) => {
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries({ ...process.env, HOME: home }).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" &&
+        !entry[0].startsWith("SEALANT_") &&
+        !entry[0].startsWith("XDG_"),
+    ),
+  );
+  const argv = withHarnessSetup("opencode", ["sh", "-c", "echo ran"], {
+    captured: options.captured !== false,
+  });
+  return spawnSync(argv[0] ?? "sh", argv.slice(1), { encoding: "utf8", env });
+};
+
+describe("opencode's seed: MCP logins stay out of saved state", () => {
+  it("is a capture launch's alone, decided by Mend: the co-located seed has no MCP block", () => {
+    expect(OPENCODE_CAPTURED_SEED).toContain("mcp-auth.json");
+    expect(OPENCODE_SEED).not.toContain("mcp-auth.json");
+    expect(OPENCODE_CAPTURED_SEED).not.toContain("SEALANT_");
+    expect(withHarnessSetup("opencode", ["opencode"], { captured: true })[2]).toBe(
+      OPENCODE_CAPTURED_SEED,
+    );
+    expect(withHarnessSetup("opencode", ["opencode"])[2]).toBe(OPENCODE_SEED);
+  });
+
+  it("links mcp-auth.json to the executor's own home, which opencode writes through", () => {
+    const home = makeHome();
+    expect(runOpencodeSeed(home).stdout).toBe("ran\n");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(mcpAuth(home))).toBe(
+      fs.realpathSync(path.join(home, ".mend", "opencode")) + "/mcp-auth.json",
+    );
+    // opencode writes the file in place: the tokens land outside the saved data directory.
+    fs.writeFileSync(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SYNTHETIC-MCP"}}}');
+    expect(fs.readFileSync(kept(home), "utf8")).toContain("SYNTHETIC-MCP");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    // A second launch keeps its own link and the logins behind it.
+    runOpencodeSeed(home);
+    expect(fs.readFileSync(kept(home), "utf8")).toContain("SYNTHETIC-MCP");
+  });
+
+  it("removes, unread, a plain mcp-auth.json a capture brought, maybe another person's", () => {
+    const home = makeHome();
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SOMEONE-ELSES"}}}');
+    runOpencodeSeed(home);
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(kept(home))).toBe(false);
+  });
+
+  it("leaves a co-located session's own MCP logins where they are", () => {
+    const home = makeHome();
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"MINE"}}}');
+    expect(runOpencodeSeed(home, { captured: false }).stdout).toBe("ran\n");
+    expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(mcpAuth(home), "utf8")).toContain("MINE");
+    expect(fs.existsSync(path.join(home, ".mend"))).toBe(false);
+  });
+
+  it("two launches into one executor at once both start, on the same link", () => {
+    const home = makeHome();
+    const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
+    for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME"]) delete env[name];
+    for (let round = 0; round < 5; round++) {
+      fs.rmSync(path.join(home, ".local"), { recursive: true, force: true });
+      const result = spawnSync(
+        "sh",
+        [
+          "-c",
+          's="$1"; shift; for i in 1 2 3 4; do sh -c "$s" sh sh -c "echo ran" & done; wait',
+          "sh",
+          OPENCODE_CAPTURED_SEED,
+        ],
+        { encoding: "utf8", env },
+      );
+      expect(result.stdout, result.stderr).toBe("ran\nran\nran\nran\n");
+      expect(fs.lstatSync(mcpAuth(home)).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  it("does not start opencode when the logins cannot be kept out of saved state", () => {
+    const home = makeHome();
+    // `~/.mend` a file: no place in the executor's own home to keep them.
+    fs.writeFileSync(path.join(home, ".mend"), "");
+    write(mcpAuth(home), '{"server":{"tokens":{"accessToken":"SOMEONE-ELSES"}}}');
+    const result = runOpencodeSeed(home);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("cannot be kept out of saved state");
+    expect(fs.existsSync(mcpAuth(home))).toBe(false);
+  });
+});
+
+describe("Codex's background server", () => {
+  it("is never started by a Codex launch: terminal, resume or app-server", () => {
+    const flags = [
+      "-c",
+      "features.shell_snapshot=false",
+      "-c",
+      "features.daemon_auto_start=false",
+      "-c",
+      "features.memories=true",
+    ];
+    for (const tail of [[], ["resume", "abc"], ["app-server"]]) {
+      expect(withHarnessSetup("codex", ["codex", ...tail]).slice(4)).toEqual([
+        "codex",
+        ...flags,
+        ...tail,
+      ]);
+    }
+  });
+
+  it("is left alone when the launch says it itself, and only Codex gets the flag", () => {
+    for (const own of [
+      ["codex", "-c", "features.daemon_auto_start=true"],
+      ["codex", "--no-daemon"],
+      ["codex", "--enable", "daemon_auto_start"],
+    ]) {
+      expect(withoutCodexDaemon(own)).toEqual(own);
+    }
+    expect(withoutCodexDaemon(["claude"])).toEqual(["claude"]);
+    expect(withHarnessSetup("claude", ["claude"])).not.toContain(
+      "features.daemon_auto_start=false",
+    );
+    // A setting whose name starts the same is not this one.
+    expect(withoutCodexDaemon(["codex", "-c", "features.daemon_auto_start_v2=true"])).toEqual([
+      "codex",
+      "-c",
+      "features.daemon_auto_start=false",
+      "-c",
+      "features.daemon_auto_start_v2=true",
+    ]);
+  });
+});
+
+describe("Codex's memory turned off", () => {
+  const off = ["-c", "features.memories=false"];
+  const unsummarised = ["-c", "memories.generate_memories=false"];
+
+  it("in a join, drops whatever the launch asked, --enable and --config included, and makes no thread to summarise", () => {
+    expect(withCodexMemoryOff(["codex", "resume", "abc"], { join: true })).toEqual([
+      "codex",
+      ...off,
+      ...unsummarised,
+      "resume",
+      "abc",
+    ]);
+    expect(
+      withCodexMemoryOff(
+        [
+          "codex",
+          "--enable",
+          "memories",
+          "-c",
+          "features.memories=true",
+          "--config",
+          "memories.generate_memories=true",
+          "--config=features.memories=true",
+          "-c",
+          "memories={generate_memories=true}",
+          "--enable=memories",
+          "-c",
+          "model=gpt",
+          "app-server",
+        ],
+        { join: true },
+      ),
+    ).toEqual(["codex", ...off, ...unsummarised, "-c", "model=gpt", "app-server"]);
+    // Every form clap takes, and Codex's `memory_tool` alias. A `features` or `memories` table
+    // goes whole: Codex would replace Mend's own settings with it.
+    expect(
+      withCodexMemoryOff(
+        [
+          "codex",
+          "-cfeatures.memories=true",
+          "-c=features.memories=true",
+          "-c",
+          "features.memory_tool=true",
+          "--enable",
+          "memory_tool",
+          "--enable=memory_tool",
+          "-c",
+          "features={memories=true, web_search=true}",
+          "--config",
+          "features={web_search=true}",
+          "-c",
+          "memories={max_unused_days=3}",
+          "-cmodel=gpt",
+          "-c",
+          "features.web_search=true",
+        ],
+        { join: true },
+      ),
+    ).toEqual(["codex", ...off, ...unsummarised, "-cmodel=gpt", "-c", "features.web_search=true"]);
+    const [, , script] = withCodexMemoryOff(
+      [
+        "sh",
+        "-c",
+        "exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
+      ],
+      { join: true },
+    );
+    expect(script).toBe(
+      "exec codex -c features.memories=false -c memories.generate_memories=false --dangerously-bypass-approvals-and-sandbox",
+    );
+    expect(withCodexMemoryOff(["claude"], { join: true })).toEqual(["claude"]);
+  });
+
+  it("in the launcher's own home, turns memory off but keeps their new threads for their memory", () => {
+    expect(withCodexMemoryOff(["codex", "--enable", "memories"], { join: false })).toEqual([
+      "codex",
+      ...off,
+    ]);
+  });
+});
+
+describe("what runs Codex, as Mend launches it", () => {
+  it("is decided by the command line, not the harness's name", () => {
+    expect(launchesCodex(["codex", "resume", "abc"])).toBe(true);
+    expect(launchesCodex(["sh", "-c", 'exec codex -c features.memories=true "$prompt"'])).toBe(
+      true,
+    );
+    expect(launchesCodex(["claude"])).toBe(false);
+    expect(launchesCodex(["sh", "-c", "exec claude"])).toBe(false);
   });
 });

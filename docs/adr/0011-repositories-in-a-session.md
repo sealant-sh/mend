@@ -268,8 +268,11 @@ co-located store keeps its bind for one release, as it keeps everything else.
     own interruption passes through.
 13. The sealantd half is designed in sealantd ADR 0016 (sealant-sh/sealantd#134); this ADR ships
     with sealant-sh/mend#480.
-14. A session's detail lists only the repositories whose project the caller can see: a private
-    sibling added to a session in a shared project stays private to those who may see it.
+14. A private project is added only to a session whose worktree nobody else can open: a private
+    project of the same creator (2026-10-05). Its files and history ride that worktree's captures to
+    whoever opens it, so hiding the row is not enough; a shared project may hold only shared
+    siblings, whatever the organization's membership today, since membership grows. A session's
+    detail still lists only the repositories whose project the caller can see.
 15. Removing a worktree counts the sessions that hold it as a repository among its members: their
     owners have a say, a holder that is live or `stopping` refuses the removal, and so does a
     capture hold on the holder's own worktree, since that is where the repository's files travel
@@ -277,6 +280,11 @@ co-located store keeps its bind for one release, as it keeps everything else.
     worktrees as a repository and is live or `stopping`.
 16. The helper bounds every request of `mend repo add` with one wall-clock timer, connect and
     response alike, and caps each poll by what is left of the thirty-minute budget.
+17. Removing a worktree whose sessions added repositories is refused without `force`, as for an
+    unlanded change, naming each repository (2026-10-05). Their files and history live nested inside
+    that worktree, outside its change (`.mend/` is excluded), and go with it; Mend reads none of
+    them in the interim, so each one counts as work that may not be on origin. A repository saved
+    under its own captures does not go with the worktree and is not counted.
 
 ## Open
 

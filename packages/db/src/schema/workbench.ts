@@ -455,6 +455,8 @@ export const projects = pgTable(
     // The command that builds the dependency tree (ADR-0002 decisions 2/9); NULL = detect it
     // from the base tree's lockfile at launch.
     installCommand: text(),
+    // Whether Mend runs an install command for this project at all (0110, "Automatic install").
+    installEnabled: boolean().notNull().default(true),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
@@ -592,7 +594,7 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
 /**
  * The server-owned model catalog (docs/models-audit.md): one row per harness and model id, in the
  * order pickers show them. `efforts` null means the harness's own; one `is_default` per harness.
- * Seeded by migration 0101 from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
+ * Seeded by migrations 0102 and 0109 (opencode) from `HARNESS_MODEL_SEED`; an operator edits the rows in place.
  */
 export const harnessModels = pgTable(
   "harness_models",
@@ -659,9 +661,55 @@ export const agentMemoryVersions = pgTable(
     encoding: text().$type<"utf8" | "base64">().notNull(),
     contents: text().notNull(),
     savedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** The only copy of some lines: the cap of twenty per file never takes it (0108). */
+    pinned: boolean().notNull().default(false),
   },
   (table) => [primaryKey({ columns: [table.userId, table.projectId, table.path, table.digest] })],
 );
+
+/**
+ * What `mend memory import` last imported from one checkout on one machine (`source`), per file:
+ * the shared version the next import from there merges against. Contents for text, null for a
+ * binary file, whose digest is all a comparison needs.
+ */
+export const agentMemoryImportBases = pgTable(
+  "agent_memory_import_bases",
+  {
+    userId: text().notNull(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    source: text().notNull(),
+    path: text().notNull(),
+    digest: text().notNull(),
+    encoding: text().$type<"utf8" | "base64">().notNull(),
+    contents: text(),
+    importedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.projectId, table.source, table.path] })],
+);
+
+/**
+ * Whose memory a worktree's capture-mode harness home holds (docs/adr/0009): settled, and the
+ * last launch's hand-over pending until a capture of its epoch is the head. Outlives the session
+ * rows.
+ */
+export const agentMemoryHomes = pgTable("agent_memory_homes", {
+  worktreeId: text()
+    .$type<WorktreeId>()
+    .primaryKey()
+    .references(() => worktrees.id, { onDelete: "cascade" }),
+  userId: text(),
+  sessionId: text(),
+  workspaceId: text(),
+  pendingUserId: text(),
+  pendingSessionId: text(),
+  pendingWorkspaceId: text(),
+  pendingEpoch: integer(),
+  pendingN: integer(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
 
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),

@@ -16,6 +16,7 @@ import { useSyncExternalStore } from "react";
 import { Platform } from "react-native";
 
 import type { StatusTone } from "@/components/status";
+import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
 import type { CheckpointDto } from "@/data/review-state";
@@ -490,11 +491,7 @@ export const toneOf = (status: string): StatusTone =>
 export const toSession = (dto: SessionDto, projectName: string) => ({
   id: dto.id,
   runId: dto.sealantRunId ?? "",
-  harness: (dto.harness === "claude"
-    ? "Claude Code"
-    : dto.harness === "codex"
-      ? "Codex"
-      : "OpenCode") as "Claude Code" | "Codex" | "OpenCode",
+  harness: harnessName(dto.harness),
   model: dto.model ?? null,
   projectId: projectName,
   title: dto.label ?? `session ${dto.id.slice(0, 8)}`,

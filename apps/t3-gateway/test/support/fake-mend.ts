@@ -5,10 +5,13 @@ import type { AddressInfo } from "node:net";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
+import { FakeWorkbench } from "./fake-workbench.ts";
+
 /**
- * A stand-in for Mend's API, speaking the routes the gateway calls in phase 0 with Mend's shapes:
+ * A stand-in for Mend's API, speaking the routes the gateway calls with Mend's shapes:
  * `POST /api/pair` (`pairGroup.claim` in @mend/api-contracts), `GET /api/me/devices`
- * (`userDevicesGroup.list`) and `GET /api/harnesses/models` (`harnessModelsGroup.list`).
+ * (`userDevicesGroup.list`), `GET /api/harnesses/models` (`harnessModelsGroup.list`), and the
+ * workbench routes and event stream of `workbench` (`fake-workbench.ts`).
  */
 export interface FakeMend {
   readonly url: URL;
@@ -22,12 +25,18 @@ export interface FakeMend {
     readonly platform: string;
     readonly token: string;
   }>;
+  /** Every `x-forwarded-for` header `POST /api/pair` saw, claimed or not. */
+  readonly pairForwardedFor: ReadonlyArray<string | undefined>;
+  /** Make `POST /api/pair` answer 429, as Mend's claim limiter does, until set back. */
+  readonly setPairingRateLimited: (limited: boolean) => void;
   /** Every `authorization` header `GET /api/me/devices` saw. */
   readonly deviceChecks: ReadonlyArray<string | undefined>;
   /** Every `authorization` header `GET /api/harnesses/models` saw. */
   readonly modelReads: ReadonlyArray<string | undefined>;
   /** Make `GET /api/harnesses/models` answer 503 until set back. */
   readonly setModelsDown: (down: boolean) => void;
+  /** Projects, sessions and their conversations, and the SSE stream that reports them. */
+  readonly workbench: FakeWorkbench;
 }
 
 /**
@@ -97,8 +106,11 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   const claims: Array<FakeMend["claims"][number]> = [];
   const deviceChecks: Array<string | undefined> = [];
   const modelReads: Array<string | undefined> = [];
+  const pairForwardedFor: Array<string | undefined> = [];
   let modelsDown = false;
+  let pairingRateLimited = false;
   let devices = 0;
+  const workbench = new FakeWorkbench();
 
   const accepted = (authorization: string | undefined) => {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
@@ -114,6 +126,11 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     void (async () => {
       if (request.method === "POST" && request.url === "/api/pair") {
         const payload = asRecord(JSON.parse(await readBody(request)));
+        const forwarded = request.headers["x-forwarded-for"];
+        pairForwardedFor.push(Array.isArray(forwarded) ? forwarded.join(", ") : forwarded);
+        if (pairingRateLimited) {
+          return json(429, { _tag: "PairingRateLimited", retryAfterSeconds: 42 });
+        }
         const code = normalise(String(payload["code"]));
         const entry = codes.get(code);
         if (entry === undefined) return json(404, { _tag: "PairingCodeNotFound" });
@@ -144,6 +161,16 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         if (modelsDown) return json(503, { _tag: "ServiceUnavailable" });
         return json(200, MEND_MODEL_CATALOG);
       }
+      const routed = await workbench.route(
+        request,
+        response,
+        async () => {
+          const text = await readBody(request);
+          return text === "" ? undefined : JSON.parse(text);
+        },
+        accepted(request.headers.authorization),
+      );
+      if (routed) return;
       return json(404, { _tag: "RouteNotFound" });
     })();
   });
@@ -154,6 +181,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     }),
     () =>
       Effect.callback<void>((resume) => {
+        workbench.dropStreams();
         server.closeAllConnections();
         server.close(() => resume(Effect.void));
       }),
@@ -171,10 +199,15 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
       if (entry !== undefined) entry.revoked = true;
     },
     claims,
+    pairForwardedFor,
+    setPairingRateLimited: (limited) => {
+      pairingRateLimited = limited;
+    },
     deviceChecks,
     modelReads,
     setModelsDown: (down) => {
       modelsDown = down;
     },
+    workbench,
   };
 });

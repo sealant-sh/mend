@@ -47,6 +47,27 @@ const HARNESS_DRIVERS: Readonly<Record<string, HarnessDriver>> = {
   },
 };
 
+/**
+ * The t3code provider a Mend harness is shown as, or null for a harness the gateway does not
+ * show. The instance id is the driver's own name: one instance per driver.
+ */
+export const harnessProvider = (
+  harness: string,
+): {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly displayName: string;
+} | null => {
+  const driver = HARNESS_DRIVERS[harness];
+  return driver === undefined
+    ? null
+    : {
+        instanceId: ProviderInstanceId.make(driver.driver),
+        driver: driver.driver,
+        displayName: driver.displayName,
+      };
+};
+
 /** The option id and choice t3code's Codex driver uses for priority processing. */
 export const SERVICE_TIER_OPTION_ID = "serviceTier";
 export const STANDARD_SERVICE_TIER = "default";
