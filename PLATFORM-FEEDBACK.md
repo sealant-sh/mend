@@ -7,26 +7,28 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
-## 2026-10-05 · 0.38.1 · Several people's logins in one running workspace, each at its own home
+## 2026-10-05 · 0.38.1 · A login for each person's home in one running workspace
 
 - **Needed:** docs/adr/0016-per-person-harness-homes.md. In capture mode several people work in one
-  executor, each with their own harness home (`/root/.mend/homes/<account id>`), and a
-  conversation's agent reads its login from a directory of its own
-  (`/root/.mend/logins/<session id>`). Mend names a person and a home; the platform writes that
-  person's login there and keeps it refreshed, for as many homes as are live, until Mend releases
-  the home. GitHub included. No login in the container's environment, which is one value for every
-  process.
-- **Today:** sealant#315 (open) writes one person's login at `$HOME` and records one held account
+  executor, and every process runs entirely as one person, with `HOME` set to that person's own home
+  (`/root/.mend/homes/<account id>`). Mend names a person and a home; the platform writes that
+  person's Claude, Codex and GitHub logins there and keeps them refreshed until Mend releases the
+  home. A home holds one person for its whole life. No login in the container's environment, which
+  is one value for every process.
+- **Today:** sealant#315 (open) switches the one login a workspace holds at `$HOME`, with a record
   per instance; sealant#316 (open) moves a Claude setup token out of `CLAUDE_CODE_OAUTH_TOKEN`.
-  `workspaces.create` injects at `$HOME`, GitHub as `GITHUB_TOKEN` and `GH_TOKEN`. There is no
-  release.
-- **Suggested:** amend #315 before it merges: a `home` (absolute, outside `/workspace`, no link on
-  the way, defaulting to `$HOME`), the held login recorded per instance, home and provider, GitHub
-  as a provider written as `gh`'s `hosts.yml`, and an unconnected provider removed from that home.
-  Then `workspaces.create({ credentialsHome })` with no login in the environment, and
-  `DELETE /v1/workspaces/:id/credentials { home }` (`workspace.releaseCredentials({ home })`).
+  `workspaces.create` injects at `$HOME`, and GitHub as `GITHUB_TOKEN` and `GH_TOKEN`.
+- **Suggested:** reshape #315 before it merges into per-home injection:
+  `POST /v1/workspaces/:id/credentials { onBehalfOf, home, claude?, codex?, github? }` with `home`
+  absolute, outside `/workspace`, no link on the way; the record per instance and home, one person
+  for its life (409 `home-held` for another person); GitHub written as
+  `<home>/.config/gh/hosts.yml`; push, POST and DELETE for a home under one row lock. Its switch
+  semantics (`restorePrevious`, the per-switch compare-and-set) are not needed. Then
+  `workspaces.create({ credentialsHome })` with no login in the environment, `DELETE … { home }` and
+  `GET` listing the homes for reconciliation.
 - **sealantd:** apply `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE` under each `people/<id>/` of
-  the harness home as well as at its root.
+  the harness home as well as at its root; and, later, scrub opencode's `account`, `control_account`
+  and `credential` tables from captured databases.
 
 ## 2026-10-04 · sealantd 0.19 · opencode's MCP logins and in-app logins ride captures
 

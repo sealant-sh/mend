@@ -4,10 +4,10 @@ Status: proposed 2026-10-03. The owner's decisions of 2026-10-03 (the noun, per 
 captured, shared with no one, the project secrets' posture) are taken as given here; the decisions
 below are the ones this document adds.
 
-Amended 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md) (decision 3): each person's set
-goes into their own home in the executor (`/root/.mend/homes/<account id>`), a joiner's included.
-Files under the XDG directories and five mapped paths reach only that person's tools; any other path
-is also written to `/root` for the person whose launch made the executor.
+Amended 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md) §11, amending decision 3 below:
+each process's `HOME` is its person's own home in the executor (`/root/.mend/homes/<account id>`),
+and each person's set is written there, a joiner's and a steerer's process included. Shared control
+now changes which set a turn uses: a steered turn runs as the steerer, with the steerer's files.
 
 ## Context
 

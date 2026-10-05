@@ -56,7 +56,9 @@ much smaller: the memory.
 1. **Mend keeps each agent's memory per person per project,** in Postgres: one row per file, keyed
    by account, project and the file's path in the harness home. Today that is Claude Code's memory
    directory. The person is the session's owner; a turn someone else steers under shared control
-   writes the owner's memory, as it spends the owner's login.
+   writes the owner's memory, as it spends the owner's login. Amended 2026-10-05 by ADR 0016: the
+   person is the one the agent process runs as; a steered turn runs in a process started as the
+   steerer and writes the steerer's memory.
 
 2. **Every session receives it at launch,** after the harness home is relocated, in both stores
    (host-side in the co-located store, through exec in capture mode), as skills are:
@@ -80,10 +82,11 @@ much smaller: the memory.
    Every version Mend replaces or deletes is kept (the last twenty per file), so nothing an agent
    wrote is lost to another session's save.
 
-   Superseded 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md) §6: in capture mode each
+   Superseded 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md) §9: in capture mode each
    person has their own saved directory in the worktree's home (`people/<account id>/`), delivery
-   writes into it and read-back reads only the owner's, so no hand-over, owner record or Codex
-   withholding is needed. The hand-over below stays only to migrate a home saved before 0.36.
+   writes into it, and read-back runs per process for the person it ran as, so no hand-over, owner
+   record or Codex withholding is needed. The hand-over below stays only to migrate a home saved
+   before 0.36, and then server-side.
 
    In capture mode a worktree has one home, which its sessions share over time and, when one joins
    another person's executor (ADR 0002), at once. Amended 2026-10-05, after three reviews found ways
