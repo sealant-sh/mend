@@ -428,7 +428,10 @@ cadence window.
   platform once the SDK reports it, else `MEND_EXECUTOR_MAX_SECONDS` counted from the executor's own
   start (not the latest run's), else the 7 h 30 fallback. The lead is the configured drain estimate,
   or what is pending at the executor's observed throughput (bytes uploaded and captures registered
-  per second, from its flush answers) when that is longer.
+  per second, from its flush answers) when that is longer. The observed rate is what the executor
+  shipped, not what the store can take, so it counts as at least 1 MB/s and one registration a
+  second. What is pending moves the drain no earlier than halfway through the executor's life: the
+  executor ships all along, so draining sooner only ends the session's work.
 - **The lease** is released only after the platform reports the workspace terminated (a terminal
   status or a 404); unobserved, it lapses with the heartbeats. A release clears the holder; a lapse
   does not. No other executor claims a worktree over a lapsed lease: Mend first confirms the holder

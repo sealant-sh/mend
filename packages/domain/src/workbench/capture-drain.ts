@@ -1142,12 +1142,25 @@ export const observeCaptureThroughput = (
 };
 
 /**
+ * The least upload rate, and the least registration rate, a drain is planned at. What Mend
+ * observes (`observeCaptureThroughput`) is what an executor shipped between two flushes, which is
+ * a lower bound on what the store takes and often only what the session produced: a fresh
+ * executor ships a few KB of small captures a second while its ~800 MB bulk is still being built,
+ * and that read as ~13 KB/s planned the drain 16 h ahead and replaced every new executor two
+ * minutes in (box, 0.36.0-next.601). Below these the observation says nothing about capacity.
+ */
+export const MIN_PLANNED_UPLOAD_BYTES_PER_SECOND = 1_000_000;
+export const MIN_PLANNED_REGISTRATIONS_PER_SECOND = 1;
+
+/**
  * When to start saving ahead of the platform's cap on one executor. The deadline comes from the
  * platform once the SDK reports it; until then from MEND_EXECUTOR_MAX_SECONDS counted from the
  * executor's own start; failing both, the fallback replacement age. The drain starts
  * `drainEstimateSeconds + marginSeconds` before the deadline, and an estimate from what is pending
  * at the observed throughput (`pendingBytes / bytesPerSecond`, `pendingObjects /
- * objectsPerSecond`) wins over the configured one when it is larger.
+ * objectsPerSecond`, each rate at least its planning floor) wins over the configured one when it
+ * is larger. That estimate moves the drain no earlier than halfway through the executor's life:
+ * the executor ships all along, so a drain started sooner only ends the session's work early.
  */
 export type ExecutorCapPlan =
   | { readonly kind: "unknown" }
@@ -1159,10 +1172,14 @@ export type ExecutorCapPlan =
       readonly drainAt: Date;
     };
 
-/** How long `amount` takes at `rate` per second; 0 when either is unknown. */
-const secondsAt = (amount: number | null | undefined, rate: number | null | undefined): number =>
+/** How long `amount` takes at `rate` per second, never slower than `floor`; 0 when unknown. */
+const secondsAt = (
+  amount: number | null | undefined,
+  rate: number | null | undefined,
+  floor: number,
+): number =>
   amount !== undefined && amount !== null && rate !== undefined && rate !== null && rate > 0
-    ? amount / rate
+    ? amount / Math.max(rate, floor)
     : 0;
 
 export const planExecutorCap = (input: {
@@ -1181,39 +1198,47 @@ export const planExecutorCap = (input: {
   readonly objectsPerSecond?: number | null;
 }): ExecutorCapPlan => {
   const measured = Math.max(
-    secondsAt(input.pendingBytes, input.bytesPerSecond),
-    secondsAt(input.pendingObjects, input.objectsPerSecond),
+    secondsAt(input.pendingBytes, input.bytesPerSecond, MIN_PLANNED_UPLOAD_BYTES_PER_SECOND),
+    secondsAt(input.pendingObjects, input.objectsPerSecond, MIN_PLANNED_REGISTRATIONS_PER_SECOND),
   );
+  const configuredLeadMs = (input.drainEstimateSeconds + input.marginSeconds) * 1000;
   const leadMs = (Math.max(input.drainEstimateSeconds, measured) + input.marginSeconds) * 1000;
+  const startedMs = input.executorStartedAt?.getTime() ?? null;
+  // `deadlineMs` less the lead; what is pending moves it no earlier than halfway from the start
+  // (or than the configured lead, when that is already earlier), and never before the start.
+  const drainAtFor = (deadlineMs: number): Date => {
+    const planned = deadlineMs - leadMs;
+    if (startedMs === null) return new Date(planned);
+    const halfway = startedMs + (deadlineMs - startedMs) / 2;
+    const earliest = Math.min(deadlineMs - configuredLeadMs, halfway);
+    return new Date(Math.max(startedMs, earliest, planned));
+  };
   if (input.platformDeadline !== null) {
     return {
       kind: "planned",
       source: "platform",
       deadline: input.platformDeadline,
-      drainAt: new Date(input.platformDeadline.getTime() - leadMs),
+      drainAt: drainAtFor(input.platformDeadline.getTime()),
     };
   }
-  if (input.executorStartedAt === null) return { kind: "unknown" };
-  const startedMs = input.executorStartedAt.getTime();
+  if (startedMs === null) return { kind: "unknown" };
   if (input.maxSeconds !== null && input.maxSeconds > 0) {
     const deadline = new Date(startedMs + input.maxSeconds * 1000);
     return {
       kind: "planned",
       source: "config",
       deadline,
-      drainAt: new Date(Math.max(startedMs, deadline.getTime() - leadMs)),
+      drainAt: drainAtFor(deadline.getTime()),
     };
   }
-  // The fallback age already leaves the configured lead before an assumed cap; what is pending
-  // at the observed throughput moves it earlier by whatever that needs beyond the estimate.
-  const beyondEstimateMs = Math.max(0, measured - input.drainEstimateSeconds) * 1000;
+  // The fallback age already leaves the configured lead before an assumed cap: the drain is
+  // planned against that cap, and what is pending moves it earlier by whatever that needs beyond
+  // the estimate.
   return {
     kind: "planned",
     source: "fallback",
     deadline: null,
-    drainAt: new Date(
-      Math.max(startedMs, startedMs + input.fallbackAgeSeconds * 1000 - beyondEstimateMs),
-    ),
+    drainAt: drainAtFor(startedMs + input.fallbackAgeSeconds * 1000 + configuredLeadMs),
   };
 };
 
