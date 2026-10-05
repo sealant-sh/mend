@@ -70,6 +70,7 @@ jobs:
           SEALANT_REF: ${{ inputs.sealant_ref }}
           SEALANTD_REF: ${{ inputs.sealantd_ref }}
           PLATFORMS: ${{ inputs.platforms }}
+          DEPLOY: ${{ inputs.deploy }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
@@ -101,6 +102,11 @@ jobs:
             linux/amd64,linux/arm64) platforms="[$amd64,$arm64]" ;;
             *) echo "::error::Unknown platforms \"$PLATFORMS\"."; exit 1 ;;
           esac
+          # The box is amd64: an arm64-only image would pull there and never start.
+          if [[ $DEPLOY == true && $PLATFORMS != *linux/amd64* ]]; then
+            echo "::error::deploy: true needs linux/amd64 in platforms: the box is amd64."
+            exit 1
+          fi
 
           {
             echo "version=$version"
@@ -461,9 +467,11 @@ jobs:
             fi
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
-  # The box updates itself: a hosted runner holds the deploy key (a repository secret, never given
-  # to a fork's workflow) and asks the VM's `deploy` user, whose forced command runs the same
-  # deploy script an operator runs by hand. Only a dispatch that asked for it deploys.
+  # The box updates itself: a hosted runner holds the deploy key (in the `box-deploy` environment,
+  # which only main and tags may use) and asks the VM's `deploy` user, whose forced command runs the
+  # same deploy script an operator runs by hand. Only a dispatch that asked for it deploys, and only
+  # code on main: the script and the image run as root on the box. A branch's preview is deployed by
+  # hand (docs/operations/preview-builds.md).
   deploy:
     # After `mend-image`, which pushes the versioned tag the box pulls: the first proof pulled
     # before the tag existed (2026-10-03).
@@ -471,7 +479,28 @@ jobs:
     if: ${{ !cancelled() && needs.mend-image.result == 'success' && inputs.deploy }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
+    environment: box-deploy
     steps:
+      - name: Check that every commit is on its main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEALANT_SHA: ${{ needs.plan.outputs.sealant_sha }}
+          SEALANTD_SHA: ${{ needs.plan.outputs.sealantd_sha }}
+        run: |
+          set -euo pipefail
+          # The environment's branch rule says the same; this holds while the environment is new.
+          [[ $GITHUB_REF == refs/heads/main || $GITHUB_REF == refs/tags/* ]] ||
+            { echo "::error::deploy: true runs from main or a tag, not $GITHUB_REF. Deploy a branch's preview by hand."; exit 1; }
+          # A branch's commit, or a fork's that GitHub serves by sha, compares as "ahead" or "diverged".
+          on_main() {
+            local status
+            status=$(gh api "repos/$1/compare/main...$2" --jq .status)
+            [[ $status == behind || $status == identical ]] ||
+              { echo "::error::$1@$2 is not on main ($status): only code on main deploys on the box."; exit 1; }
+          }
+          on_main "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          if [[ -n $SEALANT_SHA ]]; then on_main sealant-sh/sealant "$SEALANT_SHA"; fi
+          if [[ -n $SEALANTD_SHA ]]; then on_main sealant-sh/sealantd "$SEALANTD_SHA"; fi
       - name: Deploy the preview on the box
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -488,4 +517,4 @@ jobs:
           # The `deploy` user's forced command accepts exactly this and nothing else.
           ssh -p 2223 -i deploy_key -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=yes \
             -o BatchMode=yes -o ConnectTimeout=20 deploy@49.12.133.97 \
-            deploy "$VERSION" "$COMMIT" $EVEN_IF_LIVE
+            deploy "$VERSION" "$COMMIT" ${EVEN_IF_LIVE:+"$EVEN_IF_LIVE"}

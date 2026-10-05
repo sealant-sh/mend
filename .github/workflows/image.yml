@@ -129,6 +129,9 @@ jobs:
           build-args:
             MEND_VERSION=${{ matrix.image.baseline && needs.version.outputs.before ||
             needs.version.outputs.value }}
+          # scripts/preview-deploy.sh deploys an image only when this matches the commit it was
+          # given: the compose assets and the image come from one build.
+          labels: org.opencontainers.image.revision=${{ needs.version.outputs.commit }}
           outputs:
             type=image,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image.name
             }},push-by-digest=true,name-canonical=true,push=true
