@@ -7,6 +7,49 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-06 · 0.38.1 · A Linux user per person in one workspace, and a login for each home
+
+- **Needed:** docs/adr/0016-per-person-harness-homes.md. In capture mode several people work in one
+  executor, each as their own Linux user (fixed uid, group `mend`, passwordless sudo), and every
+  process runs as its person's user. Under shared control one conversation is driven by several
+  people, each turn in a process of its sender's user, on its sender's login.
+- **Today:** every process runs as root; the SDK has no way to run a session or an exec as another
+  user. sealant#315 (open) switches the one login a workspace holds at `$HOME`, written as root;
+  sealant#316 (open) moves a Claude setup token out of `CLAUDE_CODE_OAUTH_TOKEN`.
+  `workspaces.create` injects at `$HOME`, and GitHub as `GITHUB_TOKEN` and `GH_TOKEN`. sealantd
+  applies dotfiles to `/root` as root, records no owners and restores as root. The SSH gateway runs
+  its session as root. Images install toolchains under `/root` and carry no `sudo`.
+- **Suggested, Core:**
+  - `user` on sessions and exec (uid, gid, supplementary groups, `HOME` and the rest from passwd,
+    umask `0002`).
+  - Reshape #315 into per-home injection:
+    `POST /v1/workspaces/:id/credentials { onBehalfOf, home, claude?, codex?, github? }`, files
+    owned by the home's owner, 0600 (a home is a person's home, a conversation home under
+    `/run/mend/conv`, or `/root` for a launcher whose predicted layout failed at prepare); the
+    record per instance and home, one person while held (409 `home-held`), released and retaken only
+    while idle; GitHub as `<home>/.config/gh/hosts.yml`; push, POST and DELETE under one row lock;
+    DELETE removes the files. Its switch semantics are not needed.
+  - `workspaces.create({ credentialsHome, sshUser })`, no login in the environment; `GET` listing
+    the homes; sync-back per home; the capture owner map in the spec; the dotfiles verb.
+  - The person-layout capability readable before create: the image build runs
+    `sealantd capabilities --json` and probes for `sudo`, `useradd`, `setfacl` and users or groups
+    in 40000–49999, records the result on the image, and the SDK reports it with ACL support per
+    runtime. Mend has to choose the layout before create sends `credentialsHome` and the dotfiles.
+  - Images: group `mend`, `sudo` with `NOPASSWD` and `env_keep` for toolchain variables, `useradd`,
+    ACL tools and `setpriv`; toolchains under `/opt` and caches under `/var/cache` (2775, default
+    ACL) named in `ENV`; `/etc/skel` links to shared caches; `/etc/gitconfig` `safe.directory`. nix
+    images stay as they are and take one person.
+- **Suggested, sealantd:** run an exec or session as a uid; apply dotfiles as a given user into
+  their home, at boot and through a control verb; restore `people/<id>/` owned by the uid the owner
+  map names and `tree/`, git and `conversations/` group `mend`, group-writable, setgid, with a
+  default ACL, and every other entry under `people/<id>/` at its recorded mode; apply
+  `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE` under each `people/<id>/`, with Codex's
+  `codex-db/logs_*` and `*-shm` as machine state; report `exec.user`, `dotfiles.user` and
+  `restore.owner_map`, also offline (`sealantd capabilities --json`); later, scrub opencode's login
+  tables from captured databases.
+- **Later:** when the SSH gateway admits more than the workspace's owner, run each principal's
+  session as their own user.
+
 ## 2026-10-04 · sealantd 0.19 · opencode's MCP logins and in-app logins ride captures
 
 - **Needed:** no login a person makes inside a session is saved, as for every harness's own login

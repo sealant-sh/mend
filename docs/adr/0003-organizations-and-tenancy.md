@@ -166,6 +166,10 @@ credentials and spend without their consent.
 
 **Amended by [ADR 0013](0013-whoever-sends-a-turn-pays.md):** a steerer's turn runs on the steerer's
 own login, not the owner's, and in a terminal session only the owner types or opens a shell.
+**Amended by [ADR 0016](0016-per-person-harness-homes.md):** every process runs as its person's own
+Linux user; a steered turn runs in an agent process of the steerer's user on the steerer's login,
+continuing the one shared conversation, and "Runs as \<owner\>" no longer describes a steered
+session.
 
 ### Removing a member
 
