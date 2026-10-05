@@ -12,6 +12,7 @@ import {
   PI_PROFILE_HOME_DIR,
   PI_PROFILE_KEPT_DIR,
   PI_PROFILE_PROGRAM,
+  PI_PROFILE_SECRET_FILE,
   materializePiProfile,
   planPiProfile,
 } from "./pi-profile.ts";
@@ -83,6 +84,31 @@ describe("delivering a pi profile into a harness home", () => {
     // Not written again: its time is the one the test set.
     expect(fs.statSync(written).mtimeMs).toBe(0);
     expect(fs.existsSync(path.join(root, "node_modules", "dep", "index.js"))).toBe(true);
+  });
+
+  it("leaves a profile restored without its mcp.json unchanged, and writes the mcp.json again", async () => {
+    // The platform never saves `root/mcp.json` (it can hold the person's keys): a profile restored
+    // from a capture lacks it, and must still read as delivered, keeping what the session
+    // installed in it.
+    const mcp: ProfileFile = {
+      path: PI_PROFILE_SECRET_FILE,
+      encoding: "utf8",
+      contents: '{"mcpServers":{"docs":{"headers":{"Authorization":"Bearer x"}}}}',
+    };
+    const home = tempDir("mend-pi-home-");
+    await deliver(home, [extension, mcp]);
+    const root = path.join(home, PI_PROFILE_HOME_DIR);
+    write(path.join(root, "node_modules", "dep", "index.js"), "module.exports = 1;\n");
+    fs.rmSync(path.join(root, PI_PROFILE_SECRET_FILE));
+
+    const outcomes = await deliver(home, [extension, mcp]);
+    expect(outcomes.map((outcome) => outcome.outcome)).toEqual(["unchanged"]);
+    expect(fs.readFileSync(path.join(root, PI_PROFILE_SECRET_FILE), "utf8")).toBe(mcp.contents);
+    expect(fs.existsSync(path.join(root, "node_modules", "dep", "index.js"))).toBe(true);
+    // A changed mcp.json alone is written over the restored one, still unchanged.
+    const edited = { ...mcp, contents: '{"mcpServers":{}}' };
+    expect((await deliver(home, [extension, edited])).map((o) => o.outcome)).toEqual(["unchanged"]);
+    expect(fs.readFileSync(path.join(root, PI_PROFILE_SECRET_FILE), "utf8")).toBe(edited.contents);
   });
 
   it("moves a changed profile directory aside whole, never deleting it, then writes the new one", async () => {
