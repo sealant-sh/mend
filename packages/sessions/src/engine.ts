@@ -9921,7 +9921,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const owner = session.ownerUserId;
           // Pending until a capture of this executor's epoch is saved (`recordedHomeOf`).
           const epoch = (yield* capture.repo.leaseOf(session.worktreeId))?.epoch ?? null;
-          const recordHome =
+          const recordHome = (n: number | null) =>
             epoch === null
               ? Effect.logWarning(
                   "session engine: agent memory · the hand-over was not recorded · no lease",
@@ -9930,6 +9930,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   session.worktreeId,
                   { userId: owner, sessionId: session.id, workspaceId: workspace.id },
                   epoch,
+                  n,
                 );
           const recorded = yield* recordedHomeOf(session.worktreeId);
           let from: { readonly userId: string | null; readonly sessionId: string | null } | null =
@@ -9948,7 +9949,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ? { userId: only.ownerUserId, sessionId: only.id }
                   : null;
           }
-          if (owner !== null && from?.userId === owner) return yield* recordHome;
+          if (owner !== null && from?.userId === owner) return yield* recordHome(null);
           let credited: string | null = null;
           if (from !== null && from.userId !== null) {
             const read = yield* inOneReadPass(agentMemoryFromCapture(session)).pipe(
@@ -9987,11 +9988,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               null,
             );
           }
-          yield* recordHome;
+          // A capture forced now holds the moved home; the record counts only from it, never from
+          // one staged before the move. A flush that does not answer leaves any capture of the
+          // epoch to count.
+          const forced = yield* observeCaptureFlush(
+            session,
+            workspace,
+            "agent memory hand-over",
+            CHECKPOINT_FLUSH_TIMEOUT,
+            "suspend",
+          );
+          const savedFrom =
+            forced !== null && forced.pending === 0 && forced.headN !== null ? forced.headN : null;
+          yield* recordHome(savedFrom);
           yield* Effect.logInfo("session engine: agent memory · handed over").pipe(
             Effect.annotateLogs({
               sessionId: session.id,
               credited: credited === null ? "nobody" : "the previous person",
+              savedFrom: savedFrom ?? "any capture of the epoch",
               kept,
               moved: result.stdout.split("\n").filter((line) => line.startsWith("memory moved"))
                 .length,
@@ -10560,10 +10574,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (homes === null) return null;
         const pending = homes.pending;
         if (pending !== null && capture !== null) {
-          // Saved: a capture of that executor's epoch is on the worktree's chain, which every
-          // later executor restores. Mend's own checkpoints register under epochs of their own.
+          // Saved: a capture of that executor's epoch, taken after its hand-over's move, is on the
+          // worktree's chain, which every later executor restores. Mend's own checkpoints
+          // register under epochs of their own.
           const chain = yield* capture.repo.listChain(worktreeId);
-          if (chain.some((row) => row.epoch === pending.epoch)) {
+          if (
+            chain.some(
+              (row) => row.epoch === pending.epoch && (pending.n === null || row.n >= pending.n),
+            )
+          ) {
             yield* agentMemory.settleHome(worktreeId, pending.epoch);
             return { settled: pending, pendingWorkspaceId: null };
           }
@@ -10589,6 +10608,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const latest = yield* latestExecutorOf(session.worktreeId, null);
         const owner = yield* memoryOwnerOfExecutor(session, workspaceId);
         return latest !== null && latest.userId !== owner ? null : owner;
+      });
+
+      /**
+       * Whose memory the live executor `workspaceId` holds, for a launch into it: a hand-over still
+       * pending names its own executor, whose home it already moved (the record is written only
+       * after the move, or after finding the home already the launcher's). Read-backs keep the
+       * saved view (`homeOwnerOf`): they read the head, which a lost executor never wrote.
+       */
+      const liveHomeOwnerOf = Effect.fn("SessionEngine.liveHomeOwnerOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const homes = yield* agentMemory.homeOf(session.worktreeId);
+        if (homes?.pending?.workspaceId === workspaceId) return homes.pending.userId;
+        return yield* homeOwnerOf(session, workspaceId);
       });
 
       /**
@@ -11860,7 +11894,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
-        const memoryShapedArgv = codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv);
+        const memoryShapedArgv = codexMemoryOn
+          ? shapedArgv
+          : withCodexMemoryOff(shapedArgv, { join: false });
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
         const opencodeAtLaunch =
@@ -12605,11 +12641,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // anyone's Codex will summarise.
           const ownHome =
             capture === null ||
+            session.harness !== "codex" ||
             (session.ownerUserId !== null &&
-              (yield* homeOwnerOf(session, SealantWorkspaceId.make(workspace.id))) ===
+              (yield* liveHomeOwnerOf(session, SealantWorkspaceId.make(workspace.id))) ===
                 session.ownerUserId);
           const codexMemoryOn = ownHome && (yield* withholdCodexThreads(session, workspace, []));
-          const memoryShapedArgv = codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv);
+          const memoryShapedArgv = codexMemoryOn
+            ? shapedArgv
+            : withCodexMemoryOff(shapedArgv, { join: !ownHome });
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
           const opencodeAtLaunch =

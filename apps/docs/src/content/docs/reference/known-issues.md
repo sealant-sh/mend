@@ -178,16 +178,20 @@ their memory, not yours, and what it learns there is saved to their memory, neve
   else next starts a session there.
 
 A joined Codex session starts with its memory off: it neither builds memory nor leaves conversations
-for anyone's Codex to build memory from. Start your session in a worktree of your own to work from
-your memory.
+for anyone's Codex to build memory from, yours included, later or anywhere else. A session that
+joins while the other person's session is still starting can begin before Mend has moved the
+previous person's memory out of the way: its agent can read that memory, and what it writes there
+ends up kept beside it. Start your session in a worktree of your own to work from your memory.
 
 ## A worktree someone else used before you
 
 A session you start in a worktree someone else used, once their executor has ended, starts from your
 memory. Mend first saves theirs for them, then moves it to `~/.mend/agent-memory-kept/` in that
 worktree's executors, where it stays: anyone working in the worktree, and their agent, can read it
-there. When Mend cannot tell whose memory the worktree held (it was used before this release by
-several people), nobody is credited and it is only moved.
+there. Nothing deletes these kept sets, so in a worktree people take turns in they add up, one copy
+of the previous person's memory per turn, and every later session restores them. When Mend cannot
+tell whose memory the worktree held (it was used before this release by several people, or their
+sessions were removed), nobody is credited and it is only moved.
 
 An executor started before this release is judged by who started it until it ends.
 
@@ -197,6 +201,14 @@ Your Codex sessions on a server never build memory from another person's convers
 you type in a shell session, or one your agent runs in a Claude, opencode or pi session, is not a
 Codex session: Mend does not prepare it, and it can build memory from the other conversations in the
 worktree into the memory that worktree's home holds. Start a Codex session instead.
+
+Two smaller gaps in the same place:
+
+- Codex can turn a withheld conversation back on itself when it reconciles an older conversation's
+  file (the resume picker's search does), for conversations recorded before Codex 0.160. Those age
+  out of what Codex builds memory from ten days after their last change.
+- Conversations you start inside Codex with `/new` are not known to Mend as yours, so your next
+  Codex session withholds them too: they do not build your memory.
 
 ## Codex memory builds slowly, and on your login
 

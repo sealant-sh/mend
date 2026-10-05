@@ -195,24 +195,35 @@ export const withCodexMemory = (argv: ReadonlyArray<string>): ReadonlyArray<stri
   return [head, ...CODEX_MEMORY_FLAG, ...rest];
 };
 
-/** What turns Codex's memory fully off: no summarising, and no thread created for it. */
-export const CODEX_MEMORY_OFF = [
-  "-c",
-  "features.memories=false",
-  "-c",
-  "memories.generate_memories=false",
-] as const;
+/** What turns Codex's memory off: it reads none and summarises nothing. */
+export const CODEX_MEMORY_OFF = ["-c", "features.memories=false"] as const;
+
+/** And makes no thread any Codex will summarise: a new thread is created with memory disabled. */
+export const CODEX_THREADS_UNSUMMARISED = ["-c", "memories.generate_memories=false"] as const;
+
+/** A `-c`/`--config` value naming Codex's memory settings, dotted or as a TOML table. */
+const namesCodexMemory = (value: string): boolean =>
+  /^(features\.memories|memories\.|memories\s*=|features\s*=)/.test(value.trim());
 
 /**
- * A Codex launch with its memory fully off, whatever it asked (docs/adr/0009, "Codex"): a join
- * into another person's home, or a launch where Mend could not take the other people's
- * conversations out of Codex's memory. Codex neither summarises (`features.memories`) nor creates
- * a thread any Codex will summarise later (`memories.generate_memories`: a new thread is created
- * with its memory disabled). A `--enable memories` in the launch would win over `-c`, so it is
- * dropped, and a `-c` that names either setting is turned off. Takes both shapes Mend launches:
- * `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
+ * A Codex launch with its memory off, whatever it asked (docs/adr/0009, "Codex"). A `--enable
+ * memories`, and a `-c`/`--config` naming a memory setting, would win over Mend's own `-c` or keep
+ * a thread enabled, so they are dropped. Takes both shapes Mend launches: `codex …`, and a prompt's
+ * `sh -c "… exec codex -c features.memories=true …"`.
+ *
+ * `join`: the launch runs in another person's home. Its threads are also created disabled, so no
+ * Codex, the holder's included, ever summarises them. In the launcher's own home (Mend could not
+ * take the other people's conversations out of Codex's memory) its threads stay enabled: they are
+ * the launcher's, a later launch of theirs builds memory from them, and anyone else's launch
+ * withholds them.
  */
-export const withCodexMemoryOff = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
+export const withCodexMemoryOff = (
+  argv: ReadonlyArray<string>,
+  options: { readonly join: boolean },
+): ReadonlyArray<string> => {
+  const off = options.join
+    ? [...CODEX_MEMORY_OFF, ...CODEX_THREADS_UNSUMMARISED]
+    : [...CODEX_MEMORY_OFF];
   const [head, ...rest] = argv;
   if (head === "codex") {
     const kept: Array<string> = [];
@@ -223,24 +234,21 @@ export const withCodexMemoryOff = (argv: ReadonlyArray<string>): ReadonlyArray<s
         continue;
       }
       if (arg === "--enable=memories") continue;
-      // A `-c` naming either setting goes with its value; Mend's own say comes first.
-      if (
-        arg === "-c" &&
-        /^(features\.memories|memories\.generate_memories)(=|$)/.test(rest[index + 1] ?? "")
-      ) {
+      if ((arg === "-c" || arg === "--config") && namesCodexMemory(rest[index + 1] ?? "")) {
         index++;
         continue;
       }
+      if (arg.startsWith("--config=") && namesCodexMemory(arg.slice("--config=".length))) continue;
       kept.push(arg);
     }
-    return [head, ...CODEX_MEMORY_OFF, ...kept];
+    return [head, ...off, ...kept];
   }
   const script = argv[2];
   if (head === "sh" && argv[1] === "-c" && script !== undefined) {
     return [
       head,
       "-c",
-      script.replaceAll("-c features.memories=true", CODEX_MEMORY_OFF.join(" ")),
+      script.replaceAll("-c features.memories=true", off.join(" ")),
       ...argv.slice(3),
     ];
   }

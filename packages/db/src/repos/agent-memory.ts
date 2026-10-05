@@ -398,11 +398,15 @@ export class AgentMemoryRepo extends Context.Service<
      * pending; null when no launch recorded one.
      */
     readonly homeOf: (worktreeId: WorktreeId) => Effect.Effect<AgentMemoryHomes | null>;
-    /** The hand-over of the executor launched under `epoch`: pending until it is saved. */
+    /**
+     * The hand-over of the executor launched under `epoch`: pending until a capture of that epoch
+     * at chain position `n` or later is saved (`n` null: any capture of the epoch).
+     */
     readonly recordPendingHome: (
       worktreeId: WorktreeId,
       home: AgentMemoryHome,
       epoch: number,
+      n: number | null,
     ) => Effect.Effect<void>;
     /** A capture of `epoch` is the head: the hand-over pending under it is the home now. */
     readonly settleHome: (worktreeId: WorktreeId, epoch: number) => Effect.Effect<void>;
@@ -421,7 +425,9 @@ export interface AgentMemoryHome {
 /** A worktree's home as the server records it: settled, and a hand-over not saved yet. */
 export interface AgentMemoryHomes {
   readonly settled: AgentMemoryHome | null;
-  readonly pending: (AgentMemoryHome & { readonly epoch: number }) | null;
+  readonly pending:
+    | (AgentMemoryHome & { readonly epoch: number; readonly n: number | null })
+    | null;
 }
 
 type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "delete" | "execute">;
@@ -989,6 +995,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
                 sessionId: row.pendingSessionId,
                 workspaceId: row.pendingWorkspaceId,
                 epoch: row.pendingEpoch,
+                n: row.pendingN,
               },
       };
     });
@@ -997,12 +1004,14 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       worktreeId: WorktreeId,
       home: AgentMemoryHome,
       epoch: number,
+      n: number | null,
     ) {
       const pending = {
         pendingUserId: home.userId,
         pendingSessionId: home.sessionId,
         pendingWorkspaceId: home.workspaceId,
         pendingEpoch: epoch,
+        pendingN: n,
         updatedAt: new Date(),
       };
       yield* db
@@ -1026,6 +1035,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
           pendingSessionId: null,
           pendingWorkspaceId: null,
           pendingEpoch: null,
+          pendingN: null,
           updatedAt: new Date(),
         })
         .where(

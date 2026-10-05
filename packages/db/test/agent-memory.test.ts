@@ -737,18 +737,18 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
         const anna = { userId: "anna", sessionId: "s1", workspaceId: "ws-1" };
         const maria = { userId: "maria", sessionId: "s2", workspaceId: "ws-2" };
         // Anna's hand-over is pending until a capture of its epoch is the head.
-        yield* repo.recordPendingHome(worktree, anna, 3);
+        yield* repo.recordPendingHome(worktree, anna, 3, null);
         expect(yield* repo.homeOf(worktree)).toEqual({
           settled: null,
-          pending: { ...anna, epoch: 3 },
+          pending: { ...anna, epoch: 3, n: null },
         });
         yield* repo.settleHome(worktree, 3);
         // Maria's executor is lost before it saved: her hand-over never settles; Anna's home stays.
-        yield* repo.recordPendingHome(worktree, maria, 4);
+        yield* repo.recordPendingHome(worktree, maria, 4, 7);
         yield* repo.settleHome(worktree, 3);
         expect(yield* repo.homeOf(worktree)).toEqual({
           settled: anna,
-          pending: { ...maria, epoch: 4 },
+          pending: { ...maria, epoch: 4, n: 7 },
         });
         yield* repo.settleHome(worktree, 4);
         expect(yield* repo.homeOf(worktree)).toEqual({ settled: maria, pending: null });

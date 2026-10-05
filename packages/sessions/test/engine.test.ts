@@ -967,20 +967,26 @@ const agentMemoryLayerOf = (
 ): Layer.Layer<AgentMemoryRepo> =>
   Layer.succeed(AgentMemoryRepo, {
     homeOf: (worktreeId) => Effect.sync(() => homes.get(worktreeId) ?? null),
-    recordPendingHome: (worktreeId, home, epoch) =>
+    recordPendingHome: (worktreeId, home, epoch, n) =>
       Effect.sync(
         () =>
           void homes.set(worktreeId, {
             settled: homes.get(worktreeId)?.settled ?? null,
-            pending: { ...home, epoch },
+            pending: { ...home, epoch, n },
           }),
       ),
     settleHome: (worktreeId, epoch) =>
       Effect.sync(() => {
         const pending = homes.get(worktreeId)?.pending ?? null;
         if (pending === null || pending.epoch !== epoch) return;
-        const { epoch: _settled, ...home } = pending;
-        homes.set(worktreeId, { settled: home, pending: null });
+        homes.set(worktreeId, {
+          settled: {
+            userId: pending.userId,
+            sessionId: pending.sessionId,
+            workspaceId: pending.workspaceId,
+          },
+          pending: null,
+        });
       }),
     forLaunch: () => Effect.succeed([]),
     list: () => Effect.succeed([]),
@@ -9930,10 +9936,15 @@ describe("SessionEngine capture mode", () => {
     },
   );
 
-  it(
-    "an executor lost before its first save hands nothing over: the next launch hands the restored memory over again (docs/adr/0009)",
+  it.each([
+    ["nothing of it saved", false],
+    ["only a capture staged before the move saved", true],
+  ] as const)(
+    "an executor lost before it saved its hand-over hands nothing over: the next launch hands the restored memory over again (%s; docs/adr/0009)",
     { timeout: 30_000 },
-    async () => {
+    async (_label, preMoveCapture) => {
+      // The capture forced after the hand-over's move is at chain position 50.
+      let forcedHead: number | undefined;
       const created: Array<CreateOptions> = [];
       const memory = makeMemoryCaptureStore();
       const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
@@ -9978,7 +9989,29 @@ describe("SessionEngine capture mode", () => {
               label: null,
               ownerUserId: "user-maria",
             });
+            forcedHead = 50;
             yield* engine.launch(lost.id, ["claude"]);
+            forcedHead = undefined;
+            if (preMoveCapture) {
+              // A capture of Maria's epoch that sealantd staged before the move, with Anna's
+              // memory still in it, registers; the forced one never does.
+              const lostExecutor = created.at(-1);
+              if (lostExecutor === undefined) return yield* Effect.die("Maria's launch made none");
+              const lostHome = configuredHarnessHomePath(lostExecutor, relocation.executorRoot);
+              fs.mkdirSync(path.join(lostHome, root), { recursive: true });
+              fs.writeFileSync(
+                path.join(lostHome, root, "feedback.md"),
+                "Anna prefers small PRs\n",
+              );
+              yield* shipCapturedHarnessHome(
+                tmp,
+                memory,
+                anna.worktreeId,
+                memory.leases.get(anna.worktreeId)?.epoch ?? 0,
+                lostExecutor,
+                relocation.executorRoot,
+              );
+            }
             yield* engine.stop(lost.id);
             yield* until(() => world.sessions.get(lost.id)?.settledAt != null, "Maria settles");
 
@@ -10019,6 +10052,10 @@ describe("SessionEngine capture mode", () => {
             undefined,
             {
               relocation,
+              flush: () =>
+                Effect.succeed(
+                  captureAnswer(forcedHead === undefined ? {} : { headN: forcedHead }),
+                ),
               beforeCreate: (options) =>
                 Effect.gen(function* () {
                   relocation.executorRoot = path.join(testRoot, `lost-executor-${created.length}`);
@@ -10086,6 +10123,94 @@ describe("SessionEngine capture mode", () => {
             expect(argv).toContain("memories.generate_memories=false");
             expect(argv).not.toContain("features.memories=true");
             expect(argv).not.toContain("--enable");
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            spawned,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              relocation,
+              exec: (argv) => {
+                if (argv[3]?.includes("memory_mode") !== true) return undefined;
+                withholds.push(argv);
+                return { exitCode: 0, stdout: "withheld 0 restored 0", stderr: "" };
+              },
+              beforeCreate: (options) =>
+                Effect.gen(function* () {
+                  relocation.executorRoot = path.join(testRoot, `join-executor-${created.length}`);
+                  relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+                  fs.mkdirSync(relocation.executorRoot, { recursive: true });
+                  const source = options.source;
+                  if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                    throw new Error("test executor requires a capture source");
+                  }
+                  const head = memory.chains.get(WorktreeId.make(source.worktreeId))?.headCapture;
+                  if (head === null || head === undefined) return;
+                  yield* restoreConfiguredHarnessHome(
+                    testRoot,
+                    memory,
+                    WorktreeId.make(source.worktreeId),
+                    options,
+                    relocation.executorRoot,
+                  );
+                }),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "the launcher's own second Codex session, before the executor's first save, runs in their own home: withheld, memory on (docs/adr/0009, Codex)",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const withholds: Array<ReadonlyArray<string>> = [];
+      const memory = makeMemoryCaptureStore();
+      const relocation = { homePath: "", executorRoot: "" };
+      let testRoot = "";
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            testRoot = tmp;
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const holder = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(holder.id, ["codex"]);
+            expect(withholds).toHaveLength(1);
+            expect(spawned.at(-1)).toContain("features.memories=true");
+            const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            // Nothing of the executor is saved yet: its hand-over is pending, naming it.
+            yield* engine.launch(joined.id, ["codex"]);
+            expect(created).toHaveLength(1);
+            expect(withholds).toHaveLength(2);
+            const argv = spawned.at(-1) ?? [];
+            expect(argv).toContain("features.memories=true");
+            expect(argv).not.toContain("features.memories=false");
+            expect(argv).not.toContain("memories.generate_memories=false");
           }),
         {
           captured: memory,

@@ -707,6 +707,7 @@ export const agentMemoryHomes = pgTable("agent_memory_homes", {
   pendingSessionId: text(),
   pendingWorkspaceId: text(),
   pendingEpoch: integer(),
+  pendingN: integer(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

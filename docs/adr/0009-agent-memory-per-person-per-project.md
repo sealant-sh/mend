@@ -83,10 +83,13 @@ much smaller: the memory.
    one person's memory could be saved as another's:
    - **The server decides whose memory the home holds:** the person whose launch made the executor
      holding it, the only launch that delivers into it. The launch records that
-     (`agent_memory_homes`) when it hands the home over, as pending; it counts once a capture of
-     that executor's epoch is on the worktree's chain. An executor lost before it saved leaves the
-     previous home recorded, which is what the restored head holds. The record outlives the session
-     rows. Only that person's sessions read the home back. When the server cannot say, nobody does.
+     (`agent_memory_homes`) when it hands the home over, as pending: after moving another person's
+     memory, Mend forces a capture, and the record is saved once a capture of that executor's epoch
+     at that position or later is on the worktree's chain. An executor lost before that leaves the
+     previous home recorded, which is what the restored head holds. Read-backs go by the saved
+     record; a launch into the live executor goes by the pending one, which names it. The record
+     outlives the session rows. Only that person's sessions read the home back. When the server
+     cannot say, nobody does.
    - **The home's own record (`.mend/agent-memory-owner`) is for a person reading the home:**
      anything running in the executor can write it, so Mend never reads it to decide anything.
    - **A launch hands the home over before delivering:** when the server recorded the home as
@@ -96,22 +99,25 @@ much smaller: the memory.
      - then every memory path (the memory folders, Codex's summary database, the delivered record,
        files a delivery left staged) moves to `.mend/agent-memory-kept/<stamp>-handover-…`, and the
        owner record names the new person, even when they have nothing stored. The kept set is never
-       deleted. It is restored into every later executor of the worktree, where anyone working there
-       can read it.
+       deleted, so kept sets add up in a worktree people take turns in. They are restored into every
+       later executor of the worktree, where anyone working there can read them.
 
      A hand-over that cannot finish fails the launch, as pi's profile does. A join waits while one
-     runs. The launcher's own home costs one database read and one write, and nothing in the
-     executor.
+     runs. The launcher's own home costs a few database reads and one write, and nothing in the
+     executor. Another person's home also costs the capture read, one `sh` exec and one forced
+     capture.
 
    - **A Codex in the launcher's own home summarises only their conversations:** before it starts,
      every conversation in its thread index (`state_5.sqlite`) that is not the launcher's is set to
      `memory_mode = 'disabled'`, and the launcher's own that Mend disabled earlier are given back. A
      mode a person chose is never touched. Where that cannot be done (no node, no `node:sqlite`, a
-     state database under another name), that Codex starts with its memory off.
+     state database under another name), that Codex starts with its memory off; the conversations it
+     starts stay enabled, so a later launch of theirs builds memory from them.
    - **A Codex that joins another person's executor starts with its memory fully off**
-     (`features.memories=false`, `memories.generate_memories=false`, a `--enable memories` dropped)
-     and changes no thread's memory mode: the home owner's selection stands, and the threads it
-     creates are born disabled, so no Codex summarises them.
+     (`features.memories=false`, `memories.generate_memories=false`; a `--enable memories`, or a
+     `-c`/`--config` naming a memory setting, dropped) and changes no thread's memory mode: the home
+     owner's selection stands, and the threads it creates are born disabled, so no Codex, the
+     joiner's own included, ever builds memory from them.
    - **What a joined agent writes goes to the executor's owner:** it shares their memory files, and
      nobody can tell its lines from theirs. Lines written before the owner's agent ends are saved
      with that read-back. Lines written after it wait for the owner's next read-back of that home:

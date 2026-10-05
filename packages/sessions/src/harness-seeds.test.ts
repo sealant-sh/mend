@@ -589,37 +589,57 @@ describe("Codex's background server", () => {
   });
 });
 
-describe("Codex's memory turned fully off", () => {
-  it("drops whatever the launch asked, --enable included, and makes no thread to summarise", () => {
-    const off = ["-c", "features.memories=false", "-c", "memories.generate_memories=false"];
-    expect(withCodexMemoryOff(["codex", "resume", "abc"])).toEqual([
+describe("Codex's memory turned off", () => {
+  const off = ["-c", "features.memories=false"];
+  const unsummarised = ["-c", "memories.generate_memories=false"];
+
+  it("in a join, drops whatever the launch asked, --enable and --config included, and makes no thread to summarise", () => {
+    expect(withCodexMemoryOff(["codex", "resume", "abc"], { join: true })).toEqual([
       "codex",
       ...off,
+      ...unsummarised,
       "resume",
       "abc",
     ]);
     expect(
-      withCodexMemoryOff([
-        "codex",
-        "--enable",
-        "memories",
+      withCodexMemoryOff(
+        [
+          "codex",
+          "--enable",
+          "memories",
+          "-c",
+          "features.memories=true",
+          "--config",
+          "memories.generate_memories=true",
+          "--config=features.memories=true",
+          "-c",
+          "memories={generate_memories=true}",
+          "--enable=memories",
+          "-c",
+          "model=gpt",
+          "app-server",
+        ],
+        { join: true },
+      ),
+    ).toEqual(["codex", ...off, ...unsummarised, "-c", "model=gpt", "app-server"]);
+    const [, , script] = withCodexMemoryOff(
+      [
+        "sh",
         "-c",
-        "features.memories=true",
-        "-c",
-        "memories.generate_memories=true",
-        "--enable=memories",
-        "app-server",
-      ]),
-    ).toEqual(["codex", ...off, "app-server"]);
-    // A prompt's script is turned too, and other harnesses are left as they are.
-    const [, , script] = withCodexMemoryOff([
-      "sh",
-      "-c",
-      "exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
-    ]);
+        "exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
+      ],
+      { join: true },
+    );
     expect(script).toBe(
       "exec codex -c features.memories=false -c memories.generate_memories=false --dangerously-bypass-approvals-and-sandbox",
     );
-    expect(withCodexMemoryOff(["claude"])).toEqual(["claude"]);
+    expect(withCodexMemoryOff(["claude"], { join: true })).toEqual(["claude"]);
+  });
+
+  it("in the launcher's own home, turns memory off but keeps their new threads for their memory", () => {
+    expect(withCodexMemoryOff(["codex", "--enable", "memories"], { join: false })).toEqual([
+      "codex",
+      ...off,
+    ]);
   });
 });
