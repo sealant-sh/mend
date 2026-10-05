@@ -369,6 +369,11 @@ the new sender's user, on their login.
   queued turns; automatic landing follows the owner's own turns only; Slack checks the sender's
   login.
 - **Terminal sessions** stay as ADR 0013 and mend#518 made them: only the owner types.
+- **opencode is a one-person harness.** It is not supported under shared control: turning shared
+  control on for an opencode session, or sending a turn to someone else's, is refused: "opencode
+  sessions are one person's. Shared control is not available for them; start your own session in
+  this worktree." It never runs in a conversation home, and nothing in this decision applies to it.
+  pi, also terminal-only, follows the terminal-session rule above.
 
 ### 7. Joins
 
@@ -409,32 +414,30 @@ agent writes goes to the executor's owner" no longer hold.
   saves them, so ADR 0009's read-back from the capture stands; Codex's logs database is machine
   state.
 
-### 8a. The opencode in-app login: an exception for the owner to approve
+### 8a. The opencode in-app login: a documented exception
+
+Decided by the owner on 2026-10-06.
 
 opencode 1.18.34 keeps its conversations in a SQLite database that resume needs, so it is saved in
 `P`. The same database holds `account` (written only by `opencode console login` and
 `opencode login`), `credential` (written through the `/api/integration/*` and `/api/credential/:id`
 routes that every opencode server mounts, called by the desktop and web clients), `control_account`
 (legacy, unwritten) and `session_share.secret` (a public share's update key). The TUI's `/connect`
-writes `auth.json`, in the home. opencode runs only in a terminal in Mend, so no one else's opencode
-opens `P_X`'s database.
+writes `auth.json`, in the home. opencode is a one-person harness (decision 6): only its owner's
+processes open `P_X`'s database.
 
-Rule 1 holds. Rule 2, "logins are never saved", does not for those rows: they are in every capture
-taken while they exist, and `P_X` is restored into every executor of the worktree.
+**A login a person makes inside opencode stays in their own opencode data, which only their own
+sessions use.** Mend deletes those rows when opencode exits: as the person's user, with
+`node:sqlite`, it deletes every row of `account`, `control_account` and `credential`, nulls
+`session_share.secret`, runs `VACUUM` and `PRAGMA wal_checkpoint(TRUNCATE)`, and closes. It does the
+same in the layout step before that person's opencode starts and at prepare for every restored
+`people/*/` database, for an exit Mend did not observe. A scrub that fails is reported on the
+session line and the database left as it is.
 
-To shrink it, Mend scrubs that person's database with `node:sqlite`, as their user, when each
-opencode process ends, in the layout step before their opencode starts, and at prepare for every
-restored `people/*/` database: delete every row of `account`, `control_account` and `credential`,
-null `session_share.secret`, `VACUUM`, `PRAGMA wal_checkpoint(TRUNCATE)`, close. A scrub that fails
-is reported on the session line and the database left as it is.
-
-**For the owner's approval:** "An opencode login made with `opencode console login`,
-`opencode login` or the integration routes, and a public share's secret, are saved in the captures
-taken while that opencode process runs, in that person's own directory, readable by anyone working
-in the worktree. Mend removes them from the database when the process ends, before the next one
-starts, and when an executor restores it. This is logged as an exception to 'logins are never saved'
-until sealantd scrubs those tables from captures (PLATFORM-FEEDBACK 2026-10-04)." Without approval,
-the alternative is to keep opencode's database unsaved, which makes opencode sessions not resumable.
+This is a narrow exception to "logins are never saved": such a login is in the captures taken while
+that opencode process ran, in that person's own directory, where anyone working in the worktree can
+read it. Known issues says so. sealantd scrubbing those tables from captures is a follow-up
+(PLATFORM-FEEDBACK 2026-10-04).
 
 ### 9. Memory per person (replaces mend#528's hand-over)
 
@@ -482,16 +485,17 @@ the alternative is to keep opencode's database unsaved, which makes opencode ses
 Every reader goes by a prefix: `HARNESS_STATE`'s patterns become `^people/<id>/…` for a session that
 was never shared and `^people/<owner>/conversations/<session id>/…` for one that was;
 `harvestFromCaptureAlone`, `hasLiveHarnessState`, `locateLiveTranscript`, `readHarnessFileScript`,
-`CARRIED_TRANSCRIPTS` and the opencode reader take that directory, skip links, and go by exact
-provider session id. Two sessions of one person in one worktree still share a directory outside
-shared control; pinning provider session ids at launch is a follow-up.
+`CARRIED_TRANSCRIPTS` and the opencode reader take that directory (opencode's always the personal
+one, since it is never shared), skip links, and go by exact provider session id. Two sessions of one
+person in one worktree still share a directory outside shared control; pinning provider session ids
+at launch is a follow-up.
 
 ### 13. What the product says
 
 While people share a workspace, everyone can read and change everyone's files with `sudo`, logins
 included, and a person's saved conversations and memory are restored into every executor of the
-worktree. Nothing of anyone else's is used by default, and no login is saved (decision 8a aside),
-but it is not a boundary between people.
+worktree. Nothing of anyone else's is used by default, and no login is saved (decision 8a's narrow
+exception aside), but it is not a boundary between people.
 
 - **Where two people meet in a worktree** ("join a worktree" in the CLI, the composer's Worktree
   picker, the worktree's New session menu): "Anna's session is running in this worktree. You share
@@ -665,7 +669,10 @@ the same commit.
   install.sh".
 - **Pre-release executors** keep the shared home until replaced; pre-release opencode conversations
   are not resumable in the person layout.
-- **The opencode in-app login exception** (decision 8a), if the owner approves it.
+- **opencode is one person's:** shared control is refused for opencode sessions.
+- **A login made inside opencode** (`opencode console login`, the integration routes) is saved in
+  the captures taken while that opencode process ran, in that person's own directory; Mend deletes
+  it when opencode exits (decision 8a).
 - **Settings edited by hand** last until the executor ends; pi's and opencode's ChatGPT copies are
   refreshed at process start.
 
@@ -822,9 +829,10 @@ compare flag off against flag on.
     stop recorded as interrupted by the hand-over; the waiting line and its actions; the queue on
     the conversation; crons off in shared sessions and for everyone but the change owner; handoff
     and takeover through the same rules; payer from the process; cancellations; Slack; automatic
-    landing. Engine tests: B's turn runs as B with A's conversation; A's sub-agent, goal, background
-    terminal and monitor each delay B's turn and finish as A; a takeover waits. M, ~900. Perf: the
-    steered-turn scenario; same-person turns pay nothing.
+    landing; shared control refused for opencode sessions, at the toggle and at submit. Engine
+    tests: B's turn runs as B with A's conversation; A's sub-agent, goal, background terminal and
+    monitor each delay B's turn and finish as A; a takeover waits. M, ~900. Perf: the steered-turn
+    scenario; same-person turns pay nothing.
 
 **P1 · Gate: budgets met,** flag on against flag off at the same commit, on the scratch instance,
 then on the box once the conditions above hold.
@@ -901,4 +909,7 @@ benchmark once more, before 0.36 is tagged.
   its restore `chmod`; shared processes use their own Codex index; the gate compares flag off
   against flag on at one commit, with at least 10 runs; the hidden-reasoning retry is dropped, and a
   rejection fails the turn; a session once shared stays neutral.
-- Open: gate B's history record. Open: the owner's approval of decision 8a.
+- 2026-10-06 (owner): opencode is not supported under shared control; it stays a one-person harness.
+  Decision 8a is resolved: a login made inside opencode stays in that person's own opencode data,
+  deleted when opencode exits, documented as a narrow exception.
+- Open: gate B's history record.
