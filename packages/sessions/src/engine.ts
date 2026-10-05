@@ -116,6 +116,7 @@ import {
   SessionExtraMount,
   SessionReferenceMount,
   type SessionRepository as SessionRepositoryRow,
+  canNestRepository,
   canUseLink,
   isRepositoryName,
   nestedRepositoryPath,
@@ -1330,6 +1331,7 @@ export class RepositoryAddError extends Schema.TaggedErrorClass<RepositoryAddErr
       "worktree-taken",
       "no-origin",
       "not-live",
+      "private-project",
     ]),
     message: Schema.String,
   },
@@ -10808,7 +10810,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (candidate) =>
               candidate.id !== project.id &&
               !held.has(candidate.id) &&
-              canUseLink(project, candidate, viewer),
+              canUseLink(project, candidate, viewer) &&
+              canNestRepository(project, candidate),
           )
           .map(
             (candidate): AddableProject => ({
@@ -10911,6 +10914,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* refuse(
             "not-visible",
             `project ${target.name} is not visible to this session's owner`,
+          );
+        }
+        // Its files and history would ride this worktree's captures to whoever opens it: a private
+        // project goes only where nobody else can open the worktree (ADR 0011, decision 14).
+        if (!canNestRepository(project, target)) {
+          return yield* refuse(
+            "private-project",
+            project.visibility === "shared"
+              ? `${target.name} is private and ${project.name} is shared · its files and history would be saved with this session's worktree, which every member of the organization can open · add it from a session in a private project of yours, or ask an owner to share ${target.name}`
+              : `${target.name} is private and ${project.name} is another person's · its files and history would be saved with this session's worktree, which they can open · add it from a session in a private project of yours`,
           );
         }
         const name = input.name ?? target.name;
