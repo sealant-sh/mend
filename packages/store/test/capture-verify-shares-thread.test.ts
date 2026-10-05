@@ -125,12 +125,16 @@ const makeProbe = async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   const port = typeof address === "object" && address !== null ? address.port : 0;
+  const request = () => fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
+  // The first request loads `fetch` itself and opens the connection, none of it the checks'
+  // doing: it is answered before any request is timed.
+  await request();
   const latencies: Array<number> = [];
   const probing = { running: true };
   const loop = (async () => {
     while (probing.running) {
       const started = performance.now();
-      await fetch(`http://127.0.0.1:${port}/`).then((response) => response.text());
+      await request();
       latencies.push(performance.now() - started);
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
@@ -189,6 +193,9 @@ it(
     const probe = await makeProbe();
     const delay = monitorEventLoopDelay({ resolution: 10 });
     delay.enable();
+    // The histogram never records its first interval, and the checks' first synchronous stretch
+    // would be it: one interval passes before they start.
+    await new Promise((resolve) => setTimeout(resolve, 25));
     const started = performance.now();
     const outcome = await Effect.runPromise(checks);
     const ms = performance.now() - started;
@@ -205,9 +212,12 @@ it(
     );
     // Requests kept arriving, and were answered, while the checks ran.
     expect(latencies.length).toBeGreaterThan(10);
-    // Locally the worst request is ~30 ms (277 ms before the fix, minutes on alpha). Shared CI
-    // runners are several times slower, so the bound only rules out a stall a person would feel.
-    expect(worstRequest).toBeLessThan(1_000);
-    expect(worstDelay).toBeLessThan(1_000);
+    // No stall takes half the checks' own run, timed here on this machine, so the bound scales
+    // with the runner where a fixed one did not (CI runs the checks in 4–7 s, a laptop in 0.6 s).
+    // Checks that hold the thread through their work stall for nearly all of it, as alpha's did
+    // for minutes. These stall longest at their start, while the file store reads the first packs
+    // synchronously: ~11% of the run on a laptop, up to a quarter on CI.
+    expect(worstRequest).toBeLessThan(ms / 2);
+    expect(worstDelay).toBeLessThan(ms / 2);
   },
 );
