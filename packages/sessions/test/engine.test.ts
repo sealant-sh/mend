@@ -13633,6 +13633,91 @@ const lifecycleLayer = (
     knobs.captureOps,
   );
 
+describe("a Stop the person made in Mend (box, 2026-10-05)", () => {
+  // On the box (0.36.0-next.601) the first Stop of a fresh session warned "the final flush
+  // answered complete, but the executor's evidence does not read saved · stopped outside Mend" and
+  // made a second final flush (5.1 s). A status read a client's view asked for just before the
+  // Stop was still on its way: the executor answered it while Mend's own final flush ran
+  // (`in-progress`), and the answer reached Mend after the final one. Until it was published the
+  // evidence was not settled, so the drain asked for another final flush; and its `in-progress`
+  // read as a final flush Mend did not ask for.
+  it(
+    "makes one final flush and reads `stopped`, never `stopped outside Mend`, while a status read asked before it is still on its way",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      const finalAnswered = await Effect.runPromise(Deferred.make<void>());
+      let statusReads = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // The person's view asks for the executor's status as they press Stop.
+            yield* engine.refreshCaptureStatus(session.id);
+            yield* until(() => statusReads === 1, "the status read to be asked");
+            yield* engine.stop(session.id);
+            yield* until(() => events.includes("workspace-1"), "the workspace stop");
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session to settle",
+            );
+            expect(kinds).toEqual(["final"]);
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.summary ?? "").not.toContain("stopped outside Mend");
+          }),
+        {
+          captured: memory,
+          drainPolicy: { statusMinInterval: Duration.millis(0) },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushed: events,
+              flushKinds: kinds,
+              flush: () =>
+                Effect.succeed(flushReport(0, 1, { headN: 1 })).pipe(
+                  Effect.tap(() => Deferred.succeed(finalAnswered, undefined)),
+                ),
+              // Answered while the final flush ran, before its answer (observation 0, the final's
+              // is 1), and delivered after it.
+              captureStatus: () =>
+                Effect.gen(function* () {
+                  statusReads += 1;
+                  yield* Deferred.await(finalAnswered);
+                  yield* Effect.sleep(Duration.millis(150));
+                  const lease = [...memory.leases.values()].find(
+                    (held) => held.executorId !== null,
+                  );
+                  const launch = lease?.launchId ?? null;
+                  if (lease === undefined || launch === null) {
+                    return yield* Effect.die("the executor's lease names no launch");
+                  }
+                  const running = { complete: false, incompleteReason: "in-progress" };
+                  return {
+                    ...flushReport(0, 1, { headN: 1 }),
+                    ...running,
+                    origin: {
+                      epoch: lease.epoch,
+                      launch,
+                      bootId: "stand-in-boot",
+                      bootGeneration: 1,
+                      observation: 0,
+                      headN: 1,
+                    },
+                  };
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+});
+
 describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   it("every planned end asks the executor for a final flush; a checkpoint asks for a suspend one", async () => {
     const created: Array<CreateOptions> = [];

@@ -985,6 +985,14 @@ const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
 const CHECKPOINT_FLUSH_TIMEOUT = Duration.seconds(20);
 /** A status read reads a counter; it never waits on a ship. */
 const CAPTURE_STATUS_TIMEOUT = Duration.seconds(10);
+/**
+ * How long a drain whose final flush answered complete waits for an answer asked before it to be
+ * published (`awaitEvidenceSettled`): a status read's own bound, and a second more for its
+ * publication. Past it the drain goes on as before, asking for another final flush.
+ */
+const EVIDENCE_SETTLE_WAIT = Duration.sum(CAPTURE_STATUS_TIMEOUT, Duration.seconds(1));
+/** Between two looks at whether such an answer was published. */
+const EVIDENCE_SETTLE_LOOK = Duration.millis(25);
 /** A landing asks the executor this many times for its captures before it says they are behind. */
 const LANDING_FLUSH_ATTEMPTS = 4;
 const LANDING_FLUSH_PAUSE = Duration.seconds(2);
@@ -2393,6 +2401,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const evidenceSettled = (workspaceId: string) =>
         sessions.evidenceFenced(workspaceId).pipe(Effect.map((fenced) => !fenced));
       /**
+       * Whether every answer asked of the executor in `workspaceId` was published within `wait`:
+       * looked at every `EVIDENCE_SETTLE_LOOK` until it is, or the wait runs out.
+       */
+      const awaitEvidenceSettled = Effect.fn("SessionEngine.awaitEvidenceSettled")(function* (
+        workspaceId: string,
+        wait: Duration.Duration,
+      ) {
+        const deadline = Date.now() + Duration.toMillis(wait);
+        while (!(yield* evidenceSettled(workspaceId))) {
+          if (Date.now() >= deadline) return false;
+          yield* Effect.sleep(EVIDENCE_SETTLE_LOOK);
+        }
+        return true;
+      });
+      /**
        * Ask `ask` of the executor fenced: the fence is written before it and closed after it —
        * deleted when nothing arrived, kept (`unpublished`) when an answer arrived and was not
        * published. Null when the fence could not be written: nothing is asked unfenced.
@@ -2818,6 +2841,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           reading.complete === false &&
           reading.incompleteReason === "in-progress"
         ) {
+          // Asked before Mend began to drain this executor and answered while Mend's own final
+          // flush ran (a client's view asked as the person pressed Stop): that flush is the one
+          // in progress, and the end is the person's Stop, not one made outside Mend (box,
+          // 2026-10-05).
+          const workspaceId = session.sealantWorkspaceId;
+          const now = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (
+            drains.has(workspaceId) ||
+            (now !== null && now.captureDrain !== null) ||
+            (yield* workspaceFinalFlushed(session.worktreeId, workspaceId))
+          ) {
+            yield* Effect.logDebug(
+              "session engine: capture mode · a status read answered during Mend's own final flush",
+            ).pipe(Effect.annotateLogs({ sessionId, workspaceId }));
+            return;
+          }
           yield* Effect.logInfo(
             "session engine: capture mode · the executor is running a final flush Mend did not ask for · stopping",
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId: session.sealantWorkspaceId }));
@@ -4603,18 +4644,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // never reads saved over a failure the executor answered after it, or one nothing
           // orders against it. Read from the session as it is now, confirmed against the
           // evidence version it was read at.
-          const directEnd =
+          const readDirectEnd = Effect.gen(function* () {
+            const current = yield* sessions
+              .byId(sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
+            return yield* confirmedExecutorEnd(
+              current,
+              yield* executorEndOfSession(current, workspaceId),
+            );
+          });
+          let directEnd =
             reading !== null && captureSaved(reading) && lookup.kind === "found"
-              ? yield* Effect.gen(function* () {
-                  const current = yield* sessions
-                    .byId(sessionId)
-                    .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
-                  return yield* confirmedExecutorEnd(
-                    current,
-                    yield* executorEndOfSession(current, workspaceId),
-                  );
-                })
+              ? yield* readDirectEnd
               : null;
+          // An answer asked of this executor before the final flush, and not published yet, leaves
+          // its end undecided (cross-repo decision 18): typically a status read a client's view
+          // asked just before the Stop, which the executor answered while the final flush ran and
+          // which arrives after it. Its answer is waited for and the end read again; asking for
+          // another final flush instead cost a Stop on the box 5.1 s (2026-10-05).
+          if (
+            directEnd !== null &&
+            directEnd.outcome !== "stopped" &&
+            directEnd.evidence?.settled === false
+          ) {
+            yield* Effect.logInfo(
+              "session engine: capture drain · the final flush answered complete · an answer asked before it is still on its way · waiting for it",
+            ).pipe(Effect.annotateLogs({ sessionId, workspaceId, reason }));
+            if (yield* awaitEvidenceSettled(workspaceId, EVIDENCE_SETTLE_WAIT)) {
+              directEnd = yield* readDirectEnd;
+            }
+          }
           if (directEnd !== null && directEnd.outcome !== "stopped") {
             yield* Effect.logWarning(
               "session engine: capture drain · the final flush answered complete, but the executor's evidence does not read saved · not saved yet",
@@ -4624,7 +4683,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 workspaceId,
                 reason,
                 headN: reading?.headN ?? null,
-                evidence: directEnd.summary,
+                // The executor's end in its own words names how it ended; a Stop made in Mend
+                // never reads `stopped outside Mend`.
+                evidence: endedOutsideMend.has(workspaceId)
+                  ? directEnd.summary
+                  : directEnd.summary.replace(/^stopped outside Mend · /, ""),
               }),
             );
           }
