@@ -9,6 +9,7 @@ import type {
   InteractiveSession,
   SessionOptions,
   Run,
+  RunChanges,
   RunCommand,
   RunFileChange,
   RunOptions,
@@ -263,6 +264,32 @@ export const runtimeDeadlineOf = (
     }),
   );
 };
+
+/**
+ * A run's changes as Core read them. `available: false` means Core never read them (the run has
+ * not ended, the reading failed, or none was recorded): the empty `files` and `diff` then say
+ * nothing about what changed, and `unavailableReason` says why, when Core gave a reason.
+ */
+export interface RunChangesReading {
+  readonly files: ReadonlyArray<RunFileChange>;
+  readonly diff: string;
+  readonly available: boolean;
+  readonly unavailableReason: string | null;
+}
+
+/**
+ * Reads a run's changes with `available` and `unavailableReason` kept. A missing `available` (an
+ * SDK or control plane from before sealant#313) reads as `true`, as the SDK reads it.
+ */
+export const runChangesOf = (
+  changes: RunChanges,
+): Effect.Effect<RunChangesReading, SealantPlatformError> =>
+  wrap(async () => ({
+    files: changes.files,
+    diff: await changes.diff(),
+    available: changes.available ?? true,
+    unavailableReason: changes.unavailableReason ?? null,
+  }));
 
 const STOP_STATES: ReadonlyArray<WorkspaceStopState> = ["stopped", "draining", "kept", "requested"];
 
@@ -761,14 +788,8 @@ export interface SealantClientShape {
     processId: string,
     stream: "pty" | "stdout" | "stderr",
   ) => Effect.Effect<Uint8Array, SealantPlatformError>;
-  /** The before/after of what a run changed: file list plus the unified diff. */
-  readonly runChanges: (run: Run) => Effect.Effect<
-    {
-      readonly files: ReadonlyArray<RunFileChange>;
-      readonly diff: string;
-    },
-    SealantPlatformError
-  >;
+  /** The before/after of what a run changed: file list, unified diff, and whether Core read it. */
+  readonly runChanges: (run: Run) => Effect.Effect<RunChangesReading, SealantPlatformError>;
   /** Cheap authenticated round-trip for the settings page. Never fails — the failure is the content. */
   readonly connectionCheck: () => Effect.Effect<SealantConnection>;
   /** Resolve one package against the selected workspace OS through Sealant's public API. */
@@ -1092,7 +1113,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     );
 
     const runChanges = Effect.fn("SealantClient.runChanges")((run: Run) =>
-      wrap(async () => ({ files: run.changes.files, diff: await run.changes.diff() })),
+      runChangesOf(run.changes),
     );
 
     const connectionCheck = Effect.fn("SealantClient.connectionCheck")(function* () {

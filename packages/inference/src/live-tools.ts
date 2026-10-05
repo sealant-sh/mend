@@ -170,6 +170,15 @@ export const readChangeLayer = Layer.effect(
           : yield* sealant.getRun(latest.sealantRunId).pipe(
               Effect.flatMap((sdkRun) => sealant.runChanges(sdkRun)),
               toToolError("read_change", "reading the change failed"),
+              // Core never read this run's changes: its empty diff is not "no changes".
+              Effect.filterOrFail(
+                (rc) => rc.available,
+                (rc) =>
+                  new InferenceToolError({
+                    tool: "read_change",
+                    message: changesNotRead(rc.unavailableReason),
+                  }),
+              ),
               Effect.map((rc) => {
                 const counts = diffCounts(rc.diff);
                 return {
@@ -287,6 +296,10 @@ const toToolError =
         (error) => new InferenceToolError({ tool, message: `${what}: ${error.message}` }),
       ),
     );
+
+/** What read_change says for a run whose changes Core never read, in place of an empty diff. */
+const changesNotRead = (reason: string | null): string =>
+  `changes not read · ${reason ?? "Core gave no reason"}`;
 
 /** Per-file +/− counts out of a unified diff — the brief's mono facts. */
 const diffCounts = (diff: string) => {
