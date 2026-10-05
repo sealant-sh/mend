@@ -37,7 +37,8 @@ checks are not evidence that MacBook-to-Mac-Mini operation has been verified.
 npm install --global @sealant/mend
 ```
 
-This installs only the CLI. It does not install Docker, create a server, or start a service.
+This installs only the CLI. It does not install Docker, create a server, or start a service. To try
+the next release before it ships, read [Try a preview](/getting-started/try-a-preview/).
 
 ## Set up the server
 

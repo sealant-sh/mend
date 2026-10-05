@@ -29,6 +29,7 @@ export default defineConfig({
             { label: "Introduction", slug: "index" },
             { label: "How Mend works", slug: "concepts/how-mend-works" },
             { label: "Install Mend", slug: "getting-started/install" },
+            { label: "Try a preview", slug: "getting-started/try-a-preview" },
             { label: "Connect provider accounts", slug: "guides/provider-accounts" },
             { label: "How Mend handles your logins", slug: "concepts/provider-logins" },
             { label: "Adopt a project", slug: "getting-started/adopt-project" },
