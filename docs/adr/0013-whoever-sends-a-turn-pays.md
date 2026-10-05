@@ -5,13 +5,12 @@ login pays") and [ADR 0003](0003-organizations-and-tenancy.md) ("Sessions and sh
 under shared control a steerer's turn no longer spends the owner's login. Read against Mend at
 `6abd2ab9` and Sealant Core `origin/main` at `6d624c1` (SDK 0.38.1).
 
-Amended 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md): ships in 0.36, no longer held
-until the SDK. The mechanism changes: a steerer's turn runs in an agent process started as the
-steerer, with their whole home (logins, settings, MCP servers, git identity, and for Claude their
-memory), continuing the owner's conversation; a gate before it is built tests that each provider
-accepts the conversation's history under another account. A payer change restarts the agent at a
-quiescent point. There is no login swap inside a running process and no switch back; Core puts each
-person's login into their own home and never switches a home to another person.
+Amended 2026-10-05 and 2026-10-06 by [ADR 0016](0016-per-person-harness-homes.md): ships in 0.36, no
+longer held until the SDK. The mechanism changes: each person has their own Linux user, and a turn
+runs in an agent process of its sender's user on its sender's login, continuing the one shared
+conversation. A sender change hands the conversation to a new process once the previous sender's
+background work has finished. There is no login swap inside a running process and no switch back.
+While control is shared, the agent uses neither person's personal memory nor instructions.
 
 ## Context
 
@@ -174,8 +173,8 @@ Mend, one stack:
    why.
 3. Every turn records its payer, and the conversation shows it.
 4. After the SDK ships the endpoint: the switch in `dispatchNext`, the switch back, the Codex
-   restart, the refusal at submit, and the payer filled from Core's answer. Amended 2026-10-05: in
-   0.36, as a process per payer (ADR 0016 decision 6, Delivery 12 and 13).
+   restart, the refusal at submit, and the payer filled from Core's answer. Amended 2026-10-06: in
+   0.36, as a process per sender (ADR 0016 decision 6, Delivery 16 and 17).
 
 Core (`sealant-sh/sealant`), its own stack:
 
@@ -205,5 +204,5 @@ Core (`sealant-sh/sealant`), its own stack:
 2. **Capture mode with a joined worktree.** A session that joins a worktree runs inside the lease
    holder's workspace, so one switch changes the login for both sessions. Turns of the two are
    serialised per process, not per workspace; until they are, the switch refuses there and says why.
-   Closed 2026-10-05 by ADR 0016: every process runs as one person in that person's own home, so a
-   steered turn's process and a joiner's processes never share a login with anyone.
+   Closed 2026-10-06 by ADR 0016: every process runs as its person's own Linux user, so a steered
+   turn's process and a joiner's processes never share a login with anyone.

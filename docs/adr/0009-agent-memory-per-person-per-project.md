@@ -1,10 +1,11 @@
 # Agent memory: one per person per project
 
 Status: proposed 2026-10-02. Capture mode amended by [ADR 0016](0016-per-person-harness-homes.md)
-(2026-10-05): memory lives in each person's own directory of the worktree's home. Implements the
-roadmap's 0.36 "one agent home per person per project" and "import on adoption" (owner decisions of
-2026-09-28 and 2026-09-29), by carrying the agents' **memory** between a person's sessions rather
-than sharing their whole harness home.
+(2026-10-06): memory lives in each person's own directory of the worktree's home, and a session
+under shared control uses and saves no one's. Implements the roadmap's 0.36 "one agent home per
+person per project" and "import on adoption" (owner decisions of 2026-09-28 and 2026-09-29), by
+carrying the agents' **memory** between a person's sessions rather than sharing their whole harness
+home.
 
 ## Context
 
@@ -56,9 +57,9 @@ much smaller: the memory.
 1. **Mend keeps each agent's memory per person per project,** in Postgres: one row per file, keyed
    by account, project and the file's path in the harness home. Today that is Claude Code's memory
    directory. The person is the session's owner; a turn someone else steers under shared control
-   writes the owner's memory, as it spends the owner's login. Amended 2026-10-05 by ADR 0016: the
-   person is the one the agent process runs as; a steered Claude turn runs in a process started as
-   the steerer and writes the steerer's memory, and a steered Codex turn runs with memory off.
+   writes the owner's memory, as it spends the owner's login. Amended 2026-10-06 by ADR 0016: the
+   person is the one the agent process runs as, outside shared control; while a session is under
+   shared control its agent runs with no one's memory, and nothing is read back.
 
 2. **Every session receives it at launch,** after the harness home is relocated, in both stores
    (host-side in the co-located store, through exec in capture mode), as skills are:
@@ -82,11 +83,11 @@ much smaller: the memory.
    Every version Mend replaces or deletes is kept (the last twenty per file), so nothing an agent
    wrote is lost to another session's save.
 
-   Superseded 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md) §9: in capture mode each
-   person has their own saved directory in the worktree's home (`people/<account id>/`), delivery
-   writes into it, and read-back runs per process for the person it ran as, so no hand-over, owner
-   record or Codex withholding is needed. The hand-over below stays only to migrate a home saved
-   before 0.36, and then server-side.
+   Superseded 2026-10-06 by [ADR 0016](0016-per-person-harness-homes.md) §9: in capture mode each
+   person has their own Linux user and saved directory in the worktree's home
+   (`people/<account id>/`); delivery writes into it and read-back runs per process for the person
+   it ran as, outside shared control. No hand-over, owner record or Codex withholding is needed. The
+   hand-over below stays only to migrate a home saved before 0.36, server-side.
 
    In capture mode a worktree has one home, which its sessions share over time and, when one joins
    another person's executor (ADR 0002), at once. Amended 2026-10-05, after three reviews found ways
