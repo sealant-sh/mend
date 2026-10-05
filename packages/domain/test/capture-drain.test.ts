@@ -697,10 +697,10 @@ describe("planExecutorCap", () => {
     const plan = planExecutorCap({
       ...base,
       maxSeconds: 3600,
-      pendingObjects: 600,
-      objectsPerSecond: 0.5,
+      pendingObjects: 2400,
+      objectsPerSecond: 2,
     });
-    // 1200 s at half a capture a second + 300 s margin before 11:00.
+    // 1200 s at two captures a second + 300 s margin before 11:00.
     expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T10:35:00Z"));
   });
 
@@ -712,6 +712,50 @@ describe("planExecutorCap", () => {
     });
     // 1200 s needed, 300 s already in the estimate: 900 s before 17:30.
     expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T17:15:00Z"));
+  });
+
+  it("never replaces a fresh executor for its bulk at the rate its small captures shipped", () => {
+    // The box, 0.36.0-next.601: ~759 MB of node_modules bulk staged, ~13 KB/s observed between
+    // two flushes of small captures. That planned the drain 16 h ahead, due at once.
+    const fresh = {
+      ...base,
+      pendingBytes: 759_000_000,
+      bytesPerSecond: 13_000,
+      pendingObjects: 1,
+      objectsPerSecond: 0.2,
+    };
+    const twoMinutesIn = new Date("2026-09-27T10:02:17Z").getTime();
+    const plan = planExecutorCap(fresh);
+    expect(plan.kind === "planned" && plan.source).toBe("fallback");
+    expect(executorCapDue(plan, twoMinutesIn)).toBe(false);
+    // Planned at the 1 MB/s floor: 759 s needed, 300 s already in the estimate.
+    expect(plan.kind === "planned" && plan.drainAt.getTime()).toBe(
+      new Date("2026-09-27T17:30:00Z").getTime() - 459_000,
+    );
+    // The same under a stated cap and under the platform's own deadline.
+    const config = planExecutorCap({ ...fresh, maxSeconds: 28_800 });
+    expect(executorCapDue(config, twoMinutesIn)).toBe(false);
+    const platform = planExecutorCap({
+      ...fresh,
+      platformDeadline: new Date("2026-09-27T18:00:00Z"),
+    });
+    expect(executorCapDue(platform, twoMinutesIn)).toBe(false);
+  });
+
+  it("moves the drain no earlier than halfway through the executor's life for what is pending", () => {
+    // 40 GB at the floor needs 11 h: more than the executor has, so draining sooner only ends work.
+    const huge = { ...base, pendingBytes: 40_000_000_000, bytesPerSecond: 1_000_000 };
+    const fallback = planExecutorCap(huge);
+    // Halfway to the assumed cap at 17:40 (7 h 30 + the 600 s lead).
+    expect(fallback.kind === "planned" && fallback.drainAt).toEqual(
+      new Date("2026-09-27T13:50:00Z"),
+    );
+    expect(executorCapDue(fallback, new Date("2026-09-27T10:02:17Z").getTime())).toBe(false);
+    const config = planExecutorCap({ ...huge, maxSeconds: 3600 });
+    expect(config.kind === "planned" && config.drainAt).toEqual(new Date("2026-09-27T10:30:00Z"));
+    // A cap shorter than the configured lead still drains at the start, as before.
+    const short = planExecutorCap({ ...huge, maxSeconds: 400 });
+    expect(short.kind === "planned" && short.drainAt).toEqual(started);
   });
 
   it("falls back to the replacement age when nothing states the cap, and knows nothing unlaunched", () => {

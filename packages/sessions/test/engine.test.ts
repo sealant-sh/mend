@@ -14420,7 +14420,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   );
 
   it(
-    "the lead grows with what is pending at the observed rate: captures registering slowly start the replacement early",
+    "the lead grows with what is pending at the observed rate: captures registering slowly start the replacement early, past halfway",
     { timeout: 20_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -14437,9 +14437,18 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             yield* Effect.sleep(Duration.millis(1100));
             registered = 1;
             yield* engine.readCaptures(session.id);
-            expect(world.sessions.get(session.id)?.capturePending).toBe(5000);
-            // A one-hour cap and no configured lead: 5000 captures at under one a second need
-            // longer than the hour, so the planned drain is due now.
+            const reading = world.sessions.get(session.id);
+            expect(reading?.capturePending).toBe(5000);
+            // A one-hour cap, no configured lead, and an executor 40 minutes in: 5000 captures at
+            // the planning floor (one a second) need longer than the 20 minutes left, so the
+            // planned drain is due now, not at the hour. What is pending moves a drain no earlier
+            // than halfway through the executor's life, which 40 minutes is past.
+            if (reading !== undefined) {
+              world.sessions.set(
+                session.id,
+                new Session({ ...reading, executorStartedAt: new Date(Date.now() - 40 * 60_000) }),
+              );
+            }
             yield* engine.reapCaptureLeases();
             yield* until(() => kinds.includes("final"), "the planned drain's final flush");
           }),
