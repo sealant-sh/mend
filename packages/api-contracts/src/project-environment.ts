@@ -16,6 +16,7 @@ import {
   ChangeLanding,
   Checkpoint,
   DiffDigest,
+  HarnessLayout,
   ProjectClusterBinding,
   ProjectEnvironmentSnapshot,
   ProjectSecret,
@@ -339,6 +340,13 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
    * docs/adr/0007-landing.md). Null (and older clients, which omit the key) follows the project.
    */
   autoLand: Schema.NullOr(Schema.Boolean).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /**
+   * The instance operator's choice of harness layout for a worktree this start creates
+   * (docs/adr/0016, decision 14): the benchmark runs `shared` and `person` launches on fresh
+   * worktrees at one commit without flipping `MEND_HARNESS_LAYOUT`. Refused for anyone but the
+   * operator, and on an existing worktree whose layout differs. Older clients omit it.
+   */
+  harnessLayout: Schema.optionalKey(HarnessLayout),
 }) {}
 
 /** What the caller may do with a session (docs/adr/0003), so clients show only real controls. */

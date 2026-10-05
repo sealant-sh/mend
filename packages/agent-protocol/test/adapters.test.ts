@@ -4,6 +4,7 @@ import { Effect, Fiber, Option, Queue, Stream } from "effect";
 
 import {
   AgentProtocolError,
+  CODEX_THREAD_NOT_FOUND,
   ClaudeAdapter,
   CodexAdapter,
   createNdjsonDecoder,
@@ -434,6 +435,58 @@ describe("rehydrate (restart policy v2)", () => {
           return isObject(response) ? [response["request_id"]] : [];
         });
         expect(answered).toEqual(["perm-open"]);
+      }),
+    ),
+  );
+
+  it.effect("a resume whose thread Codex cannot find fails, and never starts a new thread", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport((message, push) => {
+          const id = message["id"];
+          const method = message["method"];
+          if (typeof id !== "number") return;
+          if (method === "initialize") push({ id, result: {} });
+          if (method === "thread/resume") {
+            push({ id, error: { code: -32600, message: "thread not found: thread-gone" } });
+          }
+          if (method === "thread/start") push({ id, result: { thread: { id: "thread-new" } } });
+        });
+        const error = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          providerSessionId: "thread-gone",
+        }).pipe(Effect.flip);
+        expect(error).toBeInstanceOf(AgentProtocolError);
+        expect(error.message).toBe(CODEX_THREAD_NOT_FOUND);
+        expect(fake.sent.map((message) => message["method"])).toEqual([
+          "initialize",
+          "initialized",
+          "thread/resume",
+        ]);
+      }),
+    ),
+  );
+
+  it.effect("a resume that fails for another reason fails with Codex's own words", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport((message, push) => {
+          const id = message["id"];
+          const method = message["method"];
+          if (typeof id !== "number") return;
+          if (method === "initialize") push({ id, result: {} });
+          if (method === "thread/resume") {
+            push({ id, error: { code: -32603, message: "rollout is corrupt" } });
+          }
+        });
+        const error = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          providerSessionId: "thread-1",
+        }).pipe(Effect.flip);
+        expect(error.message).toBe("rollout is corrupt");
+        expect(fake.sent.map((message) => message["method"])).not.toContain("thread/start");
       }),
     ),
   );

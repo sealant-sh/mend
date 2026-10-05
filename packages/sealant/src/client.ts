@@ -48,6 +48,11 @@ import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
 import { SealantIdentityStore } from "./identity.ts";
+import {
+  credentialsHomeUnsupported,
+  type ProcessUserOption,
+  withoutProcessUser,
+} from "./person-layout.ts";
 import { SealantPrincipal } from "./principal.ts";
 
 export interface SessionOutputPage {
@@ -565,6 +570,12 @@ export const fenceWorkspaceCreateOf = (
 export interface WorkspaceCreateLaunch {
   readonly idempotencyKey: string;
   readonly launchId?: string;
+  /**
+   * `credentialsHome` (docs/adr/0016, decision 5; Core Delivery 8): the launcher's logins written
+   * into their own home rather than `$HOME`, for a person-layout launch. Today's SDK cannot send
+   * it, so a create that names one is refused before it is asked.
+   */
+  readonly credentialsHome?: string;
 }
 
 export interface SealantClientShape {
@@ -623,7 +634,7 @@ export interface SealantClientShape {
   readonly openSession: (
     workspace: Workspace,
     argv: ReadonlyArray<string>,
-    options?: SessionOptions,
+    options?: SessionOptions & ProcessUserOption,
   ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
   /**
    * A raw TCP byte pipe — or a UDP datagram pipe, where one WS frame is
@@ -727,7 +738,7 @@ export interface SealantClientShape {
   readonly exec: (
     workspace: Workspace,
     argv: readonly string[],
-    options?: WorkspaceExecOptions,
+    options?: WorkspaceExecOptions & ProcessUserOption,
   ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
   /**
    * Point a standby workspace's working directory (or a bindable extra mount) at one
@@ -840,6 +851,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       launch?: WorkspaceCreateLaunch,
       watch?: (workspace: Workspace) => Effect.Effect<void>,
     ) => {
+      if (launch?.credentialsHome !== undefined) return Effect.fail(credentialsHomeUnsupported());
       // SDK 0.37.2 builds its request field by field and drops both; Core's next SDK sends them.
       const keyed: CreateOptions & {
         readonly idempotencyKey?: string;
@@ -896,10 +908,16 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
 
-    const openSession = Effect.fn("SealantClient.openSession")(
-      (workspace: Workspace, argv: ReadonlyArray<string>, options?: SessionOptions) =>
+    // A process asked for as a user the SDK cannot start is refused, never run as root.
+    const openSession = Effect.fn("SealantClient.openSession")((
+      workspace: Workspace,
+      argv: ReadonlyArray<string>,
+      options?: SessionOptions & ProcessUserOption,
+    ) => {
+      return withoutProcessUser(argv, options, () =>
         wrap(() => workspace.sessions.open(argv, options)),
-    );
+      );
+    });
 
     const forward = Effect.fn("SealantClient.forward")(
       (
@@ -997,10 +1015,13 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       return yield* wrap(() => sealant.runs.get(wire.runId));
     });
 
-    const exec = Effect.fn("SealantClient.exec")(
-      (workspace: Workspace, argv: readonly string[], options?: WorkspaceExecOptions) =>
-        wrap(() => workspace.exec(argv, options)),
-    );
+    const exec = Effect.fn("SealantClient.exec")((
+      workspace: Workspace,
+      argv: readonly string[],
+      options?: WorkspaceExecOptions & ProcessUserOption,
+    ) => {
+      return withoutProcessUser(argv, options, () => wrap(() => workspace.exec(argv, options)));
+    });
     const bindWorkspace = Effect.fn("SealantClient.bindWorkspace")(
       (workspace: Workspace, options: WorkspaceBindOptions) =>
         wrap(async () => {

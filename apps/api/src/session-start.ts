@@ -1,4 +1,10 @@
-import { BudgetExceeded, LaunchRequest, NotFound, StoreFailure } from "@mend/api-contracts";
+import {
+  BudgetExceeded,
+  HarnessLayoutRefused,
+  LaunchRequest,
+  NotFound,
+  StoreFailure,
+} from "@mend/api-contracts";
 import {
   AgentConversationRepo,
   HarnessModelsRepo,
@@ -14,6 +20,7 @@ import {
   resolveAutomation,
   resolveLaunchOptions,
   withLandingGuard,
+  type HarnessLayout,
   type Session,
   type SessionOrigin,
 } from "@mend/domain/workbench";
@@ -41,6 +48,11 @@ export interface CreateSessionInput {
    * `--no-land`, or a Slack request's `autopr=`. Absent or null follows the project.
    */
   readonly autoLand?: boolean | null;
+  /**
+   * The instance operator's layout for a worktree this start creates (docs/adr/0016, decision
+   * 14). Refused for anyone else, and on an existing worktree whose layout differs.
+   */
+  readonly harnessLayout?: HarnessLayout;
 }
 
 /**
@@ -68,7 +80,7 @@ export interface StartSessionInput {
   readonly launch: LaunchRequest;
 }
 
-type StartError = NotFound | StoreFailure | BudgetExceeded;
+type StartError = NotFound | StoreFailure | BudgetExceeded | HarnessLayoutRefused;
 
 /**
  * Starting a session, as a given account (docs/adr/0006-slack.md, "Slack starts sessions through
@@ -144,6 +156,12 @@ export const makeSessionStart = Effect.gen(function* () {
     input: CreateSessionInput,
   ) {
     const project = yield* access.projectAs(userId, projectId);
+    // The harness layout is the operator's to choose, for the benchmark (docs/adr/0016).
+    if (input.harnessLayout !== undefined && !(yield* access.isOperator(userId))) {
+      return yield* new HarnessLayoutRefused({
+        message: "harnessLayout is for the instance operator; start the session without it",
+      });
+    }
     // After authorization, before the worktree exists: a refusal leaves nothing behind.
     yield* requireSessionRoom(userId, project.organizationId).pipe(
       Effect.provideService(Budgets, budgets),
@@ -160,8 +178,12 @@ export const makeSessionStart = Effect.gen(function* () {
         ownerUserId: userId,
         origin: input.origin,
         autoLand: input.autoLand ?? null,
+        ...(input.harnessLayout === undefined ? {} : { harnessLayout: input.harnessLayout }),
       })
       .pipe(
+        Effect.catchTag("HarnessLayoutNotAppliedError", (error) =>
+          Effect.fail(new HarnessLayoutRefused({ message: error.message })),
+        ),
         Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id: projectId }))),
         Effect.catchTag("GitError", (error) =>
           Effect.fail(new StoreFailure({ message: error.stderr })),

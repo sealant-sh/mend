@@ -1,6 +1,7 @@
 import {
   LaunchRequest,
   type BudgetExceeded,
+  type HarnessLayoutRefused,
   type NotFound,
   type StoreFailure,
 } from "@mend/api-contracts";
@@ -402,7 +403,7 @@ export const notStarted = (reason: string): SlackMessage =>
 export const launchFailed = (reason: string): SlackMessage =>
   section(escapeSlack(`launch failed · ${reason}`));
 
-type StartRefusal = NotFound | StoreFailure | BudgetExceeded;
+type StartRefusal = NotFound | StoreFailure | BudgetExceeded | HarnessLayoutRefused;
 
 /**
  * A refusal from `SessionStart`, as the thread reads it. A budget's words are the budget's own. A
@@ -420,6 +421,9 @@ export const refusalWords = (
     case "StoreFailure":
       return stored;
     case "BudgetExceeded":
+      return error.message;
+    // Slack never asks for a layout; said as it is if it ever does.
+    case "HarnessLayoutRefused":
       return error.message;
   }
 };
@@ -1674,6 +1678,11 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         images: new Map(attached.map((image) => [image.file.id, image])),
       });
       const sent = yield* engine.submitTurn(session.id, turn, userId).pipe(Effect.result);
+      // A person-layout executor takes turns from its owner only (docs/adr/0016): said, and
+      // nothing is resumed or started in its place.
+      if (sent._tag === "Failure" && sent.failure._tag === "SessionTurnRefusedError") {
+        return yield* refuse(token, mention, notSent(sent.failure.message), false);
+      }
       // `autopr=` on a follow-up overrides what its own turn reads as; without it, automatic
       // landing reads the follow-up's intent itself.
       const reading = intentOfRequest(parsed.options.autopr, null);

@@ -45,6 +45,7 @@ import {
   UserDotfilesRepo,
   UserGitAuthorRepo,
   SessionChannelTokensRepo,
+  HarnessLayoutsRepo,
 } from "@mend/db";
 import {
   type AgentRequestId,
@@ -152,11 +153,15 @@ import {
   AGENT_MEMORY_FILES,
   AGENT_MEMORY_ROOTS,
   agentMemoryMaxFileBytes,
+  type HarnessLayout,
+  linuxHomeOf,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
   captureDrainOf,
   type CaptureFlushKind,
+  PersonLayoutPlatform,
+  type ProcessUser,
   SealantClient,
   SealantPlatformError,
   type WorkspaceStopOptions,
@@ -268,6 +273,13 @@ import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./de
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
+import {
+  HarnessLayoutConfig,
+  type LaunchLayout,
+  SHARED_AS_BEFORE,
+  makeHarnessLayoutSteps,
+} from "./harness-layout-steps.ts";
+import { processUserOf } from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
   HARNESS_UPDATES_OFF_ENV,
@@ -1084,6 +1096,12 @@ export interface ProvisionInput {
    * follows the project.
    */
   readonly autoLand?: boolean | null;
+  /**
+   * The operator-only layout (docs/adr/0016, decision 14), for a start that creates the worktree:
+   * the benchmark picks `shared` or `person` per launch on fresh worktrees without flipping the
+   * instance flag. Refused on an existing worktree whose layout differs. Callers check the role.
+   */
+  readonly harnessLayout?: HarnessLayout;
 }
 
 /** Anonymous worktrees are keyed by their own id, named ones by the name. */
@@ -1232,6 +1250,25 @@ export class LegacyBenchReadOnlyError extends Schema.TaggedErrorClass<LegacyBenc
   { sessionId: Schema.String },
 ) {}
 
+/**
+ * The operator's `harnessLayout` cannot apply (docs/adr/0016, decision 14): it is for a start that
+ * creates its worktree, and an existing worktree keeps the layout it has.
+ */
+export class HarnessLayoutNotAppliedError extends Schema.TaggedErrorClass<HarnessLayoutNotAppliedError>()(
+  "HarnessLayoutNotAppliedError",
+  { message: Schema.String },
+) {}
+
+/**
+ * A turn the session will not take from its author now (docs/adr/0016): until per-person steering,
+ * a person-layout executor takes turns from the session's owner only, so no turn runs on its
+ * process's login for anyone else.
+ */
+export class SessionTurnRefusedError extends Schema.TaggedErrorClass<SessionTurnRefusedError>()(
+  "SessionTurnRefusedError",
+  { sessionId: Schema.String, message: Schema.String },
+) {}
+
 /** The session's harness cannot continue in the requested mode (claude and codex only). */
 export class HandoffUnsupportedError extends Schema.TaggedErrorClass<HandoffUnsupportedError>()(
   "HandoffUnsupportedError",
@@ -1365,7 +1402,10 @@ export class SessionEngine extends Context.Service<
   {
     readonly provision: (
       input: ProvisionInput,
-    ) => Effect.Effect<Session, ProjectNotFoundError | GitError | WorktreeBaseConflictError>;
+    ) => Effect.Effect<
+      Session,
+      ProjectNotFoundError | GitError | WorktreeBaseConflictError | HarnessLayoutNotAppliedError
+    >;
     /**
      * The container half of provisioning: return the named worktree (join) or
      * create it — git worktree, row, ordinal-0 checkpoint, change row. A
@@ -1520,12 +1560,15 @@ export class SessionEngine extends Context.Service<
       | GitError
       | WorktreeBaseConflictError
     >;
-    /** Queue one authored turn on the live protocol process. */
+    /**
+     * Queue one authored turn on the live protocol process. Refused, before anything is queued,
+     * from anyone but the owner in a person-layout executor (docs/adr/0016, until Delivery 18).
+     */
     readonly submitTurn: (
       sessionId: SessionId,
       input: string,
       author: string | null,
-    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
+    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | SessionTurnRefusedError>;
     /** Interrupt the running protocol turn. */
     readonly interruptTurn: (turnId: AgentTurnId) => Effect.Effect<void, ProtocolHostNotLiveError>;
     /** Route and record one human response to a live provider request. */
@@ -1855,7 +1898,10 @@ type SessionEngineRequirements =
   | MendKeys
   | AgentBridge
   | SourcePolicy
-  | WorkspaceGitHooks;
+  | WorkspaceGitHooks
+  | HarnessLayoutsRepo
+  | PersonLayoutPlatform
+  | HarnessLayoutConfig;
 
 /**
  * The executor answered an ask: its evidence fence now clears only with a publication (review
@@ -2085,7 +2131,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the shared cache (`dependency-cache.ts`).
        */
       const installDependenciesIfNeeded = Effect.fn("SessionEngine.installDependenciesIfNeeded")(
-        function* (session: Session, project: Project, workspace: Workspace) {
+        function* (
+          session: Session,
+          project: Project,
+          workspace: Workspace,
+          /** In a person-layout executor the install runs as the launcher (docs/adr/0016). */
+          user?: ProcessUser,
+        ) {
           if (capture === null) return null;
           if (!project.installEnabled) {
             yield* Effect.logInfo(
@@ -2160,6 +2212,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           const result = yield* sealant.exec(workspace, ["sh", "-lc", command], {
             cwd: "/workspace/repo",
+            ...(user === undefined ? {} : { user }),
           });
           yield* Effect.logInfo(
             `session engine: dependency install · ${result.exitCode === 0 ? "completed" : "exited"} · exit ${result.exitCode}`,
@@ -6057,6 +6110,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Open bridge-op attributions, ended when the transport closes. */
       const bridgeContexts = new Map<string, () => void>();
       const scope = yield* Effect.scope;
+      // Per-person harness homes (docs/adr/0016), behind `MEND_HARNESS_LAYOUT`: with the flag off
+      // and no worktree recorded `person`, a launch reads one row here and runs as before.
+      const harnessLayouts = yield* HarnessLayoutsRepo;
+      const layoutSteps = makeHarnessLayoutSteps({
+        flag: (yield* HarnessLayoutConfig).flag,
+        repo: harnessLayouts,
+        platform: yield* PersonLayoutPlatform,
+        organizations,
+        sealant: yield* SealantClient,
+        harnessHome: HARNESS_HOME_MOUNT_PATH,
+        fork: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
+      });
       // Service lifecycle calls are rare and may span platform I/O. One engine-local permit keeps
       // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
       // across that I/O; compare-and-set persistence below protects stale cleanup after crashes.
@@ -6639,9 +6704,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       const provisionAs = Effect.fn("SessionEngine.provisionAs")(function* (input: ProvisionInput) {
         const project = yield* projects.byId(input.projectId);
+        // The operator's layout is for a worktree this start makes (docs/adr/0016): an existing
+        // one keeps its own, and asking for another is refused before anything is made.
+        const requested = input.harnessLayout;
+        const joined =
+          requested === undefined || input.name === null
+            ? null
+            : yield* worktreesRepo.byName(project.id, input.name);
+        if (requested !== undefined && joined !== null) {
+          const current = (yield* harnessLayouts.worktreeLayout(joined.id)).layout ?? "shared";
+          if (current !== requested) {
+            return yield* new HarnessLayoutNotAppliedError({
+              message: `worktree "${joined.name}" runs the ${current} layout; harnessLayout ${requested} applies only to a start that creates its worktree`,
+            });
+          }
+        }
         // The place first: join by name (an existing name IS "a new conversation in that
         // worktree") or create it — git worktree, row, ordinal-0 checkpoint.
         const worktree = yield* ensureWorktreeIn(project, input, input.ownerUserId);
+        if (requested !== undefined && joined === null) {
+          yield* harnessLayouts.requestLayout(worktree.id, requested);
+        }
         return yield* provisionInWorktree(project, worktree, input);
       });
 
@@ -8750,11 +8833,106 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * while the setup runs (`forkHarnessWarmup`). Absent for a standby, which serves any.
          */
         readonly warmHarness?: string;
+        /**
+         * The launch's harness layout (docs/adr/0016), decided before its create; absent for a
+         * launch that runs as before (the flag off, nothing recorded).
+         */
+        readonly layout?: {
+          readonly launch: LaunchLayout;
+          readonly launchId: string;
+          readonly worktreeId: WorktreeId;
+          /** What decision 1's fallback re-posts to `/root` when a person prediction was wrong. */
+          readonly fallback: {
+            readonly credentials: WorkspaceCredentialsOptions | undefined;
+            readonly dotfiles: ReadonlyArray<{
+              readonly data: string;
+              readonly manager: string;
+              readonly bootstrap: boolean;
+            }>;
+          };
+        };
       }) {
         const { sessionId, workspace, workspaceImage } = input;
         if (input.warmHarness !== undefined) {
           yield* forkHarnessWarmup(sessionId, workspace, input.warmHarness);
         }
+        const launchLayout = input.layout?.launch ?? SHARED_AS_BEFORE;
+        // The layout's own script rides the helper's exec (docs/adr/0016, Performance: no new
+        // exec on the cold path): the image probe, and in the person layout every person's user,
+        // home and saved directory, made before anything runs as them.
+        const layoutScript = layoutSteps.prepareScript(launchLayout, {
+          harnessHome: HARNESS_HOME_MOUNT_PATH,
+          repo: "/workspace/repo",
+        });
+        const stop = (message: string) =>
+          input
+            .onFailure(message)
+            .pipe(
+              Effect.ignore,
+              Effect.andThen(
+                input.abandon === undefined
+                  ? sealant.stopWorkspace(workspace).pipe(Effect.ignore)
+                  : input.abandon(workspace, message),
+              ),
+            );
+        // The helper reaches everyone through PATH, not prompt engineering.
+        // Git's ssh becomes the transport shim the same way: system config, so
+        // every process in the workspace — agent, shell, service — pushes and
+        // fetches through the host with zero credentials in the container.
+        // ssh.variant=ssh keeps ports and protocol v2 working through it.
+        // Touches /usr/local/bin and system git config, never $HOME, so it is
+        // safe before any state restore.
+        //
+        // A captured workspace mounts nothing (ADR-0002), so the socket dir that carries the two
+        // scripts never arrives: they are written into it here instead, and reach this machine
+        // over the session endpoint. Without this, both paths above named files that did not
+        // exist, and every push, fetch and `mend service` inside a captured session failed.
+        const notInstalled = (detail: Record<string, unknown>) =>
+          Effect.logWarning(
+            "session engine: the mend helper and git transport were not installed in the workspace",
+          ).pipe(Effect.annotateLogs({ sessionId, ...detail }));
+        const helper =
+          `${!input.captured ? "" : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH)} && `}` +
+          `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend && ` +
+          `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh && ` +
+          `git config --system ssh.variant ssh`;
+        // The session still launches: an agent can work without a remote. It must not be
+        // silent, though: that is how a workspace with no git transport went unnoticed.
+        const installHelper = sealant
+          .exec(workspace, [
+            "sh",
+            "-c",
+            layoutScript === null ? helper : `( ${helper} ); h=$?\n${layoutScript}\nexit $h`,
+          ])
+          .pipe(
+            Effect.tap((result) =>
+              result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
+            ),
+            Effect.map((result) => result.stdout),
+            Effect.catch((error) => notInstalled({ message: error.message }).pipe(Effect.as(""))),
+          );
+        // What prepare found about the layout, recorded; a refusal stops the executor here.
+        const settleLayout = (stdout: string) =>
+          input.layout === undefined
+            ? Effect.succeed({ layout: "shared" as const, fallback: null })
+            : layoutSteps
+                .settlePrepare({
+                  layout: launchLayout,
+                  launchId: input.layout.launchId,
+                  worktreeId: input.layout.worktreeId,
+                  workspace,
+                  stdout,
+                  fallback: input.layout.fallback,
+                })
+                .pipe(Effect.tapError((error) => stop(error.message)));
+        // In the person layout the people exist before the setup commands, which run as the
+        // launcher (docs/adr/0016, decision 1); otherwise the setup runs first, as before.
+        const person = launchLayout.layout === "person";
+        const prepared = person ? yield* settleLayout(yield* installHelper) : null;
+        const setupUser =
+          launchLayout.layout === "person" && prepared?.layout === "person"
+            ? processUserOf(launchLayout.launcher)
+            : undefined;
         let setupSkippedFrom: number | null = null;
         if (
           workspaceImage.mode === "custom" &&
@@ -8777,52 +8955,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // provision loudly instead of handing the agent a half-prepared environment.
           for (const command of workspaceImage.setupCommands) {
             const result = yield* sealant
-              .exec(workspace, ["sh", "-lc", command])
+              .exec(
+                workspace,
+                ["sh", "-lc", command],
+                setupUser === undefined ? undefined : { user: setupUser },
+              )
               .pipe(Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)));
             if (result.exitCode !== 0) {
               const message = `setup command failed (exit ${result.exitCode}): ${command}`;
-              yield* input.onFailure(message).pipe(Effect.ignore);
-              yield* input.abandon === undefined
-                ? sealant.stopWorkspace(workspace).pipe(Effect.ignore)
-                : input.abandon(workspace, message);
+              yield* stop(message);
               return yield* new SessionLaunchSetupError({ sessionId, command, message });
             }
           }
         }
-        // The helper reaches everyone through PATH, not prompt engineering.
-        // Git's ssh becomes the transport shim the same way: system config, so
-        // every process in the workspace — agent, shell, service — pushes and
-        // fetches through the host with zero credentials in the container.
-        // ssh.variant=ssh keeps ports and protocol v2 working through it.
-        // Touches /usr/local/bin and system git config, never $HOME, so it is
-        // safe before any state restore.
-        //
-        // A captured workspace mounts nothing (ADR-0002), so the socket dir that carries the two
-        // scripts never arrives: they are written into it here instead, and reach this machine
-        // over the session endpoint. Without this, both paths above named files that did not
-        // exist, and every push, fetch and `mend service` inside a captured session failed.
-        const notInstalled = (detail: Record<string, unknown>) =>
-          Effect.logWarning(
-            "session engine: the mend helper and git transport were not installed in the workspace",
-          ).pipe(Effect.annotateLogs({ sessionId, ...detail }));
-        // The session still launches: an agent can work without a remote. It must not be
-        // silent, though: that is how a workspace with no git transport went unnoticed.
-        yield* sealant
-          .exec(workspace, [
-            "sh",
-            "-c",
-            `${!input.captured ? "" : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH)} && `}` +
-              `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend && ` +
-              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh && ` +
-              `git config --system ssh.variant ssh`,
-          ])
-          .pipe(
-            Effect.flatMap((result) =>
-              result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
-            ),
-            Effect.catch((error) => notInstalled({ message: error.message })),
-          );
-        return setupSkippedFrom;
+        const outcome = prepared ?? (yield* settleLayout(yield* installHelper));
+        return {
+          setupSkippedFrom,
+          layout: outcome.layout,
+          fallback: outcome.layout === "shared" ? outcome.fallback : null,
+        };
       });
 
       /**
@@ -8884,8 +9035,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * on the session line whether the platform builds the image or boots the executor.
          */
         readonly watchCreate?: (workspace: Workspace) => Effect.Effect<void>;
+        /**
+         * The launch's harness layout (docs/adr/0016), decided before this create, which commits
+         * to it: a person launch asks for the launcher's logins in their own home.
+         */
+        readonly layout?: { readonly launch: LaunchLayout; readonly worktreeId: WorktreeId };
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
+        const launchLayout = input.layout?.launch ?? SHARED_AS_BEFORE;
         // What the project inherits: its organization's defaults over the instance's.
         const settings = yield* settingsRepo.forOrganization(project.organizationId);
         const report = <A, E extends { readonly message: string }>(
@@ -9200,7 +9357,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 },
                 input.createKey === undefined
                   ? undefined
-                  : { idempotencyKey: input.createKey.key, launchId: input.launchId },
+                  : {
+                      idempotencyKey: input.createKey.key,
+                      launchId: input.launchId,
+                      ...(launchLayout.layout === "person"
+                        ? { credentialsHome: linuxHomeOf(launchLayout.launcher) }
+                        : {}),
+                    },
                 input.watchCreate,
               ),
             ),
@@ -9261,7 +9424,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // F-B, sealantd#121): an exec clears sealantd's unclaimed marker, and a standby that ran
         // one reads as holding a session's work — a failed replan wedged its launch and a pool
         // shrink never released it. Its setup commands and tools run at claim, after the replan.
-        const setupSkippedFrom =
+        const prepared =
           input.deferPreparation === true
             ? null
             : yield* prepareExecutor({
@@ -9273,12 +9436,34 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 onFailure: input.onFailure,
                 ...(input.abandon === undefined ? {} : { abandon: input.abandon }),
                 ...(input.warmHarness === undefined ? {} : { warmHarness: input.warmHarness }),
+                ...(input.layout === undefined ||
+                (launchLayout.layout === "shared" && !launchLayout.recorded)
+                  ? {}
+                  : {
+                      layout: {
+                        launch: launchLayout,
+                        launchId: input.launchId,
+                        worktreeId: input.layout.worktreeId,
+                        fallback: {
+                          credentials: shape.credentialAttempts[0],
+                          dotfiles: dotfilesArchives.map((archive) => ({
+                            data: archive.data,
+                            manager: archive.manager,
+                            bootstrap: archive.bootstrap,
+                          })),
+                        },
+                      },
+                    }),
               });
         return {
           workspace,
           workspaceImage,
           /** The capture the setup commands were skipped for (`prepareExecutor`); null when they ran. */
-          setupSkippedFrom,
+          setupSkippedFrom: prepared?.setupSkippedFrom ?? null,
+          /** What prepare found the executor runs (docs/adr/0016); a standby's is `shared`. */
+          executorLayout: prepared?.layout ?? ("shared" as const),
+          /** Why a person prediction fell back to shared, for the session line. */
+          layoutFallback: prepared?.fallback ?? null,
           environmentManifest,
           dotfiles: {
             repository:
@@ -9630,6 +9815,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           environmentManifest: entry.environment,
           referenceMounts: entry.referenceMounts,
           extraMounts: entry.extraMounts,
+          // A standby was created as one person, before any worktree (docs/adr/0016).
+          executorLayout: "shared" as const,
+          layoutFallback: null,
         };
       });
 
@@ -10561,6 +10749,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /**
+       * Whether a worktree's head capture holds a person's saved directory (`harness/people/`):
+       * person, record or not (docs/adr/0016, decision 14). Capture 0 is Mend's own and never
+       * holds one, so only a worktree that has run is read. Unreadable reads as holding none: the
+       * record, written before any person process runs, is what decides.
+       */
+      const headHoldsPeople = (worktreeId: WorktreeId): Effect.Effect<boolean> =>
+        Effect.gen(function* () {
+          if (capture === null) return false;
+          const chain = yield* capture.repo.headOf(worktreeId);
+          const head = chain?.head ?? null;
+          if (chain === null || head === null || chain.headN === 0) return false;
+          const manifest = yield* capture.blobs
+            .get(head.manifestKey)
+            .pipe(Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)));
+          const listed = yield* listCaptureFiles(manifest, "workspace", "harness/people").pipe(
+            Effect.provideService(BlobStore, capture.blobs),
+          );
+          return listed.length > 0;
+        }).pipe(
+          Effect.catch(() => Effect.succeed(false)),
+          Effect.catchDefect(() => Effect.succeed(false)),
+        );
+
+      /**
+       * The user a session's process starts as in its executor (docs/adr/0016): its owner's own
+       * user in a person-layout executor (made there at their first process), null elsewhere,
+       * where it runs as root as before. Shells and Services run as the session's owner until the
+       * caller is known here (Delivery 13); in a person executor only the owner opens them today.
+       */
+      const startAsOwner = (
+        session: Session,
+        workspace: Workspace,
+      ): Effect.Effect<
+        { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
+        SealantPlatformError
+      > =>
+        Effect.gen(function* () {
+          if (capture === null || session.ownerUserId === null) return null;
+          if (!(yield* layoutSteps.mayRunPerson(session.worktreeId))) return null;
+          return yield* layoutSteps.processAs({
+            workspace,
+            launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
+            accountId: session.ownerUserId,
+          });
+        });
+
       /** The memory in a session's head capture, and what was delivered there; null without one. */
       const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
         session: Session,
@@ -11465,6 +11700,46 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The cold executor's launch identity, minted before its lease is claimed: the lease is
         // bound to it (cross-repo decision 11), and so are its token and its create.
         const coldLaunchKey = reusedCreateKey ?? executorCreateKeyFor(sessionId, new Date());
+        // Per-person harness homes (docs/adr/0016, decision 14): the layout is decided before the
+        // create, which commits to it. A refusal leaves nothing behind: no claim, no executor.
+        // The co-located store runs as before.
+        const launchLayout: LaunchLayout =
+          capture === null
+            ? SHARED_AS_BEFORE
+            : yield* layoutSteps
+                .decide({
+                  worktreeId: session.worktreeId,
+                  sessionId,
+                  launchId:
+                    adopted !== null && claimedEntry !== null
+                      ? standbyLaunchIdOf(claimedEntry.id)
+                      : coldLaunchKey,
+                  ownerUserId,
+                  organizationId: project.organizationId,
+                  image: Effect.suspend(() =>
+                    project.workspaceImage === null
+                      ? settingsRepo
+                          .forOrganization(project.organizationId)
+                          .pipe(Effect.map((settings) => settings.workspaceImage))
+                      : Effect.succeed(project.workspaceImage),
+                  ),
+                  headHasPeople: headHoldsPeople(session.worktreeId),
+                })
+                .pipe(settleOnFailure);
+        if (adopted !== null && claimedEntry !== null && launchLayout.layout === "person") {
+          // A standby runs as one person and never serves a person worktree (`standbyMayServe`);
+          // one claimed before the worktree turned person goes, and the launch asks again.
+          yield* drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(Effect.ignore);
+          const error = new SealantPlatformError({
+            code: "harness_layout_refused",
+            status: 409,
+            message:
+              "the standby claimed for this session runs as one person, and this worktree runs per person; start the session again",
+            cause: null,
+          });
+          yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
+          return yield* error;
+        }
         // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
         // same statement) with a boot-sized TTL, bound to the launch; the executor learns the
         // epoch from its first plan and the first heartbeat brings the TTL back to the 30 s
@@ -11603,6 +11878,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             project,
             restoredFrom,
             sessionId,
+            layout: { launch: launchLayout, worktreeId: session.worktreeId },
             socketDir,
             shape,
             ownerUserId,
@@ -11737,7 +12013,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // Claimed: what a cold launch runs right after its create runs now, and not before
             // (e2e9 F-B: an exec on an unclaimed standby clears sealantd's unclaimed marker). A
             // replan onto a saved head runs no setup command (review 2026-09-28 (15) #1).
-            setupSkippedFrom = yield* prepareExecutor({
+            // A standby runs the shared layout (`standbyMayServe` keeps it from a person
+            // worktree): nothing about the layout is prepared here.
+            setupSkippedFrom = (yield* prepareExecutor({
               sessionId,
               workspace: provisioned.workspace,
               workspaceImage: provisioned.workspaceImage,
@@ -11747,7 +12025,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
               abandon: abandonExecutor,
               warmHarness: session.harness,
-            });
+            })).setupSkippedFrom;
           }
         }
         const { workspace, workspaceImage, environmentManifest } = provisioned;
@@ -12063,6 +12341,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           repositories,
         );
 
+        // Per-person harness homes (docs/adr/0016): in a person-layout executor the launcher's
+        // processes run as their own user, made at prepare (so this adds no exec). Elsewhere
+        // nothing changes: the agent and the install run as root.
+        const executorLayout = provisioned.executorLayout;
+        const layoutFallback: string | null = provisioned.layoutFallback;
+        const startAs =
+          executorLayout === "person"
+            ? yield* layoutSteps.processAs({ workspace, launchId, accountId: ownerUserId }).pipe(
+                Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+                settleOnFailure,
+              )
+            : null;
+
         // Capture mode: the dependency tree for THIS executor's platform, before the harness.
         // Said on the session line once the launch starts, like `setupSkippedFrom`.
         let dependencyInstallSkipped: string | null = null;
@@ -12071,6 +12362,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             session,
             project,
             workspace,
+            startAs?.user,
           ).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: dependency install did not run").pipe(
@@ -12108,7 +12400,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             sealant.openSession(
               workspace,
               launchedArgv,
-              protocolStart === null ? undefined : { mode: "pipe" },
+              protocolStart === null && startAs === null
+                ? undefined
+                : {
+                    ...(protocolStart === null ? {} : { mode: "pipe" as const }),
+                    ...(startAs === null ? {} : { user: startAs.user, env: startAs.env }),
+                  },
             ),
           ),
           // Co-located: the workspace's id is not on the row yet — reap it here or it burns
@@ -12242,6 +12539,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         if (setupSkippedFrom !== null) {
           yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
+        }
+        // Why this workspace takes one person, when it was not just the flag (docs/adr/0016).
+        const layoutWords =
+          layoutFallback ?? (launchLayout.layout === "shared" ? launchLayout.reason : null);
+        if (layoutWords !== null) {
+          yield* noteLaunchWords(sessionId, layoutWords).pipe(Effect.ignore);
         }
         if (dependencyInstallSkipped !== null) {
           yield* noteLaunchWords(sessionId, dependencyInstallSkipped);
@@ -12420,8 +12723,34 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ).pipe(Effect.catchTag("SessionNotLiveError", launchFresh));
       });
 
-      const submitTurn = (sessionId: SessionId, input: string, author: string | null) =>
-        protocolHost.submitTurn(sessionId, input, author);
+      const submitTurn = Effect.fn("SessionEngine.submitTurn")(function* (
+        sessionId: SessionId,
+        input: string,
+        author: string | null,
+      ) {
+        // The owner's own turns ask nothing more; only another person's turn reads the layout.
+        if (capture !== null && author !== null) {
+          const session = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (
+            session !== null &&
+            author !== session.ownerUserId &&
+            session.sealantWorkspaceId !== null &&
+            (yield* layoutSteps.mayRunPerson(session.worktreeId))
+          ) {
+            const refusal = yield* layoutSteps.turnRefusal({
+              launchId: yield* executorLaunchIdOf(session, session.sealantWorkspaceId),
+              ownerUserId: session.ownerUserId,
+              author,
+            });
+            if (refusal !== null) {
+              return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
+            }
+          }
+        }
+        return yield* protocolHost.submitTurn(sessionId, input, author);
+      });
 
       const interruptTurn = (turnId: AgentTurnId) => protocolHost.interruptTurn(turnId);
 
@@ -12869,12 +13198,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   captured: capture !== null,
                 })
               : withHarnessSetup(session.harness, memoryShapedArgv, { captured: capture !== null });
+          // Per-person harness homes (docs/adr/0016): in a person-layout executor the session's
+          // owner runs as their own user, made there at their first process (a join's one more
+          // exec, and the worktree repair beside it, never awaited).
+          const startAs = yield* startAsOwner(session, workspace).pipe(
+            Effect.tapError((error) =>
+              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
+                Effect.ignore,
+              ),
+            ),
+          );
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
               sealant.openSession(
                 workspace,
                 launchedArgv,
-                protocolStart === null ? undefined : { mode: "pipe" },
+                protocolStart === null && startAs === null
+                  ? undefined
+                  : {
+                      ...(protocolStart === null ? {} : { mode: "pipe" as const }),
+                      ...(startAs === null ? {} : { user: startAs.user, env: startAs.env }),
+                    },
               ),
             ),
             Effect.tapError((error) =>
@@ -13834,7 +14178,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }, 0) + 1;
         // The image stamped at launch names the login shell this tab should run.
         const shellArgv = interactiveShellArgv(session.workspaceImage);
-        const pty = yield* sealant.openSession(workspace, shellArgv);
+        const startAs = yield* startAsOwner(session, workspace);
+        const pty = yield* sealant.openSession(
+          workspace,
+          shellArgv,
+          startAs === null ? undefined : { user: startAs.user, env: startAs.env },
+        );
         const shellProcess = yield* processes.create({
           sessionId,
           sealantWorkspaceId: session.sealantWorkspaceId ?? SealantWorkspaceId.make(workspace.id),
@@ -14183,9 +14532,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           status: "starting",
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
-        const pty = yield* sealant
-          .openSession(workspace, argv)
-          .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
+        const pty = yield* startAsOwner(session, workspace).pipe(
+          Effect.flatMap((startAs) =>
+            sealant.openSession(
+              workspace,
+              argv,
+              startAs === null ? undefined : { user: startAs.user, env: startAs.env },
+            ),
+          ),
+          Effect.tapError(() => processes.markExited(attempt.id, "exited", null)),
+        );
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
         yield* renewWorkspaceLease(sessionId, workspaceId);
         yield* reconcileSession(sessionId, { sweep: false });
@@ -14344,9 +14700,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           status: "starting",
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
-        const pty = yield* sealant
-          .openSession(workspace, previous.argv)
-          .pipe(Effect.tapError(() => processes.markExited(attempt.id, "exited", null)));
+        const pty = yield* sessions.byId(service.sessionId).pipe(
+          Effect.mapError(
+            () => new ServiceStartError({ message: "The Service's session no longer exists." }),
+          ),
+          Effect.flatMap((owner) => startAsOwner(owner, workspace)),
+          Effect.flatMap((startAs) =>
+            sealant.openSession(
+              workspace,
+              previous.argv,
+              startAs === null ? undefined : { user: startAs.user, env: startAs.env },
+            ),
+          ),
+          Effect.tapError(() => processes.markExited(attempt.id, "exited", null)),
+        );
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
         yield* renewWorkspaceLease(service.sessionId, previous.sealantWorkspaceId);
         const runningAttempt = (yield* processes.byId(attempt.id)) ?? attempt;
@@ -15102,6 +15469,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return null;
           }
         }
+        // A standby is created as one person before any worktree is known (docs/adr/0016): it
+        // never serves a worktree that runs, or may run, per person.
+        if (capture !== null && !(yield* layoutSteps.standbyMayServe(worktree.id))) return null;
         // Only the owner's own standby serves the session, and only while they may run here.
         const ownerUserId = input.ownerUserId;
         if (ownerUserId === null) return null;

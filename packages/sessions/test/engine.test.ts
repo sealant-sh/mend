@@ -58,6 +58,10 @@ import {
   type NewSessionRun,
   SessionChannelTokensRepo,
   SessionChannelTokensRepoMemory,
+  type HarnessLayoutsMemoryState,
+  harnessLayoutsRepoMemory,
+  linuxLoginNameOf,
+  makeHarnessLayoutsMemoryState,
   WorktreeNotFoundError,
   type ExecutorCaptureEvidence,
   piProfileDigest,
@@ -94,6 +98,7 @@ import {
   Checkpoint,
   HotWorkspace,
   Organization,
+  OrganizationMember,
   Project,
   ProjectClusterBinding,
   ProjectClusterBindingsSnapshot,
@@ -124,8 +129,12 @@ import {
   withoutAgentStarting,
 } from "@mend/domain/workbench";
 import { LAUNCH_BOOTING, LAUNCH_PREPARING, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
+import type { HarnessLayout } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
+  PersonLayoutPlatform,
+  PersonLayoutPlatformLive,
+  type ProcessUserOption,
   SealantClient,
   SealantPlatformError,
   SealantPrincipal,
@@ -231,6 +240,7 @@ import {
   type Scope,
 } from "effect";
 
+import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
   OPENCODE_CAPTURED_SEED,
@@ -367,7 +377,7 @@ const sealantLaunchLayer = (
     Effect.succeed(new Date("2030-01-01T00:00:00.000Z")),
   /** Per-PTY observed state a test flips to simulate an exit the watcher must notice. */
   ptyStates?: Map<string, InteractiveSessionStatus>,
-  openedOptions?: SessionOptions[],
+  openedOptions?: Array<SessionOptions & ProcessUserOption>,
   createWorkspaceOverride?: (
     options: CreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>,
@@ -420,6 +430,10 @@ const sealantLaunchLayer = (
     readonly createKeys?: Array<string | undefined>;
     /** Every create's launch identity, as Mend sent it (`undefined`: none). */
     readonly createLaunches?: Array<string | undefined>;
+    /** Every create's `credentialsHome` (docs/adr/0016), as Mend sent it (`undefined`: none). */
+    readonly createHomes?: Array<string | undefined>;
+    /** Every exec's user (docs/adr/0016): the login name it ran as, null for root. */
+    readonly execUsers?: Array<string | null>;
     /** While true, a create's answer is lost (503) as if the control plane never answered. */
     readonly loseCreateAnswer?: () => boolean;
     /** `launch.runtime.resourceId` / `runtime()` (Core's next SDK); absent answers null, as on 0.37.2. */
@@ -569,6 +583,7 @@ const sealantLaunchLayer = (
         created.push(options);
         captureOps?.createKeys?.push(launch?.idempotencyKey);
         captureOps?.createLaunches?.push(launch?.launchId);
+        captureOps?.createHomes?.push(launch?.credentialsHome);
         terminated = false;
         const beforeCreate = captureOps?.beforeCreate?.(options) ?? Effect.void;
         if (captureOps?.loseCreateAnswer?.() === true) {
@@ -704,9 +719,10 @@ const sealantLaunchLayer = (
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
     // quietly and still reach the workspace reap.
-    exec: (_workspace, argv) =>
+    exec: (_workspace, argv, options) =>
       Effect.suspend(() => {
         execCalls?.push(argv);
+        captureOps?.execUsers?.push(options?.user?.name ?? null);
         const effect = captureOps?.execEffect?.(argv);
         if (effect !== undefined) {
           return effect.pipe(Effect.map((answer) => ({ ...answer, run: fakeExecRun })));
@@ -1683,6 +1699,20 @@ const organizationsLayer = (world: World) =>
               joinedAt: now(),
             };
       }),
+    members: () =>
+      Effect.sync(() =>
+        [...world.members.entries()].map(
+          ([userId, role]) =>
+            new OrganizationMember({
+              organizationId: OrganizationId.make("org-test"),
+              userId,
+              name: userId,
+              email: `${userId}@example.com`,
+              role,
+              joinedAt: now(),
+            }),
+        ),
+      ),
   });
 
 /** No organization folders selected in these worlds. */
@@ -2834,6 +2864,15 @@ const withEngine = <A, E>(
     readonly transformBlobs?: (base: Layer.Layer<BlobStore>) => Layer.Layer<BlobStore>;
     /** Aborted, the run is interrupted (the engine's build included) and the world cleaned up. */
     readonly signal?: AbortSignal;
+    /**
+     * Per-person harness homes (docs/adr/0016): the flag, the layout records and the platform's
+     * person-layout surface. Off, with today's platform, unless a test says.
+     */
+    readonly harnessLayout?: {
+      readonly flag?: HarnessLayout;
+      readonly state?: HarnessLayoutsMemoryState;
+      readonly platform?: Layer.Layer<PersonLayoutPlatform>;
+    };
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2958,6 +2997,13 @@ const withEngine = <A, E>(
         options.piProfilesLayer ?? piProfilesLayerOf(),
         options.agentMemoryLayer ?? agentMemoryLayerOf(),
         options.secretFilesLayer ?? secretFilesLayerOf(),
+      ),
+    ),
+    Layer.provide(
+      Layer.mergeAll(
+        harnessLayoutsRepoMemory(options.harnessLayout?.state),
+        options.harnessLayout?.platform ?? PersonLayoutPlatformLive,
+        Layer.succeed(HarnessLayoutConfig, { flag: options.harnessLayout?.flag ?? "shared" }),
       ),
     ),
   );
@@ -6520,6 +6566,13 @@ describe("SessionEngine", () => {
           piProfilesLayerOf(),
           agentMemoryLayerOf(),
           secretFilesLayerOf(),
+        ),
+      ),
+      Layer.provide(
+        Layer.mergeAll(
+          harnessLayoutsRepoMemory(),
+          PersonLayoutPlatformLive,
+          HarnessLayoutConfigShared,
         ),
       ),
     );
@@ -22618,4 +22671,523 @@ describe("SessionEngine startup never waits on an executor (2026-10-03)", () => 
       },
     );
   }, 15_000);
+});
+
+// ─── per-person harness homes (docs/adr/0016) ─────────────────────────────
+
+const MARIA = "user-maria";
+const LAYOUT_READY = "mend-layout probed\nmend-layout ready\n";
+const isRepair = (argv: ReadonlyArray<string>) => (argv[2] ?? "").includes("mend-repair");
+const isPersonHome = (argv: ReadonlyArray<string>) =>
+  (argv[2] ?? "").includes("useradd") && !(argv[2] ?? "").includes("mend-layout");
+/** Every exec whose script carries the layout's own lines answers with `stdout`. */
+const answerLayout =
+  (stdout: string) =>
+  (argv: ReadonlyArray<string>): { exitCode: number; stdout: string; stderr: string } | undefined =>
+    argv[0] === "sh" && (argv[2] ?? "").includes("mend-layout")
+      ? { exitCode: 0, stdout, stderr: "" }
+      : undefined;
+const personPlatform = (
+  calls: Array<string>,
+  report: { readonly person?: boolean | null; readonly missing?: ReadonlyArray<string> } = {},
+): Layer.Layer<PersonLayoutPlatform> =>
+  Layer.succeed(PersonLayoutPlatform, {
+    processUser: true,
+    imageReport: () =>
+      Effect.succeed({
+        digest: "sha256:img",
+        runtime: "docker",
+        person: report.person ?? null,
+        missing: report.missing ?? [],
+      }),
+    postCredentials: (_workspace, input) =>
+      Effect.sync(() => {
+        calls.push(`post:${input.onBehalfOf}:${input.home}`);
+      }),
+    deleteCredentials: (_workspace, input) =>
+      Effect.sync(() => {
+        calls.push(`delete:${input.home}`);
+      }),
+    applyDotfiles: (_workspace, input) =>
+      Effect.sync(() => {
+        calls.push(`dotfiles:${input.home}`);
+      }),
+  });
+
+interface Scenario {
+  readonly cold: number;
+  readonly join: number;
+  readonly joinRepairs: number;
+  readonly joinPersonHomes: number;
+  readonly resume: number;
+  readonly created: number;
+  readonly homes: ReadonlyArray<string | undefined>;
+  readonly opened: ReadonlyArray<SessionOptions & ProcessUserOption>;
+  readonly users: ReadonlyArray<string | null>;
+  readonly execs: ReadonlyArray<ReadonlyArray<string>>;
+  readonly worktreeId: string;
+}
+
+/**
+ * A holder's cold launch, a second session in its executor (owned by `joiner`), then the holder
+ * stopped and resumed: the launch, join and resume of the exec budget (Performance).
+ */
+const coldJoinResume = async (options: {
+  readonly flag: HarnessLayout;
+  readonly joiner: string;
+  readonly state?: HarnessLayoutsMemoryState;
+  readonly platform?: Layer.Layer<PersonLayoutPlatform>;
+  readonly exec?: (
+    argv: ReadonlyArray<string>,
+  ) => { exitCode: number; stdout: string; stderr: string } | undefined;
+  readonly before?: (worktreeId: string) => void;
+}): Promise<Scenario> => {
+  const created: Array<CreateOptions> = [];
+  const execCalls: Array<ReadonlyArray<string>> = [];
+  const opened: Array<SessionOptions & ProcessUserOption> = [];
+  const users: Array<string | null> = [];
+  const homes: Array<string | undefined> = [];
+  const memory = makeMemoryCaptureStore();
+  let result: Scenario | null = null;
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const holder = yield* engine.provision({
+          projectId: project.id,
+          harness: "claude",
+          label: null,
+          name: "shared",
+          ownerUserId: "user-fixture",
+          base: null,
+        });
+        options.before?.(holder.worktreeId);
+        yield* engine.launch(holder.id, ["claude"]);
+        const cold = execCalls.length;
+        const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+          harness: "claude",
+          label: null,
+          ownerUserId: options.joiner,
+        });
+        yield* engine.launch(joined.id, ["claude"]);
+        // The repair runs beside the join, never awaited by it.
+        yield* Effect.sleep("50 millis");
+        const joinExecs = execCalls.slice(cold);
+        const joinRepairs = joinExecs.filter(isRepair).length;
+        const joinPersonHomes = joinExecs.filter(isPersonHome).length;
+        const afterJoin = execCalls.length;
+        // A resume after a Stop: the holder's executor ends and a new one starts.
+        const agent = [...world.processes.values()].findLast(
+          (process) => process.sessionId === holder.id && process.kind === "agent-pty",
+        );
+        yield* engine.stop(joined.id);
+        yield* engine.stop(holder.id);
+        if (agent !== undefined) {
+          const stateDir = processStatePathOf(project.storePath, holder.id, agent.id);
+          fs.mkdirSync(stateDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(stateDir, "manifest.json"),
+            JSON.stringify({
+              harness: "claude",
+              providerSessionId: "11111111-2222-3333-4444-555555555555",
+              capturedAt: now().toISOString(),
+            }),
+          );
+        }
+        const beforeResume = execCalls.length;
+        yield* engine.resumeSession(holder.id, null);
+        result = {
+          cold,
+          join: afterJoin - cold - joinRepairs,
+          joinRepairs,
+          joinPersonHomes,
+          resume: execCalls.length - beforeResume,
+          created: created.length,
+          homes,
+          opened,
+          users,
+          execs: execCalls,
+          worktreeId: holder.worktreeId,
+        };
+      }),
+    {
+      captured: memory,
+      prepareWorld: (world) => world.members.set(MARIA, "member"),
+      sealantLayer: sealantLaunchLayer(
+        created,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        opened,
+        undefined,
+        execCalls,
+        undefined,
+        {
+          execUsers: users,
+          createHomes: homes,
+          ...(options.exec === undefined ? {} : { exec: options.exec }),
+        },
+      ),
+      harnessLayout: {
+        flag: options.flag,
+        ...(options.state === undefined ? {} : { state: options.state }),
+        ...(options.platform === undefined ? {} : { platform: options.platform }),
+      },
+    },
+  );
+  if (result === null) throw new Error("the scenario did not run");
+  return result;
+};
+
+describe("per-person harness homes (docs/adr/0016)", () => {
+  // Today's counts (main at 4ccbaa2cd, measured with this same scenario): what the flag off must
+  // keep, and what a person launch may not exceed (Performance, CI guards).
+  const BUDGET = { cold: 13, sameJoin: 4, otherJoin: 3, resume: 13 } as const;
+  const LAUNCHER = linuxLoginNameOf("user-fixture");
+  const JOINER = linuxLoginNameOf(MARIA);
+  const IMAGE = "digest:sha256:img\u0000docker";
+
+  it("with the flag off costs nothing: today's execs, no home, no user, nothing recorded", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const same = await coldJoinResume({ flag: "shared", joiner: "user-fixture", state });
+    const other = await coldJoinResume({ flag: "shared", joiner: MARIA, state });
+    expect([same.cold, same.join, same.resume]).toEqual([
+      BUDGET.cold,
+      BUDGET.sameJoin,
+      BUDGET.resume,
+    ]);
+    expect([other.cold, other.join]).toEqual([BUDGET.cold, BUDGET.otherJoin]);
+    for (const run of [same, other]) {
+      expect(run.homes.every((home) => home === undefined)).toBe(true);
+      expect(run.users.every((user) => user === null)).toBe(true);
+      expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
+      expect(run.joinRepairs + run.joinPersonHomes).toBe(0);
+      expect(run.execs.some((argv) => (argv[2] ?? "").includes("mend-layout"))).toBe(false);
+    }
+    expect(state.launches.size).toBe(0);
+    expect(state.identities.size).toBe(0);
+  });
+
+  it("a person launch runs as the launcher's own user, in no more execs than today", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const calls: Array<string> = [];
+    const run = await coldJoinResume({
+      flag: "person",
+      joiner: "user-fixture",
+      state,
+      platform: personPlatform(calls, { person: true }),
+      exec: answerLayout(LAYOUT_READY),
+    });
+    expect(run.cold).toBeLessThanOrEqual(BUDGET.cold);
+    expect(run.join).toBeLessThanOrEqual(BUDGET.sameJoin);
+    expect(run.resume).toBeLessThanOrEqual(BUDGET.resume);
+    // The create commits to the layout: the launcher's logins into their own home.
+    expect(run.homes[0]).toBe(`/home/${LAUNCHER}`);
+    // Users and homes are made in the executor's first exec, beside the helper install.
+    const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+    expect(first?.[2]).toContain(`useradd -u 40001 -g mend`);
+    expect(first?.[2]).toContain("ln -sf /run/mend/bin/mend /usr/local/bin/mend");
+    // Every agent of the launcher runs as them; a same-person join makes nobody and repairs nothing.
+    const users = run.opened.map((options) => options.user?.name ?? null);
+    expect(users.length).toBeGreaterThan(0);
+    expect(users.every((user) => user === LAUNCHER)).toBe(true);
+    expect(run.joinPersonHomes + run.joinRepairs).toBe(0);
+    expect(state.worktrees.get(run.worktreeId)?.layout).toBe("person");
+    expect([...state.launches.values()].every((launch) => launch.confirmed)).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  it("a join by another person runs as them: at most two more execs, and one repair beside it", async () => {
+    const calls: Array<string> = [];
+    const same = await coldJoinResume({
+      flag: "person",
+      joiner: "user-fixture",
+      platform: personPlatform(calls, { person: true }),
+      exec: answerLayout(LAYOUT_READY),
+    });
+    const other = await coldJoinResume({
+      flag: "person",
+      joiner: MARIA,
+      platform: personPlatform(calls, { person: true }),
+      exec: answerLayout(LAYOUT_READY),
+    });
+    expect(other.join - same.join).toBeLessThanOrEqual(2);
+    expect(other.joinPersonHomes).toBe(1);
+    expect(other.joinRepairs).toBe(1);
+    // Maria's agent runs as Maria; the launcher's as the launcher.
+    expect(other.opened.map((options) => options.user?.name)).toEqual(
+      expect.arrayContaining([LAUNCHER, JOINER]),
+    );
+    const home = other.execs.find(isPersonHome);
+    expect(home?.[2]).toContain(`useradd -u 40002 -g mend`);
+    expect(home?.[2]).toContain(JOINER);
+  });
+
+  it("has no way back: a person worktree launches person with the flag off", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const run = await coldJoinResume({
+      flag: "shared",
+      joiner: "user-fixture",
+      state,
+      platform: personPlatform([], { person: true }),
+      exec: answerLayout(LAYOUT_READY),
+      before: (worktreeId) =>
+        state.worktrees.set(worktreeId, { layout: "person", requested: null }),
+    });
+    expect(run.homes[0]).toBe(`/home/${LAUNCHER}`);
+    expect(run.opened.every((options) => options.user?.name === LAUNCHER)).toBe(true);
+    expect([...state.launches.values()].map((launch) => launch.source)).toContain("worktree");
+  });
+
+  /** One cold launch of a new session; its failure, if any, as the error it failed with. */
+  const launchPersonOnce = async (options: {
+    readonly flag: HarnessLayout;
+    readonly state: HarnessLayoutsMemoryState;
+    readonly platform: Layer.Layer<PersonLayoutPlatform>;
+    readonly exec?: (
+      argv: ReadonlyArray<string>,
+    ) => { exitCode: number; stdout: string; stderr: string } | undefined;
+    readonly before?: (worktreeId: string) => void;
+    readonly harnessLayout?: HarnessLayout;
+  }) => {
+    const created: Array<CreateOptions> = [];
+    const opened: Array<SessionOptions & ProcessUserOption> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const stops: Array<"drain" | "discard"> = [];
+    const order: Array<string> = [];
+    let failure: string | null = null;
+    let worktreeId: string | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "pph",
+            ownerUserId: "user-fixture",
+            base: null,
+            ...(options.harnessLayout === undefined
+              ? {}
+              : { harnessLayout: options.harnessLayout }),
+          });
+          worktreeId = session.worktreeId;
+          options.before?.(session.worktreeId);
+          const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
+          if (launched._tag === "Failure") failure = launched.failure.message;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            stops,
+            beforeOpen: () => order.push("open"),
+            ...(options.exec === undefined ? {} : { exec: options.exec }),
+          },
+        ),
+        harnessLayout: { flag: options.flag, state: options.state, platform: options.platform },
+      },
+    );
+    return { created, opened, execCalls, stops, failure, worktreeId, order };
+  };
+
+  it("refuses a person worktree before create when its image is known not to run it", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    state.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: false,
+      missing: ["no sudo"],
+      observedAt: new Date(),
+    });
+    const run = await launchPersonOnce({
+      flag: "shared",
+      state,
+      platform: personPlatform([], { person: true }),
+      before: (worktreeId) =>
+        state.worktrees.set(worktreeId, { layout: "person", requested: null }),
+    });
+    expect(run.failure).toContain(
+      "This worktree's sessions are saved per person, and its image cannot run per-person users (no sudo). Pick an image that can, or start a new worktree.",
+    );
+    // Mend's record of what prepare found wins over Core's yes; nothing was created.
+    expect(run.created).toHaveLength(0);
+    expect(run.execCalls).toHaveLength(0);
+  });
+
+  it("refuses at prepare a person worktree whose image turns out not to run it: nothing starts", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const run = await launchPersonOnce({
+      flag: "shared",
+      state,
+      platform: personPlatform([]),
+      exec: answerLayout(
+        "mend-layout missing uid 40001 is taken in this image\nmend-layout probed\n",
+      ),
+      before: (worktreeId) =>
+        state.worktrees.set(worktreeId, { layout: "person", requested: null }),
+    });
+    expect(run.failure).toContain("(uid 40001 is taken in this image)");
+    expect(run.created).toHaveLength(1);
+    expect(run.opened).toHaveLength(0);
+    expect(run.order).toEqual([]);
+    // What prepare found is recorded for the next launch, which is refused before create.
+    expect(state.capabilities.get(IMAGE)?.person).toBe(false);
+    // The worktree stays person: nothing changed but the refusal.
+    expect(state.worktrees.get(run.worktreeId ?? "")?.layout).toBe("person");
+  });
+
+  it("with the flag on and the image unknown, launches shared, probes, and records what it found", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const run = await launchPersonOnce({
+      flag: "person",
+      state,
+      platform: personPlatform([]),
+      exec: answerLayout("mend-layout probed\n"),
+    });
+    expect(run.failure).toBeNull();
+    expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
+    const probe = run.execCalls.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+    expect(probe?.[2]).toContain("sealantd capabilities --json");
+    expect(probe?.[2]).not.toContain("useradd -u");
+    // Nothing missing: the next launch on this image can be person.
+    expect(state.capabilities.get(IMAGE)?.person).toBe(true);
+    expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
+    expect([...state.launches.values()]).toEqual([
+      expect.objectContaining({ layout: "shared", source: "capability", confirmed: true }),
+    ]);
+  });
+
+  it("when Core said yes and prepare says no on a fresh worktree, puts the logins in /root before the agent starts", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const calls: Array<string> = [];
+    const run = await launchPersonOnce({
+      flag: "person",
+      state,
+      platform: personPlatform(calls, { person: true }),
+      exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
+    });
+    expect(run.failure).toBeNull();
+    expect(calls).toEqual([`delete:/home/${LAUNCHER}`, "post:user-fixture:/root"]);
+    // The agent starts as root, after its login is written.
+    expect(run.order).toContain("open");
+    expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
+    expect([...state.launches.values()]).toEqual([
+      expect.objectContaining({ layout: "shared", source: "fallback", confirmed: true }),
+    ]);
+    expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false, missing: ["no setfacl"] });
+    expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
+  });
+
+  it("takes the operator's harnessLayout for a worktree it makes, and refuses another on a person worktree", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    const run = await launchPersonOnce({
+      flag: "person",
+      state,
+      platform: personPlatform([], { person: true }),
+      exec: answerLayout(LAYOUT_READY),
+      harnessLayout: "shared",
+    });
+    expect(run.failure).toBeNull();
+    expect(state.worktrees.get(run.worktreeId ?? "")?.requested).toBe("shared");
+    expect([...state.launches.values()]).toEqual([
+      expect.objectContaining({ layout: "shared", source: "operator" }),
+    ]);
+    expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
+
+    // The same name again, now that its worktree is person: refused before anything is made.
+    const refused = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const first = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "pph",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          state.worktrees.set(first.worktreeId, { layout: "person", requested: null });
+          return yield* engine
+            .provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "pph",
+              ownerUserId: "user-fixture",
+              base: null,
+              harnessLayout: "shared",
+            })
+            .pipe(Effect.flip);
+        }),
+      { harnessLayout: { flag: "shared", state } },
+    );
+    expect(refused._tag).toBe("HarnessLayoutNotAppliedError");
+  });
+
+  it("refuses a turn from anyone but the owner in a person executor, until per-person steering", async () => {
+    const authors: Array<string | null> = [];
+    const submitted: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const outcome = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "pph",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          const refused = yield* engine.submitTurn(session.id, "hi", MARIA).pipe(Effect.flip);
+          yield* engine.submitTurn(session.id, "mine", "user-fixture");
+          return refused;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        protocolHostLayer: recordingProtocolHostLayer([], submitted, authors),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", state, platform: personPlatform([], { person: true }) },
+      },
+    );
+    expect(outcome._tag).toBe("SessionTurnRefusedError");
+    expect(authors).toEqual(["user-fixture"]);
+    expect(submitted).toEqual(["mine"]);
+  });
 });
