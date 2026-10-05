@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   allowance,
+  deliveryWindow,
+  harnessVersionOf,
   compareResults,
   execCount,
   firstExecAt,
@@ -25,6 +27,8 @@ import {
   restoreOf,
   scenarioOf,
   settleNotRun,
+  sshRemoteOf,
+  withCompanion,
   stagedBytesOf,
   stepsOf,
   stripAnsi,
@@ -452,4 +456,79 @@ test("options default to the ADR's run counts and check what they name", () => {
   assert.throws(() => parseOptions(["run", "--runs", "-1"]), /whole number/);
   assert.throws(() => parseOptions(["run", "--bogus"]), /unknown option/);
   assert.throws(() => parseOptions(["compare", "a.json"]), /needs 2/);
+});
+
+test("an origin is addressed in the SSH form the git shim carries", () => {
+  assert.equal(
+    sshRemoteOf("https://github.com/sealant-sh/mend.git"),
+    "git@github.com:sealant-sh/mend.git",
+  );
+  assert.equal(
+    sshRemoteOf("https://github.com/sealant-sh/mend"),
+    "git@github.com:sealant-sh/mend.git",
+  );
+  assert.equal(sshRemoteOf("ssh://git@github.com:22/a/b.git"), "git@github.com:a/b.git");
+  assert.equal(sshRemoteOf("git@github.com:a/b.git"), "git@github.com:a/b.git");
+  assert.equal(sshRemoteOf("/srv/repo.git"), null);
+});
+
+const joinsOn = (median) => ({
+  target: { project: { name: "dots" } },
+  measures: { "join.other.first_output": { unit: "ms", budget: "join-other", samples: [median] } },
+});
+
+test("a run on another project rides inside the main record, in its table and its comparison", () => {
+  const main = { measures: { "api.session_list": { unit: "ms", budget: "api", samples: [100] } } };
+  const before = withCompanion(main, joinsOn(10_000));
+  assert.match(
+    formatTable(before),
+    /On project dots:[\s\S]*join\.other\.first_output \| 1 \| 10\.0 s/,
+  );
+  const after = withCompanion(main, joinsOn(14_000));
+  const comparison = compareResults(before, after);
+  assert.deepEqual(
+    comparison.misses.map((row) => [row.measure, row.stat]),
+    [
+      ["dots: join.other.first_output", "median"],
+      ["dots: join.other.first_output", "p90"],
+    ],
+  );
+  // The companion missing from a later record is a miss on both statistics.
+  assert.equal(compareResults(before, main).misses.length, 2);
+});
+
+const m = (name, when) => ({ name, at: when });
+
+test("delivery runs from the warm-up, or in a join from the step before it, to the last file", () => {
+  assert.equal(
+    deliveryWindow([
+      m("harness warm-up · read", 1000),
+      m("default shell profile · written", 1200),
+      m("agent memory · delivered", 4000),
+      m("secret file · written", 4400),
+      m("dependency install · completed", 20_000),
+    ]),
+    3400,
+  );
+  assert.equal(
+    deliveryWindow([
+      m("capture flush · completed", 500),
+      m("capture mode · joining the lease holder", 900),
+      m("secret file · written", 1600),
+    ]),
+    700,
+  );
+  assert.equal(deliveryWindow([m("dependency install · completed", 1)]), null);
+});
+
+test("a harness's version is read from its own first screen", () => {
+  assert.deepEqual(harnessVersionOf("  Claude Code v2.1.287  Fable 5.1"), {
+    harness: "claude",
+    version: "2.1.287",
+  });
+  assert.deepEqual(harnessVersionOf(">_ OpenAI Codex (v0.160.0)"), {
+    harness: "codex",
+    version: "0.160.0",
+  });
+  assert.equal(harnessVersionOf("$ "), null);
 });

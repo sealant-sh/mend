@@ -181,6 +181,58 @@ export const makeHost = async ({ ssh }) => {
   }
   return {
     shell,
+    /**
+     * Server minus local clock, over one held connection so a round trip is the network's and
+     * not a new SSH handshake's: the probe with the shortest round trip of `samples` wins.
+     */
+    clockOffset: async (samples = 15) => {
+      const command = "while read -r _; do date +%s%N; done";
+      const child =
+        sshArgs === null
+          ? spawn("sh", ["-c", command])
+          : spawn("ssh", ["-o", "BatchMode=yes", ...sshArgs, command]);
+      let buffer = "";
+      const lines = [];
+      let wake = null;
+      child.stdout.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        const parts = buffer.split("\n");
+        buffer = parts.pop() ?? "";
+        lines.push(...parts.filter((line) => line.trim() !== ""));
+        wake?.();
+      });
+      const nextLine = async (timeoutMs) => {
+        const deadline = Date.now() + timeoutMs;
+        while (lines.length === 0) {
+          if (Date.now() > deadline) throw new Error("the clock probe did not answer");
+          const { promise, resolve } = Promise.withResolvers();
+          wake = resolve;
+          const timer = setTimeout(resolve, 100);
+          await promise;
+          clearTimeout(timer);
+        }
+        return lines.shift();
+      };
+      try {
+        // The first answer pays for the connection; it is not a sample.
+        child.stdin.write("\n");
+        await nextLine(30_000);
+        let best = null;
+        for (let k = 0; k < samples; k += 1) {
+          const before = Date.now();
+          child.stdin.write("\n");
+          const serverMs = Number(BigInt((await nextLine(10_000)).trim()) / 1_000_000n);
+          const after = Date.now();
+          const rtt = after - before;
+          if (best === null || rtt < best.rtt)
+            best = { rtt, offset: serverMs - (before + after) / 2 };
+        }
+        return { offsetMs: best.offset, uncertaintyMs: best.rtt / 2 };
+      } finally {
+        child.stdin.end();
+        child.kill("SIGTERM");
+      }
+    },
     /** Follows a container's whole log until it exits or `stop()`; the text so far, with docker timestamps. */
     follow: (container) => {
       const command = `docker logs -f -t ${container} 2>&1`;

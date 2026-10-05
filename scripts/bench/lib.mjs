@@ -224,6 +224,37 @@ export const stepsOf = (startMs, milestones) => {
   return steps;
 };
 
+const DELIVERED = /^(agent memory · delivered|secret file · written)/;
+
+/**
+ * The delivery window of a launch: from the harness warm-up (a cold launch reads the harness's
+ * home first) or, when there is none (a join of a live executor), from the milestone just before
+ * the first delivery, to the last of memory and secret files. Skills log nothing of their own and
+ * fall inside it. Null when nothing was delivered.
+ */
+export const deliveryWindow = (milestones) => {
+  const ordered = milestones.toSorted((a, b) => a.at - b.at);
+  const ends = ordered.filter((m) => DELIVERED.test(m.name));
+  if (ends.length === 0) return null;
+  const firstEnd = ends[0].at;
+  const before = ordered.filter((m) => m.at <= firstEnd && !DELIVERED.test(m.name));
+  const start =
+    before.find((m) => m.name.startsWith("harness warm-up")) ??
+    before.find((m) => m.name.startsWith("default shell profile")) ??
+    before.at(-1);
+  if (start === undefined) return null;
+  return ends.at(-1).at - start.at;
+};
+
+/** A harness's version from its own first screen ("Claude Code v2.1.287"), or null. */
+export const harnessVersionOf = (screen) => {
+  const claude = /Claude Code v(\d+\.\d+\.\d+)/.exec(screen);
+  if (claude !== null) return { harness: "claude", version: claude[1] };
+  const codex = /OpenAI Codex \(v(\d+\.\d+\.\d+)\)/.exec(screen);
+  if (codex !== null) return { harness: "codex", version: codex[1] };
+  return null;
+};
+
 /** The Sealant worker's line for a Stop's drain: what the executor uploaded and registered. */
 export const parseDrainLine = (message) => {
   const match =
@@ -369,6 +400,12 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
       });
     }
   }
+  for (const [name, companion] of Object.entries(before.companions ?? {})) {
+    const theirs = after.companions?.[name] ?? { measures: {} };
+    for (const row of compareResults(companion, theirs, { stats }).rows) {
+      rows.push({ ...row, measure: `${name}: ${row.measure}` });
+    }
+  }
   return { rows, misses: rows.filter((row) => !row.ok) };
 };
 
@@ -413,6 +450,9 @@ export const formatTable = (result) => {
   }
   for (const skipped of result.notRun ?? []) {
     lines.push(`| ${skipped.measure} | 0 | not run: ${skipped.reason} | | | |`);
+  }
+  for (const [name, companion] of Object.entries(result.companions ?? {})) {
+    lines.push("", `On project ${name}:`, "", formatTable(companion));
   }
   return lines.join("\n");
 };
@@ -619,16 +659,44 @@ export const parseOptions = (argv, now = Date.now()) => {
   for (const stat of opts.stats) {
     if (!["median", "p90", "worst"].includes(stat)) throw new Error(`unknown statistic ${stat}`);
   }
-  const needs = { table: 1, compare: 2, merge: 2 }[opts.command];
+  const needs = { table: 1, compare: 2, merge: 2, companion: 2 }[opts.command];
   if (needs !== undefined && opts.args.length < needs) {
     throw new Error(`${opts.command} needs ${needs} record file(s)`);
   }
   if (opts.out === null) {
     opts.out =
-      opts.command === "compare" || opts.command === "merge"
-        ? (opts.args[1] ?? "/tmp/st-bench.json").replace(/\.json$/, "") +
-          `.${opts.command === "merge" ? "merged" : "rerun"}.json`
+      opts.command === "compare" || opts.command === "merge" || opts.command === "companion"
+        ? (opts.args[opts.command === "companion" ? 0 : 1] ?? "/tmp/st-bench.json").replace(
+            /\.json$/,
+            "",
+          ) +
+          `.${{ merge: "merged", compare: "rerun", companion: "with-companion" }[opts.command]}.json`
         : `/tmp/st-bench-${now.toString(36).slice(-6)}.json`;
   }
   return opts;
 };
+
+/**
+ * An origin URL in the SSH form Mend's git shim carries (`git@host:owner/repo.git`); null when it
+ * has none (a local path, an unknown scheme).
+ */
+export const sshRemoteOf = (url) => {
+  if (/^[\w.-]+@[\w.-]+:.+/.test(url)) return url;
+  const match = /^(?:https?|ssh):\/\/(?:[^@/]+@)?([^/:]+)(?::\d+)?\/(.+?)\/?$/.exec(url);
+  if (match === null) return null;
+  const repo = match[2].endsWith(".git") ? match[2] : `${match[2]}.git`;
+  return `git@${match[1]}:${repo}`;
+};
+
+/**
+ * A record run on another project, kept inside the main one under that project's name (the
+ * different-person join needs a project both accounts can see; the same-person join is run there
+ * too, so the two compare like for like). `compare` checks companions as well.
+ */
+export const withCompanion = (main, companion) => ({
+  ...main,
+  companions: {
+    ...main.companions,
+    [companion.target?.project?.name ?? "other"]: companion,
+  },
+});

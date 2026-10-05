@@ -7,6 +7,7 @@
 //   node scripts/bench/bench.mjs table <record.json>      print a record's table
 //   node scripts/bench/bench.mjs compare <before> <after> check after against before and the budgets
 //   node scripts/bench/bench.mjs merge <base> <extra>     fold a later run of some scenarios in
+//   node scripts/bench/bench.mjs companion <main> <other> keep a run on another project inside main
 //   node scripts/bench/bench.mjs cleanup [options]        remove every st-bench- resource
 //
 // `node scripts/bench/bench.mjs help` lists the options. Everything the benchmark creates is named
@@ -27,10 +28,11 @@ import {
   parseOptions,
   scenarioOf,
   settleNotRun,
+  withCompanion,
 } from "./lib.mjs";
 import { HARNESSES, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
 
-const USAGE = `usage: node scripts/bench/bench.mjs <run|table|compare|merge|cleanup|help> [args] [options]
+const USAGE = `usage: node scripts/bench/bench.mjs <run|table|compare|merge|companion|cleanup|help> [args] [options]
 
 server
   --url <url>                 the Mend server (default: the url in --token-file)
@@ -78,20 +80,9 @@ const readCredential = (file) => {
   return { url: null, token: text };
 };
 
-/** Server minus local clock, from the host's `date` with the shortest round trip of five. */
-const measureClockOffset = async (host) => {
-  if (host === null) return { offsetMs: 0, uncertaintyMs: null };
-  let best = null;
-  for (let k = 0; k < 5; k += 1) {
-    const before = Date.now();
-    const out = await host.shell("date +%s%N");
-    const after = Date.now();
-    const serverMs = Number(BigInt(out.trim()) / 1_000_000n);
-    const rtt = after - before;
-    if (best === null || rtt < best.rtt) best = { rtt, offset: serverMs - (before + after) / 2 };
-  }
-  return { offsetMs: best.offset, uncertaintyMs: best.rtt / 2 };
-};
+/** Server minus local clock; zero, with no stated uncertainty, when the host is out of reach. */
+const measureClockOffset = async (host) =>
+  host === null ? { offsetMs: 0, uncertaintyMs: null } : host.clockOffset();
 
 const gitCommitOf = (version) => {
   try {
@@ -144,12 +135,26 @@ const describeTarget = async ({ url, api, host, project }, opts) => {
           .catch(() => "")
       ).trim() || null;
   }
+  let storeBytes = null;
+  if (host !== null && typeof project.storePath === "string") {
+    const out = await host
+      .shell(`docker exec ${opts.mendContainer} du -sb ${project.storePath}; true`)
+      .catch(() => "");
+    const bytes = Number(out.trim().split(/\s+/)[0]);
+    storeBytes = Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+  }
   return {
     url,
     version: health.version ?? null,
     commit: health.version === undefined ? null : gitCommitOf(health.version),
     flag: flag ?? "unknown (no host access)",
-    project: { id: project.id, name: project.name },
+    project: {
+      id: project.id,
+      name: project.name,
+      visibility: project.visibility ?? null,
+      originUrl: project.originUrl ?? null,
+      storeBytes,
+    },
     mendImage,
     workspaceImage: null,
     harnessVersions: {},
@@ -271,6 +276,13 @@ const main = async () => {
       writeJson(opts.out, merged);
       process.stdout.write(`${formatTable(merged)}\n`);
       log(`merged · ${opts.out}`);
+      return;
+    }
+    case "companion": {
+      const joined = withCompanion(readJson(opts.args[0]), readJson(opts.args[1]));
+      writeJson(opts.out, joined);
+      process.stdout.write(`${formatTable(joined)}\n`);
+      log(`with companion · ${opts.out}`);
       return;
     }
     case "compare": {

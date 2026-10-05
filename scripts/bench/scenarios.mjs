@@ -13,7 +13,9 @@ import {
   mendLogBetween,
 } from "./host.mjs";
 import {
+  deliveryWindow,
   execCount,
+  harnessVersionOf,
   firstExecAt,
   milestonesOf,
   parseContainerDisk,
@@ -23,6 +25,7 @@ import {
   parseMendLog,
   parseSealantdLog,
   restoreOf,
+  sshRemoteOf,
   stagedBytesOf,
   stepsOf,
   stripAnsi,
@@ -115,6 +118,8 @@ const waitForAnswer = async (ctx, processId, answer, timeoutMs = 180_000) => {
     }
     if (page.nextFrom !== null && page.nextFrom !== undefined) from = String(page.nextFrom);
     const plain = stripAnsi(text);
+    const version = harnessVersionOf(plain);
+    if (version !== null) ctx.result.target.harnessVersions[version.harness] = version.version;
     if (plain.includes(answer) || plain.replace(/\s+/g, "").includes(answer)) return Date.now();
     if (page.status === "exited") return null;
     await sleep(250);
@@ -126,12 +131,18 @@ const stopAndSettle = async (ctx, sessionId, timeoutMs = 1_200_000, api = ctx.ap
   const startedAt = Date.now();
   const { ms } = await api.call("POST", `/sessions/${sessionId}/stop`, {});
   const deadline = Date.now() + timeoutMs;
+  let again = false;
   for (;;) {
     const detail = await api.get(`/sessions/${sessionId}`);
     if (detail.session.settledAt !== null) {
       return { startedAt, callMs: ms, settledAt: local(ctx, detail.session.settledAt), detail };
     }
     if (Date.now() > deadline) throw new Error("the Stop did not settle within the timeout");
+    // A Stop that ended the agent leaves shells running; a second one takes them too.
+    if (!again && detail.session.status !== "stopping" && Date.now() - startedAt > 15_000) {
+      again = true;
+      await api.post(`/sessions/${sessionId}/stop`).catch(() => null);
+    }
     await sleep(500);
   }
 };
@@ -185,15 +196,9 @@ const recordLaunch = async (ctx, prefix, { startedAt, sessionId, detail, agent }
   if (workspaceId !== null) {
     rec.sample(`${prefix}.execs`, execCount(blocks, workspaceId, startedAt, agentAt), "count");
   }
-  const start =
-    milestones.find((m) => m.name.startsWith("harness warm-up")) ??
-    milestones.find((m) => m.name.startsWith("default shell profile"));
-  const ends = milestones.filter((m) =>
-    /^(agent memory · delivered|secret file · written)/.test(m.name),
-  );
-  if (start !== undefined && ends.length > 0) {
-    const end = Math.max(...ends.map((m) => m.at));
-    rec.sample(`${prefix}.delivery`, end - start.at, "ms", "delivery");
+  const delivery = deliveryWindow(milestones);
+  if (delivery !== null) {
+    rec.sample(`${prefix}.delivery`, delivery, "ms", "delivery");
   } else {
     rec.notRun(`${prefix}.delivery`, "the delivery milestones were not in the log");
   }
@@ -405,16 +410,28 @@ const interactive = async (ctx, primary) => {
     attached.close();
   }
   ctx.log(`terminal · ${opts.interactiveRuns} attaches`);
-  const terminal = shell.terminal;
+  try {
+    await onShell(ctx, primary, shell.terminal);
+  } finally {
+    shell.terminal.close();
+    await ctx.api.post(`/processes/${shell.process.id}/stop`).catch(() => null);
+  }
+};
+
+/** What runs at the last shell's prompt: versions, typing, git, checkpoints. */
+const onShell = async (ctx, primary, terminal) => {
+  const { rec, opts } = ctx;
+  const sessionId = primary.session.id;
   await terminal.settle(800, 20_000);
 
   const versions = await runCommand(
     terminal,
-    "for h in claude codex pi opencode; do printf 'ver:%s=' $h; $h --version 2>/dev/null | head -1; echo; done",
+    "for h in claude codex pi opencode; do printf 'ver:%s=' $h; $h --version 2>&1 | head -1; echo; done",
   );
   for (const match of versions.text.matchAll(/ver:(\w+)=([^\r\n]*)/g)) {
-    if (match[2].trim() !== "" && !match[2].includes("$h")) {
-      ctx.result.target.harnessVersions[match[1]] = match[2].trim();
+    const text = match[2].trim();
+    if (/\d+\.\d+/.test(text) && !(match[1] in ctx.result.target.harnessVersions)) {
+      ctx.result.target.harnessVersions[match[1]] = text;
     }
   }
 
@@ -430,27 +447,7 @@ const interactive = async (ctx, primary) => {
   await terminal.settle(500, 5000);
   ctx.log(`terminal · ${opts.typingRuns} keystrokes`);
 
-  for (let k = 1; k <= opts.interactiveRuns; k += 1) {
-    const fetched = await runCommand(terminal, "git fetch -q origin main");
-    if (fetched.exit !== 0) throw new Error(`git fetch exited ${fetched.exit}`);
-    rec.sample("git.fetch", fetched.ms, "ms", "interactive");
-  }
-  const commit = await runCommand(
-    terminal,
-    "git commit --allow-empty -q -m 'st-bench: push timing'",
-  );
-  if (commit.exit !== 0) throw new Error(`git commit exited ${commit.exit}`);
-  for (let k = 1; k <= opts.interactiveRuns; k += 1) {
-    const ref = `${PREFIX}${ctx.rid}-${k}`;
-    ctx.created.remoteRefs.add(ref);
-    const pushed = await runCommand(terminal, `git push -q origin HEAD:refs/heads/${ref}`);
-    if (pushed.exit !== 0) throw new Error(`git push exited ${pushed.exit}`);
-    rec.sample("git.push", pushed.ms, "ms", "interactive");
-    const deleted = await runCommand(terminal, `git push -q origin --delete ${ref}`);
-    if (deleted.exit === 0) ctx.created.remoteRefs.delete(ref);
-    rec.sample("git.push_delete", deleted.ms, "ms");
-  }
-  ctx.log(`git · ${opts.interactiveRuns} fetches and pushes`);
+  await gitThroughShim(ctx, terminal).catch((error) => rec.error("git", error));
 
   for (let k = 1; k <= opts.interactiveRuns; k += 1) {
     await runCommand(terminal, `echo ${k} > .st-bench-checkpoint-${k}`);
@@ -461,8 +458,52 @@ const interactive = async (ctx, primary) => {
   }
   await runCommand(terminal, "rm -f .st-bench-checkpoint-*");
   ctx.log(`checkpoint · ${opts.interactiveRuns} saves`);
-  terminal.close();
-  await ctx.api.post(`/processes/${shell.process.id}/stop`).catch(() => null);
+};
+
+/**
+ * `git fetch` and `git push` through Mend's git shim: the workspace's `core.sshCommand`
+ * (`mend-git-ssh`) carries git's SSH transport to the Mend host, which authenticates. The shim
+ * serves SSH remotes only, so the project's origin is addressed in its SSH form; a prompt for
+ * credentials fails the command at once instead of waiting for a person.
+ */
+const gitThroughShim = async (ctx, terminal) => {
+  const { rec, opts } = ctx;
+  const remote = sshRemoteOf(ctx.project.originUrl ?? "");
+  if (remote === null) {
+    rec.notRun("git.fetch", `the project's origin (${ctx.project.originUrl}) has no SSH form`);
+    rec.notRun("git.push", `the project's origin (${ctx.project.originUrl}) has no SSH form`);
+    return;
+  }
+  const git = `GIT_TERMINAL_PROMPT=0 git`;
+  const branch = ctx.project.defaultBranch ?? "main";
+  for (let k = 1; k <= opts.interactiveRuns; k += 1) {
+    const fetched = await runCommand(terminal, `${git} fetch -q ${remote} ${branch}`);
+    if (fetched.exit !== 0) throw new Error(`git fetch exited ${fetched.exit}`);
+    rec.sample("git.fetch", fetched.ms, "ms", "interactive");
+  }
+  const commit = await runCommand(
+    terminal,
+    `${git} commit --allow-empty -q -m 'st-bench: push timing'`,
+  );
+  if (commit.exit !== 0) throw new Error(`git commit exited ${commit.exit}`);
+  for (let k = 1; k <= opts.interactiveRuns; k += 1) {
+    const ref = `${PREFIX}${ctx.rid}-${k}`;
+    ctx.created.remoteRefs.add(ref);
+    const pushed = await runCommand(terminal, `${git} push -q ${remote} HEAD:refs/heads/${ref}`);
+    if (pushed.exit !== 0) {
+      ctx.created.remoteRefs.delete(ref);
+      rec.notRun(
+        "git.push",
+        `git push to ${remote} exited ${pushed.exit} (no push access through the shim?)`,
+      );
+      return;
+    }
+    rec.sample("git.push", pushed.ms, "ms", "interactive");
+    const deleted = await runCommand(terminal, `${git} push -q ${remote} --delete ${ref}`);
+    if (deleted.exit === 0) ctx.created.remoteRefs.delete(ref);
+    rec.sample("git.push_delete", deleted.ms, "ms");
+  }
+  ctx.log(`git · ${opts.interactiveRuns} fetches and pushes through the shim`);
 };
 
 /** The two reads every client makes most: the session list and one session's view. */
