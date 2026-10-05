@@ -268,8 +268,11 @@ co-located store keeps its bind for one release, as it keeps everything else.
     own interruption passes through.
 13. The sealantd half is designed in sealantd ADR 0016 (sealant-sh/sealantd#134); this ADR ships
     with sealant-sh/mend#480.
-14. A session's detail lists only the repositories whose project the caller can see: a private
-    sibling added to a session in a shared project stays private to those who may see it.
+14. A private project is added only to a session whose worktree nobody else can open: a private
+    project of the same creator (2026-10-05). Its files and history ride that worktree's captures to
+    whoever opens it, so hiding the row is not enough; a shared project may hold only shared
+    siblings, whatever the organization's membership today, since membership grows. A session's
+    detail still lists only the repositories whose project the caller can see.
 15. Removing a worktree counts the sessions that hold it as a repository among its members: their
     owners have a say, a holder that is live or `stopping` refuses the removal, and so does a
     capture hold on the holder's own worktree, since that is where the repository's files travel

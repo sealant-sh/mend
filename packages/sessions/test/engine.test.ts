@@ -8647,6 +8647,63 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
+  it("refuses to add a private project to a session whose worktree others can open, and lists it only where nobody else can (ADR 0011, decision 14)", async () => {
+    await withEngine((world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const sibling = yield* setupSibling(tmp, world, "vault", project.originUrl ?? "");
+        // The session owner's own private project: only they can see it.
+        const vault = new Project({
+          ...sibling,
+          visibility: "private",
+          createdByUserId: "user-fixture",
+        });
+        world.projects.set(vault.id, vault);
+        const engine = yield* SessionEngine;
+        const worktrees = yield* WorktreesRepo;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: "fix-login",
+          ownerUserId: "user-fixture",
+          base: null,
+        });
+
+        // `fixture` is shared: every member can open this worktree and would receive vault's
+        // files and history with its captures.
+        expect(yield* engine.addableProjects(session.id)).toEqual([]);
+        const refused = yield* engine
+          .addRepository(session.id, { project: "vault", name: null, worktree: null })
+          .pipe(Effect.flip);
+        expect(
+          refused._tag === "RepositoryAddError"
+            ? [refused.reason, refused.message]
+            : [refused._tag, String(refused)],
+        ).toEqual([
+          "private-project",
+          "vault is private and fixture is shared · its files and history would be saved with this session's worktree, which every member of the organization can open · add it from a session in a private project of yours, or ask an owner to share vault",
+        ]);
+        // Nothing was made in vault.
+        expect(yield* worktrees.byName(vault.id, "fix-login")).toBeNull();
+
+        // Once the session's own project is private to the same person, nobody else can open
+        // the worktree: vault is listed, and the add goes on to the next check.
+        world.projects.set(
+          project.id,
+          new Project({ ...project, visibility: "private", createdByUserId: "user-fixture" }),
+        );
+        expect((yield* engine.addableProjects(session.id)).map((row) => row.name)).toEqual([
+          "vault",
+        ]);
+        const next = yield* engine
+          .addRepository(session.id, { project: "vault", name: null, worktree: null })
+          .pipe(Effect.flip);
+        expect(next._tag === "RepositoryAddError" ? next.reason : next._tag).toBe("not-live");
+      }),
+    );
+  });
+
   it("keeps transcript classification unknown when the capture head cannot be read", async () => {
     const created: Array<CreateOptions> = [];
     const stopped: string[] = [];
