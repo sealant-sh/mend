@@ -195,6 +195,111 @@ export const withCodexMemory = (argv: ReadonlyArray<string>): ReadonlyArray<stri
   return [head, ...CODEX_MEMORY_FLAG, ...rest];
 };
 
+/** What turns Codex's memory off: it reads none and summarises nothing. */
+export const CODEX_MEMORY_OFF = ["-c", "features.memories=false"] as const;
+
+/** And makes no thread any Codex will summarise: a new thread is created with memory disabled. */
+export const CODEX_THREADS_UNSUMMARISED = ["-c", "memories.generate_memories=false"] as const;
+
+/** The memory settings a launch may not set for itself, per table (`memory_tool`: Codex's alias). */
+const CODEX_MEMORY_KEYS: Readonly<Record<string, ReadonlyArray<string>>> = {
+  features: ["memories", "memory_tool"],
+  memories: ["generate_memories"],
+};
+
+/**
+ * Whether a `-c`/`--config` value would set one of Codex's memory settings: a dotted memory key,
+ * or the `features` or `memories` table whole. Codex replaces a whole table set this way, Mend's
+ * own `-c features.memories=false` and `-c memories.generate_memories=false` with it, so such a
+ * table is dropped whatever else it holds.
+ */
+const setsCodexMemory = (value: string): boolean => {
+  const dotted = /^\s*([a-z_]+)\.([a-z_]+)\s*(=|$)/.exec(value);
+  if (dotted !== null)
+    return CODEX_MEMORY_KEYS[dotted[1] ?? ""]?.includes(dotted[2] ?? "") === true;
+  const table = /^\s*([a-z_]+)\s*=/.exec(value);
+  return table !== null && CODEX_MEMORY_KEYS[table[1] ?? ""] !== undefined;
+};
+
+/** Whether `--enable <name>` turns Codex's memory on (`memory_tool`: Codex's alias). */
+const enablesCodexMemory = (name: string | undefined): boolean =>
+  name === "memories" || name === "memory_tool";
+
+/** Whether `argv`, as Mend launches it, runs Codex: `codex …`, or a prompt's `sh -c "… exec codex …"`. */
+export const launchesCodex = (argv: ReadonlyArray<string>): boolean =>
+  argv[0] === "codex" ||
+  (argv[0] === "sh" && argv[1] === "-c" && /(^|[\s;&|])exec codex(\s|$)/.test(argv[2] ?? ""));
+
+/**
+ * A Codex launch with its memory off, whatever it asked (docs/adr/0009, "Codex"). What the launch
+ * says itself would win over Mend's own `-c` or keep a thread enabled, so it is dropped: `--enable
+ * memories` and `--enable memory_tool` (Codex's alias), in either form, and every `-c`/`--config`
+ * naming a memory setting, in every form clap takes (`-c V`, `-cV`, `-c=V`, `--config V`,
+ * `--config=V`; a dotted key, or the `features` or `memories` table whole). Takes both shapes Mend launches:
+ * `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
+ *
+ * `join`: the launch runs in another person's home. Its threads are also created disabled, so no
+ * Codex, the holder's included, ever summarises them. In the launcher's own home (Mend could not
+ * take the other people's conversations out of Codex's memory) its threads stay enabled: they are
+ * the launcher's, a later launch of theirs builds memory from them, and anyone else's launch
+ * withholds them.
+ */
+export const withCodexMemoryOff = (
+  argv: ReadonlyArray<string>,
+  options: { readonly join: boolean },
+): ReadonlyArray<string> => {
+  const off = options.join
+    ? [...CODEX_MEMORY_OFF, ...CODEX_THREADS_UNSUMMARISED]
+    : [...CODEX_MEMORY_OFF];
+  const [head, ...rest] = argv;
+  if (head === "codex") {
+    const kept: Array<string> = [];
+    for (let index = 0; index < rest.length; index++) {
+      const arg = rest[index] ?? "";
+      if (arg === "--enable" && enablesCodexMemory(rest[index + 1])) {
+        index++;
+        continue;
+      }
+      if (arg.startsWith("--enable=") && enablesCodexMemory(arg.slice("--enable=".length))) {
+        continue;
+      }
+      const separate = arg === "-c" || arg === "--config";
+      const attached = separate
+        ? null
+        : arg.startsWith("--config=")
+          ? arg.slice("--config=".length)
+          : arg.startsWith("-c=")
+            ? arg.slice("-c=".length)
+            : arg.startsWith("-c") && arg.length > 2
+              ? arg.slice(2)
+              : null;
+      if (separate) {
+        const value = rest[index + 1];
+        if (value === undefined) {
+          kept.push(arg);
+          continue;
+        }
+        index++;
+        if (!setsCodexMemory(value)) kept.push(arg, value);
+        continue;
+      }
+      if (attached !== null && setsCodexMemory(attached)) continue;
+      kept.push(arg);
+    }
+    return [head, ...off, ...kept];
+  }
+  const script = argv[2];
+  if (head === "sh" && argv[1] === "-c" && script !== undefined) {
+    return [
+      head,
+      "-c",
+      script.replaceAll("-c features.memories=true", off.join(" ")),
+      ...argv.slice(3),
+    ];
+  }
+  return argv;
+};
+
 /**
  * Codex's background server, never started by a Codex session Mend starts. Codex 0.160's TUI
  * starts a shared app-server daemon by default (`features.daemon_auto_start`), and the daemon first

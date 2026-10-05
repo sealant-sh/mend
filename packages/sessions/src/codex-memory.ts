@@ -14,8 +14,8 @@ import { CARRIED_TRANSCRIPTS, parseCarriedTranscripts } from "./harness-state.ts
 /**
  * Codex memory, carried between one person's sessions on a project (docs/adr/0009, "Codex").
  *
- * Codex builds memory from past conversations when a session starts: up to two a start, each quiet
- * for six hours and under ten days old, summarised by the model and consolidated into
+ * Codex builds memory from past conversations when a session starts, and in 0.160 at every turn's
+ * start: up to two at a time, each quiet for six hours and under ten days old, summarised by the model and consolidated into
  * `.codex/memories/`. It merges only summaries whose conversation its state database lists, and a
  * fresh home lists only the rollouts in it. So each launch lays down, for the person's own Codex
  * conversations on the project:
@@ -692,3 +692,70 @@ export const storedCodexThreadLines = (
       return line === "" ? [] : [[match[1], line] as const];
     }),
   );
+
+/** Codex's thread index in a harness home: every conversation it knows, with its memory mode. */
+export const CODEX_STATE_DATABASE = ".codex/state_5.sqlite";
+
+/** The threads Mend took out of Codex's memory in a home, so it gives back only those. */
+export const CODEX_MEMORY_WITHHELD = ".mend/codex-memory-withheld.json";
+
+/**
+ * Takes every conversation that is not the launcher's out of Codex's memory before a Codex starts
+ * in a capture-mode home (docs/adr/0009, "Codex"; `node -e`, argv: the harness home and the
+ * launcher's own thread ids as JSON). Codex summarises, at every start, any idle conversation its
+ * state database lists with `memory_mode = 'enabled'`, whoever had it (codex-rs
+ * `state/src/runtime/memories.rs`, `claim_stage1_jobs_for_startup`), and a worktree's home holds
+ * every person's conversations there. So each thread that is not the launcher's and is enabled is
+ * set `disabled` and listed in `CODEX_MEMORY_WITHHELD`; each of the launcher's that Mend withheld
+ * earlier is given back. A mode the person chose themselves is never touched. One transaction,
+ * waiting up to five seconds for a Codex that holds the database (a joined executor's), through
+ * SQLite's own locking and write-ahead log.
+ *
+ * With no state database yet, Codex will list every rollout in the home the first time it opens
+ * it, all enabled: then it prints `memory-off` when a rollout there is not the launcher's. A state
+ * database under any other name (a Codex that moved to `state_6.sqlite` would build it from the
+ * rollouts, every thread enabled) prints `memory-off` too. Prints
+ * `withheld <n> restored <n>`, `clean`, or `memory-off <why>`. Exits 3 when the runtime has no
+ * `node:sqlite`.
+ */
+export const CODEX_WITHHOLD_PROGRAM = [
+  `const fs=require("fs"),path=require("path");let S;try{S=require("node:sqlite")}catch{process.exit(3)}`,
+  `const [home,ownJson]=process.argv.slice(1),own=new Set(JSON.parse(ownJson));`,
+  `const D=path.join(home,${JSON.stringify(CODEX_STATE_DATABASE)}),W=path.join(home,${JSON.stringify(CODEX_MEMORY_WITHHELD)});`,
+  `let names=[];try{names=fs.readdirSync(path.join(home,".codex"))}catch{}`,
+  `if(names.some(n=>/^state_[0-9]+\\.sqlite$/.test(n)&&n!==path.basename(D))){console.log("memory-off another state database is in the home");process.exit(0)}`,
+  `if(!fs.existsSync(D)){const ids=[];const walk=d=>{let es;try{es=fs.readdirSync(d,{withFileTypes:true})}catch{return}`,
+  `for(const e of es){const p=path.join(d,e.name);if(e.isDirectory())walk(p);else{const m=/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\\.jsonl(\\.zst)?$/.exec(e.name);if(m)ids.push(m[1])}}};`,
+  `walk(path.join(home,".codex","sessions"));walk(path.join(home,".codex","archived_sessions"));`,
+  `console.log(ids.some(id=>!own.has(id))?"memory-off another person's conversation is in the home":"clean");process.exit(0)}`,
+  `let withheld=new Set();try{const v=JSON.parse(fs.readFileSync(W,"utf8"));if(Array.isArray(v))withheld=new Set(v.filter(x=>typeof x==="string"))}catch{}`,
+  `const db=new S.DatabaseSync(D);db.exec("PRAGMA busy_timeout=5000");`,
+  `if(!db.prepare("PRAGMA table_info(threads)").all().some(c=>c.name==="memory_mode")){console.log("memory-off this Codex keeps no memory mode");process.exit(0)}`,
+  `let off=0,on=0;db.exec("BEGIN IMMEDIATE");try{const set=db.prepare("UPDATE threads SET memory_mode=? WHERE id=?");`,
+  `for(const r of db.prepare("SELECT id,memory_mode FROM threads").all()){`,
+  `if(!own.has(r.id)&&r.memory_mode==="enabled"){set.run("disabled",r.id);withheld.add(r.id);off++}`,
+  `else if(own.has(r.id)&&r.memory_mode==="disabled"&&withheld.has(r.id)){set.run("enabled",r.id);withheld.delete(r.id);on++}}`,
+  `db.exec("COMMIT")}catch(e){try{db.exec("ROLLBACK")}catch{}throw e}db.close();`,
+  `fs.mkdirSync(path.dirname(W),{recursive:true});fs.writeFileSync(W+".mend-part",JSON.stringify([...withheld]));fs.renameSync(W+".mend-part",W);`,
+  `console.log("withheld "+off+" restored "+on)`,
+].join("");
+
+/**
+ * The exec that runs `CODEX_WITHHOLD_PROGRAM`: on runtimes that need it, again with
+ * `--experimental-sqlite`. Exit 127: no node; 3: no `node:sqlite`.
+ */
+export const withholdCodexThreadsExec = (
+  home: string,
+  own: ReadonlyArray<string>,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `node --no-warnings -e "$0" "$1" "$2"; rc=$?; if [ "$rc" = 3 ]; then node --no-warnings --experimental-sqlite -e "$0" "$1" "$2" 2>/dev/null || exit 3; else exit "$rc"; fi`,
+  CODEX_WITHHOLD_PROGRAM,
+  home,
+  JSON.stringify(own),
+];
+
+/** What a withholding said: Codex may keep its memory on, or must start with it off. */
+export const codexMemoryMayStayOn = (exitCode: number, stdout: string): boolean =>
+  exitCode === 0 && /^(withheld \d+ restored \d+|clean)$/m.test(stdout);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { ProjectId } from "@mend/domain";
+import type { ProjectId, WorktreeId } from "@mend/domain";
 import {
   AGENT_MEMORY_MAX_BYTES,
   agentMemoryMaxFileBytes,
@@ -19,13 +19,14 @@ import {
   unionLines,
   validateAgentMemoryPath,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
 import {
   agentMemoryFiles,
+  agentMemoryHomes,
   agentMemoryImportBases,
   agentMemoryVersions,
 } from "../schema/workbench.ts";
@@ -392,8 +393,55 @@ export class AgentMemoryRepo extends Context.Service<
       readonly mergeDatabase: MergeDatabase;
       readonly holdsDatabase: HoldsDatabase;
     }) => Effect.Effect<AgentMemoryImportReport>;
+    /**
+     * Whose memory a worktree's capture-mode home holds: settled, and the last launch's hand-over
+     * pending; null when no launch recorded one.
+     */
+    readonly homeOf: (worktreeId: WorktreeId) => Effect.Effect<AgentMemoryHomes | null>;
+    /**
+     * The hand-over of the executor launched under `epoch`: pending, at a chain position not known
+     * yet (`notePendingHomePosition`).
+     */
+    readonly recordPendingHome: (
+      worktreeId: WorktreeId,
+      home: AgentMemoryHome,
+      epoch: number,
+    ) => Effect.Effect<void>;
+    /**
+     * The chain position a caught-up flush of the pending executor (`workspaceId`, under `epoch`)
+     * reached after the hand-over: the record settles on a capture of that epoch at `n` or later.
+     * Only the first one counts.
+     */
+    readonly notePendingHomePosition: (
+      worktreeId: WorktreeId,
+      workspaceId: string,
+      epoch: number,
+      n: number,
+    ) => Effect.Effect<void>;
+    /**
+     * A capture of `epoch` at the pending position or later is on the chain: the hand-over pending
+     * under it is the home now.
+     */
+    readonly settleHome: (worktreeId: WorktreeId, epoch: number) => Effect.Effect<void>;
   }
 >()("@mend/db/AgentMemoryRepo") {}
+
+/** Whose memory a capture-mode harness home holds, and the executor holding it. */
+export interface AgentMemoryHome {
+  /** Null: the person was removed, or nobody could be named. */
+  readonly userId: string | null;
+  /** The session whose launch made the executor; its row may be gone. */
+  readonly sessionId: string | null;
+  readonly workspaceId: string;
+}
+
+/** A worktree's home as the server records it: settled, and a hand-over not saved yet. */
+export interface AgentMemoryHomes {
+  readonly settled: AgentMemoryHome | null;
+  readonly pending:
+    | (AgentMemoryHome & { readonly epoch: number; readonly n: number | null })
+    | null;
+}
 
 type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "delete" | "execute">;
 
@@ -939,6 +987,109 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    return { forLaunch, list, read, remove, readBack, importFiles };
+    const homeOf = Effect.fn("AgentMemoryRepo.homeOf")(function* (worktreeId: WorktreeId) {
+      const [row] = yield* db
+        .select()
+        .from(agentMemoryHomes)
+        .where(eq(agentMemoryHomes.worktreeId, worktreeId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined) return null;
+      return {
+        settled:
+          row.workspaceId === null
+            ? null
+            : { userId: row.userId, sessionId: row.sessionId, workspaceId: row.workspaceId },
+        pending:
+          row.pendingWorkspaceId === null || row.pendingEpoch === null
+            ? null
+            : {
+                userId: row.pendingUserId,
+                sessionId: row.pendingSessionId,
+                workspaceId: row.pendingWorkspaceId,
+                epoch: row.pendingEpoch,
+                n: row.pendingN,
+              },
+      };
+    });
+
+    const recordPendingHome = Effect.fn("AgentMemoryRepo.recordPendingHome")(function* (
+      worktreeId: WorktreeId,
+      home: AgentMemoryHome,
+      epoch: number,
+    ) {
+      const pending = {
+        pendingUserId: home.userId,
+        pendingSessionId: home.sessionId,
+        pendingWorkspaceId: home.workspaceId,
+        pendingEpoch: epoch,
+        pendingN: null,
+        updatedAt: new Date(),
+      };
+      yield* db
+        .insert(agentMemoryHomes)
+        .values({ worktreeId, ...pending })
+        .onConflictDoUpdate({ target: agentMemoryHomes.worktreeId, set: pending })
+        .pipe(Effect.orDie);
+    });
+
+    const notePendingHomePosition = Effect.fn("AgentMemoryRepo.notePendingHomePosition")(function* (
+      worktreeId: WorktreeId,
+      workspaceId: string,
+      epoch: number,
+      n: number,
+    ) {
+      yield* db
+        .update(agentMemoryHomes)
+        .set({ pendingN: n, updatedAt: new Date() })
+        .where(
+          and(
+            eq(agentMemoryHomes.worktreeId, worktreeId),
+            eq(agentMemoryHomes.pendingWorkspaceId, workspaceId),
+            eq(agentMemoryHomes.pendingEpoch, epoch),
+            isNull(agentMemoryHomes.pendingN),
+          ),
+        )
+        .pipe(Effect.orDie);
+    });
+
+    const settleHome = Effect.fn("AgentMemoryRepo.settleHome")(function* (
+      worktreeId: WorktreeId,
+      epoch: number,
+    ) {
+      yield* db
+        .update(agentMemoryHomes)
+        .set({
+          userId: sql`${agentMemoryHomes.pendingUserId}`,
+          sessionId: sql`${agentMemoryHomes.pendingSessionId}`,
+          workspaceId: sql`${agentMemoryHomes.pendingWorkspaceId}`,
+          pendingUserId: null,
+          pendingSessionId: null,
+          pendingWorkspaceId: null,
+          pendingEpoch: null,
+          pendingN: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(agentMemoryHomes.worktreeId, worktreeId),
+            eq(agentMemoryHomes.pendingEpoch, epoch),
+          ),
+        )
+        .pipe(Effect.orDie);
+    });
+
+    return {
+      forLaunch,
+      list,
+      read,
+      remove,
+      readBack,
+      importFiles,
+      homeOf,
+      recordPendingHome,
+      notePendingHomePosition,
+      settleHome,
+    };
   }),
 );

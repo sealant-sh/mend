@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { PgClient } from "@effect/sql-pg";
-import type { ProjectId } from "@mend/domain";
+import { type ProjectId, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -717,6 +717,55 @@ describe.skipIf(!reachable)("agent memory, in Postgres", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("records whose memory a worktree's home holds, past the session rows, and forgets a removed person", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* AgentMemoryRepo;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('maria', 'Maria Example', 'maria@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-homes', ${project}, 'homes', 'homes', 'mend/homes', 'abc')`;
+        const worktree = WorktreeId.make("wt-homes");
+        expect(yield* repo.homeOf(worktree)).toBeNull();
+        const anna = { userId: "anna", sessionId: "s1", workspaceId: "ws-1" };
+        const maria = { userId: "maria", sessionId: "s2", workspaceId: "ws-2" };
+        // Anna's hand-over is pending until a capture of its epoch is the head.
+        yield* repo.recordPendingHome(worktree, anna, 3);
+        expect(yield* repo.homeOf(worktree)).toEqual({
+          settled: null,
+          pending: { ...anna, epoch: 3, n: null },
+        });
+        yield* repo.settleHome(worktree, 3);
+        // Maria's executor is lost before it saved: her hand-over never settles; Anna's home stays.
+        yield* repo.recordPendingHome(worktree, maria, 4);
+        // Only a caught-up flush of Maria's own executor, under her epoch, fills the position.
+        yield* repo.notePendingHomePosition(worktree, "ws-other", 4, 6);
+        yield* repo.notePendingHomePosition(worktree, "ws-2", 3, 6);
+        yield* repo.notePendingHomePosition(worktree, "ws-2", 4, 7);
+        yield* repo.notePendingHomePosition(worktree, "ws-2", 4, 9);
+        yield* repo.settleHome(worktree, 3);
+        expect(yield* repo.homeOf(worktree)).toEqual({
+          settled: anna,
+          pending: { ...maria, epoch: 4, n: 7 },
+        });
+        yield* repo.settleHome(worktree, 4);
+        expect(yield* repo.homeOf(worktree)).toEqual({ settled: maria, pending: null });
+        // A removed person is nobody Mend can name; the executor it held is still known.
+        yield* sql`DELETE FROM "user" WHERE id = 'maria'`;
+        expect((yield* repo.homeOf(worktree))?.settled).toEqual({
+          userId: null,
+          sessionId: "s2",
+          workspaceId: "ws-2",
+        });
+        yield* sql`DELETE FROM worktrees WHERE id = 'wt-homes'`;
+        expect(yield* repo.homeOf(worktree)).toBeNull();
       }),
     );
   });

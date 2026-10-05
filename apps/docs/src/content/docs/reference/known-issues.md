@@ -167,13 +167,61 @@ not before, so a session started meanwhile does not see what that one has learne
 When two of your sessions changed the same memory file, both sides' lines are kept, so a line both
 of them wrote can appear twice. The agent tidies its memory as it goes.
 
+## A session that joins someone else's executor uses their memory
+
+On a server, a worktree has one executor. A session you start in a worktree where another person's
+session is already running joins their executor, and its agent shares their harness home. It reads
+their memory, not yours, and what it learns there is saved to their memory, never to yours:
+
+- what it writes before their agent ends is saved when that agent ends;
+- what it writes after that is saved when their next agent in that worktree ends, or when someone
+  else next starts a session there.
+
+A joined Codex session starts with its memory off: it neither builds memory nor leaves conversations
+for anyone's Codex to build memory from, yours included, later or anywhere else. A session that
+joins while the other person's session is still starting can begin before Mend has moved the
+previous person's memory out of the way: its agent can read that memory, and what it writes there
+ends up kept beside it. Start your session in a worktree of your own to work from your memory.
+
+## A worktree someone else used before you
+
+A session you start in a worktree someone else used, once their executor has ended, starts from your
+memory. Mend first saves theirs for them, then moves it to `~/.mend/agent-memory-kept/` in that
+worktree's executors, where it stays: anyone working in the worktree, and their agent, can read it
+there. Nothing deletes these kept sets, so in a worktree people take turns in they add up, one copy
+of the previous person's memory per turn, and every later session restores them. When Mend cannot
+tell whose memory the worktree held (it was used before this release by several people, or their
+sessions were removed), nobody is credited and it is only moved.
+
+An executor started before this release is judged by who started it until it ends.
+
+## A `codex` you run yourself in a shared worktree
+
+Your Codex sessions on a server never build memory from another person's conversations. A `codex`
+you type in a shell session, or one your agent runs in a Claude, opencode or pi session, is not a
+Codex session: Mend does not prepare it, and it can build memory from the other conversations in the
+worktree into the memory that worktree's home holds. Start a Codex session instead.
+
+The same goes for a Codex session whose command Mend does not recognise as `codex`: one wrapped in
+`env`, started by an absolute path or through `npx`, or run from a shell script
+(`mend run -- sh -c "…"`). Joining someone else's executor, it starts with Codex's own memory
+settings, so the conversations it starts can build their memory.
+
+Two smaller gaps in the same place:
+
+- Codex can turn a withheld conversation back on itself when it reconciles an older conversation's
+  file (the resume picker's search does), for conversations recorded before Codex 0.160. Those age
+  out of what Codex builds memory from ten days after their last change.
+- Conversations you start inside Codex with `/new` are not known to Mend as yours, so your next
+  Codex session withholds them too: they do not build your memory.
+
 ## Codex memory builds slowly, and on your login
 
-Codex makes memory from a conversation only once it has been quiet for six hours, and only two at
-each session start, with model calls on your own login. Mend carries your earlier Codex
-conversations on the project into each new session so it can, a few at a time. A session resumed
-later learns only from what was carried at its first launch. pi and opencode keep no memory of their
-own.
+Codex makes memory from a conversation only once it has been quiet for six hours, and only two at a
+time when a session or a turn starts, with model calls on your own login. Mend carries your earlier
+Codex conversations on the project into each new session so it can, a few at a time. A session
+resumed later learns only from what was carried at its first launch. pi and opencode keep no memory
+of their own.
 
 Everything else in a session's harness home stays with that session: its conversations, and settings
 or plugins changed inside it. A conversation resumes in its own session, not from another.

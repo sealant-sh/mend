@@ -647,6 +647,71 @@ describe.skipIf(!reachable)("0110 automatic install", () => {
   });
 });
 
+describe.skipIf(!reachable)("0111 agent memory homes", () => {
+  const HOMES_DB = `${SCRATCH_DB}_memory_homes`;
+  const homesLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${HOMES_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withHomesDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(homesLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${HOMES_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${HOMES_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("comes after 0110 and records a home per worktree that outlives its person and goes with its worktree", async () => {
+    const rows = await withHomesDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0110_project_install_enabled");
+        yield* migrations["0111_agent_memory_homes"];
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
+            ('u-maria', 'Maria', 'maria@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-homes', 'Homes')`;
+        yield* sql`
+          INSERT INTO projects (id, organization_id, name, store_path, default_branch)
+          VALUES ('p-homes', 'org-homes', 'homes', '/store/homes/repo.git', 'main')`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES
+            ('wt-kept', 'p-homes', 'kept', 'kept', 'mend/kept', 'abc'),
+            ('wt-gone', 'p-homes', 'gone', 'gone', 'mend/gone', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_memory_homes
+            (worktree_id, user_id, session_id, workspace_id, pending_user_id, pending_epoch) VALUES
+            ('wt-kept', 'u-maria', 's-removed', 'ws-1', 'u-maria', 4),
+            ('wt-gone', 'u-maria', 's-other', 'ws-2', NULL, NULL)`;
+        yield* sql`DELETE FROM "user" WHERE id = 'u-maria'`;
+        yield* sql`DELETE FROM worktrees WHERE id = 'wt-gone'`;
+        return yield* sql<{
+          readonly worktree_id: string;
+          readonly user_id: string | null;
+          readonly session_id: string | null;
+          readonly pending_user_id: string | null;
+        }>`SELECT worktree_id, user_id, session_id, pending_user_id FROM agent_memory_homes ORDER BY worktree_id`;
+      }),
+    );
+    expect(rows).toEqual([
+      { worktree_id: "wt-kept", user_id: null, session_id: "s-removed", pending_user_id: null },
+    ]);
+  });
+});
+
 describe.skipIf(!reachable)("0046 worktree containers", () => {
   const WORKTREE_DB = `${SCRATCH_DB}_wt`;
   const worktreeUrl = (() => {

@@ -3026,6 +3026,36 @@ const projectInstallEnabledMigration = Effect.gen(function* () {
       ADD COLUMN IF NOT EXISTS install_enabled boolean NOT NULL DEFAULT true`;
 });
 
+/**
+ * docs/adr/0009-agent-memory-per-person-per-project.md, capture mode: whose memory each worktree's
+ * one harness home holds, as the server decided it when the launch of an executor handed the home
+ * over. It outlives the session rows (a removed session's executor is still known as its owner's),
+ * and the home's own record, which anything running in the executor can write, is never consulted.
+ * - `user_id`, `session_id`, `workspace_id`: the settled home, the one the worktree's head capture
+ *   holds. `user_id` null: the person was removed, or nobody could be named.
+ * - `pending_*`: the hand-over of the executor launched last, under the lease `pending_epoch`. It
+ *   counts only once a capture of that epoch, at chain position `pending_n` or later, is on the
+ *   chain. `pending_n` is where the executor's first caught-up flush after the hand-over reached,
+ *   null until one answers: an executor lost before it saved its hand-over leaves the previous
+ *   home in place.
+ */
+const agentMemoryHomesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE agent_memory_homes (
+      worktree_id text PRIMARY KEY REFERENCES worktrees (id) ON DELETE CASCADE,
+      user_id text REFERENCES "user" (id) ON DELETE SET NULL,
+      session_id text,
+      workspace_id text,
+      pending_user_id text REFERENCES "user" (id) ON DELETE SET NULL,
+      pending_session_id text,
+      pending_workspace_id text,
+      pending_epoch integer,
+      pending_n integer,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3137,4 +3167,5 @@ export const migrations = {
   "0108_agent_memory_import_bases": agentMemoryImportBasesMigration,
   "0109_opencode_models": opencodeModelsMigration,
   "0110_project_install_enabled": projectInstallEnabledMigration,
+  "0111_agent_memory_homes": agentMemoryHomesMigration,
 };

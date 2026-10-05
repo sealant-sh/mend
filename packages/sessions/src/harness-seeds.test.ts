@@ -14,6 +14,8 @@ import {
   OPENCODE_SEED,
   PI_SEED,
   withCodexMemory,
+  launchesCodex,
+  withCodexMemoryOff,
   withHarnessSetup,
   withoutCodexDaemon,
 } from "./harness-seeds.ts";
@@ -585,5 +587,97 @@ describe("Codex's background server", () => {
       "-c",
       "features.daemon_auto_start_v2=true",
     ]);
+  });
+});
+
+describe("Codex's memory turned off", () => {
+  const off = ["-c", "features.memories=false"];
+  const unsummarised = ["-c", "memories.generate_memories=false"];
+
+  it("in a join, drops whatever the launch asked, --enable and --config included, and makes no thread to summarise", () => {
+    expect(withCodexMemoryOff(["codex", "resume", "abc"], { join: true })).toEqual([
+      "codex",
+      ...off,
+      ...unsummarised,
+      "resume",
+      "abc",
+    ]);
+    expect(
+      withCodexMemoryOff(
+        [
+          "codex",
+          "--enable",
+          "memories",
+          "-c",
+          "features.memories=true",
+          "--config",
+          "memories.generate_memories=true",
+          "--config=features.memories=true",
+          "-c",
+          "memories={generate_memories=true}",
+          "--enable=memories",
+          "-c",
+          "model=gpt",
+          "app-server",
+        ],
+        { join: true },
+      ),
+    ).toEqual(["codex", ...off, ...unsummarised, "-c", "model=gpt", "app-server"]);
+    // Every form clap takes, and Codex's `memory_tool` alias. A `features` or `memories` table
+    // goes whole: Codex would replace Mend's own settings with it.
+    expect(
+      withCodexMemoryOff(
+        [
+          "codex",
+          "-cfeatures.memories=true",
+          "-c=features.memories=true",
+          "-c",
+          "features.memory_tool=true",
+          "--enable",
+          "memory_tool",
+          "--enable=memory_tool",
+          "-c",
+          "features={memories=true, web_search=true}",
+          "--config",
+          "features={web_search=true}",
+          "-c",
+          "memories={max_unused_days=3}",
+          "-cmodel=gpt",
+          "-c",
+          "features.web_search=true",
+        ],
+        { join: true },
+      ),
+    ).toEqual(["codex", ...off, ...unsummarised, "-cmodel=gpt", "-c", "features.web_search=true"]);
+    const [, , script] = withCodexMemoryOff(
+      [
+        "sh",
+        "-c",
+        "exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
+      ],
+      { join: true },
+    );
+    expect(script).toBe(
+      "exec codex -c features.memories=false -c memories.generate_memories=false --dangerously-bypass-approvals-and-sandbox",
+    );
+    expect(withCodexMemoryOff(["claude"], { join: true })).toEqual(["claude"]);
+  });
+
+  it("in the launcher's own home, turns memory off but keeps their new threads for their memory", () => {
+    expect(withCodexMemoryOff(["codex", "--enable", "memories"], { join: false })).toEqual([
+      "codex",
+      ...off,
+    ]);
+  });
+});
+
+describe("what runs Codex, as Mend launches it", () => {
+  it("is decided by the command line, not the harness's name", () => {
+    expect(launchesCodex(["codex", "resume", "abc"])).toBe(true);
+    expect(launchesCodex(["sh", "-c", 'exec codex -c features.memories=true "$prompt"'])).toBe(
+      true,
+    );
+    expect(launchesCodex(["claude"])).toBe(false);
+    expect(launchesCodex(["sh", "-c", "exec claude"])).toBe(false);
   });
 });

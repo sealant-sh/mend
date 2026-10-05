@@ -25,8 +25,8 @@ import { shellQuote } from "./workspace-files.ts";
  * One program delivers in both stores (`AGENT_MEMORY_DELIVER_PROGRAM`): the stored files are first
  * staged under `.mend/agent-memory-incoming/`, then the program puts each in place unless the
  * session changed it since the last delivery, moves aside (never deletes) a file Mend delivered and
- * no longer stores, and records what it delivered in `AGENT_MEMORY_DELIVERED`. The read-back
- * compares against that record.
+ * no longer stores, and records what it delivered in `AGENT_MEMORY_DELIVERED` and whose memory
+ * it is in `AGENT_MEMORY_OWNER`. The read-back compares against that record.
  */
 
 /** What was delivered, path to digest, relative to the harness home. */
@@ -37,6 +37,80 @@ const AGENT_MEMORY_INCOMING = ".mend/agent-memory-incoming";
 
 /** Where a delivered file Mend no longer stores goes, relative to the harness home. */
 export const AGENT_MEMORY_KEPT_DIR = ".mend/agent-memory-kept";
+
+/**
+ * Whose memory the harness home holds, as the last delivery or hand-over wrote it, relative to the
+ * harness home: for a person reading the home, never for Mend. Anything running in the executor
+ * can write it, so nothing reads it to decide anything; the server keeps the answer
+ * (`agent_memory_homes`).
+ */
+export const AGENT_MEMORY_OWNER = ".mend/agent-memory-owner";
+
+/**
+ * Everything of one person's memory in a harness home, relative to it: the memory roots, Codex's
+ * summary database with its write-ahead log and shared memory, the delivered record, the owner
+ * record, and a delivery's staged files left behind. A hand-over moves all of it aside before
+ * another person's memory is laid down.
+ */
+export const AGENT_MEMORY_HANDOVER_PATHS: ReadonlyArray<string> = [
+  ...AGENT_MEMORY_ROOTS.map(({ root }) => root),
+  ...AGENT_MEMORY_FILES.flatMap(({ path: file }) => [file, `${file}-wal`, `${file}-shm`]),
+  AGENT_MEMORY_DELIVERED,
+  AGENT_MEMORY_OWNER,
+  AGENT_MEMORY_INCOMING,
+];
+
+/**
+ * Whether every path a snapshot could not read (as sealantd names them, from the capture's root:
+ * `tree/…`, `harness/…`) lies outside the harness home's memory: not one of
+ * `AGENT_MEMORY_HANDOVER_PATHS`, inside one, or a directory holding one. A path from a root Mend
+ * does not know is taken as touching it.
+ */
+export const unreadableOutsideMemory = (paths: ReadonlyArray<string>): boolean =>
+  paths.every((raw) => {
+    const at = raw.replace(/\/+$/, "");
+    if (at.startsWith("tree/")) return true;
+    if (at !== "harness" && !at.startsWith("harness/")) return false;
+    return AGENT_MEMORY_HANDOVER_PATHS.every((memory) => {
+      const full = `harness/${memory}`;
+      return !(
+        at === full ||
+        at.startsWith(`${full}/`) ||
+        full.startsWith(`${at}/`) ||
+        at === "harness"
+      );
+    });
+  });
+
+/**
+ * The exec that hands a capture-mode harness home over to `owner` (plain `sh`, no node): each of
+ * `AGENT_MEMORY_HANDOVER_PATHS` that is there moves to `kept` (relative to the home), never
+ * deleted, and the owner record then names `owner`, written even when nothing was there. Prints
+ * `memory moved <path>` per path. Exits non-zero the moment a path cannot be moved: the launch
+ * must not start on another person's memory.
+ */
+export const handOverAgentMemoryExec = (
+  home: string,
+  kept: string,
+  owner: string,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  [
+    `home=${shellQuote(home)}; kept="$home"/${shellQuote(kept)};`,
+    `for p in ${AGENT_MEMORY_HANDOVER_PATHS.map(shellQuote).join(" ")}; do`,
+    `if [ -e "$home/$p" ] || [ -L "$home/$p" ]; then`,
+    `mkdir -p "$kept/$(dirname "$p")" && mv "$home/$p" "$kept/$p" || exit 1; echo "memory moved $p"; fi; done;`,
+    `mkdir -p "$home/.mend" && printf %s ${shellQuote(owner)} > "$home"/${shellQuote(AGENT_MEMORY_OWNER)}`,
+  ].join(" "),
+];
+
+/** A fresh kept directory for one hand-over, relative to the harness home. */
+export const agentMemoryHandoverKeptDir = (now: Date = new Date()): string =>
+  path.posix.join(
+    AGENT_MEMORY_KEPT_DIR,
+    `${now.toISOString().replace(/[:.]/g, "-")}-handover-${randomUUID().slice(0, 8)}`,
+  );
 
 export class AgentMemoryDeliveryError extends Schema.TaggedErrorClass<AgentMemoryDeliveryError>()(
   "AgentMemoryDeliveryError",
@@ -51,15 +125,17 @@ type MemoryFile = {
 
 /**
  * Puts the staged memory in place (`node -e`, argv: home, the incoming directory and a fresh kept
- * directory relative to it, and the stored files as `[{path, digest}]` JSON). Prints one
+ * directory relative to it, the stored files as `[{path, digest}]` JSON, and the account they are
+ * for, written to `AGENT_MEMORY_OWNER` before any file moves; "" writes none). Prints one
  * `memory <outcome> <path>` line per file: `written`, `unchanged` (already exactly the stored
  * file), `left` (the session changed it since the last delivery and Mend has not read it back),
  * `kept` (Mend no longer stores it; moved aside) or `error`. Exits 1 after any `error`.
  */
 export const AGENT_MEMORY_DELIVER_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
-  `const [home,incoming,kept,list]=process.argv.slice(1),store=JSON.parse(list);`,
+  `const [home,incoming,kept,list,owner]=process.argv.slice(1),store=JSON.parse(list);`,
   `const M=path.join(home,${JSON.stringify(AGENT_MEMORY_DELIVERED)});`,
+  `if(owner){const O=path.join(home,${JSON.stringify(AGENT_MEMORY_OWNER)});fs.mkdirSync(path.dirname(O),{recursive:true});fs.writeFileSync(O,owner)}`,
   `let before={};try{const v=JSON.parse(fs.readFileSync(M,"utf8"));if(v&&typeof v==="object")before=v}catch{}`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
   `const digestOf=p=>{try{const st=fs.lstatSync(p);if(!st.isFile())return "not-a-file";return sha(fs.readFileSync(p))}catch(e){if(e.code==="ENOENT")return null;throw e}};`,
@@ -130,25 +206,31 @@ export const planAgentMemory = (
   };
 };
 
-/** The exec that delivers `plan` into a workspace's harness home, once its files are staged. */
+/**
+ * The exec that delivers `plan`, `owner`'s memory, into a workspace's harness home, once its files
+ * are staged.
+ */
 export const deliverAgentMemoryExec = (
   home: string,
   plan: AgentMemoryPlan,
+  owner: string,
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
-  `exec node -e ${shellQuote(AGENT_MEMORY_DELIVER_PROGRAM)} "$1" "$2" "$3" "$4"`,
+  `exec node -e ${shellQuote(AGENT_MEMORY_DELIVER_PROGRAM)} "$1" "$2" "$3" "$4" "$5"`,
   "mend-agent-memory",
   home,
   AGENT_MEMORY_INCOMING,
   plan.kept,
   plan.list,
+  owner,
 ];
 
 /** Deliver into a harness home on this machine: the co-located store's mounted home. */
 export const materializeAgentMemory = (
   harnessHomePath: string,
   plan: AgentMemoryPlan,
+  owner: string,
 ): Effect.Effect<ReadonlyArray<AgentMemoryOutcome>, AgentMemoryDeliveryError> =>
   Effect.tryPromise({
     try: async () => {
@@ -168,6 +250,7 @@ export const materializeAgentMemory = (
           AGENT_MEMORY_INCOMING,
           plan.kept,
           plan.list,
+          owner,
         ],
         { encoding: "utf8" },
       );
@@ -288,7 +371,11 @@ export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<
         (raw) => raw,
         () => null,
       );
-    return { delivered: parseAgentMemoryDelivered(delivered), files, skipped };
+    return {
+      delivered: parseAgentMemoryDelivered(delivered),
+      files,
+      skipped,
+    };
   });
 
 /**
