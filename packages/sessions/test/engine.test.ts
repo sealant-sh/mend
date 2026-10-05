@@ -81,6 +81,7 @@ import {
   SkillId,
   SessionId,
   SessionProcessId,
+  SecretFileId,
   Sha,
   MendSettings,
   WorktreeId,
@@ -108,6 +109,7 @@ import {
   SessionProcess,
   SessionRun,
   PiProfile,
+  SecretFile,
   Skill,
   SkillWithFiles,
   Worktree,
@@ -171,6 +173,7 @@ import {
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
   secretFilesDeliveredExec,
+  secretFilesRecordExec,
 } from "@mend/sessions";
 import {
   AgentBridge,
@@ -951,10 +954,11 @@ const piProfilesLayerOf = (
 /** The owner's secret files (docs/adr/0010); none unless a test brings some, sealed as the stub cipher seals. */
 const secretFilesLayerOf = (
   sealedForLaunch: SecretFilesRepo["Service"]["sealedForLaunch"] = () => Effect.succeed([]),
+  list: SecretFilesRepo["Service"]["list"] = () => Effect.succeed([]),
 ): Layer.Layer<SecretFilesRepo> =>
   Layer.succeed(SecretFilesRepo, {
     sealedForLaunch,
-    list: () => Effect.succeed([]),
+    list,
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
@@ -9489,6 +9493,144 @@ describe("SessionEngine capture mode", () => {
           captured: memory,
           sealantLayer: sealantLaunchLayer(created),
           protocolHostLayer: recordingProtocolHostLayer(attached, [], [], [], launchLogins),
+        },
+      );
+    },
+  );
+
+  it(
+    "a joined session's later runs in the holder's executor write none of its owner's secret files there, and its session line says so (docs/adr/0010 decision 3)",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      // Each person's `.aws/credentials`, told apart by its bytes; the stub cipher seals as
+      // `sealed:<base64>`, so a write exec carries the base64 in its argv.
+      const contents: Record<string, string> = {
+        "user-fixture": "[default]\naws_access_key_id = AKIAHOLDER\n",
+        "user-maria": "[default]\naws_access_key_id = AKIAJOINER\n",
+      };
+      const base64Of = (userId: string) =>
+        Buffer.from(contents[userId] ?? "", "utf8").toString("base64");
+      const writes: Array<"holder" | "joiner"> = [];
+      const recordWrites: Array<string> = [];
+      const fileOf = (userId: string) =>
+        new SecretFile({
+          id: SecretFileId.make(`secret-${userId}`),
+          path: ".aws/credentials",
+          name: "credentials",
+          bytes: Buffer.byteLength(contents[userId] ?? ""),
+          revision: 1,
+          createdAt: new Date("2026-10-05T09:12:00.000Z"),
+          updatedAt: new Date("2026-10-05T09:12:00.000Z"),
+        });
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const first = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(first.id, ["codex"]);
+            // The holder's own launch writes the holder's file into the holder's home.
+            expect(writes).toEqual(["holder"]);
+            // The holder's shell keeps its executor retained between the joined session's runs.
+            yield* engine.openShell(first.id);
+
+            const second = yield* engine.provisionSessionIn(first.worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: "user-maria",
+            });
+            const converse = () =>
+              engine.launchProtocol(
+                second.id,
+                { mode: "protocol", permissionMode: "bypass" },
+                "user-maria",
+              );
+            // The join, then a later run in the executor its row now names: the holder's.
+            yield* converse();
+            expect(world.sessions.get(second.id)?.sealantWorkspaceId).toBe("workspace-1");
+            yield* engine.stop(second.id);
+            const writtenBefore = recordWrites.length;
+            yield* converse();
+            expect(created).toHaveLength(1);
+            // Nothing of Maria's reached the holder's home, and the holder's record of the files
+            // in it was never rewritten: nothing of the holder's was replaced or removed.
+            expect(writes).toEqual(["holder"]);
+            expect(recordWrites).toHaveLength(writtenBefore);
+            expect(world.sessions.get(second.id)?.summary ?? "").toContain(
+              "secret files · 1 not written · this workspace is another person's · ~/.aws/credentials",
+            );
+
+            // The holder's own later run in that executor still receives the holder's files.
+            yield* engine.stop(first.id);
+            yield* engine.launchProtocol(
+              first.id,
+              { mode: "protocol", permissionMode: "bypass" },
+              "user-fixture",
+            );
+            expect(created).toHaveLength(1);
+            expect(writes).toEqual(["holder", "holder"]);
+
+            // Once the lease names no session, nothing says whose home that is: still nothing.
+            const lease = memory.leases.get(first.worktreeId);
+            if (lease === undefined) return yield* Effect.die("the worktree holds no lease");
+            memory.leases.set(first.worktreeId, { ...lease, executorId: null });
+            yield* engine.stop(second.id);
+            yield* converse();
+            expect(writes).toEqual(["holder", "holder"]);
+            expect(world.sessions.get(second.id)?.summary ?? "").toContain(
+              "secret files · 1 not written · Mend cannot say whose workspace this is · ~/.aws/credentials",
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              exec: (argv) => {
+                if (argv[3] !== "mend-secret-files") return undefined;
+                // The sealed record of what Mend wrote into this home: rewritten by every
+                // delivery, and the only way one removes a file as stale.
+                if (argv[2] === secretFilesRecordExec(null)[2]) {
+                  recordWrites.push(argv.join(" "));
+                  return { exitCode: 0, stdout: "", stderr: "" };
+                }
+                const joined = argv.join(" ");
+                if (joined.includes(base64Of("user-fixture"))) writes.push("holder");
+                if (joined.includes(base64Of("user-maria"))) writes.push("joiner");
+                return { exitCode: 0, stdout: "written\t.aws/credentials\n", stderr: "" };
+              },
+            },
+          ),
+          secretFilesLayer: secretFilesLayerOf(
+            (userId) =>
+              Effect.succeed([
+                {
+                  path: ".aws/credentials",
+                  sealedContents: `sealed:${base64Of(userId)}`,
+                },
+              ]),
+            (userId) => Effect.succeed([fileOf(userId)]),
+          ),
+          protocolHostLayer: recordingProtocolHostLayer([], []),
         },
       );
     },

@@ -876,6 +876,20 @@ const secretFilesRefusedWords = (refused: ReadonlyArray<SecretFileOutcome>) =>
   `${SECRET_FILES_SUMMARY_PREFIX} · ${refused.length} not written · ${refused
     .map((outcome) => `~/${outcome.path} · ${outcome.reason ?? "refused"}`)
     .join(" · ")}`;
+/**
+ * Said once, as a run in an executor that is not its owner's starts (docs/adr/0010 decision 3): a
+ * join, or a later run of a session that joined, in the home of the person whose launch made the
+ * executor. None of the owner's files is written there, and the line names them, paths only.
+ */
+const secretFilesWithheldWords = (
+  paths: ReadonlyArray<string>,
+  executorOwner: "another person" | "unknown",
+) =>
+  `${SECRET_FILES_SUMMARY_PREFIX} · ${paths.length} not written · ${
+    executorOwner === "another person"
+      ? "this workspace is another person's"
+      : "Mend cannot say whose workspace this is"
+  } · ${paths.map((filePath) => `~/${filePath}`).join(" · ")}`;
 
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
@@ -12619,10 +12633,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ));
           // Read before this launch writes the workspace onto the session's row: a session that
           // joined another person's executor keeps running there on that person's login.
-          const launchedWithLoginOf =
-            protocolStart === null
-              ? null
-              : yield* launchLoginOfWorkspace(session, SealantWorkspaceId.make(workspace.id));
+          const workspaceLogin = yield* launchLoginOfWorkspace(
+            session,
+            SealantWorkspaceId.make(workspace.id),
+          );
+          const launchedWithLoginOf = protocolStart === null ? null : workspaceLogin;
           if (nativeImport !== null) {
             yield* placeConvertedFiles(
               session,
@@ -12664,12 +12679,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // The owner's secret files again (docs/adr/0010): a retained executor may predate a
           // file the owner added or replaced since its launch, and this run reads the home as it
-          // is now. Only into a home that is the owner's: the session's own executor, or a lease
-          // holder's whose session the same person owns. A join into another person's executor
-          // writes nothing, and the log says so.
+          // is now. Only into a home that is the owner's (decision 3): whose it is is decided from
+          // the executor, never from how the launch reached it. A join names the lease holder's
+          // owner; any other retained run (resume, follow-up, shell resume, mode handoff) reads
+          // whose launch made the executor (`launchLoginOfWorkspace`), because a session that once
+          // joined another person's executor keeps that executor on its row. Delivering there
+          // would put the owner's files where the holder's agent reads them, replace the holder's
+          // own at the same path, and remove the holder's files as stale. Unknown reads as
+          // another person's: nothing is written, and the session line says so.
+          const executorOwner = workspaceOverride === null ? workspaceLogin : executorOwnerUserId;
           const homeIsOwners =
-            workspaceOverride === null ||
-            (executorOwnerUserId !== null && executorOwnerUserId === session.ownerUserId);
+            session.ownerUserId !== null && executorOwner === session.ownerUserId;
+          const withheldSecretFiles =
+            homeIsOwners || session.ownerUserId === null
+              ? []
+              : (yield* secretFiles.list(session.ownerUserId)).map((file) => file.path);
           if (homeIsOwners) {
             yield* deliverSecretFiles(session, workspace).pipe(
               Effect.catch((error) =>
@@ -12680,8 +12704,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           } else if (session.ownerUserId !== null) {
             yield* Effect.logInfo(
-              "session engine: secret files not written · the executor is another person's",
-            ).pipe(Effect.annotateLogs({ sessionId }));
+              executorOwner === null
+                ? "session engine: secret files not written · Mend cannot say whose the executor is"
+                : "session engine: secret files not written · the executor is another person's",
+            ).pipe(Effect.annotateLogs({ sessionId, withheld: withheldSecretFiles.length }));
           }
           // A retained workspace may hold a repository whose add this server did not see end
           // (docs/adr/0010): settle it from what the workspace holds, as a fresh launch would.
@@ -12852,6 +12878,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* clearStaleStartSummary(sessionId);
           if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
             yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+          }
+          // After the stale words go, which would take a `secret files · …` line with them.
+          if (withheldSecretFiles.length > 0) {
+            yield* noteLaunchWords(
+              sessionId,
+              secretFilesWithheldWords(
+                withheldSecretFiles,
+                executorOwner === null ? "unknown" : "another person",
+              ),
+            ).pipe(Effect.ignore);
           }
           // As at a cold launch, on the machine that is already up (`agentStartingWords`).
           const startingWords =
