@@ -228,7 +228,11 @@ import {
   type Scope,
 } from "effect";
 
-import { OPENCODE_CAPTURED_SEED, OPENCODE_SEED } from "../src/harness-seeds.ts";
+import {
+  HARNESS_UPDATES_OFF_ENV,
+  OPENCODE_CAPTURED_SEED,
+  OPENCODE_SEED,
+} from "../src/harness-seeds.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
 import { writeOpencodeDatabase } from "./opencode-db.ts";
@@ -477,6 +481,8 @@ const sealantLaunchLayer = (
      * lookup never answers), as in every world that does not ask for it.
      */
     readonly record?: () => Stream.Stream<TimelineEntry, SealantPlatformError>;
+    /** The run as the platform settles it once its record ends. */
+    readonly waitRun?: () => Effect.Effect<Run, SealantPlatformError>;
   },
 ) => {
   let nextPty = 0;
@@ -627,7 +633,7 @@ const sealantLaunchLayer = (
     runHarness: () => Effect.die("not in test"),
     startHarness: () => Effect.die("not in test"),
     startHarnessInWorkspace: () => Effect.die("not in test"),
-    waitRun: () => Effect.die("not in test"),
+    waitRun: () => captureOps?.waitRun?.() ?? Effect.die("not in test"),
     openSession: (_workspace, argv, options) =>
       captureOps?.openFails?.() === true
         ? Effect.fail(
@@ -5585,7 +5591,11 @@ describe("SessionEngine", () => {
 
           // Configuration rides `env`, secrets are unsealed into `secretEnv` — exactly once.
           expect(created).toHaveLength(1);
-          expect(created[0]?.env).toEqual({ APP_MODE: "review", PORT: "3000" });
+          expect(created[0]?.env).toEqual({
+            ...HARNESS_UPDATES_OFF_ENV,
+            APP_MODE: "review",
+            PORT: "3000",
+          });
           expect(created[0]?.secretEnv).toEqual({
             DATABASE_URL: "postgres://u:hunter2@h/db",
             STRIPE_API_KEY: "sk_live_x",
@@ -5715,7 +5725,7 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("omits env/secretEnv from createWorkspace when the project store is empty", async () => {
+  it("passes only the harnesses' update switches as env when the project store is empty", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
       (world, tmp) =>
@@ -5731,7 +5741,8 @@ describe("SessionEngine", () => {
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
-          expect(created[0]?.env).toBeUndefined();
+          // The harnesses' self-updaters are off in every workspace, whatever the project sets.
+          expect(created[0]?.env).toEqual(HARNESS_UPDATES_OFF_ENV);
           expect(created[0]?.secretEnv).toBeUndefined();
           expect(created[0]?.envFrom).toBeUndefined();
           expect(created[0]?.kubernetes).toBeUndefined();
@@ -5768,7 +5779,7 @@ describe("SessionEngine", () => {
           });
           yield* engine.launch(session.id, ["codex"]);
           expect(created).toHaveLength(1);
-          expect(created[0]?.env).toEqual({ APP_MODE: "review" });
+          expect(created[0]?.env).toEqual({ ...HARNESS_UPDATES_OFF_ENV, APP_MODE: "review" });
           expect(created[0]?.secretEnv).toEqual({ API_KEY: "old" });
 
           // Edit while live: a shell in the running workspace triggers no create and no re-read.
@@ -5788,7 +5799,11 @@ describe("SessionEngine", () => {
           }
           yield* engine.resumeSession(session.id, "shell", true);
           expect(created).toHaveLength(2);
-          expect(created[1]?.env).toEqual({ APP_MODE: "prod", NEW_VAR: "1" });
+          expect(created[1]?.env).toEqual({
+            ...HARNESS_UPDATES_OFF_ENV,
+            APP_MODE: "prod",
+            NEW_VAR: "1",
+          });
           expect(created[1]?.secretEnv).toEqual({ API_KEY: "new" });
           // The fake PTY reuses one run id, so the world holds the LATEST run only — enough to
           // prove the resumed launch stamped the current store's manifest, not the original.
@@ -21511,6 +21526,47 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
                 ),
                 Stream.concat(Stream.fromEffect(Effect.never)),
               ),
+          },
+        }),
+      },
+    );
+  });
+
+  it("a launch whose run settles completed but exited non-zero settles failed, as its PTY end reads", async () => {
+    // Core settles an interactive session's run `completed` whatever its process exited with.
+    // 2026-10-05: two joins whose `claude` could not start read `failed · exited with code 1` and
+    // `completed`, depending on whether the PTY watcher or the run's supervision saw the end first.
+    const created: Array<CreateOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          yield* until(
+            () => world.sessions.get(session.id)?.settledAt != null,
+            "the session to settle from its run",
+          );
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+          expect(world.sessions.get(session.id)?.summary).toContain("exited with code 1");
+        }),
+      {
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            record: () => Stream.empty,
+            waitRun: () =>
+              Effect.succeed({
+                ...fakeExecRun,
+                result: { status: "completed", outcome: "completed", exitCode: 1 },
+              }),
           },
         }),
       },

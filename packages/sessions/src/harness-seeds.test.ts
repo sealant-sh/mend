@@ -10,6 +10,7 @@ import {
   CLAUDE_ONBOARDING_SEED,
   CODEX_TRUST_SEED,
   COPY_REFRESH_TOKEN,
+  HARNESS_UPDATES_OFF_ENV,
   OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
   PI_SEED,
@@ -70,6 +71,26 @@ describe("claude onboarding seed", () => {
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       skipDangerousModePermissionPrompt: true,
       model: "fable",
+    });
+  });
+
+  it("turns Claude Code's self-updater off for the process it execs", () => {
+    // 2026-10-05: a Claude that updated itself inside a workspace left `bin/claude.exe` a stub, and
+    // every later `claude` there failed to start. DISABLE_AUTOUPDATER is the switch 2.1.x reads.
+    const home = makeHome();
+    const result = spawnSync(
+      "sh",
+      ["-c", CLAUDE_ONBOARDING_SEED, "sh", "sh", "-c", 'echo "updater off: $DISABLE_AUTOUPDATER"'],
+      { encoding: "utf8", env: { ...process.env, HOME: home, DISABLE_AUTOUPDATER: "" } },
+    );
+    expect(result.stdout).toBe("updater off: 1\n");
+  });
+
+  it("names every harness's own update switch for the workspace's environment", () => {
+    expect(HARNESS_UPDATES_OFF_ENV).toEqual({
+      DISABLE_AUTOUPDATER: "1",
+      OPENCODE_DISABLE_AUTOUPDATE: "1",
+      PI_SKIP_VERSION_CHECK: "1",
     });
   });
 

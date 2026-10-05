@@ -269,6 +269,7 @@ import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   CODEX_DAEMON_OFF,
+  HARNESS_UPDATES_OFF_ENV,
   launchesCodex,
   withCodexMemoryOff,
   withHarnessSetup,
@@ -6202,18 +6203,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
         const settled = yield* sealant.waitRun(sdkRun);
-        const outcome = settled.result.outcome === "completed" ? "completed" : "failed";
-        const summary =
-          settled.result.summary ??
-          (outcome === "failed" ? `harness exited with code ${settled.result.exitCode}` : null);
         // The run ended, so the agent process recording it ended too. The PTY watcher races
         // this path; whichever observes the end first records it, and the other finds the row
         // already ended.
         const agentProcess = yield* agentProcessForRun(session.id, sessionRun.sealantRunId);
+        const exitCode =
+          typeof settled.result.exitCode === "number" ? settled.result.exitCode : null;
+        // Core settles an interactive session's run `completed` whatever its process exited with,
+        // so the outcome reads the exit code as the PTY watcher does (`endProcess`): a launch that
+        // exits non-zero is failed whichever of the two observes its end first (2026-10-05, two
+        // joins that failed to start read `failed · exited with code 1` and `completed`). An
+        // open-workbench shell's exit never judges the work.
+        const outcome: SessionOutcome =
+          settled.result.outcome !== "completed"
+            ? "failed"
+            : (agentProcess?.harness ?? session.harness) === "shell" ||
+                exitCode === null ||
+                exitCode === 0
+              ? "completed"
+              : "failed";
+        const summary =
+          settled.result.summary ??
+          (outcome === "failed" ? `harness exited with code ${settled.result.exitCode}` : null);
         if (agentProcess !== null) {
           const ended = yield* endAgentProcess(agentProcess, {
             how: "exited",
-            exitCode: typeof settled.result.exitCode === "number" ? settled.result.exitCode : null,
+            exitCode,
             outcome,
             summary,
           });
@@ -8991,6 +9006,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const channel = yield* sessionChannelLaunchEnv(sessionId, input.launchId);
         const env = {
+          // The harnesses' self-updaters are off for every process in the workspace, a `claude`
+          // typed in a shell included; a project variable of the same name wins.
+          ...HARNESS_UPDATES_OFF_ENV,
           ...Object.fromEntries(
             environment.variables.map((variable) => [variable.name, variable.value] as const),
           ),
@@ -9060,7 +9078,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       }),
                   packages: workspaceImage.packages,
                   services: workspaceImage.services,
-                  ...(Object.keys(env).length === 0 ? {} : { env }),
+                  env,
                   ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
                   // Cluster bindings (and the Docker service above) pass through unconditionally — no
                   // Mend-side capability pre-check. The platform validates at create: a runtime that

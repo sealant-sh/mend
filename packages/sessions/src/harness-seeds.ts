@@ -57,10 +57,34 @@ const CLAUDE_SEED_PROGRAM = [
 ].join("");
 
 /**
- * Claude's seed. The workspace IS the sandbox: Claude Code refuses bypass-permissions as root
- * unless the environment says so, and it is telling the truth.
+ * The harnesses' own self-updaters, off in every workspace: the image owns each harness (Core
+ * installs it at build time), and an update inside a running workspace can break it for every
+ * later launch there.
+ *
+ * Observed 2026-10-05 on 0.36.0-next.601, and reproduced in a container: 10–30 s after the first
+ * Claude Code starts, it updates itself (2.1.287 to 2.1.289) with `npm install -g`. Recent npm
+ * (12.2.0 in the reproduction) runs no install scripts unless told to, so the postinstall that
+ * links the native binary never runs, and `bin/claude.exe` is left as its 500-byte stub. Every
+ * later `claude` in that workspace (a join, a second session, a `claude` typed in a shell) then
+ * fails with "claude native binary not installed". With `DISABLE_AUTOUPDATER=1`, the switch Claude
+ * Code documents and 2.1.x reads before its settings, no update runs and a second `claude` starts.
+ *
+ * Set on the workspace (every process in it, a hand-typed harness included) and again by each
+ * harness's seed (a workspace created before Mend set it). A project variable of the same name
+ * wins on the workspace.
  */
-export const CLAUDE_ONBOARDING_SEED = `node -e '${CLAUDE_SEED_PROGRAM}' 2>/dev/null; export IS_SANDBOX=1; exec "$@"`;
+export const HARNESS_UPDATES_OFF_ENV: Readonly<Record<string, string>> = {
+  DISABLE_AUTOUPDATER: "1",
+  OPENCODE_DISABLE_AUTOUPDATE: "1",
+  PI_SKIP_VERSION_CHECK: "1",
+};
+
+/**
+ * Claude's seed. The workspace IS the sandbox: Claude Code refuses bypass-permissions as root
+ * unless the environment says so, and it is telling the truth. Its self-updater is off
+ * (`HARNESS_UPDATES_OFF_ENV`).
+ */
+export const CLAUDE_ONBOARDING_SEED = `node -e '${CLAUDE_SEED_PROGRAM}' 2>/dev/null; export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; exec "$@"`;
 
 /**
  * Codex's per-project trust prompt, pre-answered the same way: the user made the trust decision
