@@ -12651,9 +12651,14 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
             expect(world.sessions.get(session.id)?.settledAt).toBeNull();
             yield* engine.reapCaptureLeases();
             expect(world.sessions.get(session.id)?.settledAt).toBeNull();
-            // The platform reports it gone: the next sweep settles it.
+            // The platform reports it gone: a sweep settles it. A sweep passes over a session
+            // whose stop tail or drain is still running, and those end a moment after the drain's
+            // record does (longer on a loaded runner), so it sweeps as the reaper's interval would.
             gone = true;
-            yield* engine.reapCaptureLeases();
+            for (let i = 0; i < 500 && world.sessions.get(session.id)?.status !== "stopped"; i++) {
+              yield* engine.reapCaptureLeases();
+              yield* Effect.sleep(Duration.millis(10));
+            }
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("stopped");
             expect(settled?.settledAt).not.toBeNull();
