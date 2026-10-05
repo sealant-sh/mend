@@ -11,6 +11,7 @@ import {
   formatComparison,
   formatTable,
   formatValue,
+  harnessOf,
   mergeResults,
   milestoneName,
   milestonesOf,
@@ -400,6 +401,7 @@ test("a later run of one scenario replaces its measures and leaves the launches 
     measures: {
       "new.claude.first_output": { unit: "ms", budget: "start", samples: [1, 2, 3] },
       "api.session_list": { unit: "ms", budget: "api", samples: [5] },
+      "join.other.stale": { unit: "ms", budget: null, samples: [1] },
     },
     notRun: [{ measure: "join.other.first_output", reason: "second account not yet joined" }],
     notes: ["base"],
@@ -419,6 +421,8 @@ test("a later run of one scenario replaces its measures and leaves the launches 
   const merged = mergeResults(base, extra);
   assert.deepEqual(merged.measures["new.claude.first_output"].samples, [1, 2, 3]);
   assert.deepEqual(merged.measures["join.other.first_output"].samples, [7, 8]);
+  assert.equal(merged.measures["join.other.stale"], undefined);
+  assert.deepEqual(merged.measures["api.session_list"].samples, [5]);
   assert.deepEqual(merged.notRun, []);
   assert.deepEqual(merged.notes, ["base", "extra"]);
   assert.deepEqual(merged.merged, [
@@ -427,6 +431,7 @@ test("a later run of one scenario replaces its measures and leaves the launches 
   // A re-run of missed measures takes exactly those.
   const rerun = mergeResults(base, extra, (name) => name === "new.claude.first_output");
   assert.deepEqual(rerun.measures["new.claude.first_output"].samples, [9]);
+  assert.deepEqual(rerun.measures["join.other.stale"].samples, [1]);
   assert.equal(rerun.measures["join.other.first_output"], undefined);
 });
 
@@ -522,7 +527,7 @@ test("delivery runs from the warm-up, or in a join from the step before it, to t
 });
 
 test("a harness's version is read from its own first screen", () => {
-  assert.deepEqual(harnessVersionOf("  Claude Code v2.1.287  Fable 5.1"), {
+  assert.deepEqual(harnessVersionOf("  Claude Codev2.1.287  Fable 5.1"), {
     harness: "claude",
     version: "2.1.287",
   });
@@ -531,4 +536,27 @@ test("a harness's version is read from its own first screen", () => {
     version: "0.160.0",
   });
   assert.equal(harnessVersionOf("$ "), null);
+});
+
+test("a re-run for some harnesses replaces only theirs", () => {
+  assert.equal(harnessOf("stop.codex.save"), "codex");
+  assert.equal(harnessOf("stop.after_resume.save"), null);
+  assert.equal(harnessOf("executor.resumed.disk_bytes"), null);
+  const base = {
+    measures: {
+      "stop.claude.save": { unit: "ms", samples: [1] },
+      "stop.codex.save": { unit: "ms", samples: [2] },
+      "stop.claude.stale": { unit: "ms", samples: [3] },
+    },
+  };
+  const extra = {
+    options: { only: ["stop"], harnesses: ["claude"] },
+    measures: { "stop.claude.save": { unit: "ms", samples: [9] } },
+  };
+  const merged = mergeResults(base, extra);
+  assert.deepEqual(Object.keys(merged.measures).toSorted(), [
+    "stop.claude.save",
+    "stop.codex.save",
+  ]);
+  assert.deepEqual(merged.measures["stop.claude.save"].samples, [9]);
 });

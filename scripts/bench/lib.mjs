@@ -248,7 +248,7 @@ export const deliveryWindow = (milestones) => {
 
 /** A harness's version from its own first screen ("Claude Code v2.1.287"), or null. */
 export const harnessVersionOf = (screen) => {
-  const claude = /Claude Code v(\d+\.\d+\.\d+)/.exec(screen);
+  const claude = /Claude Code\s*v(\d+\.\d+\.\d+)/.exec(screen);
   if (claude !== null) return { harness: "claude", version: claude[1] };
   const codex = /OpenAI Codex \(v(\d+\.\d+\.\d+)\)/.exec(screen);
   if (codex !== null) return { harness: "codex", version: codex[1] };
@@ -475,6 +475,8 @@ export const formatComparison = (comparison) => {
 
 // ─── results ────────────────────────────────────────────────────────────────
 
+const HARNESS_LIST = ["claude", "codex", "pi", "opencode"];
+
 /** The scenarios `--only` takes; `new` and `stop` are one scenario seen from either end. */
 export const SCENARIOS = [
   "new",
@@ -504,6 +506,12 @@ export const scenarioOf = (measure) => {
   return null;
 };
 
+/** The harness a per-harness measure belongs to (`new.codex.…`, `stop.pi.…`), or null. */
+export const harnessOf = (measure) => {
+  const match = /^(?:new|stop|executor)\.([a-z]+)\./.exec(measure);
+  return match !== null && HARNESS_LIST.includes(match[1]) ? match[1] : null;
+};
+
 /** A "not run" entry is dropped once its measure has samples (a later run of it worked). */
 export const settleNotRun = (result) => ({
   ...result,
@@ -521,22 +529,45 @@ export const settleNotRun = (result) => ({
  * One result with some measures taken again. The measures of `extra` that `takes` accepts replace
  * the base's (a re-run stands for the measure; it is not pooled with the run that missed). By
  * default those are the measures of the scenarios `extra` was run for, so the session a
- * `--only join-other` run launches to join does not replace the base's launch numbers. Notes,
+ * `--only join-other` run launches to join does not replace the base's launch numbers; the base's
+ * other measures of those scenarios are dropped, so nothing of the run being replaced stays. Notes,
  * errors and the runs merged are kept beside the base's.
  */
 export const mergeResults = (base, extra, takes = null) => {
   const only = extra.options?.only ?? null;
+  const harnesses = extra.options?.harnesses ?? null;
   const accept =
-    takes ?? ((name) => only === null || only.includes(scenarioOf(name) ?? "") === true);
+    takes ??
+    ((name) => {
+      if (only !== null && !only.includes(scenarioOf(name) ?? "")) return false;
+      const harness = harnessOf(name);
+      return harness === null || harnesses === null || harnesses.includes(harness);
+    });
   const taken = Object.fromEntries(
     Object.entries(extra.measures ?? {}).filter(
       ([name, measure]) => accept(name) && (measure.samples ?? []).length > 0,
     ),
   );
   const extraNotRun = (extra.notRun ?? []).filter((entry) => accept(entry.measure));
+  // A scenario run again stands whole: its measures the later run did not take go too. Named
+  // measures (a re-run of misses) replace only themselves.
+  const kept = Object.fromEntries(
+    Object.entries(base.measures ?? {}).filter(([name]) => takes !== null || !accept(name)),
+  );
   return settleNotRun({
     ...base,
-    measures: { ...base.measures, ...taken },
+    target:
+      base.target === undefined || base.target === null
+        ? (extra.target ?? null)
+        : {
+            ...base.target,
+            workspaceImage: base.target.workspaceImage ?? extra.target?.workspaceImage ?? null,
+            harnessVersions: {
+              ...extra.target?.harnessVersions,
+              ...base.target.harnessVersions,
+            },
+          },
+    measures: { ...kept, ...taken },
     notRun: [
       ...(base.notRun ?? []).filter(
         (entry) => !extraNotRun.some((other) => other.measure === entry.measure),

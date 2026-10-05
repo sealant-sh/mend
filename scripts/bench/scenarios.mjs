@@ -169,14 +169,15 @@ const sealantdEvents = (ctx, text) =>
  * delivery window (warm-up read → the last of memory and secret files; skills, which log nothing
  * of their own, fall inside it).
  */
-const recordLaunch = async (ctx, prefix, { startedAt, sessionId, detail, agent }) => {
+const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent }) => {
   const { rec } = ctx;
   const agentAt = local(ctx, agent.createdAt);
   const outputAt = local(ctx, agent.firstOutputAt);
-  rec.sample(`${prefix}.agent_to_output`, outputAt - agentAt, "ms");
   if (ctx.host === null) {
+    const prefix = typeof prefixOf === "function" ? prefixOf(null) : prefixOf;
+    rec.sample(`${prefix}.agent_to_output`, outputAt - agentAt, "ms");
     rec.notRun(`${prefix}.step.*`, "no access to the server's host (pass --ssh or run there)");
-    return;
+    return { prefix, milestones: null };
   }
   const workspaceId = detail.session.sealantWorkspaceId;
   const blocks = await mendBlocks(ctx, startedAt, outputAt + 1000);
@@ -186,6 +187,9 @@ const recordLaunch = async (ctx, prefix, { startedAt, sessionId, detail, agent }
     fromMs: startedAt,
     toMs: agentAt,
   });
+  // The prefix may depend on what the launch turned out to be (a join that launched cold).
+  const prefix = typeof prefixOf === "function" ? prefixOf(milestones) : prefixOf;
+  rec.sample(`${prefix}.agent_to_output`, outputAt - agentAt, "ms");
   const executorUp = workspaceId === null ? null : firstExecAt(blocks, workspaceId, startedAt);
   const marks = [...milestones];
   if (executorUp !== null) marks.push({ name: "executor up · first command", at: executorUp });
@@ -208,6 +212,43 @@ const recordLaunch = async (ctx, prefix, { startedAt, sessionId, detail, agent }
   }
   const image = blocks.map((block) => parseImageLine(block.message)).find((line) => line !== null);
   if (image !== null && image !== undefined) ctx.result.target.workspaceImage ??= image.image;
+  return { prefix, milestones };
+};
+
+/**
+ * Whether a join went into the live executor: it joined the lease holder and neither waited for a
+ * previous executor to end nor started a new one (a harness warm-up is a new executor's first
+ * step). After a replacement the worktree has no live executor and a "join" is a cold launch.
+ */
+const joinedLiveExecutor = (milestones) =>
+  milestones === null ||
+  (milestones.some((m) => m.name.includes("joining the lease holder")) &&
+    !milestones.some(
+      (m) =>
+        m.name.includes("previous executor has not ended") || m.name.startsWith("harness warm-up"),
+    ));
+
+/**
+ * One join measured: into a live executor (budgeted, under `prefix`), or a launch that found none
+ * and went cold (`prefix.cold`, kept apart). Returns the prefix it was recorded under.
+ */
+const recordJoin = async (ctx, prefix, budget, { startedAt, session, detail, agent, run }) => {
+  const firstOutput = local(ctx, agent.firstOutputAt) - startedAt;
+  const recorded = await recordLaunch(
+    ctx,
+    (milestones) => (joinedLiveExecutor(milestones) ? prefix : `${prefix}.cold`),
+    { startedAt, sessionId: session.id, detail, agent },
+  );
+  if (recorded.prefix === prefix) {
+    ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", budget);
+  } else {
+    ctx.rec.sample(`${recorded.prefix}.first_output`, firstOutput, "ms");
+    ctx.rec.note(
+      `${prefix} #${run} found no live executor (replaced or replacing) and launched cold (${(firstOutput / 1000).toFixed(1)} s); kept apart`,
+    );
+  }
+  ctx.log(`${recorded.prefix} #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
+  return recorded.prefix;
 };
 
 const recordResources = async (ctx, name, container, budget) => {
@@ -221,9 +262,12 @@ const recordResources = async (ctx, name, container, budget) => {
 /** A Stop, as steps: the save (the drain's "saved · terminating"), the settle, what was uploaded. */
 const recordStop = async (ctx, prefix, { stop, sessionId, container, follower }, budgeted) => {
   const { rec } = ctx;
-  rec.sample(`${prefix}.settled`, stop.settledAt - stop.startedAt, "ms", budgeted ? "start" : null);
+  const settled = stop.settledAt - stop.startedAt;
   rec.sample(`${prefix}.call`, stop.callMs, "ms");
-  if (ctx.host === null) return;
+  if (ctx.host === null) {
+    rec.sample(`${prefix}.settled`, settled, "ms", budgeted ? "start" : null);
+    return;
+  }
   const blocks = await mendBlocks(ctx, stop.startedAt, stop.settledAt + 2000);
   const milestones = milestonesOf(blocks, {
     sessionId,
@@ -235,9 +279,14 @@ const recordStop = async (ctx, prefix, { stop, sessionId, container, follower },
   }
   const saved = milestones.find((m) => m.name === "capture drain · saved · terminating");
   if (saved !== undefined) {
+    rec.sample(`${prefix}.settled`, settled, "ms", budgeted ? "start" : null);
     rec.sample(`${prefix}.save`, saved.at - stop.startedAt, "ms", budgeted ? "start" : null);
   } else {
-    rec.notRun(`${prefix}.save`, 'no "capture drain · saved · terminating" line for the Stop');
+    // No executor saved for this Stop (one was already replaced or gone): a settle, not a save.
+    rec.sample(`${prefix}.settled_without_save`, settled, "ms");
+    rec.note(
+      `${prefix}: a Stop with no save of its own (${(settled / 1000).toFixed(1)} s); kept apart`,
+    );
   }
   const flush = milestones.find((m) => m.name.startsWith("capture flush · final · completed"));
   if (flush !== undefined && typeof flush.fields.uploadedBytes === "number") {
@@ -350,18 +399,15 @@ const joinSamePerson = async (ctx, primary, run) => {
   }
   await ctx.api.call("POST", `/sessions/${session.id}/launch`, {});
   const { detail, agent } = await waitForAgent(ctx, session.id, startedAt);
-  ctx.rec.sample(
-    "join.same.first_output",
-    local(ctx, agent.firstOutputAt) - startedAt,
-    "ms",
-    "start",
-  );
-  ctx.log(
-    `join #${run} · first output ${((local(ctx, agent.firstOutputAt) - startedAt) / 1000).toFixed(1)} s`,
-  );
-  await recordLaunch(ctx, "join.same", { startedAt, sessionId: session.id, detail, agent });
+  const prefix = await recordJoin(ctx, "join.same", "start", {
+    startedAt,
+    session,
+    detail,
+    agent,
+    run,
+  });
   const stop = await stopAndSettle(ctx, session.id);
-  ctx.rec.sample("join.same.stop_settled", stop.settledAt - stop.startedAt, "ms");
+  ctx.rec.sample(`${prefix}.stop_settled`, stop.settledAt - stop.startedAt, "ms");
 };
 
 /** A join by a different person; only with a second account's token. */
@@ -377,10 +423,7 @@ const joinOtherPerson = async (ctx, primary, run) => {
   }
   await ctx.api2.call("POST", `/sessions/${session.id}/launch`, {});
   const { detail, agent } = await waitForAgent(ctx, session.id, startedAt, 600_000, ctx.api2);
-  const firstOutput = local(ctx, agent.firstOutputAt) - startedAt;
-  ctx.rec.sample("join.other.first_output", firstOutput, "ms", "join-other");
-  ctx.log(`other-person join #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
-  await recordLaunch(ctx, "join.other", { startedAt, sessionId: session.id, detail, agent });
+  await recordJoin(ctx, "join.other", "join-other", { startedAt, session, detail, agent, run });
   await stopAndSettle(ctx, session.id, 1_200_000, ctx.api2);
 };
 
@@ -560,7 +603,11 @@ const resume = async (ctx, primary, run) => {
     }
     await recordResources(ctx, "executor.resumed", container, null);
   }
-  return { container, follower: container === null ? null : ctx.host.follow(container) };
+  return {
+    agent,
+    container,
+    follower: container === null ? null : ctx.host.follow(container),
+  };
 };
 
 // ─── cleanup ────────────────────────────────────────────────────────────────
@@ -636,7 +683,7 @@ const secondAccountBlocker = async (ctx) => {
     return null;
   } catch (error) {
     if (error instanceof ApiError && (error.status === 404 || error.status === 403)) {
-      return `the second account cannot see project ${ctx.project.name} (it is ${ctx.project.visibility ?? "private"})`;
+      return `second account not yet joined to a shared project (it cannot see ${ctx.project.name}, which is ${ctx.project.visibility ?? "private"})`;
     }
     throw error;
   }
@@ -670,6 +717,13 @@ export const runAll = async (ctx) => {
       ctx.log(`join-other · not run: ${otherBlocker}`);
     }
   }
+  // Nothing selected needs a session (only what cannot run yet): launch nothing.
+  const launches = opts.only.some(
+    (scenario) =>
+      !["handover", "growth"].includes(scenario) &&
+      !(scenario === "join-other" && otherBlocker !== null),
+  );
+  if (!launches) return;
   const primaryHarness = opts.harnesses[0];
   const harnesses = selected("new") || selected("stop") ? opts.harnesses : [primaryHarness];
   for (let run = 1; run <= opts.runs; run += 1) {
@@ -678,26 +732,35 @@ export const runAll = async (ctx) => {
       let primary = null;
       try {
         primary = await newSession(ctx, harness, run);
-        if (isPrimary && run === 1 && selected("interactive")) {
-          await interactive(ctx, primary).catch((error) => rec.error("interactive", error));
-        }
-        if (isPrimary && run === 1 && selected("api")) {
-          await apiLatency(ctx, primary.session.id).catch((error) => rec.error("api", error));
-        }
-        if (isPrimary && selected("join-same")) {
-          for (let k = 1; k <= opts.joinsPerRun; k += 1) {
-            await joinSamePerson(ctx, primary, `${run}.${k}`).catch((error) =>
-              rec.error("join.same", error),
-            );
+        const live = primary;
+        // What rides on the first harness's live session, joins first: on 0.36.0-next.601 an
+        // executor is replaced about two minutes after it starts ("planned drain due ·
+        // fallback"), which ends the shells, and a join after it launches cold. Joins that find no
+        // live executor are kept apart (`first_output_cold`).
+        const extras = async () => {
+          if (selected("join-same")) {
+            for (let k = 1; k <= opts.joinsPerRun; k += 1) {
+              await joinSamePerson(ctx, live, `${run}.${k}`).catch((error) =>
+                rec.error("join.same", error),
+              );
+            }
           }
-        }
-        if (isPrimary && selected("join-other") && otherBlocker === null) {
-          for (let k = 1; k <= opts.joinsPerRun; k += 1) {
-            await joinOtherPerson(ctx, primary, `${run}.${k}`).catch((error) =>
-              rec.error("join.other", error),
-            );
+          if (selected("join-other") && otherBlocker === null) {
+            for (let k = 1; k <= opts.joinsPerRun; k += 1) {
+              await joinOtherPerson(ctx, live, `${run}.${k}`).catch((error) =>
+                rec.error("join.other", error),
+              );
+            }
           }
-        }
+          if (run === 1 && selected("interactive")) {
+            await interactive(ctx, live).catch((error) => rec.error("interactive", error));
+          }
+          if (run === 1 && selected("api")) {
+            await apiLatency(ctx, live.session.id).catch((error) => rec.error("api", error));
+          }
+        };
+        const resumes = isPrimary && selected("resume") ? opts.resumesPerRun : 0;
+        if (isPrimary && resumes === 0) await extras();
         const stop = await stopAndSettle(ctx, primary.session.id);
         await recordStop(
           ctx,
@@ -714,9 +777,11 @@ export const runAll = async (ctx) => {
         ctx.log(
           `${harness} #${run} · stop settled ${((stop.settledAt - stop.startedAt) / 1000).toFixed(1)} s`,
         );
-        if (isPrimary && selected("resume")) {
-          for (let k = 1; k <= opts.resumesPerRun; k += 1) {
+        if (resumes > 0) {
+          for (let k = 1; k <= resumes; k += 1) {
             const resumed = await resume(ctx, primary, `${run}.${k}`);
+            primary.agent = resumed.agent;
+            if (k === resumes) await extras();
             const again = await stopAndSettle(ctx, primary.session.id);
             await recordStop(
               ctx,
