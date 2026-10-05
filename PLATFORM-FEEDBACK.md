@@ -7,6 +7,27 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-05 · 0.38.1 · Several people's logins in one running workspace, each at its own home
+
+- **Needed:** docs/adr/0016-per-person-harness-homes.md. In capture mode several people work in one
+  executor, each with their own harness home (`/root/.mend/homes/<account id>`), and a
+  conversation's agent reads its login from a directory of its own
+  (`/root/.mend/logins/<session id>`). Mend names a person and a home; the platform writes that
+  person's login there and keeps it refreshed, for as many homes as are live, until Mend releases
+  the home. GitHub included. No login in the container's environment, which is one value for every
+  process.
+- **Today:** sealant#315 (open) writes one person's login at `$HOME` and records one held account
+  per instance; sealant#316 (open) moves a Claude setup token out of `CLAUDE_CODE_OAUTH_TOKEN`.
+  `workspaces.create` injects at `$HOME`, GitHub as `GITHUB_TOKEN` and `GH_TOKEN`. There is no
+  release.
+- **Suggested:** amend #315 before it merges: a `home` (absolute, outside `/workspace`, no link on
+  the way, defaulting to `$HOME`), the held login recorded per instance, home and provider, GitHub
+  as a provider written as `gh`'s `hosts.yml`, and an unconnected provider removed from that home.
+  Then `workspaces.create({ credentialsHome })` with no login in the environment, and
+  `DELETE /v1/workspaces/:id/credentials { home }` (`workspace.releaseCredentials({ home })`).
+- **sealantd:** apply `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE` under each `people/<id>/` of
+  the harness home as well as at its root.
+
 ## 2026-10-04 · sealantd 0.19 · opencode's MCP logins and in-app logins ride captures
 
 - **Needed:** no login a person makes inside a session is saved, as for every harness's own login

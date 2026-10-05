@@ -4,6 +4,11 @@ Status: proposed 2026-10-03. The owner's decisions of 2026-10-03 (the noun, per 
 captured, shared with no one, the project secrets' posture) are taken as given here; the decisions
 below are the ones this document adds.
 
+Amended 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md) (decision 3): each person's set
+goes into their own home in the executor (`/root/.mend/homes/<account id>`), a joiner's included.
+Files under the XDG directories and five mapped paths reach only that person's tools; any other path
+is also written to `/root` for the person whose launch made the executor.
+
 ## Context
 
 The owner develops Mend inside Mend on the box, and a session there needs files that are neither
@@ -59,11 +64,12 @@ base64 (`workspace-files.ts`).
    the cold launch, the claimed standby, and a run started in a retained executor, which may predate
    a file added since. Only into a home that is the person's: in capture mode a worktree has one
    executor, and a session joining a worktree another person's session holds runs in that person's
-   executor, so it receives no secret files of its own there, and the log says so. The server
-   unseals the set once per launch and holds the bytes only for that write. Each file lands 0600,
-   its directory made 0700 when missing, staged beside the target under the delivery's own stamp and
-   renamed into place; a delivery cut short removes its staging files. What was written is recorded
-   at `~/.mend/secret-files`, sealed with the machine key and bound to the workspace, each file with
+   executor, so it receives no secret files of its own there, and the log says so (superseded by ADR
+   0016 §7: a joiner receives their own set in their own home). The server unseals the set once per
+   launch and holds the bytes only for that write. Each file lands 0600, its directory made 0700
+   when missing, staged beside the target under the delivery's own stamp and renamed into place; a
+   delivery cut short removes its staging files. What was written is recorded at
+   `~/.mend/secret-files`, sealed with the machine key and bound to the workspace, each file with
    the digest of its bytes; the next delivery into that home removes a recorded file the person no
    longer keeps, only while it still holds those bytes, never through a link, and a record that does
    not unseal or is another workspace's says nothing. Best-effort like skills: an agent without its

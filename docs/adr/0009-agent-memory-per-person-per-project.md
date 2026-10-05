@@ -1,8 +1,10 @@
 # Agent memory: one per person per project
 
-Status: proposed 2026-10-02. Implements the roadmap's 0.36 "one agent home per person per project"
-and "import on adoption" (owner decisions of 2026-09-28 and 2026-09-29), by carrying the agents'
-**memory** between a person's sessions rather than sharing their whole harness home.
+Status: proposed 2026-10-02. Capture mode amended by [ADR 0016](0016-per-person-harness-homes.md)
+(2026-10-05): memory lives in each person's own directory of the worktree's home. Implements the
+roadmap's 0.36 "one agent home per person per project" and "import on adoption" (owner decisions of
+2026-09-28 and 2026-09-29), by carrying the agents' **memory** between a person's sessions rather
+than sharing their whole harness home.
 
 ## Context
 
@@ -78,6 +80,11 @@ much smaller: the memory.
    Every version Mend replaces or deletes is kept (the last twenty per file), so nothing an agent
    wrote is lost to another session's save.
 
+   Superseded 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md) §6: in capture mode each
+   person has their own saved directory in the worktree's home (`people/<account id>/`), delivery
+   writes into it and read-back reads only the owner's, so no hand-over, owner record or Codex
+   withholding is needed. The hand-over below stays only to migrate a home saved before 0.36.
+
    In capture mode a worktree has one home, which its sessions share over time and, when one joins
    another person's executor (ADR 0002), at once. Amended 2026-10-05, after three reviews found ways
    one person's memory could be saved as another's:
@@ -136,7 +143,7 @@ much smaller: the memory.
    - **Not covered:** a `codex` someone types themselves, or an agent runs, in a session that is not
      a Codex session. Mend withholds other people's conversations only before a Codex session
      starts, so such a Codex can summarise them into the home's memory. Per-person homes would close
-     this structurally.
+     this structurally. Closed by ADR 0016.
 
 4. **Import from the person's machine is the CLI's,** run from inside the repository:
    `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/`. Transcripts

@@ -5,6 +5,12 @@ login pays") and [ADR 0003](0003-organizations-and-tenancy.md) ("Sessions and sh
 under shared control a steerer's turn no longer spends the owner's login. Read against Mend at
 `6abd2ab9` and Sealant Core `origin/main` at `6d624c1` (SDK 0.38.1).
 
+Amended 2026-10-05 by [ADR 0016](0016-per-person-harness-homes.md): the switch ships in 0.36, no
+longer held until a later release. A conversation's agent reads its login from a directory of its
+own (`/root/.mend/logins/<session id>`), and the switch writes the steerer's login there, so it
+changes exactly one process; the same Core call, with a target home, gives a joiner their own login.
+GitHub is switched with the harness's provider.
+
 ## Context
 
 Shared control lets other members steer a session. Today every turn runs on the owner's login (ADR
@@ -166,7 +172,8 @@ Mend, one stack:
    why.
 3. Every turn records its payer, and the conversation shows it.
 4. After the SDK ships the endpoint: the switch in `dispatchNext`, the switch back, the Codex
-   restart, the refusal at submit, and the payer filled from Core's answer.
+   restart, the refusal at submit, and the payer filled from Core's answer. Amended 2026-10-05: in
+   0.36, ADR 0016 Delivery 12, writing into the conversation's own login directory.
 
 Core (`sealant-sh/sealant`), its own stack:
 
@@ -196,3 +203,5 @@ Core (`sealant-sh/sealant`), its own stack:
 2. **Capture mode with a joined worktree.** A session that joins a worktree runs inside the lease
    holder's workspace, so one switch changes the login for both sessions. Turns of the two are
    serialised per process, not per workspace; until they are, the switch refuses there and says why.
+   Closed 2026-10-05 by ADR 0016: each conversation's agent reads its login from its own directory,
+   and a joiner's session runs on its own home, so a switch changes one process.
