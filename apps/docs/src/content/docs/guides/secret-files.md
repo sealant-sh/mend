@@ -46,7 +46,9 @@ ones you removed.
 
 One exception: on the captured session store a worktree has one workspace, so a session you start in
 a worktree where someone else's session is live runs in their workspace. It receives none of your
-secret files there, and the session log says so.
+secret files there, on that run or any later one in their workspace, and the session line names the
+files not written:
+`secret files · 1 not written · this workspace is another person's · ~/.aws/credentials`.
 
 ## Never captured
 
