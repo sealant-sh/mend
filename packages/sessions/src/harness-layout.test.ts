@@ -319,16 +319,23 @@ describe("a person's home and saved directory (decision 2)", () => {
   it("writes at most 64 KB into saved state outside conversation state", () => {
     const { saved, script } = layout();
     expect(sh(script).status).toBe(0);
+    // What a capture saves of these entries: the bytes of files and links. A directory is an
+    // entry with no content (its inode size is the filesystem's, 4096 on ext4, not saved state).
     let bytes = 0;
+    let files = 0;
     const walk = (dir: string) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
-        bytes += fs.lstatSync(full).size;
         if (entry.isDirectory()) walk(full);
+        else {
+          files++;
+          bytes += fs.lstatSync(full).size;
+        }
       }
     };
     walk(saved);
-    // Directory entries and nothing else: the layout itself writes no file.
+    // The layout itself writes no file into P: directories only.
+    expect(files).toBe(0);
     expect(bytes).toBeLessThan(64 * 1024);
   });
 });
