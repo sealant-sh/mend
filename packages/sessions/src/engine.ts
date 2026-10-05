@@ -2039,8 +2039,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * restore, so a later head still names it.
        *
        * "Automatic install" off: no install command runs, detected or saved. This decides only
-       * what runs here; the tree the executor restored from the head or the shared cache (its
-       * plan, before this launch) is laid down either way.
+       * what runs here; the tree the executor restored from the head, or a standby from the shared
+       * cache (its plan, before this launch), is laid down either way. A cold launch never reads
+       * the shared cache (`dependency-cache.ts`).
        */
       const installDependenciesIfNeeded = Effect.fn("SessionEngine.installDependenciesIfNeeded")(
         function* (session: Session, project: Project, workspace: Workspace) {

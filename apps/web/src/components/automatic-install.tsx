@@ -42,10 +42,10 @@ export function AutomaticInstallView({
       <h2 className="font-sans text-sm font-semibold">Dependencies</h2>
       {captured ? (
         <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
-          On, Mend installs dependencies before the agent starts when neither the saved state nor
-          this project&apos;s shared cache has them, and fills the shared cache the same way. Off,
-          Mend runs no install; an agent can install by hand. A tree already saved or cached is
-          restored either way.
+          On, Mend installs dependencies before the agent starts when the saved state has none for
+          the workspace&apos;s platform, and fills this project&apos;s shared cache, which standby
+          workspaces start from. Off, Mend runs no install; an agent can install by hand. A tree
+          already saved or cached is restored either way.
         </p>
       ) : (
         <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
