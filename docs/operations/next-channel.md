@@ -114,8 +114,10 @@ GitHub prerelease, and npm after your approval in the `release` environment. The
 `next` again after the approval: if a newer next build was published in the meantime, it fails
 rather than move `next` back.
 
-Deploy it on the box with `deploy-box.yml` (`version` and the commit), or by hand with
-`scripts/preview-deploy.sh <version> <commit>`.
+Deploy it on the box with `deploy-box.yml` (`version` and the commit), dispatched from main, or by
+hand with `scripts/preview-deploy.sh <version> <commit>`. The script refuses an image whose
+`org.opencontainers.image.revision` is not that commit; next builds made before image.yml stamped
+that label (`0.36.0-next.601` and earlier) are deployed by hand with `mend server upgrade`.
 
 A next tag counts as handed out the moment it exists: it raises B for every later build, and one off
 main blocks the release of its version. **Delete a tag the pins job refused, or one pushed by

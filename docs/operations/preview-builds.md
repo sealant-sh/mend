@@ -74,12 +74,31 @@ curl -fsSL https://raw.githubusercontent.com/sealant-sh/mend/<sha>/scripts/previ
 
 or `scripts/preview-deploy.sh <version> <sha>` from a checkout. The script takes
 `deploy/docker/compose.v2.yaml` and `deploy/docker/postgres-init.sh` from that Mend commit, pulls
-`ghcr.io/sealant-sh/mend:<version>`, and checks the image's version label. With no Mend server on
-the box it runs `mend server setup --version <version> --assets-dir <dir>`, passing on any options
-after the commit (`--url`, `--bind`, `--port`, `--edge`, `--exposure` and the rest); with one, it
-runs `mend server upgrade --version <version> --assets-dir <dir>` and the installed configuration
-stays, the edge and the declared exposure and tenancy included (the CLI carries the edge overlay and
-writes it into every generation). It ends with `mend server status`.
+`ghcr.io/sealant-sh/mend:<version>`, and refuses the image unless its
+`org.opencontainers.image.version` label is that version, its `org.opencontainers.image.revision`
+label is that commit, and its platform is the box's. With no Mend server on the box it runs
+`mend server setup --version <version> --assets-dir <dir>`, passing on any options after the commit
+(`--url`, `--bind`, `--port`, `--edge`, `--exposure` and the rest); with one, it runs
+`mend server upgrade --version <version> --assets-dir <dir>` and the installed configuration stays,
+the edge and the declared exposure and tenancy included (the CLI carries the edge overlay and writes
+it into every generation). It ends with `mend server status`.
+
+Before an upgrade it counts the sessions that have not settled, in the bundled Postgres. It refuses
+when any is live, and also when it cannot read the count; `PREVIEW_DEPLOY_EVEN_IF_LIVE=1` upgrades
+anyway.
+
+### From the workflow
+
+`-f deploy=true` (or `deploy-box.yml` for a version already built) runs the same script on the box
+over SSH, through the `deploy` user's forced command, as root. So the workflows deploy only code on
+main:
+
+- the deploy key is in the `box-deploy` environment, which only `main` and tags may use;
+- the deploy job runs only when dispatched from `main` or a tag, and checks that the Mend commit is
+  on main, and so are the `sealant_ref` and `sealantd_ref` commits when they are set;
+- `deploy=true` needs `linux/amd64` in `platforms`: the box is amd64.
+
+A preview of a branch is built by the workflow and deployed by hand, with the command above.
 
 ## Limits
 
@@ -96,8 +115,8 @@ writes it into every generation). It ends with `mend server status`.
   `@sealant/runtime-*` packages from npm. A Core branch that changes the SDK or the API contract
   Mend uses, or a sealantd branch that changes those runtime packages, does not reach the preview:
   merge it, and pin the prerelease main publishes.
-- The deploy script covers a box installed with `mend server setup`. An arm64 deployment such as
-  alpha (`deploy/aws`) is deployed by hand for now, from the images a `linux/arm64` run pushed.
+- The deploy script covers a box installed with `mend server setup`. The workflows deploy only to
+  the amd64 box; an arm64 box is deployed by hand, from the images a `linux/arm64` run pushed.
 - A release build passes none of these arguments: the root `Dockerfile` defaults are the pinned Core
   digests (`scripts/bundle-packaging.test.mjs` asserts them), and an empty
   `MEND_PREVIEW_SEALANTD_IMAGE` changes nothing.
