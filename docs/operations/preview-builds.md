@@ -1,8 +1,12 @@
 # Preview builds
 
-A preview build puts unreleased branches of Mend, Sealant Core and sealantd on one self-hosted box,
+A preview build puts unmerged branches of Mend, Sealant Core and sealantd on one self-hosted box,
 through the same `mend server setup` and `mend server upgrade` an operator uses for a release. The
 workflow is `.github/workflows/preview.yml`; the box side is `scripts/preview-deploy.sh`.
+
+What is already on main does not need a preview: Core and sealantd publish a prerelease on every
+merge, and a Mend `next` build is one tag away. Read [The next channel](next-channel.md). A preview
+is for the branches that have not merged yet, and it reaches only the box: nothing goes to npm.
 
 ## Build
 
@@ -29,10 +33,13 @@ because Core trusts the recovery boot only of released `ghcr.io/sealant-sh/seala
 and of the images listed there. The reference is a digest, so each sealantd build gets its own
 workspace images instead of reusing the last preview's.
 
-The version is the next minor of `apps/cli/package.json` plus the run number: on `0.35.1`, run 17 is
-`0.36.0-preview.17`. A later run is always a higher version, and the release that follows (`0.36.0`)
-is higher than every preview of it. Re-running a run keeps its number, and the box already pinned to
-that version does nothing: dispatch a new run instead.
+The version is the `next` version of the branch's merge base with main, plus the run number
+(`scripts/next-version.mjs --package apps/cli --preview`): a branch cut from main's
+`0.36.0-next.56`, built by run 17, is `0.36.0-next.56.preview.17`. It sorts after `0.36.0-next.56`
+and before `0.36.0-next.57`, so the box moves between next builds and previews in main's order, and
+the release that follows (`0.36.0`) is higher than both. A branch cut from an older main sorts
+lower, and a box already past it refuses it: rebase the branch. Re-running a run keeps its number,
+and the box already pinned to that version does nothing: dispatch a new run instead.
 
 The run's summary lists the three refs and their commits, every image it pushed, the version, and
 the deploy command. The workflow runs no packaged acceptance, so a preview takes one image build per
@@ -67,26 +74,49 @@ curl -fsSL https://raw.githubusercontent.com/sealant-sh/mend/<sha>/scripts/previ
 
 or `scripts/preview-deploy.sh <version> <sha>` from a checkout. The script takes
 `deploy/docker/compose.v2.yaml` and `deploy/docker/postgres-init.sh` from that Mend commit, pulls
-`ghcr.io/sealant-sh/mend:<version>`, and checks the image's version label. With no Mend server on
-the box it runs `mend server setup --version <version> --assets-dir <dir>`, passing on any options
-after the commit (`--url`, `--bind`, `--port`, `--edge`, `--exposure` and the rest); with one, it
-runs `mend server upgrade --version <version> --assets-dir <dir>` and the installed configuration
-stays, the edge and the declared exposure and tenancy included (the CLI carries the edge overlay and
-writes it into every generation). It ends with `mend server status`.
+`ghcr.io/sealant-sh/mend:<version>`, and refuses the image unless its
+`org.opencontainers.image.version` label is that version, its `org.opencontainers.image.revision`
+label is that commit, and its platform is the box's. With no Mend server on the box it runs
+`mend server setup --version <version> --assets-dir <dir>`, passing on any options after the commit
+(`--url`, `--bind`, `--port`, `--edge`, `--exposure` and the rest); with one, it runs
+`mend server upgrade --version <version> --assets-dir <dir>` and the installed configuration stays,
+the edge and the declared exposure and tenancy included (the CLI carries the edge overlay and writes
+it into every generation). It ends with `mend server status`.
+
+Before an upgrade it counts the sessions that have not settled, in the bundled Postgres. It refuses
+when any is live, and also when it cannot read the count; `PREVIEW_DEPLOY_EVEN_IF_LIVE=1` upgrades
+anyway.
+
+### From the workflow
+
+`-f deploy=true` (or `deploy-box.yml` for a version already built) runs the same script on the box
+over SSH, through the `deploy` user's forced command, as root. So the workflows deploy only code on
+main:
+
+- the deploy key is in the `box-deploy` environment, which only `main` and tags may use;
+- the deploy job runs only when dispatched from `main` or a tag, and checks that the Mend commit is
+  on main, and so are the `sealant_ref` and `sealantd_ref` commits when they are set;
+- `deploy=true` needs `linux/amd64` in `platforms`: the box is amd64.
+
+A preview of a branch is built by the workflow and deployed by hand, with the command above.
 
 ## Limits
 
-- `mend server upgrade` refuses an equal or lower version, so a preview from a Mend branch whose CLI
-  version is behind the box's cannot be installed over it. Neither can a release older than the
-  preview: a box on `0.36.0-preview.17` takes `0.36.0` or later.
+- `mend server upgrade` refuses an equal or lower version, so a preview of a branch cut before the
+  box's version cannot be installed over it. Neither can a release older than the preview: a box on
+  `0.36.0-next.56.preview.17` takes `0.36.0-next.57`, `0.36.0` or later.
+- Previews before ADR 0015 were numbered `0.36.0-preview.R`. `preview` sorts after `next`, so a box
+  on one of those refuses every `0.36.0-next.*`, new-style previews included. Move it once with
+  `mend server upgrade --version <version> --from-preview` (steps in
+  [The next channel](next-channel.md)); after that this deploy script works as usual.
 - A preview applies its Mend and Sealant migrations to the box's databases, and they are not
   reversed. Use a box you can rebuild.
 - Mend imports `@sealant/sdk` and `@sealant/api-contracts` from npm, and Core imports the
   `@sealant/runtime-*` packages from npm. A Core branch that changes the SDK or the API contract
   Mend uses, or a sealantd branch that changes those runtime packages, does not reach the preview:
-  publish them first.
-- The deploy script covers a box installed with `mend server setup`. An arm64 deployment such as
-  alpha (`deploy/aws`) is deployed by hand for now, from the images a `linux/arm64` run pushed.
+  merge it, and pin the prerelease main publishes.
+- The deploy script covers a box installed with `mend server setup`. The workflows deploy only to
+  the amd64 box; an arm64 box is deployed by hand, from the images a `linux/arm64` run pushed.
 - A release build passes none of these arguments: the root `Dockerfile` defaults are the pinned Core
   digests (`scripts/bundle-packaging.test.mjs` asserts them), and an empty
   `MEND_PREVIEW_SEALANTD_IMAGE` changes nothing.

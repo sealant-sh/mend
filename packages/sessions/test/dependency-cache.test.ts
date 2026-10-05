@@ -28,6 +28,7 @@ import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
   bulkSectionOfCache,
   dependencyCachePrefix,
+  detectInstall,
   detectInstallCommand,
   platformKeyOf,
   promoteBulkToCache,
@@ -46,6 +47,35 @@ describe("detectInstallCommand", () => {
     expect(detectInstallCommand(["Cargo.toml", "Cargo.lock"])).toBe("cargo fetch --locked");
     expect(detectInstallCommand(["pyproject.toml", "uv.lock"])).toBe("uv sync --frozen");
     expect(detectInstallCommand(["README.md"])).toBeNull();
+  });
+
+  it("keeps the order every launch has used: the first match wins, the rest are never asked", () => {
+    expect(detectInstallCommand(["bun.lockb", "package-lock.json"])).toBe(
+      "bun install --frozen-lockfile",
+    );
+    expect(detectInstallCommand(["npm-shrinkwrap.json"])).toBe("npm ci");
+    expect(detectInstallCommand(["Cargo.toml"])).toBe("cargo fetch");
+    expect(detectInstallCommand(["poetry.lock"])).toBe("poetry install");
+    expect(detectInstallCommand(["go.mod"])).toBe("go mod download");
+    expect(detectInstallCommand(["package.json", "Cargo.lock"])).toBe("npm install");
+  });
+});
+
+describe("detectInstall", () => {
+  it("names the file that decided the command, for the setup page", () => {
+    expect(detectInstall(["package.json", "pnpm-lock.yaml"])).toEqual({
+      command: "pnpm install --frozen-lockfile",
+      from: "pnpm-lock.yaml",
+    });
+    expect(detectInstall(["bun.lock"])).toEqual({
+      command: "bun install --frozen-lockfile",
+      from: "bun.lock",
+    });
+    expect(detectInstall(["go.sum", "go.mod"])).toEqual({
+      command: "go mod download",
+      from: "go.sum",
+    });
+    expect(detectInstall(["README.md", "src/"])).toBeNull();
   });
 });
 

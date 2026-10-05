@@ -35,6 +35,8 @@ import {
   ProjectGitAuthRequest,
   ProjectHotSessionsRequest,
   ProjectInstallCommandRequest,
+  ProjectInstallDetection,
+  ProjectInstallEnabledRequest,
   ProjectInheritUserSkillsRequest,
   ProjectHotSessionsStatus,
   ProjectWorkspaceImageRequest,
@@ -154,6 +156,22 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.put("installCommand", "/projects/:id/install-command", {
       params: { id: ProjectId },
       payload: ProjectInstallCommandRequest,
+      success: Project,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // What a launch would detect from the default branch's lockfile, for the setup page.
+    HttpApiEndpoint.get("installDetection", "/projects/:id/install-detection", {
+      params: { id: ProjectId },
+      success: ProjectInstallDetection,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("installEnabled", "/projects/:id/install-enabled", {
+      params: { id: ProjectId },
+      payload: ProjectInstallEnabledRequest,
       success: Project,
       error: NotFound,
     }),

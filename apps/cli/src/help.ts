@@ -714,11 +714,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "bring this machine's claude and codex memory for the repository",
     synopsis: ["[--project <p>] [--dry-run]"],
     description: [
-      "Run inside the repository's checkout. Reads the memory Claude Code keeps on this machine for that directory, and the summaries Codex made of conversations held in it, and adds each file Mend does not have yet. A file Mend already has with other contents is left as Mend has it. Codex keeps one memory for everything, so only its summaries of this repository's conversations are read, never its consolidated memory. Transcripts, logins and settings are not read.",
+      "Run inside the repository's checkout. Reads the memory Claude Code keeps on this machine for that directory, and the summaries Codex made of conversations held in it. Codex keeps one memory for everything, so only its summaries of this repository's conversations are read, never its consolidated memory. Transcripts, logins and settings are not read.",
+      "A file Mend does not have is added. A file both sides have with other contents is merged, keeping both sides' lines (a line both wrote at different places stays twice), and a note's frontmatter is merged key by key, with this machine's value kept as a comment where the two differ. Mend remembers what it imported from this checkout on this machine, so the next import from here takes whichever side changed since and merges only what both changed. A file Mend removed since then is not added again. A file it cannot merge stays as Mend has it, and this machine's is kept as a version, as it is when a merge does not hold every line this machine sent. Every version Mend replaces is kept.",
     ],
     options: [
       project(),
-      { flag: "--dry-run", text: "list what would be imported, and send nothing" },
+      { flag: "--dry-run", text: "show what the import would do, and write nothing" },
     ],
     examples: [{ command: "mend memory import --dry-run", text: "" }],
     see: ["memory", "adopt"],
@@ -1215,7 +1216,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "server upgrade",
     section: "this machine",
     summary: "upgrade to an explicit version with a database backup",
-    synopsis: ["--version <target|latest> [--assets-dir <dir>] [--offline]"],
+    synopsis: ["--version <target|latest> [--assets-dir <dir>] [--offline] [--from-preview]"],
     description: [
       "Preflights release assets and the canonical image's version label before interrupting Mend. Downgrades are refused. latest is resolved only when explicitly requested; a same-version request does nothing.",
       "The installed configuration stays: the bind, the origin, the ports, the edge host and the declared exposure and tenancy are carried into the new generation, which renders the same overlays beside the new compose.yaml. An upgrade never drops the edge or the posture; mend server setup is where they change.",
@@ -1234,6 +1235,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         flag: "--offline",
         text: "no GitHub requests or release-image pulls; target assets and exact-version images must be local",
+      },
+      {
+        flag: "--from-preview",
+        text: "once, from a preview numbered X.Y.Z-preview.K to a next build X.Y.Z-next.N; refused unless the target carries every migration the server applied",
       },
     ],
     examples: [

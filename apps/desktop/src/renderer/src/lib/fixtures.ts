@@ -43,6 +43,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
   inheritUserSkills: true,
   hotSessions: 0,
   installCommand: null,
+  installEnabled: true,
   createdAt: AT,
   updatedAt: AT,
   ...patch,

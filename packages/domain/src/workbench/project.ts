@@ -219,6 +219,13 @@ export class Project extends Schema.Class<Project>("Project")({
   installCommand: Schema.NullOr(Schema.String).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  /**
+   * "Automatic install": whether Mend runs the install command above (or the detected one) at
+   * all. Off, neither a session's launch nor the install job runs one; restoring a dependency
+   * tree from saved state, or a standby's from the shared cache, is unaffected. Older values
+   * decode to on.
+   */
+  installEnabled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

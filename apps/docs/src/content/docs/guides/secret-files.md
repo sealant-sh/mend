@@ -46,7 +46,9 @@ ones you removed.
 
 One exception: on the captured session store a worktree has one workspace, so a session you start in
 a worktree where someone else's session is live runs in their workspace. It receives none of your
-secret files there, and the session log says so.
+secret files there, on that run or any later one in their workspace, and the session line names the
+files not written:
+`secret files · 1 not written · this workspace is another person's · ~/.aws/credentials`.
 
 ## Never captured
 
@@ -56,7 +58,7 @@ that holds the agent's conversations. A secret file is in none of these:
 - It is written into the workspace's own home directory, `~`. The captured roots are the worktree at
   `/workspace/repo` and the harness home at `/workspace/harness-home`. Neither covers `~`.
 - A path under a directory sessions do capture is refused when you add it: `.claude`, `.codex`,
-  `.pi`, `.local/share/opencode`, `.claude.json` and Mend's own `.mend`.
+  `.pi`, `.local/share/opencode`, `.local/state/opencode`, `.claude.json` and Mend's own `.mend`.
 - Before writing, the workspace checks the path is still a plain path in the home: no symlink at any
   component, and the directory's real location is where its name says. A dotfiles tree that linked
   `~/.aws` into the worktree would turn a secret file into a captured one, so such a file is not

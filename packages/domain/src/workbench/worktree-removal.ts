@@ -110,3 +110,35 @@ export const worktreeRemovalRefusalOf = (words: string): WorktreeRemovalRefusal 
   forceable: words.includes(WORKTREE_REMOVAL_FORCE_HINT),
   unlanded: unlandedFactsOf(words),
 });
+
+/** A repository a session of the worktree added with `mend repo add`, as removal names it. */
+export interface HeldRepository {
+  readonly path: string;
+  readonly branch: string;
+  /** Where its files are saved: `nested` ones live inside this worktree and go with it. */
+  readonly capture: "nested" | "own";
+}
+
+/**
+ * Why removal must be asked again with `force`, for the repositories this worktree's sessions
+ * added (docs/adr/0011-repositories-in-a-session.md), or null when it holds none. Until sealantd
+ * captures repository roots, a repository's files, history included, live nested inside the main
+ * worktree and are saved only with it, and Mend reads none of them: its own change stays at its
+ * start. So every nested repository counts as work that may not be on origin, and removal is
+ * refused as it is for an unlanded change. One saved under its own captures does not go with this
+ * worktree and is not named.
+ */
+export const heldRepositoriesRefusal = (
+  repositories: ReadonlyArray<HeldRepository>,
+): string | null => {
+  const nested = repositories.filter((repository) => repository.capture === "nested");
+  if (nested.length === 0) return null;
+  const named = nested
+    .slice(0, UNLANDED_NAMED_FILES)
+    .map((repository) => `${repository.path} on ${repository.branch}`)
+    .join(", ");
+  const more =
+    nested.length > UNLANDED_NAMED_FILES ? `, ${nested.length - UNLANDED_NAMED_FILES} more` : "";
+  const one = nested.length === 1;
+  return `This worktree holds ${plural(nested.length, "repository", "repositories")} added with mend repo add, saved only with it · ${named}${more} · Mend cannot see whether ${one ? "it holds" : "they hold"} commits or edits that are not on origin, and removal deletes ${one ? "it" : "them"}. Push what you need from a session in this worktree before removal, ${WORKTREE_REMOVAL_FORCE_HINT}.`;
+};

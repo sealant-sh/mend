@@ -38,6 +38,7 @@ export const SECRET_FILE_RESERVED_PATHS: ReadonlyArray<string> = [
   ".codex",
   ".pi",
   ".local/share/opencode",
+  ".local/state/opencode",
   ".mend",
 ];
 
@@ -90,6 +91,27 @@ export const secretFileNameOf = (filePath: string): string =>
  * empty, `.` or `..` segment, outside every reserved path. The first thing wrong, or null.
  */
 export const validateSecretFilePath = (filePath: string): string | null => {
+  const syntax = validateSecretFilePathSyntax(filePath);
+  if (syntax !== null) return syntax;
+  const reserved = reservedSecretFileRoot(filePath);
+  if (reserved !== null) {
+    return `${filePath} is under ${reserved}, which sessions capture`;
+  }
+  return null;
+};
+
+/** The reserved path (`SECRET_FILE_RESERVED_PATHS`) a home-relative path is, or is under; null when none. */
+export const reservedSecretFileRoot = (filePath: string): string | null =>
+  SECRET_FILE_RESERVED_PATHS.find(
+    (prefix) => filePath === prefix || filePath.startsWith(`${prefix}/`),
+  ) ?? null;
+
+/**
+ * Whether a path is a well-formed home-relative path at all, reserved or not: what a record of a
+ * delivery made before a path was reserved still needs, so the file it names can be cleaned up
+ * (`.local/state/opencode` became reserved on 2026-10-04). The first thing wrong, or null.
+ */
+export const validateSecretFilePathSyntax = (filePath: string): string | null => {
   if (filePath.length === 0) return "a path under the home directory is required";
   if (filePath.length > SECRET_FILE_MAX_PATH_LENGTH) {
     return `${filePath} is longer than ${SECRET_FILE_MAX_PATH_LENGTH} characters`;
@@ -105,12 +127,6 @@ export const validateSecretFilePath = (filePath: string): string | null => {
   const segments = filePath.split("/");
   if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
     return `${filePath} must not contain empty, "." or ".." segments`;
-  }
-  const reserved = SECRET_FILE_RESERVED_PATHS.find(
-    (prefix) => filePath === prefix || filePath.startsWith(`${prefix}/`),
-  );
-  if (reserved !== undefined) {
-    return `${filePath} is under ${reserved}, which sessions capture`;
   }
   return null;
 };

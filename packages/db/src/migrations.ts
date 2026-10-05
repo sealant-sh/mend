@@ -2963,6 +2963,99 @@ const turnPayerMigration = Effect.gen(function* () {
       ADD COLUMN billed_account_name text`;
 });
 
+/**
+ * 0108: what `mend memory import` last imported from each checkout on each machine
+ * (docs/adr/0009, decision 4), so the next import from there merges three-way against it instead
+ * of with no shared version. A text file's contents are kept; a binary one's digest is enough.
+ * And which kept versions are pinned beyond the cap.
+ */
+const agentMemoryImportBasesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE agent_memory_import_bases (
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      source text NOT NULL,
+      path text NOT NULL,
+      digest text NOT NULL,
+      encoding text NOT NULL,
+      contents text,
+      imported_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, project_id, source, path)
+    )`;
+  // A version that is the only copy of some lines (a machine's file in a conflict, one a merge
+  // did not keep whole, a stored file a read-back could not merge) is pinned: the cap of twenty
+  // versions per file never takes it.
+  yield* sql`ALTER TABLE agent_memory_versions ADD COLUMN pinned boolean NOT NULL DEFAULT false`;
+  // Every version kept before this one may be the only copy of some lines, and nothing recorded
+  // which: all of them are pinned. Memory versions are small text, and few.
+  yield* sql`UPDATE agent_memory_versions SET pinned = true`;
+});
+
+/**
+ * 0109: opencode's models in the catalog (`HARNESS_MODEL_SEED.opencode`, written out here so the
+ * migration stays what it was): the Codex models through the ChatGPT login, as opencode names them,
+ * for the pickers to list. None is the default: a launch that names no model leaves the choice to
+ * opencode and the person's own opencode config (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`). A row an
+ * operator already added is kept as it is, their default with it.
+ */
+const opencodeModelsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO harness_models (harness, id, label, is_default, efforts, position) VALUES
+      ('opencode', 'openai/gpt-6.1-sol', 'GPT-6.1 Sol', false, NULL, 0),
+      ('opencode', 'openai/gpt-6-astra', 'GPT-6 Astra', false, NULL, 1),
+      ('opencode', 'openai/gpt-6-sol', 'GPT-6 Sol', false, NULL, 2),
+      ('opencode', 'openai/gpt-6-luna', 'GPT-6 Luna', false, NULL, 3),
+      ('opencode', 'openai/gpt-5.6-sol', 'GPT-5.6 Sol', false, NULL, 4),
+      ('opencode', 'openai/gpt-5.6-terra', 'GPT-5.6 Terra', false, NULL, 5),
+      ('opencode', 'openai/gpt-5.6-luna', 'GPT-5.6 Luna', false, NULL, 6),
+      ('opencode', 'openai/gpt-5.5', 'GPT-5.5', false, NULL, 7)
+    ON CONFLICT (harness, id) DO NOTHING`;
+});
+
+/**
+ * The project's "Automatic install" setting: whether Mend runs an install command for it at all,
+ * in a session's workspace or in the install job that feeds the shared cache. Every project,
+ * existing and new, starts on, which is what Mend did before the setting existed.
+ */
+const projectInstallEnabledMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS install_enabled boolean NOT NULL DEFAULT true`;
+});
+
+/**
+ * docs/adr/0009-agent-memory-per-person-per-project.md, capture mode: whose memory each worktree's
+ * one harness home holds, as the server decided it when the launch of an executor handed the home
+ * over. It outlives the session rows (a removed session's executor is still known as its owner's),
+ * and the home's own record, which anything running in the executor can write, is never consulted.
+ * - `user_id`, `session_id`, `workspace_id`: the settled home, the one the worktree's head capture
+ *   holds. `user_id` null: the person was removed, or nobody could be named.
+ * - `pending_*`: the hand-over of the executor launched last, under the lease `pending_epoch`. It
+ *   counts only once a capture of that epoch, at chain position `pending_n` or later, is on the
+ *   chain. `pending_n` is where the executor's first caught-up flush after the hand-over reached,
+ *   null until one answers: an executor lost before it saved its hand-over leaves the previous
+ *   home in place.
+ */
+const agentMemoryHomesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE agent_memory_homes (
+      worktree_id text PRIMARY KEY REFERENCES worktrees (id) ON DELETE CASCADE,
+      user_id text REFERENCES "user" (id) ON DELETE SET NULL,
+      session_id text,
+      workspace_id text,
+      pending_user_id text REFERENCES "user" (id) ON DELETE SET NULL,
+      pending_session_id text,
+      pending_workspace_id text,
+      pending_epoch integer,
+      pending_n integer,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3071,4 +3164,8 @@ export const migrations = {
   "0105_turn_origin": turnOriginMigration,
   "0106_terminal_watch_control": terminalWatchControlMigration,
   "0107_turn_payer": turnPayerMigration,
+  "0108_agent_memory_import_bases": agentMemoryImportBasesMigration,
+  "0109_opencode_models": opencodeModelsMigration,
+  "0110_project_install_enabled": projectInstallEnabledMigration,
+  "0111_agent_memory_homes": agentMemoryHomesMigration,
 };

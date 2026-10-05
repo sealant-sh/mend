@@ -148,6 +148,22 @@ export const canUseLink = (
   canSeeProject(project, owner) &&
   canSeeProject(linked, owner);
 
+/**
+ * Whether a repository of `nested` may be saved inside a worktree of `host`
+ * (docs/adr/0011-repositories-in-a-session.md, decision 14). The repository's files and history
+ * ride that worktree's captures, and anyone who can see `host` can open the worktree and receive
+ * them, so everyone who can see `host` must be able to see `nested`. A shared project is seen by
+ * its whole organization, so any project of that organization may hold it. A private project is
+ * seen by its creator only, so only a private project of the same creator may hold it. Membership
+ * is not counted: a shared project's audience grows with every member who joins.
+ */
+export const canNestRepository = (host: ProjectTenancy, nested: ProjectTenancy): boolean =>
+  host.organizationId === nested.organizationId &&
+  (nested.visibility === "shared" ||
+    (host.visibility === "private" &&
+      host.createdByUserId !== null &&
+      host.createdByUserId === nested.createdByUserId));
+
 /** Private or shared is an owner decision after adoption. */
 export const canChangeVisibility = (project: ProjectTenancy, viewer: Viewer): boolean =>
   canSeeProject(project, viewer) && viewer.role === "owner";

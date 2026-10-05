@@ -1,14 +1,14 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
-# Sealant stays a published platform dependency. These stages copy the released 0.38.1 artifacts;
-# this build never imports Core source or its database schema. Sealant 0.38.1 runs its job queue
+# Sealant stays a published platform dependency. These stages copy the released 0.39.0-next.683 artifacts;
+# this build never imports Core source or its database schema. Sealant 0.39.0-next.683 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
 #
 # The defaults are the release pins. Only a preview build (.github/workflows/preview.yml) passes
 # other Core images, built from a Sealant branch; a release build passes none of these.
-ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api@sha256:73b148883bb0d9635d8253092e796113531715f3a0eda1a0e4723b55b12b7443
-ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker@sha256:f46251c1a01477cc56c5fa5573a8f407614fd5083756dc0b221f0436193bf7be
-ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:f7513a5541af8d8ed548b1aeb29c527b6a2d3bd0bc884b81bf7c594fb747ce82
+ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:1114bdcf83eecf3c404b8b4418b6db6682863deee36719ceb21238732bad6b3d
+ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:a0873bea1e2207d73369fafc12147fd5c208db1984bb4ea89e691a1b97f0c73c
+ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:27f38ffaf6eed09249fc9f2b7271b16b1577e4c2f4666e7b11bcc90bf8999e47
 FROM ${SEALANT_API_IMAGE} AS sealant-api
 FROM ${SEALANT_WORKER_IMAGE} AS sealant-worker
 FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
@@ -25,6 +25,7 @@ WORKDIR /app
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build
+RUN node scripts/mend-migrations.mjs > /app/mend-migrations.txt
 
 # The runtime is the same slim Node image the build stages use. Sealant's published bundles
 # support this newer Node too.
@@ -36,7 +37,7 @@ ARG MEND_VERSION=dev
 ARG MEND_PREVIEW_SEALANTD_IMAGE=""
 LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
-  dev.sealant.mend.sealant-version="0.38.1"
+  dev.sealant.mend.sealant-version="0.39.0-next.683"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root
@@ -66,6 +67,18 @@ COPY --from=sealant-worker /app/node_modules /opt/sealant/worker/node_modules
 COPY --from=sealant-worker /app/microvm-image /opt/sealant/worker/microvm-image
 COPY --from=sealant-ssh-gateway /app/dist /opt/sealant/ssh-gateway/dist
 COPY --from=sealant-ssh-gateway /app/node_modules /opt/sealant/ssh-gateway/node_modules
+# Every migration this image carries: Mend's as `mend <id>_<name>`, Sealant's as
+# `sealant <folder> <sha256 of migration.sql>` (drizzle's hash). `mend server upgrade --from-preview`
+# reads it to refuse a target that lacks, changed or would skip one a server already applied.
+COPY --from=mend-build /app/mend-migrations.txt /tmp/mend-migrations.txt
+RUN { sed 's/^/mend /' /tmp/mend-migrations.txt; \
+    for folder in /opt/sealant/api/drizzle/*/; do \
+      if [ -f "${folder}migration.sql" ]; then \
+        echo "sealant $(basename "$folder") $(sha256sum "${folder}migration.sql" | cut -d ' ' -f 1)"; \
+      fi; \
+    done; } > /app/migrations.txt \
+  && rm /tmp/mend-migrations.txt \
+  && grep -q '^mend ' /app/migrations.txt && grep -q '^sealant ' /app/migrations.txt
 RUN mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /run/sealant/sockets /run/mend-bundle
 
 ENV NODE_ENV=production \

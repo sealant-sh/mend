@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, SessionProcessId } from "@mend/domain";
+import { HARNESS_MODEL_SEED, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -586,6 +587,127 @@ describe.skipIf(!reachable)("0052 project skill inheritance", () => {
     expect(rows).toEqual([
       { id: "project-existing", inherit_user_skills: true },
       { id: "project-new", inherit_user_skills: true },
+    ]);
+  });
+});
+
+describe.skipIf(!reachable)("0110 automatic install", () => {
+  const INSTALL_DB = `${SCRATCH_DB}_install_enabled`;
+  const installUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${INSTALL_DB}`;
+    return url.toString();
+  })();
+  const installLayer = PgClient.layer({ url: Redacted.make(installUrl) });
+  const withInstallDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(installLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${INSTALL_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${INSTALL_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("turns automatic install on for existing and new projects, and keeps a saved command", async () => {
+    const rows = await withInstallDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0109_opencode_models");
+        yield* sql`
+          INSERT INTO organizations (id, name) VALUES ('org-install', 'Install')`;
+        yield* sql`
+          INSERT INTO projects (id, organization_id, name, origin_url, store_path, default_branch, install_command)
+          VALUES ('project-existing', 'org-install', 'existing', NULL, '/store/existing/repo.git', 'main', 'make deps')`;
+        yield* migrations["0110_project_install_enabled"];
+        yield* sql`
+          INSERT INTO projects (id, organization_id, name, origin_url, store_path, default_branch)
+          VALUES ('project-new', 'org-install', 'new', NULL, '/store/new/repo.git', 'main')`;
+        return yield* sql<{
+          readonly id: string;
+          readonly install_enabled: boolean;
+          readonly install_command: string | null;
+        }>`SELECT id, install_enabled, install_command FROM projects ORDER BY id`;
+      }),
+    );
+    expect(rows).toEqual([
+      { id: "project-existing", install_enabled: true, install_command: "make deps" },
+      { id: "project-new", install_enabled: true, install_command: null },
+    ]);
+  });
+});
+
+describe.skipIf(!reachable)("0111 agent memory homes", () => {
+  const HOMES_DB = `${SCRATCH_DB}_memory_homes`;
+  const homesLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${HOMES_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withHomesDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(homesLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${HOMES_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${HOMES_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("comes after 0110 and records a home per worktree that outlives its person and goes with its worktree", async () => {
+    const rows = await withHomesDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0110_project_install_enabled");
+        yield* migrations["0111_agent_memory_homes"];
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
+            ('u-maria', 'Maria', 'maria@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-homes', 'Homes')`;
+        yield* sql`
+          INSERT INTO projects (id, organization_id, name, store_path, default_branch)
+          VALUES ('p-homes', 'org-homes', 'homes', '/store/homes/repo.git', 'main')`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha) VALUES
+            ('wt-kept', 'p-homes', 'kept', 'kept', 'mend/kept', 'abc'),
+            ('wt-gone', 'p-homes', 'gone', 'gone', 'mend/gone', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_memory_homes
+            (worktree_id, user_id, session_id, workspace_id, pending_user_id, pending_epoch) VALUES
+            ('wt-kept', 'u-maria', 's-removed', 'ws-1', 'u-maria', 4),
+            ('wt-gone', 'u-maria', 's-other', 'ws-2', NULL, NULL)`;
+        yield* sql`DELETE FROM "user" WHERE id = 'u-maria'`;
+        yield* sql`DELETE FROM worktrees WHERE id = 'wt-gone'`;
+        return yield* sql<{
+          readonly worktree_id: string;
+          readonly user_id: string | null;
+          readonly session_id: string | null;
+          readonly pending_user_id: string | null;
+        }>`SELECT worktree_id, user_id, session_id, pending_user_id FROM agent_memory_homes ORDER BY worktree_id`;
+      }),
+    );
+    expect(rows).toEqual([
+      { worktree_id: "wt-kept", user_id: null, session_id: "s-removed", pending_user_id: null },
     ]);
   });
 });
@@ -2156,5 +2278,86 @@ describe.skipIf(!reachable)("0106 terminal watch control", () => {
     ]) {
       expect(definition).toContain(`'${kind}'`);
     }
+  });
+});
+
+describe.skipIf(!reachable)("0109 opencode models", () => {
+  const MODELS_DB = `${SCRATCH_DB}_opencode_models`;
+  const modelsLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${MODELS_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withModelsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(modelsLayer), Effect.scoped));
+  const opencodeRows = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      readonly id: string;
+      readonly label: string;
+      readonly is_default: boolean;
+    }>`
+      SELECT id, label, is_default FROM harness_models
+      WHERE harness = 'opencode' ORDER BY position, id`;
+    return rows.map((row) => ({ ...row }));
+  });
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${MODELS_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${MODELS_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("lists the ChatGPT login's models for opencode with no default of its own, and keeps an operator's rows", async () => {
+    const rows = await withModelsDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0108_agent_memory_import_bases");
+        // An operator added opencode rows by hand before this migration: theirs stay as they are,
+        // and their default stays the only one.
+        yield* sql`
+          INSERT INTO harness_models (harness, id, label, is_default, efforts, position) VALUES
+            ('opencode', 'anthropic/claude-opus-5', 'Opus 5 · API key', true, NULL, 0),
+            ('opencode', 'openai/gpt-5.5', 'Their label', false, NULL, 9)`;
+        yield* migrations["0109_opencode_models"];
+        return yield* opencodeRows;
+      }),
+    );
+    expect(rows.filter((row) => row.is_default).map((row) => row.id)).toEqual([
+      "anthropic/claude-opus-5",
+    ]);
+    expect(rows.find((row) => row.id === "openai/gpt-5.5")?.label).toBe("Their label");
+    expect(rows.map((row) => row.id)).toContain("openai/gpt-6.1-sol");
+
+    // A catalog with no opencode rows takes the seed as it is.
+    const fresh = await withModelsDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM harness_models WHERE harness = 'opencode'`;
+        yield* migrations["0109_opencode_models"];
+        return yield* opencodeRows;
+      }),
+    );
+    expect(fresh).toEqual(
+      (HARNESS_MODEL_SEED.opencode ?? []).map((model) => ({
+        id: model.id,
+        label: model.label,
+        is_default: model.isDefault,
+      })),
+    );
+    // No default: a launch naming no model leaves the choice to opencode and its config.
+    expect(fresh.filter((row) => row.is_default)).toEqual([]);
+    expect(fresh[0]?.id).toBe(OPENCODE_DEFAULT_MODEL);
   });
 });

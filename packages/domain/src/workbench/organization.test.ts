@@ -6,6 +6,7 @@ import {
   canManageProject,
   canRemoveProject,
   canSeeProject,
+  canNestRepository,
   canUseLink,
   invitationState,
   organizationNameIssue,
@@ -95,6 +96,20 @@ describe("removal and links", () => {
     expect(canUseLink(shared, project("private", "olga"), carol)).toBe(false);
     expect(canUseLink(shared, project("shared", "bob", globex), carol)).toBe(false);
     expect(canUseLink(shared, project("shared", "mo"), null)).toBe(false);
+  });
+
+  it("nests a repository only where everyone who can open the worktree can see it", () => {
+    // A shared project is seen by the whole organization: any project of it may hold one.
+    expect(canNestRepository(project("shared", "olga"), project("shared", "mo"))).toBe(true);
+    expect(canNestRepository(project("private", "carol"), project("shared", "mo"))).toBe(true);
+    // A private project is seen by its creator only: only their own private project holds it.
+    expect(canNestRepository(project("private", "carol"), project("private", "carol"))).toBe(true);
+    expect(canNestRepository(project("shared", "carol"), project("private", "carol"))).toBe(false);
+    expect(canNestRepository(project("private", "olga"), project("private", "carol"))).toBe(false);
+    expect(canNestRepository(project("private", null), project("private", null))).toBe(false);
+    expect(canNestRepository(project("shared", "olga"), project("shared", "mo", globex))).toBe(
+      false,
+    );
   });
 });
 

@@ -78,11 +78,122 @@ much smaller: the memory.
    Every version Mend replaces or deletes is kept (the last twenty per file), so nothing an agent
    wrote is lost to another session's save.
 
+   In capture mode a worktree has one home, which its sessions share over time and, when one joins
+   another person's executor (ADR 0002), at once. Amended 2026-10-05, after three reviews found ways
+   one person's memory could be saved as another's:
+   - **The server decides whose memory the home holds:** the person whose launch made the executor
+     holding it, the only launch that delivers into it. The launch records that
+     (`agent_memory_homes`) when it hands the home over, as pending, at a chain position not known
+     yet. The first flush of that executor after the move that has saved the moved home, under its
+     epoch, fills the position in: caught up, or a saved final, or caught up but for named
+     unreadable paths that all lie outside the harness home's memory. That is one Mend forces after
+     moving another person's memory, started as soon as the home is recorded and run alongside the
+     rest of the launch (none once a final flush was sent), or any later one, an agent's end
+     included. The record is saved once a capture of that epoch at that position or later is on the
+     worktree's chain. An executor lost before that leaves the previous home recorded, which is what
+     the restored head holds. Read-backs go by the saved record; a launch into the live executor
+     goes by the pending one, which names it. The record outlives the session rows. Only that
+     person's sessions read the home back. When the server cannot say, nobody does.
+   - **The home's own record (`.mend/agent-memory-owner`) is for a person reading the home:**
+     anything running in the executor can write it, so Mend never reads it to decide anything.
+   - **A launch hands the home over before delivering:** when the server recorded the home as
+     another person's, or as nobody's it can name:
+     - the home is first read back into that person's memory. Nobody the server cannot name is
+       credited;
+     - then every memory path (the memory folders, Codex's summary database, the delivered record,
+       files a delivery left staged) moves to `.mend/agent-memory-kept/<stamp>-handover-…`, and the
+       owner record names the new person, even when they have nothing stored. The kept set is never
+       deleted, so kept sets add up in a worktree people take turns in. They are restored into every
+       later executor of the worktree, where anyone working there can read them.
+
+     A hand-over that cannot finish fails the launch, as pi's profile does. A join waits while one
+     runs. The launcher's own home costs a few database reads and one write, and nothing in the
+     executor. Another person's home also costs the capture read and one `sh` exec on the launch
+     path, and one forced capture that no launch or join waits for.
+
+   - **What counts as a Codex is what runs:** a `codex` command line, whatever the session's harness
+     is called (`mend run -- codex` too). A wrapped one (`env … codex`, an absolute path, `npx`, a
+     shell script) is not recognised.
+   - **A Codex in the launcher's own home summarises only their conversations:** before it starts,
+     every conversation in its thread index (`state_5.sqlite`) that is not the launcher's is set to
+     `memory_mode = 'disabled'`, and the launcher's own that Mend disabled earlier are given back. A
+     mode a person chose is never touched. Where that cannot be done (no node, no `node:sqlite`, a
+     state database under another name), that Codex starts with its memory off; the conversations it
+     starts stay enabled, so a later launch of theirs builds memory from them.
+   - **A Codex that joins another person's executor starts with its memory fully off**
+     (`features.memories=false`, `memories.generate_memories=false`; a `--enable memories` or
+     `--enable memory_tool`, and a `-c`/`--config` naming a memory setting in any form or setting
+     the `features` or `memories` table whole, dropped) and changes no thread's memory mode: the
+     home owner's selection stands, and the threads it creates are born disabled, so no Codex, the
+     joiner's own included, ever builds memory from them.
+   - **What a joined agent writes goes to the executor's owner:** it shares their memory files, and
+     nobody can tell its lines from theirs. Lines written before the owner's agent ends are saved
+     with that read-back. Lines written after it wait for the owner's next read-back of that home:
+     when their next agent in that worktree ends, or at the hand-over when someone else launches
+     there. They never reach the joiner's memory. Any member with access to the project can join, so
+     this is a way to write into another person's memory without their consent; the owner decides
+     whether joins should keep it.
+   - **Not covered:** a `codex` someone types themselves, or an agent runs, in a session that is not
+     a Codex session. Mend withholds other people's conversations only before a Codex session
+     starts, so such a Codex can summarise them into the home's memory. Per-person homes would close
+     this structurally.
+
 4. **Import from the person's machine is the CLI's,** run from inside the repository:
-   `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/` and adds each file
-   the store does not have; a file it has with other contents is reported and left. Transcripts
+   `mend memory import` reads `~/.claude/projects/<this checkout's path>/memory/`. Transcripts
    ("bring your previous sessions") are a later step: a transcript needs its paths rewritten for
-   `/workspace/repo` to resume. Logins, goals, logs and caches are never read.
+   `/workspace/repo` to resume. Logins, goals, logs and caches are never read. Amended 2026-10-04:
+   an import merges what both sides have, as a read-back does.
+   - **Mend records what it last imported from each checkout on each machine** (the import's source:
+     the CLI's machine id, kept in its config directory, and the checkout's path), file by file: a
+     text file's contents, a binary file's digest. That is the shared version the next import from
+     there merges against.
+   - A file the store does not have is added, unless the store removed it since the last import from
+     there and the machine still has it as it was then: that file is not added again.
+   - A file one side changed since the last import takes that side's.
+   - A file both changed since then, or any file that differs with no last import, is merged:
+     - Text keeps both sides' lines, three-way (`git merge-file --union`) against the last import
+       when there is one. With none, each line the two share is kept once, in place, and between two
+       shared lines the store's own lines come first, then the machine's. Two files too different to
+       align that way (over four million comparisons once a shared start and end are set aside) are
+       not merged: no line is ever dropped to make a merge fit.
+     - When both versions open with YAML frontmatter, the frontmatter is merged key by key and only
+       the body by line. A key both set differently keeps the store's value and the machine's under
+       it as a YAML comment (`# from <host>, <date>: description: …`). Only a simple subset is
+       merged by key: `key: value` lines with a plain key and a one-line value, and whole-line
+       comments, which belong to the key above them and are content like it. Frontmatter outside
+       that subset (a quoted key, a block scalar, a nested map, a key written twice) that differs is
+       not merged. Line endings are compared as LF; the result keeps the store's.
+     - No line is removed after the merge, in `MEMORY.md` or anywhere: a line both sides wrote at
+       different places stays twice, and the agent folds it when it next rewrites its memory.
+     - Codex's summary database keeps every conversation's newer summary from either side.
+     - The last step of every merge compares both inputs, the store's and the machine's, line by
+       line as multisets, with the final text. The one exemption: with a last import, as many copies
+       of a line as the other side removed since it. A frontmatter value the merge kept as a comment
+       counts as there: it is in the file byte for byte after the `# from …:` prefix. A merge that
+       misses any other line of either side keeps that side's file whole as a version and says how
+       many lines; when it is the machine's, the base stays where it was, so the next import merges
+       it and says so again.
+     - Anything else (not text, frontmatter not merged, too different to align), or a merge over the
+       size limit, keeps the store's file. The machine's is kept as a version, and the next import
+       reports it again.
+   - A file the store has and the machine no longer sends stays in the store.
+   - An import that names a path twice is refused whole (400).
+   - Every version an import replaces is kept, the machine's own copy of a merged file too, as for a
+     read-back. `--dry-run` asks the server for the same plan and writes nothing, on the machine
+     either: it makes no machine id.
+   - One rule pins versions, for every version Mend keeps, on every path (import, read-back, a
+     session replacing its own earlier save, a binary replacement, a conflict, a removal): a version
+     that holds a line, or for a binary file any content, that the file the store holds after that
+     step lacks is pinned, and the cap of twenty versions per file never takes it. Codex's summary
+     database counts as held when the new one has every summary at a newer valid revision, or at the
+     same revision with the same words. One function writes every version and applies the rule; no
+     path writes one any other way.
+
+   The same rules apply to a read-back merge. A read-back merge with no shared version (a file the
+   session made itself, or a delivered version no longer kept) keeps each shared line once instead
+   of repeating the whole file. One that cannot be merged takes the session's, as for a file that is
+   not text, and one that does not hold every line of either side keeps that side's file as a pinned
+   version.
 
 5. **People can see and remove it.** `mend memory` lists the files for the current project,
    `mend memory show <file>` prints one, `mend memory rm <file>` removes it. The API serves the same
@@ -111,7 +222,7 @@ to build it.
   - `MEMORY.md` and `memory_summary.md`;
   - `raw_memories.md`, `rollout_summaries/` and `skills/`;
   - a git baseline it diffs against.
-- It builds that memory when a session starts:
+- It builds that memory when a session starts, and again at every turn's start (codex-cli 0.160):
   - It takes up to two past conversations that have been quiet for 6 hours and are under 10 days
     old, from the threads in its state database.
   - It summarises each one with a model call on the session's login.
@@ -207,3 +318,38 @@ to build it.
   would not bring, and the owner does not use it.
 - 2026-10-02: Codex memory carried. The owner chose to carry the memory folder and the conversations
   Codex builds it from over carrying the folder only, which would never fill, or waiting a release.
+- 2026-10-04: an import merges (decision 4). Leaving a file both sides have meant a second machine,
+  or a second import after both sides changed, never combined anything, and `MEMORY.md` is the file
+  most certain to differ. A note is merged into one file rather than kept beside under a second
+  name: Claude finds a note through one index line, a second copy would need a synthesized index
+  line and its own merges on every later import, and two drifted versions of the same note mostly
+  differ by added lines, which a line merge keeps in place. Frontmatter is merged by key because a
+  line union writes a key twice. A conflicting value is kept as a YAML comment, which no parser
+  reads, so the frontmatter stays valid. The agent still sees the comment and can fold it in.
+- 2026-10-04, after review: the merge never drops a line to succeed. The index keeps each entry
+  once, never a delimiter, fence or line inside one; frontmatter is merged by key only within a
+  simple subset (no YAML parser is in the tree, and guessing at the rest wrote keys twice or lost a
+  block scalar's lines); files too different to align are a conflict rather than a lossy union; and
+  any merge that still misses a line keeps the incoming file as a version and holds the base.
+- 2026-10-04, second review: the missing-line check is the last step, on the final text, with two
+  named exceptions only; code blocks are read after CommonMark (a ``` line inside a four-backtick
+  block, a ~~~ block, an unclosed block); and versions that are the only copy of some lines are
+  pinned rather than counted in the cap. Pinning, rather than raising the cap or counting pinned
+  versions in it, because any finite cap would still evict the only copy after enough saves, and
+  these versions are rare: one per conflict or lossy merge, and a repeated one is the same row.
+- 2026-10-04, third review: two invariants instead of more cases. The index dedupe is dropped: a
+  repeated line in `MEMORY.md` is harmless, as the Consequences already accept, and a lost one is
+  not, while every rule that decided which repeats were safe to drop (fences, indented code, lines a
+  union moved into or out of a block) found another way to drop a real line. The check is symmetric,
+  on both inputs, with base deletions as its only exemption. And pinning is one rule in one
+  function, applied to every version on every path, rather than chosen at each call site; the
+  same-session replacement and binary paths had kept sole copies unpinned. The cost: a version that
+  lost lines to an agent's own edit is pinned too, so the cap now bounds only versions the next file
+  holds whole.
+- 2026-10-04, fourth review: a summary database row is held only by the same conversation at a
+  valid, strictly newer revision, or at the same revision with the same words. A missing row, a
+  revision that is not an integer, or a database that does not open is not held; two databases with
+  one conversation at one revision in other words are not merged, as one row cannot keep both.
+  Migration 0108 (0106 when written; renumbered after main took 0106 and 0107) pins every version
+  kept before it: nothing recorded which were the only copy of a line, and memory versions are
+  small.

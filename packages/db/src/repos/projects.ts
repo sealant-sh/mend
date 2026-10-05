@@ -121,6 +121,11 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       installCommand: string | null,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** "Automatic install": whether Mend runs an install command for this project at all. */
+    readonly setInstallEnabled: (
+      id: ProjectId,
+      installEnabled: boolean,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
@@ -391,6 +396,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setInstallEnabled = Effect.fn("ProjectsRepo.setInstallEnabled")(function* (
+        id: ProjectId,
+        installEnabled: boolean,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ installEnabled, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
         yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
@@ -413,6 +434,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setInheritUserSkills,
         setHotSessions,
         setInstallCommand,
+        setInstallEnabled,
         remove,
       };
     }),

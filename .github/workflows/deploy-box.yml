@@ -1,20 +1,25 @@
 name: Deploy on the box
 
-# Deploys a preview that is already built (ghcr.io/sealant-sh/mend:<version>) on the Mend VM: a hosted
-# runner asks the VM's `deploy` user over SSH (port 2223 on the box), whose forced command runs the
-# deploy script and nothing else. `preview.yml` deploys on its own when dispatched
+# Deploys a next build or a preview that is already built (ghcr.io/sealant-sh/mend:<version>) on the
+# Mend VM: a hosted runner asks the VM's `deploy` user over SSH (port 2223 on the box), whose forced
+# command runs the deploy script and nothing else. `preview.yml` deploys on its own when dispatched
 # with `deploy: true`; this is for deploying a version again, or one built earlier.
+#
+# The script runs as root on the box, fetched from the commit given here, so only a commit on main
+# deploys: dispatch this from main (or a tag), for a commit main contains. The deploy key lives in
+# the `box-deploy` environment, which only main and tags may use.
 
 on:
   workflow_dispatch:
     inputs:
       version:
         description:
-          "The preview version to deploy, as the preview workflow printed it (0.36.0-preview.N)"
+          "The version to deploy: a next build (0.36.0-next.N) or a preview
+          (0.36.0-next.N.preview.R)"
         required: true
         type: string
       commit:
-        description: "The full mend commit sha that preview was built from"
+        description: "The full mend commit sha that version was built from"
         required: true
         type: string
       even_if_live:
@@ -32,12 +37,23 @@ jobs:
     if: github.repository == 'sealant-sh/mend'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
+    environment: box-deploy
     steps:
-      - name: Check the commit
+      - name: Check the ref and the commit
         env:
+          GH_TOKEN: ${{ github.token }}
           COMMIT: ${{ inputs.commit }}
         run: |
+          set -euo pipefail
+          # The environment's branch rule says the same; this holds while the environment is new.
+          [[ $GITHUB_REF == refs/heads/main || $GITHUB_REF == refs/tags/* ]] ||
+            { echo "::error::Dispatch deploy-box.yml from main or a tag, not $GITHUB_REF."; exit 1; }
           [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "::error::commit must be the full 40-character sha"; exit 1; }
+          # The box runs this commit's deploy script as root: main's history only. A branch's commit,
+          # or a fork's that GitHub serves by sha, compares as "ahead" or "diverged".
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$COMMIT" --jq .status)
+          [[ $status == behind || $status == identical ]] ||
+            { echo "::error::$COMMIT is not on main ($status): only a commit on main deploys on the box."; exit 1; }
       - name: Deploy the preview on the box
         env:
           VERSION: ${{ inputs.version }}
@@ -54,4 +70,4 @@ jobs:
           # The `deploy` user's forced command accepts exactly this and nothing else.
           ssh -p 2223 -i deploy_key -o UserKnownHostsFile=known_hosts -o StrictHostKeyChecking=yes \
             -o BatchMode=yes -o ConnectTimeout=20 deploy@49.12.133.97 \
-            deploy "$VERSION" "$COMMIT" $EVEN_IF_LIVE
+            deploy "$VERSION" "$COMMIT" ${EVEN_IF_LIVE:+"$EVEN_IF_LIVE"}

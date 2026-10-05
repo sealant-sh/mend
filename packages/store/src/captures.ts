@@ -386,6 +386,8 @@ export const DirEntry = Schema.Struct({
   target: Schema.optionalKey(Schema.String),
   child: Schema.optionalKey(Schema.String),
   group: Schema.optionalKey(Schema.String),
+  /** The file (or its SQLite group) changed under every read sealantd made of it (`tree.rs`). */
+  torn: Schema.optionalKey(Schema.Boolean),
   raw_name: Schema.optionalKey(Schema.String),
   raw_target: Schema.optionalKey(Schema.String),
 });

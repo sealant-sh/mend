@@ -400,6 +400,10 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage", "PUT", "/install-command", { installCommand: null })(
     "projects.installCommand",
   ),
+  project("project-manage", "PUT", "/install-enabled", { installEnabled: false })(
+    "projects.installEnabled",
+  ),
+  project("project-read", "GET", "/install-detection")("projects.installDetection"),
   project("project-read", "GET", "/hot-sessions")("projects.hotSessionsStatus"),
   project("project-read", "GET", "/branches")("projects.branches"),
   project("project-read", "POST", "/refresh")("projects.refresh"),
@@ -409,6 +413,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-read", "GET", "/memory/file?path=x")("agentMemory.file"),
   project("project-read", "DELETE", "/memory/file?path=x")("agentMemory.remove"),
   project("project-read", "POST", "/memory/import", { files: [] })("agentMemory.import"),
+  project("project-read", "POST", "/memory/import/plan", { files: [] })("agentMemory.importPlan"),
   project("project-read", "GET", "/skills")("skills.forProject"),
 
   // ── Project configuration ──

@@ -337,6 +337,10 @@ This worktree holds a change that was never landed · 2 files · +32 −5 · src
 A worktree that changed after its last landing is refused the same way, naming the files changed
 since.
 
+A worktree whose sessions added repositories with `mend repo add` is refused too, naming each one.
+Their files and history are saved only inside this worktree, and Mend cannot see whether they hold
+commits or edits that are not on origin. Push what you need from a session in the worktree first.
+
 The refusal is the first step, never the last. In the web app, the worktree menu's **Remove
 worktree** shows these words with the files and line counts not on origin, and offers **Remove
 anyway**, which is the same removal with `force=true`. **Clear settled** never forces: it says how

@@ -11,6 +11,7 @@ import * as vscode from "vscode";
 import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
+import { modelPickRows } from "./model-picks.js";
 import {
   agentModeLabel,
   continueCommand,
@@ -690,8 +691,9 @@ class MendCommands {
       { title: newSessionTitle(project, join), placeHolder: "Harness", ignoreFocusOut: true },
     );
     if (harness === undefined) return;
-    // The server's catalog for the harness (docs/models-audit.md): the default first, so a plain
-    // Enter runs what every other client runs. A harness it lists nothing for asks no model.
+    // The server's catalog for the harness (docs/models-audit.md): the default first (or the
+    // harness's own choice, `modelPickRows`), so a plain Enter runs what every other client runs. A
+    // harness it lists nothing for asks no model.
     const catalog =
       (await this.client.harnessModels().catch(() => [])).find(
         (candidate) => candidate.harness === harness.id,
@@ -699,13 +701,7 @@ class MendCommands {
     const offered = modelPicker(catalog, { model: null, effort: null });
     const model = offered.hasModels
       ? await vscode.window.showQuickPick<ModelPick>(
-          offered.models
-            .toSorted((left, right) => Number(right.isDefault) - Number(left.isDefault))
-            .map((option) => ({
-              label: option.label,
-              description: option.isDefault ? `${option.id} · default` : option.id,
-              model: option.id,
-            })),
+          modelPickRows(catalog, harness.description ?? harness.id),
           {
             title: `New ${harness.description} session`,
             placeHolder: "Model",

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -38,6 +38,29 @@ export const PI_PROFILE_KEPT_DIR = ".mend/pi-profile-kept";
 /** What the session builds inside a delivered profile, which the comparison leaves out. */
 const SESSION_BUILT = ["node_modules"];
 
+/**
+ * The profile file that can hold the person's keys (`mcp.json`: its servers' headers, env and
+ * client secrets, sent as they are). The platform never saves it, so a profile restored from a
+ * capture lacks it: the comparison leaves it out, and it is written again at every delivery, so a
+ * restored profile stays `unchanged` and keeps what the session installed in it.
+ */
+export const PI_PROFILE_SECRET_FILE = "root/mcp.json";
+
+const sha256 = (bytes: Uint8Array | string): string =>
+  createHash("sha256").update(bytes).digest("hex");
+
+/** The digest `SKILLS_VACATE_PROGRAM` reads off a directory holding exactly these files. */
+const treeDigest = (
+  files: ReadonlyArray<{ readonly path: string; readonly bytes: Uint8Array }>,
+): string =>
+  sha256(
+    files
+      .map((file) => [file.path, sha256(file.bytes)] as const)
+      .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([file, digest]) => `${file}\u0000${digest}\n`)
+      .join(""),
+  );
+
 export class PiProfileDeliveryError extends Schema.TaggedErrorClass<PiProfileDeliveryError>()(
   "PiProfileDeliveryError",
   { message: Schema.String },
@@ -60,19 +83,27 @@ export const planPiProfile = (profile: {
     readonly encoding: "utf8" | "base64";
     readonly contents: string;
   }>;
-}): PiProfilePlan => ({
-  vacate: {
-    dir: PI_PROFILE_HOME_DIR,
-    accept: [profile.digest],
-    delivering: profile.digest,
-    skip: SESSION_BUILT,
-  },
-  files: profile.files.flatMap((file) => {
+}): PiProfilePlan => {
+  const files = profile.files.flatMap((file) => {
     const bytes = piProfileFileBytes(file);
     if (bytes === null || validatePiProfileFilePath(file.path) !== null) return [];
-    return [{ path: path.posix.join(PI_PROFILE_HOME_DIR, file.path), bytes }];
-  }),
-});
+    return [{ path: file.path, bytes }];
+  });
+  const compared = treeDigest(files.filter((file) => file.path !== PI_PROFILE_SECRET_FILE));
+  return {
+    vacate: {
+      dir: PI_PROFILE_HOME_DIR,
+      accept: [compared],
+      delivering: compared,
+      skip: SESSION_BUILT,
+      skipFiles: [PI_PROFILE_SECRET_FILE],
+    },
+    files: files.map((file) => ({
+      path: path.posix.join(PI_PROFILE_HOME_DIR, file.path),
+      bytes: file.bytes,
+    })),
+  };
+};
 
 /** A fresh kept directory for one delivery, relative to the harness home. */
 export const piProfileKeptDir = (now: Date = new Date()): string =>
@@ -97,14 +128,22 @@ export const vacatePiProfileExec = (
   JSON.stringify([plan.vacate]),
 ];
 
-/** The plan's files, unless the directory already held exactly them. */
+/**
+ * The plan's files, unless the directory already held exactly them; then only the file the
+ * comparison leaves out (`PI_PROFILE_SECRET_FILE`), which a restore never brings back.
+ */
 export const piProfileFilesToWrite = (
   plan: PiProfilePlan,
   outcomes: ReadonlyArray<SkillsVacateOutcome>,
-): PiProfilePlan["files"] =>
-  outcomes.some((outcome) => outcome.dir === plan.vacate.dir && outcome.outcome === "unchanged")
-    ? []
-    : plan.files;
+): PiProfilePlan["files"] => {
+  if (!outcomes.some((o) => o.dir === plan.vacate.dir && o.outcome === "unchanged")) {
+    return plan.files;
+  }
+  const uncompared = (plan.vacate.skipFiles ?? []).map((file) =>
+    path.posix.join(plan.vacate.dir, file),
+  );
+  return plan.files.filter((file) => uncompared.includes(file.path));
+};
 
 /**
  * Write the profile into a session's harness home on this machine: the co-located store, where

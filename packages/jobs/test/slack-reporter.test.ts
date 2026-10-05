@@ -116,6 +116,7 @@ const project = new Project({
   inheritUserSkills: true,
   hotSessions: 0,
   installCommand: null,
+  installEnabled: true,
   createdAt: NOW,
   updatedAt: NOW,
 });

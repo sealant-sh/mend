@@ -1,12 +1,25 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 
 import { GatewayConfig } from "./config.ts";
+import {
+  MendChangeDiff,
+  MendEventPointer,
+  MendItem,
+  MendProject,
+  MendProjectDetail,
+  MendRequest,
+  MendSession,
+  MendSessionDetail,
+  MendTurn,
+} from "./mend-workbench.ts";
 
 /**
  * The gateway's view of Mend: an ordinary HTTP client of `/api`, calling as the person who paired
@@ -47,17 +60,35 @@ const MendHarnessCatalog = Schema.Struct({
 export type MendHarnessCatalog = typeof MendHarnessCatalog.Type;
 const decodeHarnessCatalogs = Schema.decodeUnknownEffect(Schema.Array(MendHarnessCatalog));
 
-/** Mend refused the pairing code: unknown, already claimed or expired, or too many tries. */
+/** Mend refused the pairing code: unknown, or already claimed or expired. */
 export class MendPairingRefused extends Schema.TaggedError<MendPairingRefused>()(
   "MendPairingRefused",
   {
-    reason: Schema.Literals(["unknown-code", "spent-code", "rate-limited"]),
+    reason: Schema.Literals(["unknown-code", "spent-code"]),
   },
 ) {
   override get message(): string {
     return `Mend refused the pairing code (${this.reason}).`;
   }
 }
+
+/**
+ * Mend refused the claim without looking at the code: too many failed codes from the client's
+ * address. `retryAfterSeconds` is Mend's own answer, or null when its body did not carry one.
+ */
+export class MendPairingRateLimited extends Schema.TaggedError<MendPairingRateLimited>()(
+  "MendPairingRateLimited",
+  {
+    retryAfterSeconds: Schema.NullOr(Schema.Int),
+  },
+) {
+  override get message(): string {
+    return "Mend refused the pairing claim: too many failed codes from this address.";
+  }
+}
+
+/** Mend's `PairingRateLimited` body (`@mend/api-contracts`, not imported here). */
+const PairingRateLimitedBody = Schema.Struct({ retryAfterSeconds: Schema.Int });
 
 /** Mend no longer accepts the device token: the device was revoked or its person deactivated. */
 export class MendDeviceRefused extends Schema.TaggedError<MendDeviceRefused>()(
@@ -82,15 +113,62 @@ export class MendUnavailable extends Schema.TaggedError<MendUnavailable>()("Mend
   }
 }
 
+/** Mend has no such thing, or the person may not see it: a 404 on a read. */
+export class MendNotFound extends Schema.TaggedError<MendNotFound>()("MendNotFound", {
+  operation: Schema.String,
+}) {
+  override get message(): string {
+    return `Mend found nothing for ${this.operation}.`;
+  }
+}
+
+/**
+ * Mend refused a command with one of its typed errors: the session is not the caller's to steer
+ * (403 `SessionNotSteerable`), its agent is not live (409 `ProtocolSessionNotLive`), the request
+ * was already answered (409 `AgentRequestResolved`), and so on. `tag` and `message` are Mend's.
+ */
+export class MendCommandRefused extends Schema.TaggedError<MendCommandRefused>()(
+  "MendCommandRefused",
+  {
+    operation: Schema.String,
+    status: Schema.Number,
+    tag: Schema.NullOr(Schema.String),
+    detail: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return this.detail ?? `Mend refused ${this.operation} (${this.tag ?? this.status}).`;
+  }
+}
+
+/** A command as the person: Mend's answer, or why it did not take it. */
+export type MendCommand<A> = Effect.Effect<
+  A,
+  MendDeviceRefused | MendNotFound | MendCommandRefused | MendUnavailable
+>;
+
+/** The answer a request takes (`RespondAgentRequest` in @mend/api-contracts). */
+export type MendRequestResponse =
+  | { readonly decision: "accept" | "accept-for-session" | "decline" | "cancel" }
+  | { readonly answers: Readonly<Record<string, ReadonlyArray<string>>> };
+
+/** A read of the person's workbench: Mend's answer, or why there is none. */
+export type MendRead<A> = Effect.Effect<A, MendDeviceRefused | MendNotFound | MendUnavailable>;
+
 export class MendClient extends Context.Service<
   MendClient,
   {
-    /** `POST /api/pair`: spends the code and returns a device token for its person. */
+    /**
+     * `POST /api/pair`: spends the code and returns a device token for its person. `forwardedFor`
+     * is the `x-forwarded-for` the gateway sends: the client's chain plus the address the gateway
+     * saw, so Mend counts failed claims per client rather than one bucket for the gateway.
+     */
     readonly claimPairing: (input: {
       readonly code: string;
       readonly name: string;
       readonly platform: MendDevicePlatform;
-    }) => Effect.Effect<PairClaim, MendPairingRefused | MendUnavailable>;
+      readonly forwardedFor: string | undefined;
+    }) => Effect.Effect<PairClaim, MendPairingRefused | MendPairingRateLimited | MendUnavailable>;
     /**
      * Whether Mend still accepts a device token. Mend has no `GET /api/me`; `GET /api/me/devices`
      * is the smallest read every signed-in person may make, and it answers 401 once the device is
@@ -103,8 +181,91 @@ export class MendClient extends Context.Service<
     readonly listHarnessModels: (
       deviceToken: string,
     ) => Effect.Effect<ReadonlyArray<MendHarnessCatalog>, MendDeviceRefused | MendUnavailable>;
+    /** `GET /api/projects`: the projects the person can see. */
+    readonly listProjects: (deviceToken: string) => MendRead<ReadonlyArray<MendProject>>;
+    /** `GET /api/projects/:id`: the project, its sessions and their list facts. */
+    readonly projectDetail: (deviceToken: string, projectId: string) => MendRead<MendProjectDetail>;
+    /** `GET /api/sessions/:id/turns`: the session's protocol turns, oldest first. */
+    readonly listTurns: (
+      deviceToken: string,
+      sessionId: string,
+    ) => MendRead<ReadonlyArray<MendTurn>>;
+    /**
+     * `GET /api/sessions/:id/items?after=&limit=`: the items whose change-feed cursor is past
+     * `after`, in cursor order, at most `limit` of them.
+     */
+    readonly listItems: (
+      deviceToken: string,
+      sessionId: string,
+      after: number,
+      limit: number,
+    ) => MendRead<ReadonlyArray<MendItem>>;
+    /** `GET /api/sessions/:id/requests`: what its agent asked, answered or not. */
+    readonly listRequests: (
+      deviceToken: string,
+      sessionId: string,
+    ) => MendRead<ReadonlyArray<MendRequest>>;
+    /** `GET /api/sessions/:id`: the session, what the caller may do with it, and its change. */
+    readonly sessionDetail: (deviceToken: string, sessionId: string) => MendRead<MendSessionDetail>;
+    /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
+    readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
+    /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
+    readonly submitTurn: (
+      deviceToken: string,
+      sessionId: string,
+      input: string,
+    ) => MendCommand<MendTurn>;
+    /**
+     * `POST /api/sessions/:id/launch` in protocol mode, with the prompt as its opening turn or, for
+     * an empty prompt, none. Naming no model, effort or permission mode, the launch runs on what
+     * the session's last protocol agent recorded (mend#493).
+     */
+    readonly launchProtocol: (
+      deviceToken: string,
+      sessionId: string,
+      prompt: string,
+    ) => MendCommand<MendSession>;
+    /** `POST /api/turns/:id/interrupt`. */
+    readonly interruptTurn: (deviceToken: string, turnId: string) => MendCommand<void>;
+    /** `POST /api/requests/:id/respond`. */
+    readonly respondRequest: (
+      deviceToken: string,
+      requestId: string,
+      response: MendRequestResponse,
+    ) => MendCommand<MendRequest>;
+    /**
+     * `GET /api/events`: Mend's SSE pointers, filtered by Mend to what the person can see. The
+     * stream ends when the connection does; the caller reconnects and re-reads.
+     */
+    readonly events: (
+      deviceToken: string,
+    ) => Stream.Stream<MendEventPointer, MendDeviceRefused | MendUnavailable>;
   }
 >()("@mend/t3-gateway/MendClient") {}
+
+const decodeProjects = Schema.decodeUnknownEffect(Schema.Array(MendProject));
+const decodeProjectDetail = Schema.decodeUnknownEffect(MendProjectDetail);
+const decodeTurns = Schema.decodeUnknownEffect(Schema.Array(MendTurn));
+const decodeRequests = Schema.decodeUnknownEffect(Schema.Array(MendRequest));
+const decodeItems = Schema.decodeUnknownEffect(Schema.Array(MendItem));
+const decodeSessionDetail = Schema.decodeUnknownEffect(MendSessionDetail);
+const decodeChangeDiff = Schema.decodeUnknownEffect(MendChangeDiff);
+const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
+const decodeSession = Schema.decodeUnknownEffect(MendSession);
+const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
+const MendErrorBody = Schema.Struct({
+  _tag: Schema.optional(Schema.String),
+  message: Schema.optional(Schema.String),
+});
+const decodeErrorBody = Schema.decodeUnknownOption(MendErrorBody);
+const decodePointer = Schema.decodeUnknownOption(Schema.fromJsonString(MendEventPointer));
+
+/** The pointer an SSE `data:` line carries, or null for a heartbeat, a blank or a stray line. */
+export const pointerOfSseLine = (line: string): MendEventPointer | null => {
+  if (!line.startsWith("data:")) return null;
+  const pointer = decodePointer(line.slice("data:".length).trim());
+  return pointer._tag === "Some" ? pointer.value : null;
+};
 
 const readJson = (
   operation: string,
@@ -130,17 +291,24 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             Effect.mapError((cause) => new MendUnavailable({ operation, status: null, cause })),
           );
 
-      const claimPairing = Effect.fn("MendClient.claimPairing")(function* (input: {
+      const claimPairing = Effect.fn("MendClient.claimPairing")(function* ({
+        forwardedFor,
+        ...claim
+      }: {
         readonly code: string;
         readonly name: string;
         readonly platform: MendDevicePlatform;
+        readonly forwardedFor: string | undefined;
       }) {
         const operation = "POST /api/pair";
         const response = yield* send(
           operation,
           HttpClientRequest.post(url("/api/pair")).pipe(
             HttpClientRequest.acceptJson,
-            HttpClientRequest.bodyJsonUnsafe(input),
+            forwardedFor === undefined
+              ? (request) => request
+              : HttpClientRequest.setHeader("x-forwarded-for", forwardedFor),
+            HttpClientRequest.bodyJsonUnsafe(claim),
           ),
         );
         switch (response.status) {
@@ -156,8 +324,15 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             return yield* new MendPairingRefused({ reason: "unknown-code" });
           case 410:
             return yield* new MendPairingRefused({ reason: "spent-code" });
-          case 429:
-            return yield* new MendPairingRefused({ reason: "rate-limited" });
+          case 429: {
+            const body = yield* response.json.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(PairingRateLimitedBody)),
+              Effect.option,
+            );
+            return yield* new MendPairingRateLimited({
+              retryAfterSeconds: Option.getOrNull(Option.map(body, (b) => b.retryAfterSeconds)),
+            });
+          }
           default:
             return yield* new MendUnavailable({
               operation,
@@ -204,6 +379,237 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         );
       });
 
-      return { claimPairing, checkDevice, listHarnessModels };
+      /** A JSON read as the person: 401 is a refused device, 404 is nothing there. */
+      const read = <A>(
+        operation: string,
+        path: string,
+        deviceToken: string,
+        decode: (body: unknown) => Effect.Effect<A, Schema.SchemaError>,
+      ): MendRead<A> =>
+        Effect.gen(function* () {
+          const response = yield* send(
+            operation,
+            HttpClientRequest.get(url(path)).pipe(
+              HttpClientRequest.acceptJson,
+              HttpClientRequest.bearerToken(deviceToken),
+            ),
+          );
+          if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+          if (response.status === 404) return yield* new MendNotFound({ operation });
+          if (response.status !== 200) {
+            return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+          }
+          const body = yield* readJson(operation, response);
+          return yield* decode(body).pipe(
+            Effect.mapError(
+              (cause) => new MendUnavailable({ operation, status: response.status, cause }),
+            ),
+          );
+        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+
+      /**
+       * A JSON command as the person. 401 is a refused device and 404 is nothing there; any other
+       * 4xx is Mend's typed refusal, read from its body.
+       */
+      const command = <A>(
+        operation: string,
+        path: string,
+        deviceToken: string,
+        body: unknown,
+        decode: ((value: unknown) => Effect.Effect<A, Schema.SchemaError>) | null,
+      ): MendCommand<A | undefined> =>
+        Effect.gen(function* () {
+          const response = yield* send(
+            operation,
+            HttpClientRequest.post(url(path)).pipe(
+              HttpClientRequest.acceptJson,
+              HttpClientRequest.bearerToken(deviceToken),
+              HttpClientRequest.bodyJsonUnsafe(body),
+            ),
+          );
+          if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+          if (response.status === 404) return yield* new MendNotFound({ operation });
+          if (response.status >= 400 && response.status < 500) {
+            const refusal = decodeErrorBody(
+              yield* response.json.pipe(Effect.orElseSucceed((): unknown => null)),
+            );
+            return yield* new MendCommandRefused({
+              operation,
+              status: response.status,
+              tag: refusal._tag === "Some" ? (refusal.value._tag ?? null) : null,
+              detail: refusal._tag === "Some" ? (refusal.value.message ?? null) : null,
+            });
+          }
+          if (response.status < 200 || response.status >= 300) {
+            return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+          }
+          if (decode === null) return undefined;
+          const value = yield* readJson(operation, response);
+          return yield* decode(value).pipe(
+            Effect.mapError(
+              (cause) => new MendUnavailable({ operation, status: response.status, cause }),
+            ),
+          );
+        }).pipe(Effect.withSpan(`MendClient ${operation}`));
+
+      /** The decoded answer of a command that has one. */
+      const answered = <A>(effect: MendCommand<A | undefined>, operation: string): MendCommand<A> =>
+        Effect.flatMap(effect, (value) =>
+          value === undefined
+            ? Effect.fail(new MendUnavailable({ operation, status: null, cause: null }))
+            : Effect.succeed(value),
+        );
+
+      const sessionDetail = (deviceToken: string, sessionId: string) =>
+        read(
+          "GET /api/sessions/:id",
+          `/api/sessions/${encodeURIComponent(sessionId)}`,
+          deviceToken,
+          decodeSessionDetail,
+        );
+
+      const changeDiff = (deviceToken: string, changeId: string) =>
+        read(
+          "GET /api/changes/:id/diff",
+          `/api/changes/${encodeURIComponent(changeId)}/diff`,
+          deviceToken,
+          decodeChangeDiff,
+        );
+
+      const submitTurn = (deviceToken: string, sessionId: string, input: string) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/turns",
+            `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
+            deviceToken,
+            { input },
+            decodeTurn,
+          ),
+          "POST /api/sessions/:id/turns",
+        );
+
+      const launchProtocol = (deviceToken: string, sessionId: string, prompt: string) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/launch",
+            `/api/sessions/${encodeURIComponent(sessionId)}/launch`,
+            deviceToken,
+            // No prompt is a launch that only brings the agent up (the gateway's relaunch).
+            prompt === "" ? { mode: "protocol" } : { mode: "protocol", prompt },
+            decodeSession,
+          ),
+          "POST /api/sessions/:id/launch",
+        );
+
+      const interruptTurn = (deviceToken: string, turnId: string) =>
+        command(
+          "POST /api/turns/:id/interrupt",
+          `/api/turns/${encodeURIComponent(turnId)}/interrupt`,
+          deviceToken,
+          {},
+          null,
+        ).pipe(Effect.asVoid);
+
+      const respondRequest = (
+        deviceToken: string,
+        requestId: string,
+        response: MendRequestResponse,
+      ) =>
+        answered(
+          command(
+            "POST /api/requests/:id/respond",
+            `/api/requests/${encodeURIComponent(requestId)}/respond`,
+            deviceToken,
+            response,
+            decodeRequest,
+          ),
+          "POST /api/requests/:id/respond",
+        );
+
+      const listProjects = (deviceToken: string) =>
+        read("GET /api/projects", "/api/projects", deviceToken, decodeProjects);
+
+      const projectDetail = (deviceToken: string, projectId: string) =>
+        read(
+          "GET /api/projects/:id",
+          `/api/projects/${encodeURIComponent(projectId)}`,
+          deviceToken,
+          decodeProjectDetail,
+        );
+
+      const listTurns = (deviceToken: string, sessionId: string) =>
+        read(
+          "GET /api/sessions/:id/turns",
+          `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
+          deviceToken,
+          decodeTurns,
+        );
+
+      const listItems = (deviceToken: string, sessionId: string, after: number, limit: number) =>
+        read(
+          "GET /api/sessions/:id/items",
+          `/api/sessions/${encodeURIComponent(sessionId)}/items?after=${after}&limit=${limit}`,
+          deviceToken,
+          decodeItems,
+        );
+
+      const listRequests = (deviceToken: string, sessionId: string) =>
+        read(
+          "GET /api/sessions/:id/requests",
+          `/api/sessions/${encodeURIComponent(sessionId)}/requests`,
+          deviceToken,
+          decodeRequests,
+        );
+
+      const events = (deviceToken: string) => {
+        const operation = "GET /api/events";
+        return Stream.unwrap(
+          Effect.gen(function* () {
+            const response = yield* send(
+              operation,
+              HttpClientRequest.get(url("/api/events")).pipe(
+                HttpClientRequest.accept("text/event-stream"),
+                HttpClientRequest.bearerToken(deviceToken),
+              ),
+            );
+            if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+            if (response.status !== 200) {
+              return yield* new MendUnavailable({
+                operation,
+                status: response.status,
+                cause: null,
+              });
+            }
+            return response.stream.pipe(
+              Stream.mapError(
+                (cause) => new MendUnavailable({ operation, status: response.status, cause }),
+              ),
+            );
+          }),
+        ).pipe(
+          Stream.decodeText,
+          Stream.splitLines,
+          Stream.map(pointerOfSseLine),
+          Stream.filter((pointer): pointer is MendEventPointer => pointer !== null),
+        );
+      };
+
+      return {
+        claimPairing,
+        checkDevice,
+        listHarnessModels,
+        listProjects,
+        projectDetail,
+        listTurns,
+        listItems,
+        listRequests,
+        sessionDetail,
+        changeDiff,
+        submitTurn,
+        launchProtocol,
+        interruptTurn,
+        respondRequest,
+        events,
+      };
     }),
   );

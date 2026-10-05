@@ -31,6 +31,8 @@ import * as path from "node:path";
 
 import { Effect, Schema } from "effect";
 
+import { OPENCODE_DATABASE, readOpencodeHome } from "./opencode-state.ts";
+
 export const HarnessStateManifest = Schema.Struct({
   harness: Schema.String,
   /** The harness's OWN session id — what a native resume addresses. */
@@ -192,6 +194,12 @@ interface HarnessStateShape {
   readonly liveTranscript: RegExp | null;
   /** Derive the provider session id from the primary transcript's path/name. */
   readonly providerSessionId: (transcriptPath: string) => string | null;
+  /**
+   * For a harness that keeps no transcript file (`liveTranscript` null): the `$HOME`-relative
+   * file whose presence says it left a conversation behind, so a harvest commits its state with
+   * no transcript and no session id, and a resume continues it (`nativeResumeArgv`).
+   */
+  readonly stateFile?: string;
 }
 
 /**
@@ -234,6 +242,8 @@ export const HARNESS_HOME_CREDENTIALS: ReadonlyArray<string> = [
   ".codex/auth.json",
   ".pi/agent/auth.json",
   ".local/share/opencode/auth.json",
+  // opencode keeps the logins of the MCP servers it connects to beside its own (`mcp/auth.ts`).
+  ".local/share/opencode/mcp-auth.json",
 ];
 
 /** `chmod go-rwx` over every credential that exists, quiet about the ones that do not. */
@@ -266,14 +276,18 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     liveTranscript: /^\.codex\/sessions\/[^/]+\/[^/]+\/[^/]+\/rollout-[^/]+\.jsonl$/,
     providerSessionId: (file) => CODEX_ROLLOUT.exec(file)?.[1] ?? null,
   },
-  // opencode keeps its sessions in a SQLite database (`opencode.db`), not files: the directory
-  // is relocated and harvested whole, and no session id is read from it yet.
+  // opencode keeps its sessions in a SQLite database (`opencode.db`), not files: the directory is
+  // relocated and harvested whole, and the harvest reads which conversation the process held out
+  // of the database (`opencode-state.ts`), which a resume opens by id (`--session`). Its state
+  // directory holds the model it last used and the prompt history, which a resume needs as much
+  // (`OPENCODE_SEED` writes the first model).
   opencode: {
-    paths: [".local/share/opencode"],
-    homeDirs: [".local/share/opencode"],
+    paths: [".local/share/opencode", ".local/state/opencode"],
+    homeDirs: [".local/share/opencode", ".local/state/opencode"],
     latestTranscript: "true",
     liveTranscript: null,
     providerSessionId: () => null,
+    stateFile: OPENCODE_DATABASE,
   },
   pi: {
     paths: [".pi/agent/sessions", ".pi/agent/settings.json"],
@@ -356,7 +370,9 @@ const physicalRootFunction = (mountPath: string) =>
  * points at (docs/adr/0010) or anything else outside the harness home never enters the archive.
  * The relocation's own top-level links are the one indirection taken, by reading under the mount.
  * Conversations Mend carried in from other sessions (docs/adr/0009, "Codex") stay out: restored
- * without their list, one could read as this session's own.
+ * without their list, one could read as this session's own. So does every login file the harness
+ * home can hold (`HARNESS_HOME_CREDENTIALS`): opencode's state path is its whole data directory,
+ * `auth.json` included, and the store keeps no login.
  *
  * Exit 3 when none of the paths is present. Prints the archive, base64, on stdout. The archive and
  * the exclude list go under `$TMPDIR`, `/tmp` by default.
@@ -371,8 +387,9 @@ export const harvestHarnessStateScript = (
     physicalRootFunction(mountPath) +
     `A=""; B=""; for p in ${list}; do [ -e "$p" ] || continue; physical_root "$p" || continue; ` +
     `if [ "$R" = "$HOME" ]; then B="$B $p"; else A="$A $p"; fi; done; ` +
-    '[ -n "$A$B" ] || exit 3; X="$O.exclude"; : > "$X"; ' +
-    `C="${mountPath}/${CARRIED_TRANSCRIPTS}"; [ -s "$C" ] && sed 's/.*/*&*/' "$C" > "$X"; ` +
+    '[ -n "$A$B" ] || exit 3; X="$O.exclude"; ' +
+    `printf '%s\\n' ${HARNESS_HOME_CREDENTIALS.map((file) => `"${file}"`).join(" ")} > "$X"; ` +
+    `C="${mountPath}/${CARRIED_TRANSCRIPTS}"; [ -s "$C" ] && sed 's/.*/*&*/' "$C" >> "$X"; ` +
     `set --; [ -n "$A" ] && set -- "$@" -C "${mountPath}" $A; [ -n "$B" ] && set -- "$@" -C "$HOME" $B; ` +
     'tar -czf "$O.tgz" -X "$X" "$@" && base64 -w0 "$O.tgz"'
   );
@@ -389,9 +406,23 @@ export const readHarnessFileScript = (mountPath: string = HARNESS_HOME_MOUNT_PAT
   physicalRootFunction(mountPath) +
   'physical_root "$rel" || { echo "a symlink is on the way to $1" >&2; exit 4; }; cat "$R/$rel"';
 
+/**
+ * Login files a capture made before the platform left them out may still hold, under the harness
+ * home: opencode's MCP server logins (`mcp-auth.json`, until sealantd#136). Capture mode's
+ * relocation removes a plain one unread before any harness or shell starts, so one person's login
+ * a materialised head brought never reaches the next person's session, and removes a link there
+ * unless it leads to the one place the opencode seed links it to, `keptAt` in the executor's own
+ * home (`OPENCODE_MCP_AUTH_SEED`): a link planted into the worktree would have the next person's
+ * opencode write their logins into the change.
+ */
+export const CAPTURED_LOGIN_FILES: ReadonlyArray<{
+  readonly path: string;
+  readonly keptAt: string;
+}> = [{ path: ".local/share/opencode/mcp-auth.json", keptAt: ".mend/opencode/mcp-auth.json" }];
+
 export const relocateHarnessHomeScript = (
   mountPath: string = HARNESS_HOME_MOUNT_PATH,
-  options: { readonly keepStoreReadable?: boolean } = {},
+  options: { readonly keepStoreReadable?: boolean; readonly dropCapturedLogins?: boolean } = {},
 ): string => {
   const dirs = [...new Set(Object.values(HARNESS_STATE).flatMap((shape) => shape.homeDirs))];
   // The parents of each harness directory are created when missing; the harness directory itself
@@ -473,9 +504,24 @@ export const relocateHarnessHomeScript = (
     `${tightenCredentials(mountPath)}; done' ` +
     `>/dev/null 2>&1 & fi; ` +
     `chmod -R go+rX "${mountPath}" 2>/dev/null || true; ${tightenCredentials(mountPath)}`;
-  return [...preflight, ...perDir, ...(options.keepStoreReadable === false ? [] : [keeper])].join(
-    "; ",
-  );
+  const dropLogins = CAPTURED_LOGIN_FILES.map(({ path: file, keptAt }) => {
+    const keptDir = keptAt.split("/").slice(0, -1).join("/");
+    const keptName = keptAt.split("/").at(-1) ?? "";
+    return (
+      `if [ -L "${mountPath}/${file}" ]; then lt=$(readlink "${mountPath}/${file}"); ` +
+      `lk=$(cd "$HOME/${keptDir}" 2>/dev/null && pwd -P) || lk="$HOME/${keptDir}"; ` +
+      `if [ "$lt" != "$lk/${keptName}" ] && [ "$lt" != "$HOME/${keptAt}" ]; then ` +
+      `rm -f "${mountPath}/${file}" || fail "remove a captured login link: ${file}"; fi; ` +
+      `elif [ -e "${mountPath}/${file}" ]; then ` +
+      `rm -rf "${mountPath}/${file}" || fail "remove a captured login: ${file}"; fi`
+    );
+  });
+  return [
+    ...preflight,
+    ...perDir,
+    ...(options.dropCapturedLogins === true ? dropLogins : []),
+    ...(options.keepStoreReadable === false ? [] : [keeper]),
+  ].join("; ");
 };
 
 /**
@@ -555,6 +601,25 @@ export const locateLiveTranscript = (
     }
   });
 
+/**
+ * Whether the session's harness home holds a conversation, server-side: a transcript, or for
+ * opencode a database that opens and lists at least one conversation (`readOpencodeHome`). An
+ * empty, corrupt or linked database is none.
+ */
+export const hasLiveConversation = (
+  harnessHomePath: string,
+  harness: string,
+): Effect.Effect<boolean> =>
+  locateLiveTranscript(harnessHomePath, harness).pipe(
+    Effect.flatMap((live) =>
+      live !== null || HARNESS_STATE[harness]?.stateFile === undefined
+        ? Effect.succeed(live !== null)
+        : readOpencodeHome(harnessHomePath).pipe(
+            Effect.map((conversations) => conversations !== null && conversations.length > 0),
+          ),
+    ),
+  );
+
 /** Turn a normal harness launch into that harness's native session resume. */
 export const nativeResumeArgv = (
   harness: string,
@@ -562,6 +627,19 @@ export const nativeResumeArgv = (
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => {
   if (providerSessionId === null) return argv;
+  // opencode's conversations are rows in its database; the harvest read which one this session
+  // held. A launch that brings a prompt opens on it instead: opencode submits `--prompt` only from
+  // its home screen, which opening a conversation skips.
+  if (harness === "opencode") {
+    if (
+      argv[0] !== "opencode" ||
+      ["--continue", "-c", "--session", "-s", "--prompt"].some((flag) => argv.includes(flag))
+    ) {
+      return argv;
+    }
+    const [, ...tail] = argv;
+    return ["opencode", "--session", providerSessionId, ...tail];
+  }
   switch (harness) {
     case "claude": {
       if (

@@ -279,6 +279,7 @@ export const makeProject = (facts: {
     inheritUserSkills: false,
     hotSessions: 0,
     installCommand: null,
+    installEnabled: true,
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -721,6 +722,11 @@ export const createTenancyWorld = async (
       "worktrees",
       {
         byId: (id) => found(worktrees, id, () => new WorktreeNotFoundError({ id })),
+        // A removal deletes the row; its sessions, change and chain cascade in the database.
+        remove: (id) =>
+          Effect.sync(() => {
+            worktrees.delete(id);
+          }),
       },
       calls,
     ),
@@ -753,6 +759,8 @@ export const createTenancyWorld = async (
       {
         byId: (id) => Effect.succeed(services.get(id) ?? null),
         listAll: () => Effect.succeed([...services.values()]),
+        listForSession: (sessionId) =>
+          Effect.succeed([...services.values()].filter((row) => row.sessionId === sessionId)),
         liveCountsForSessions: () => Effect.succeed(new Map()),
       },
       calls,
