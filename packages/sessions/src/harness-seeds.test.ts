@@ -14,6 +14,7 @@ import {
   OPENCODE_SEED,
   PI_SEED,
   withCodexMemory,
+  launchesCodex,
   withCodexMemoryOff,
   withHarnessSetup,
   withoutCodexDaemon,
@@ -622,6 +623,36 @@ describe("Codex's memory turned off", () => {
         { join: true },
       ),
     ).toEqual(["codex", ...off, ...unsummarised, "-c", "model=gpt", "app-server"]);
+    // Every form clap takes, Codex's `memory_tool` alias, and a table keeps its other keys.
+    expect(
+      withCodexMemoryOff(
+        [
+          "codex",
+          "-cfeatures.memories=true",
+          "-c=features.memories=true",
+          "-c",
+          "features.memory_tool=true",
+          "--enable",
+          "memory_tool",
+          "--enable=memory_tool",
+          "-c",
+          "features={memories=true, web_search=true}",
+          "--config",
+          "features={web_search=true}",
+          "-c",
+          "memories={generate_memories=true}",
+        ],
+        { join: true },
+      ),
+    ).toEqual([
+      "codex",
+      ...off,
+      ...unsummarised,
+      "-c",
+      "features={web_search=true}",
+      "--config",
+      "features={web_search=true}",
+    ]);
     const [, , script] = withCodexMemoryOff(
       [
         "sh",
@@ -641,5 +672,16 @@ describe("Codex's memory turned off", () => {
       "codex",
       ...off,
     ]);
+  });
+});
+
+describe("what runs Codex, as Mend launches it", () => {
+  it("is decided by the command line, not the harness's name", () => {
+    expect(launchesCodex(["codex", "resume", "abc"])).toBe(true);
+    expect(launchesCodex(["sh", "-c", 'exec codex -c features.memories=true "$prompt"'])).toBe(
+      true,
+    );
+    expect(launchesCodex(["claude"])).toBe(false);
+    expect(launchesCodex(["sh", "-c", "exec claude"])).toBe(false);
   });
 });

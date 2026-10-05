@@ -83,9 +83,11 @@ much smaller: the memory.
    one person's memory could be saved as another's:
    - **The server decides whose memory the home holds:** the person whose launch made the executor
      holding it, the only launch that delivers into it. The launch records that
-     (`agent_memory_homes`) when it hands the home over, as pending: after moving another person's
-     memory, Mend forces a capture, and the record is saved once a capture of that executor's epoch
-     at that position or later is on the worktree's chain. An executor lost before that leaves the
+     (`agent_memory_homes`) when it hands the home over, as pending, at a chain position not known
+     yet. The first flush of that executor after the move that has caught up, under its epoch, fills
+     the position in: one Mend forces after moving another person's memory (off the launch path), or
+     any later one, an agent's end included. The record is saved once a capture of that epoch at
+     that position or later is on the worktree's chain. An executor lost before that leaves the
      previous home recorded, which is what the restored head holds. Read-backs go by the saved
      record; a launch into the live executor goes by the pending one, which names it. The record
      outlives the session rows. Only that person's sessions read the home back. When the server
@@ -104,9 +106,11 @@ much smaller: the memory.
 
      A hand-over that cannot finish fails the launch, as pi's profile does. A join waits while one
      runs. The launcher's own home costs a few database reads and one write, and nothing in the
-     executor. Another person's home also costs the capture read, one `sh` exec and one forced
-     capture.
+     executor. Another person's home also costs the capture read and one `sh` exec on the launch
+     path, and one forced capture after the agent starts.
 
+   - **What counts as a Codex is what runs:** a `codex` command line, whatever the session's harness
+     is called (`mend run -- codex` too).
    - **A Codex in the launcher's own home summarises only their conversations:** before it starts,
      every conversation in its thread index (`state_5.sqlite`) that is not the launcher's is set to
      `memory_mode = 'disabled'`, and the launcher's own that Mend disabled earlier are given back. A
@@ -114,10 +118,10 @@ much smaller: the memory.
      state database under another name), that Codex starts with its memory off; the conversations it
      starts stay enabled, so a later launch of theirs builds memory from them.
    - **A Codex that joins another person's executor starts with its memory fully off**
-     (`features.memories=false`, `memories.generate_memories=false`; a `--enable memories`, or a
-     `-c`/`--config` naming a memory setting, dropped) and changes no thread's memory mode: the home
-     owner's selection stands, and the threads it creates are born disabled, so no Codex, the
-     joiner's own included, ever builds memory from them.
+     (`features.memories=false`, `memories.generate_memories=false`; a `--enable memories` or
+     `--enable memory_tool`, and a `-c`/`--config` naming a memory setting in any form, dropped) and
+     changes no thread's memory mode: the home owner's selection stands, and the threads it creates
+     are born disabled, so no Codex, the joiner's own included, ever builds memory from them.
    - **What a joined agent writes goes to the executor's owner:** it shares their memory files, and
      nobody can tell its lines from theirs. Lines written before the owner's agent ends are saved
      with that read-back. Lines written after it wait for the owner's next read-back of that home:

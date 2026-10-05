@@ -266,7 +266,12 @@ import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./de
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
-import { CODEX_DAEMON_OFF, withCodexMemoryOff, withHarnessSetup } from "./harness-seeds.ts";
+import {
+  CODEX_DAEMON_OFF,
+  launchesCodex,
+  withCodexMemoryOff,
+  withHarnessSetup,
+} from "./harness-seeds.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
@@ -2444,6 +2449,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         kind: CaptureFlushKind,
         fence: EvidenceFence,
       ) {
+        // A memory hand-over this executor recorded before this flush was asked, its position not
+        // known yet: a caught-up answer under its epoch says where the moved home is saved.
+        const pendingHome =
+          capture === null
+            ? null
+            : ((yield* agentMemory.homeOf(session.worktreeId))?.pending ?? null);
+        const unplacedHome =
+          pendingHome !== null && pendingHome.n === null && pendingHome.workspaceId === workspace.id
+            ? pendingHome
+            : null;
         // Receipt is marked as the answer arrives (review 2026-09-28 (8) #4): from here its fence
         // clears only with its publication, whatever fails between.
         const outcome = yield* sealant.captureFlush(workspace, kind).pipe(
@@ -2475,6 +2490,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Published before anything else is done with it: a log is never what decides whether a
         // received answer becomes the executor's evidence.
         yield* recordReading(session, workspace.id, reading, kind, fence);
+        if (
+          unplacedHome !== null &&
+          reading.headN !== null &&
+          reading.epoch === unplacedHome.epoch &&
+          (captureCaughtUp(reading) || (kind === "final" && captureSaved(reading)))
+        ) {
+          yield* agentMemory.notePendingHomePosition(
+            session.worktreeId,
+            workspace.id,
+            unplacedHome.epoch,
+            reading.headN,
+          );
+        }
         if (kind === "final") recentFinals.set(workspace.id, { reading, atMs: Date.now() });
         throughputs.set(
           workspace.id,
@@ -9898,16 +9926,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Capture mode: the worktree's home is handed to the person launching this executor before
        * any of their memory goes in (docs/adr/0009). The home holds whatever the worktree's last
        * executor left: the memory of the person the server recorded for it (`agent_memory_homes`,
-       * which outlives the session rows). The launcher's own home costs one database write and
-       * nothing in the executor. When it was someone else's, or nobody's the server can name:
+       * which outlives the session rows). The launcher's own home costs a few database reads and
+       * one write, and nothing in the executor. When it was someone else's, or nobody's the server
+       * can name:
        * - the home is first read back into the previous person's memory, so what they learned and
        *   had not saved yet reaches them. Nobody the server cannot name is credited;
        * - then every memory path moves to `.mend/agent-memory-kept/<stamp>-handover-…`, never
        *   deleted, and the owner record names the new person, written even when the home held
        *   nothing;
-       * - then the server records the home as the launcher's, pending until this executor's first
-       *   save is the head, before any delivery step that can fail. An executor lost before it
-       *   saved leaves the previous home recorded, as the restored head holds it.
+       * - then the server records the home as the launcher's, pending, before any delivery step
+       *   that can fail, and forces a capture of the moved home off the launch path. The record
+       *   counts once this executor's first caught-up flush after the move has placed it and a
+       *   capture of its epoch at that position is on the chain (`recordedHomeOf`). An executor
+       *   lost before that leaves the previous home recorded, as the restored head holds it.
        *
        * Load-bearing, as pi's profile is: a hand-over that cannot finish fails the launch rather
        * than start an agent on another person's memory. A join waits while it runs
@@ -9919,9 +9950,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         function* (session: Session, workspace: Workspace) {
           if (capture === null) return;
           const owner = session.ownerUserId;
-          // Pending until a capture of this executor's epoch is saved (`recordedHomeOf`).
+          // Pending until a caught-up flush of this executor places it and its capture is saved.
           const epoch = (yield* capture.repo.leaseOf(session.worktreeId))?.epoch ?? null;
-          const recordHome = (n: number | null) =>
+          const recordHome =
             epoch === null
               ? Effect.logWarning(
                   "session engine: agent memory · the hand-over was not recorded · no lease",
@@ -9930,7 +9961,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   session.worktreeId,
                   { userId: owner, sessionId: session.id, workspaceId: workspace.id },
                   epoch,
-                  n,
                 );
           const recorded = yield* recordedHomeOf(session.worktreeId);
           let from: { readonly userId: string | null; readonly sessionId: string | null } | null =
@@ -9949,7 +9979,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ? { userId: only.ownerUserId, sessionId: only.id }
                   : null;
           }
-          if (owner !== null && from?.userId === owner) return yield* recordHome(null);
+          if (owner !== null && from?.userId === owner) return yield* recordHome;
           let credited: string | null = null;
           if (from !== null && from.userId !== null) {
             const read = yield* inOneReadPass(agentMemoryFromCapture(session)).pipe(
@@ -9988,24 +10018,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               null,
             );
           }
-          // A capture forced now holds the moved home; the record counts only from it, never from
-          // one staged before the move. A flush that does not answer leaves any capture of the
-          // epoch to count.
-          const forced = yield* observeCaptureFlush(
-            session,
-            workspace,
-            "agent memory hand-over",
-            CHECKPOINT_FLUSH_TIMEOUT,
-            "suspend",
+          yield* recordHome;
+          // A capture of the moved home, forced off the launch path: its caught-up answer places
+          // the record (`observeCaptureFlushFenced`), and so does any later one of this executor.
+          // Never a capture staged before the move.
+          yield* Effect.forkIn(
+            observeCaptureFlush(
+              session,
+              workspace,
+              "agent memory hand-over",
+              CHECKPOINT_FLUSH_TIMEOUT,
+              "suspend",
+            ).pipe(Effect.ignore),
+            scope,
           );
-          const savedFrom =
-            forced !== null && forced.pending === 0 && forced.headN !== null ? forced.headN : null;
-          yield* recordHome(savedFrom);
           yield* Effect.logInfo("session engine: agent memory · handed over").pipe(
             Effect.annotateLogs({
               sessionId: session.id,
               credited: credited === null ? "nobody" : "the previous person",
-              savedFrom: savedFrom ?? "any capture of the epoch",
               kept,
               moved: result.stdout.split("\n").filter((line) => line.startsWith("memory moved"))
                 .length,
@@ -10032,9 +10062,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const withholdCodexThreads = Effect.fn("SessionEngine.withholdCodexThreads")(function* (
         session: Session,
         workspace: Workspace,
+        argv: ReadonlyArray<string>,
         carried: ReadonlyArray<string>,
       ) {
-        if (capture === null || session.harness !== "codex") return true;
+        if (capture === null || !launchesCodex(argv)) return true;
         const members = (yield* sessions.listForWorktree(session.worktreeId)).filter(
           (member) => member.ownerUserId !== null && member.ownerUserId === session.ownerUserId,
         );
@@ -10564,8 +10595,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Whose memory a worktree's capture-mode home holds, as the server recorded it
        * (`agent_memory_homes`): the settled home, and the workspace of a hand-over still pending.
-       * A pending hand-over counts once a capture of its executor's epoch is on the worktree's
-       * chain, and is settled then. Null: no launch recorded one (executors launched before the record).
+       * A pending hand-over counts once its executor's first caught-up flush after the move placed
+       * it (`observeCaptureFlushFenced`) and a capture of its epoch at that position or later is
+       * on the worktree's chain, and is settled then. Null: no launch recorded one (executors
+       * launched before the record).
        */
       const recordedHomeOf = Effect.fn("SessionEngine.recordedHomeOf")(function* (
         worktreeId: WorktreeId,
@@ -10579,9 +10612,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // register under epochs of their own.
           const chain = yield* capture.repo.listChain(worktreeId);
           if (
-            chain.some(
-              (row) => row.epoch === pending.epoch && (pending.n === null || row.n >= pending.n),
-            )
+            pending.n !== null &&
+            chain.some((row) => row.epoch === pending.epoch && row.n >= (pending.n ?? 0))
           ) {
             yield* agentMemory.settleHome(worktreeId, pending.epoch);
             return { settled: pending, pendingWorkspaceId: null };
@@ -11825,7 +11857,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
-        const codexMemoryOn = yield* withholdCodexThreads(session, workspace, carried);
+        const codexMemoryOn = yield* withholdCodexThreads(session, workspace, shapedArgv, carried);
         yield* deliverPiProfile(session, project, workspace).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: the pi profile was not delivered").pipe(
@@ -12639,13 +12671,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // A Codex in a home that is not the launcher's (a join) touches no thread's memory mode:
           // the home owner's selection stands. It starts with its memory off and makes no thread
           // anyone's Codex will summarise.
+          // Decided on what runs, not the harness's name: a `mend run -- codex` is a Codex too.
           const ownHome =
             capture === null ||
-            session.harness !== "codex" ||
+            !launchesCodex(shapedArgv) ||
             (session.ownerUserId !== null &&
               (yield* liveHomeOwnerOf(session, SealantWorkspaceId.make(workspace.id))) ===
                 session.ownerUserId);
-          const codexMemoryOn = ownHome && (yield* withholdCodexThreads(session, workspace, []));
+          const codexMemoryOn =
+            ownHome && (yield* withholdCodexThreads(session, workspace, shapedArgv, []));
           const memoryShapedArgv = codexMemoryOn
             ? shapedArgv
             : withCodexMemoryOff(shapedArgv, { join: !ownHome });

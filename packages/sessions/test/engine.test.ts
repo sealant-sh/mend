@@ -967,14 +967,29 @@ const agentMemoryLayerOf = (
 ): Layer.Layer<AgentMemoryRepo> =>
   Layer.succeed(AgentMemoryRepo, {
     homeOf: (worktreeId) => Effect.sync(() => homes.get(worktreeId) ?? null),
-    recordPendingHome: (worktreeId, home, epoch, n) =>
+    recordPendingHome: (worktreeId, home, epoch) =>
       Effect.sync(
         () =>
           void homes.set(worktreeId, {
             settled: homes.get(worktreeId)?.settled ?? null,
-            pending: { ...home, epoch, n },
+            pending: { ...home, epoch, n: null },
           }),
       ),
+    notePendingHomePosition: (worktreeId, workspaceId, epoch, n) =>
+      Effect.sync(() => {
+        const current = homes.get(worktreeId);
+        const pending = current?.pending ?? null;
+        if (
+          current === undefined ||
+          pending === null ||
+          pending.workspaceId !== workspaceId ||
+          pending.epoch !== epoch ||
+          pending.n !== null
+        ) {
+          return;
+        }
+        homes.set(worktreeId, { ...current, pending: { ...pending, n } });
+      }),
     settleHome: (worktreeId, epoch) =>
       Effect.sync(() => {
         const pending = homes.get(worktreeId)?.pending ?? null;
@@ -7457,6 +7472,26 @@ const shipCapturedHarnessHome = (
   }).pipe(Effect.provide(memory.layer));
 
 /** Poll a forked side effect (a warm, a replacement) into view; the pool fakes are in memory. */
+/**
+ * Where the worktree's head stands, as an executor's caught-up flush reports it: its lease's epoch
+ * and the head's chain position. A memory hand-over settles only on such an answer.
+ */
+const headReport = (memory: MemoryCaptureStore): Partial<WorkspaceCaptureStatus> => {
+  const [worktreeId, chain] = [...memory.chains.entries()][0] ?? [];
+  const head =
+    chain?.headCapture === null || chain?.headCapture === undefined
+      ? undefined
+      : memory.captures.get(chain.headCapture);
+  return {
+    epoch: worktreeId === undefined ? 0 : (memory.leases.get(worktreeId)?.epoch ?? 0),
+    ...(head === undefined ? {} : { headN: head.n }),
+  };
+};
+
+/** A flush that answers caught up at the worktree's head (`headReport`). */
+const headFlush = (memory: MemoryCaptureStore) => () =>
+  Effect.sync(() => captureAnswer(headReport(memory)));
+
 const until = (condition: () => boolean, label: string) =>
   Effect.gen(function* () {
     for (let i = 0; i < 500 && !condition(); i++) yield* Effect.sleep(Duration.millis(10));
@@ -7655,6 +7690,7 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
                 shipped = true;
               }
               return captureAnswer({
+                ...(shipped ? headReport(memory) : {}),
                 epoch: 2,
                 uploadedObjects: shipped ? 1 : 0,
                 uploadedBytes: shipped ? 1 : 0,
@@ -9571,6 +9607,8 @@ describe("SessionEngine capture mode", () => {
             undefined,
             undefined,
             execCalls,
+            undefined,
+            { flush: headFlush(memory) },
           ),
         },
       );
@@ -9905,6 +9943,7 @@ describe("SessionEngine capture mode", () => {
             undefined,
             {
               relocation,
+              flush: headFlush(memory),
               exec: (argv) =>
                 handoverFails && argv[2]?.includes(".mend/agent-memory-kept") === true
                   ? { exitCode: 1, stdout: "", stderr: "mv: cannot move" }
@@ -9943,8 +9982,9 @@ describe("SessionEngine capture mode", () => {
     "an executor lost before it saved its hand-over hands nothing over: the next launch hands the restored memory over again (%s; docs/adr/0009)",
     { timeout: 30_000 },
     async (_label, preMoveCapture) => {
-      // The capture forced after the hand-over's move is at chain position 50.
-      let forcedHead: number | undefined;
+      // Maria's executor is lost: no flush of hers answers under her epoch, so nothing places her
+      // hand-over (the stand-in still lets her stop go through).
+      let mariaLost = false;
       const created: Array<CreateOptions> = [];
       const memory = makeMemoryCaptureStore();
       const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
@@ -9989,9 +10029,8 @@ describe("SessionEngine capture mode", () => {
               label: null,
               ownerUserId: "user-maria",
             });
-            forcedHead = 50;
+            mariaLost = true;
             yield* engine.launch(lost.id, ["claude"]);
-            forcedHead = undefined;
             if (preMoveCapture) {
               // A capture of Maria's epoch that sealantd staged before the move, with Anna's
               // memory still in it, registers; the forced one never does.
@@ -10014,6 +10053,7 @@ describe("SessionEngine capture mode", () => {
             }
             yield* engine.stop(lost.id);
             yield* until(() => world.sessions.get(lost.id)?.settledAt != null, "Maria settles");
+            mariaLost = false;
 
             // The head is still Anna's executor's, with her memory in place: Maria's next launch
             // hands it over again rather than take it as hers.
@@ -10052,10 +10092,7 @@ describe("SessionEngine capture mode", () => {
             undefined,
             {
               relocation,
-              flush: () =>
-                Effect.succeed(
-                  captureAnswer(forcedHead === undefined ? {} : { headN: forcedHead }),
-                ),
+              flush: () => Effect.sync(() => captureAnswer(mariaLost ? {} : headReport(memory))),
               beforeCreate: (options) =>
                 Effect.gen(function* () {
                   relocation.executorRoot = path.join(testRoot, `lost-executor-${created.length}`);
@@ -10082,10 +10119,13 @@ describe("SessionEngine capture mode", () => {
     },
   );
 
-  it(
-    "a join leaves every thread's memory mode alone and starts its Codex with memory fully off (docs/adr/0009, Codex)",
+  it.each([
+    ["a Codex session", "codex"],
+    ["`mend run -- codex`", "run"],
+  ] as const)(
+    "a join leaves every thread's memory mode alone and starts its Codex with memory fully off (%s; docs/adr/0009, Codex)",
     { timeout: 30_000 },
-    async () => {
+    async (_label, joinerHarness) => {
       const created: Array<CreateOptions> = [];
       const spawned: ReadonlyArray<string>[] = [];
       const withholds: Array<ReadonlyArray<string>> = [];
@@ -10110,7 +10150,7 @@ describe("SessionEngine capture mode", () => {
             expect(withholds).toHaveLength(1);
             expect(spawned.at(-1)).toContain("features.memories=true");
             const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
-              harness: "codex",
+              harness: joinerHarness,
               label: null,
               ownerUserId: "user-maria",
             });
@@ -10140,6 +10180,7 @@ describe("SessionEngine capture mode", () => {
             undefined,
             {
               relocation,
+              flush: headFlush(memory),
               exec: (argv) => {
                 if (argv[3]?.includes("memory_mode") !== true) return undefined;
                 withholds.push(argv);
@@ -10377,6 +10418,7 @@ describe("SessionEngine capture mode", () => {
             undefined,
             {
               relocation,
+              flush: headFlush(memory),
               beforeCreate: (options) =>
                 Effect.gen(function* () {
                   relocation.executorRoot = path.join(

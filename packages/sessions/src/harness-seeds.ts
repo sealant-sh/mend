@@ -201,15 +201,52 @@ export const CODEX_MEMORY_OFF = ["-c", "features.memories=false"] as const;
 /** And makes no thread any Codex will summarise: a new thread is created with memory disabled. */
 export const CODEX_THREADS_UNSUMMARISED = ["-c", "memories.generate_memories=false"] as const;
 
-/** A `-c`/`--config` value naming Codex's memory settings, dotted or as a TOML table. */
-const namesCodexMemory = (value: string): boolean =>
-  /^(features\.memories|memories\.|memories\s*=|features\s*=)/.test(value.trim());
+/** The memory settings a launch may not set for itself, per table (`memory_tool`: Codex's alias). */
+const CODEX_MEMORY_KEYS: Readonly<Record<string, ReadonlyArray<string>>> = {
+  features: ["memories", "memory_tool"],
+  memories: ["generate_memories"],
+};
 
 /**
- * A Codex launch with its memory off, whatever it asked (docs/adr/0009, "Codex"). A `--enable
- * memories`, and a `-c`/`--config` naming a memory setting, would win over Mend's own `-c` or keep
- * a thread enabled, so they are dropped. Takes both shapes Mend launches: `codex …`, and a prompt's
- * `sh -c "… exec codex -c features.memories=true …"`.
+ * A `-c`/`--config` value without Codex's memory settings: null when it named only those (drop the
+ * flag), the value itself when it named none, or its table without them (`features={…}` keeps
+ * every other feature).
+ */
+const withoutCodexMemoryKeys = (value: string): string | null => {
+  const dotted = /^\s*([a-z_]+)\.([a-z_]+)\s*(=|$)/.exec(value);
+  if (dotted !== null) {
+    return CODEX_MEMORY_KEYS[dotted[1] ?? ""]?.includes(dotted[2] ?? "") === true ? null : value;
+  }
+  const table = /^\s*([a-z_]+)\s*=\s*\{(.*)\}\s*$/s.exec(value);
+  const dropped = table === null ? undefined : CODEX_MEMORY_KEYS[table[1] ?? ""];
+  if (table === null || dropped === undefined) return value;
+  const entries = (table[2] ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+  const kept = entries.filter(
+    (entry) => !dropped.includes(entry.split("=")[0]?.trim().replace(/^"|"$/g, "") ?? ""),
+  );
+  if (kept.length === entries.length) return value;
+  return kept.length === 0 ? null : `${table[1]}={${kept.join(",")}}`;
+};
+
+/** Whether `--enable <name>` turns Codex's memory on (`memory_tool`: Codex's alias). */
+const enablesCodexMemory = (name: string | undefined): boolean =>
+  name === "memories" || name === "memory_tool";
+
+/** Whether `argv`, as Mend launches it, runs Codex: `codex …`, or a prompt's `sh -c "… exec codex …"`. */
+export const launchesCodex = (argv: ReadonlyArray<string>): boolean =>
+  argv[0] === "codex" ||
+  (argv[0] === "sh" && argv[1] === "-c" && /(^|[\s;&|])exec codex(\s|$)/.test(argv[2] ?? ""));
+
+/**
+ * A Codex launch with its memory off, whatever it asked (docs/adr/0009, "Codex"). What the launch
+ * says itself would win over Mend's own `-c` or keep a thread enabled, so it is dropped: `--enable
+ * memories` and `--enable memory_tool` (Codex's alias), in either form, and every `-c`/`--config`
+ * naming a memory setting, in every form clap takes (`-c V`, `-cV`, `-c=V`, `--config V`,
+ * `--config=V`; dotted or as a table, whose other keys stay). Takes both shapes Mend launches:
+ * `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
  *
  * `join`: the launch runs in another person's home. Its threads are also created disabled, so no
  * Codex, the holder's included, ever summarises them. In the launcher's own home (Mend could not
@@ -229,16 +266,39 @@ export const withCodexMemoryOff = (
     const kept: Array<string> = [];
     for (let index = 0; index < rest.length; index++) {
       const arg = rest[index] ?? "";
-      if (arg === "--enable" && rest[index + 1] === "memories") {
+      if (arg === "--enable" && enablesCodexMemory(rest[index + 1])) {
         index++;
         continue;
       }
-      if (arg === "--enable=memories") continue;
-      if ((arg === "-c" || arg === "--config") && namesCodexMemory(rest[index + 1] ?? "")) {
-        index++;
+      if (arg.startsWith("--enable=") && enablesCodexMemory(arg.slice("--enable=".length))) {
         continue;
       }
-      if (arg.startsWith("--config=") && namesCodexMemory(arg.slice("--config=".length))) continue;
+      const separate = arg === "-c" || arg === "--config";
+      const attached = separate
+        ? null
+        : arg.startsWith("--config=")
+          ? arg.slice("--config=".length)
+          : arg.startsWith("-c=")
+            ? arg.slice("-c=".length)
+            : arg.startsWith("-c") && arg.length > 2
+              ? arg.slice(2)
+              : null;
+      if (separate) {
+        const value = rest[index + 1];
+        if (value === undefined) {
+          kept.push(arg);
+          continue;
+        }
+        index++;
+        const left = withoutCodexMemoryKeys(value);
+        if (left !== null) kept.push(arg, left);
+        continue;
+      }
+      if (attached !== null) {
+        const left = withoutCodexMemoryKeys(attached);
+        if (left !== null) kept.push("-c", left);
+        continue;
+      }
       kept.push(arg);
     }
     return [head, ...off, ...kept];

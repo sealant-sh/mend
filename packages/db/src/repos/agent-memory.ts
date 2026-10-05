@@ -19,7 +19,7 @@ import {
   unionLines,
   validateAgentMemoryPath,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -399,16 +399,29 @@ export class AgentMemoryRepo extends Context.Service<
      */
     readonly homeOf: (worktreeId: WorktreeId) => Effect.Effect<AgentMemoryHomes | null>;
     /**
-     * The hand-over of the executor launched under `epoch`: pending until a capture of that epoch
-     * at chain position `n` or later is saved (`n` null: any capture of the epoch).
+     * The hand-over of the executor launched under `epoch`: pending, at a chain position not known
+     * yet (`notePendingHomePosition`).
      */
     readonly recordPendingHome: (
       worktreeId: WorktreeId,
       home: AgentMemoryHome,
       epoch: number,
-      n: number | null,
     ) => Effect.Effect<void>;
-    /** A capture of `epoch` is the head: the hand-over pending under it is the home now. */
+    /**
+     * The chain position a caught-up flush of the pending executor (`workspaceId`, under `epoch`)
+     * reached after the hand-over: the record settles on a capture of that epoch at `n` or later.
+     * Only the first one counts.
+     */
+    readonly notePendingHomePosition: (
+      worktreeId: WorktreeId,
+      workspaceId: string,
+      epoch: number,
+      n: number,
+    ) => Effect.Effect<void>;
+    /**
+     * A capture of `epoch` at the pending position or later is on the chain: the hand-over pending
+     * under it is the home now.
+     */
     readonly settleHome: (worktreeId: WorktreeId, epoch: number) => Effect.Effect<void>;
   }
 >()("@mend/db/AgentMemoryRepo") {}
@@ -1004,20 +1017,39 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       worktreeId: WorktreeId,
       home: AgentMemoryHome,
       epoch: number,
-      n: number | null,
     ) {
       const pending = {
         pendingUserId: home.userId,
         pendingSessionId: home.sessionId,
         pendingWorkspaceId: home.workspaceId,
         pendingEpoch: epoch,
-        pendingN: n,
+        pendingN: null,
         updatedAt: new Date(),
       };
       yield* db
         .insert(agentMemoryHomes)
         .values({ worktreeId, ...pending })
         .onConflictDoUpdate({ target: agentMemoryHomes.worktreeId, set: pending })
+        .pipe(Effect.orDie);
+    });
+
+    const notePendingHomePosition = Effect.fn("AgentMemoryRepo.notePendingHomePosition")(function* (
+      worktreeId: WorktreeId,
+      workspaceId: string,
+      epoch: number,
+      n: number,
+    ) {
+      yield* db
+        .update(agentMemoryHomes)
+        .set({ pendingN: n, updatedAt: new Date() })
+        .where(
+          and(
+            eq(agentMemoryHomes.worktreeId, worktreeId),
+            eq(agentMemoryHomes.pendingWorkspaceId, workspaceId),
+            eq(agentMemoryHomes.pendingEpoch, epoch),
+            isNull(agentMemoryHomes.pendingN),
+          ),
+        )
         .pipe(Effect.orDie);
     });
 
@@ -1056,6 +1088,7 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
       importFiles,
       homeOf,
       recordPendingHome,
+      notePendingHomePosition,
       settleHome,
     };
   }),

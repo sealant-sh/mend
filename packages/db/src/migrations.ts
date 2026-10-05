@@ -3034,9 +3034,10 @@ const projectInstallEnabledMigration = Effect.gen(function* () {
  * - `user_id`, `session_id`, `workspace_id`: the settled home, the one the worktree's head capture
  *   holds. `user_id` null: the person was removed, or nobody could be named.
  * - `pending_*`: the hand-over of the executor launched last, under the lease `pending_epoch`. It
- *   counts only once a capture of that epoch, at chain position `pending_n` or later (the capture
- *   forced after the hand-over's move; null when that flush did not answer), is on the chain: an
- *   executor lost before it saved its hand-over leaves the previous home in place.
+ *   counts only once a capture of that epoch, at chain position `pending_n` or later, is on the
+ *   chain. `pending_n` is where the executor's first caught-up flush after the hand-over reached,
+ *   null until one answers: an executor lost before it saved its hand-over leaves the previous
+ *   home in place.
  */
 const agentMemoryHomesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
