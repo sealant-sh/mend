@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -21,6 +21,12 @@ import { GatewayConfig } from "./config.ts";
 /**
  * The gateway's own state (ADR 0012, "State"): one `node:sqlite` file it owns. Mend's records stay
  * in Mend; losing this file loses only the environment id, paired bearers and t3code-side ids.
+ *
+ * The file holds every paired person's Mend device token, usable as that person: the gateway calls
+ * Mend with it when no client request is in flight (the event stream, device checks, queued sends
+ * and relaunches), and after a restart a reconnecting socket carries only a ticket. A hash cannot
+ * make those calls, and a key kept beside the file protects nothing the file's mode does not. So
+ * only the gateway's own user may read it (`restrictStateFile`).
  */
 
 /** One t3code client's bearer, and the Mend device token it stands for. */
@@ -247,6 +253,20 @@ const ensureEnvironmentId = (database: DatabaseSync): string => {
   ).value;
 };
 
+/**
+ * The state file 0600, before SQLite opens it, and a directory the gateway creates 0700. A file an
+ * older gateway created with the umask's mode is narrowed on open, and so are SQLite's `-wal` and
+ * `-shm` beside it (SQLite creates those with the database file's mode). An existing directory is
+ * left as it is: `MEND_T3_GATEWAY_STATE_PATH` may name a directory others use.
+ */
+const restrictStateFile = (path: string): void => {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  closeSync(openSync(path, "a", 0o600));
+  for (const file of [path, `${path}-wal`, `${path}-shm`]) {
+    if (existsSync(file)) chmodSync(file, 0o600);
+  }
+};
+
 /** Opens (or creates) the state file at `path`, migrated, and closes it with the scope. */
 export const openGatewayState = (
   path: string,
@@ -255,7 +275,7 @@ export const openGatewayState = (
     const database = yield* Effect.acquireRelease(
       Effect.try({
         try: () => {
-          if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+          if (path !== ":memory:") restrictStateFile(path);
           const opened = new DatabaseSync(path);
           opened.exec("PRAGMA journal_mode = WAL");
           opened.exec("PRAGMA foreign_keys = ON");

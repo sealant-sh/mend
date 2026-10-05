@@ -173,12 +173,38 @@ To pair, mint a code in Mend (`POST /api/me/devices/pairings`, or the devices pa
 the gateway's host and that code, or `http://<gateway>/pair#token=<code>`. The device shows in
 Mend's device list as `t3code · <client label>`; revoking it there ends the bearer.
 
+Mend allows ten failed pairing claims a minute per client address. The gateway sends each claim with
+`x-forwarded-for`: the client's own header, if any, then the address the gateway saw. Mend believes
+it only from a hop it trusts: loopback (the default `MEND_T3_GATEWAY_MEND_URL`), or an address in
+`MEND_TRUSTED_PROXIES`, the same rule as for any proxy in front of Mend. Reached any other way,
+every client of the gateway shares the gateway's one budget. Clients on the gateway's own machine
+share the loopback budget; a web page can't send `x-forwarded-for` through the gateway's CORS.
+
+A claim Mend refuses for the limit answers `429 Too Many Requests` with Mend's `retry-after` and
+`{"error": "rate_limited", "error_description": "…"}`. t3code's token contract declares no
+rate-limit error, so its clients report "returned undeclared status 429", as a transient failure,
+not as a wrong code. The code is not spent.
+
 ## State
 
 One `node:sqlite` file the gateway owns: the environment id, bearer sessions (the bearer's sha256
-and the Mend device token it stands for), and the id maps phase 1 fills (`project_ids`,
-`thread_ids`, `message_ids`). Mend's database is never touched. Losing the file loses pairings and
-t3code-side ids, never Mend records.
+and the Mend device token it stands for), and the id maps (`run_ids` and `message_ids`, filled by
+every turn a t3code client sends; `project_ids` and `thread_ids` stay empty until phase 2). Mend's
+database is never touched. Losing the file loses pairings and t3code-side ids, never Mend records.
+
+**The file holds every paired person's Mend device token in clear**, and the token acts as that
+person in Mend until the device is revoked. The gateway needs it usable: it calls Mend for a person
+when no client request is in flight (the event stream, device checks every 60 s, queued sends and
+relaunches), and a socket that reconnects after a restart carries only a ticket. A hash cannot make
+those calls, and a key kept beside the file would protect nothing the file's mode does not. So:
+
+- the gateway creates the file `0600` and a missing directory `0700`, and narrows the file, and
+  SQLite's `-wal` and `-shm` beside it, to `0600` each time it opens an existing one;
+- an existing directory keeps its mode: point `MEND_T3_GATEWAY_STATE_PATH` at a directory of its
+  own;
+- run the gateway as a user no one else shares, and keep the file out of backups that others can
+  read. Anyone who can read it, or is root, can act as everyone who paired. Revoking a `t3code · …`
+  device in Mend ends that token.
 
 ## Tests
 

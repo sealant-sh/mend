@@ -25,6 +25,10 @@ export interface FakeMend {
     readonly platform: string;
     readonly token: string;
   }>;
+  /** Every `x-forwarded-for` header `POST /api/pair` saw, claimed or not. */
+  readonly pairForwardedFor: ReadonlyArray<string | undefined>;
+  /** Make `POST /api/pair` answer 429, as Mend's claim limiter does, until set back. */
+  readonly setPairingRateLimited: (limited: boolean) => void;
   /** Every `authorization` header `GET /api/me/devices` saw. */
   readonly deviceChecks: ReadonlyArray<string | undefined>;
   /** Every `authorization` header `GET /api/harnesses/models` saw. */
@@ -102,7 +106,9 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   const claims: Array<FakeMend["claims"][number]> = [];
   const deviceChecks: Array<string | undefined> = [];
   const modelReads: Array<string | undefined> = [];
+  const pairForwardedFor: Array<string | undefined> = [];
   let modelsDown = false;
+  let pairingRateLimited = false;
   let devices = 0;
   const workbench = new FakeWorkbench();
 
@@ -120,6 +126,11 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     void (async () => {
       if (request.method === "POST" && request.url === "/api/pair") {
         const payload = asRecord(JSON.parse(await readBody(request)));
+        const forwarded = request.headers["x-forwarded-for"];
+        pairForwardedFor.push(Array.isArray(forwarded) ? forwarded.join(", ") : forwarded);
+        if (pairingRateLimited) {
+          return json(429, { _tag: "PairingRateLimited", retryAfterSeconds: 42 });
+        }
         const code = normalise(String(payload["code"]));
         const entry = codes.get(code);
         if (entry === undefined) return json(404, { _tag: "PairingCodeNotFound" });
@@ -188,6 +199,10 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
       if (entry !== undefined) entry.revoked = true;
     },
     claims,
+    pairForwardedFor,
+    setPairingRateLimited: (limited) => {
+      pairingRateLimited = limited;
+    },
     deviceChecks,
     modelReads,
     setModelsDown: (down) => {

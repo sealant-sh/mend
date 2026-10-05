@@ -9,6 +9,7 @@ import {
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as HttpEffect from "effect/unstable/http/HttpEffect";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
@@ -16,7 +17,11 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { GatewayAuth, type GatewayCredentialInvalid } from "./auth.ts";
+import {
+  GatewayAuth,
+  type GatewayCredentialInvalid,
+  type GatewayPairingRateLimited,
+} from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal, notFound, requestInvalid, scopeRequired } from "./http-errors.ts";
 import { Projections } from "./hub.ts";
@@ -48,6 +53,46 @@ const invalidCredential = (error: GatewayCredentialInvalid) =>
     error.dpopFailureReason === undefined ? Effect.void : dpopChallenge,
     authInvalid("invalid_credential", error.dpopFailureReason),
   );
+
+/**
+ * A claim Mend refused for its rate limit. t3code's token contract declares no rate-limit error, so
+ * this is a plain `429 Too Many Requests` with `retry-after` and an RFC 6749-shaped body. t3code's
+ * clients report an undeclared status as transient ("returned undeclared status 429"), never as a
+ * wrong code to discard, and the code is not spent.
+ */
+export const pairingRateLimited = (error: GatewayPairingRateLimited) =>
+  Effect.succeed(
+    HttpServerResponse.jsonUnsafe(
+      {
+        error: "rate_limited",
+        error_description:
+          error.retryAfterSeconds === null
+            ? "Too many failed pairing codes from this client's address. The code was not spent; try again shortly."
+            : `Too many failed pairing codes from this client's address. The code was not spent; try again in ${error.retryAfterSeconds} s.`,
+      },
+      {
+        status: 429,
+        headers:
+          error.retryAfterSeconds === null
+            ? {}
+            : { "retry-after": String(error.retryAfterSeconds) },
+      },
+    ),
+  );
+
+/**
+ * The `x-forwarded-for` a pairing claim carries to Mend: the client's own chain, then the address
+ * the gateway saw, the way every proxy in front of Mend appends its hop. Without the second there
+ * is nothing to append to, so the client's chain is not passed on alone: Mend would believe it.
+ */
+export const forwardedChain = (
+  forwardedFor: string | undefined,
+  remoteAddress: string | undefined,
+): string | undefined => {
+  if (remoteAddress === undefined || remoteAddress === "") return undefined;
+  const chain = forwardedFor?.trim() ?? "";
+  return chain === "" ? remoteAddress : `${chain}, ${remoteAddress}`;
+};
 
 /** Credentials never sit in a cache (t3code's `CREDENTIAL_RESPONSE_HEADERS`). */
 const noStore = HttpEffect.appendPreResponseHandler((_request, response) =>
@@ -119,9 +164,14 @@ export const AuthGroupLive = HttpApiBuilder.group(GatewayHttpApi, "auth", (handl
         .handle("token", (args) =>
           Effect.gen(function* () {
             yield* noStore;
+            const request = yield* HttpServerRequest.HttpServerRequest;
             return yield* auth.exchange({
               credential: args.payload.subject_token,
               scope: args.payload.scope,
+              forwardedFor: forwardedChain(
+                request.headers["x-forwarded-for"],
+                Option.getOrUndefined(request.remoteAddress),
+              ),
               dpop: args.headers.dpop !== undefined,
               client: {
                 label: args.payload.client_label,
@@ -133,6 +183,7 @@ export const AuthGroupLive = HttpApiBuilder.group(GatewayHttpApi, "auth", (handl
             Effect.catchTags({
               GatewayRequestInvalid: (error) => requestInvalid(error.reason),
               GatewayCredentialInvalid: invalidCredential,
+              GatewayPairingRateLimited: pairingRateLimited,
               GatewayStateError: (error) => internal("access_token_issuance_failed", error),
               MendUnavailable: (error) => internal("access_token_issuance_failed", error),
             }),
