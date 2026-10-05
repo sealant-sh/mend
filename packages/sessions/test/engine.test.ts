@@ -9801,6 +9801,76 @@ describe("SessionEngine capture mode", () => {
     },
   );
 
+  it(
+    "only an answer that saved the moved home places its hand-over: never one behind, and one unreadable only outside the memory does (docs/adr/0009)",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const homes = new Map<string, AgentMemoryHomes>();
+      let answer: Partial<WorkspaceCaptureStatus> = {};
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["claude"]);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const position = () => homes.get(session.worktreeId)?.pending?.n ?? null;
+            expect(homes.get(session.worktreeId)?.pending?.epoch).toBe(epoch);
+            const flushWith = (fields: Partial<WorkspaceCaptureStatus>) =>
+              Effect.gen(function* () {
+                answer = { epoch, headN: 7, ...fields };
+                yield* engine.flushCaptures(session.id, "landing");
+              });
+            // Behind: the small class refused, or a memory path it could not read.
+            yield* flushWith({ refused: ["small"] });
+            expect(position()).toBeNull();
+            yield* flushWith({
+              unreadable: 1,
+              unreadablePaths: ["harness/.claude/projects/-workspace-repo/memory/notes.md"],
+            });
+            expect(position()).toBeNull();
+            // More unreadable paths than it names: the unnamed ones may be memory.
+            yield* flushWith({ unreadable: 3, unreadablePaths: ["tree/locked.bin"] });
+            expect(position()).toBeNull();
+            // Caught up but for a file outside the memory it may never read: saved.
+            yield* flushWith({ unreadable: 1, unreadablePaths: ["tree/locked.bin"] });
+            expect(position()).toBe(7);
+            // The first such answer is the one that counts.
+            yield* flushWith({ headN: 9 });
+            expect(position()).toBe(7);
+          }),
+        {
+          captured: memory,
+          agentMemoryLayer: agentMemoryLayerOf({}, homes),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { flush: () => Effect.sync(() => captureAnswer(answer)) },
+          ),
+        },
+      );
+    },
+  );
+
   it.each([
     ["the hand-over finishes", false],
     ["the first hand-over cannot move the memory aside", true],

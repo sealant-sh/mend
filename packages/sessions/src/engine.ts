@@ -217,6 +217,7 @@ import {
   AGENT_MEMORY_DELIVERED,
   type AgentMemoryRead,
   agentMemoryHandoverKeptDir,
+  unreadableOutsideMemory,
   asMemoryFile,
   deliverAgentMemoryExec,
   handOverAgentMemoryExec,
@@ -671,6 +672,24 @@ const logAgentMemoryDelivered = (
             .join(", "),
         }),
       );
+};
+
+/**
+ * Whether a flush answer says the home a memory hand-over moved is saved: caught up
+ * (`captureCaughtUp`), a saved final, or caught up but for paths it could not read that all
+ * lie outside the harness home's memory, every one of them named. A path that stays
+ * unreadable for an executor's life (a file it may not open) would otherwise leave its
+ * hand-over unsettled for good, and the launcher's memory credited to the previous person.
+ */
+const placesMemoryHome = (reading: CaptureReading, kind: CaptureFlushKind): boolean => {
+  if (captureCaughtUp(reading) || (kind === "final" && captureSaved(reading))) return true;
+  if (reading.unreadable === null || reading.unreadablePaths.length < reading.unreadable) {
+    return false;
+  }
+  return (
+    captureCaughtUp({ ...reading, unreadable: 0, unreadablePaths: [] }) &&
+    unreadableOutsideMemory(reading.unreadablePaths)
+  );
 };
 
 /** A hand-over that could not finish: the launch fails rather than start on another's memory. */
@@ -2494,7 +2513,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           unplacedHome !== null &&
           reading.headN !== null &&
           reading.epoch === unplacedHome.epoch &&
-          (captureCaughtUp(reading) || (kind === "final" && captureSaved(reading)))
+          placesMemoryHome(reading, kind)
         ) {
           yield* agentMemory.notePendingHomePosition(
             session.worktreeId,
@@ -10023,13 +10042,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // the record (`observeCaptureFlushFenced`), and so does any later one of this executor.
           // Never a capture staged before the move.
           yield* Effect.forkIn(
-            observeCaptureFlush(
-              session,
-              workspace,
-              "agent memory hand-over",
-              CHECKPOINT_FLUSH_TIMEOUT,
-              "suspend",
-            ).pipe(Effect.ignore),
+            workspaceFinalFlushed(session.worktreeId, SealantWorkspaceId.make(workspace.id)).pipe(
+              Effect.flatMap((ending) =>
+                // An executor sent its final flush admits no other; that final places the record.
+                ending
+                  ? Effect.void
+                  : observeCaptureFlush(
+                      session,
+                      workspace,
+                      "agent memory hand-over",
+                      CHECKPOINT_FLUSH_TIMEOUT,
+                      "suspend",
+                    ),
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session engine: agent memory · forced capture failed").pipe(
+                  Effect.annotateLogs({ sessionId: session.id, cause: Cause.pretty(cause) }),
+                ),
+              ),
+            ),
             scope,
           );
           yield* Effect.logInfo("session engine: agent memory · handed over").pipe(

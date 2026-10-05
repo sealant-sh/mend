@@ -202,6 +202,11 @@ you type in a shell session, or one your agent runs in a Claude, opencode or pi 
 Codex session: Mend does not prepare it, and it can build memory from the other conversations in the
 worktree into the memory that worktree's home holds. Start a Codex session instead.
 
+The same goes for a Codex session whose command Mend does not recognise as `codex`: one wrapped in
+`env`, started by an absolute path or through `npx`, or run from a shell script
+(`mend run -- sh -c "…"`). Joining someone else's executor, it starts with Codex's own memory
+settings, so the conversations it starts can build their memory.
+
 Two smaller gaps in the same place:
 
 - Codex can turn a withheld conversation back on itself when it reconciles an older conversation's

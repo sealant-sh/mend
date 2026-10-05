@@ -61,6 +61,28 @@ export const AGENT_MEMORY_HANDOVER_PATHS: ReadonlyArray<string> = [
 ];
 
 /**
+ * Whether every path a snapshot could not read (as sealantd names them, from the capture's root:
+ * `tree/…`, `harness/…`) lies outside the harness home's memory: not one of
+ * `AGENT_MEMORY_HANDOVER_PATHS`, inside one, or a directory holding one. A path from a root Mend
+ * does not know is taken as touching it.
+ */
+export const unreadableOutsideMemory = (paths: ReadonlyArray<string>): boolean =>
+  paths.every((raw) => {
+    const at = raw.replace(/\/+$/, "");
+    if (at.startsWith("tree/")) return true;
+    if (at !== "harness" && !at.startsWith("harness/")) return false;
+    return AGENT_MEMORY_HANDOVER_PATHS.every((memory) => {
+      const full = `harness/${memory}`;
+      return !(
+        at === full ||
+        at.startsWith(`${full}/`) ||
+        full.startsWith(`${at}/`) ||
+        at === "harness"
+      );
+    });
+  });
+
+/**
  * The exec that hands a capture-mode harness home over to `owner` (plain `sh`, no node): each of
  * `AGENT_MEMORY_HANDOVER_PATHS` that is there moves to `kept` (relative to the home), never
  * deleted, and the owner record then names `owner`, written even when nothing was there. Prints

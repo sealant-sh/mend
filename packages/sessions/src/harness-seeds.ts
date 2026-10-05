@@ -208,27 +208,17 @@ const CODEX_MEMORY_KEYS: Readonly<Record<string, ReadonlyArray<string>>> = {
 };
 
 /**
- * A `-c`/`--config` value without Codex's memory settings: null when it named only those (drop the
- * flag), the value itself when it named none, or its table without them (`features={…}` keeps
- * every other feature).
+ * Whether a `-c`/`--config` value would set one of Codex's memory settings: a dotted memory key,
+ * or the `features` or `memories` table whole. Codex replaces a whole table set this way, Mend's
+ * own `-c features.memories=false` and `-c memories.generate_memories=false` with it, so such a
+ * table is dropped whatever else it holds.
  */
-const withoutCodexMemoryKeys = (value: string): string | null => {
+const setsCodexMemory = (value: string): boolean => {
   const dotted = /^\s*([a-z_]+)\.([a-z_]+)\s*(=|$)/.exec(value);
-  if (dotted !== null) {
-    return CODEX_MEMORY_KEYS[dotted[1] ?? ""]?.includes(dotted[2] ?? "") === true ? null : value;
-  }
-  const table = /^\s*([a-z_]+)\s*=\s*\{(.*)\}\s*$/s.exec(value);
-  const dropped = table === null ? undefined : CODEX_MEMORY_KEYS[table[1] ?? ""];
-  if (table === null || dropped === undefined) return value;
-  const entries = (table[2] ?? "")
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry !== "");
-  const kept = entries.filter(
-    (entry) => !dropped.includes(entry.split("=")[0]?.trim().replace(/^"|"$/g, "") ?? ""),
-  );
-  if (kept.length === entries.length) return value;
-  return kept.length === 0 ? null : `${table[1]}={${kept.join(",")}}`;
+  if (dotted !== null)
+    return CODEX_MEMORY_KEYS[dotted[1] ?? ""]?.includes(dotted[2] ?? "") === true;
+  const table = /^\s*([a-z_]+)\s*=/.exec(value);
+  return table !== null && CODEX_MEMORY_KEYS[table[1] ?? ""] !== undefined;
 };
 
 /** Whether `--enable <name>` turns Codex's memory on (`memory_tool`: Codex's alias). */
@@ -245,7 +235,7 @@ export const launchesCodex = (argv: ReadonlyArray<string>): boolean =>
  * says itself would win over Mend's own `-c` or keep a thread enabled, so it is dropped: `--enable
  * memories` and `--enable memory_tool` (Codex's alias), in either form, and every `-c`/`--config`
  * naming a memory setting, in every form clap takes (`-c V`, `-cV`, `-c=V`, `--config V`,
- * `--config=V`; dotted or as a table, whose other keys stay). Takes both shapes Mend launches:
+ * `--config=V`; a dotted key, or the `features` or `memories` table whole). Takes both shapes Mend launches:
  * `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
  *
  * `join`: the launch runs in another person's home. Its threads are also created disabled, so no
@@ -290,15 +280,10 @@ export const withCodexMemoryOff = (
           continue;
         }
         index++;
-        const left = withoutCodexMemoryKeys(value);
-        if (left !== null) kept.push(arg, left);
+        if (!setsCodexMemory(value)) kept.push(arg, value);
         continue;
       }
-      if (attached !== null) {
-        const left = withoutCodexMemoryKeys(attached);
-        if (left !== null) kept.push("-c", left);
-        continue;
-      }
+      if (attached !== null && setsCodexMemory(attached)) continue;
       kept.push(arg);
     }
     return [head, ...off, ...kept];

@@ -623,7 +623,8 @@ describe("Codex's memory turned off", () => {
         { join: true },
       ),
     ).toEqual(["codex", ...off, ...unsummarised, "-c", "model=gpt", "app-server"]);
-    // Every form clap takes, Codex's `memory_tool` alias, and a table keeps its other keys.
+    // Every form clap takes, and Codex's `memory_tool` alias. A `features` or `memories` table
+    // goes whole: Codex would replace Mend's own settings with it.
     expect(
       withCodexMemoryOff(
         [
@@ -640,19 +641,14 @@ describe("Codex's memory turned off", () => {
           "--config",
           "features={web_search=true}",
           "-c",
-          "memories={generate_memories=true}",
+          "memories={max_unused_days=3}",
+          "-cmodel=gpt",
+          "-c",
+          "features.web_search=true",
         ],
         { join: true },
       ),
-    ).toEqual([
-      "codex",
-      ...off,
-      ...unsummarised,
-      "-c",
-      "features={web_search=true}",
-      "--config",
-      "features={web_search=true}",
-    ]);
+    ).toEqual(["codex", ...off, ...unsummarised, "-cmodel=gpt", "-c", "features.web_search=true"]);
     const [, , script] = withCodexMemoryOff(
       [
         "sh",
