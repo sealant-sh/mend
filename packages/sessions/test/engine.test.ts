@@ -9495,6 +9495,67 @@ describe("SessionEngine capture mode", () => {
   );
 
   it.each([
+    ["claude", "11111111-2222-3333-4444-555555555555", ["claude", "--resume"]],
+    ["codex", "66666666-7777-8888-9999-aaaaaaaaaaaa", ["codex", "resume"]],
+    ["opencode", "ses_joined", ["opencode", "--session"]],
+    ["pi", "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", ["pi", "--session"]],
+  ] as const)(
+    "a %s resume that joins the lease holder's executor opens the conversation its saved state names",
+    { timeout: 20_000 },
+    async (harness, providerSessionId, resumeFlags) => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const holder = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(holder.id, ["codex"]);
+            const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness,
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            yield* engine.launch(joined.id, [harness]);
+            const agentOf = () =>
+              [...world.processes.values()].findLast(
+                (process) =>
+                  process.sessionId === joined.id &&
+                  process.kind === "agent-pty" &&
+                  process.exitedAt === null,
+              );
+            const agent = agentOf();
+            if (agent === undefined) throw new Error("the join recorded no agent");
+            yield* engine.stop(joined.id);
+            const stateDir = processStatePathOf(project.storePath, joined.id, agent.id);
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(stateDir, "manifest.json"),
+              JSON.stringify({ harness, providerSessionId, capturedAt: now().toISOString() }),
+            );
+
+            // The holder's agent keeps its executor; nothing of the joined session's retains it.
+            yield* engine.resumeSession(joined.id, null);
+            const resumed = agentOf();
+            expect(created).toHaveLength(1);
+            expect(resumed?.sealantWorkspaceId).toBe("workspace-1");
+            expect(resumed?.argv.slice(0, 3)).toEqual([...resumeFlags, providerSessionId]);
+            expect(resumed?.providerSessionId).toBe(providerSessionId);
+          }),
+        { captured: memory, sealantLayer: sealantLaunchLayer(created) },
+      );
+    },
+  );
+
+  it.each([
     ["no owner record", null, "user-fixture"],
     ["the record names the holder", "user-fixture", "user-fixture"],
     // The home's own record is never consulted: whatever it says, the server decides.

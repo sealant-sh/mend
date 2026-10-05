@@ -601,6 +601,22 @@ const interactiveShellArgv = (
 ];
 
 /**
+ * A terminal launch of a session whose saved state is its own harness's continues the
+ * conversation that state names. One rule for every executor a launch can land in — a fresh one
+ * or a lease holder's it joins — so the process row and the harness name the same conversation.
+ * A protocol launch resumes through its own handshake and is left alone.
+ */
+const savedConversationArgv = (
+  harness: string,
+  manifest: HarnessStateManifest | null,
+  protocolStart: LaunchStart | null,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> =>
+  manifest !== null && manifest.harness === harness && protocolStart === null
+    ? nativeResumeArgv(harness, manifest.providerSessionId, argv)
+    : argv;
+
+/**
  * Permission prompts are the harness re-asking a question Mend already
  * answers: the session runs in an isolated workspace on its own
  * worktree, every byte is recorded, and nothing lands without review.
@@ -11275,9 +11291,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.map((held) => held.ownerUserId),
               Effect.orElseSucceed(() => null),
             );
+            // A resume through a join opens the conversation it names, as a cold one does.
             return yield* launchInRetainedWorkspace(
               sessionId,
-              argv,
+              savedConversationArgv(session.harness, manifest, protocolStart, argv),
               null,
               correlationId,
               manifest !== null && manifest.harness === session.harness
@@ -11753,9 +11770,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             }
           }
-          if (manifest.harness === session.harness && protocolStart === null) {
-            shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
-          }
+          shapedArgv = savedConversationArgv(session.harness, manifest, protocolStart, shapedArgv);
         }
 
         if (nativeImport !== null && capture !== null) {
@@ -13232,9 +13247,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* sessions.setProviderSessionId(sessionId, nativeImport.providerSessionId);
           }
         }
-        if (retainCurrentWorkspace && manifest.harness === target) {
-          argv = nativeResumeArgv(target, manifest.providerSessionId, argv);
-        }
+        if (retainCurrentWorkspace) argv = savedConversationArgv(target, manifest, null, argv);
         if (target !== session.harness) {
           yield* sessions.setHarness(sessionId, target);
           // The converted launch names no model: the new harness picks its own, and the row
