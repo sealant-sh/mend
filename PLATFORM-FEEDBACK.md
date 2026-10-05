@@ -24,21 +24,29 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
     umask `0002`).
   - Reshape #315 into per-home injection:
     `POST /v1/workspaces/:id/credentials { onBehalfOf, home, claude?, codex?, github? }`, files
-    owned by the home's owner, 0600; the record per instance and home, one person while held (409
-    `home-held`), released and retaken only while idle; GitHub as `<home>/.config/gh/hosts.yml`;
-    push, POST and DELETE under one row lock; DELETE removes the files. Its switch semantics are not
-    needed.
+    owned by the home's owner, 0600 (a home is a person's home, a conversation home under
+    `/run/mend/conv`, or `/root` for a launcher whose predicted layout failed at prepare); the
+    record per instance and home, one person while held (409 `home-held`), released and retaken only
+    while idle; GitHub as `<home>/.config/gh/hosts.yml`; push, POST and DELETE under one row lock;
+    DELETE removes the files. Its switch semantics are not needed.
   - `workspaces.create({ credentialsHome, sshUser })`, no login in the environment; `GET` listing
     the homes; sync-back per home; the capture owner map in the spec; the dotfiles verb.
+  - The person-layout capability readable before create: the image build runs
+    `sealantd capabilities --json` and probes for `sudo`, `useradd`, `setfacl` and users or groups
+    in 40000–49999, records the result on the image, and the SDK reports it with ACL support per
+    runtime. Mend has to choose the layout before create sends `credentialsHome` and the dotfiles.
   - Images: group `mend`, `sudo` with `NOPASSWD` and `env_keep` for toolchain variables, `useradd`,
     ACL tools and `setpriv`; toolchains under `/opt` and caches under `/var/cache` (2775, default
-    ACL) named in `ENV`; `/etc/skel` links to shared caches; `/etc/gitconfig` `safe.directory`; the
-    nix daemon in nix images.
+    ACL) named in `ENV`; `/etc/skel` links to shared caches; `/etc/gitconfig` `safe.directory`. nix
+    images stay as they are and take one person.
 - **Suggested, sealantd:** run an exec or session as a uid; apply dotfiles as a given user into
   their home, at boot and through a control verb; restore `people/<id>/` owned by the uid the owner
   map names and `tree/`, git and `conversations/` group `mend`, group-writable, setgid, with a
-  default ACL; apply `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE` under each `people/<id>/`;
-  later, scrub opencode's login tables from captured databases.
+  default ACL, and every other entry under `people/<id>/` at its recorded mode; apply
+  `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE` under each `people/<id>/`, with Codex's
+  `codex-db/logs_*` and `*-shm` as machine state; report `exec.user`, `dotfiles.user` and
+  `restore.owner_map`, also offline (`sealantd capabilities --json`); later, scrub opencode's login
+  tables from captured databases.
 - **Later:** when the SSH gateway admits more than the workspace's owner, run each principal's
   session as their own user.
 
