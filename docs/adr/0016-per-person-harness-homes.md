@@ -92,14 +92,15 @@ starts. A person's live process, Services included, keeps their user's logins he
 ### 2. Homes, saved directories and the shared worktree
 
 - **The home,** `/home/<name>` (`R`), the user's passwd home, 0700. Not saved; gone when the
-  executor ends. Logins, settings, dotfiles, secret files, caches, Codex's databases, pi's packages,
-  `~/.mend/` (the Mend session token and Mend's per-home records; a real directory, never linked
-  into anything saved).
+  executor ends. Logins, settings, dotfiles, secret files, caches, Codex's logs database, pi's
+  packages, `~/.mend/` (the Mend session token and Mend's per-home records; a real directory, never
+  linked into anything saved).
 - **The saved directory,** `/workspace/harness-home/people/<account id>` (`P`), owned by the
   user, 0700. Saved with every capture. Conversations and memory: Claude `projects/`, Codex
-  `sessions/` and `memories/`, pi `sessions/`, opencode's data directory, each reached from `R`
-  through a directory link (sealantd stores a link as a link). Mend's per-person saved records are
-  `P/.mend-saved/`, addressed by their absolute path, never through `~/.mend`.
+  `sessions/` and `memories/`, pi `sessions/`, opencode's data directory, each reached from `R`, and
+  Codex's thread index and memory database (`P/codex-db`, named by `CODEX_SQLITE_HOME`; see
+  Performance), through a directory link (sealantd stores a link as a link). Mend's per-person saved
+  records are `P/.mend-saved/`, addressed by their absolute path, never through `~/.mend`.
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`, so
   the process of whoever steers can write there and nothing it writes is left unwritable to the
@@ -259,13 +260,13 @@ the new sender's user, on their login.
   - **Claude quiescent:** no open turn; `session_state_changed: idle` (Claude launched with
     `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`); an empty `background_tasks_changed` set, refreshed
     with a re-`initialize` after an attach or rehydrate; no task Mend saw as `paused` in
-    `task_updated`; no pending `ScheduleWakeup`, no live `Monitor`, no session cron; then a settle
-    of 5 s with no new `system/init` or turn. Mend's Claude adapter handles
-    `background_tasks_changed`, `session_state_changed` and tasks first reported outside a turn,
-    which it drops today.
+    `task_updated`; no pending `ScheduleWakeup`, no live `Monitor`, no session cron; then no settle
+    once Claude has reported `session_state_changed: idle` with no new `system/init` or turn after
+    it. Mend's Claude adapter handles `background_tasks_changed`, `session_state_changed` and tasks
+    first reported outside a turn, which it drops today.
   - **Codex quiescent:** no running turn on the thread or on any thread it spawned (sub-agents; the
     app-server reports `turn/*` for child threads); an empty `thread/backgroundTerminals/list`; no
-    active goal (`thread/goal/get`); then a settle of 5 s after the last `turn/completed` or
+    active goal (`thread/goal/get`); then a settle of 1 s after the last `turn/completed` or
     `item/completed` with no `turn/started` (goals, the mailbox and queued prompts start turns on
     their own after `turn/completed`). `app-server` is initialised with
     `capabilities.experimentalApi`.
@@ -330,8 +331,9 @@ agent writes goes to the executor's owner" no longer hold.
   root. sealantd applies `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE`, sibling-suffix rule
   included, under each `people/<id>/` as well as at the root: load-bearing for anything a
   link-breaking write leaves in `P`.
-- Codex's memory database is read back from the live executor at each Codex process's end through
-  `node:sqlite` `VACUUM INTO`; when the executor is gone first, the stored copy stands.
+- Codex's thread index and memory database are saved in `P/codex-db`, as today's relocated home
+  saves them, so ADR 0009's read-back from the capture stands; Codex's logs database is machine
+  state.
 
 ### 8a. The opencode in-app login: an exception for the owner to approve
 
@@ -390,8 +392,9 @@ the alternative is to keep opencode's database unsaved, which makes opencode ses
   (repository clone, chezmoi, stow or copy, then `./install.sh` when the person's `bootstrap`
   setting is on) runs as the person's user into their home: at create for the launcher, and at a
   person's first process in an executor for everyone else, through a new control verb. It runs in
-  parallel with the person's login and deliveries; their agent starts when it ends, and the session
-  line shows "Applying your dotfiles". A script can `sudo`; that is the accepted limit, not a new
+  parallel with the person's login and deliveries. A joiner's agent starts once the files are
+  applied, and `install.sh` runs beside it ("install.sh running" on the session line), so a join
+  stays inside its budget (Performance). A script can `sudo`; that is the accepted limit, not a new
   one.
 - Mend's default shell profile is written into each home.
 
@@ -452,17 +455,87 @@ but it is not a boundary between people.
     Their owner can resume them only in the pre-release executor that holds them, before it is
     replaced.
 
-## Start-time impact
+## Performance
 
-- **Cold launch:** `useradd` and the group policy at prepare (milliseconds); no added Core call
-  (`credentialsHome`). Dotfiles apply as today, as the launcher. Removed: mend#528's hand-over, the
-  Codex withholding exec, the migration (server-side), and any copy of `/root`.
-- **Join:** a `useradd`, one Core call, the dotfiles verb and the deliveries, in parallel. A joiner
-  with an `install.sh` waits for it. Measured on the box for Claude, pi and a mise project.
-- **sealantd materialize:** an `lchown` per entry it writes or reuses, done in the same pass.
-- **Codex's first start per person per executor** re-indexes their rollouts (up to 30 s); measured
-  before the flip, and `state_5*` moves into `P` if it is material.
-- **Payer change:** a process stop and start, plus waiting for background work and a 5 s settle.
+The owner's rule (2026-10-06): no performance penalty for this feature. Every number below is a hard
+limit. A limit missed blocks turning the flag on for the box and blocks the release; only the owner
+grants an exception.
+
+### What is measured
+
+Everything this decision can affect, on the box, before and after, at the same commit base, with the
+same project (Mend's own repository), the same image and the same harness versions:
+
+- **Sessions:** a new session to the first agent output, for Claude, Codex, pi and opencode; a
+  resume after a Stop; a second session of the same person in a live executor; a join by a different
+  person; a steered turn, from the steerer's send to the first output, with the hand-over when the
+  sender changes and nothing runs in the background.
+- **Saves and restores:** the Stop's save; a checkpoint save during a turn; capture size per
+  worktree and its growth per extra person; restore time and bytes.
+- **Delivery and agents:** memory, skills and secret-file delivery; Codex's first start (its thread
+  index); the first turn's latency.
+- **Interactive:** opening a shell and a terminal; `git push` and `git fetch` through the shim;
+  typing latency in the web terminal (keystroke to echo).
+- **Resources:** executor disk and memory; Mend API latency for the session list and a session view.
+
+### Budgets
+
+Each limit applies to the median and to the worst of the runs, after against before.
+
+| Measure                                                                  | Limit                                                                                      |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| New session to first output (each harness), resume, Stop's save          | +5% or +1 s, whichever is larger                                                           |
+| Second session of the same person                                        | +5% or +1 s, whichever is larger                                                           |
+| Join by a different person                                               | +3 s                                                                                       |
+| Steering hand-over (send to first output, nothing in the background)     | under 5 s more than the same turn sent by the process's own person                         |
+| Checkpoint save, restore time, first-turn latency                        | +5% or +1 s, whichever is larger                                                           |
+| Restore bytes; capture size per worktree with one person                 | +5%                                                                                        |
+| Growth per extra person                                                  | that person's conversations and memory, plus at most 64 KB                                 |
+| Delivery (memory, skills, secret files) per person                       | +5% or +0.5 s, whichever is larger                                                         |
+| Codex first start                                                        | +5% or +1 s, whichever is larger                                                           |
+| Shell and terminal open, `git push` and `fetch`, terminal typing latency | unchanged within noise: the larger of the baseline's spread (worst minus median) and 50 ms |
+| Executor disk and memory with one person                                 | +5%                                                                                        |
+| Session list and session view API latency                                | +5% or +20 ms, whichever is larger                                                         |
+
+### What the design does to stay inside them
+
+- **No new Core call on the cold path:** `credentialsHome` at create. A join's Core call, `useradd`,
+  dotfiles and deliveries run in parallel; only the agent start waits for them.
+- **A joiner's `install.sh` runs beside the agent,** not before it: the agent starts when the
+  dotfiles' files are applied, and the session line says "install.sh running" until it ends. The
+  launcher's runs at boot, as today.
+- **Codex's thread index and memory database stay saved,** as they are today:
+  `CODEX_SQLITE_HOME=P/codex-db`, so a first start does not re-index (up to 30 s otherwise). The
+  logs database is set aside as machine state.
+- **sealantd's ownership costs no extra pass:** files under `tree/` and the git section take their
+  group from the setgid root and their group write from the mode sealantd already sets, and the
+  default ACL is inherited; only `people/<id>/` entries, a small tree, are `lchown`ed.
+- **The hand-over:** the settle is 1 s for Codex and none for Claude once it reports
+  `session_state_changed: idle`; `H`'s seed is staged while the old process stops, so only the Core
+  write and the start wait for the exit; Claude and Codex start directly, with no shell profile.
+- **Removed from the launch path:** mend#528's hand-over (a capture read, an `sh` exec and a forced
+  capture), the Codex withholding exec, and the migration (server-side).
+
+### Method
+
+- **A benchmark script in the repository** (`scripts/bench/`, Delivery 2), run against the box. It
+  drives the box through the API and the CLI with two accounts, runs each scenario at least 3 times
+  (interactive ones 10), takes each step's time from the session record, the server's log lines and
+  the capture records (as the 2026-10-03 Stop measurement did), and writes a JSON record and a
+  table: the median and the worst per measure, with the commit, image, harness versions and project.
+- **Baseline** (gate B): on the box at `0.36.0-next.601`/`602`, before any per-person code lands.
+  The record is checked in under `docs/perf/` and named in this ADR's decision log.
+- **After** (gate P): the same script with the flag on, at the commit the box is to run. The
+  comparison is checked in beside the baseline; every measure must meet its limit.
+- **CI guards:** engine tests count the execs and Core calls of a cold launch, a join, a resume and
+  a hand-over and fail when the count grows past its budget (cold launch: no more than today; join:
+  at most two more than a same-person second session; hand-over: one Core call, one stop, one
+  start); a layout test fails when the bytes written into saved state per person, outside
+  conversations and memory, exceed 64 KB; no step is added to the launch path's synchronous part
+  without a measured budget in its PR.
+- **Every PR in the plan states its expected effect.** One that touches the launch, join, resume,
+  Stop or capture path carries a before-and-after run of the affected scenarios, or the unit budget
+  test that covers it.
 
 ## Known limits
 
@@ -478,15 +551,14 @@ but it is not a boundary between people.
 - **Custom images:** toolchains under `/root` run for everyone but take each person's installs into
   their own home; an image without `sudo`, `useradd` or ACLs takes one person.
 - **Shared control:** a payer change waits for background work and holds the turns behind it, costs
-  a process restart and a settle, ends "accept for session" approvals and MCP logins made in the
-  steered process; no personal memory, instructions, skills or MCP servers apply while control is
-  shared; scheduled prompts are off in a shared session; what the owner's agent loaded before
-  sharing is in the history.
+  a process restart, ends "accept for session" approvals and MCP logins made in the steered process;
+  no personal memory, instructions, skills or MCP servers apply while control is shared; scheduled
+  prompts are off in a shared session; what the owner's agent loaded before sharing is in the
+  history.
 - **A durable cron** runs only in the worktree change owner's own Claude processes.
 - **A conversation resumed by hand** while Mend's process for it runs gets two writers.
 - **Personal config inside the worktree is shared by design** (`.claude/settings.local.json`,
   `.env`, a repository `.npmrc`, `.mcp.json` env).
-- **Codex goals and queued prompts** live in the process's databases and end with the executor.
 - **Pre-release executors** keep the shared home until replaced; pre-release opencode conversations
   are not resumable in the person layout.
 - **The opencode in-app login exception** (decision 8a), if the owner approves it.
@@ -512,99 +584,144 @@ but it is not a boundary between people.
 
 ## Delivery
 
-Ordered; each is one pull request; sizes are lines changed, tests included.
+Ordered; each is one pull request; sizes are lines changed, tests included. Every PR states its
+expected performance effect (**Perf**); one that touches the launch, join, resume, Stop or capture
+path carries a before-and-after run of the affected benchmark scenarios, or the unit budget test
+that covers it.
 
-- **Platform (2–9)** runs in parallel with Mend 10; 2 and 3 are load-bearing and must be in the
+- **Gates.** **B, baseline recorded:** the benchmark has run on the box at `0.36.0-next.601`/`602`
+  and its record is checked in, before any per-person code merges. **P, budgets met:** the benchmark
+  with the flag on meets every limit in Performance; it blocks turning the flag on for the box (P1)
+  and blocks the flip and the release (P2). No exception without the owner.
+- **Platform (3–10)** runs in parallel with Mend 11; 3 and 4 are load-bearing and must be in the
   box's images before its flag goes on.
-- **Mend 11–15 are one stack behind `MEND_HARNESS_LAYOUT=person`** (default `shared`), built and
+- **Mend 12–16 are one stack behind `MEND_HARNESS_LAYOUT=person`** (default `shared`), built and
   exercised on a scratch instance; under the flag Codex's `thread/start` fallback on a failed resume
-  is off. Until 17 lands, a steer turn in a person executor is refused with the reason.
-- **The box turns the flag on** after 15 and 16 have merged and 2–3 are in its images.
+  is off. Until 18 lands, a steer turn in a person executor is refused with the reason.
+- **The box turns the flag on** after 16 and 17 have merged, 3–4 are in its images, and gate P1 has
+  passed on the scratch instance.
 
-1. **Mend · this ADR.** Amendment notes in 0003, 0009, 0010, 0013; PLATFORM-FEEDBACK. ~950.
-2. **sealantd · the tables under `people/*/`.** Sibling-suffix rule included. Round-trip test: a
-   person directory with every listed path, and a regular `auth.json` where a link was, restores
-   none of them. S, ~150.
-3. **sealantd · ownership on restore.** The owner map in the capture spec; `people/<id>/` owned by
-   its uid; `tree/`, git and `conversations/` group `mend`, group-writable, setgid, default ACL;
-   reused files included. Tests: two people's directories restored with their uids; a tree file
-   writable by a second uid after restore; no owner recorded in captures. M, ~450.
-4. **sealantd · run as a user, and dotfiles as a user.** Exec and sessions with a uid (setgid,
+1. **Mend · this ADR.** Amendment notes in 0003, 0009, 0010, 0013; PLATFORM-FEEDBACK. ~1,050. Perf:
+   none.
+2. **Mend · the benchmark (`scripts/bench/`).** A Node script that drives an instance through the
+   API and the CLI with two accounts on Mend's own repository: every scenario in Performance, each
+   run at least 3 times (interactive ones 10), each step timed from the session record, the server's
+   log lines and the capture records; a JSON record and a median-and-worst table with commit, image,
+   harness versions and project; a compare mode that checks a record against a baseline and the
+   budgets and exits non-zero on a miss. Unit tests for the parsing and the comparison. M, ~700.
+   Perf: none (tooling).
+
+**B · Gate: baseline recorded.** The benchmark on the box at `0.36.0-next.601`/`602`; the record in
+`docs/perf/0016-baseline.json` and the decision log.
+
+3. **sealantd · the tables under `people/*/`.** Sibling-suffix rule included; `codex-db/logs_*` as
+   machine state. Round-trip test: a person directory with every listed path, and a regular
+   `auth.json` where a link was, restores none of them. S, ~150. Perf: none (listing filter).
+4. **sealantd · ownership on restore.** The owner map in the capture spec; `people/<id>/` `lchown`ed
+   to its uid; `tree/`, git and `conversations/` take group `mend` from setgid roots, group write
+   from the mode already set, the default ACL by inheritance; reused files included. Tests: two
+   people's directories restored with their uids; a tree file writable by a second uid; no owner
+   recorded; a restore of a 200k-entry tree makes no more syscalls than before plus one per
+   `people/` entry. M, ~450. Perf: restore within budget, measured on the box's largest worktree.
+5. **sealantd · run as a user, and dotfiles as a user.** Exec and sessions with a uid (setgid,
    initgroups, setuid, passwd `HOME`, umask); the dotfiles applier as a given user into their home,
-   at boot and through a control verb. Tests: a process's ids and `HOME`; `install.sh` runs as the
-   user. M, ~500.
-5. **Core · sealant#316 as it is.** S, open.
-6. **Core · sealant#315 reshaped into per-home injection.** `home`; files owned by the home's owner;
+   at boot and through a control verb, reporting when files are applied separately from
+   `install.sh`. Tests: a process's ids and `HOME`; `install.sh` runs as the user. M, ~500. Perf:
+   process start unchanged within noise (unit timing of the spawn path).
+6. **Core · sealant#316 as it is.** S, open. Perf: none.
+7. **Core · sealant#315 reshaped into per-home injection.** `home`; files owned by the home's owner;
    the record per instance and home (`home-held`, release and retake only when idle); GitHub as
-   `hosts.yml`; DELETE removing the files; one row lock. M, ~+550 / −250.
-7. **Core · SDK and workspace surface.** `user` on sessions and exec; `credentialsHome`; `GET`;
+   `hosts.yml`; DELETE removing the files; one row lock. M, ~+550 / −250. Perf: one control-channel
+   write per call; measured for the hand-over.
+8. **Core · SDK and workspace surface.** `user` on sessions and exec; `credentialsHome`; `GET`;
    sync-back per home; the dotfiles verb; the capture owner map in the spec; `sshUser` for the
-   gateway. M, ~600.
-8. **Core · images.** Group `mend` (gid 60000); `sudo` with `NOPASSWD` for the group and `env_keep`
+   gateway. M, ~600. Perf: no new call at create.
+9. **Core · images.** Group `mend` (gid 60000); `sudo` with `NOPASSWD` for the group and `env_keep`
    for the toolchain variables; `useradd`, ACL tools and `setpriv`; toolchains under `/opt` and
    caches under `/var/cache` (2775, default ACL) with their `ENV`; `/etc/skel` links to shared
    caches; `/etc/gitconfig` `safe.directory`; `docker` group; the nix daemon in nix images. Image
    tests: a second uid runs `pnpm install`, `mise install`, `cargo build` and Playwright against the
-   shared paths. M, ~450.
-9. **Core and sealantd · release chain.** `next` prereleases, Core's pin of sealantd, image builds,
-   Mend's pin. S.
-10. **Mend · mend#526 merged as it is.** Its pi refusal stays until 20, for `shared` executors. S,
-    open.
-11. **Mend · users and layout behind the flag.** Linux identity per account (migration: name, uid);
+   shared paths. M, ~450. Perf: image size and the benchmark's install and first-turn scenarios
+   within budget on the new images.
+10. **Core and sealantd · release chain.** `next` prereleases, Core's pin of sealantd, image builds,
+    Mend's pin. S. Perf: the benchmark at the new pin, flag off, matches the baseline within budget.
+11. **Mend · mend#526 merged as it is.** Its pi refusal stays until 21, for `shared` executors. S,
+    open. Perf: none expected; its pi launch scenario run.
+12. **Mend · users and layout behind the flag.** Linux identity per account (migration: name, uid);
     `useradd` at prepare for the launcher and every restored person, at first process for joiners;
-    `harness_layout` on the launch; `user` on every session and exec; `P` and `C` with their modes;
-    `core.sharedRepository`; the custom-image capability check; install and setup as the launcher;
-    `/root` 0755. Tests: each harness writes only under its user's home and `P`; two users edit the
-    same worktree file; a JVM tool and `ssh-keygen` use the person's home. M, ~850.
-12. **Mend · git and Mend identity.** The per-(launch, person) token, binding and revocation; the
+    `harness_layout` on the launch; `user` on every session and exec; `P`, `C` and `P/codex-db` with
+    their modes; `core.sharedRepository`; the custom-image capability check; install and setup as
+    the launcher; `/root` 0755; the exec-count budget test for cold launch, join and resume. Tests:
+    each harness writes only under its user's home and `P`; two users edit the same worktree file; a
+    JVM tool and `ssh-keygen` use the person's home; bytes in saved state per person outside
+    conversations and memory under 64 KB. M, ~900. Perf: `useradd` folded into prepare's existing
+    exec; cold launch exec count unchanged; new session and join scenarios.
+13. **Mend · git and Mend identity.** The per-(launch, person) token, binding and revocation; the
     container token refused; no `mend.sock` in capture mode; transport signs as the token's person;
     helper routes authorise it; `mend-git-credential`; `~/.config/git/config`. Tests: a joiner's
-    push signs as the joiner in key and bridge modes; a joiner's `mend land` refused. M, ~550.
-13. **Mend · logins per person.** `credentialsHome`; POST per person in parallel; DELETE, retried;
+    push signs as the joiner in key and bridge modes; a joiner's `mend land` refused. M, ~550. Perf:
+    `git push` and `fetch` through the shim unchanged within noise (benchmark).
+14. **Mend · logins per person.** `credentialsHome`; POST per person in parallel; DELETE, retried;
     reconciliation at startup; refusal before start; re-post on authentication failure; ChatGPT
     copies in place. Tests: a join never reads the holder's login; files owned by the user; no
-    regular `auth.json` under `P`. M, ~400.
-14. **Mend · deliveries per person.** Dotfiles through the verb (with `bootstrap`), shell profile,
-    skills, pi profile, memory, Codex carry, secret files, as the user; the opencode scrub at end,
-    in the layout step and at prepare. Tests per delivery; two people's pi profiles live in one
-    executor; the scrub leaves no row and no WAL page. M, ~600.
-15. **Mend · readers per person.** Prefixes for personal and shared conversations; links skipped;
-    memory read-back per process's person outside shared control; Codex's database read back live;
-    the pre-release transcript copy, only when absent. Tests: two people's transcripts and memory in
-    one capture, each read back only for its person. M, ~600.
-16. **Mend · the conversation home and the restart path.** `C` and the move into it when shared
-    control turns on; `H` emptied and recreated per process with its links, login and neutral seed;
-    one live process per conversation with fencing; the stop protocol with settle; no-fork resume;
-    the retry without foreign hidden reasoning. Tests with fake harnesses: a steered Claude turn's
-    large tool output and a steered Codex sub-agent's rollout land in `C` and stay; the owner's
-    transcript has no path under the steerer's home and no byte of either person's memory; a missing
-    rollout fails the turn; a rejected replay is retried once without the opaque blocks. M, ~850.
-17. **Mend · steering dispatch.** Quiescence for Claude (session state, background-task set, paused
-    tasks, wakeups, monitors, session crons, settle) and Codex (child threads, background terminals,
-    goals, settle); the Claude adapter handling the events it drops today; the waiting line and its
+    regular `auth.json` under `P`; the join adds exactly one Core call. M, ~400. Perf: join
+    scenario.
+15. **Mend · deliveries per person.** Dotfiles through the verb (with `bootstrap`; a joiner's
+    `install.sh` beside the agent), shell profile, skills, pi profile, memory, Codex carry, secret
+    files, as the user; the opencode scrub at end, in the layout step and at prepare. Tests per
+    delivery; two people's pi profiles live in one executor; the scrub leaves no row and no WAL
+    page. M, ~650. Perf: delivery scenarios; the scrub runs off the launch path except before
+    opencode starts (measured on the opencode new-session scenario).
+16. **Mend · readers per person.** Prefixes for personal and shared conversations; links skipped;
+    memory read-back per process's person outside shared control; the pre-release transcript copy,
+    only when absent. Tests: two people's transcripts and memory in one capture, each read back only
+    for its person. M, ~600. Perf: Stop and resume scenarios.
+17. **Mend · the conversation home and the restart path.** `C` and the move into it when shared
+    control turns on; `H` staged during the stop and recreated per process with its links, login and
+    neutral seed; one live process per conversation with fencing; the stop protocol with its settle;
+    no-fork resume; the retry without foreign hidden reasoning; the hand-over budget test (one Core
+    call, one stop, one start). Tests with fake harnesses: a steered Claude turn's large tool output
+    and a steered Codex sub-agent's rollout land in `C` and stay; the owner's transcript has no path
+    under the steerer's home and no byte of either person's memory; a missing rollout fails the
+    turn; a rejected replay is retried once without the opaque blocks. M, ~900. Perf: hand-over
+    under 5 s.
+18. **Mend · steering dispatch.** Quiescence for Claude (session state, background-task set, paused
+    tasks, wakeups, monitors, session crons) and Codex (child threads, background terminals, goals,
+    1 s settle); the Claude adapter handling the events it drops today; the waiting line and its
     actions; the queue on the conversation; crons off in shared sessions and for everyone but the
     change owner; handoff and takeover through the same rules; payer from the process;
     cancellations; Slack; automatic landing. Engine tests: B's turn runs as B with A's conversation;
     A's sub-agent, goal, background terminal and monitor each delay B's turn and finish as A; a
-    takeover waits. M, ~900.
-18. **Mend · the migration job and replacement.** Server-side memory crediting; `retiring`, the `ps`
+    takeover waits. M, ~900. Perf: the steered-turn scenario; same-person turns pay nothing.
+
+**P1 · Gate: budgets met on the scratch instance,** then on the box with the flag on (16, 17 merged;
+3–4 in its images).
+
+19. **Mend · the migration job and replacement.** Server-side memory crediting; `retiring`, the `ps`
     and `docker ps` checks, replacement only after a saved flush; "Replace this workspace now"; the
     refusal; the opencode pre-release refusal. Tests: nothing lost; ambiguous memory credits nobody;
-    an executor with a hand-started Service is not replaced automatically. M, ~650.
-19. **Mend · what the product says.** The API's live people; the lines of decision 13 and the
+    an executor with a hand-started Service is not replaced automatically. M, ~650. Perf: off every
+    launch path (a test asserts no launch waits on it).
+20. **Mend · what the product says.** The API's live people; the lines of decision 13 and the
     waiting line in the web app, CLI, desktop, phone, VS Code and t3 gateway; the Shared control
     confirmation; the GitHub settings copy; docs: Known issues, provider logins, agent memory,
-    secret files, dotfiles, shared control, sudo, release notes. M, ~600.
-20. **Mend · the flip.** `person` becomes the default; #526's pi refusal and the `/root` relocation
-    kept only for `shared` executors. S, ~150.
-21. **Mend · removing what is dead.** The hand-over at launch, withholding, the owner record,
-    `agent_memory_homes` writes (reads stay for 18 until 0.37), joiner memory flags; ADR 0010's join
-    rule; stale Known issues. The credential tables stay. L, ~−1,500 / +200.
+    secret files, dotfiles, shared control, sudo, performance, release notes. M, ~600. Perf: session
+    list and session view API latency within budget (the live-people field read in the same query).
+
+**P2 · Gate: budgets met** on the box with the flag on, at the commit to be flipped, after a week of
+use. The comparison is checked in beside the baseline.
+
+21. **Mend · the flip.** `person` becomes the default; #526's pi refusal and the `/root` relocation
+    kept only for `shared` executors. S, ~150. Perf: none beyond P2.
+22. **Mend · removing what is dead.** The hand-over at launch, withholding, the owner record,
+    `agent_memory_homes` writes (reads stay for 19 until 0.37), joiner memory flags; ADR 0010's join
+    rule; stale Known issues. The credential tables stay. L, ~−1,500 / +200. Perf: fewer execs on
+    the launch path; the budget tests lowered to match.
 
 Then the box with the default flipped: two people in one worktree editing the same files, a join, a
 steered Claude and Codex conversation with a sub-agent and a background task in flight, `ssh` and a
-Gradle build as two people, a migrated worktree and a replaced pre-release executor, before 0.36 is
-tagged.
+Gradle build as two people, a migrated worktree and a replaced pre-release executor, and the
+benchmark once more, before 0.36 is tagged.
 
 ## Considered
 
@@ -643,4 +760,7 @@ tagged.
   reasoning.
 - 2026-10-06: memory of an old shared home goes to the saved `agent_memory_homes` record, else to
   the only person who had sessions there, else to nobody; it is never deleted.
-- Open: the owner's approval of decision 8a.
+- 2026-10-06: performance is a hard limit (owner): the budgets in Performance gate the box's flag
+  and the release; Codex's thread index stays saved, a joiner's `install.sh` runs beside the agent,
+  and the hand-over's settle is 1 s or none.
+- Open: gate B's baseline record. Open: the owner's approval of decision 8a.

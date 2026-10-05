@@ -174,7 +174,7 @@ Mend, one stack:
 3. Every turn records its payer, and the conversation shows it.
 4. After the SDK ships the endpoint: the switch in `dispatchNext`, the switch back, the Codex
    restart, the refusal at submit, and the payer filled from Core's answer. Amended 2026-10-06: in
-   0.36, as a process per sender (ADR 0016 decision 6, Delivery 16 and 17).
+   0.36, as a process per sender (ADR 0016 decision 6, Delivery 17 and 18).
 
 Core (`sealant-sh/sealant`), its own stack:
 
