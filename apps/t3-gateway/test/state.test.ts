@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -88,5 +88,44 @@ describe("the id map", () => {
         ["session-b", "kept"],
       ]);
     }),
+  );
+});
+
+const modeOf = (path: string) => statSync(path).mode & 0o777;
+
+/**
+ * Spec divergence 1 (t3code-gateway.md): the state file holds every paired person's Mend device
+ * token, so only the gateway's own user may read it.
+ */
+describe("the state file's permissions", () => {
+  it.effect("creates the file 0600 in a directory of its own 0700, WAL files included", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const directory = join(mkdtempSync(join(tmpdir(), "t3-gateway-mode-")), "mend", "t3");
+        const path = join(directory, "state.sqlite");
+        const state = yield* openGatewayState(path);
+        yield* state.recordTurnIds(
+          { sessionId: "session", turnId: "turn", runId: "t3-run:1", messageId: "message" },
+          1,
+        );
+        assert.strictEqual(modeOf(directory), 0o700);
+        assert.strictEqual(modeOf(path), 0o600);
+        for (const file of [`${path}-wal`, `${path}-shm`]) {
+          if (existsSync(file)) assert.strictEqual(modeOf(file), 0o600, file);
+        }
+      }),
+    ),
+  );
+
+  it.effect("narrows a file an older gateway left readable", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-mode-")), "state.sqlite");
+        writeFileSync(path, "");
+        chmodSync(path, 0o644);
+        yield* openGatewayState(path);
+        assert.strictEqual(modeOf(path), 0o600);
+      }),
+    ),
   );
 });

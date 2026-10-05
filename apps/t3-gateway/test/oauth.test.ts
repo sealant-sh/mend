@@ -5,6 +5,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 
 import { BEARER_TTL_MS } from "../src/auth.ts";
+import { forwardedChain } from "../src/http.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 
@@ -145,6 +146,73 @@ describe("POST /oauth/token", () => {
       );
     }),
   );
+
+  it.live("tells Mend which client a claim came from, so each client has its own limit", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.addPairingCode("DIRECT01", PERSON);
+        mend.addPairingCode("PROXIED1", PERSON);
+        const client = yield* t3Client;
+        yield* client.auth.token(tokenRequest("DIRECT01"));
+
+        // Behind a proxy of its own, the client's chain goes on and the gateway appends its hop.
+        const http = yield* HttpClient.HttpClient;
+        const response = yield* http.execute(
+          HttpClientRequest.post("/oauth/token").pipe(
+            HttpClientRequest.setHeader("x-forwarded-for", "203.0.113.7"),
+            HttpClientRequest.bodyUrlParams(tokenRequest("PROXIED1").payload),
+          ),
+        );
+        assert.strictEqual(response.status, 200);
+
+        const [direct, proxied] = mend.pairForwardedFor;
+        assert.match(direct ?? "", /^(::ffff:)?127\.0\.0\.1$/);
+        assert.match(proxied ?? "", /^203\.0\.113\.7, (::ffff:)?127\.0\.0\.1$/);
+      }),
+    ),
+  );
+
+  it.live("tells a rate-limited client it is rate limited, not that its code is wrong", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.addPairingCode("GOODCODE", PERSON);
+        mend.setPairingRateLimited(true);
+
+        const http = yield* HttpClient.HttpClient;
+        const limited = yield* http.execute(
+          HttpClientRequest.post("/oauth/token").pipe(
+            HttpClientRequest.bodyUrlParams(tokenRequest("GOODCODE").payload),
+          ),
+        );
+        assert.strictEqual(limited.status, 429);
+        // Mend's own wait, carried through.
+        assert.strictEqual(limited.headers["retry-after"], "42");
+        assert.strictEqual(limited.headers["cache-control"], "no-store");
+        const body = yield* limited.json;
+        assert.deepInclude(body, { error: "rate_limited" });
+        assert.match(JSON.stringify(body), /try again in 42 s/);
+        assert.strictEqual(mend.claims.length, 0);
+
+        // The code was not spent: once Mend lets the address through, it pairs.
+        mend.setPairingRateLimited(false);
+        const client = yield* t3Client;
+        const access = yield* client.auth.token(tokenRequest("GOODCODE"));
+        assert.strictEqual(access.token_type, "Bearer");
+      }),
+    ),
+  );
+});
+
+describe("the forwarded chain a claim carries", () => {
+  it("appends the address the gateway saw, and never passes a client's chain alone", () => {
+    assert.strictEqual(forwardedChain(undefined, "198.51.100.4"), "198.51.100.4");
+    assert.strictEqual(forwardedChain(" ", "198.51.100.4"), "198.51.100.4");
+    assert.strictEqual(
+      forwardedChain("203.0.113.7, 10.0.0.2", "127.0.0.1"),
+      "203.0.113.7, 10.0.0.2, 127.0.0.1",
+    );
+    assert.isUndefined(forwardedChain("203.0.113.7", undefined));
+  });
 });
 
 describe("GET /api/auth/session", () => {
