@@ -62,20 +62,15 @@ export const AGENT_MEMORY_HANDOVER_PATHS: ReadonlyArray<string> = [
 
 /**
  * The exec that hands a capture-mode harness home over to `owner` (plain `sh`, no node): each of
- * `AGENT_MEMORY_HANDOVER_PATHS` that is there moves to `kept` (relative to the home), and the
- * owner record then names `owner`, written even when nothing was there. Prints `memory moved
- * <path>` per path. Exits non-zero the moment a path cannot be moved: the launch must not start on
- * another person's memory.
- *
- * `prune`: everything moved is already in the previous person's store (the hand-over saved all of
- * it for them), so the kept set is removed rather than restored into every later executor of the
- * worktree, where anyone working there could read it. Without it, the set stays: nothing is lost.
+ * `AGENT_MEMORY_HANDOVER_PATHS` that is there moves to `kept` (relative to the home), never
+ * deleted, and the owner record then names `owner`, written even when nothing was there. Prints
+ * `memory moved <path>` per path. Exits non-zero the moment a path cannot be moved: the launch
+ * must not start on another person's memory.
  */
 export const handOverAgentMemoryExec = (
   home: string,
   kept: string,
   owner: string,
-  prune: boolean,
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
@@ -84,7 +79,6 @@ export const handOverAgentMemoryExec = (
     `for p in ${AGENT_MEMORY_HANDOVER_PATHS.map(shellQuote).join(" ")}; do`,
     `if [ -e "$home/$p" ] || [ -L "$home/$p" ]; then`,
     `mkdir -p "$kept/$(dirname "$p")" && mv "$home/$p" "$kept/$p" || exit 1; echo "memory moved $p"; fi; done;`,
-    prune ? `rm -rf "$kept"; rmdir "$home"/${shellQuote(AGENT_MEMORY_KEPT_DIR)} 2>/dev/null;` : "",
     `mkdir -p "$home/.mend" && printf %s ${shellQuote(owner)} > "$home"/${shellQuote(AGENT_MEMORY_OWNER)}`,
   ].join(" "),
 ];

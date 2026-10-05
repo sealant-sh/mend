@@ -692,19 +692,23 @@ describe.skipIf(!reachable)("0111 agent memory homes", () => {
             ('wt-kept', 'p-homes', 'kept', 'kept', 'mend/kept', 'abc'),
             ('wt-gone', 'p-homes', 'gone', 'gone', 'mend/gone', 'abc')`;
         yield* sql`
-          INSERT INTO agent_memory_homes (worktree_id, user_id, session_id, workspace_id) VALUES
-            ('wt-kept', 'u-maria', 's-removed', 'ws-1'),
-            ('wt-gone', 'u-maria', 's-other', 'ws-2')`;
+          INSERT INTO agent_memory_homes
+            (worktree_id, user_id, session_id, workspace_id, pending_user_id, pending_epoch) VALUES
+            ('wt-kept', 'u-maria', 's-removed', 'ws-1', 'u-maria', 4),
+            ('wt-gone', 'u-maria', 's-other', 'ws-2', NULL, NULL)`;
         yield* sql`DELETE FROM "user" WHERE id = 'u-maria'`;
         yield* sql`DELETE FROM worktrees WHERE id = 'wt-gone'`;
         return yield* sql<{
           readonly worktree_id: string;
           readonly user_id: string | null;
           readonly session_id: string | null;
-        }>`SELECT worktree_id, user_id, session_id FROM agent_memory_homes ORDER BY worktree_id`;
+          readonly pending_user_id: string | null;
+        }>`SELECT worktree_id, user_id, session_id, pending_user_id FROM agent_memory_homes ORDER BY worktree_id`;
       }),
     );
-    expect(rows).toEqual([{ worktree_id: "wt-kept", user_id: null, session_id: "s-removed" }]);
+    expect(rows).toEqual([
+      { worktree_id: "wt-kept", user_id: null, session_id: "s-removed", pending_user_id: null },
+    ]);
   });
 });
 

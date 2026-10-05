@@ -176,7 +176,7 @@ describe("handing a harness home over to another person (docs/adr/0009)", () => 
     fs.writeFileSync(path.join(home, ".codex", "memories_1.sqlite-wal"), "wal");
     fs.writeFileSync(path.join(home, ".codex", "auth.json"), "{}");
     const kept = agentMemoryHandoverKeptDir();
-    const [, , script, ...args] = handOverAgentMemoryExec(home, kept, "user-maria", false);
+    const [, , script, ...args] = handOverAgentMemoryExec(home, kept, "user-maria");
     const result = spawnSync("sh", ["-c", script ?? "", ...args], {
       encoding: "utf8",
       env: { PATH: process.env["PATH"] ?? "" },

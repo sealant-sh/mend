@@ -473,6 +473,17 @@ describe("other people's conversations in a capture-mode home (docs/adr/0009, Co
     fs.rmSync(home, { recursive: true, force: true });
   });
 
+  it("a state database under another name turns Codex's memory off", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-withhold-"));
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    new DatabaseSync(path.join(home, CODEX_STATE_DATABASE)).close();
+    fs.writeFileSync(path.join(home, ".codex", "state_6.sqlite"), "");
+    const result = runWithhold(home, [OWN]);
+    expect(result.stdout).toContain("memory-off");
+    expect(codexMemoryMayStayOn(result.status ?? -1, result.stdout)).toBe(false);
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
   it("anything else turns Codex's memory off: no node, no node:sqlite, a failure", () => {
     expect(codexMemoryMayStayOn(127, "")).toBe(false);
     expect(codexMemoryMayStayOn(3, "")).toBe(false);

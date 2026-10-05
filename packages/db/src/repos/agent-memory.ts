@@ -394,12 +394,18 @@ export class AgentMemoryRepo extends Context.Service<
       readonly holdsDatabase: HoldsDatabase;
     }) => Effect.Effect<AgentMemoryImportReport>;
     /**
-     * Whose memory a worktree's capture-mode home holds, as the server decided it at the launch
-     * of the executor holding it (`workspaceId`); null when no launch recorded one.
+     * Whose memory a worktree's capture-mode home holds: settled, and the last launch's hand-over
+     * pending; null when no launch recorded one.
      */
-    readonly homeOf: (worktreeId: WorktreeId) => Effect.Effect<AgentMemoryHome | null>;
-    /** The home is `home.userId`'s, held by the executor `home.workspaceId`, from now on. */
-    readonly recordHome: (worktreeId: WorktreeId, home: AgentMemoryHome) => Effect.Effect<void>;
+    readonly homeOf: (worktreeId: WorktreeId) => Effect.Effect<AgentMemoryHomes | null>;
+    /** The hand-over of the executor launched under `epoch`: pending until it is saved. */
+    readonly recordPendingHome: (
+      worktreeId: WorktreeId,
+      home: AgentMemoryHome,
+      epoch: number,
+    ) => Effect.Effect<void>;
+    /** A capture of `epoch` is the head: the hand-over pending under it is the home now. */
+    readonly settleHome: (worktreeId: WorktreeId, epoch: number) => Effect.Effect<void>;
   }
 >()("@mend/db/AgentMemoryRepo") {}
 
@@ -410,6 +416,12 @@ export interface AgentMemoryHome {
   /** The session whose launch made the executor; its row may be gone. */
   readonly sessionId: string | null;
   readonly workspaceId: string;
+}
+
+/** A worktree's home as the server records it: settled, and a hand-over not saved yet. */
+export interface AgentMemoryHomes {
+  readonly settled: AgentMemoryHome | null;
+  readonly pending: (AgentMemoryHome & { readonly epoch: number }) | null;
 }
 
 type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "delete" | "execute">;
@@ -963,23 +975,78 @@ export const AgentMemoryRepoLive: Layer.Layer<AgentMemoryRepo, never, MendDB> = 
         .where(eq(agentMemoryHomes.worktreeId, worktreeId))
         .limit(1)
         .pipe(Effect.orDie);
-      return row === undefined
-        ? null
-        : { userId: row.userId, sessionId: row.sessionId, workspaceId: row.workspaceId };
+      if (row === undefined) return null;
+      return {
+        settled:
+          row.workspaceId === null
+            ? null
+            : { userId: row.userId, sessionId: row.sessionId, workspaceId: row.workspaceId },
+        pending:
+          row.pendingWorkspaceId === null || row.pendingEpoch === null
+            ? null
+            : {
+                userId: row.pendingUserId,
+                sessionId: row.pendingSessionId,
+                workspaceId: row.pendingWorkspaceId,
+                epoch: row.pendingEpoch,
+              },
+      };
     });
 
-    const recordHome = Effect.fn("AgentMemoryRepo.recordHome")(function* (
+    const recordPendingHome = Effect.fn("AgentMemoryRepo.recordPendingHome")(function* (
       worktreeId: WorktreeId,
       home: AgentMemoryHome,
+      epoch: number,
     ) {
-      const values = { ...home, updatedAt: new Date() };
+      const pending = {
+        pendingUserId: home.userId,
+        pendingSessionId: home.sessionId,
+        pendingWorkspaceId: home.workspaceId,
+        pendingEpoch: epoch,
+        updatedAt: new Date(),
+      };
       yield* db
         .insert(agentMemoryHomes)
-        .values({ worktreeId, ...values })
-        .onConflictDoUpdate({ target: agentMemoryHomes.worktreeId, set: values })
+        .values({ worktreeId, ...pending })
+        .onConflictDoUpdate({ target: agentMemoryHomes.worktreeId, set: pending })
         .pipe(Effect.orDie);
     });
 
-    return { forLaunch, list, read, remove, readBack, importFiles, homeOf, recordHome };
+    const settleHome = Effect.fn("AgentMemoryRepo.settleHome")(function* (
+      worktreeId: WorktreeId,
+      epoch: number,
+    ) {
+      yield* db
+        .update(agentMemoryHomes)
+        .set({
+          userId: sql`${agentMemoryHomes.pendingUserId}`,
+          sessionId: sql`${agentMemoryHomes.pendingSessionId}`,
+          workspaceId: sql`${agentMemoryHomes.pendingWorkspaceId}`,
+          pendingUserId: null,
+          pendingSessionId: null,
+          pendingWorkspaceId: null,
+          pendingEpoch: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(agentMemoryHomes.worktreeId, worktreeId),
+            eq(agentMemoryHomes.pendingEpoch, epoch),
+          ),
+        )
+        .pipe(Effect.orDie);
+    });
+
+    return {
+      forLaunch,
+      list,
+      read,
+      remove,
+      readBack,
+      importFiles,
+      homeOf,
+      recordPendingHome,
+      settleHome,
+    };
   }),
 );

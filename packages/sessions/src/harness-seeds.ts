@@ -195,27 +195,52 @@ export const withCodexMemory = (argv: ReadonlyArray<string>): ReadonlyArray<stri
   return [head, ...CODEX_MEMORY_FLAG, ...rest];
 };
 
+/** What turns Codex's memory fully off: no summarising, and no thread created for it. */
+export const CODEX_MEMORY_OFF = [
+  "-c",
+  "features.memories=false",
+  "-c",
+  "memories.generate_memories=false",
+] as const;
+
 /**
- * A Codex launch with its memory off, whatever it asked: when Mend could not take the other
- * people's conversations in a capture-mode home out of Codex's memory (no node, no `node:sqlite`),
- * Codex must not summarise them into the launcher's memory (docs/adr/0009, "Codex"). Takes both
- * shapes Mend launches: `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
+ * A Codex launch with its memory fully off, whatever it asked (docs/adr/0009, "Codex"): a join
+ * into another person's home, or a launch where Mend could not take the other people's
+ * conversations out of Codex's memory. Codex neither summarises (`features.memories`) nor creates
+ * a thread any Codex will summarise later (`memories.generate_memories`: a new thread is created
+ * with its memory disabled). A `--enable memories` in the launch would win over `-c`, so it is
+ * dropped, and a `-c` that names either setting is turned off. Takes both shapes Mend launches:
+ * `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
  */
 export const withCodexMemoryOff = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
   const [head, ...rest] = argv;
   if (head === "codex") {
-    const named = argv.some((arg) => arg.startsWith("features.memories"));
-    const turned = argv.map((arg) =>
-      arg.startsWith("features.memories") ? "features.memories=false" : arg,
-    );
-    return named ? turned : [head, "-c", "features.memories=false", ...rest];
+    const kept: Array<string> = [];
+    for (let index = 0; index < rest.length; index++) {
+      const arg = rest[index] ?? "";
+      if (arg === "--enable" && rest[index + 1] === "memories") {
+        index++;
+        continue;
+      }
+      if (arg === "--enable=memories") continue;
+      // A `-c` naming either setting goes with its value; Mend's own say comes first.
+      if (
+        arg === "-c" &&
+        /^(features\.memories|memories\.generate_memories)(=|$)/.test(rest[index + 1] ?? "")
+      ) {
+        index++;
+        continue;
+      }
+      kept.push(arg);
+    }
+    return [head, ...CODEX_MEMORY_OFF, ...kept];
   }
   const script = argv[2];
   if (head === "sh" && argv[1] === "-c" && script !== undefined) {
     return [
       head,
       "-c",
-      script.replaceAll("features.memories=true", "features.memories=false"),
+      script.replaceAll("-c features.memories=true", CODEX_MEMORY_OFF.join(" ")),
       ...argv.slice(3),
     ];
   }

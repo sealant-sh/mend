@@ -691,8 +691,9 @@ export const agentMemoryImportBases = pgTable(
 );
 
 /**
- * Whose memory a worktree's capture-mode harness home holds (docs/adr/0009): decided by the
- * server when the executor holding it was launched. Outlives the session rows.
+ * Whose memory a worktree's capture-mode harness home holds (docs/adr/0009): settled, and the
+ * last launch's hand-over pending until a capture of its epoch is the head. Outlives the session
+ * rows.
  */
 export const agentMemoryHomes = pgTable("agent_memory_homes", {
   worktreeId: text()
@@ -701,7 +702,11 @@ export const agentMemoryHomes = pgTable("agent_memory_homes", {
     .references(() => worktrees.id, { onDelete: "cascade" }),
   userId: text(),
   sessionId: text(),
-  workspaceId: text().notNull(),
+  workspaceId: text(),
+  pendingUserId: text(),
+  pendingSessionId: text(),
+  pendingWorkspaceId: text(),
+  pendingEpoch: integer(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

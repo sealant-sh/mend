@@ -3028,11 +3028,14 @@ const projectInstallEnabledMigration = Effect.gen(function* () {
 
 /**
  * docs/adr/0009-agent-memory-per-person-per-project.md, capture mode: whose memory each worktree's
- * one harness home holds, as the server decided it when the executor that holds it now was
- * launched and the home was handed to its launcher. It outlives the session rows (a removed
- * session's executor is still known as its owner's), and a home's own record, which anything
- * running in the executor can write, is never consulted. `user_id` null: the person was removed,
- * or nobody could be named.
+ * one harness home holds, as the server decided it when the launch of an executor handed the home
+ * over. It outlives the session rows (a removed session's executor is still known as its owner's),
+ * and the home's own record, which anything running in the executor can write, is never consulted.
+ * - `user_id`, `session_id`, `workspace_id`: the settled home, the one the worktree's head capture
+ *   holds. `user_id` null: the person was removed, or nobody could be named.
+ * - `pending_*`: the hand-over of the executor launched last, under the lease `pending_epoch`. It
+ *   counts only once a capture of that epoch is the worktree's head: an executor lost before its
+ *   first save leaves the previous home in place, and the record says so.
  */
 const agentMemoryHomesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -3041,7 +3044,11 @@ const agentMemoryHomesMigration = Effect.gen(function* () {
       worktree_id text PRIMARY KEY REFERENCES worktrees (id) ON DELETE CASCADE,
       user_id text REFERENCES "user" (id) ON DELETE SET NULL,
       session_id text,
-      workspace_id text NOT NULL,
+      workspace_id text,
+      pending_user_id text REFERENCES "user" (id) ON DELETE SET NULL,
+      pending_session_id text,
+      pending_workspace_id text,
+      pending_epoch integer,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
 });
