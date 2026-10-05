@@ -11,7 +11,8 @@
 #     | bash -s -- <version> <sha>
 #
 # It takes compose.v2.yaml and postgres-init.sh from that exact Mend commit, pulls
-# ghcr.io/sealant-sh/mend:<version>, and runs `mend server setup` when the box has no Mend server
+# ghcr.io/sealant-sh/mend:<version>, refuses an image whose version, commit or platform is not the
+# one asked for, and runs `mend server setup` when the box has no Mend server
 # or `mend server upgrade` when it has one. Options after the commit go to `mend server setup` only;
 # an upgrade keeps the installed configuration, the edge (--edge) and the declared exposure and
 # tenancy included: the CLI carries the edge overlay and renders it into every generation, so
@@ -47,7 +48,7 @@ shift 2
   die "version must be an exact Mend version such as 0.36.0-next.56.preview.17, not \"$version\"."
 [[ $commit =~ ^[0-9a-f]{40}$ ]] ||
   die "mend-commit-sha must be the full 40-character commit the workflow printed, not \"$commit\"."
-[[ $EUID -eq 0 ]] || die "run this as root: mend server setup and upgrade drive the host's Docker."
+[[ $(id -u) -eq 0 ]] || die "run this as root: mend server setup and upgrade drive the host's Docker."
 for tool in mend docker curl; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is not on PATH."
 done
@@ -67,6 +68,17 @@ docker pull "$image" || die "could not pull $image. Check the version and that t
 label=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")
 [[ $label == "$version" ]] ||
   die "$image carries org.opencontainers.image.version=\"$label\", expected \"$version\"."
+# The compose assets come from <commit> and the image from <version>: one build, or nothing. An image
+# without the label (a next build from before image.yml stamped it) cannot be checked, so it is
+# refused too.
+revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
+[[ $revision == "$commit" ]] ||
+  die "$image carries org.opencontainers.image.revision=\"$revision\", expected \"$commit\" · nothing deployed."
+# An image for another platform pulls (a single-platform image) and then never starts here.
+image_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
+host_platform=$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')
+[[ $image_platform == "$host_platform" ]] ||
+  die "$image is built for $image_platform and this box runs $host_platform · nothing deployed."
 
 # `mend server status` exits non-zero both when nothing is installed and when an installed server
 # is stopped or unhealthy; only the first one means setup.
@@ -82,7 +94,8 @@ else
   fi
   # Sessions live on this box lose their executor's connection in an upgrade (an incident on
   # 2026-10-03 lost a phone session's evidence this way): refuse unless told otherwise. The count
-  # is read from the bundled Postgres; a box without it is told and goes on.
+  # is read from the bundled Postgres. A count that cannot be read (Postgres restarting, renamed,
+  # or absent) refuses too: no count is not zero sessions.
   live=$(docker exec mend-postgres-1 psql -U mend -d mend -At \
     -c "select count(*) from agent_sessions where settled_at is null" 2>/dev/null || printf '?')
   if [[ $live =~ ^[0-9]+$ ]]; then
@@ -90,8 +103,10 @@ else
       die "$live session(s) are live on this box · nothing deployed · set PREVIEW_DEPLOY_EVEN_IF_LIVE=1 to upgrade anyway"
     fi
     say "$live session(s) live"
+  elif [[ ${PREVIEW_DEPLOY_EVEN_IF_LIVE:-} == 1 ]]; then
+    say "could not count live sessions (no bundled Postgres answered) · going on: PREVIEW_DEPLOY_EVEN_IF_LIVE=1"
   else
-    say "could not count live sessions (no bundled Postgres answered) · going on"
+    die "could not count live sessions (no bundled Postgres answered) · nothing deployed · set PREVIEW_DEPLOY_EVEN_IF_LIVE=1 to upgrade anyway"
   fi
   # The previous container's log would go with the container: kept, the last twenty.
   logs="${MEND_CONFIG_DIR:-/root/.config/mend}/logs"

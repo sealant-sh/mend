@@ -30,10 +30,14 @@ import { Effect, Schema } from "effect";
  * server-side copy. A session capture is never promoted — nothing in the register route knows
  * this prefix — so one agent's `node_modules` can never become another session's supply chain.
  *
- * Readers: a standby executor's plan (`hot-pool.ts` "Capture-mode standby") and a cold launch
- * whose head carries no bulk for the executor's platform — neither as `bulk` nor in `other_bulk`
- * (`bulkSectionFor`); both fall back to running the install command in the workspace when the
+ * Reader: only a standby executor's plan (`hot-pool.ts` "Capture-mode standby", through
+ * `prepareStandby`), which falls back to running the install command in the workspace when the
  * cache has nothing for that platform. A record is served only for the platform it names.
+ *
+ * A cold launch never reads the cache: its capture 0 is always `bulk: "pending"`, and
+ * `installDependenciesIfNeeded` runs the install command when the head carries no tree for the
+ * executor's platform. That is on purpose: on the box, restoring a 2.4 GB tree from the cache took
+ * about 20 s, against about 14 s for `pnpm install`.
  *
  * A bulk section in either section format promotes (sealantd PR #99): format 1 names its dir
  * objects by key, so they are re-keyed under the cache prefix; format 2 names them by digest

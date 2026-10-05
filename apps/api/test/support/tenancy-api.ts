@@ -186,6 +186,8 @@ export const createTenancyApi = async (
       readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
       readonly agentMemory?: Layer.PartialEffectful<AgentMemoryRepo["Service"]>;
       readonly sessionRepositories?: Layer.PartialEffectful<SessionRepositoriesRepo["Service"]>;
+      readonly forwards?: Layer.PartialEffectful<ServiceForwardsRepo["Service"]>;
+      readonly store?: Layer.PartialEffectful<Store["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
@@ -282,7 +284,7 @@ export const createTenancyApi = async (
       recording(ReviewSlicesRepo, "slices", {}, calls),
       recording(SessionControlEventsRepo, "controlEvents", { record: () => Effect.void }, calls),
       recording(RunsRepo, "runs", {}, calls),
-      recording(ServiceForwardsRepo, "forwards", {}, calls),
+      recording(ServiceForwardsRepo, "forwards", options.implement?.forwards ?? {}, calls),
       recording(ServiceObservationsRepo, "observations", {}, calls),
       recording(SettingsRepo, "settings", {}, calls),
       recording(UserEvents, "userEvents", {}, calls),
@@ -323,7 +325,7 @@ export const createTenancyApi = async (
       recording(SecretCipher, "cipher", options.implement?.cipher ?? {}, calls),
     ),
     Layer.mergeAll(
-      recording(Store, "store", {}, calls),
+      recording(Store, "store", options.implement?.store ?? {}, calls),
       recording(Gh, "gh", {}, calls),
       recording(SlackApi, "slackApi", {}, calls),
       recording(SlackDefaultsRepo, "slackDefaults", {}, calls),

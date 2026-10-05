@@ -116,6 +116,7 @@ import {
   SessionExtraMount,
   SessionReferenceMount,
   type SessionRepository as SessionRepositoryRow,
+  canNestRepository,
   canUseLink,
   isRepositoryName,
   nestedRepositoryPath,
@@ -269,6 +270,7 @@ import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   CODEX_DAEMON_OFF,
+  HARNESS_UPDATES_OFF_ENV,
   launchesCodex,
   withCodexMemoryOff,
   withHarnessSetup,
@@ -601,6 +603,22 @@ const interactiveShellArgv = (
 ];
 
 /**
+ * A terminal launch of a session whose saved state is its own harness's continues the
+ * conversation that state names. One rule for every executor a launch can land in — a fresh one
+ * or a lease holder's it joins — so the process row and the harness name the same conversation.
+ * A protocol launch resumes through its own handshake and is left alone.
+ */
+const savedConversationArgv = (
+  harness: string,
+  manifest: HarnessStateManifest | null,
+  protocolStart: LaunchStart | null,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> =>
+  manifest !== null && manifest.harness === harness && protocolStart === null
+    ? nativeResumeArgv(harness, manifest.providerSessionId, argv)
+    : argv;
+
+/**
  * Permission prompts are the harness re-asking a question Mend already
  * answers: the session runs in an isolated workspace on its own
  * worktree, every byte is recorded, and nothing lands without review.
@@ -876,6 +894,20 @@ const secretFilesRefusedWords = (refused: ReadonlyArray<SecretFileOutcome>) =>
   `${SECRET_FILES_SUMMARY_PREFIX} · ${refused.length} not written · ${refused
     .map((outcome) => `~/${outcome.path} · ${outcome.reason ?? "refused"}`)
     .join(" · ")}`;
+/**
+ * Said once, as a run in an executor that is not its owner's starts (docs/adr/0010 decision 3): a
+ * join, or a later run of a session that joined, in the home of the person whose launch made the
+ * executor. None of the owner's files is written there, and the line names them, paths only.
+ */
+const secretFilesWithheldWords = (
+  paths: ReadonlyArray<string>,
+  executorOwner: "another person" | "unknown",
+) =>
+  `${SECRET_FILES_SUMMARY_PREFIX} · ${paths.length} not written · ${
+    executorOwner === "another person"
+      ? "this workspace is another person's"
+      : "Mend cannot say whose workspace this is"
+  } · ${paths.map((filePath) => `~/${filePath}`).join(" · ")}`;
 
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
@@ -967,6 +999,14 @@ const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
 const CHECKPOINT_FLUSH_TIMEOUT = Duration.seconds(20);
 /** A status read reads a counter; it never waits on a ship. */
 const CAPTURE_STATUS_TIMEOUT = Duration.seconds(10);
+/**
+ * How long a drain whose final flush answered complete waits for an answer asked before it to be
+ * published (`awaitEvidenceSettled`): a status read's own bound, and a second more for its
+ * publication. Past it the drain goes on as before, asking for another final flush.
+ */
+const EVIDENCE_SETTLE_WAIT = Duration.sum(CAPTURE_STATUS_TIMEOUT, Duration.seconds(1));
+/** Between two looks at whether such an answer was published. */
+const EVIDENCE_SETTLE_LOOK = Duration.millis(25);
 /** A landing asks the executor this many times for its captures before it says they are behind. */
 const LANDING_FLUSH_ATTEMPTS = 4;
 const LANDING_FLUSH_PAUSE = Duration.seconds(2);
@@ -1314,6 +1354,7 @@ export class RepositoryAddError extends Schema.TaggedErrorClass<RepositoryAddErr
       "worktree-taken",
       "no-origin",
       "not-live",
+      "private-project",
     ]),
     message: Schema.String,
   },
@@ -2039,8 +2080,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * restore, so a later head still names it.
        *
        * "Automatic install" off: no install command runs, detected or saved. This decides only
-       * what runs here; the tree the executor restored from the head or the shared cache (its
-       * plan, before this launch) is laid down either way.
+       * what runs here; the tree the executor restored from the head, or a standby from the shared
+       * cache (its plan, before this launch), is laid down either way. A cold launch never reads
+       * the shared cache (`dependency-cache.ts`).
        */
       const installDependenciesIfNeeded = Effect.fn("SessionEngine.installDependenciesIfNeeded")(
         function* (session: Session, project: Project, workspace: Workspace) {
@@ -2372,6 +2414,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Nothing asked and unpublished: the evidence kept is all that was received. */
       const evidenceSettled = (workspaceId: string) =>
         sessions.evidenceFenced(workspaceId).pipe(Effect.map((fenced) => !fenced));
+      /**
+       * Whether every answer asked of the executor in `workspaceId` was published within `wait`:
+       * looked at every `EVIDENCE_SETTLE_LOOK` until it is, or the wait runs out.
+       */
+      const awaitEvidenceSettled = Effect.fn("SessionEngine.awaitEvidenceSettled")(function* (
+        workspaceId: string,
+        wait: Duration.Duration,
+      ) {
+        const deadline = Date.now() + Duration.toMillis(wait);
+        while (!(yield* evidenceSettled(workspaceId))) {
+          if (Date.now() >= deadline) return false;
+          yield* Effect.sleep(EVIDENCE_SETTLE_LOOK);
+        }
+        return true;
+      });
       /**
        * Ask `ask` of the executor fenced: the fence is written before it and closed after it —
        * deleted when nothing arrived, kept (`unpublished`) when an answer arrived and was not
@@ -2798,6 +2855,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           reading.complete === false &&
           reading.incompleteReason === "in-progress"
         ) {
+          // Asked before Mend began to drain this executor and answered while Mend's own final
+          // flush ran (a client's view asked as the person pressed Stop): that flush is the one
+          // in progress, and the end is the person's Stop, not one made outside Mend (box,
+          // 2026-10-05).
+          const workspaceId = session.sealantWorkspaceId;
+          const now = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (
+            drains.has(workspaceId) ||
+            (now !== null && now.captureDrain !== null) ||
+            (yield* workspaceFinalFlushed(session.worktreeId, workspaceId))
+          ) {
+            yield* Effect.logDebug(
+              "session engine: capture mode · a status read answered during Mend's own final flush",
+            ).pipe(Effect.annotateLogs({ sessionId, workspaceId }));
+            return;
+          }
           yield* Effect.logInfo(
             "session engine: capture mode · the executor is running a final flush Mend did not ask for · stopping",
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId: session.sealantWorkspaceId }));
@@ -4583,18 +4658,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // never reads saved over a failure the executor answered after it, or one nothing
           // orders against it. Read from the session as it is now, confirmed against the
           // evidence version it was read at.
-          const directEnd =
+          const readDirectEnd = Effect.gen(function* () {
+            const current = yield* sessions
+              .byId(sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
+            return yield* confirmedExecutorEnd(
+              current,
+              yield* executorEndOfSession(current, workspaceId),
+            );
+          });
+          let directEnd =
             reading !== null && captureSaved(reading) && lookup.kind === "found"
-              ? yield* Effect.gen(function* () {
-                  const current = yield* sessions
-                    .byId(sessionId)
-                    .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
-                  return yield* confirmedExecutorEnd(
-                    current,
-                    yield* executorEndOfSession(current, workspaceId),
-                  );
-                })
+              ? yield* readDirectEnd
               : null;
+          // An answer asked of this executor before the final flush, and not published yet, leaves
+          // its end undecided (cross-repo decision 18): typically a status read a client's view
+          // asked just before the Stop, which the executor answered while the final flush ran and
+          // which arrives after it. Its answer is waited for and the end read again; asking for
+          // another final flush instead cost a Stop on the box 5.1 s (2026-10-05).
+          if (
+            directEnd !== null &&
+            directEnd.outcome !== "stopped" &&
+            directEnd.evidence?.settled === false
+          ) {
+            yield* Effect.logInfo(
+              "session engine: capture drain · the final flush answered complete · an answer asked before it is still on its way · waiting for it",
+            ).pipe(Effect.annotateLogs({ sessionId, workspaceId, reason }));
+            if (yield* awaitEvidenceSettled(workspaceId, EVIDENCE_SETTLE_WAIT)) {
+              directEnd = yield* readDirectEnd;
+            }
+          }
           if (directEnd !== null && directEnd.outcome !== "stopped") {
             yield* Effect.logWarning(
               "session engine: capture drain · the final flush answered complete, but the executor's evidence does not read saved · not saved yet",
@@ -4604,7 +4697,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 workspaceId,
                 reason,
                 headN: reading?.headN ?? null,
-                evidence: directEnd.summary,
+                // The executor's end in its own words names how it ended; a Stop made in Mend
+                // never reads `stopped outside Mend`.
+                evidence: endedOutsideMend.has(workspaceId)
+                  ? directEnd.summary
+                  : directEnd.summary.replace(/^stopped outside Mend · /, ""),
               }),
             );
           }
@@ -6202,18 +6299,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
         const settled = yield* sealant.waitRun(sdkRun);
-        const outcome = settled.result.outcome === "completed" ? "completed" : "failed";
-        const summary =
-          settled.result.summary ??
-          (outcome === "failed" ? `harness exited with code ${settled.result.exitCode}` : null);
         // The run ended, so the agent process recording it ended too. The PTY watcher races
         // this path; whichever observes the end first records it, and the other finds the row
         // already ended.
         const agentProcess = yield* agentProcessForRun(session.id, sessionRun.sealantRunId);
+        const exitCode =
+          typeof settled.result.exitCode === "number" ? settled.result.exitCode : null;
+        // Core settles an interactive session's run `completed` whatever its process exited with,
+        // so the outcome reads the exit code as the PTY watcher does (`endProcess`): a launch that
+        // exits non-zero is failed whichever of the two observes its end first (2026-10-05, two
+        // joins that failed to start read `failed · exited with code 1` and `completed`). An
+        // open-workbench shell's exit never judges the work.
+        const outcome: SessionOutcome =
+          settled.result.outcome !== "completed"
+            ? "failed"
+            : (agentProcess?.harness ?? session.harness) === "shell" ||
+                exitCode === null ||
+                exitCode === 0
+              ? "completed"
+              : "failed";
+        const summary =
+          settled.result.summary ??
+          (outcome === "failed" ? `harness exited with code ${settled.result.exitCode}` : null);
         if (agentProcess !== null) {
           const ended = yield* endAgentProcess(agentProcess, {
             how: "exited",
-            exitCode: typeof settled.result.exitCode === "number" ? settled.result.exitCode : null,
+            exitCode,
             outcome,
             summary,
           });
@@ -8991,6 +9102,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const channel = yield* sessionChannelLaunchEnv(sessionId, input.launchId);
         const env = {
+          // The harnesses' self-updaters are off for every process in the workspace, a `claude`
+          // typed in a shell included; a project variable of the same name wins.
+          ...HARNESS_UPDATES_OFF_ENV,
           ...Object.fromEntries(
             environment.variables.map((variable) => [variable.name, variable.value] as const),
           ),
@@ -9060,7 +9174,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       }),
                   packages: workspaceImage.packages,
                   services: workspaceImage.services,
-                  ...(Object.keys(env).length === 0 ? {} : { env }),
+                  env,
                   ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
                   // Cluster bindings (and the Docker service above) pass through unconditionally — no
                   // Mend-side capability pre-check. The platform validates at create: a runtime that
@@ -10791,7 +10905,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (candidate) =>
               candidate.id !== project.id &&
               !held.has(candidate.id) &&
-              canUseLink(project, candidate, viewer),
+              canUseLink(project, candidate, viewer) &&
+              canNestRepository(project, candidate),
           )
           .map(
             (candidate): AddableProject => ({
@@ -10894,6 +11009,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* refuse(
             "not-visible",
             `project ${target.name} is not visible to this session's owner`,
+          );
+        }
+        // Its files and history would ride this worktree's captures to whoever opens it: a private
+        // project goes only where nobody else can open the worktree (ADR 0011, decision 14).
+        if (!canNestRepository(project, target)) {
+          return yield* refuse(
+            "private-project",
+            project.visibility === "shared"
+              ? `${target.name} is private and ${project.name} is shared · its files and history would be saved with this session's worktree, which every member of the organization can open · add it from a session in a private project of yours, or ask an owner to share ${target.name}`
+              : `${target.name} is private and ${project.name} is another person's · its files and history would be saved with this session's worktree, which they can open · add it from a session in a private project of yours`,
           );
         }
         const name = input.name ?? target.name;
@@ -11275,9 +11400,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.map((held) => held.ownerUserId),
               Effect.orElseSucceed(() => null),
             );
+            // A resume through a join opens the conversation it names, as a cold one does.
             return yield* launchInRetainedWorkspace(
               sessionId,
-              argv,
+              savedConversationArgv(session.harness, manifest, protocolStart, argv),
               null,
               correlationId,
               manifest !== null && manifest.harness === session.harness
@@ -11753,9 +11879,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             }
           }
-          if (manifest.harness === session.harness && protocolStart === null) {
-            shapedArgv = nativeResumeArgv(session.harness, manifest.providerSessionId, shapedArgv);
-          }
+          shapedArgv = savedConversationArgv(session.harness, manifest, protocolStart, shapedArgv);
         }
 
         if (nativeImport !== null && capture !== null) {
@@ -12619,10 +12743,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ));
           // Read before this launch writes the workspace onto the session's row: a session that
           // joined another person's executor keeps running there on that person's login.
-          const launchedWithLoginOf =
-            protocolStart === null
-              ? null
-              : yield* launchLoginOfWorkspace(session, SealantWorkspaceId.make(workspace.id));
+          const workspaceLogin = yield* launchLoginOfWorkspace(
+            session,
+            SealantWorkspaceId.make(workspace.id),
+          );
+          const launchedWithLoginOf = protocolStart === null ? null : workspaceLogin;
           if (nativeImport !== null) {
             yield* placeConvertedFiles(
               session,
@@ -12664,12 +12789,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // The owner's secret files again (docs/adr/0010): a retained executor may predate a
           // file the owner added or replaced since its launch, and this run reads the home as it
-          // is now. Only into a home that is the owner's: the session's own executor, or a lease
-          // holder's whose session the same person owns. A join into another person's executor
-          // writes nothing, and the log says so.
+          // is now. Only into a home that is the owner's (decision 3): whose it is is decided from
+          // the executor, never from how the launch reached it. A join names the lease holder's
+          // owner; any other retained run (resume, follow-up, shell resume, mode handoff) reads
+          // whose launch made the executor (`launchLoginOfWorkspace`), because a session that once
+          // joined another person's executor keeps that executor on its row. Delivering there
+          // would put the owner's files where the holder's agent reads them, replace the holder's
+          // own at the same path, and remove the holder's files as stale. Unknown reads as
+          // another person's: nothing is written, and the session line says so.
+          const executorOwner = workspaceOverride === null ? workspaceLogin : executorOwnerUserId;
           const homeIsOwners =
-            workspaceOverride === null ||
-            (executorOwnerUserId !== null && executorOwnerUserId === session.ownerUserId);
+            session.ownerUserId !== null && executorOwner === session.ownerUserId;
+          const withheldSecretFiles =
+            homeIsOwners || session.ownerUserId === null
+              ? []
+              : (yield* secretFiles.list(session.ownerUserId)).map((file) => file.path);
           if (homeIsOwners) {
             yield* deliverSecretFiles(session, workspace).pipe(
               Effect.catch((error) =>
@@ -12680,8 +12814,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           } else if (session.ownerUserId !== null) {
             yield* Effect.logInfo(
-              "session engine: secret files not written · the executor is another person's",
-            ).pipe(Effect.annotateLogs({ sessionId }));
+              executorOwner === null
+                ? "session engine: secret files not written · Mend cannot say whose the executor is"
+                : "session engine: secret files not written · the executor is another person's",
+            ).pipe(Effect.annotateLogs({ sessionId, withheld: withheldSecretFiles.length }));
           }
           // A retained workspace may hold a repository whose add this server did not see end
           // (docs/adr/0010): settle it from what the workspace holds, as a fresh launch would.
@@ -12852,6 +12988,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* clearStaleStartSummary(sessionId);
           if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
             yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+          }
+          // After the stale words go, which would take a `secret files · …` line with them.
+          if (withheldSecretFiles.length > 0) {
+            yield* noteLaunchWords(
+              sessionId,
+              secretFilesWithheldWords(
+                withheldSecretFiles,
+                executorOwner === null ? "unknown" : "another person",
+              ),
+            ).pipe(Effect.ignore);
           }
           // As at a cold launch, on the machine that is already up (`agentStartingWords`).
           const startingWords =
@@ -13232,9 +13378,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* sessions.setProviderSessionId(sessionId, nativeImport.providerSessionId);
           }
         }
-        if (retainCurrentWorkspace && manifest.harness === target) {
-          argv = nativeResumeArgv(target, manifest.providerSessionId, argv);
-        }
+        if (retainCurrentWorkspace) argv = savedConversationArgv(target, manifest, null, argv);
         if (target !== session.harness) {
           yield* sessions.setHarness(sessionId, target);
           // The converted launch names no model: the new harness picks its own, and the row

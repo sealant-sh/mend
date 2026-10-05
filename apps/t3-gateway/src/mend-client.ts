@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/unstable/http/HttpClient";
@@ -59,17 +60,35 @@ const MendHarnessCatalog = Schema.Struct({
 export type MendHarnessCatalog = typeof MendHarnessCatalog.Type;
 const decodeHarnessCatalogs = Schema.decodeUnknownEffect(Schema.Array(MendHarnessCatalog));
 
-/** Mend refused the pairing code: unknown, already claimed or expired, or too many tries. */
+/** Mend refused the pairing code: unknown, or already claimed or expired. */
 export class MendPairingRefused extends Schema.TaggedError<MendPairingRefused>()(
   "MendPairingRefused",
   {
-    reason: Schema.Literals(["unknown-code", "spent-code", "rate-limited"]),
+    reason: Schema.Literals(["unknown-code", "spent-code"]),
   },
 ) {
   override get message(): string {
     return `Mend refused the pairing code (${this.reason}).`;
   }
 }
+
+/**
+ * Mend refused the claim without looking at the code: too many failed codes from the client's
+ * address. `retryAfterSeconds` is Mend's own answer, or null when its body did not carry one.
+ */
+export class MendPairingRateLimited extends Schema.TaggedError<MendPairingRateLimited>()(
+  "MendPairingRateLimited",
+  {
+    retryAfterSeconds: Schema.NullOr(Schema.Int),
+  },
+) {
+  override get message(): string {
+    return "Mend refused the pairing claim: too many failed codes from this address.";
+  }
+}
+
+/** Mend's `PairingRateLimited` body (`@mend/api-contracts`, not imported here). */
+const PairingRateLimitedBody = Schema.Struct({ retryAfterSeconds: Schema.Int });
 
 /** Mend no longer accepts the device token: the device was revoked or its person deactivated. */
 export class MendDeviceRefused extends Schema.TaggedError<MendDeviceRefused>()(
@@ -139,12 +158,17 @@ export type MendRead<A> = Effect.Effect<A, MendDeviceRefused | MendNotFound | Me
 export class MendClient extends Context.Service<
   MendClient,
   {
-    /** `POST /api/pair`: spends the code and returns a device token for its person. */
+    /**
+     * `POST /api/pair`: spends the code and returns a device token for its person. `forwardedFor`
+     * is the `x-forwarded-for` the gateway sends: the client's chain plus the address the gateway
+     * saw, so Mend counts failed claims per client rather than one bucket for the gateway.
+     */
     readonly claimPairing: (input: {
       readonly code: string;
       readonly name: string;
       readonly platform: MendDevicePlatform;
-    }) => Effect.Effect<PairClaim, MendPairingRefused | MendUnavailable>;
+      readonly forwardedFor: string | undefined;
+    }) => Effect.Effect<PairClaim, MendPairingRefused | MendPairingRateLimited | MendUnavailable>;
     /**
      * Whether Mend still accepts a device token. Mend has no `GET /api/me`; `GET /api/me/devices`
      * is the smallest read every signed-in person may make, and it answers 401 once the device is
@@ -267,17 +291,24 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             Effect.mapError((cause) => new MendUnavailable({ operation, status: null, cause })),
           );
 
-      const claimPairing = Effect.fn("MendClient.claimPairing")(function* (input: {
+      const claimPairing = Effect.fn("MendClient.claimPairing")(function* ({
+        forwardedFor,
+        ...claim
+      }: {
         readonly code: string;
         readonly name: string;
         readonly platform: MendDevicePlatform;
+        readonly forwardedFor: string | undefined;
       }) {
         const operation = "POST /api/pair";
         const response = yield* send(
           operation,
           HttpClientRequest.post(url("/api/pair")).pipe(
             HttpClientRequest.acceptJson,
-            HttpClientRequest.bodyJsonUnsafe(input),
+            forwardedFor === undefined
+              ? (request) => request
+              : HttpClientRequest.setHeader("x-forwarded-for", forwardedFor),
+            HttpClientRequest.bodyJsonUnsafe(claim),
           ),
         );
         switch (response.status) {
@@ -293,8 +324,15 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             return yield* new MendPairingRefused({ reason: "unknown-code" });
           case 410:
             return yield* new MendPairingRefused({ reason: "spent-code" });
-          case 429:
-            return yield* new MendPairingRefused({ reason: "rate-limited" });
+          case 429: {
+            const body = yield* response.json.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(PairingRateLimitedBody)),
+              Effect.option,
+            );
+            return yield* new MendPairingRateLimited({
+              retryAfterSeconds: Option.getOrNull(Option.map(body, (b) => b.retryAfterSeconds)),
+            });
+          }
           default:
             return yield* new MendUnavailable({
               operation,

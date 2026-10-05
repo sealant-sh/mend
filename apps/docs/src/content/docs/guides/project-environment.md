@@ -187,13 +187,15 @@ places, both under its own control:
 - in a workspace whose captured dependency tree was built for another platform (or that has none
   yet), before the harness starts; the log line names the platform observed and the command;
 - in an install session Mend launches itself when the command changes or automatic install is turned
-  on, whose result fills the project's shared cache for that platform. Standby workspaces and cold
-  launches read that cache.
+  on, whose result fills the project's shared cache for that platform. Only standby workspaces read
+  that cache. A cold launch restores the session's saved state and, when that has no tree for its
+  platform, runs the install command.
 
 Off, Mend runs no install command for the project, in a session or in the install session; an agent
-can install by hand. A dependency tree already in the session's saved state, or in the project's
-shared cache, is restored either way. Turning it off keeps the custom command. In co-located mode a
-worktree keeps its own dependencies and Mend runs no install, whatever the switch says.
+can install by hand. A dependency tree already in the session's saved state, or in the shared cache
+a standby workspace starts from, is restored either way. Turning it off keeps the custom command. In
+co-located mode a worktree keeps its own dependencies and Mend runs no install, whatever the switch
+says.
 
 A session's own dependency tree is captured with its work, like any other bytes, and is never
 promoted into the shared cache: what one agent installed belongs to that session.

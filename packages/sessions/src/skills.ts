@@ -173,6 +173,11 @@ export interface SkillsVacate {
    * delivered tree (a pi profile's `node_modules`). Skills name none.
    */
   readonly skip?: ReadonlyArray<string>;
+  /**
+   * Files, relative to the directory, the digest does not read either: what the platform never
+   * saves, so a restored tree lacks them (a pi profile's `root/mcp.json`). Skills name none.
+   */
+  readonly skipFiles?: ReadonlyArray<string>;
 }
 
 /**
@@ -249,14 +254,14 @@ export const SKILLS_VACATE_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
   `const [home,kept,list]=process.argv.slice(1);const items=JSON.parse(list);`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
-  `function tree(dir,skip){const out=[];const walk=(abs,rel)=>{for(const e of fs.readdirSync(abs,{withFileTypes:true})){`,
+  `function tree(dir,skip,skipFiles){const out=[];const walk=(abs,rel)=>{for(const e of fs.readdirSync(abs,{withFileTypes:true})){`,
   `const a=path.join(abs,e.name),r=rel===""?e.name:rel+"/"+e.name;`,
-  `if(e.isDirectory()){if(!skip.includes(e.name))walk(a,r)}else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
+  `if(e.isDirectory()){if(!skip.includes(e.name))walk(a,r)}else if(skipFiles.includes(r))continue;else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
   `walk(dir,"");out.sort((x,y)=>x[0]<y[0]?-1:x[0]>y[0]?1:0);return sha(out.map(([r,h])=>r+"\\u0000"+h+"\\n").join(""))}`,
   `function say(o,d,x){process.stdout.write("skill "+o+" "+d+(x?" "+x:"")+"\\n")}`,
   `let failed=false;for(const it of items){const abs=path.join(home,it.dir);let st;`,
   `try{st=fs.lstatSync(abs)}catch(e){if(e.code==="ENOENT"){say("absent",it.dir);continue}say("error",it.dir,e.code);failed=true;continue}`,
-  `let digest=null;if(st.isDirectory()){try{digest=tree(abs,it.skip||[])}catch{digest=null}}`,
+  `let digest=null;if(st.isDirectory()){try{digest=tree(abs,it.skip||[],it.skipFiles||[])}catch{digest=null}}`,
   `if(digest!==null&&it.delivering!==null&&digest===it.delivering){say("unchanged",it.dir);continue}`,
   `try{const rel=path.join(kept,it.dir),to=path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});fs.renameSync(abs,to);say("kept",it.dir,rel)}`,
   `catch(e){say("error",it.dir,e.code||"error");failed=true}}`,

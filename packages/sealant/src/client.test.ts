@@ -1,4 +1,4 @@
-import { SealantApiError } from "@sealant/sdk";
+import { type RunChanges, SealantApiError } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -7,6 +7,7 @@ import {
   captureStatusOf,
   platformErrorCode,
   runtimeDeadlineOf,
+  runChangesOf,
   runtimeResourceIdOf,
   stopWith,
   type WorkspaceStopOptions,
@@ -310,5 +311,45 @@ describe("captureDrainOf (e2e9 F-A)", () => {
     ).toEqual({ kind: "drain", state: "kept", retained: true });
     expect(await readDrain({ captureDrain: async () => null })).toEqual({ kind: "none" });
     expect(await readDrain({})).toEqual({ kind: "unsupported" });
+  });
+});
+
+const readChanges = (changes: RunChanges) => Effect.runPromise(runChangesOf(changes));
+
+describe("runChangesOf (sealant#313)", () => {
+  const files: RunChanges["files"] = [{ path: "src/a.ts", change: "modified" }];
+
+  it("carries a reading Core made, with its diff", async () => {
+    expect(await readChanges({ files, diff: async () => "+a\n", available: true })).toEqual({
+      files,
+      diff: "+a\n",
+      available: true,
+      unavailableReason: null,
+    });
+  });
+
+  it("carries a reading Core never made, and why", async () => {
+    expect(
+      await readChanges({
+        files: [],
+        diff: async () => "",
+        available: false,
+        unavailableReason: "reading the run's changes failed",
+      }),
+    ).toEqual({
+      files: [],
+      diff: "",
+      available: false,
+      unavailableReason: "reading the run's changes failed",
+    });
+  });
+
+  it("reads a missing `available` (a control plane before sealant#313) as read, as the SDK does", async () => {
+    expect(await readChanges({ files, diff: async () => "+a\n" })).toEqual({
+      files,
+      diff: "+a\n",
+      available: true,
+      unavailableReason: null,
+    });
   });
 });

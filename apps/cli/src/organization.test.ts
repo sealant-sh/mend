@@ -156,7 +156,9 @@ describe("folder push", () => {
   });
 });
 
-describe("the commands against a server", () => {
+// Each `runCli` starts the CLI from source in a fresh `node`, 1–3 s on a loaded CI runner, and a
+// test runs it up to twice: the 5 s default is too short for that, as it is in `doctor.test.ts`.
+describe("the commands against a server", { timeout: 30_000 }, () => {
   it("invite prints the link and its limits for an owner, and refuses a member", async () => {
     let role: "owner" | "member" = "owner";
     const fake = await startFakeMend((request) =>
@@ -372,5 +374,5 @@ describe("operator", () => {
     } finally {
       await fake.close();
     }
-  });
+  }, 30_000);
 });

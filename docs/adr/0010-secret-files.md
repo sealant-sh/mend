@@ -63,16 +63,19 @@ base64 (`workspace-files.ts`).
    the cold launch, the claimed standby, and a run started in a retained executor, which may predate
    a file added since. Only into a home that is the person's: in capture mode a worktree has one
    executor, and a session joining a worktree another person's session holds runs in that person's
-   executor, so it receives no secret files of its own there, and the log says so (superseded by ADR
-   0016 §7: a joiner receives their own set in their own home). The server unseals the set once per
-   launch and holds the bytes only for that write. Each file lands 0600, its directory made 0700
-   when missing, staged beside the target under the delivery's own stamp and renamed into place; a
-   delivery cut short removes its staging files. What was written is recorded at
-   `~/.mend/secret-files`, sealed with the machine key and bound to the workspace, each file with
-   the digest of its bytes; the next delivery into that home removes a recorded file the person no
-   longer keeps, only while it still holds those bytes, never through a link, and a record that does
-   not unseal or is another workspace's says nothing. Best-effort like skills: an agent without its
-   files still starts, and the session line says which were not written and why.
+   executor, so it receives no secret files of its own there, nor does any later run of that session
+   in that executor (a resume, a follow-up), and the session line names the files not written
+   (superseded by ADR 0016 §7: a joiner receives their own set in their own home). Whose home an
+   executor is comes from whose launch made it, never from how a run reached it; when Mend cannot
+   say, nothing is written. The server unseals the set once per launch and holds the bytes only for
+   that write. Each file lands 0600, its directory made 0700 when missing, staged beside the target
+   under the delivery's own stamp and renamed into place; a delivery cut short removes its staging
+   files. What was written is recorded at `~/.mend/secret-files`, sealed with the machine key and
+   bound to the workspace, each file with the digest of its bytes; the next delivery into that home
+   removes a recorded file the person no longer keeps, only while it still holds those bytes, never
+   through a link, and a record that does not unseal or is another workspace's says nothing.
+   Best-effort like skills: an agent without its files still starts, and the session line says which
+   were not written and why.
 
 4. **Never captured, by construction and by refusal.**
    - By construction: a secret file goes into the executor's own `$HOME`, which no capture root,
@@ -140,6 +143,12 @@ base64 (`workspace-files.ts`).
   long-lived session's next run without a relaunch.
 - 2026-10-03: a join into another person's executor receives no secret files there. Writing the
   joiner's files into a home the holder's agent reads would hand them to the holder.
+- 2026-10-05: the same for every later run of a session that joined. Its row keeps the holder's
+  executor, and a resume or follow-up there counted it as the owner's home: the owner's files were
+  written where the holder's agent reads them, replaced the holder's own at the same path, and the
+  holder's other files were removed as stale. A retained run now decides from whose launch made the
+  executor (the worktree's lease), and the session line, not only the server log, names the files
+  not written. Per-person homes (ADR 0016) will deliver a joiner's own files.
 - 2026-10-03, after the first Astra review: each delivery stages under its own stamp and proves the
   path again before every chunk and the rename, since a planted staging file under a symlinked
   directory took later chunks; a delivery records what it wrote in `~/.mend/secret-files` and the
