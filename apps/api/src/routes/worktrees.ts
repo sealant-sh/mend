@@ -23,7 +23,7 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
-import { currentAgentProcess } from "@mend/domain/workbench";
+import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine } from "@mend/sessions";
 import { Store } from "@mend/store";
 import { Effect } from "effect";
@@ -242,13 +242,22 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         // origin's branch still has, goes without one.
         if (query.force !== "true") {
           const change = yield* (yield* WorktreeChangesRepo).byWorktree(worktree.id);
-          const refusal = yield* unlandedWork({
+          const unlanded = yield* unlandedWork({
             change,
             project,
             worktree,
             userId: caller.user.id,
           }).pipe(Effect.mapError(readFailure));
-          if (refusal !== null) return yield* new StoreFailure({ message: refusal });
+          // The repositories this worktree's sessions added live nested inside it, outside its
+          // change (`.mend/` is excluded), and go with it (docs/adr/0011): they refuse too.
+          const held = yield* SessionRepositoriesRepo;
+          const repositories = (yield* Effect.forEach(inhabitants, (session) =>
+            held.listForSession(session.id),
+          )).flat();
+          const refusal = [unlanded, heldRepositoriesRefusal(repositories)]
+            .filter((words) => words !== null)
+            .join(" ");
+          if (refusal !== "") return yield* new StoreFailure({ message: refusal });
         }
         const { leftover } = yield* store.removeWorktreeForce(
           project.storePath,

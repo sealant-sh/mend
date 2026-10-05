@@ -277,6 +277,11 @@ co-located store keeps its bind for one release, as it keeps everything else.
     worktrees as a repository and is live or `stopping`.
 16. The helper bounds every request of `mend repo add` with one wall-clock timer, connect and
     response alike, and caps each poll by what is left of the thirty-minute budget.
+17. Removing a worktree whose sessions added repositories is refused without `force`, as for an
+    unlanded change, naming each repository (2026-10-05). Their files and history live nested inside
+    that worktree, outside its change (`.mend/` is excluded), and go with it; Mend reads none of
+    them in the interim, so each one counts as work that may not be on origin. A repository saved
+    under its own captures does not go with the worktree and is not counted.
 
 ## Open
 

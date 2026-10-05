@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeUnlanded,
+  heldRepositoriesRefusal,
   unlandedFactsOf,
   WORKTREE_REMOVAL_FORCE_HINT,
   worktreeRemovalRefusalOf,
@@ -133,5 +134,33 @@ describe("worktreeRemovalRefusalOf", () => {
     );
     expect(saving.forceable).toBe(false);
     expect(saving.unlanded).toBeNull();
+  });
+});
+
+const held = (name: string, capture: "nested" | "own" = "nested") => ({
+  path: `/workspace/repos/${name}`,
+  branch: "mend/fast-stop",
+  capture,
+});
+
+describe("heldRepositoriesRefusal", () => {
+  it("says nothing when no repository is nested inside the worktree", () => {
+    expect(heldRepositoriesRefusal([])).toBeNull();
+    expect(heldRepositoriesRefusal([held("core", "own")])).toBeNull();
+  });
+
+  it("names up to five nested repositories, counts the rest, and is lifted by force", () => {
+    const words = heldRepositoriesRefusal(
+      Array.from({ length: 7 }, (_, index) => held(`r${index}`)),
+    );
+    expect(words).toContain(
+      "/workspace/repos/r0 on mend/fast-stop, /workspace/repos/r1 on mend/fast-stop, /workspace/repos/r2 on mend/fast-stop, /workspace/repos/r3 on mend/fast-stop, /workspace/repos/r4 on mend/fast-stop, 2 more",
+    );
+    expect(words).toContain("holds 7 repositories");
+    expect(worktreeRemovalRefusalOf(words ?? "")).toEqual({
+      words,
+      forceable: true,
+      unlanded: null,
+    });
   });
 });
