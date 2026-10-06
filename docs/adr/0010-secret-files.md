@@ -101,21 +101,33 @@ base64 (`workspace-files.ts`).
      links and shows the written file in neither the capture listing nor the harvest archive.
 
 5. **The session channel carries the bytes; the exec carries a ticket.** (Amended 2026-10-06.) Core
-   keeps every exec's argv in plaintext and for good: in `telemetry_events`, in `telemetry_timeline`
-   (`ref_json` and `summary`) and in the job row. So the bytes never ride it.
+   keeps every exec's argv in plaintext and for good: in the job row from the moment the exec is
+   queued, then in `telemetry_events` and `telemetry_timeline` (`ref_json` and `summary`). So the
+   bytes never ride it.
    - Mend mints a pickup ticket (`pickup-tickets.ts`) for the launch's files: 32 random bytes,
-     single-use, redeemable for 30 seconds. It is bound to the session and its worktree, to the
-     owner, and to the launch of the executor it is written into. Mend keeps the ticket's hash and
-     never logs it.
-   - One exec carries the ticket and the paths. Inside it, after the shell proves each path, node
-     redeems the ticket once over the session channel (`POST /pickup`, on the authenticated
-     connection the workspace already uses) and writes each file's bytes into its 0600 staging file.
-     The shell proves the path again and renames the file into place.
-   - The network channel answers only a ticket whose launch is the one its token names. Over the
-     Unix socket, the socket's session must be the ticket's, or another session of the same worktree
-     and the same owner. Any presentation spends the ticket.
-   - What Core records is a ticket that is spent or expired. The pi profile, whose `mcp.json` holds
-     the person's MCP keys, is written the same way (`writeFilesPickupExec`).
+     single-use. It is bound to the session and its worktree, to the owner, and to the launch of the
+     executor it is written into. Mend keeps the ticket's hash and never logs it.
+   - The ticket dies when the exec that carries it ends, redeemed or not. A ten-minute backstop
+     covers an exec that never returns; it is longer than an exec waits for a slot on Core's
+     run-exec queue, so a busy instance does not expire a ticket before its exec runs.
+   - One exec carries the ticket and the paths. The shell proves each path. Then node redeems the
+     ticket once over the session channel (`POST /pickup`, on the authenticated connection the
+     workspace already uses), opens each file's directory once, and writes and renames the file
+     through that descriptor, 0600, never through a link, only while the directory at the path is
+     still the one it opened. A directory swapped mid-pickup keeps no staging file and the path is
+     refused, by name.
+   - The network channel answers only a ticket whose launch is the one its token names, and a
+     person's token (ADR 0016) only that person's ticket. Over the Unix socket, the socket's session
+     must be the ticket's, or another session of the same worktree and the same owner. Any
+     presentation spends the ticket; a second presentation is logged as a possible theft, without
+     the ticket.
+   - What Core stores is a ticket that is spent or discarded by the time the exec ends, and useless
+     without a live channel credential for that executor. The pi profile, whose `mcp.json` holds the
+     person's MCP keys (written 0600), and every other file Mend places in a capture-mode workspace
+     (agent memory, skills, carried conversations, pasted images) go the same way
+     (`writeFilesPickupExec`).
+   - Secret files now need `node` on the image's `PATH` for `sh -c`. Without it every file is
+     refused, and the session line says node is missing.
 
    Before 2026-10-06 the bytes rode argv as base64, so every delivery since this ADR shipped is in
    Core's database. Core's side, a purge of those rows and argv redaction, is asked for in
@@ -141,9 +153,9 @@ base64 (`workspace-files.ts`).
 - A session the person owns has `~/.aws/credentials` and the rest where the tools read them, in
   every project, from the next launch after a save.
 - The bytes cross the session channel once per launch, and never the platform's exec arguments. The
-  exec's argv holds a ticket that is spent before Core stores it. A delivery costs the same one exec
-  as before, or fewer for a file over 90 KB (which took several), plus one round trip from the
-  executor to Mend inside it.
+  exec's argv holds a ticket, which Core stores at queue time and which is spent or discarded by the
+  time the exec ends. A delivery costs the same one exec as before, or fewer for a file over 90 KB
+  (which took several), plus one round trip from the executor to Mend inside it.
 - The deliveries made before 2026-10-06 are stored in Core in plaintext until Core purges them.
 - A file on a path dotfiles turned into a symlink is not written; the session summary names it.
 - In capture mode, the executor of a leased worktree is one person's home. A second person's session
@@ -156,7 +168,9 @@ base64 (`workspace-files.ts`).
 
 - 2026-10-06: secret files and the pi profile leave exec argv for a single-use pickup ticket
   redeemed over the session channel (review of mend#552/#553, P1-1). Core's purge and argv redaction
-  are recorded in PLATFORM-FEEDBACK.md.
+  are recorded in PLATFORM-FEEDBACK.md. Review of mend#555: the ticket lives until its exec ends
+  (ten-minute backstop, not 30 s), is bound to the person for a person's token, and carries every
+  workspace file write, not only secrets.
 
 - 2026-10-03: exec after relocation, not a dotfiles archive or a platform injection that does not
   exist; both stores share one path.

@@ -15,6 +15,7 @@ import {
   type GitTransportPlan,
   type GitTransportRequest,
 } from "./git-transport.ts";
+import type { PickupGrant } from "./pickup-tickets.ts";
 import { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
 import {
   handleGitConnect,
@@ -133,9 +134,14 @@ export interface SessionSocketApi {
    * spent either way.
    */
   readonly pickup?: ((ticket: string) => Effect.Effect<PickupAnswer, Error>) | undefined;
-  /** The same, for the launch the network channel's token names: what an executor is served. */
+  /**
+   * The same, for what the network channel's token names: its launch, and its person when it is a
+   * per-person token (docs/adr/0016). What an executor is served. A grant that limits a token's
+   * routes (a person executor's own token reaches only its capture routes) keeps this one: the
+   * ticket carries its own binding, and a person's token redeems only that person's tickets.
+   */
   readonly pickupAs?:
-    | ((launchId: string) => (ticket: string) => Effect.Effect<PickupAnswer, Error>)
+    | ((grant: PickupGrant) => (ticket: string) => Effect.Effect<PickupAnswer, Error>)
     | undefined;
 }
 

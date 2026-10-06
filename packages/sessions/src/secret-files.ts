@@ -1,6 +1,10 @@
 import { validateSecretFilePath, validateSecretFilePathSyntax } from "@mend/domain/workbench";
 
-import { SCRIPT_PICKUP_FUNCTION, SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
+import {
+  SCRIPT_PICKUP_FUNCTION,
+  SCRIPT_PINNED_PUT_FUNCTION,
+  SCRIPT_TRANSPORT_PRELUDE,
+} from "./script-transport.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 /**
@@ -83,53 +87,33 @@ const TARGET_FUNCTION =
 /** The staging path for `$T` under this delivery's stamp, in `P`. */
 const partOf = (stamp: string) => `P="$T${SECRET_FILE_PART_PREFIX}${stampOf(stamp)}"; `;
 
-/** Rename the staging file `P` into place as `$p`'s target `$T`, 0600, or remove it and say so. */
-const FINISH_PART =
-  `{ chmod 600 "$P" && mv -f "$P" "$T" && printf 'written\\t%s\\n' "$p"; } || ` +
-  `{ rm -f "$P"; printf 'refused\\t%s\\tcould not write\\n' "$p"; }`;
-
 /**
  * The pickup (`pickup-tickets.ts`), in node, inside the delivery's own exec: redeem the ticket
- * once over the session channel and write each file's bytes into its staging file
- * `<home>/<path><suffix>`, created here exclusively, 0600, never through a link, in a directory
- * whose physical path is still its literal one. Arguments: the ticket, the physical home, the
- * staging suffix, then the paths the shell proved. Prints only `refused\t<path>\t<reason>` lines,
- * never a byte of a file, never the ticket, never the channel's answer; a file it wrote is left
- * for the shell to prove again and rename. Exits 0 whenever it answered for every path.
+ * once over the session channel and put each file in place with `pinnedPut`: staged as
+ * `<target><suffix>`, 0600, never through a link, in the directory the shell proved and only while
+ * it is still that directory, then renamed. Arguments: the ticket, the physical home, the staging
+ * suffix, then the paths the shell proved. Prints one `written\t<path>` or
+ * `refused\t<path>\t<reason>` line per path, never a byte of a file, never the ticket, never the
+ * channel's answer. Exits 0 whenever it answered for every path.
  */
 const PICKUP_PROGRAM =
   SCRIPT_TRANSPORT_PRELUDE +
   SCRIPT_PICKUP_FUNCTION +
+  SCRIPT_PINNED_PUT_FUNCTION +
   `const path = require("node:path");
 const [ticket, home, suffix, ...paths] = process.argv.slice(1);
 const say = (p, reason) => process.stdout.write("refused\\t" + p + "\\t" + reason + "\\n");
 const refuseAll = (reason) => { for (const p of paths) say(p, reason); };
-const stagingOf = (p) => home + "/" + p + suffix;
-const put = (p, bytes) => {
-  const staging = stagingOf(p);
-  const dir = path.dirname(staging);
-  let real;
-  try { real = fs.realpathSync(dir); } catch { return say(p, "could not enter its directory"); }
-  if (real !== dir) return say(p, "its directory is really " + real);
-  let fd;
-  try {
-    const c = fs.constants;
-    fd = fs.openSync(staging, c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
-    let at = 0;
-    while (at < bytes.length) at += fs.writeSync(fd, bytes, at, bytes.length - at);
-  } catch {
-    if (fd !== undefined) { try { fs.unlinkSync(staging); } catch {} }
-    return say(p, "could not write");
-  } finally {
-    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
-  }
-};
 redeemPickup(ticket, (reason, files) => {
   if (reason !== null) return refuseAll(reason);
   for (const p of paths) {
     const bytes = files.get(p);
-    if (bytes === undefined) say(p, "not in the pickup");
-    else put(p, bytes);
+    if (bytes === undefined) { say(p, "not in the pickup"); continue; }
+    const target = home + "/" + p;
+    const name = path.basename(target);
+    const why = pinnedPut(path.dirname(target), name, name + suffix, bytes);
+    if (why === null) process.stdout.write("written\\t" + p + "\\n");
+    else say(p, why);
   }
 });
 `;
@@ -137,9 +121,9 @@ redeemPickup(ticket, (reason, files) => {
 /**
  * The delivery: `$1` the ticket, then the HOME-relative paths. Each path is proved and its
  * directory made (`secret_target`), whatever sits at its staging path removed, and only the paths
- * that passed go on, in `$@`. Then the pickup writes their staging files, and each is proved once
- * more and renamed into place. A pickup that could not run at all (no node, killed) leaves no
- * staging file behind and refuses every path.
+ * that passed go on, in `$@`, to the pickup, which writes and renames each. A pickup that did not
+ * finish (no node on this image's `PATH`, or node ended early) leaves no staging file it can reach
+ * and refuses every path it was given, saying which.
  */
 const pickupScript = (stamp: string) =>
   TARGET_FUNCTION +
@@ -147,11 +131,11 @@ const pickupScript = (stamp: string) =>
   `${partOf(stamp)}rm -f "$P"; set -- "$@" "$p"; fi; done; ` +
   '[ "$#" -gt 0 ] || exit 0; ' +
   `node -e ${shellQuote(PICKUP_PROGRAM)} -- "$t" "$H" ${shellQuote(SECRET_FILE_PART_PREFIX + stampOf(stamp))} "$@"; rc=$?; ` +
-  'if [ "$rc" -ne 0 ]; then for p; do if secret_path "$p" >/dev/null; then ' +
+  '[ "$rc" -eq 0 ] && exit 0; ' +
+  `if [ "$rc" -eq 127 ]; then why="node is not on this image's PATH"; else why="the pickup ended early (exit $rc)"; fi; ` +
+  'for p; do if secret_path "$p" >/dev/null; then ' +
   `${partOf(stamp)}[ -L "$P" ] || rm -f "$P"; fi; ` +
-  `printf 'refused\\t%s\\tthe pickup did not run (exit %s)\\n' "$p" "$rc"; done; exit 0; fi; ` +
-  'for p; do secret_target "$p" >/dev/null || continue; ' +
-  `${partOf(stamp)}[ -f "$P" ] && [ ! -L "$P" ] || continue; ${FINISH_PART}; done; exit 0`;
+  `printf 'refused\\t%s\\t%s\\n' "$p" "$why"; done; exit 0`;
 
 /**
  * The files worth writing out of what the store holds: a path that no longer validates (a rule

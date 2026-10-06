@@ -321,8 +321,6 @@ describe("SessionChannelNetworkHost", () => {
     );
   });
 
-  // e2e8 F8: a statement timeout in the token lookup was an unhandled rejection, and Node ended
-  // the Mend process with every session on it.
   it("serves a pickup only for the launch the token names, never the socket's unbound one", async () => {
     await Effect.runPromise(
       Effect.scoped(
@@ -336,8 +334,10 @@ describe("SessionChannelNetworkHost", () => {
             ...api([]),
             pickup: () =>
               Effect.sync(() => void asked.push("socket")).pipe(Effect.as({ files: [] })),
-            pickupAs: (launchId) => (ticket) =>
-              Effect.sync(() => void asked.push(`${launchId}:${ticket}`)).pipe(
+            pickupAs: (grant) => (ticket) =>
+              Effect.sync(
+                () => void asked.push(`${grant.launchId}:${grant.accountId ?? "nobody"}:${ticket}`),
+              ).pipe(
                 Effect.flatMap(() =>
                   ticket === "good"
                     ? Effect.succeed({ files: [{ path: ".npmrc", base64: "c2VjcmV0" }] })
@@ -365,7 +365,8 @@ describe("SessionChannelNetworkHost", () => {
             call(address, "POST", "/pickup", {}, { ticket: "good" }),
           );
           expect(unauthenticated.status).toBe(401);
-          expect(asked).toEqual(["launch-7:good", "launch-7:spent"]);
+          // The launch's own token names its launch and nobody: the engine's binding does the rest.
+          expect(asked).toEqual(["launch-7:nobody:good", "launch-7:nobody:spent"]);
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
@@ -375,6 +376,8 @@ describe("SessionChannelNetworkHost", () => {
     );
   });
 
+  // e2e8 F8: a statement timeout in the token lookup was an unhandled rejection, and Node ended
+  // the Mend process with every session on it.
   it("answers 503 when the token lookup fails, and goes on serving", async () => {
     const rejections: Array<unknown> = [];
     const onRejection = (reason: unknown) => rejections.push(reason);

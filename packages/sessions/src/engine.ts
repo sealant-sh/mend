@@ -347,6 +347,8 @@ import {
   materializePiProfile,
   piProfileFilesToWrite,
   piProfileKeptDir,
+  PI_PROFILE_HOME_DIR,
+  PI_PROFILE_SECRET_FILE,
   planPiProfile,
   preparePiProfileExec,
 } from "./pi-profile.ts";
@@ -354,6 +356,7 @@ import {
   makePickupTickets,
   pickupAnswerOf,
   pickupChannelMatch,
+  pickupSiblingMatch,
   type PickupBinding,
   type PickupChannel,
   type PickupFile,
@@ -429,7 +432,6 @@ import {
   type WorkspaceFile,
   WorkspaceFileError,
   writeAbsentHomeFilesExecs,
-  writeFilesExecs,
   writeFilesPickupExec,
 } from "./workspace-files.ts";
 import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
@@ -5965,13 +5967,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
-       * the launch of the executor in `workspace` when Mend knows it. One in-process read of the
-       * executor's launch; nothing reaches the platform.
+       * the launch of the executor in `workspace` when Mend knows it: one to three reads of the
+       * store (the launch row, then the lease and its holder's launch). Nothing reaches the
+       * platform.
        */
       const mintPickup = Effect.fn("SessionEngine.mintPickup")(function* (
         purpose: PickupBinding["purpose"],
         session: Session,
-        personId: string,
+        personId: string | null,
         workspace: Workspace,
         files: ReadonlyArray<PickupFile>,
       ) {
@@ -5983,32 +5986,50 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * Redeem a ticket presented through `channel`. The ticket is spent whatever this answers. A
-       * channel naming the ticket's launch is the executor it was minted for; one naming another
-       * launch is not. Otherwise (the Unix socket names no launch) the channel's session must be
-       * the ticket's, or another session of the same worktree and the same owner: the socket a
-       * workspace mounts is the session's that made it.
+       * Redeem a ticket presented through `channel` (`pickupChannelMatch`, `pickupSiblingMatch`).
+       * The ticket is spent whatever this answers. A refusal is logged as a possible theft: which
+       * channel presented which session's ticket, never the ticket.
        */
       const redeemPickup = (channel: PickupChannel, ticket: string) =>
         Effect.gen(function* () {
-          const entry = pickups.take(ticket);
-          if (entry === null) {
-            return yield* Effect.fail(new Error("this pickup ticket is spent, expired or unknown"));
+          const taken = pickups.take(ticket);
+          const refuse = (binding: PickupBinding | null, reason: string) =>
+            Effect.logWarning(
+              "session engine: pickup refused · a ticket presented where it does not belong may have been taken",
+            ).pipe(
+              Effect.annotateLogs({
+                reason,
+                presentedBySession: channel.sessionId,
+                presentedByLaunch: channel.launchId ?? "none",
+                presentedByAccount: channel.accountId ?? "none",
+                ...(binding === null
+                  ? {}
+                  : {
+                      ticketSession: binding.sessionId,
+                      ticketLaunch: binding.launchId ?? "none",
+                      purpose: binding.purpose,
+                    }),
+              }),
+              Effect.andThen(Effect.fail(new Error(reason))),
+            );
+          if (taken.kind === "unknown") {
+            return yield* refuse(null, "this pickup ticket is spent, expired or unknown");
           }
+          if (taken.kind === "spent") {
+            return yield* refuse(
+              taken.binding,
+              "this pickup ticket was already redeemed, perhaps through another channel",
+            );
+          }
+          const { entry } = taken;
           const match = pickupChannelMatch(entry.binding, channel);
-          if (match === "no") {
-            return yield* Effect.fail(new Error("this pickup ticket is another executor's"));
-          }
-          if (match === "ask" && channel.sessionId !== entry.binding.sessionId) {
+          if (match.kind === "no") return yield* refuse(entry.binding, match.reason);
+          if (match.kind === "ask") {
             const other = yield* sessions
               .byId(SessionId.make(channel.sessionId))
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-            if (
-              other === null ||
-              other.worktreeId !== entry.binding.worktreeId ||
-              other.ownerUserId !== entry.binding.personId
-            ) {
-              return yield* Effect.fail(new Error("this pickup ticket is another session's"));
+            if (!pickupSiblingMatch(entry.binding, other)) {
+              return yield* refuse(entry.binding, "this pickup ticket is another session's");
             }
           }
           yield* Effect.logInfo("session engine: pickup redeemed").pipe(
@@ -10105,19 +10126,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      /** Write files into a live workspace through exec (`workspace-files.ts`), in order. */
+      /**
+       * Write files into a live workspace (capture mode): one exec, carrying a pickup ticket and
+       * the paths, that redeems the bytes over the session channel (`writeFilesPickupExec`). None
+       * of a file rides argv, which the platform keeps for good: agent memory, skills, carried
+       * conversations, pasted images and the pi profile alike, whatever they weigh (a skills
+       * library that took 103 execs in argv takes one). A file marked `secret` is written 0600,
+       * never through a link. A later write of the same path wins, as in order.
+       */
       const writeWorkspaceFiles = Effect.fn("SessionEngine.writeWorkspaceFiles")(function* (
+        session: Session,
         workspace: Workspace,
-        files: ReadonlyArray<WorkspaceFile>,
+        files: ReadonlyArray<WorkspaceFile & { readonly secret?: boolean }>,
+        purpose: PickupBinding["purpose"] = "workspace-files",
       ) {
-        for (const argv of writeFilesExecs(files)) {
-          const result = yield* sealant.exec(workspace, argv);
-          if (result.exitCode !== 0) {
-            return yield* new WorkspaceFileError({
-              path: argv.at(-1) ?? "",
-              message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
-            });
-          }
+        const latest = new Map<string, WorkspaceFile & { readonly secret?: boolean }>();
+        for (const file of files) latest.set(file.path, file);
+        const unique = [...latest.values()];
+        if (unique.length === 0) return;
+        const ticket = yield* mintPickup(purpose, session, session.ownerUserId, workspace, unique);
+        const result = yield* sealant
+          .exec(
+            workspace,
+            writeFilesPickupExec(
+              unique.map((file) => ({ path: file.path, secret: file.secret === true })),
+              ticket,
+            ),
+          )
+          .pipe(
+            Effect.ensuring(Effect.sync(() => pickups.discard(ticket))),
+            Effect.mapError(
+              (error) => new WorkspaceFileError({ path: "", message: error.message }),
+            ),
+          );
+        if (result.exitCode !== 0) {
+          return yield* new WorkspaceFileError({
+            path: unique.at(-1)?.path ?? "",
+            message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
+          });
         }
       });
 
@@ -10203,7 +10249,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
           }
           const encoder = new TextEncoder();
-          yield* writeWorkspaceFiles(workspace, [
+          yield* writeWorkspaceFiles(session, workspace, [
             ...skillFilesToWrite(plan, vacated).map((file) => ({
               path: inHome(file.path),
               bytes: encoder.encode(file.contents),
@@ -10254,37 +10300,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
           );
         }
-        if (plan === null || session.ownerUserId === null) return;
+        if (plan === null) return;
         // The profile can hold the person's keys (`mcp.json`'s headers, env and client secrets;
-        // settings and extensions may too), so none of it rides argv, which the platform keeps:
-        // one exec carries a pickup ticket and the paths and redeems the bytes over the channel.
-        const files = piProfileFilesToWrite(plan, vacated).map((file) => ({
-          path: path.posix.join(home, file.path),
-          bytes: file.bytes,
-        }));
-        if (files.length === 0) return;
-        const ticket = yield* mintPickup(
-          "pi-profile",
+        // settings and extensions may too), so none of it rides argv: the pickup writer. The
+        // `mcp.json` is written 0600, never through a link.
+        yield* writeWorkspaceFiles(
           session,
-          session.ownerUserId,
           workspace,
-          files,
-        );
-        const written = yield* sealant
-          .exec(
-            workspace,
-            writeFilesPickupExec(
-              files.map((file) => file.path),
-              ticket,
-            ),
-          )
-          .pipe(
-            Effect.ensuring(Effect.sync(() => pickups.discard(ticket))),
-            Effect.mapError((error) => piProfileNotDelivered(error.message)),
-          );
-        if (written.exitCode !== 0) {
-          return yield* piProfileNotDelivered(`exit ${written.exitCode}: ${written.stderr.trim()}`);
-        }
+          piProfileFilesToWrite(plan, vacated).map((file) => ({
+            path: path.posix.join(home, file.path),
+            bytes: file.bytes,
+            secret: file.path === path.posix.join(PI_PROFILE_HOME_DIR, PI_PROFILE_SECRET_FILE),
+          })),
+          "pi-profile",
+        ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
       });
 
       /**
@@ -10335,6 +10364,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (before.exitCode !== 0) return;
         }
         yield* writeWorkspaceFiles(
+          session,
           workspace,
           plan.staged.map((file) => ({
             path: path.posix.join(home, file.path),
@@ -10736,6 +10766,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
+        // A planned path the workspace said nothing about was not written: said so, not lost.
+        const answered = new Set(outcomes.map((outcome) => outcome.path));
+        for (const file of plan.files) {
+          if (!answered.has(file.path)) {
+            outcomes.push({
+              path: file.path,
+              outcome: "refused",
+              reason: "the workspace gave no word of it",
+            });
+          }
+        }
         // A file delivered before and no longer kept goes, when it still holds the bytes Mend
         // wrote; one still kept but refused this time stays recorded, so a later delivery can
         // still remove it, and so does one whose removal was refused.
@@ -10863,7 +10904,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         } else {
           const carry = carryConversationsExec(HARNESS_HOME_MOUNT_PATH, files);
-          yield* writeWorkspaceFiles(workspace, carry.staged);
+          yield* writeWorkspaceFiles(session, workspace, carry.staged);
           const result = yield* sealant.exec(workspace, carry.argv);
           outcomes = parseCarryOutcomes(result.stdout);
         }
@@ -11230,7 +11271,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const checked = yield* checkPastedImage(bytes);
         const workspace = yield* workspaceForSupportingProcess(session);
         const target = pastedImageWorkspacePath(checked.name);
-        yield* writeWorkspaceFiles(workspace, [{ path: target, bytes }]).pipe(
+        yield* writeWorkspaceFiles(session, workspace, [{ path: target, bytes }]).pipe(
           Effect.mapError(
             (error) =>
               new PastedImageError({
@@ -14918,8 +14959,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const socketApiFor = (sessionId: SessionId): SessionSocketApi =>
         ownedSocketApi(sessionId, {
-          pickup: (ticket) => redeemPickup({ sessionId, launchId: null }, ticket),
-          pickupAs: (launchId) => (ticket) => redeemPickup({ sessionId, launchId }, ticket),
+          pickup: (ticket) => redeemPickup({ sessionId, launchId: null, accountId: null }, ticket),
+          pickupAs: (grant) => (ticket) =>
+            redeemPickup(
+              { sessionId, launchId: grant.launchId, accountId: grant.accountId },
+              ticket,
+            ),
           ...(capture === null
             ? {}
             : {

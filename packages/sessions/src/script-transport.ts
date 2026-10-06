@@ -91,3 +91,55 @@ export const SCRIPT_PICKUP_FUNCTION = `const redeemPickup = (ticket, done) => {
   request.end(JSON.stringify({ ticket }));
 };
 `;
+
+/**
+ * `pinnedPut(dir, name, stagingName, bytes)`, for files that must not leave the directory they
+ * were proved in: `null` once `bytes` are at `<dir>/<name>`, 0600, else why not. The directory is
+ * opened once (no link at its last component) and every later step goes through that descriptor
+ * (`/proc/self/fd/<n>/…`), so a directory renamed away mid-write keeps the staging file with it and
+ * the cleanup reaches it there. Before the write and again before the rename the directory at the
+ * literal path must be that same directory, physically where its name says; otherwise the staging
+ * file is removed and the path is said to have changed. The staging file is created exclusively,
+ * never through a link, and renamed into place, so no reader sees half a file.
+ */
+export const SCRIPT_PINNED_PUT_FUNCTION = `const pinnedPut = (dir, name, stagingName, bytes) => {
+  const c = fs.constants;
+  let real;
+  try { real = fs.realpathSync(dir); } catch { return "could not enter its directory"; }
+  if (real !== dir) return "its directory is really " + real;
+  let dfd;
+  try { dfd = fs.openSync(dir, c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW); } catch { return "could not enter its directory"; }
+  try {
+    const proc = "/proc/self/fd/" + dfd;
+    const base = fs.existsSync(proc) ? proc : dir;
+    const at = (entry) => base + "/" + entry;
+    const same = () => {
+      try {
+        const pinned = fs.fstatSync(dfd);
+        const named = fs.lstatSync(dir);
+        return named.isDirectory() && pinned.dev === named.dev && pinned.ino === named.ino && fs.realpathSync(dir) === dir;
+      } catch { return false; }
+    };
+    const unstage = () => { try { if (!fs.lstatSync(at(stagingName)).isDirectory()) fs.unlinkSync(at(stagingName)); } catch {} };
+    if (!same()) return "its path changed during the pickup";
+    unstage();
+    let fd;
+    try {
+      fd = fs.openSync(at(stagingName), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+      let done = 0;
+      while (done < bytes.length) done += fs.writeSync(fd, bytes, done, bytes.length - done);
+      fs.fchmodSync(fd, 0o600);
+    } catch {
+      if (fd !== undefined) unstage();
+      return "could not write";
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+    }
+    if (!same()) { unstage(); return "its path changed during the pickup"; }
+    try { fs.renameSync(at(stagingName), at(name)); } catch { unstage(); return "could not write"; }
+    return null;
+  } finally {
+    try { fs.closeSync(dfd); } catch {}
+  }
+};
+`;

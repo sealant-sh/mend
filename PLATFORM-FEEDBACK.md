@@ -35,9 +35,15 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   - **Retention for `telemetry_events`, `telemetry_timeline` and finished job rows,** with a
     documented window and an endpoint to delete a run's record.
   - **A one-off purge of what is already stored:** the `processStarted` rows, the timeline
-    `ref_json` and `summary` entries, and the job rows whose args carry Mend's secret-file script
-    (`mend-secret-files` with `.mend-secret-part-` in the script) or its pi profile writer
-    (`mend-write` with `.pi/agent/mend/profile`). Name it in the 0.36 notes.
+    `ref_json` and `summary` entries, and the job rows whose args carry:
+    - Mend's secret-file script (`mend-secret-files` with `.mend-secret-part-` in the script);
+    - its workspace file writer in argv (`mend-write` with `w`/`s`/`a` operations, gzip+base64), the
+      pi profile (`.pi/agent/mend/profile`, whose `mcp.json` holds MCP keys) and agent memory among
+      them;
+    - the `mend repo add` clone of an origin adopted with a credential
+      (`git clone --quiet --no-checkout -- 'https://<user or token>@…'`).
+
+    Name it in the 0.36 notes.
 
 ## 2026-10-06 · 0.38.1 · A Linux user per person in one workspace, and a login for each home
 

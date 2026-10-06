@@ -68,10 +68,15 @@ export const startPickupChannel = async (
       Effect.suspend(() => {
         redemptions += 1;
         options.beforeAnswer?.();
-        const entry = tickets.take(ticket);
-        return entry === null
-          ? Effect.fail(new Error("this pickup ticket is spent, expired or unknown"))
-          : Effect.succeed(pickupAnswerOf(entry.files));
+        const taken = tickets.take(ticket);
+        if (taken.kind === "taken") return Effect.succeed(pickupAnswerOf(taken.entry.files));
+        return Effect.fail(
+          new Error(
+            taken.kind === "spent"
+              ? "this pickup ticket was already redeemed, perhaps through another channel"
+              : "this pickup ticket is spent, expired or unknown",
+          ),
+        );
       }),
   };
   const server = http.createServer((request, response) => {

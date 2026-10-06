@@ -456,8 +456,10 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
       // which answers whichever launch the row names now (or the session id before a create
       // answers). A session served without launch-bound routes serves no capture routes here.
       const capture = api.captureAs?.(scope.launchId);
-      // Pickups likewise: a ticket redeemed here answers only for the launch the token names.
-      const pickup = api.pickupAs?.(scope.launchId);
+      // Pickups likewise: a ticket redeemed here answers only for the launch the token names, and,
+      // for a person's token, only for that person (`pickupChannelMatch`). The launch's own token
+      // names nobody.
+      const pickup = api.pickupAs?.({ launchId: scope.launchId, accountId: null });
       return { ok: true, api: { ...api, capture, pickup } };
     };
 

@@ -1,20 +1,20 @@
 /**
  * Files Mend places into a live workspace that mounts nothing (capture mode, ADR-0002): a pasted
- * image, the owner's skills, their agent memory. The SDK's `exec` takes argv only — no stdin, no
- * file write (PLATFORM-FEEDBACK.md, "A file into a workspace") — so the bytes ride argv, gzipped
- * and base64-encoded, and a small `node` program inside writes them: every launch already runs
+ * image, the owner's skills, their agent memory, carried conversations, the pi profile. The SDK's
+ * `exec` takes argv only (no stdin, no file write; PLATFORM-FEEDBACK.md, "A file into a
+ * workspace"), and Core stores every exec's argv in plaintext for good. So the engine writes them
+ * with `writeFilesPickupExec`: one exec carrying a pickup ticket and the paths, whose `node`
+ * redeems the bytes over the session channel (`pickup-tickets.ts`). Every launch already runs
  * `node` there (the helper install, the skills plan).
  *
- * An exec is a round trip of half a second or more, and a launch waits on each one before its
- * agent starts: a 1.9 MB skills library took 103 execs, 55 s, on the box (2026-10-03). So files
- * share as few execs as the argument limits allow. One argument stays under
- * `WORKSPACE_EXEC_ARG_CHARS` (Linux refuses a single argument over 128 KiB); one exec's arguments
- * together stay under `WORKSPACE_EXEC_BATCH_CHARS` (argv and environment must fit in 2 MiB); and an
- * identical content (one skill in each harness's directory) travels once. A content too large for
- * one exec is staged across several and written by the last, so a reader never sees half an image.
+ * `writeFilesExecs` is the argv writer it replaced: the bytes gzipped and base64-encoded into the
+ * arguments, as few execs as the argument limits allow (a 1.9 MB skills library took 103 execs,
+ * 55 s, on the box, 2026-10-03). One argument stays under `WORKSPACE_EXEC_ARG_CHARS`, one exec's
+ * arguments under `WORKSPACE_EXEC_BATCH_CHARS`, an identical content travels once, and a content
+ * too large for one exec is staged across several. Nothing in the engine uses it now.
  *
  * Paths are absolute workspace paths chosen by Mend (never user input) and ride as positional
- * parameters, like the bytes: nothing is interpolated into the script.
+ * parameters: nothing is interpolated into the script.
  */
 
 import { randomBytes } from "node:crypto";
@@ -23,7 +23,11 @@ import { gzipSync } from "node:zlib";
 
 import { Schema } from "effect";
 
-import { SCRIPT_PICKUP_FUNCTION, SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
+import {
+  SCRIPT_PICKUP_FUNCTION,
+  SCRIPT_PINNED_PUT_FUNCTION,
+  SCRIPT_TRANSPORT_PRELUDE,
+} from "./script-transport.ts";
 
 /** `value` as one single-quoted `sh` word, whatever it holds. */
 export const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
@@ -160,34 +164,48 @@ export const writeFilesExecs = (
 };
 
 /**
- * The pickup writer (`pickup-tickets.ts`): the same writes as `WRITE_PROGRAM` for files whose
- * bytes must never ride argv, because the platform keeps every exec's argv for good. Arguments: a
- * single-use ticket, then the absolute paths. It redeems the ticket once over the session channel
- * and writes each path's bytes as `put` does; any path the answer lacks, or any refusal, fails
- * the exec with a reason that names paths only, never a byte of a file.
+ * The pickup writer (`pickup-tickets.ts`): the same writes as `WRITE_PROGRAM`, for bytes that must
+ * never ride argv, because the platform keeps every exec's argv for good. Arguments: a single-use
+ * ticket, then each absolute path behind one letter: `P` a plain file, written as `put` does
+ * (0644, its directories made 0755), or `S` a file that holds someone's keys, written 0600 by
+ * `pinnedPut`, in a directory made 0700 that must be physically where its name says, never
+ * through a link. It redeems the ticket once over the session channel; a path the answer lacks,
+ * or any refusal, fails the exec with a reason that names paths only, never a byte of a file.
  */
 const WRITE_PICKUP_PROGRAM =
   SCRIPT_TRANSPORT_PRELUDE +
   SCRIPT_PICKUP_FUNCTION +
+  SCRIPT_PINNED_PUT_FUNCTION +
   [
     'const path=require("path"),crypto=require("crypto");',
-    "const [ticket,...paths]=process.argv.slice(1);",
+    "const [ticket,...marked]=process.argv.slice(1);",
+    'const targets=marked.map((m)=>({secret:m[0]==="S",path:m.slice(1)}));',
     'const fail=(why)=>{process.stderr.write("mend-write: "+why+"\\n");process.exit(3);};',
     "const put=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true});",
     'fs.chmodSync(d,0o755);const t=path.join(d,".mend-part-"+crypto.randomBytes(8).toString("hex"));',
     'fs.writeFileSync(t,b,{flag:"wx",mode:0o600});fs.chmodSync(t,0o644);fs.renameSync(t,p);};',
+    "const putSecret=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true,mode:0o700});",
+    'const n=path.basename(p);const why=pinnedPut(d,n,".mend-part-"+crypto.randomBytes(8).toString("hex"),b);',
+    "if(why!==null)throw new Error(why);};",
     "redeemPickup(ticket,(reason,files)=>{if(reason!==null)return fail(reason);",
-    'const missing=paths.filter((p)=>!files.has(p));if(missing.length>0)return fail("not in the pickup: "+missing.join(", "));',
-    'for(const p of paths){try{put(p,files.get(p));}catch(e){return fail("not written: "+p+" ("+(e&&e.code?e.code:"error")+")");}}});',
+    'const missing=targets.filter((t)=>!files.has(t.path)).map((t)=>t.path);if(missing.length>0)return fail("not in the pickup: "+missing.join(", "));',
+    "for(const t of targets){try{(t.secret?putSecret:put)(t.path,files.get(t.path));}",
+    'catch(e){return fail("not written: "+t.path+" ("+(e&&e.code?e.code:e&&e.message?e.message:"error")+")");}}});',
   ].join("");
 
+/** One file the pickup writer puts in place: `secret` for one that holds someone's keys. */
+export interface PickupTarget {
+  readonly path: string;
+  readonly secret?: boolean;
+}
+
 /**
- * The one exec that writes `paths` into a workspace with bytes it redeems through `ticket` over
+ * The one exec that writes `targets` into a workspace with bytes it redeems through `ticket` over
  * the session channel (`pickup-tickets.ts`): only the ticket and the paths ride argv, whatever the
  * files hold or weigh. Exits non-zero, naming paths only, when any file is not written.
  */
 export const writeFilesPickupExec = (
-  paths: ReadonlyArray<string>,
+  targets: ReadonlyArray<PickupTarget>,
   ticket: string,
 ): ReadonlyArray<string> => [
   "sh",
@@ -195,7 +213,7 @@ export const writeFilesPickupExec = (
   `exec node -e ${shellQuote(WRITE_PICKUP_PROGRAM)} -- "$@"`,
   "mend-write",
   ticket,
-  ...paths,
+  ...targets.map((target) => `${target.secret === true ? "S" : "P"}${target.path}`),
 ];
 
 /**

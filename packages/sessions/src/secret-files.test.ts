@@ -239,7 +239,8 @@ describe("writing secret files into a workspace home", () => {
       {
         path: ".npmrc",
         outcome: "refused",
-        reason: "the pickup was refused: this pickup ticket is spent, expired or unknown",
+        reason:
+          "the pickup was refused: this pickup ticket was already redeemed, perhaps through another channel",
       },
     ]);
     expect(fs.readFileSync(path.join(home, ".npmrc"), "utf8")).toBe("mine again\n");
@@ -269,7 +270,7 @@ describe("writing secret files into a workspace home", () => {
     expect(filesUnder(home)).toEqual([]);
   });
 
-  it("a pickup that cannot run at all refuses every file and leaves no staging file", async () => {
+  it("a pickup that ends early refuses every file and leaves no staging file", async () => {
     const home = tempDir("mend-secret-home-");
     // An image whose `node` fails before it writes anything.
     const bin = tempDir("mend-secret-bin-");
@@ -278,7 +279,21 @@ describe("writing secret files into a workspace home", () => {
       PATH: `${bin}:${process.env["PATH"] ?? ""}`,
     });
     expect(outcomes).toEqual([
-      { path: ".npmrc", outcome: "refused", reason: "the pickup did not run (exit 7)" },
+      { path: ".npmrc", outcome: "refused", reason: "the pickup ended early (exit 7)" },
+    ]);
+    expect(filesUnder(home)).toEqual([]);
+  });
+
+  it("an image without node on its PATH refuses every file, saying so", async () => {
+    const home = tempDir("mend-secret-home-");
+    // What `sh` answers for a command it cannot find.
+    const bin = tempDir("mend-secret-bin-");
+    fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+    const outcomes = await write(home, [utf8(".npmrc", "secret-bytes")], STAMP, channel, {
+      PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+    });
+    expect(outcomes).toEqual([
+      { path: ".npmrc", outcome: "refused", reason: "node is not on this image's PATH" },
     ]);
     expect(filesUnder(home)).toEqual([]);
   });

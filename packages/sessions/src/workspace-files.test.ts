@@ -202,7 +202,7 @@ describe("writeFilesPickupExec", () => {
     ];
     const ticket = channel.mint(files);
     const argv = writeFilesPickupExec(
-      files.map((file) => file.path),
+      files.map((file) => ({ path: file.path, secret: file.path === mcp })),
       ticket,
     );
     const joined = argv.join("\u0000");
@@ -217,7 +217,30 @@ describe("writeFilesPickupExec", () => {
     expect(fs.readFileSync(mcp)).toEqual(Buffer.from(files[0]?.bytes ?? []));
     expect(fs.readFileSync(settings)).toEqual(Buffer.from(files[1]?.bytes ?? []));
     expect(fs.readdirSync(path.dirname(mcp)).toSorted()).toEqual(["mcp.json", "settings.json"]);
+    // The file with someone's keys is theirs alone; the rest stay readable.
+    expect((fs.statSync(mcp).mode & 0o777).toString(8)).toBe("600");
+    expect((fs.statSync(settings).mode & 0o777).toString(8)).toBe("644");
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("writes a secret file into no directory reached through a link, and leaves nothing behind", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-elsewhere-"));
+    fs.mkdirSync(path.join(root, "profile"));
+    fs.symlinkSync(elsewhere, path.join(root, "profile", "root"));
+    const target = path.join(root, "profile", "root", "mcp.json");
+    const ticket = channel.mint([
+      { path: target, bytes: new TextEncoder().encode("sk-live-secret-1") },
+    ]);
+    const result = await runExec(
+      writeFilesPickupExec([{ path: target, secret: true }], ticket),
+      channel.env,
+    );
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain(`not written: ${target} (its directory is really`);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(elsewhere, { recursive: true, force: true });
   });
 
   it("fails, naming the reason and no byte, when the ticket is spent", async () => {
@@ -227,7 +250,7 @@ describe("writeFilesPickupExec", () => {
       { path: target, bytes: new TextEncoder().encode("token-abcdefgh") },
     ]);
     channel.tickets.discard(ticket);
-    const result = await runExec(writeFilesPickupExec([target], ticket), channel.env);
+    const result = await runExec(writeFilesPickupExec([{ path: target }], ticket), channel.env);
     expect(result.status).toBe(3);
     expect(result.stderr).toBe(
       "mend-write: the pickup was refused: this pickup ticket is spent, expired or unknown\n",
