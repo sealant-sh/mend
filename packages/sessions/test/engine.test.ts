@@ -24095,6 +24095,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     const submitted: Array<string> = [];
     const sessionReads: Array<string> = [];
     const anyRecordedQueries: Array<string> = [];
+    const layoutReads: Array<string> = [];
     const turnReads = await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -24111,6 +24112,9 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           yield* engine.launch(session.id, ["claude"]);
           // The capture reaper's first tick runs as the engine starts: let it.
           yield* Effect.sleep(Duration.millis(50));
+          // The access reconciliation of the reaper's minute tick (mend#558), over the live
+          // session: it reads sessions and access, never a layout.
+          yield* engine.reconcileAccess();
           const before = sessionReads.length;
           for (const author of [MARIA, "user-fixture", MARIA]) {
             yield* engine.submitTurn(session.id, `from ${author}`, author);
@@ -24122,7 +24126,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         protocolHostLayer: recordingProtocolHostLayer([], submitted, authors),
         sealantLayer: sealantLaunchLayer([]),
         sessionReads,
-        harnessLayout: { flag: "shared", anyRecordedQueries },
+        harnessLayout: { flag: "shared", anyRecordedQueries, launchLayoutReads: layoutReads },
       },
     );
     expect(authors).toEqual([MARIA, "user-fixture", MARIA]);
@@ -24131,6 +24135,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(turnReads).toBe(3);
     // The one query at startup, and none on any reaper tick since.
     expect(anyRecordedQueries).toEqual(["anyRecorded"]);
+    // No layout was read: not by the launch, the turns or the access reconciliation.
+    expect(layoutReads).toEqual([]);
   });
 });
 
