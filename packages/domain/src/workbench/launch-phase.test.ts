@@ -5,6 +5,7 @@ import {
   LAUNCH_PREPARING,
   LAUNCH_WAITING_SAVING,
   launchPhaseOf,
+  leaseWaitWords,
   withoutLaunchPhase,
 } from "./launch-phase.ts";
 
@@ -33,5 +34,31 @@ describe("launch phase words", () => {
   it("never claims an image build: the platform reports none", () => {
     expect(LAUNCH_PREPARING).not.toContain("building the workspace image");
     expect(LAUNCH_PREPARING).toContain("no runtime yet");
+  });
+
+  it("says what a live holder's lookup observed, never 'not answering' for a 404 under a live lease", () => {
+    const notFound = leaseWaitWords({
+      kind: "unreachable",
+      lookup: { kind: "failed", status: 404, code: "WorkspaceNotFoundError" },
+    });
+    expect(notFound).toBe(
+      "waiting · the previous session in this worktree renews its lease, but the platform did not find its workspace (404)",
+    );
+    expect(
+      leaseWaitWords({ kind: "unreachable", lookup: { kind: "not-live", state: "stopped" } }),
+    ).toBe(
+      "waiting · the previous session in this worktree renews its lease, but the platform reports its workspace stopped",
+    );
+    expect(
+      leaseWaitWords({
+        kind: "unreachable",
+        lookup: { kind: "failed", status: 503, code: "control_plane_unavailable" },
+      }),
+    ).toBe("waiting · the previous session in this worktree is not answering");
+    expect(leaseWaitWords({ kind: "unreachable" })).toBe(
+      "waiting · the previous session in this worktree is not answering",
+    );
+    // Every one of them still reads as the waiting phase.
+    expect(launchPhaseOf(notFound)?.kind).toBe("waiting-previous");
   });
 });

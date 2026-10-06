@@ -168,6 +168,8 @@ import {
   SessionSocketHostLive,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
+  SealantClientByWorkspaceCreator,
+  WorkspaceCallerLive,
   WorkspaceGitHooksLive,
   WorktreeReadsCapturedLive,
   WorktreeReadsColocatedLive,
@@ -832,8 +834,15 @@ const MainLive = Layer.unwrap(
       Layer.provide(HostEnvironmentLive),
       Layer.provide(AuthLive.pipe(Layer.provide(RegistrationPolicyLive))),
       Layer.provide(NetworkConfigLive),
-      // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md).
-      Layer.provide(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
+      // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md), and
+      // every call about a workspace made as the person who created it, for whoever may work in
+      // it (`WorkspaceCaller`): a second person's join reaches the holder's executor.
+      Layer.provide(
+        SealantClientByWorkspaceCreator.pipe(
+          Layer.provideMerge(WorkspaceCallerLive),
+          Layer.provideMerge(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
+        ),
+      ),
       Layer.provide(DatabaseLive),
     );
   }),

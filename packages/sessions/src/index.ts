@@ -27,3 +27,4 @@ export * from "./run-eligibility.ts";
 export { mergeTextUnion } from "./agent-memory.ts";
 export { codexDatabaseHolds, mergeCodexDatabases } from "./codex-memory.ts";
 export * from "./harness-layout-steps.ts";
+export * from "./workspace-caller.ts";

@@ -567,6 +567,14 @@ export class SessionsRepo extends Context.Service<
       readonly workspaceId: SealantWorkspaceId;
       readonly launchId: string;
     } | null>;
+    /**
+     * The session whose own launch made the executor in `workspaceId` (0083): its row names the
+     * workspace under a launch of its own. A session that joined the executor names it with no
+     * launch, so it is never the answer. Null when no row does: a create not recorded yet, a
+     * standby before its claim, the co-located store. Whose platform identity a call about the
+     * workspace runs as (`@mend/sessions` `WorkspaceCaller`).
+     */
+    readonly executorSessionOf: (workspaceId: SealantWorkspaceId) => Effect.Effect<Session | null>;
     /** Removal asked while the workspace was up; the sweep removes the row once it has gone. */
     readonly requestRemoval: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Sessions whose removal waits on their workspace. */
@@ -1917,6 +1925,24 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return { workspaceId: row.workspaceId, launchId: row.launchId };
       });
 
+      const executorSessionOf = Effect.fn("SessionsRepo.executorSessionOf")(function* (
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const [row] = yield* db
+          .select()
+          .from(agentSessions)
+          .where(
+            and(
+              eq(agentSessions.sealantWorkspaceId, workspaceId),
+              isNotNull(agentSessions.executorLaunchId),
+            ),
+          )
+          .orderBy(sql`${agentSessions.executorStartedAt} DESC NULLS LAST`)
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row === undefined ? null : toSession(row);
+      });
+
       const requestRemoval = Effect.fn("SessionsRepo.requestRemoval")(function* (
         id: SessionId,
         at: Date,
@@ -2010,6 +2036,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         recordExecutorResource,
         executorResourceOf,
         executorLaunchOf,
+        executorSessionOf,
         recordExecutorCreate,
         clearExecutorCreate,
         executorCreateOf,

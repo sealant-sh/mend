@@ -244,6 +244,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
           });
           return { ok: true as const, status: 200, attachment };
         }).pipe(
+          // As the session's owner, after the caller was authorized above. A joined session's PTY
+          // runs in another person's executor: the client asks about it as that executor's
+          // creator, for an owner who may work there (`WorkspaceCaller`, alpha 2026-10-06).
           asSealantUser(ownerUserId),
           Effect.catch((error) =>
             Effect.succeed({ ok: false as const, status: 502, message: String(error.message) }),

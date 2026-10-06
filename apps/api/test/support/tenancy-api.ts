@@ -61,6 +61,7 @@ import {
   DotfilesCloner,
   FollowUpDelivery,
   SessionEngine,
+  WorkspaceCaller,
   WorktreeReads,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
@@ -315,6 +316,18 @@ export const createTenancyApi = async (
         calls,
       ),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
+      // Whose identity a call about a workspace runs as: the principal in context here, since the
+      // harness's platform has one user.
+      recording(
+        WorkspaceCaller,
+        "workspaceCaller",
+        {
+          aboutWorkspace: () => (self) => self,
+          aboutRun: () => (self) => self,
+          aboutRunStream: () => (self) => self,
+        },
+        calls,
+      ),
       recording(AgentBridge, "agentBridge", { socketPath: () => "/unused/agent.sock" }, calls),
       options.dotfiles === undefined
         ? recording(DotfilesStore, "dotfilesStore", {}, calls)

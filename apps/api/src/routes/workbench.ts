@@ -151,6 +151,7 @@ import {
   RECIPE_NAME,
   type ReadStamp,
   SessionEngine,
+  WorkspaceCaller,
   WorktreeReads,
   type WorktreeReadError,
   stampLabel,
@@ -2714,7 +2715,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("processLogs", ({ params, query }) =>
       Effect.gen(function* () {
         const sealant = yield* SealantClient;
-        const { process: row } = yield* (yield* ProjectAccess).process(params.id);
+        const workspaces = yield* WorkspaceCaller;
+        const { process: row, session } = yield* (yield* ProjectAccess).process(params.id);
         if (row.sealantSessionId === null) {
           return yield* new StoreFailure({
             message:
@@ -2729,9 +2731,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         if (!/^[1-9]\d*$/.test(limit) || BigInt(limit) > 1_000n) {
           return yield* new StoreFailure({ message: `Invalid log page limit: ${limit}` });
         }
-        const page = yield* sealant
-          .sessionOutput(row.sealantSessionId, { from, limit })
-          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
+        // Read as the session's owner, and the PTY's output as its workspace's creator: a joined
+        // session's processes run in another person's executor (`WorkspaceCaller`).
+        const page = yield* sealant.sessionOutput(row.sealantSessionId, { from, limit }).pipe(
+          workspaces.aboutWorkspace(row.sealantWorkspaceId),
+          asSealantUser(session.ownerUserId),
+          Effect.mapError((error) => new StoreFailure({ message: error.message })),
+        );
         return new ProcessLogPage({
           processId: row.id,
           sealantSessionId: row.sealantSessionId,

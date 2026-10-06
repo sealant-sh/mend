@@ -138,11 +138,13 @@ import {
 } from "@mend/domain/workbench";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
+  asSealantUser,
   type CaptureFlushKind,
   PersonLayoutPlatform,
   PersonLayoutPlatformLive,
   type PersonSessionOptions,
   SealantClient,
+  type SealantClientShape,
   SealantPlatformError,
   SealantPrincipal,
   type SealantPrincipalValue,
@@ -177,6 +179,7 @@ import {
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
+  SealantClientByWorkspaceCreator,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
   SessionChannelNetworkHost,
@@ -187,6 +190,7 @@ import {
   type SessionSocketApi,
   SessionSocketHost,
   WORKSPACE_MEND_TOML,
+  WorkspaceCallerLive,
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
   secretFilesDeliveredExec,
@@ -2440,6 +2444,16 @@ const sessionsLayer = (world: World) => {
           ? null
           : { workspaceId: current, launchId: found.launchId };
       }),
+    executorSessionOf: (workspaceId) =>
+      Effect.sync(() => {
+        for (const [id, launch] of world.executorLaunches) {
+          const session = world.sessions.get(id);
+          if (launch.workspaceId === workspaceId && session?.sealantWorkspaceId === workspaceId) {
+            return session;
+          }
+        }
+        return null;
+      }),
     recordExecutorCreate: (id, key) => Effect.sync(() => void world.executorCreates.set(id, key)),
     clearExecutorCreate: (id, key) =>
       Effect.sync(() => {
@@ -2961,6 +2975,39 @@ const countingLaunchLayoutReads = (
     })),
   ).pipe(Layer.provide(harnessLayoutsRepoMemory(state)));
 
+/** `SealantClientByWorkspaceCreator` over `inner`, reading the world's sessions and projects. */
+const byWorkspaceCreatorIn = (
+  world: World,
+  inner: Layer.Layer<SealantClient>,
+): Layer.Layer<SealantClient> =>
+  SealantClientByWorkspaceCreator.pipe(
+    Layer.provide(WorkspaceCallerLive),
+    Layer.provide(inner),
+    Layer.provide(
+      Layer.mergeAll(
+        sessionsLayer(world),
+        sessionRunsLayer(world),
+        projectsLayer(world),
+        organizationsLayer(world),
+      ),
+    ),
+  );
+
+/** `layer`, handing the client it builds to `expose` as well. */
+const exposing = (
+  layer: Layer.Layer<SealantClient>,
+  expose: ((client: SealantClientShape) => void) | undefined,
+): Layer.Layer<SealantClient> =>
+  expose === undefined
+    ? layer
+    : Layer.effect(
+        SealantClient,
+        Effect.map(SealantClient, (client) => {
+          expose(client);
+          return client;
+        }),
+      ).pipe(Layer.provide(layer));
+
 const withEngine = <A, E>(
   work: (
     world: World,
@@ -2968,6 +3015,8 @@ const withEngine = <A, E>(
   ) => Effect.Effect<A, E, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
   options: {
     readonly sealantLayer?: Layer.Layer<SealantClient>;
+    /** Hands a test the platform client exactly as the engine reaches it (`WorkspaceCaller` on). */
+    readonly exposeSealant?: (client: SealantClientShape) => void;
     readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
     readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
@@ -3101,10 +3150,18 @@ const withEngine = <A, E>(
     Layer.provide(testDrainPolicy(options.drainPolicy)),
     Layer.provide(sessionRepositoryLayer),
     Layer.provide(storeLayer),
+    // The platform as the server reaches it: through the rule for whose identity a call about a
+    // workspace runs as (`WorkspaceCaller`), over the world's own rows.
     Layer.provide(
-      options.captured === undefined || options.sealantLayer === undefined
-        ? (options.sealantLayer ?? sealantDeadLayer)
-        : stampedAnswers(options.sealantLayer, options.captured, world),
+      exposing(
+        byWorkspaceCreatorIn(
+          world,
+          options.captured === undefined || options.sealantLayer === undefined
+            ? (options.sealantLayer ?? sealantDeadLayer)
+            : stampedAnswers(options.sealantLayer, options.captured, world),
+        ),
+        options.exposeSealant,
+      ),
     ),
     Layer.provide(settingsLayer(options.workspaceImage)),
     Layer.provide(projectsLayer(world)),
@@ -24396,6 +24453,12 @@ const livePersonJoin = async <A>(options: {
   /** Present every identity ticket again while its first answer is still being made. */
   readonly presentOverlapping?: boolean;
   readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
+  /**
+   * The stand-in platform has one workspace for every create, so a scenario that launches a second
+   * executor cannot keep each workspace its creator's; it runs on one platform user instead. Every
+   * other scenario runs where only a workspace's creator reaches it (`workspacesPerOwner`).
+   */
+  readonly onePlatformUser?: boolean;
   readonly inspect: (
     engine: SessionEngine["Service"],
     join: LiveJoin,
@@ -24485,31 +24548,34 @@ const livePersonJoin = async <A>(options: {
         ? {}
         : { gitHooksLayer: recordingLandings(options.landings) }),
       ...(options.gitAuthorLayer === undefined ? {} : { gitAuthorLayer: options.gitAuthorLayer }),
-      sealantLayer: sealantLaunchLayer(
-        created,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        opened,
-        undefined,
-        execCalls,
-        undefined,
-        person
-          ? {
-              exec: answerLayout(LAYOUT_READY),
-              execEffect: identityExec({
-                pickups,
-                holder: holderOf,
-                launchId: launchIdOf,
-                ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
-                ...(options.presentTwice === true ? { twice: true } : {}),
-                ...(options.presentOverlapping === true ? { overlap: true } : {}),
-              }),
-            }
-          : {},
+      sealantLayer: perOwnerUnless(
+        options.onePlatformUser,
+        sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          execCalls,
+          undefined,
+          person
+            ? {
+                exec: answerLayout(LAYOUT_READY),
+                execEffect: identityExec({
+                  pickups,
+                  holder: holderOf,
+                  launchId: launchIdOf,
+                  ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
+                  ...(options.presentTwice === true ? { twice: true } : {}),
+                  ...(options.presentOverlapping === true ? { overlap: true } : {}),
+                }),
+              }
+            : {},
+        ),
       ),
       harnessLayout: {
         flag: options.flag,
@@ -24911,6 +24977,8 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
   it("a person's token works only for sessions live in its launch that they may act on", async () => {
     await livePersonJoin({
       flag: "person",
+      // Maria's own session in another worktree is a second executor.
+      onePlatformUser: true,
       inspect: (engine, join) =>
         Effect.gen(function* () {
           // Maria may not act on Alice's session while shared control is off.
@@ -25003,24 +25071,68 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
   });
 });
 
+/** Whose principal a platform call is made under, as `workspacesPerOwner` records it. */
+const userOf = (principal: SealantPrincipalValue) =>
+  principal.kind === "none" ? "none" : principal.userId;
+
 /**
  * The platform as Core serves it to more than one person (`MEND_TENANCY=multi`, each Mend user its
- * own Sealant user): a workspace belongs to the Sealant user who created it, and a lookup by anyone
- * else is a 404, as `GET /v1/workspaces/<id>` answered the joiner on alpha. Every lookup's
- * principal lands in `seen` as `<user>:<found|404>`.
+ * own Sealant user): a workspace, its interactive sessions and their runs belong to the Sealant
+ * user who created the workspace, and every call about them by anyone else is a 404, as
+ * `GET /v1/workspaces/<id>` answered the joiner on alpha. Stricter than Core in one way, so no
+ * path can hide behind a handle: a call through a workspace handle is judged by the principal it
+ * is made under, not by whose client fetched the handle. Every judged call lands in `seen` as
+ * `<user>:<found|404>`, and in `calls` as `<method> <user>:<found|404>`.
  */
 const workspacesPerOwner = (
   inner: Layer.Layer<SealantClient>,
   seen: Array<string>,
+  calls: Array<string> = [],
 ): Layer.Layer<SealantClient> =>
   Layer.effect(
     SealantClient,
-    Effect.map(SealantClient, (client) => {
+    Effect.map(SealantClient, (client): SealantClientShape => {
       const owners = new Map<string, string>();
-      const userOf = (principal: SealantPrincipalValue) =>
-        principal.kind === "none" ? "none" : principal.userId;
+      const runOwners = new Map<string, string>();
+      const ptyOwners = new Map<string, string>();
+      const notFound = new SealantPlatformError({
+        code: "WorkspaceNotFoundError",
+        status: 404,
+        message: "workspace not found",
+        cause: null,
+      });
+      const judge = (
+        method: string,
+        owner: string | undefined,
+        principal: SealantPrincipalValue,
+      ) => {
+        const found = owner === undefined || owner === userOf(principal);
+        const entry = `${userOf(principal)}:${found ? "found" : "404"}`;
+        seen.push(entry);
+        calls.push(`${method} ${entry}`);
+        return found;
+      };
+      const guarded = <A>(
+        method: string,
+        ownerOf: () => string | undefined,
+        call: () => Effect.Effect<A, SealantPlatformError>,
+      ): Effect.Effect<A, SealantPlatformError> =>
+        Effect.flatMap(SealantPrincipal, (principal) =>
+          judge(method, ownerOf(), principal) ? call() : Effect.fail(notFound),
+        );
+      const guardedStream = <A>(
+        method: string,
+        ownerOf: () => string | undefined,
+        call: () => Stream.Stream<A, SealantPlatformError>,
+      ): Stream.Stream<A, SealantPlatformError> =>
+        Stream.unwrap(
+          Effect.map(SealantPrincipal, (principal) =>
+            judge(method, ownerOf(), principal) ? call() : Stream.fail(notFound),
+          ),
+        );
+      const ofWorkspace = (id: string) => () => owners.get(id);
+      const ofRun = (id: string) => () => runOwners.get(id);
       return {
-        ...client,
         createWorkspace: (options, launch, watch) =>
           Effect.flatMap(SealantPrincipal, (principal) =>
             client
@@ -25031,41 +25143,147 @@ const workspacesPerOwner = (
                 ),
               ),
           ),
+        findWorkspaceByKey: (key) => client.findWorkspaceByKey(key),
+        fenceWorkspaceCreate: (key) => client.fenceWorkspaceCreate(key),
         getWorkspace: (id) =>
-          Effect.flatMap(SealantPrincipal, (principal) => {
-            const owner = owners.get(id);
-            const found = owner === undefined || owner === userOf(principal);
-            seen.push(`${userOf(principal)}:${found ? "found" : "404"}`);
-            return found
-              ? client.getWorkspace(id)
-              : Effect.fail(
-                  new SealantPlatformError({
-                    code: "WorkspaceNotFoundError",
-                    status: 404,
-                    message: "workspace not found",
-                    cause: null,
-                  }),
-                );
-          }),
+          guarded("getWorkspace", ofWorkspace(id), () => client.getWorkspace(id)),
+        getRun: (runId) => guarded("getRun", ofRun(runId), () => client.getRun(runId)),
+        runHarness: (workspace, prompt, options) =>
+          guarded("runHarness", ofWorkspace(workspace.id), () =>
+            client.runHarness(workspace, prompt, options),
+          ),
+        startHarness: (workspace, prompt, options) =>
+          guarded("startHarness", ofWorkspace(workspace.id), () =>
+            client.startHarness(workspace, prompt, options),
+          ),
+        startHarnessInWorkspace: (workspaceId, harness, prompt) =>
+          guarded("startHarnessInWorkspace", ofWorkspace(workspaceId), () =>
+            client.startHarnessInWorkspace(workspaceId, harness, prompt),
+          ),
+        waitRun: (run) => guarded("waitRun", ofRun(run.id), () => client.waitRun(run)),
+        openSession: (workspace, argv, options) =>
+          guarded("openSession", ofWorkspace(workspace.id), () =>
+            client.openSession(workspace, argv, options).pipe(
+              Effect.tap((pty) =>
+                Effect.sync(() => {
+                  const owner = owners.get(workspace.id);
+                  if (owner === undefined) return;
+                  runOwners.set(pty.runId, owner);
+                  ptyOwners.set(pty.id, owner);
+                }),
+              ),
+            ),
+          ),
+        forward: (workspace, port, host, protocol) =>
+          guarded("forward", ofWorkspace(workspace.id), () =>
+            client.forward(workspace, port, host, protocol),
+          ),
+        stopWorkspace: (workspace, options) =>
+          guarded("stopWorkspace", ofWorkspace(workspace.id), () =>
+            client.stopWorkspace(workspace, options),
+          ),
+        runtimeResourceId: (workspace, launchId) =>
+          guarded("runtimeResourceId", ofWorkspace(workspace.id), () =>
+            client.runtimeResourceId(workspace, launchId),
+          ),
+        captureFlush: (workspace, kind) =>
+          guarded("captureFlush", ofWorkspace(workspace.id), () =>
+            client.captureFlush(workspace, kind),
+          ),
+        captureStatus: (workspace) =>
+          guarded("captureStatus", ofWorkspace(workspace.id), () =>
+            client.captureStatus(workspace),
+          ),
+        captureReplan: (workspace) =>
+          guarded("captureReplan", ofWorkspace(workspace.id), () =>
+            client.captureReplan(workspace),
+          ),
+        runtimeDeadline: (workspace) =>
+          guarded("runtimeDeadline", ofWorkspace(workspace.id), () =>
+            client.runtimeDeadline(workspace),
+          ),
+        expireWorkspace: (workspaceId, ttlSeconds) =>
+          guarded("expireWorkspace", ofWorkspace(workspaceId), () =>
+            client.expireWorkspace(workspaceId, ttlSeconds),
+          ),
+        getSession: (workspace, sessionId) =>
+          guarded("getSession", ofWorkspace(workspace.id), () =>
+            client.getSession(workspace, sessionId),
+          ),
+        sessionOutput: (sessionId, options) =>
+          guarded(
+            "sessionOutput",
+            () => ptyOwners.get(sessionId),
+            () => client.sessionOutput(sessionId, options),
+          ),
+        exec: (workspace, argv, options) =>
+          guarded("exec", ofWorkspace(workspace.id), () => client.exec(workspace, argv, options)),
+        bindWorkspace: (workspace, options) =>
+          guarded("bindWorkspace", ofWorkspace(workspace.id), () =>
+            client.bindWorkspace(workspace, options),
+          ),
+        diffCommits: (workspaceId, base, head) =>
+          guarded("diffCommits", ofWorkspace(workspaceId), () =>
+            client.diffCommits(workspaceId, base, head),
+          ),
+        inferenceRespond: (options) => client.inferenceRespond(options),
+        recordStream: (run, options) =>
+          guardedStream("recordStream", ofRun(run.id), () => client.recordStream(run, options)),
+        recordTimeline: (run, options) =>
+          guardedStream("recordTimeline", ofRun(run.id), () => client.recordTimeline(run, options)),
+        recordCommands: (run) =>
+          guarded("recordCommands", ofRun(run.id), () => client.recordCommands(run)),
+        recordScrollback: (run, processId, stream) =>
+          guarded("recordScrollback", ofRun(run.id), () =>
+            client.recordScrollback(run, processId, stream),
+          ),
+        runChanges: (run) => guarded("runChanges", ofRun(run.id), () => client.runChanges(run)),
+        connectionCheck: () => client.connectionCheck(),
+        resolveWorkspacePackage: (packageName, targetOs) =>
+          client.resolveWorkspacePackage(packageName, targetOs),
       };
     }),
   ).pipe(Layer.provide(inner));
 
-/** The owner's session runs; Maria, a member, starts one in its worktree and launches it. */
+/** `workspacesPerOwner` over `inner`, unless the scenario runs on one platform user. */
+const perOwnerUnless = (
+  onePlatformUser: boolean | undefined,
+  inner: Layer.Layer<SealantClient>,
+): Layer.Layer<SealantClient> => (onePlatformUser === true ? inner : workspacesPerOwner(inner, []));
+
+/** What a test after a join by another person is handed. */
+interface JoinByAnother {
+  readonly holder: SessionId;
+  readonly joined: SessionId;
+  readonly tmp: string;
+  readonly project: Project;
+  /** The platform client exactly as the engine and the routes reach it. */
+  readonly platform: SealantClientShape;
+  /** Every judged call (`workspacesPerOwner`), in order. */
+  readonly calls: Array<string>;
+  readonly execCalls: Array<ReadonlyArray<string>>;
+}
+
+/**
+ * The owner's session runs; Maria, a member, starts one in its worktree and launches it, on a
+ * platform where every call about the owner's workspace by anyone but the owner is a 404.
+ */
 const joinByAnotherPerson = async (
   then: (
     engine: SessionEngine["Service"],
     world: World,
-    ids: { readonly holder: SessionId; readonly joined: SessionId },
-  ) => Effect.Effect<void, unknown>,
+    join: JoinByAnother,
+  ) => Effect.Effect<void, unknown, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
 ) => {
   const created: Array<CreateOptions> = [];
   const execCalls: Array<ReadonlyArray<string>> = [];
   const seen: Array<string> = [];
+  const calls: Array<string> = [];
   const logs: Array<string> = [];
   let failure: string | null = null;
   let holderWorkspace: string | null = null;
   let joinedWorkspace: string | null = null;
+  let platform: SealantClientShape | null = null;
   await withEngine(
     (world, tmp) =>
       Effect.gen(function* () {
@@ -25089,12 +25307,26 @@ const joinByAnotherPerson = async (
         const launched = yield* engine.launch(joined.id, ["claude"]).pipe(Effect.result);
         if (launched._tag === "Failure") failure = launched.failure.message;
         joinedWorkspace = world.sessions.get(joined.id)?.sealantWorkspaceId ?? null;
-        if (failure === null) yield* then(engine, world, { holder: holder.id, joined: joined.id });
+        if (platform === null) throw new Error("the platform client was not handed over");
+        if (failure === null) {
+          yield* then(engine, world, {
+            holder: holder.id,
+            joined: joined.id,
+            tmp,
+            project,
+            platform,
+            calls,
+            execCalls,
+          });
+        }
       }),
     {
       captured: makeMemoryCaptureStore(),
       logs,
       prepareWorld: (world) => world.members.set(MARIA, "member"),
+      exposeSealant: (client) => {
+        platform = client;
+      },
       sealantLayer: workspacesPerOwner(
         sealantLaunchLayer(
           created,
@@ -25109,10 +25341,22 @@ const joinByAnotherPerson = async (
           execCalls,
         ),
         seen,
+        calls,
       ),
     },
   );
-  return { created, seen, logs, failure, holderWorkspace, joinedWorkspace };
+  return { created, seen, calls, logs, failure, holderWorkspace, joinedWorkspace };
+};
+
+/** The joiner's agent process, as the terminal route resolves it for `?session=`. */
+const joinedAgentOf = (world: World, joined: SessionId) => {
+  const agent = [...world.processes.values()].find(
+    (process) => process.sessionId === joined && process.kind === "agent-pty",
+  );
+  if (agent === undefined || agent.sealantSessionId === null) {
+    throw new Error("the joined session has no agent PTY");
+  }
+  return { workspaceId: agent.sealantWorkspaceId, ptyId: agent.sealantSessionId };
 };
 
 describe("a join by another person into a live executor (alpha 2026-10-06, 9e486cfc)", () => {
@@ -25125,8 +25369,11 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     expect(run.created).toHaveLength(1);
     expect(run.holderWorkspace).not.toBeNull();
     expect(run.joinedWorkspace).toBe(run.holderWorkspace);
-    // The holder's executor is never looked up as the joiner.
+    // The holder's executor is never asked about as the joiner: every call about it, the join's
+    // own process included, is made as its creator.
     expect(run.seen).not.toContain(`${MARIA}:404`);
+    expect(run.calls.filter((call) => !call.endsWith("user-fixture:found"))).toEqual([]);
+    expect(run.calls).toContain("openSession user-fixture:found");
   });
 
   it("after the join, the joiner's own verbs reach the executor they run in: a shell opens", async () => {
@@ -25146,5 +25393,195 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     expect(run.failure).toBeNull();
     expect(shell).toBeNull();
     expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("the joiner's terminal attaches as the terminal route asks for it, as the session's owner", async () => {
+    let attached: string | null = null;
+    let expected: string | null = null;
+    const run = await joinByAnotherPerson((_engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        expected = agent.ptyId;
+        // apps/api/src/routes/tty.ts: the workspace, then the PTY, as the session's owner (the
+        // joiner); the client asks as the workspace's creator.
+        const pty = yield* join.platform.getWorkspace(agent.workspaceId).pipe(
+          Effect.flatMap((workspace) => join.platform.getSession(workspace, agent.ptyId)),
+          asSealantUser(MARIA),
+        );
+        attached = pty.id;
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(attached).not.toBeNull();
+    expect(attached).toBe(expected);
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+    expect(run.calls).toContain("getSession user-fixture:found");
+  });
+
+  it("a Service the joiner runs starts in the executor, and stops there", async () => {
+    let started: string | null = null;
+    let stopped: string | null = null;
+    const run = await joinByAnotherPerson((engine, _world, { joined }) =>
+      Effect.gen(function* () {
+        const service = yield* engine.runService(joined, ["pnpm", "dev"], 3000, "web");
+        started = service.attempts[0]?.status ?? null;
+        const after = yield* engine.stopService(service.service.id);
+        stopped = after.service.id;
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(started).toBe("running");
+    expect(stopped).not.toBeNull();
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("a git op through the workspace: a repository the joiner adds is cloned in the executor", async () => {
+    let listed: ReadonlyArray<readonly [string, string, string | null]> = [];
+    const run = await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        yield* setupSibling(join.tmp, world, "core", join.project.originUrl ?? "");
+        yield* engine.addRepository(join.joined, { project: "core", name: null, worktree: null });
+        yield* until(
+          () => join.execCalls.some((argv) => argv.join("\n").includes("git clone --quiet")),
+          "the clone in the workspace",
+        );
+        let rows = yield* engine.listRepositories(join.joined);
+        for (let i = 0; i < 500 && rows[0]?.state === "adding"; i++) {
+          yield* Effect.sleep(Duration.millis(10));
+          rows = yield* engine.listRepositories(join.joined);
+        }
+        listed = rows.map((row) => [row.name, row.state, row.error] as const);
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(listed).toEqual([["core", "ready", null]]);
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("a checkpoint of the joiner's session flushes the executor it runs in, and its files are read there", async () => {
+    let checkpoint: string | null = null;
+    const run = await joinByAnotherPerson((engine, _world, { joined }) =>
+      Effect.gen(function* () {
+        const taken = yield* engine.checkpointNow(joined, "user-mark");
+        checkpoint = taken.id;
+        // The transcript reads the conversation's file through the executor.
+        yield* engine.transcript(joined);
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(checkpoint).not.toBeNull();
+    expect(run.calls).toContain("captureFlush user-fixture:found");
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("says what it observed when the platform does not find a live holder's workspace: a 404, never 'not answering'", async () => {
+    let lookupsRejected = false;
+    const phases: Array<string> = [];
+    let refusal: string | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "together",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(holder.id, ["claude"]);
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          // The holder's lease stays live; Core answers 404 for its workspace, whoever asks.
+          lookupsRejected = true;
+          const launch = yield* Effect.forkChild(
+            engine.launch(joined.id, ["claude"]).pipe(Effect.result),
+          );
+          yield* until(() => {
+            const summary = world.sessions.get(joined.id)?.summary ?? "";
+            if (summary.includes("waiting")) phases.push(summary);
+            return phases.length > 0;
+          }, "the waiting line");
+          const result = yield* Fiber.join(launch);
+          if (result._tag === "Failure") refusal = result.failure.message;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        drainPolicy: { leaseWait: Duration.seconds(1) },
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          () => lookupsRejected,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+        ),
+      },
+    );
+    expect(phases[0]).toContain(
+      "the previous session in this worktree renews its lease, but the platform did not find its workspace (404)",
+    );
+    expect(phases.join("\n")).not.toContain("is not answering");
+    expect(refusal).toContain("worktree leased");
+  });
+
+  it("refuses a joiner who lost access, though the platform would answer the workspace's creator", async () => {
+    const outcomes: Record<string, string> = {};
+    const run = await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        const ask = (as: string) =>
+          join.platform
+            .getWorkspace(agent.workspaceId)
+            .pipe(
+              asSealantUser(as),
+              Effect.match({ onSuccess: () => "answered", onFailure: (error) => error.message }),
+            );
+        // Removed from the organization: nothing of the executor is lent to her any more.
+        world.members.delete(MARIA);
+        const mark = join.calls.length;
+        outcomes["shell"] = yield* engine
+          .openShell(join.joined)
+          .pipe(Effect.match({ onSuccess: () => "opened", onFailure: (error) => error.message }));
+        outcomes["terminal"] = yield* ask(MARIA);
+        outcomes["after"] = join.calls
+          .slice(mark)
+          .filter((call) => call.includes(MARIA))
+          .every((call) => call.endsWith(`${MARIA}:404`))
+          ? "all 404"
+          : "borrowed";
+        // The platform answers the creator: only Mend's authorization stood in her way.
+        outcomes["creator"] = yield* ask("user-fixture");
+        // A member of the organization with no session in this worktree has no standing either.
+        world.members.set("user-other", "member");
+        outcomes["stranger"] = yield* ask("user-other");
+        // Nor does someone kept out of a private project, though they have a session here.
+        world.members.set(MARIA, "member");
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "private", createdByUserId: "user-fixture" }),
+        );
+        outcomes["private"] = yield* ask(MARIA);
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(outcomes).toEqual({
+      shell: expect.stringContaining("not"),
+      terminal: "workspace not found",
+      after: "all 404",
+      creator: "answered",
+      stranger: "workspace not found",
+      private: "workspace not found",
+    });
   });
 });

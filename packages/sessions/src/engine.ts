@@ -1088,6 +1088,18 @@ const ENDED_DRAIN_STATES: ReadonlySet<string> = new Set(["stopped", "saved", "go
 const workspaceIsLive = (status: string) =>
   status === "queued" || status === "running" || status === "ready";
 
+/** What a lookup of a live lease holder's workspace found (`leaseHolderWorkspace`). */
+type HolderLookup =
+  | { readonly kind: "none" }
+  | { readonly kind: "live"; readonly workspace: Workspace }
+  | { readonly kind: "not-live"; readonly state: string }
+  | {
+      readonly kind: "failed";
+      readonly status: number | null;
+      readonly code: string;
+      readonly message: string;
+    };
+
 /**
  * The platform positively says there is no such workspace (a 404, or the contract's
  * `WorkspaceNotFoundError`). Every other failure is only a failure to answer.
@@ -3572,26 +3584,70 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           return { kind: "ending" as const, sessionId: lease.executorId, epoch: lease.epoch };
         }
-        const workspace =
-          workspaceId === null
-            ? null
+        // The holder's executor is its owner's, whoever asks (`WorkspaceCaller`), so it is looked
+        // up as that owner, like every other holder check here. Asked as a joiner of another
+        // person, Core answered 404, read as `unreachable`, and the join waited `leaseWait` (30
+        // min) on a holder that was running (alpha 2026-10-06, 9e486cfc). The handle it returns
+        // is bound to the owner's client, so the join's own process runs there.
+        const lookup: HolderLookup =
+          workspaceId === null || holder === null
+            ? { kind: "none" }
             : yield* sealant.getWorkspace(workspaceId).pipe(
                 Effect.flatMap((candidate) =>
                   Effect.promise(() => candidate.status()).pipe(
-                    Effect.map((status) => (workspaceIsLive(status) ? candidate : null)),
+                    Effect.map(
+                      (status): HolderLookup =>
+                        workspaceIsLive(status)
+                          ? { kind: "live", workspace: candidate }
+                          : { kind: "not-live", state: status },
+                    ),
                   ),
                 ),
-                Effect.catch(() => Effect.succeed(null)),
-                Effect.catchDefect(() => Effect.succeed(null)),
+                asSealantUser(holder.ownerUserId),
+                Effect.catch((error) =>
+                  Effect.succeed<HolderLookup>({
+                    kind: "failed",
+                    status: error.status,
+                    code: error.code,
+                    message: error.message,
+                  }),
+                ),
+                Effect.catchDefect((defect) =>
+                  Effect.succeed<HolderLookup>({
+                    kind: "failed",
+                    status: null,
+                    code: "defect",
+                    message: String(defect),
+                  }),
+                ),
               );
-        if (workspace !== null) {
-          return { kind: "held" as const, sessionId: lease.executorId, workspace };
+        if (lookup.kind === "live") {
+          return {
+            kind: "held" as const,
+            sessionId: lease.executorId,
+            workspace: lookup.workspace,
+          };
         }
         return {
           kind: "unreachable" as const,
           sessionId: lease.executorId,
           epoch: lease.epoch,
           expiresAt: lease.expiresAt?.toISOString() ?? "never",
+          lookup:
+            lookup.kind === "failed"
+              ? { kind: "failed" as const, status: lookup.status, code: lookup.code }
+              : lookup.kind === "not-live"
+                ? { kind: "not-live" as const, state: lookup.state }
+                : null,
+          // For the log line: what the platform said, in its words.
+          observed:
+            lookup.kind === "failed"
+              ? `${lookup.status ?? "no status"} ${lookup.code} · ${lookup.message}`
+              : lookup.kind === "not-live"
+                ? `workspace ${lookup.state}`
+                : holder === null
+                  ? "the holder's session row is gone"
+                  : "no workspace on record for the lease's launch",
         };
       });
 
@@ -3673,6 +3729,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             const words = leaseWaitWords(holder);
             if (words !== said) {
+              // Why, in the platform's words: a 404 while the holder's heartbeat is live is not
+              // "not answering", and the line says what was observed.
               yield* Effect.logInfo(
                 "session engine: capture mode · the worktree's previous executor has not ended · the launch waits",
               ).pipe(
@@ -3680,6 +3738,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   sessionId: session.id,
                   holderSessionId: holder.sessionId,
                   holder: holder.kind,
+                  ...(holder.kind === "unreachable"
+                    ? { leaseLive: true, observed: holder.observed }
+                    : {}),
                 }),
               );
               yield* sayLaunchPhase(session.id, words);

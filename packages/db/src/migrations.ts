@@ -3125,6 +3125,20 @@ const personIdentityMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE services ADD COLUMN started_by text`;
 });
 
+/**
+ * 0114: who created a workspace, found by the workspace (`SessionsRepo.executorSessionOf`): the
+ * session whose row names it under a launch of its own (0083). A call about a workspace runs as
+ * that session's owner, whoever asks (alpha 2026-10-06, 9e486cfc: a second person's join looked
+ * the holder's workspace up as themselves, and Core answered 404). Partial: joined rows name the
+ * workspace with no launch and are never the answer.
+ */
+const executorWorkspaceIndexMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE INDEX agent_sessions_executor_workspace_idx ON agent_sessions (sealant_workspace_id)
+      WHERE executor_launch_id IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3239,4 +3253,5 @@ export const migrations = {
   "0111_agent_memory_homes": agentMemoryHomesMigration,
   "0112_harness_layout": harnessLayoutMigration,
   "0113_person_identity": personIdentityMigration,
+  "0114_executor_workspace_index": executorWorkspaceIndexMigration,
 };
