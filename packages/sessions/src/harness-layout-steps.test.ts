@@ -44,6 +44,8 @@ const workspace: Workspace = {
     return this;
   },
   expire: async () => undefined,
+  image: async () => null,
+  credentials: { put: never, release: never, list: async () => [] },
 };
 
 const platformLayer = Layer.succeed(PersonLayoutPlatform, {

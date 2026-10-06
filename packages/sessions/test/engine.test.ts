@@ -24368,7 +24368,7 @@ interface LiveJoin {
   readonly launchId: string;
   readonly origin: string;
   readonly execs: ReadonlyArray<ReadonlyArray<string>>;
-  readonly opened: ReadonlyArray<SessionOptions & ProcessUserOption>;
+  readonly opened: ReadonlyArray<PersonSessionOptions>;
   readonly tokenEvents: ReadonlyArray<string>;
   readonly pickups: IdentityPickups;
   /** Why the join failed, or null. */
@@ -24402,7 +24402,7 @@ const livePersonJoin = async <A>(options: {
 }): Promise<A> => {
   const created: Array<CreateOptions> = [];
   const execCalls: Array<ReadonlyArray<string>> = [];
-  const opened: Array<SessionOptions & ProcessUserOption> = [];
+  const opened: Array<PersonSessionOptions> = [];
   const tokenEvents: Array<string> = [];
   const person = options.flag === "person";
   const pickups: IdentityPickups = {
