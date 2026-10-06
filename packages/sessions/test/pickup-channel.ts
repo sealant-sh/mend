@@ -45,6 +45,8 @@ export const startPickupChannel = async (
   options: {
     /** Runs when a redemption arrives, before it is answered (a test can move things then). */
     readonly beforeAnswer?: () => void;
+    /** How many redemptions to answer as a busy channel first, the ticket left untaken. */
+    readonly failFirst?: number;
   } = {},
 ): Promise<PickupChannel> => {
   const tickets = makePickupTickets();
@@ -67,6 +69,9 @@ export const startPickupChannel = async (
     pickup: (ticket) =>
       Effect.suspend(() => {
         redemptions += 1;
+        if (redemptions <= (options.failFirst ?? 0)) {
+          return Effect.fail(new Error("session channel: this request could not be answered now"));
+        }
         options.beforeAnswer?.();
         const taken = tickets.take(ticket);
         if (taken.kind === "taken") return Effect.succeed(pickupAnswerOf(taken.entry.files));

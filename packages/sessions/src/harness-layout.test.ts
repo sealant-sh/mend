@@ -18,7 +18,7 @@ import {
   parseLayoutReport,
   personHomeScript,
   personLayoutRefusal,
-  gitAuthorConfigText,
+  gitAuthorPickupBytes,
   identityFilesOf,
   identityPickupScript,
   personPrepareScript,
@@ -656,6 +656,12 @@ describe("the worktree repair (decision 2)", () => {
   });
 });
 
+/** A key of a git config file, every value of it, as git reads it. */
+const gitGet = (file: string, key: string) =>
+  spawnSync("git", ["config", "--file", file, "--get-all", key], {
+    encoding: "utf8",
+  }).stdout.trim();
+
 describe("a person's Mend identity in their home (decision 4)", () => {
   const TOKEN = "t".repeat(40) + "abc";
   const AUTHOR = { name: 'Alice "Al" O\'Neil\\', email: "alice@example.com" };
@@ -677,8 +683,8 @@ describe("a person's Mend identity in their home (decision 4)", () => {
   afterEach(async () => {
     for (const channel of channels.splice(0)) await channel.close();
   });
-  const channel = async () => {
-    const opened = await startPickupChannel();
+  const channel = async (failFirst = 0) => {
+    const opened = await startPickupChannel({ failFirst });
     channels.push(opened);
     return opened;
   };
@@ -690,11 +696,7 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     const files = identityFilesOf(home);
     return opened.mint([
       { path: files.token, bytes: new TextEncoder().encode(TOKEN) },
-      ...(author === null
-        ? []
-        : [
-            { path: files.gitConfig, bytes: new TextEncoder().encode(gitAuthorConfigText(author)) },
-          ]),
+      ...(author === null ? [] : [{ path: files.gitConfig, bytes: gitAuthorPickupBytes(author) }]),
     ]);
   };
 
@@ -741,6 +743,103 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(opened.redemptions()).toBe(2);
   });
 
+  it("sets only the author keys their git config lacks: their dotfiles' config and author stay", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    // What their dotfiles (or their own `git config --global`) put in the XDG file.
+    const config = path.join(home, ".config/git/config");
+    fs.writeFileSync(
+      config,
+      [
+        '[url "git@github.com:"]',
+        "\tinsteadOf = https://github.com/",
+        "[commit]",
+        "\tgpgsign = true",
+        "[user]",
+        "\tsigningkey = ~/.ssh/id_ed25519.pub",
+        "\temail = alice@work.example",
+        "[gpg]",
+        "\tformat = ssh",
+        "",
+      ].join("\n"),
+    );
+    const opened = await channel();
+    const ticket = identityTicket(opened, home);
+    const run = await runExec(
+      ["sh", "-c", identityPickupScript([{ person: alice, ticket, home }])],
+      opened.env,
+    );
+    expect(run.status).toBe(0);
+    expect(gitGet(config, "url.git@github.com:.insteadof")).toBe("https://github.com/");
+    expect(gitGet(config, "commit.gpgsign")).toBe("true");
+    expect(gitGet(config, "user.signingkey")).toBe("~/.ssh/id_ed25519.pub");
+    expect(gitGet(config, "gpg.format")).toBe("ssh");
+    // Their own email stays; the name they did not set is Mend's.
+    expect(gitGet(config, "user.email")).toBe("alice@work.example");
+    expect(gitGet(config, "user.name")).toBe(AUTHOR.name);
+  });
+
+  it("writes the author through a ~/.config/git their dotfiles linked, and never fails the person over it", async () => {
+    const { dir, home, script } = homeOf(null);
+    // Their install.sh linked ~/.config/git into their checkout before prepare made the rest.
+    const checkout = path.join(dir, "dotfiles", "git");
+    fs.mkdirSync(checkout, { recursive: true });
+    fs.writeFileSync(path.join(checkout, "config"), "[pull]\n\trebase = true\n");
+    fs.mkdirSync(path.join(home, ".config"), { recursive: true });
+    fs.symlinkSync(checkout, path.join(home, ".config/git"));
+    expect(sh(script).status).toBe(0);
+    expect(fs.lstatSync(path.join(home, ".config/git")).isSymbolicLink()).toBe(true);
+    const opened = await channel();
+    const run = await runExec(
+      [
+        "sh",
+        "-c",
+        identityPickupScript([{ person: alice, ticket: identityTicket(opened, home), home }]),
+      ],
+      opened.env,
+    );
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(`mend-layout identity ${alice.name}\n`);
+    expect(gitGet(path.join(checkout, "config"), "pull.rebase")).toBe("true");
+    expect(gitGet(path.join(checkout, "config"), "user.email")).toBe(AUTHOR.email);
+    // A link that leads nowhere: the author is not set, said on stderr, and the person is fine.
+    const broken = homeOf(null);
+    fs.mkdirSync(path.join(broken.home, ".config"), { recursive: true });
+    fs.symlinkSync(path.join(broken.dir, "nowhere"), path.join(broken.home, ".config/git"));
+    expect(sh(broken.script).status).toBe(0);
+    const again = await runExec(
+      [
+        "sh",
+        "-c",
+        identityPickupScript([
+          { person: alice, ticket: identityTicket(opened, broken.home), home: broken.home },
+        ]),
+      ],
+      opened.env,
+    );
+    expect(again.status).toBe(0);
+    expect(again.stdout).toBe(`mend-layout identity ${alice.name}\n`);
+    expect(again.stderr).toContain("git author was not set");
+    expect(fs.readFileSync(path.join(broken.home, ".mend/session-token"), "utf8")).toBe(TOKEN);
+  });
+
+  it("tries a redemption once more when the channel is busy", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const opened = await channel(1);
+    const run = await runExec(
+      [
+        "sh",
+        "-c",
+        identityPickupScript([{ person: alice, ticket: identityTicket(opened, home), home }]),
+      ],
+      opened.env,
+    );
+    expect(run.status).toBe(0);
+    expect(opened.redemptions()).toBe(2);
+    expect(fs.readFileSync(path.join(home, ".mend/session-token"), "utf8")).toBe(TOKEN);
+  });
+
   it("skips a person prepare did not make, and never presents their ticket", async () => {
     const opened = await channel();
     const home = path.join(tempDir("mend-identity-"), "home", alice.name);
@@ -761,8 +860,9 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     const root = fakeRoot();
     const { home, script } = homeOf(root);
     expect(root.run(script).status).toBe(0);
+    // `-h`: a link their dotfiles made is given away, never what it points at.
     expect(root.log()).toContain(
-      `chown 40012:40000 ${home}/.mend ${home}/.config ${home}/.config/git`,
+      `chown -h 40012:40000 ${home}/.mend ${home}/.config ${home}/.config/git`,
     );
   });
 

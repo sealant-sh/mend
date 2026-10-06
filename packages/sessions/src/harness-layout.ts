@@ -98,6 +98,14 @@ export const personLayoutRefusal = (missing: ReadonlyArray<string>): string =>
 export const ownerMapRefusal = (found: string): string =>
   `This workspace's restore did not give its files to the people working in it (${found}), so nobody could edit them. Nothing was started; the next launch tries again.`;
 
+/**
+ * A person launch whose people could not be given their Mend identity (decision 4): usually a
+ * passing failure (Mend or its channel not answering), so the words say to try again, never to
+ * change the image or the worktree. Nothing is recorded against the image.
+ */
+export const identityRefusal = (failed: ReadonlyArray<string>): string =>
+  `This workspace could not give each person their Mend identity (${failed.join("; ")}). Nothing was started; the next launch tries again.`;
+
 /** The operator asked for person on an image that cannot run it (decision 14, the benchmark). */
 export const operatorPersonRefusal = (missing: ReadonlyArray<string>): string =>
   `harnessLayout person was asked for, and this image cannot run per-person users` +
@@ -308,7 +316,11 @@ export const personProcessEnv = (
 /** Where a person's git author goes in their home (decision 4). */
 export const GIT_CONFIG_IN_HOME = ".config/git/config";
 
-/** The files a person's identity pickup writes into `home`: their token, then their git author. */
+/**
+ * What a person's identity pickup answers, by path in `home`: their token, written to that file;
+ * and their git author, set key by key in that git config file (`gitAuthorPickupBytes`), never
+ * written over it.
+ */
 export const identityFilesOf = (
   home: string,
 ): { readonly token: string; readonly gitConfig: string } => ({
@@ -316,27 +328,20 @@ export const identityFilesOf = (
   gitConfig: `${home}/${GIT_CONFIG_IN_HOME}`,
 });
 
-/** A git config value, quoted: backslash and double quote escaped, control characters dropped. */
-const gitConfigValue = (value: string): string =>
-  `"${[...value]
-    .filter((char) => {
-      const code = char.codePointAt(0) ?? 0;
-      return code >= 0x20 && code !== 0x7f;
-    })
-    .join("")
-    .replaceAll("\\", "\\\\")
-    .replaceAll('"', '\\"')}"`;
-
 /**
- * A person's git author as `~/.config/git/config` holds it (decision 4). Git reads that file for
- * the user through `$XDG_CONFIG_HOME` or `$HOME`, so a tool that moves either reads no author;
- * their dotfiles' `~/.gitconfig` wins over it, as global config won over system config before.
+ * A person's git author as their identity pickup carries it: JSON, which node sets with
+ * `git config --file ~/.config/git/config` as the person, `user.name` and `user.email` only, and
+ * only where that file does not set them already (decision 4). Everything else in the file
+ * (their dotfiles' `insteadOf`, signing, includes, what they ran `git config --global` for) stays,
+ * and so does an author their dotfiles chose. Git reads the file for the user through
+ * `$XDG_CONFIG_HOME` or `$HOME`, so a tool that moves either reads no author; their `~/.gitconfig`
+ * wins over it, as global config won over system config before.
  */
-export const gitAuthorConfigText = (author: {
+export const gitAuthorPickupBytes = (author: {
   readonly name: string;
   readonly email: string;
-}): string =>
-  `[user]\n\tname = ${gitConfigValue(author.name)}\n\temail = ${gitConfigValue(author.email)}\n`;
+}): Uint8Array =>
+  new TextEncoder().encode(JSON.stringify({ name: author.name, email: author.email }));
 
 // ─── the scripts ─────────────────────────────────────────────────────────────
 
@@ -569,9 +574,11 @@ export const personHomeScript = (
     // Where their Mend token and git author go (decision 4): real directories, theirs. What goes
     // in them arrives through a pickup (`identityPickupScript`), never in this script.
     `[ -L ${q(`${home}/.mend`)} ] && fail "unexpected link: ${home}/.mend"`,
-    `mkdir -p ${q(`${home}/.mend`)} ${q(`${home}/.config/git`)}`,
+    `mkdir -p ${q(`${home}/.mend`)}`,
+    // A `~/.config/git` their dotfiles made (a link into their checkout included) stays theirs.
+    `[ -e ${q(`${home}/.config/git`)} ] || [ -L ${q(`${home}/.config/git`)} ] || mkdir -p ${q(`${home}/.config/git`)}`,
     `chmod 0700 ${q(`${home}/.mend`)}`,
-    `[ "$root" = 1 ] && chown ${owner} ${q(`${home}/.mend`)} ${q(`${home}/.config`)} ${q(`${home}/.config/git`)} || true`,
+    `[ "$root" = 1 ] && chown -h ${owner} ${q(`${home}/.mend`)} ${q(`${home}/.config`)} ${q(`${home}/.config/git`)} || true`,
   ].join("\n");
 };
 
@@ -580,10 +587,13 @@ export const personHomeScript = (
  * reaching an exec's arguments (decision 4; Core keeps every exec's argv, review of mend#552/#553
  * P1-1). The exec carries one pickup ticket per person (`pickup-tickets.ts`, purpose
  * `session-token`), and node, inside the same exec, redeems each over the session channel and
- * writes what it got through a pinned directory (`pinnedPut`): `~/.mend/session-token` and
- * `~/.config/git/config`, 0600, then given to the person. A person whose `~/.mend` is not there
- * (prepare did not make them) is skipped and their ticket left unredeemed, so no token is minted
- * for them. Prints `mend-layout identity <name>` for each person written, and
+ * writes the token through a pinned directory (`pinnedPut`) to `~/.mend/session-token`, 0600, then
+ * gives it to the person. Their git author is set as the person (`gitAuthorPickupBytes`): only the
+ * keys their `~/.config/git/config` does not set, through a link if their dotfiles made one, and a
+ * failure there is said and fails nothing. A redemption that fails for a passing reason (Mend not
+ * answering, the channel busy) is tried once more. A person whose `~/.mend` is not there (prepare
+ * did not make them) is skipped and their ticket left unredeemed, so no token is minted for them.
+ * Prints `mend-layout identity <name>` for each person written, and
  * `mend-layout failed <name> identity: <why>` (also on stderr) for one that could not be, then
  * exits 1.
  */
@@ -630,16 +640,48 @@ const write = (person, files, file) => {
   if (root) { try { fs.lchownSync(file, person.uid, ${MEND_GROUP.gid}); } catch { return file + ": could not give it to its person"; } }
   return null;
 };
+// The author, as the person, key by key: what their file already sets stays. Never fatal.
+const setAuthor = (person, files) => {
+  const bytes = files.get(person.home + "/${GIT_CONFIG_IN_HOME}");
+  if (bytes === undefined) return;
+  let author;
+  try { author = JSON.parse(bytes.toString("utf8")); } catch { return; }
+  const file = person.home + "/${GIT_CONFIG_IN_HOME}";
+  const options = {
+    cwd: person.home,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin", HOME: person.home },
+    ...(root ? { uid: person.uid, gid: ${MEND_GROUP.gid} } : {}),
+  };
+  const git = (args) => require("node:child_process").spawnSync("git", ["config", "--file", file, ...args], options);
+  for (const [key, value] of [["user.name", author.name], ["user.email", author.email]]) {
+    if (typeof value !== "string" || value === "") continue;
+    const known = git(["--get", key]);
+    if (known.error === undefined && known.status === 0) continue;
+    const set = git([key, value]);
+    if (set.error !== undefined || set.status !== 0) {
+      process.stderr.write("mend: " + person.name + "'s git author was not set: " + ((set.stderr || "").trim() || String(set.error || "git config failed")) + "\\n");
+      return;
+    }
+  }
+};
+// Passing reasons are tried once more; a ticket refused as spent or as someone else's is not.
+const passing = (reason) => !reason.startsWith("the pickup was refused: this pickup ticket");
+const redeem = (person, done) =>
+  redeemPickup(person.ticket, (reason, files) => {
+    if (reason === null || !passing(reason)) return done(reason, files);
+    setTimeout(() => redeemPickup(person.ticket, done), 500);
+  });
 const next = (index) => {
   if (index >= people.length) process.exit(failed ? 1 : 0);
   const person = people[index];
   if (!made(person)) return next(index + 1);
-  redeemPickup(person.ticket, (reason, files) => {
+  redeem(person, (reason, files) => {
     if (reason !== null) { fail(person, reason); return next(index + 1); }
-    const why = write(person, files, person.home + "/${SESSION_TOKEN_IN_HOME}") ?? write(person, files, person.home + "/${GIT_CONFIG_IN_HOME}");
+    const why = write(person, files, person.home + "/${SESSION_TOKEN_IN_HOME}");
     if (why !== null) fail(person, why);
     else if (!files.has(person.home + "/${SESSION_TOKEN_IN_HOME}")) fail(person, "the pickup carried no token");
-    else say("identity " + person.name);
+    else { setAuthor(person, files); say("identity " + person.name); }
     next(index + 1);
   });
 };

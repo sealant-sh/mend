@@ -218,10 +218,12 @@ refuses it (decision 14).
   exec's argv; ADR 0010 decision 5, mend#555). The exec that makes a person (prepare for the
   launcher and every member it makes, the first process for anyone else) carries one single-use
   pickup ticket per person, purpose `session-token`, bound to that person, the session and the
-  launch. Inside the same exec, node redeems it over the session channel and writes the answer, the
-  token and the person's git author, through a pinned directory, then gives the files to the person.
-  The token is minted when the ticket is redeemed, so a person prepare does not make gets none, and
-  a ticket left unredeemed dies with its exec. A person's token redeems only that person's tickets.
+  launch. Inside the same exec, node redeems it over the session channel, writes the token through a
+  pinned directory and gives it to the person, and sets the person's git author as them (below). A
+  redemption that fails for a passing reason is tried once more; a person who still cannot be given
+  their identity refuses the launch with words to try again, never to change the image. The token is
+  minted when the ticket is redeemed, so a person prepare does not make gets none, and a ticket left
+  unredeemed dies with its exec. A person's token redeems only that person's tickets.
 - **What the server accepts.** A person's token, only with a session id that is live in that
   launch's executor and that the token's person may act on: they may steer it, are still a member of
   its organization, and can see its project; checked on every request. Its row names no session
@@ -245,10 +247,13 @@ refuses it (decision 14).
   passwd home, the file Core writes. No `gh` needed in the image. `mend-git-credential token` is for
   a command that needs the token (`GH_TOKEN=$(mend-git-credential token) gh …`), so it never reaches
   a terminal.
-- **Git author and config.** `git config --system user.*` is no longer written. Mend writes the
-  person's git author to `~/.config/git/config`, which git finds through `$XDG_CONFIG_HOME` or
-  `$HOME` (a tool that moves them commits with no author); the person's dotfiles' `~/.gitconfig`
-  wins over it, as global config wins today.
+- **Git author and config.** `git config --system user.*` is no longer written. Mend sets the
+  person's `user.name` and `user.email` in `~/.config/git/config`, as the person and key by key,
+  only where that file does not set them already: what their dotfiles or their own
+  `git config --global` put there (an author, `insteadOf`, signing, includes) stays, a
+  `~/.config/git` their dotfiles linked is written through, and a failure there never fails the
+  launch. Git finds the file through `$XDG_CONFIG_HOME` or `$HOME` (a tool that moves them commits
+  with no author); the person's `~/.gitconfig` wins over it, as global config wins today.
 - **SSH, `scp`, `sftp`, `ssh-keygen`, GnuPG and the JVM** read the passwd home, which is the
   person's. No wrapper.
 

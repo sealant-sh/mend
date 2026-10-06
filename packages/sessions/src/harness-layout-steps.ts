@@ -31,6 +31,7 @@ import {
   decideHarnessLayout,
   identityPickupScript,
   imageLayoutKeyOf,
+  identityRefusal,
   layoutProbeScript,
   ownerMapRefusal,
   parseLayoutReport,
@@ -152,6 +153,7 @@ export interface HarnessLayoutSteps {
     readonly layout: LaunchLayout;
     readonly launchId: string;
     readonly sessionId: string;
+    readonly worktreeId: string;
   }) => Effect.Effect<ReadonlyMap<string, string> | null>;
   /** What prepare runs in the executor's first exec for this layout, after the helper install. */
   readonly prepareScript: (
@@ -193,6 +195,8 @@ export interface HarnessLayoutSteps {
     readonly accountId: string;
     /** The session the process belongs to: what its shim and helper name (`MEND_SESSION_ID`). */
     readonly sessionId: string;
+    /** That session's worktree, which a person's identity ticket names. */
+    readonly worktreeId: string;
   }) => Effect.Effect<
     { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
     SealantPlatformError
@@ -234,7 +238,12 @@ const bounded = <K, V>() => {
   return {
     get: (key: K) => map.get(key),
     set: (key: K, value: V) => {
-      if (map.size >= BOUND) map.clear();
+      // The oldest goes, one at a time: live launches are never flushed together.
+      map.delete(key);
+      if (map.size >= BOUND) {
+        const oldest = map.keys().next();
+        if (oldest.done !== true) map.delete(oldest.value);
+      }
       map.set(key, value);
     },
   };
@@ -253,6 +262,7 @@ export const makeHarnessLayoutSteps = (deps: {
    */
   readonly identityTicket: (input: {
     readonly sessionId: string;
+    readonly worktreeId: string;
     readonly launchId: string;
     readonly person: LinuxIdentity;
   }) => Effect.Effect<string>;
@@ -277,7 +287,12 @@ export const makeHarnessLayoutSteps = (deps: {
       [layout.launcher, ...layout.members],
       (person) =>
         deps
-          .identityTicket({ sessionId: input.sessionId, launchId: input.launchId, person })
+          .identityTicket({
+            sessionId: input.sessionId,
+            worktreeId: input.worktreeId,
+            launchId: input.launchId,
+            person,
+          })
           .pipe(Effect.map((ticket) => [person.accountId, ticket] as const)),
       { concurrency: 4 },
     );
@@ -324,6 +339,8 @@ export const makeHarnessLayoutSteps = (deps: {
       const worktree = yield* repo.worktreeLayout(input.worktreeId);
       // Nothing asks for person: as before, nothing read, nothing recorded.
       if (worktree.layout === null && worktree.requested === null && flag === "shared") {
+        // Known now, at no cost: the channel never reads this launch's layout from the store.
+        layoutByLaunch.set(input.launchId, "shared");
         return SHARED_AS_BEFORE;
       }
       // The record is written before any person process runs; the head is read as a belt only
@@ -419,6 +436,12 @@ export const makeHarnessLayoutSteps = (deps: {
     // The restore, not the image: nothing is recorded against the image, and the launch is
     // refused whatever the worktree, since nobody could edit what came back.
     if (report.unowned !== null) return yield* layoutRefused(ownerMapRefusal(report.unowned));
+    // A person could not be given their Mend identity: usually passing, never the image's fault,
+    // so the launch is refused with words to try again and nothing is recorded against the image.
+    const identityFailures = report.failed.filter((entry) => entry.includes(": identity: "));
+    if (!report.ready && report.missing.length === 0 && identityFailures.length > 0) {
+      return yield* layoutRefused(identityRefusal(identityFailures));
+    }
     if (report.ready) {
       yield* repo.recordCapability({
         imageKey: layout.imageKey,
@@ -427,6 +450,7 @@ export const makeHarnessLayoutSteps = (deps: {
         missing: [],
       });
       yield* repo.confirmPerson(input.launchId, input.worktreeId);
+      layoutByLaunch.set(input.launchId, "person");
       // Only the people this prepare says it made: a member with an identity (made in some other
       // worktree) whose saved directory did not come back with this head was skipped, and is
       // made at their first process here.
@@ -493,9 +517,12 @@ export const makeHarnessLayoutSteps = (deps: {
     const known = layoutByLaunch.get(launchId);
     if (known !== undefined) return known;
     const record = yield* repo.launchLayout(launchId);
-    // Only a confirmed person launch runs as people; anything else ran as root.
+    // A person record is person, confirmed or still in prepare (decide wrote it before create;
+    // a fallback rewrites it as shared): the window between decide and prepare's confirm is
+    // person too, so nothing in it ever reads as a shared executor (review 3 of mend#553, P2-1).
+    // Anything else, a launch from before this release included, ran as root.
     const layout: HarnessLayout =
-      record !== null && record.layout === "person" && record.confirmed ? "person" : "shared";
+      record !== null && record.layout === "person" ? "person" : "shared";
     layoutByLaunch.set(launchId, layout);
     return layout;
   });
@@ -514,6 +541,7 @@ export const makeHarnessLayoutSteps = (deps: {
         // exec of their own, and neither in its arguments.
         const ticket = yield* deps.identityTicket({
           sessionId: input.sessionId,
+          worktreeId: input.worktreeId,
           launchId: input.launchId ?? "",
           person: identity,
         });

@@ -24508,12 +24508,18 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           const joinerFiles = decoded(join.pickups.written.get(`/home/${JOINER}`));
           expect(launcherFiles.get(`/home/${LAUNCHER}/.mend/session-token`)).toBe(launcherToken);
           expect(joinerFiles.get(`/home/${JOINER}/.mend/session-token`)).toBe(joinerToken);
-          expect(launcherFiles.get(`/home/${LAUNCHER}/.config/git/config`)).toBe(
-            '[user]\n\tname = "Account user-fixture"\n\temail = "user-fixture@accounts.example"\n',
-          );
-          expect(joinerFiles.get(`/home/${JOINER}/.config/git/config`)).toContain(
-            `email = "${MARIA}@accounts.example"`,
-          );
+          // The author, which node sets key by key in their git config as them.
+          expect(
+            JSON.parse(launcherFiles.get(`/home/${LAUNCHER}/.config/git/config`) ?? ""),
+          ).toEqual({
+            name: "Account user-fixture",
+            email: "user-fixture@accounts.example",
+          });
+          expect(
+            JSON.parse(joinerFiles.get(`/home/${JOINER}/.config/git/config`) ?? ""),
+          ).toMatchObject({
+            email: `${MARIA}@accounts.example`,
+          });
           // Neither token nor author ever rides an exec's arguments; only tickets do.
           for (const argv of join.execs) {
             for (const arg of argv) {
@@ -24708,7 +24714,7 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
-  it("with the flag off, a push or fetch reads its launch's layout once, then never again", async () => {
+  it("with the flag off, a push or fetch never reads its launch's layout from the store", async () => {
     const reads: Array<string> = [];
     await livePersonJoin({
       flag: "shared",
@@ -24721,9 +24727,9 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             if (!grant.ok) throw new Error(grant.message);
             yield* grant.api.gitTransport(push(join.origin)).pipe(Effect.exit);
           }
-          // Five git ops: at most the one read that fills the cache (none when the launch
-          // already asked), and nothing per op after it.
-          expect(reads.length - before).toBeLessThanOrEqual(1);
+          // Five git ops, and no read: the layout was known when the launch was decided.
+          expect(reads.length - before).toBe(0);
+          expect(reads).toEqual([]);
         }),
     });
   });

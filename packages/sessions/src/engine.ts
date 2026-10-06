@@ -291,7 +291,7 @@ import {
   SHARED_AS_BEFORE,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
-import { gitAuthorConfigText, identityFilesOf, processUserOf } from "./harness-layout.ts";
+import { gitAuthorPickupBytes, identityFilesOf, processUserOf } from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
   CODEX_SHELL_SNAPSHOT_OFF,
@@ -6008,31 +6008,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * person, the session and the launch. It carries no secret: its files are the two paths in
        * the person's home, and their bytes, the person's Mend token and git author, are made only
        * when the exec redeems it (`identityFilesAt`), so a person prepare does not make gets no
-       * token. One session read, for the worktree the binding names.
+       * token. No read: the caller names the worktree.
        */
-      const mintIdentityTicket = Effect.fn("SessionEngine.mintIdentityTicket")(function* (input: {
+      const mintIdentityTicket = (input: {
         readonly sessionId: string;
+        readonly worktreeId: string;
         readonly launchId: string;
         readonly person: LinuxIdentity;
-      }) {
-        const session = yield* sessions
-          .byId(SessionId.make(input.sessionId))
-          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        const files = identityFilesOf(linuxHomeOf(input.person));
-        return pickups.mint(
-          {
-            purpose: "session-token",
-            sessionId: input.sessionId,
-            worktreeId: session?.worktreeId ?? "",
-            personId: input.person.accountId,
-            launchId: input.launchId,
-          },
-          [
-            { path: files.token, bytes: new Uint8Array() },
-            { path: files.gitConfig, bytes: new Uint8Array() },
-          ],
-        );
-      });
+      }): Effect.Effect<string> =>
+        Effect.sync(() => {
+          const files = identityFilesOf(linuxHomeOf(input.person));
+          return pickups.mint(
+            {
+              purpose: "session-token",
+              sessionId: input.sessionId,
+              worktreeId: input.worktreeId,
+              personId: input.person.accountId,
+              launchId: input.launchId,
+            },
+            [
+              { path: files.token, bytes: new Uint8Array() },
+              { path: files.gitConfig, bytes: new Uint8Array() },
+            ],
+          );
+        });
 
       /**
        * What an identity ticket answers, made now: the person's Mend token of the launch, and
@@ -6060,12 +6059,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           { path: tokenFile.path, bytes: new TextEncoder().encode(token) },
           ...(author === null
             ? []
-            : [
-                {
-                  path: configFile.path,
-                  bytes: new TextEncoder().encode(gitAuthorConfigText(author)),
-                },
-              ]),
+            : [{ path: configFile.path, bytes: gitAuthorPickupBytes(author) }]),
         ];
       });
 
@@ -9083,6 +9077,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 layout: launchLayout,
                 launchId: input.layout.launchId,
                 sessionId,
+                worktreeId: input.layout.worktreeId,
               });
         const layoutScript = layoutSteps.prepareScript(
           launchLayout,
@@ -11108,6 +11103,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
             accountId,
             sessionId: session.id,
+            worktreeId: session.worktreeId,
           });
         });
       /** An agent of the session: its owner's (steering, Delivery 18, picks the sender). */
@@ -12676,7 +12672,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const startAs =
           executorLayout === "person"
             ? yield* layoutSteps
-                .processAs({ workspace, launchId, accountId: ownerUserId, sessionId })
+                .processAs({
+                  workspace,
+                  launchId,
+                  accountId: ownerUserId,
+                  sessionId,
+                  worktreeId: session.worktreeId,
+                })
                 .pipe(
                   Effect.tapError((error) => abandonExecutor(workspace, error.message)),
                   settleOnFailure,
