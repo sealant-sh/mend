@@ -97,7 +97,9 @@ describe("pairing facts", () => {
   });
 });
 
-describe("mend pair", () => {
+// Each test here spawns the CLI from source; on a loaded CI runner one start has taken 3 s, so
+// vitest's 5 s default left little headroom.
+describe("mend pair", { timeout: 30_000 }, () => {
   it.each([null, "http://100.64.1.2:3105"])(
     "prints the configured URL and QR with override %s, without Origin",
     async (override) => {

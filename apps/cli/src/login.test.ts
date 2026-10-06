@@ -138,7 +138,9 @@ describe("authorize walk facts", () => {
   });
 });
 
-describe("mend login", () => {
+// Each test here spawns the CLI from source; on a loaded CI runner the first, with its two real
+// polling delays, took 5 s, so vitest's 5 s default left no headroom.
+describe("mend login", { timeout: 30_000 }, () => {
   it("opens a request, polls to approval, and saves url + token + device id", async () => {
     const requests: Array<string> = [];
     let polls = 0;
@@ -197,8 +199,7 @@ describe("mend login", () => {
     } finally {
       await fake.close();
     }
-    // This exercises two real polling delays and a separate CLI process.
-  }, 10_000);
+  });
 
   it("reuses a saved server URL without asking for it again", async () => {
     let polls = 0;
