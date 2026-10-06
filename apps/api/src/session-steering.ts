@@ -10,6 +10,7 @@ import {
   ProjectsRepo,
   ServicesRepo,
   SessionProcessesRepo,
+  SessionsRepo,
 } from "@mend/db";
 import {
   type AgentRequestId,
@@ -102,18 +103,28 @@ export class SessionSteering extends Context.Service<
       session: Session,
       userId: string,
     ) => Effect.Effect<Session, SteeringError>;
-    /** Owners who remain members may watch their terminal after project visibility changes. */
+    /**
+     * Who may reach a session's terminal, and whether they may type in it. Anyone who may steer
+     * the session (visibility, then steering) reaches it with `steer: true`. Its owner, while still
+     * a member of the project's organization but no longer able to see the project, only watches
+     * (`steer: false`): their session keeps running, read-only to them, and their keys never reach
+     * it (review 4 of mend#558, P1). Typing also needs `WorkspaceCaller.mayAct` in the route.
+     */
     readonly authorizeTerminal: (
       session: Session,
       userId: string,
-    ) => Effect.Effect<Session, SteeringError>;
+    ) => Effect.Effect<{ readonly session: Session; readonly steer: boolean }, SteeringError>;
     readonly session: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
     /**
      * The owner's own acts, closed to others even while control is shared: deleting the session,
      * renaming it, handing it off. Shared control lends steering, not the session itself.
      */
     readonly owned: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
-    /** Stopping is steering, and an organization owner may also stop any session they can see. */
+    /**
+     * Stopping is steering, and an organization owner may also stop any session they can see. A
+     * session's owner may always Stop it while they remain a member, even once they cannot see
+     * its project: a Stop only ends and saves their own work.
+     */
     readonly stop: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
     readonly process: (
       id: SessionProcessId,
@@ -155,6 +166,7 @@ export const SessionSteeringLive: Layer.Layer<
   | ProjectAccess
   | ServicesRepo
   | SessionProcessesRepo
+  | SessionsRepo
 > = Layer.effect(
   SessionSteering,
   Effect.gen(function* () {
@@ -164,6 +176,7 @@ export const SessionSteeringLive: Layer.Layer<
     const access = yield* ProjectAccess;
     const organizations = yield* OrganizationsRepo;
     const projects = yield* ProjectsRepo;
+    const sessions = yield* SessionsRepo;
 
     const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
       session: Session,
@@ -180,7 +193,9 @@ export const SessionSteeringLive: Layer.Layer<
       session: Session,
       userId: string,
     ) {
-      if (session.ownerUserId !== userId) return yield* authorizeUser(session, userId);
+      const steered = yield* authorizeUser(session, userId).pipe(Effect.result);
+      if (steered._tag === "Success") return { session, steer: true };
+      if (session.ownerUserId !== userId) return yield* steered.failure;
       const project = yield* projects
         .byId(session.projectId)
         .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
@@ -188,8 +203,8 @@ export const SessionSteeringLive: Layer.Layer<
       if (membership?.organization.id !== project.organizationId) {
         return yield* new NotFound({ id: session.id });
       }
-      // Watching does not lend input. The terminal route separately checks WorkspaceCaller.mayAct.
-      return session;
+      // Watching only: no input reaches the terminal of a project they cannot see.
+      return { session, steer: false };
     });
 
     const session = Effect.fn("SessionSteering.session")(function* (id: SessionId) {
@@ -211,9 +226,36 @@ export const SessionSteeringLive: Layer.Layer<
       return row;
     });
 
+    /**
+     * The owner's own session, whether or not they can still see its project, while they remain
+     * a member of its organization: what they may always Stop (owner decision 2026-10-06, review
+     * 4 of mend#558). A Stop only ends and saves their own work. NotFound otherwise, as a hidden
+     * session answers.
+     */
+    const ownSessionOfMember = Effect.fn("SessionSteering.ownSessionOfMember")(function* (
+      id: SessionId,
+      userId: string,
+    ) {
+      const row = yield* sessions.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
+      if (row.ownerUserId !== userId) return yield* new NotFound({ id });
+      const project = yield* projects
+        .byId(row.projectId)
+        .pipe(Effect.mapError(() => new NotFound({ id })));
+      const membership = yield* organizations.membershipOf(userId);
+      if (membership?.organization.id !== project.organizationId) {
+        return yield* new NotFound({ id });
+      }
+      return row;
+    });
+
     const stop = Effect.fn("SessionSteering.stop")(function* (id: SessionId) {
       const caller = yield* CurrentUser;
-      const row = yield* access.session(id);
+      const visible = yield* access.session(id).pipe(Effect.result);
+      if (visible._tag === "Failure") {
+        if (visible.failure._tag !== "NotFound") return yield* visible.failure;
+        return yield* ownSessionOfMember(id, caller.user.id);
+      }
+      const row = visible.success;
       if (canSteerSession(row, caller.user.id)) return row;
       const viewer = yield* access.viewer();
       if (viewer !== null && viewer.role === "owner") return row;

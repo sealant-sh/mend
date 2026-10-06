@@ -199,11 +199,14 @@ export const WorkspaceCallerLive: Layer.Layer<
       });
 
     /** Acting: the creator, while both may work there; refused otherwise. */
-    const actor = (workspaceId: string): Effect.Effect<string | null, SealantPlatformError> =>
+    const actor = (
+      workspaceId: string,
+      trustUnknown = false,
+    ): Effect.Effect<string | null, SealantPlatformError> =>
       Effect.gen(function* () {
         const principal = yield* SealantPrincipal;
         if (principal.kind === "none") return null;
-        const creator = yield* creatorOf(workspaceId, false);
+        const creator = yield* creatorOf(workspaceId, trustUnknown);
         if (creator === null || creator === principal.userId) return null;
         const access = yield* sessions.executorAccessOf(
           SealantWorkspaceId.make(workspaceId),
@@ -245,7 +248,10 @@ export const WorkspaceCallerLive: Layer.Layer<
           unknownSince.delete(workspaceId);
           if (userId !== null) remember(creators, workspaceId, userId);
         }),
-      mayAct: (workspaceId) => Effect.asVoid(actor(workspaceId)),
+      // A check before input on every terminal attach: a cached "none on record" stands (the
+      // co-located store never records one), so it costs no query there (review 3, P3-6). The
+      // act itself still re-reads it.
+      mayAct: (workspaceId) => Effect.asVoid(actor(workspaceId, true)),
       observe: (workspaceId) => asLent(observer(workspaceId)),
       act:
         (workspaceId) =>

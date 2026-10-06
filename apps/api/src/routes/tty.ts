@@ -8,7 +8,7 @@ import {
 } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
-import { asSealantUser, SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { WorkspaceCaller } from "@mend/sessions";
 import { Duration, Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
@@ -137,6 +137,8 @@ export const TtyRoutes = HttpRouter.use((router) =>
         // Two address forms resolve to one (workspace, PTY) pair.
         const processParam = url.searchParams.get("process");
         const sessionParam = url.searchParams.get("session");
+        // Whether the caller may steer the session: typing needs it (`authorizeTerminal`).
+        let steer = false;
         let target: {
           readonly sealantWorkspaceId: SealantWorkspaceId;
           readonly sealantSessionId: string;
@@ -156,13 +158,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("unknown process", { status: 404 });
           }
           // Owners may keep watching after a visibility change; others still need steering access.
-          const refusal = yield* steering.authorizeTerminal(owner.value, caller.userId).pipe(
-            Effect.as(null),
-            Effect.catch((error) => Effect.succeed(error._tag)),
+          const admitted = yield* steering.authorizeTerminal(owner.value, caller.userId).pipe(
+            Effect.map((terminal) => ({ refusal: null, steer: terminal.steer })),
+            Effect.catch((error) => Effect.succeed({ refusal: error._tag, steer: false })),
           );
-          if (refusal === "NotFound")
+          if (admitted.refusal === "NotFound")
             return HttpServerResponse.text("unknown process", { status: 404 });
-          if (refusal !== null) return HttpServerResponse.text("forbidden", { status: 403 });
+          if (admitted.refusal !== null) {
+            return HttpServerResponse.text("forbidden", { status: 403 });
+          }
+          steer = admitted.steer;
           if (process.kind === "agent-protocol") {
             return HttpServerResponse.text("protocol agents use the structured conversation API", {
               status: 409,
@@ -186,13 +191,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("unknown session", { status: 404 });
           }
           // Owners may keep watching after a visibility change; others still need steering access.
-          const refusal = yield* steering.authorizeTerminal(session.value, caller.userId).pipe(
-            Effect.as(null),
-            Effect.catch((error) => Effect.succeed(error._tag)),
+          const admitted = yield* steering.authorizeTerminal(session.value, caller.userId).pipe(
+            Effect.map((terminal) => ({ refusal: null, steer: terminal.steer })),
+            Effect.catch((error) => Effect.succeed({ refusal: error._tag, steer: false })),
           );
-          if (refusal === "NotFound")
+          if (admitted.refusal === "NotFound")
             return HttpServerResponse.text("unknown session", { status: 404 });
-          if (refusal !== null) return HttpServerResponse.text("forbidden", { status: 403 });
+          if (admitted.refusal !== null) {
+            return HttpServerResponse.text("forbidden", { status: 403 });
+          }
+          steer = admitted.steer;
           const agent = currentAgentProcess(yield* processes.listForSession(session.value.id));
           if (agent?.kind === "agent-protocol") {
             return HttpServerResponse.text("protocol agents use the structured conversation API", {
@@ -234,7 +242,10 @@ export const TtyRoutes = HttpRouter.use((router) =>
           // Typing into an existing terminal is acting in its workspace (review 2 of mend#558,
           // P2-1): an owner who may no longer work there still watches, read-only, until the
           // session is stopped; their keys and resizes are dropped (review 3, P3-5).
+          // Only someone who may steer the session types, and only its owner (docs/adr/0013); an
+          // owner who can no longer see the project watches (review 4 of mend#558, P1).
           const typing =
+            steer &&
             caller.userId === ownerUserId &&
             (yield* workspaces.mayAct(sealantWorkspaceId).pipe(
               Effect.as(true),
@@ -259,8 +270,20 @@ export const TtyRoutes = HttpRouter.use((router) =>
           // runs in another person's executor: the client asks about it as that executor's
           // creator, for an owner who may work there (`WorkspaceCaller`, alpha 2026-10-06).
           asSealantUser(ownerUserId),
+          // The platform's own refusal keeps its status (a terminal it has not, one it will not
+          // hand over); anything else is a gateway failure (review 4 of mend#558, P3).
           Effect.catch((error) =>
-            Effect.succeed({ ok: false as const, status: 502, message: String(error.message) }),
+            Effect.succeed({
+              ok: false as const,
+              status:
+                error instanceof SealantPlatformError &&
+                error.status !== null &&
+                error.status >= 400 &&
+                error.status < 500
+                  ? error.status
+                  : 502,
+              message: String(error.message),
+            }),
           ),
           // Bounded, so the upgrade is answered before a client gives up on it (the CLI waits
           // 30 s): a platform slow to attach reads as that, and the session keeps running.

@@ -1,4 +1,3 @@
-import { SealantPlatformError } from "@mend/sealant";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -6,6 +5,7 @@ import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-ap
 import {
   ids,
   CAROL_SESSION_IN_SHARED_A,
+  CAROL_SHELL_IN_SHARED_A,
   NULL_OWNER_SESSION,
   PROTOCOL_PROCESS,
   UDP_SERVICE,
@@ -111,36 +111,53 @@ describe("raw steering routes", () => {
     },
   );
 
-  it("an owner who lost project visibility can still reach their terminal read-only", async () => {
-    const watching = await createTenancyApi(
-      {},
-      {
-        implement: {
-          workspaceCaller: {
-            mayAct: () =>
-              Effect.fail(
-                new SealantPlatformError({
-                  code: "no_standing",
-                  status: 403,
-                  message: "project is private",
-                  cause: null,
-                }),
-              ),
-          },
-        },
-      },
-    );
+  it("an owner who lost project visibility watches their own shell and never types in it", async () => {
+    const watching = await createTenancyApi();
     try {
-      watching.world.setVisibility("shared-a", "private");
-      await watching.rawRequest("carol", `/api/tty?session=${CAROL_SESSION_IN_SHARED_A}`);
+      // Steering first, as anyone who may type is: the typing check asks the workspace rule.
+      await watching.rawRequest("carol", `/api/tty?process=${CAROL_SHELL_IN_SHARED_A}`);
       expect(watching.world.calls).toContain("workspaceCaller.mayAct");
+      watching.world.calls.length = 0;
+      // The project goes private: Carol, a member who cannot see it, still reaches her shell
+      // (the platform is asked for it, read-only), and typing is never even considered.
+      watching.world.setVisibility("shared-a", "private");
+      await watching.rawRequest("carol", `/api/tty?process=${CAROL_SHELL_IN_SHARED_A}`);
       expect(watching.world.calls).toContain("sealant.getWorkspace");
+      expect(watching.world.calls).not.toContain("workspaceCaller.mayAct");
+      // Someone else's terminal in that project stays hidden.
       watching.world.calls.length = 0;
       const other = await watching.rawRequest("carol", `/api/tty?session=${sharedA.session}`);
       expect(other.status).toBe(404);
       expect(watching.world.calls).toEqual([]);
     } finally {
       await watching.dispose();
+    }
+  });
+
+  it("an owner who lost project visibility may still Stop their own session, and only their own", async () => {
+    const stopping = await createTenancyApi(
+      {},
+      { implement: { engine: { launchUnderWay: () => false, stop: () => Effect.void } } },
+    );
+    try {
+      stopping.world.setVisibility("shared-a", "private");
+      const own = await stopping.request(
+        "carol",
+        "POST",
+        `/api/sessions/${CAROL_SESSION_IN_SHARED_A}/stop`,
+      );
+      expect(own.status).toBeLessThan(300);
+      expect(stopping.world.calls).toContain("engine.stop");
+      stopping.world.calls.length = 0;
+      const other = await stopping.request(
+        "carol",
+        "POST",
+        `/api/sessions/${sharedA.session}/stop`,
+      );
+      expect(other.status).toBe(404);
+      expect(stopping.world.calls).not.toContain("engine.stop");
+    } finally {
+      await stopping.dispose();
     }
   });
 

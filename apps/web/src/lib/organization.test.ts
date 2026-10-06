@@ -35,6 +35,14 @@ describe("describeAudit", () => {
       "made carol an owner",
     );
     expect(describeAudit(event("member.removed", {}, "Carol Chen"))).toBe("removed Carol Chen");
+    expect(
+      describeAudit({
+        ...event("session.stopped_no_access", {
+          reason: "no_standing",
+          words: "stopped · you can no longer see this project",
+        }),
+      }),
+    ).toContain("stopped · you can no longer see this project");
     expect(describeAudit(event("folder.created", { name: "fixtures" }))).toBe(
       "created folder fixtures",
     );

@@ -44,11 +44,13 @@ and so is a session in someone else's workspace whose owner can no longer see th
 one's line says why, and the organization's audit log records it. A session in your own workspace
 keeps running when a project becomes private, as the setting says. Typing into an existing terminal
 and restoring a running agent after a restart follow the same rules. A member who lost project
-visibility can still watch their own terminal until it stops, but cannot type in it. A Stop of one
-person's session in a shared executor no longer ends anyone else's agent or the executor itself
-while someone else still works there.
+visibility can still watch their own terminal, but cannot type in it, and can always Stop their own
+session, which saves their work. A Stop of one person's session in a shared executor no longer ends
+anyone else's agent or the executor itself while someone else still works there.
 
-A refused Stop preserves any replacement or relaunch already saving the executor. Its warning
-survives a Mend restart and clears once the process is observed ended. One failed Stop does not
-interrupt the other sessions being stopped, and counts and audit entries report only sessions whose
-processes ended.
+A Stop wins over a replacement or relaunch that is saving the executor from the moment it is asked,
+even while the platform is slow to close the agent: nothing starts on a new machine after it. A
+refused Stop leaves that replacement or relaunch as it was. Its warning names the process, survives
+a Mend restart, and clears once that process is observed ended. One failed Stop does not interrupt
+the other sessions being stopped, and counts and audit entries report only sessions whose processes
+ended.
