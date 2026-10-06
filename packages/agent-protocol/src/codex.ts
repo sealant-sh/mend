@@ -64,6 +64,10 @@ const requestKey = (id: JsonRpcId): string => `${typeof id === "number" ? "n" : 
 const protocolError = (operation: string, message: string, cause: unknown): AgentProtocolError =>
   new AgentProtocolError({ adapter: "codex", operation, message, cause });
 
+/** What a resume that cannot find its thread says: the turn fails, and nothing was sent. */
+export const CODEX_THREAD_NOT_FOUND =
+  "Codex could not find this conversation's thread. Nothing was sent.";
+
 const encodeLine = (value: unknown): Uint8Array =>
   new TextEncoder().encode(`${JSON.stringify(value)}\n`);
 
@@ -538,16 +542,22 @@ export const CodexAdapter: AgentAdapter = {
           approvalPolicy: options.permissionMode === "ask" ? "on-request" : "never",
           sandbox: options.permissionMode === "ask" ? "workspace-write" : "danger-full-access",
         };
-        const startThread = request("thread/start", threadParams);
+        // A resume never forks (docs/adr/0016, decision 6): a thread Codex cannot find fails the
+        // start, and nothing starts a new thread in its place. Starting a new conversation is
+        // the person's explicit choice, never a silent one: a fresh thread under the same session
+        // would carry its next turn into an empty conversation, and later turns would continue
+        // that one.
         const threadResult =
           options.providerSessionId === undefined
-            ? yield* startThread
+            ? yield* request("thread/start", threadParams)
             : yield* request("thread/resume", {
                 ...threadParams,
                 threadId: options.providerSessionId,
               }).pipe(
-                Effect.catch((error) =>
-                  /unknown|not found/i.test(error.message) ? startThread : Effect.fail(error),
+                Effect.mapError((error) =>
+                  /unknown|not found|no such|does not exist/i.test(error.message)
+                    ? protocolError("thread/resume", CODEX_THREAD_NOT_FOUND, error)
+                    : error,
                 ),
               );
         threadId = stringField(objectField(threadResult, "thread"), "id");

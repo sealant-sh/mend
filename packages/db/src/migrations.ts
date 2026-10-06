@@ -3056,6 +3056,62 @@ const agentMemoryHomesMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * docs/adr/0016-per-person-harness-homes.md, behind `MEND_HARNESS_LAYOUT`:
+ * - `linux_identities`: each account's Linux login name and uid, allocated the first time it runs
+ *   anything in a person-layout workspace, stable instance-wide (the same name, uid and home in
+ *   every executor and project). No foreign key: a removed account's uid is never given to
+ *   another, since its files in old captures are owned by it.
+ * - `worktrees.harness_layout`: `person` once the worktree has had a person launch, never cleared
+ *   (decision 14: there is no way back). Null until then.
+ * - `worktrees.harness_layout_requested`: the operator-only `harnessLayout` a start that made the
+ *   worktree asked for (the benchmark picks the layout per launch on fresh worktrees).
+ * - `executor_layouts`: the layout of each launch (one physical executor), with what decided it.
+ *   `confirmed`: prepare found the executor could run it (a `person` prediction may fall back to
+ *   `shared` on a fresh worktree, and is then recorded as `shared` from `fallback`).
+ * - `image_layout_capabilities`: what an executor's prepare found about its image and runtime,
+ *   per image key, which wins over Core's report for the same image.
+ */
+const harnessLayoutMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE linux_identities (
+      user_id text PRIMARY KEY,
+      name text NOT NULL UNIQUE,
+      uid integer NOT NULL UNIQUE CHECK (uid BETWEEN 40001 AND 49999),
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    ALTER TABLE worktrees
+      ADD COLUMN harness_layout text CHECK (harness_layout = 'person'),
+      ADD COLUMN harness_layout_requested text
+        CHECK (harness_layout_requested IN ('person', 'shared'))`;
+  yield* sql`
+    CREATE TABLE executor_layouts (
+      launch_id text PRIMARY KEY,
+      worktree_id text NOT NULL REFERENCES worktrees (id) ON DELETE CASCADE,
+      session_id text NOT NULL,
+      layout text NOT NULL CHECK (layout IN ('person', 'shared')),
+      source text NOT NULL
+        CHECK (source IN ('worktree', 'operator', 'capability', 'flag', 'fallback')),
+      reason text,
+      image_key text,
+      confirmed boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX executor_layouts_worktree_idx ON executor_layouts (worktree_id)`;
+  yield* sql`
+    CREATE TABLE image_layout_capabilities (
+      image_key text NOT NULL,
+      runtime text NOT NULL,
+      person boolean NOT NULL,
+      missing jsonb NOT NULL DEFAULT '[]'::jsonb,
+      observed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (image_key, runtime)
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3168,4 +3224,5 @@ export const migrations = {
   "0109_opencode_models": opencodeModelsMigration,
   "0110_project_install_enabled": projectInstallEnabledMigration,
   "0111_agent_memory_homes": agentMemoryHomesMigration,
+  "0112_harness_layout": harnessLayoutMigration,
 };

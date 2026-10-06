@@ -42,6 +42,7 @@ export * from "./landing-description.ts";
 export * from "./model-catalog.ts";
 export * from "./mount.ts";
 export * from "./notifications.ts";
+export * from "./harness-layout.ts";
 export * from "./host-user-namespaces.ts";
 export * from "./pi-profile.ts";
 export * from "./link.ts";

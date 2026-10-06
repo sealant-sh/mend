@@ -76,6 +76,7 @@ import {
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
   UserGitAuthorRepoLive,
+  HarnessLayoutsRepoLive,
   UserEventsLive,
   UsersRepoLive,
   UpgradeTicketsRepoLive,
@@ -136,7 +137,12 @@ import {
   PullRequestWorkspacesLive,
 } from "@mend/landing";
 import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/network";
-import { asSealantUser, type SealantClients, SealantLiveFromEnv } from "@mend/sealant";
+import {
+  asSealantUser,
+  PersonLayoutPlatformLive,
+  type SealantClients,
+  SealantLiveFromEnv,
+} from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureGitVerifierLive,
@@ -151,6 +157,7 @@ import {
   CaptureSealsStoreLive,
   DotfilesClonerLive,
   FollowUpDeliveryLive,
+  HarnessLayoutConfigLive,
   FollowUpLauncherLive,
   ProtocolHostLive,
   ServiceHostLive,
@@ -244,6 +251,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
   UserGitAuthorRepoLive,
+  HarnessLayoutsRepoLive,
   UsersRepoLive,
   UserEventsLive,
   HotWorkspacesRepoLive,
@@ -799,7 +807,17 @@ const MainLive = Layer.unwrap(
       // `pipe` takes at most twenty steps; deployment facts, the source policy (which git
       // remotes Mend may reach, for the routes and the engine) and the dotfiles cloner (whose
       // git access a dotfiles clone uses, for the save probe and the launch) ride one.
-      Layer.provide(Layer.mergeAll(DeploymentConfigLive, SourcePolicyLive, DotfilesClonerLive)),
+      // Per-person harness homes (docs/adr/0016) ride it too: `MEND_HARNESS_LAYOUT` (shared unless
+      // set) and the platform's person-layout surface, which today's SDK does not have.
+      Layer.provide(
+        Layer.mergeAll(
+          DeploymentConfigLive,
+          SourcePolicyLive,
+          DotfilesClonerLive,
+          HarnessLayoutConfigLive,
+          PersonLayoutPlatformLive,
+        ),
+      ),
       // The per-user dotfiles store and the organization folders, read and written directly.
       Layer.provide(Layer.merge(DotfilesStoreLayer, FolderStoreLayer)),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).

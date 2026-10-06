@@ -89,6 +89,19 @@ export class ResumeRequest extends Schema.Class<ResumeRequest>("ResumeRequest")(
   fresh: Schema.optionalKey(Schema.Boolean),
 }) {}
 
+/**
+ * A start's `harnessLayout` refused (docs/adr/0016, decision 14): it is the instance operator's,
+ * and only for a start that creates its worktree.
+ */
+export class HarnessLayoutRefused extends Schema.TaggedErrorClass<HarnessLayoutRefused>()(
+  "HarnessLayoutRefused",
+  {
+    /** Why, in words a client can show as they are. */
+    message: Schema.String,
+  },
+  { httpApiStatus: 403 },
+) {}
+
 export class SessionNotSteerable extends Schema.TaggedErrorClass<SessionNotSteerable>()(
   "SessionNotSteerable",
   {
@@ -134,7 +147,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: ProjectId },
       payload: NewWorkbenchSession,
       success: Session,
-      error: [NotFound, StoreFailure, BudgetExceeded],
+      error: [NotFound, StoreFailure, BudgetExceeded, HarnessLayoutRefused],
     }),
   )
   .add(

@@ -126,6 +126,8 @@ const startWorld = (
     readonly settingsAutoLand?: boolean;
     /** How many turns the session has had already. */
     readonly turns?: number;
+    /** Alice is the instance operator. */
+    readonly operator?: boolean;
   } = {},
 ) => {
   const effects: Array<string> = [];
@@ -141,6 +143,10 @@ const startWorld = (
                   ? Effect.succeed(project)
                   : Effect.fail(new NotFound({ id })),
               ),
+            ),
+          isOperator: (userId) =>
+            note(`access.isOperator:${userId}`).pipe(
+              Effect.as(options.operator === true && userId === "alice"),
             ),
         }),
         Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...options.limits })),
@@ -177,7 +183,7 @@ const startWorld = (
           detach: (effect) => Effect.forkDetach(effect),
           provision: (input) =>
             note(
-              `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}`,
+              `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}${input.harnessLayout === undefined ? "" : `:layout=${input.harnessLayout}`}`,
             ).pipe(
               Effect.as(
                 provisioned(
@@ -569,5 +575,37 @@ describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)"
       },
     });
     expect(world.effects).toContain(`engine.provision:${PROJECT}:alice:mend:land=true`);
+  });
+});
+
+describe("SessionStart.createAs harnessLayout (docs/adr/0016, decision 14)", () => {
+  const createAs = (world: ReturnType<typeof startWorld>) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        return yield* start.createAs("alice", PROJECT, {
+          harness: "claude",
+          label: null,
+          name: null,
+          base: null,
+          origin: "mend",
+          harnessLayout: "person",
+        });
+      }).pipe(Effect.provide(world.layer), Effect.result),
+    );
+
+  it("is refused for anyone but the instance operator, before anything is made", async () => {
+    const world = startWorld();
+    const result = await createAs(world);
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure._tag).toBe("HarnessLayoutRefused");
+    expect(world.effects.some((effect) => effect.startsWith("engine.provision"))).toBe(false);
+  });
+
+  it("reaches the engine for the operator, which applies it to a worktree it makes", async () => {
+    const world = startWorld({ operator: true });
+    const result = await createAs(world);
+    expect(result._tag).toBe("Success");
+    expect(world.effects).toContain(`engine.provision:${PROJECT}:alice:mend:layout=person`);
   });
 });

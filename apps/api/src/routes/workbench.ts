@@ -2308,6 +2308,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           base: payload.base,
           origin: "mend",
           autoLand: payload.autoLand,
+          ...(payload.harnessLayout === undefined ? {} : { harnessLayout: payload.harnessLayout }),
         });
       }),
     )
@@ -2371,13 +2372,15 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        return yield* engine
-          .submitTurn(params.id, payload.input, caller.user.id)
-          .pipe(
-            Effect.catchTag("ProtocolHostNotLiveError", (error) =>
-              Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
-            ),
-          );
+        return yield* engine.submitTurn(params.id, payload.input, caller.user.id).pipe(
+          Effect.catchTag("ProtocolHostNotLiveError", (error) =>
+            Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+          ),
+          // A person-layout executor takes turns from its owner only (docs/adr/0016).
+          Effect.catchTag("SessionTurnRefusedError", (error) =>
+            Effect.fail(new SessionNotSteerable({ sessionId: params.id, message: error.message })),
+          ),
+        );
       }),
     )
     .handle("pasteImage", ({ params, payload }) =>

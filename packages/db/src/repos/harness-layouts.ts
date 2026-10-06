@@ -1,0 +1,463 @@
+import { createHash } from "node:crypto";
+
+import { PgClient } from "@effect/sql-pg";
+import { WorktreeId } from "@mend/domain";
+import {
+  HarnessLayout,
+  HarnessLayoutSource,
+  LINUX_UID_FIRST,
+  LINUX_UID_RANGE,
+  LinuxIdentity,
+} from "@mend/domain/workbench";
+import { Effect, Layer, Schema } from "effect";
+import * as Context from "effect/Context";
+
+import { uniqueViolationConstraint } from "./unique-violation.ts";
+
+const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
+
+/**
+ * The login name Mend proposes for an account (docs/adr/0016, decision 1): `m` and 8 base32
+ * characters of a hash of its id. `attempt` 0 is every account's first proposal; a later attempt
+ * is asked only when that name is already another account's, and is stable for the same
+ * (account, attempt), so the allocation is deterministic.
+ */
+export const linuxLoginNameOf = (accountId: string, attempt = 0): string => {
+  const digest = createHash("sha256")
+    .update(attempt === 0 ? accountId : `${accountId}\u0000${attempt}`)
+    .digest();
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const byte of digest) {
+    value = ((value << 8) | byte) & 0xffff;
+    bits += 8;
+    while (bits >= 5 && out.length < 8) {
+      out += BASE32[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+    if (out.length === 8) break;
+  }
+  return `m${out}`;
+};
+
+/** How many names an allocation tries before it gives up (each a distinct hash). */
+const NAME_ATTEMPTS = 16;
+
+const IdentityRow = Schema.Struct({
+  userId: Schema.String,
+  name: Schema.String,
+  uid: Schema.Number,
+});
+const decodeIdentityRow = Schema.decodeUnknownSync(IdentityRow);
+const identityOf = (row: unknown): LinuxIdentity => {
+  const decoded = decodeIdentityRow(row);
+  return new LinuxIdentity({ accountId: decoded.userId, name: decoded.name, uid: decoded.uid });
+};
+
+/** One launch's layout, as recorded before its executor was created. */
+export interface ExecutorLayoutRecord {
+  readonly launchId: string;
+  readonly worktreeId: WorktreeId;
+  readonly sessionId: string;
+  readonly layout: HarnessLayout;
+  readonly source: HarnessLayoutSource;
+  /** Why, in the words the session line takes; null when nothing needs saying. */
+  readonly reason: string | null;
+  /** The image the decision read the capability of; null when none was read. */
+  readonly imageKey: string | null;
+  /** Prepare found the executor runs this layout (or recorded the fallback). */
+  readonly confirmed: boolean;
+}
+
+const LaunchRow = Schema.Struct({
+  launchId: Schema.String,
+  worktreeId: WorktreeId,
+  sessionId: Schema.String,
+  layout: HarnessLayout,
+  source: HarnessLayoutSource,
+  reason: Schema.NullOr(Schema.String),
+  imageKey: Schema.NullOr(Schema.String),
+  confirmed: Schema.Boolean,
+});
+const decodeLaunchRow = Schema.decodeUnknownSync(LaunchRow);
+
+/** What a worktree's row says about its layout (decision 14). */
+export interface WorktreeLayoutRecord {
+  /** `person` once it has had a person launch; never cleared. */
+  readonly layout: "person" | null;
+  /** The operator-only `harnessLayout` the start that made it asked for. */
+  readonly requested: HarnessLayout | null;
+}
+
+const WorktreeLayoutRow = Schema.Struct({
+  layout: Schema.NullOr(Schema.Literal("person")),
+  requested: Schema.NullOr(HarnessLayout),
+});
+const decodeWorktreeLayoutRow = Schema.decodeUnknownSync(WorktreeLayoutRow);
+
+/** What an executor's prepare found about an image on a runtime (decision 1). */
+export interface ImageLayoutCapabilityRecord {
+  readonly imageKey: string;
+  readonly runtime: string;
+  /** The executor could run the person layout. */
+  readonly person: boolean;
+  /** What it lacked, each in a word the refusal line names (`sudo`, `uid 40001 is taken`, …). */
+  readonly missing: ReadonlyArray<string>;
+  readonly observedAt: Date;
+}
+
+const CapabilityRow = Schema.Struct({
+  imageKey: Schema.String,
+  runtime: Schema.String,
+  person: Schema.Boolean,
+  missing: Schema.Array(Schema.String),
+  observedAt: Schema.Date,
+});
+const decodeCapabilityRow = Schema.decodeUnknownSync(CapabilityRow);
+
+export class LinuxIdentityExhaustedError extends Schema.TaggedErrorClass<LinuxIdentityExhaustedError>()(
+  "LinuxIdentityExhaustedError",
+  { accountId: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * Per-person harness homes (docs/adr/0016), in Postgres: Linux identities, the layout of each
+ * worktree and launch, and what Mend learnt about each image. Read and written only by the
+ * session engine's layout step; nothing here runs unless `MEND_HARNESS_LAYOUT` or a worktree's
+ * record asks for the person layout, apart from the worktree record every launch reads.
+ */
+export class HarnessLayoutsRepo extends Context.Service<
+  HarnessLayoutsRepo,
+  {
+    /** The account's identity, allocating it the first time: a stable name and uid. */
+    readonly ensureIdentity: (
+      accountId: string,
+    ) => Effect.Effect<LinuxIdentity, LinuxIdentityExhaustedError>;
+    /** The identities these accounts already have; an account without one is left out. */
+    readonly identitiesOf: (
+      accountIds: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlyArray<LinuxIdentity>>;
+    /** The worktree's layout record; both fields null for a worktree with none. */
+    readonly worktreeLayout: (worktreeId: WorktreeId) => Effect.Effect<WorktreeLayoutRecord>;
+    /** The operator's `harnessLayout`, on the start that made the worktree. */
+    readonly requestLayout: (worktreeId: WorktreeId, layout: HarnessLayout) => Effect.Effect<void>;
+    /** A launch's decision, recorded before its executor is created; idempotent per launch. */
+    readonly recordLaunch: (record: ExecutorLayoutRecord) => Effect.Effect<void>;
+    /**
+     * Prepare found the launch's executor runs the person layout: the launch is confirmed and,
+     * in the same transaction, the worktree becomes `person` for good.
+     */
+    readonly confirmPerson: (launchId: string, worktreeId: WorktreeId) => Effect.Effect<void>;
+    /**
+     * Prepare found the launch's executor cannot run the person layout it was predicted on, on a
+     * worktree with no layout: the launch is `shared`, from `fallback`.
+     */
+    readonly recordFallback: (launchId: string, reason: string) => Effect.Effect<void>;
+    /** A shared launch's prepare ran: nothing to correct, the decision stands. */
+    readonly confirm: (launchId: string) => Effect.Effect<void>;
+    readonly launchLayout: (launchId: string) => Effect.Effect<ExecutorLayoutRecord | null>;
+    readonly capabilityOf: (
+      imageKey: string,
+      runtime: string,
+    ) => Effect.Effect<ImageLayoutCapabilityRecord | null>;
+    readonly recordCapability: (
+      record: Omit<ImageLayoutCapabilityRecord, "observedAt">,
+    ) => Effect.Effect<void>;
+  }
+>()("@mend/db/HarnessLayoutsRepo") {}
+
+export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgClient.PgClient> =
+  Layer.effect(
+    HarnessLayoutsRepo,
+    Effect.gen(function* () {
+      const sql = yield* PgClient.PgClient;
+
+      const identityRow = (accountId: string) =>
+        sql`
+          SELECT user_id AS "userId", name, uid FROM linux_identities
+          WHERE user_id = ${accountId}`.pipe(
+          Effect.orDie,
+          Effect.map((rows) => (rows[0] === undefined ? null : identityOf(rows[0]))),
+        );
+
+      const ensureIdentity = Effect.fn("HarnessLayoutsRepo.ensureIdentity")(function* (
+        accountId: string,
+      ) {
+        const existing = yield* identityRow(accountId);
+        if (existing !== null) return existing;
+        // Concurrent first runs of different accounts race for the same next uid; the loser of
+        // the unique key asks again. A name another account holds moves on to the next proposal.
+        for (let attempt = 0, races = 0; attempt < NAME_ATTEMPTS && races < 64; ) {
+          const name = linuxLoginNameOf(accountId, attempt);
+          const inserted = yield* sql`
+            INSERT INTO linux_identities (user_id, name, uid)
+            SELECT ${accountId}, ${name}, COALESCE(MAX(uid), ${LINUX_UID_FIRST - 1}) + 1
+              FROM linux_identities
+            ON CONFLICT (user_id) DO NOTHING
+            RETURNING user_id AS "userId", name, uid`.pipe(
+            Effect.map((rows) => ({ rows, violated: null })),
+            Effect.catch((error) =>
+              Effect.succeed({ rows: [], violated: uniqueViolationConstraint(error) ?? "other" }),
+            ),
+          );
+          if (inserted.rows[0] !== undefined) return identityOf(inserted.rows[0]);
+          const now = yield* identityRow(accountId);
+          if (now !== null) return now;
+          if (inserted.violated === "other") {
+            return yield* new LinuxIdentityExhaustedError({
+              accountId,
+              message: `no uid left in ${LINUX_UID_RANGE.first}–${LINUX_UID_RANGE.last}`,
+            });
+          }
+          if (inserted.violated === "linux_identities_name_key") attempt++;
+          else races++;
+        }
+        return yield* new LinuxIdentityExhaustedError({
+          accountId,
+          message: "no Linux login name could be allocated",
+        });
+      });
+
+      const identitiesOf = Effect.fn("HarnessLayoutsRepo.identitiesOf")(function* (
+        accountIds: ReadonlyArray<string>,
+      ) {
+        if (accountIds.length === 0) return [];
+        const rows = yield* sql`
+          SELECT user_id AS "userId", name, uid FROM linux_identities
+          WHERE user_id IN ${sql.in([...accountIds])}
+          ORDER BY uid`.pipe(Effect.orDie);
+        return rows.map(identityOf);
+      });
+
+      const worktreeLayout = Effect.fn("HarnessLayoutsRepo.worktreeLayout")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        const rows = yield* sql`
+          SELECT harness_layout AS layout, harness_layout_requested AS requested
+          FROM worktrees WHERE id = ${worktreeId}`.pipe(Effect.orDie);
+        return rows[0] === undefined
+          ? { layout: null, requested: null }
+          : decodeWorktreeLayoutRow(rows[0]);
+      });
+
+      const requestLayout = Effect.fn("HarnessLayoutsRepo.requestLayout")(function* (
+        worktreeId: WorktreeId,
+        layout: HarnessLayout,
+      ) {
+        yield* sql`
+          UPDATE worktrees SET harness_layout_requested = ${layout}
+          WHERE id = ${worktreeId}`.pipe(Effect.orDie);
+      });
+
+      const recordLaunch = Effect.fn("HarnessLayoutsRepo.recordLaunch")(function* (
+        record: ExecutorLayoutRecord,
+      ) {
+        yield* sql`
+          INSERT INTO executor_layouts
+            (launch_id, worktree_id, session_id, layout, source, reason, image_key, confirmed)
+          VALUES (${record.launchId}, ${record.worktreeId}, ${record.sessionId}, ${record.layout},
+                  ${record.source}, ${record.reason}, ${record.imageKey}, ${record.confirmed})
+          ON CONFLICT (launch_id) DO UPDATE
+            SET layout = excluded.layout, source = excluded.source, reason = excluded.reason,
+                image_key = excluded.image_key, confirmed = excluded.confirmed,
+                updated_at = now()
+            WHERE NOT executor_layouts.confirmed`.pipe(Effect.orDie);
+        if (record.layout === "person" && record.confirmed) {
+          yield* sql`
+            UPDATE worktrees SET harness_layout = 'person'
+            WHERE id = ${record.worktreeId} AND harness_layout IS NULL`.pipe(Effect.orDie);
+        }
+      });
+
+      const confirmPerson = Effect.fn("HarnessLayoutsRepo.confirmPerson")(function* (
+        launchId: string,
+        worktreeId: WorktreeId,
+      ) {
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
+                UPDATE executor_layouts SET confirmed = true, updated_at = now()
+                WHERE launch_id = ${launchId} AND layout = 'person'`;
+              yield* sql`
+                UPDATE worktrees SET harness_layout = 'person'
+                WHERE id = ${worktreeId} AND harness_layout IS NULL`;
+            }),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      const recordFallback = Effect.fn("HarnessLayoutsRepo.recordFallback")(function* (
+        launchId: string,
+        reason: string,
+      ) {
+        yield* sql`
+          UPDATE executor_layouts
+             SET layout = 'shared', source = 'fallback', reason = ${reason}, confirmed = true,
+                 updated_at = now()
+           WHERE launch_id = ${launchId} AND NOT confirmed`.pipe(Effect.orDie);
+      });
+
+      const confirm = Effect.fn("HarnessLayoutsRepo.confirm")(function* (launchId: string) {
+        yield* sql`
+          UPDATE executor_layouts SET confirmed = true, updated_at = now()
+          WHERE launch_id = ${launchId} AND layout = 'shared'`.pipe(Effect.orDie);
+      });
+
+      const launchLayout = Effect.fn("HarnessLayoutsRepo.launchLayout")(function* (
+        launchId: string,
+      ) {
+        const rows = yield* sql`
+          SELECT launch_id AS "launchId", worktree_id AS "worktreeId", session_id AS "sessionId",
+                 layout, source, reason, image_key AS "imageKey", confirmed
+          FROM executor_layouts WHERE launch_id = ${launchId}`.pipe(Effect.orDie);
+        if (rows[0] === undefined) return null;
+        return decodeLaunchRow(rows[0]);
+      });
+
+      const capabilityOf = Effect.fn("HarnessLayoutsRepo.capabilityOf")(function* (
+        imageKey: string,
+        runtime: string,
+      ) {
+        const rows = yield* sql`
+          SELECT image_key AS "imageKey", runtime, person, missing, observed_at AS "observedAt"
+          FROM image_layout_capabilities
+          WHERE image_key = ${imageKey} AND runtime = ${runtime}`.pipe(Effect.orDie);
+        return rows[0] === undefined ? null : decodeCapabilityRow(rows[0]);
+      });
+
+      const recordCapability = Effect.fn("HarnessLayoutsRepo.recordCapability")(function* (
+        record: Omit<ImageLayoutCapabilityRecord, "observedAt">,
+      ) {
+        yield* sql`
+          INSERT INTO image_layout_capabilities (image_key, runtime, person, missing)
+          VALUES (${record.imageKey}, ${record.runtime}, ${record.person},
+                  ${JSON.stringify(record.missing)}::jsonb)
+          ON CONFLICT (image_key, runtime) DO UPDATE
+            SET person = excluded.person, missing = excluded.missing, observed_at = now()`.pipe(
+          Effect.orDie,
+        );
+      });
+
+      return {
+        ensureIdentity,
+        identitiesOf,
+        worktreeLayout,
+        requestLayout,
+        recordLaunch,
+        confirmPerson,
+        recordFallback,
+        confirm,
+        launchLayout,
+        capabilityOf,
+        recordCapability,
+      };
+    }),
+  );
+
+/** The in-memory repo's rows, for a test to seed and read. */
+export interface HarnessLayoutsMemoryState {
+  readonly identities: Map<string, LinuxIdentity>;
+  readonly worktrees: Map<string, WorktreeLayoutRecord>;
+  readonly launches: Map<string, ExecutorLayoutRecord>;
+  readonly capabilities: Map<string, ImageLayoutCapabilityRecord>;
+}
+
+export const makeHarnessLayoutsMemoryState = (): HarnessLayoutsMemoryState => ({
+  identities: new Map(),
+  worktrees: new Map(),
+  launches: new Map(),
+  capabilities: new Map(),
+});
+
+/** In-memory implementation with the same contract, for tests. */
+export const harnessLayoutsRepoMemory = (
+  state: HarnessLayoutsMemoryState = makeHarnessLayoutsMemoryState(),
+): Layer.Layer<HarnessLayoutsRepo> =>
+  Layer.succeed(HarnessLayoutsRepo, {
+    ensureIdentity: (accountId) =>
+      Effect.sync(() => {
+        const existing = state.identities.get(accountId);
+        if (existing !== undefined) return existing;
+        const taken = new Set([...state.identities.values()].map((identity) => identity.name));
+        let attempt = 0;
+        while (taken.has(linuxLoginNameOf(accountId, attempt))) attempt++;
+        const uid =
+          Math.max(LINUX_UID_FIRST - 1, ...[...state.identities.values()].map((i) => i.uid)) + 1;
+        const identity = new LinuxIdentity({
+          accountId,
+          name: linuxLoginNameOf(accountId, attempt),
+          uid,
+        });
+        state.identities.set(accountId, identity);
+        return identity;
+      }),
+    identitiesOf: (accountIds) =>
+      Effect.sync(() =>
+        accountIds
+          .flatMap((id) => {
+            const identity = state.identities.get(id);
+            return identity === undefined ? [] : [identity];
+          })
+          .toSorted((a, b) => a.uid - b.uid),
+      ),
+    worktreeLayout: (worktreeId) =>
+      Effect.sync(() => state.worktrees.get(worktreeId) ?? { layout: null, requested: null }),
+    requestLayout: (worktreeId, layout) =>
+      Effect.sync(() => {
+        const current = state.worktrees.get(worktreeId) ?? { layout: null, requested: null };
+        state.worktrees.set(worktreeId, { ...current, requested: layout });
+      }),
+    recordLaunch: (record) =>
+      Effect.sync(() => {
+        const existing = state.launches.get(record.launchId);
+        if (existing !== undefined && existing.confirmed) return;
+        state.launches.set(record.launchId, record);
+        if (record.layout === "person" && record.confirmed) {
+          const current = state.worktrees.get(record.worktreeId) ?? {
+            layout: null,
+            requested: null,
+          };
+          state.worktrees.set(record.worktreeId, { ...current, layout: "person" });
+        }
+      }),
+    confirmPerson: (launchId, worktreeId) =>
+      Effect.sync(() => {
+        const launch = state.launches.get(launchId);
+        if (launch !== undefined && launch.layout === "person") {
+          state.launches.set(launchId, { ...launch, confirmed: true });
+        }
+        const current = state.worktrees.get(worktreeId) ?? { layout: null, requested: null };
+        state.worktrees.set(worktreeId, { ...current, layout: "person" });
+      }),
+    recordFallback: (launchId, reason) =>
+      Effect.sync(() => {
+        const launch = state.launches.get(launchId);
+        if (launch === undefined || launch.confirmed) return;
+        state.launches.set(launchId, {
+          ...launch,
+          layout: "shared",
+          source: "fallback",
+          reason,
+          confirmed: true,
+        });
+      }),
+    confirm: (launchId) =>
+      Effect.sync(() => {
+        const launch = state.launches.get(launchId);
+        if (launch !== undefined && launch.layout === "shared") {
+          state.launches.set(launchId, { ...launch, confirmed: true });
+        }
+      }),
+    launchLayout: (launchId) => Effect.sync(() => state.launches.get(launchId) ?? null),
+    capabilityOf: (imageKey, runtime) =>
+      Effect.sync(() => state.capabilities.get(`${imageKey}\u0000${runtime}`) ?? null),
+    recordCapability: (record) =>
+      Effect.sync(() => {
+        state.capabilities.set(`${record.imageKey}\u0000${record.runtime}`, {
+          ...record,
+          observedAt: new Date(),
+        });
+      }),
+  });
