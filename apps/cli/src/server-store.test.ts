@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { withServerStore, type ServerFiles, type ServerStore } from "./server-store.ts";
+import {
+  withServerStore,
+  type ServerFiles,
+  type ServerGeneration,
+  type ServerStore,
+} from "./server-store.ts";
 
 const roots: Array<string> = [];
 const children: Array<ChildProcess> = [];
@@ -351,16 +356,22 @@ const unwrap = <T>(result: { _tag: "ok"; value: T } | { _tag: "error"; error: Er
   if (result._tag === "error") throw result.error;
   return result.value;
 };
+const TRAILER = "--\n-- PostgreSQL database cluster dump complete\n--\n";
 /** One upgrade's backup as the upgrade leaves it: a dump, then completed only when told. */
-const backupIn = async (
+const backupIn = (
   store: ServerStore,
   outcome: "completed" | "pending" | "unfinished" = "completed",
+  generations?: { readonly previous: ServerGeneration; readonly target: ServerGeneration },
 ) => {
-  // createdAt has millisecond precision; keep successive backups apart.
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  const generation = unwrap(store.commit(files));
-  const backup = unwrap(store.createBackup(generation, generation));
-  fs.writeFileSync(backup.partialFile, `dump of ${path.basename(backup.directory)}\n`);
+  const generation = generations ?? {
+    previous: unwrap(store.commit(files)),
+    target: unwrap(store.commit(files)),
+  };
+  const backup = unwrap(store.createBackup(generation.previous, generation.target));
+  fs.writeFileSync(
+    backup.partialFile,
+    `-- PostgreSQL database cluster dump\n-- ${path.basename(backup.directory)}\n${TRAILER}`,
+  );
   if (outcome === "unfinished") return backup;
   unwrap(backup.complete());
   if (outcome === "completed") unwrap(backup.markCompleted());
@@ -368,33 +379,45 @@ const backupIn = async (
 };
 const recovery = (directory: string): Record<string, unknown> =>
   JSON.parse(fs.readFileSync(path.join(directory, "recovery.json"), "utf8"));
+/** Rewrite a record the way releases before 0.36 wrote it: no state, sequence or createdAt. */
+const makeLegacy = (directory: string, mtime?: Date): void => {
+  const { state: _state, sequence: _sequence, createdAt: _createdAt, ...old } = recovery(directory);
+  const file = path.join(directory, "recovery.json");
+  fs.writeFileSync(file, JSON.stringify(old));
+  if (mtime !== undefined) fs.utimesSync(file, mtime, mtime);
+};
 const names = (root: string): ReadonlyArray<string> =>
   fs.readdirSync(path.join(root, "backups")).toSorted();
-
 const size = (directory: string) =>
   fs.statSync(path.join(directory, "database.sql")).size +
   fs.statSync(path.join(directory, "recovery.json")).size;
+const directories = (entries: ReadonlyArray<{ readonly directory: string }>) =>
+  entries.map((entry) => entry.directory).toSorted();
+/** Distinct generations, one per config, so records can chain previous → target. */
+const generationsIn = (store: ServerStore, count: number): ReadonlyArray<ServerGeneration> =>
+  Array.from({ length: count }, (_, index) =>
+    unwrap(store.prepare({ ...files, config: `config ${index}\n` })),
+  );
 
 describe("upgrade backup pruning", () => {
   it("keeps the newest N completed backups, the current one among them, and reports the bytes", async () => {
     const root = temporary();
     const result = await withServerStore(root, async (store) => {
-      const oldest = await backupIn(store);
-      const older = await backupIn(store);
-      const newer = await backupIn(store);
-      const current = await backupIn(store);
-      expect(recovery(current.directory)).toMatchObject({ state: "completed" });
+      const oldest = backupIn(store);
+      const older = backupIn(store);
+      const newer = backupIn(store);
+      const current = backupIn(store);
+      expect(recovery(current.directory)).toMatchObject({ state: "completed", sequence: 4 });
       const pruned = unwrap(store.pruneBackups(2, current));
       expect(pruned.kept.map((entry) => entry.directory)).toEqual([
         current.directory,
         newer.directory,
       ]);
-      expect(pruned.removed.map((entry) => entry.directory).toSorted()).toEqual(
-        [oldest.directory, older.directory].toSorted(),
-      );
-      expect(pruned.removed.every((entry) => entry.bytes > 0)).toBe(true);
+      expect(directories(pruned.removed)).toEqual(directories([oldest, older]));
+      expect(pruned.removed.every((entry) => entry.bytes > 0 && !entry.legacy)).toBe(true);
       expect(pruned.kept[0]?.bytes).toBe(size(current.directory));
       expect(pruned.held).toEqual([]);
+      expect(pruned.failed).toEqual([]);
       expect(fs.existsSync(oldest.directory)).toBe(false);
       expect(fs.existsSync(older.directory)).toBe(false);
       // A second prune finds nothing more to remove.
@@ -404,12 +427,65 @@ describe("upgrade backup pruning", () => {
     expect(names(root)).toHaveLength(2);
   });
 
+  it("orders by Mend's sequence, not a clock that ran ahead", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const skewed = backupIn(store);
+      // The box's clock was a year fast for this upgrade, then corrected.
+      const file = path.join(skewed.directory, "recovery.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ ...recovery(skewed.directory), createdAt: "2099-01-01T00:00:00.000Z" }),
+      );
+      fs.utimesSync(file, new Date("2099-01-01"), new Date("2099-01-01"));
+      const previous = backupIn(store);
+      const current = backupIn(store);
+      const pruned = unwrap(store.pruneBackups(2, current));
+      expect(pruned.kept.map((entry) => entry.directory)).toEqual([
+        current.directory,
+        previous.directory,
+      ]);
+      expect(directories(pruned.removed)).toEqual([skewed.directory]);
+    });
+    expect(result._tag).toBe("ok");
+  });
+
+  it("orders records from before 0.36 by the generation chain when a copy reset their mtimes", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const generations = generationsIn(store, 5);
+      const at = (index: number): ServerGeneration => {
+        const generation = generations[index];
+        if (generation === undefined) throw new Error(`No generation ${index}`);
+        return generation;
+      };
+      const [g0, g1, g2, g3, g4] = [at(0), at(1), at(2), at(3), at(4)];
+      const first = backupIn(store, "completed", { previous: g0, target: g1 });
+      const second = backupIn(store, "completed", { previous: g1, target: g2 });
+      const third = backupIn(store, "completed", { previous: g2, target: g3 });
+      // A copy without -t: mtimes in reverse order of the upgrades.
+      makeLegacy(first.directory, new Date("2026-10-03T00:00:03Z"));
+      makeLegacy(second.directory, new Date("2026-10-03T00:00:02Z"));
+      makeLegacy(third.directory, new Date("2026-10-03T00:00:01Z"));
+      const current = backupIn(store, "completed", { previous: g3, target: g4 });
+      expect(recovery(current.directory)).toMatchObject({ sequence: 1 });
+      const pruned = unwrap(store.pruneBackups(2, current));
+      expect(pruned.kept.map((entry) => entry.directory)).toEqual([
+        current.directory,
+        third.directory,
+      ]);
+      expect(directories(pruned.removed)).toEqual(directories([first, second]));
+      expect(pruned.removed.every((entry) => entry.legacy)).toBe(true);
+    });
+    expect(result._tag).toBe("ok");
+  });
+
   it("never removes the current backup, even when every other one is newer", async () => {
     const root = temporary();
     const result = await withServerStore(root, async (store) => {
-      const current = await backupIn(store);
-      await backupIn(store);
-      await backupIn(store);
+      const current = backupIn(store);
+      backupIn(store);
+      backupIn(store);
       const pruned = unwrap(store.pruneBackups(1, current));
       expect(pruned.kept.map((entry) => entry.directory)).toEqual([current.directory]);
       expect(pruned.removed).toHaveLength(2);
@@ -422,9 +498,9 @@ describe("upgrade backup pruning", () => {
   it("removes nothing while the current backup is not recorded as completed", async () => {
     const root = temporary();
     const result = await withServerStore(root, async (store) => {
-      await backupIn(store);
-      await backupIn(store);
-      const current = await backupIn(store, "pending");
+      backupIn(store);
+      backupIn(store);
+      const current = backupIn(store, "pending");
       expect(recovery(current.directory)).toMatchObject({ state: "pending" });
       expect(store.pruneBackups(1, current)).toMatchObject({ _tag: "error" });
       expect(store.pruneBackups(0, current)).toMatchObject({ _tag: "error" });
@@ -436,49 +512,126 @@ describe("upgrade backup pruning", () => {
   it("keeps a backup whose recovery is pending or unfinished, however old", async () => {
     const root = temporary();
     const result = await withServerStore(root, async (store) => {
-      const unfinished = await backupIn(store, "unfinished");
-      const pending = await backupIn(store, "pending");
-      const dumpless = await backupIn(store);
-      fs.unlinkSync(path.join(dumpless.directory, "database.sql"));
-      await backupIn(store);
-      const current = await backupIn(store);
-      const pruned = unwrap(store.pruneBackups(1, current));
-      expect(pruned.held.toSorted((a, b) => a.directory.localeCompare(b.directory))).toEqual(
-        [
-          { directory: unfinished.directory, reason: "unfinished" },
-          { directory: pending.directory, reason: "pending" },
-          { directory: dumpless.directory, reason: "unfinished" },
-        ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
+      const unfinished = backupIn(store, "unfinished");
+      const pending = backupIn(store, "pending");
+      // markCompleted wrote its temporary and never renamed it: still pending, still listed.
+      const interrupted = backupIn(store, "pending");
+      fs.writeFileSync(
+        path.join(interrupted.directory, ".recovery-00000000-0000-4000-8000-000000000009"),
+        "{}",
       );
+      const truncated = backupIn(store);
+      fs.writeFileSync(path.join(truncated.directory, "database.sql"), "-- PostgreSQL database");
+      const legacyEmpty = backupIn(store);
+      fs.writeFileSync(path.join(legacyEmpty.directory, "database.sql"), "x");
+      makeLegacy(legacyEmpty.directory);
+      const legacyDumpless = backupIn(store);
+      fs.unlinkSync(path.join(legacyDumpless.directory, "database.sql"));
+      makeLegacy(legacyDumpless.directory);
+      backupIn(store);
+      const current = backupIn(store);
+      const pruned = unwrap(store.pruneBackups(1, current));
+      const reasons = Object.fromEntries(
+        pruned.held.map((entry) => [entry.directory, entry.reason]),
+      );
+      expect(reasons).toEqual({
+        [unfinished.directory]: "unfinished",
+        [pending.directory]: "pending",
+        [interrupted.directory]: "pending",
+        [truncated.directory]: "unfinished",
+        [legacyEmpty.directory]: "unfinished",
+        [legacyDumpless.directory]: "unfinished",
+      });
       expect(pruned.removed).toHaveLength(1);
-      expect(fs.existsSync(path.join(unfinished.directory, "database.sql.partial"))).toBe(true);
-      expect(fs.existsSync(path.join(pending.directory, "database.sql"))).toBe(true);
-      expect(fs.existsSync(path.join(dumpless.directory, "recovery.json"))).toBe(true);
+      for (const directory of Object.keys(reasons)) expect(fs.existsSync(directory)).toBe(true);
     });
     expect(result._tag).toBe("ok");
   });
 
-  it("ignores foreign entries and links, and treats a record from before the state field as completed", async () => {
+  it("finishes removals a crash cut short", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const backups = path.join(root, "backups");
+      const renamed = backupIn(store);
+      fs.renameSync(renamed.directory, `${renamed.directory}.removing`);
+      const dumpless = backupIn(store);
+      fs.unlinkSync(path.join(dumpless.directory, "database.sql"));
+      const empty = path.join(backups, "upgrade-00000000-0000-4000-8000-00000000000a");
+      fs.mkdirSync(empty);
+      // Not Mend's to finish: a .removing directory holding something Mend never writes.
+      const foreign = path.join(backups, "upgrade-00000000-0000-4000-8000-00000000000b.removing");
+      fs.mkdirSync(foreign);
+      fs.writeFileSync(path.join(foreign, "notes.txt"), "mine\n");
+      const current = backupIn(store);
+      const pruned = unwrap(store.pruneBackups(5, current));
+      expect(directories(pruned.removed)).toEqual(
+        [`${renamed.directory}.removing`, dumpless.directory, empty].toSorted(),
+      );
+      expect(pruned.removed.every((entry) => entry.interrupted)).toBe(true);
+      expect(pruned.held).toEqual([]);
+    });
+    expect(result._tag).toBe("ok");
+    expect(names(root)).toHaveLength(2);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "reports what it removed when a removal fails partway, and finishes it next time",
+    async () => {
+      const root = temporary();
+      const result = await withServerStore(root, async (store) => {
+        const stuck = backupIn(store);
+        const removable = backupIn(store);
+        const current = backupIn(store);
+        fs.chmodSync(stuck.directory, 0o500);
+        const pruned = unwrap(store.pruneBackups(1, current));
+        fs.chmodSync(`${stuck.directory}.removing`, 0o700);
+        expect(pruned.removed.map((entry) => entry.directory)).toEqual([removable.directory]);
+        expect(pruned.failed.map((entry) => entry.directory)).toEqual([stuck.directory]);
+        const retried = unwrap(store.pruneBackups(1, current));
+        expect(retried.removed).toMatchObject([
+          { directory: `${stuck.directory}.removing`, interrupted: true },
+        ]);
+        expect(retried.failed).toEqual([]);
+      });
+      expect(result._tag).toBe("ok");
+      expect(names(root)).toHaveLength(1);
+    },
+  );
+
+  it("claims no freed space for a dump another hard link still holds", async () => {
+    const root = temporary();
+    const outside = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const linked = backupIn(store);
+      fs.linkSync(path.join(linked.directory, "database.sql"), path.join(outside, "snapshot.sql"));
+      const record = fs.statSync(path.join(linked.directory, "recovery.json")).size;
+      const current = backupIn(store);
+      const pruned = unwrap(store.pruneBackups(1, current));
+      expect(pruned.removed).toMatchObject([{ directory: linked.directory, bytes: record }]);
+      expect(fs.readFileSync(path.join(outside, "snapshot.sql"), "utf8")).toContain(TRAILER);
+    });
+    expect(result._tag).toBe("ok");
+  });
+
+  it("ignores foreign entries and links, and treats a whole record from before 0.36 as completed", async () => {
     const root = temporary();
     const outside = temporary();
     const result = await withServerStore(root, async (store) => {
       const backups = path.join(root, "backups");
-      const legacy = await backupIn(store);
-      // The record releases before this one wrote: no state, no createdAt.
-      const { state: _state, createdAt: _createdAt, ...old } = recovery(legacy.directory);
-      fs.writeFileSync(path.join(legacy.directory, "recovery.json"), JSON.stringify(old));
+      const legacy = backupIn(store);
+      makeLegacy(legacy.directory);
       // A completed backup outside backups/, reached through an upgrade-UUID link.
       const target = path.join(outside, "upgrade-00000000-0000-4000-8000-000000000001");
       fs.mkdirSync(target);
-      fs.writeFileSync(path.join(target, "database.sql"), "outside dump\n");
+      fs.writeFileSync(path.join(target, "database.sql"), `outside dump\n${TRAILER}`);
       fs.writeFileSync(
         path.join(target, "recovery.json"),
         JSON.stringify({ previousGeneration: "a", targetGeneration: "b", state: "completed" }),
       );
       fs.symlinkSync(target, path.join(backups, "upgrade-00000000-0000-4000-8000-000000000002"));
-      const extra = await backupIn(store);
+      const extra = backupIn(store);
       fs.writeFileSync(path.join(extra.directory, "notes.txt"), "mine\n");
-      const linkedDump = await backupIn(store);
+      const linkedDump = backupIn(store);
       fs.unlinkSync(path.join(linkedDump.directory, "database.sql"));
       fs.symlinkSync(
         path.join(target, "database.sql"),
@@ -486,17 +639,17 @@ describe("upgrade backup pruning", () => {
       );
       const noRecord = path.join(backups, "upgrade-00000000-0000-4000-8000-000000000003");
       fs.mkdirSync(noRecord);
-      fs.writeFileSync(path.join(noRecord, "database.sql"), "dump\n");
+      fs.writeFileSync(path.join(noRecord, "database.sql"), `dump\n${TRAILER}`);
       const badRecord = path.join(backups, "upgrade-00000000-0000-4000-8000-000000000004");
       fs.mkdirSync(badRecord);
-      fs.writeFileSync(path.join(badRecord, "database.sql"), "dump\n");
+      fs.writeFileSync(path.join(badRecord, "database.sql"), `dump\n${TRAILER}`);
       fs.writeFileSync(path.join(badRecord, "recovery.json"), "not json");
       fs.mkdirSync(path.join(backups, "upgrade-not-a-uuid"));
       fs.mkdirSync(path.join(backups, "manual-copy"));
       fs.writeFileSync(path.join(backups, "upgrade-00000000-0000-4000-8000-000000000005"), "file");
-      const current = await backupIn(store);
+      const current = backupIn(store);
       const pruned = unwrap(store.pruneBackups(1, current));
-      expect(pruned.removed.map((entry) => entry.directory)).toEqual([legacy.directory]);
+      expect(pruned.removed).toMatchObject([{ directory: legacy.directory, legacy: true }]);
       expect(pruned.held).toEqual([]);
       expect(fs.existsSync(path.join(target, "database.sql"))).toBe(true);
       expect(fs.existsSync(path.join(extra.directory, "database.sql"))).toBe(true);

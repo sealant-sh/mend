@@ -221,11 +221,17 @@ Upgrade proceeds under the installation lock:
 4. Activate the target only after the backup completes. This is the write-ahead migration boundary.
    Start it with `--pull never --no-build`, bounded Compose wait, and exact-version health.
 5. After exact-version health, replace `recovery.json` (write and rename) with
-   `"state": "completed"`; it said `"pending"` until then. Then keep the newest `--keep-backups`
-   completed backups (default 2, this one included; 0 skips pruning) and unlink the older ones file
-   by file, never recursively. Pending, partial or dumpless backups, links, and anything that is not
-   an `upgrade-UUID` directory holding exactly `recovery.json` and `database.sql` stay. A pruning
-   failure is printed; the upgrade has already succeeded.
+   `"state": "completed"`; it said `"pending"` until then, and carries a `sequence` (one more than
+   the highest under the lock). Then keep the newest `--keep-backups` completed backups by sequence
+   (default 2, this one included; 0 skips pruning). Each older one is renamed to
+   `upgrade-UUID.removing`, then its files and the empty directory are unlinked, never recursively;
+   a `.removing` directory, an empty one, or a completed record without its dump is a removal a
+   crash cut short and is finished. Pending backups, partial or dumpless ones, dumps without
+   pg_dumpall's `dump complete` trailer, links, and anything that is not an `upgrade-UUID` directory
+   holding exactly `recovery.json` and `database.sql` stay. Records from before 0.36 (no state, no
+   sequence) count as completed when their dump is whole, order by the generation chain below every
+   sequenced record, and are marked as such when removed. A pruning failure is printed with what was
+   removed; the upgrade has already succeeded.
 
 If assets, images, generation preparation, or recovery-directory creation fail, the old pin and app
 are untouched. If stop, backup, or activation fails or times out before target startup, reselect the

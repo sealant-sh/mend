@@ -174,9 +174,14 @@ Upgrade backups · removed 1 · 2.4 GiB freed · kept 2 (--keep-backups 2)
 ```
 
 Choose the count with `--keep-backups N`; `--keep-backups 0` keeps every backup. A failed upgrade
-removes nothing. A backup whose upgrade never recorded a healthy target, or whose dump is
-incomplete, is always kept and listed; remove it yourself once its recovery no longer needs it.
-Directories Mend did not write are left alone.
+removes nothing. A backup that 0.36 or later recorded as pending (its upgrade never saw a healthy
+target), or whose dump is incomplete, is always kept and listed; remove it yourself once its
+recovery no longer needs it. Directories Mend did not write are left alone.
+
+Backups written by releases before 0.36 carry no outcome. The first upgrade on 0.36 or later treats
+each one whose dump is whole as completed and keeps only the newest N, including the backup of an
+old upgrade that failed after its target started. Copy any you want to keep out of
+`~/.config/mend/backups/` first. Their removals end in `· from before 0.36, no recorded outcome`.
 
 The [self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) covers
 offline assets, port selection, ownership conflicts, locks, and upgrade recovery. The retired host

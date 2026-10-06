@@ -716,9 +716,22 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       expect(f.backups()).toHaveLength(3);
       expect(f.lines).toContain("Upgrade backups · all kept (--keep-backups 0)");
       expect(f.lines.some((line) => line.startsWith("Removed upgrade backup "))).toBe(false);
+      // One of them as a release before 0.36 wrote it: no outcome recorded, and the output says so.
+      const legacy = path.join(f.configDir, "backups", f.backups()[0] ?? "", "recovery.json");
+      const {
+        state: _state,
+        sequence: _sequence,
+        createdAt: _createdAt,
+        ...old
+      } = JSON.parse(fs.readFileSync(legacy, "utf8"));
+      fs.writeFileSync(legacy, JSON.stringify(old));
       expect(await f.upgradeKeeping(versions[3], "1")).toEqual({ _tag: "ok" });
       expect(f.backups()).toHaveLength(1);
-      expect(f.lines.filter((line) => line.startsWith("Removed upgrade backup "))).toHaveLength(3);
+      const removals = f.lines.filter((line) => line.startsWith("Removed upgrade backup "));
+      expect(removals).toHaveLength(3);
+      expect(
+        removals.filter((line) => line.endsWith(" · from before 0.36, no recorded outcome")),
+      ).toEqual([expect.stringContaining(path.dirname(legacy))]);
     });
 
     it.each(["-1", "two", "1.5"])(

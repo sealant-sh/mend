@@ -2015,13 +2015,23 @@ const pruneUpgradeBackups = (
     runtime.writeLine(`Upgrade backups · not pruned: ${pruned.error.message}`);
     return;
   }
-  const { removed, kept, held } = pruned.value;
+  const { removed, kept, held, failed } = pruned.value;
   for (const entry of removed)
-    runtime.writeLine(`Removed upgrade backup ${entry.directory} · ${formatBytes(entry.bytes)}`);
+    runtime.writeLine(
+      `Removed upgrade backup ${entry.directory} · ${formatBytes(entry.bytes)}${
+        entry.interrupted
+          ? " · finishing a removal a crash cut short"
+          : entry.legacy
+            ? " · from before 0.36, no recorded outcome"
+            : ""
+      }`,
+    );
   const freed = removed.reduce((total, entry) => total + entry.bytes, 0);
   runtime.writeLine(
     `Upgrade backups · removed ${removed.length}${removed.length > 0 ? ` · ${formatBytes(freed)} freed` : ""} · kept ${kept.length} (--keep-backups ${keep})`,
   );
+  for (const entry of failed)
+    runtime.writeLine(`Could not remove upgrade backup ${entry.directory}: ${entry.message}`);
   for (const entry of held)
     runtime.writeLine(
       `Kept upgrade backup ${entry.directory} · ${entry.reason === "pending" ? "pending: its upgrade never recorded a healthy target" : "unfinished: no complete database dump"}`,
