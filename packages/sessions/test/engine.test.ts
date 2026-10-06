@@ -145,6 +145,7 @@ import {
   SealantClient,
   SealantPlatformError,
   SealantPrincipal,
+  type SealantPrincipalValue,
   type WorkspaceByKey,
   type WorkspaceCreateFence,
   type WorkspaceStopOptions,
@@ -24999,5 +25000,151 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           expect(join.opened.at(-1)?.user?.name).toBe(LAUNCHER);
         }),
     });
+  });
+});
+
+/**
+ * The platform as Core serves it to more than one person (`MEND_TENANCY=multi`, each Mend user its
+ * own Sealant user): a workspace belongs to the Sealant user who created it, and a lookup by anyone
+ * else is a 404, as `GET /v1/workspaces/<id>` answered the joiner on alpha. Every lookup's
+ * principal lands in `seen` as `<user>:<found|404>`.
+ */
+const workspacesPerOwner = (
+  inner: Layer.Layer<SealantClient>,
+  seen: Array<string>,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => {
+      const owners = new Map<string, string>();
+      const userOf = (principal: SealantPrincipalValue) =>
+        principal.kind === "none" ? "none" : principal.userId;
+      return {
+        ...client,
+        createWorkspace: (options, launch, watch) =>
+          Effect.flatMap(SealantPrincipal, (principal) =>
+            client
+              .createWorkspace(options, launch, watch)
+              .pipe(
+                Effect.tap((workspace) =>
+                  Effect.sync(() => owners.set(workspace.id, userOf(principal))),
+                ),
+              ),
+          ),
+        getWorkspace: (id) =>
+          Effect.flatMap(SealantPrincipal, (principal) => {
+            const owner = owners.get(id);
+            const found = owner === undefined || owner === userOf(principal);
+            seen.push(`${userOf(principal)}:${found ? "found" : "404"}`);
+            return found
+              ? client.getWorkspace(id)
+              : Effect.fail(
+                  new SealantPlatformError({
+                    code: "WorkspaceNotFoundError",
+                    status: 404,
+                    message: "workspace not found",
+                    cause: null,
+                  }),
+                );
+          }),
+      };
+    }),
+  ).pipe(Layer.provide(inner));
+
+/** The owner's session runs; Maria, a member, starts one in its worktree and launches it. */
+const joinByAnotherPerson = async (
+  then: (
+    engine: SessionEngine["Service"],
+    world: World,
+    ids: { readonly holder: SessionId; readonly joined: SessionId },
+  ) => Effect.Effect<void, unknown>,
+) => {
+  const created: Array<CreateOptions> = [];
+  const execCalls: Array<ReadonlyArray<string>> = [];
+  const seen: Array<string> = [];
+  const logs: Array<string> = [];
+  let failure: string | null = null;
+  let holderWorkspace: string | null = null;
+  let joinedWorkspace: string | null = null;
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const holder = yield* engine.provision({
+          projectId: project.id,
+          harness: "claude",
+          label: null,
+          name: "together",
+          ownerUserId: "user-fixture",
+          base: null,
+        });
+        yield* engine.launch(holder.id, ["claude"]);
+        holderWorkspace = world.sessions.get(holder.id)?.sealantWorkspaceId ?? null;
+        const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+          harness: "claude",
+          label: null,
+          ownerUserId: MARIA,
+        });
+        const launched = yield* engine.launch(joined.id, ["claude"]).pipe(Effect.result);
+        if (launched._tag === "Failure") failure = launched.failure.message;
+        joinedWorkspace = world.sessions.get(joined.id)?.sealantWorkspaceId ?? null;
+        if (failure === null) yield* then(engine, world, { holder: holder.id, joined: joined.id });
+      }),
+    {
+      captured: makeMemoryCaptureStore(),
+      logs,
+      prepareWorld: (world) => world.members.set(MARIA, "member"),
+      sealantLayer: workspacesPerOwner(
+        sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+        ),
+        seen,
+      ),
+    },
+  );
+  return { created, seen, logs, failure, holderWorkspace, joinedWorkspace };
+};
+
+describe("a join by another person into a live executor (alpha 2026-10-06, 9e486cfc)", () => {
+  it("finds the holder's executor as its owner and joins it, never waiting on a lookup only the owner may make", async () => {
+    const run = await joinByAnotherPerson(() => Effect.void);
+    // On alpha: `holder: 'unreachable'`, the session line "waiting · the previous session in this
+    // worktree is not answering", and after `leaseWait` (30 min) `worktree leased · held by …`.
+    expect(run.failure).toBeNull();
+    expect(run.logs.some((line) => line.includes("joining the lease holder"))).toBe(true);
+    expect(run.created).toHaveLength(1);
+    expect(run.holderWorkspace).not.toBeNull();
+    expect(run.joinedWorkspace).toBe(run.holderWorkspace);
+    // The holder's executor is never looked up as the joiner.
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("after the join, the joiner's own verbs reach the executor they run in: a shell opens", async () => {
+    let shell: string | null = "not asked";
+    const run = await joinByAnotherPerson((engine, _world, { joined }) =>
+      engine.openShell(joined).pipe(
+        Effect.match({
+          onSuccess: () => {
+            shell = null;
+          },
+          onFailure: (error) => {
+            shell = error.message;
+          },
+        }),
+      ),
+    );
+    expect(run.failure).toBeNull();
+    expect(shell).toBeNull();
+    expect(run.seen).not.toContain(`${MARIA}:404`);
   });
 });
