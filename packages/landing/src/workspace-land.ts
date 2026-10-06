@@ -18,11 +18,23 @@ export const workspaceLandRefusal = (input: {
   readonly changeOwnerUserId: string | null;
   /** The session's turns; the one running is the request the agent is answering. */
   readonly turns: ReadonlyArray<Pick<AgentTurn, "status" | "author">>;
+  /**
+   * The person whose process asked, in a person-layout executor (docs/adr/0016, decision 4); null
+   * when the workspace itself asked (its socket, or its launch's token), as before.
+   */
+  readonly requestedBy?: string | null;
 }): string | null => {
   const owner = input.changeOwnerUserId;
   if (owner === null) return "not landed · the change has no owner";
   if (input.session.ownerUserId !== owner) {
     return "not landed · only the change's owner lands it · this session is not theirs";
+  }
+  if (
+    input.requestedBy !== undefined &&
+    input.requestedBy !== null &&
+    input.requestedBy !== owner
+  ) {
+    return "not landed · only the change's owner lands it · this process runs as someone else";
   }
   const running = input.turns.find((turn) => turn.status === "running");
   if (running !== undefined) {

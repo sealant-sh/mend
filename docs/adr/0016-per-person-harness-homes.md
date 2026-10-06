@@ -208,23 +208,61 @@ refuses it (decision 14).
 ### 4. Git, SSH and the Mend identity
 
 - **The Mend identity.** Each (launch, person) gets its own session-channel token, written 0600 to
-  `~/.mend/session-token`; `MEND_SESSION_ID` names the session the process belongs to. The shim and
-  the helper read the token from there. The server accepts it only with a session id that is live in
-  that launch's executor and that the token's person may act on, and revokes it when the person's
-  logins are released. The container-wide token is for sealantd's capture channel only, and the
-  server refuses it on `/git/transport` and on every helper route. A capture-mode executor has no
-  token-less `/run/mend/mend.sock`.
+  `~/.mend/session-token`; `MEND_SESSION_ID` names the session the process belongs to, and
+  `MEND_SESSION_TOKEN_FILE` names the token's file, since a process may run with another `HOME` (a
+  shared Codex conversation's app-server). The shim and the helper read the token from there, and
+  never fall back to the container-wide token or a socket. A person's process Mend started without
+  that environment (a setup command, the dependency install, a Remote-SSH login) finds the file in
+  its passwd home, read from passwd, never `$HOME`.
+- **The token reaches the home through a pickup, never an exec's arguments** (Core keeps every
+  exec's argv; ADR 0010 decision 5, mend#555). The exec that makes a person (prepare for the
+  launcher and every member it makes, the first process for anyone else) carries one single-use
+  pickup ticket per person, purpose `session-token`, bound to that person, the session and the
+  launch. Inside the same exec, node redeems it over the session channel, writes the token through a
+  pinned directory and gives it to the person, and sets the person's git author as them (below). A
+  redemption that fails for a passing reason is tried once more: a ticket whose answer failed goes
+  back, redeemable again, and a retry from the same channel whose answer was lost gets that same
+  answer, never a second token and never a theft warning. A person who still cannot be given their
+  identity refuses the launch with words to try again, never to change the image. The token is
+  minted when the ticket is redeemed, so a person prepare does not make gets none, and a ticket left
+  unredeemed dies with its exec. A person's token redeems only that person's tickets.
+- **What the server accepts.** A person's token, only with a session id that is live in that
+  launch's executor and that the token's person may act on: they may steer it, are still a member of
+  its organization, and can see its project; checked on every request. Its row names no session
+  (`person:<account>`), so no older Mend takes it for a session's own token. It is revoked with its
+  launch, and when the person's logins are released (Delivery 14). The container-wide token is for
+  sealantd's capture channel and the launch's pickups only, and the server refuses it on
+  `/git/transport` and on every helper route. A capture-mode executor has no token-less
+  `/run/mend/mend.sock`.
+- **Flag off, nothing read.** Mend reads once at startup whether any launch or worktree has a layout
+  recorded. With the flag off and none, every launch is `shared` and no layout is read from the
+  store, by any launch, join, process start or channel request, until one is recorded.
+- **No shared login in a person's environment.** Until Core stops putting the launcher's
+  `GITHUB_TOKEN`, `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` into the container (Deliveries 7–8),
+  every process Mend starts as a person has them set empty.
 - **Git over SSH** to origin goes through the shim; the server signs as the token's person, with
   their Mend key or their own bridge.
 - **The helper** (`mend land`, `repo add`, `runService`, `runServiceRecipe`) authorises the token's
   person under that person's rules: only the change's owner lands (ADR 0007), only the owner runs a
-  command in a terminal session (ADR 0013).
+  command in a terminal session (ADR 0013). A Service runs as the person who started it, and so does
+  its restart, whoever asks for it: a steerer who restarts the owner's Service sets off a process on
+  the owner's logins, as the API already allows.
 - **Git over HTTPS to GitHub** uses Mend's credential helper, `/run/mend/bin/mend-git-credential`
-  (system config for `https://github.com`), which reads `~/.config/gh/hosts.yml`, the file Core
-  writes. No `gh` needed in the image.
-- **Git author and config.** `git config --system user.*` is no longer written. Mend writes the
-  person's git author to `~/.config/git/config`; the person's dotfiles' `~/.gitconfig` wins over it,
-  as global config wins today.
+  (system config for `https://github.com`), which reads `~/.config/gh/hosts.yml` in the user's
+  passwd home, the file Core writes. No `gh` needed in the image. `mend-git-credential token` is for
+  a command that needs the token (`GH_TOKEN=$(mend-git-credential token) gh …`), so it never reaches
+  a terminal.
+- **Git author and config.** `git config --system user.*` is no longer written. The person's author
+  goes into Mend's own file, `~/.mend/git-author` (a `[user]` section, empty when they have none),
+  rewritten at every identity pickup, so a changed setting applies at the next one. Their
+  `~/.config/git/config` includes it at its very top, added once, as the person, through a link
+  their dotfiles made, under git's own `config.lock`: every `user.*` they set themselves (their
+  dotfiles, `git config --global`) comes after it and wins, nothing else in the file changes (a
+  leading BOM, which git reads only at byte 0, is dropped; the mode is kept), a file git cannot
+  parse is left alone and reported, and a failure never fails the launch. When the include cannot be
+  added, the author is set in the file directly where it sets none, and that is reported. Git finds
+  the file through `$XDG_CONFIG_HOME` or `$HOME` (a tool that moves them commits with no author);
+  the person's `~/.gitconfig` wins over it, as global config wins today.
 - **SSH, `scp`, `sftp`, `ssh-keygen`, GnuPG and the JVM** read the passwd home, which is the
   person's. No wrapper.
 
@@ -1138,4 +1176,8 @@ benchmark once more, before 0.36 is tagged.
 - 2026-10-06 (owner): Claude's file history is never saved anywhere, `people/*/` included, since it
   holds copies of edited secret files; it is not part of `P`, `C` or `H`'s links. A `person` launch
   whose restore did not apply the owner map is refused at prepare (decision 8).
+- 2026-10-06, after the review of mend#552/#553: a person's token and git author reach their home
+  through a pickup ticket bound to them (mend#555's mechanism), minted at redemption; a person's
+  token is rechecked against membership and project access on every request, names no session in its
+  row, and a person's process without Mend's environment finds it in its passwd home.
 - Open: gate B's history record.

@@ -17,6 +17,12 @@ import {
   linuxHomeOf,
 } from "@mend/domain/workbench";
 
+import { GIT_CREDENTIAL_HELPER_PATH } from "./git-credential.ts";
+import {
+  SCRIPT_PICKUP_FUNCTION,
+  SCRIPT_PINNED_PUT_FUNCTION,
+  SCRIPT_TRANSPORT_PRELUDE,
+} from "./script-transport.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 // ─── the decision ────────────────────────────────────────────────────────────
@@ -91,6 +97,14 @@ export const personLayoutRefusal = (missing: ReadonlyArray<string>): string =>
  */
 export const ownerMapRefusal = (found: string): string =>
   `This workspace's restore did not give its files to the people working in it (${found}), so nobody could edit them. Nothing was started; the next launch tries again.`;
+
+/**
+ * A person launch whose people could not be given their Mend identity (decision 4): usually a
+ * passing failure (Mend or its channel not answering), so the words say to try again, never to
+ * change the image or the worktree. Nothing is recorded against the image.
+ */
+export const identityRefusal = (failed: ReadonlyArray<string>): string =>
+  `This workspace could not give each person their Mend identity (${failed.join("; ")}). Nothing was started; the next launch tries again.`;
 
 /** The operator asked for person on an image that cannot run it (decision 14, the benchmark). */
 export const operatorPersonRefusal = (missing: ReadonlyArray<string>): string =>
@@ -265,22 +279,87 @@ export const processUserOf = (identity: LinuxIdentity): ProcessUser => ({
 });
 
 /**
- * The environment a person's agent process gets beside what sealantd derives from the passwd
- * entry: Codex's databases in the person's saved directory, so a first start does not re-index
- * and the person's thread index is saved with their conversations (decision 2, Performance).
+ * Where a person's Mend session token lives in their home (decision 4): `~/.mend/session-token`,
+ * 0600, in a real `~/.mend` (0700), never linked into anything saved.
+ */
+export const SESSION_TOKEN_IN_HOME = ".mend/session-token";
+
+export const sessionTokenFileOf = (identity: LinuxIdentity): string =>
+  `${linuxHomeOf(identity)}/${SESSION_TOKEN_IN_HOME}`;
+
+/**
+ * The environment a person's process gets beside what sealantd derives from the passwd entry:
+ * Codex's databases in the person's saved directory, so a first start does not re-index and the
+ * person's thread index is saved with their conversations (decision 2, Performance); and the Mend
+ * identity the SSH shim and the `mend` helper present (decision 4): the session the process
+ * belongs to, and the file holding its person's token. The file is named, not found through
+ * `$HOME`, because a process may run with another `HOME` (a shared Codex conversation's
+ * app-server runs with `HOME` at its conversation home).
  */
 export const personProcessEnv = (
   harnessHome: string,
   identity: LinuxIdentity,
+  sessionId: string,
 ): Readonly<Record<string, string>> => ({
   CODEX_SQLITE_HOME: codexDatabaseDirOf(harnessHome, identity.accountId),
   TMPDIR: privateTmpOf(identity.uid),
   XDG_RUNTIME_DIR: privateRuntimeOf(identity.uid),
+  MEND_SESSION_ID: sessionId,
+  MEND_SESSION_TOKEN_FILE: sessionTokenFileOf(identity),
+  // Never another person's login through the container's environment (decision 5): until Core
+  // stops putting the launcher's tokens there (Deliveries 7–8), a person's process sees none.
+  GH_TOKEN: "",
+  GITHUB_TOKEN: "",
+  CLAUDE_CODE_OAUTH_TOKEN: "",
 });
+
+/** The person's own git config, which includes Mend's author file (decision 4). */
+export const GIT_CONFIG_IN_HOME = ".config/git/config";
+
+/** Mend's own file for the person's git author: Mend rewrites it at every identity pickup. */
+export const GIT_AUTHOR_IN_HOME = ".mend/git-author";
+
+/**
+ * What a person's identity pickup writes into `home`: their token, and Mend's author file, which
+ * `~/.config/git/config` includes at its top (`identityPickupScript`).
+ */
+export const identityFilesOf = (
+  home: string,
+): { readonly token: string; readonly gitAuthor: string } => ({
+  token: `${home}/${SESSION_TOKEN_IN_HOME}`,
+  gitAuthor: `${home}/${GIT_AUTHOR_IN_HOME}`,
+});
+
+/** A git config value, quoted: backslash and double quote escaped, control characters dropped. */
+const gitConfigValue = (value: string): string =>
+  `"${[...value]
+    .filter((char) => {
+      const code = char.codePointAt(0) ?? 0;
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("")
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')}"`;
+
+/**
+ * Mend's author file for a person (decision 4): a `[user]` section and nothing else, empty when
+ * they have no author. Mend owns it and rewrites it at every identity pickup, so a changed
+ * setting applies at the next one. Their `~/.config/git/config` includes it at its very top, so
+ * any `user.*` they set themselves (their dotfiles, `git config --global`) comes later and wins,
+ * and so does their `~/.gitconfig`. Git reads it through `$XDG_CONFIG_HOME` or `$HOME`, so a tool
+ * that moves either reads no author.
+ */
+export const gitAuthorConfigText = (
+  author: { readonly name: string; readonly email: string } | null,
+): string =>
+  author === null
+    ? ""
+    : `[user]\n\tname = ${gitConfigValue(author.name)}\n\temail = ${gitConfigValue(author.email)}\n`;
 
 // ─── the scripts ─────────────────────────────────────────────────────────────
 
 const SAFE_ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SAFE_TICKET = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_LOGIN = /^m[a-z2-7]{8}$/;
 
 /** Account ids and login names go into scripts unquoted only after this. */
@@ -363,6 +442,8 @@ export interface LayoutReport {
    * worktree came back root's, 0644, which nobody could edit and the repair never reaches.
    */
   readonly unowned: string | null;
+  /** Who could not be made, and why (`mend-layout failed <name> <words>`). */
+  readonly failed: ReadonlyArray<string>;
 }
 
 export const parseLayoutReport = (stdout: string): LayoutReport => {
@@ -371,12 +452,18 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
   let probed = false;
   let ready = false;
   let unowned: string | null = null;
+  const failed: Array<string> = [];
   for (const line of stdout.split("\n")) {
     if (!line.startsWith(`${LAYOUT_LINE} `)) continue;
     const rest = line.slice(LAYOUT_LINE.length + 1).trim();
     if (rest === "probed") probed = true;
     else if (rest === "ready") ready = true;
-    else if (rest.startsWith("unowned ")) {
+    else if (rest.startsWith("failed ")) {
+      const words = rest.slice("failed ".length).trim();
+      const name = words.split(" ")[0] ?? "";
+      const why = words.slice(name.length).trim();
+      if (name !== "") failed.push(why === "" ? `${name} could not be made` : `${name}: ${why}`);
+    } else if (rest.startsWith("unowned ")) {
       unowned = rest.slice("unowned ".length).trim() || "the worktree is not group mend's";
     } else if (rest.startsWith("made ")) {
       const name = rest.slice("made ".length).trim();
@@ -386,7 +473,7 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
       if (words !== "" && !missing.includes(words)) missing.push(words);
     }
   }
-  return { probed, missing, ready, made, unowned };
+  return { probed, missing, ready, made, unowned, failed };
 };
 
 /** Every parent directory of these relative paths, shallowest first, once each. */
@@ -454,7 +541,9 @@ export const personHomeScript = (
       // What Core wrote before the user existed is root's, and useradd copied no skeleton into
       // a home that was already there: both become the user's, nothing already there replaced.
       `if [ "$pre" = 1 ]; then ` +
-      `[ -d ${q(skel)} ] && cp -an ${q(`${skel}/.`)} ${q(home)}/; ` +
+      // `|| true`: a coreutils whose `-n` exits 1 when it skips (upstream 9.2) must not fail the
+      // person.
+      `if [ -d ${q(skel)} ]; then cp -an ${q(`${skel}/.`)} ${q(home)}/ || true; fi; ` +
       `chown -hR ${owner} ${q(home)}; fi; ` +
       `fi; fi`,
     `mkdir -p ${q(home)}`,
@@ -495,8 +584,206 @@ export const personHomeScript = (
       `${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)}; ` +
       `chgrp ${MEND_GROUP.gid} ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}; fi`,
     `chmod 0711 ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}`,
+    // Where their Mend token and git author go (decision 4): real directories, theirs. What goes
+    // in them arrives through a pickup (`identityPickupScript`), never in this script.
+    `[ -L ${q(`${home}/.mend`)} ] && fail "unexpected link: ${home}/.mend"`,
+    `mkdir -p ${q(`${home}/.mend`)}`,
+    // A `~/.config/git` their dotfiles made (a link into their checkout included) stays theirs.
+    `[ -e ${q(`${home}/.config/git`)} ] || [ -L ${q(`${home}/.config/git`)} ] || mkdir -p ${q(`${home}/.config/git`)}`,
+    `chmod 0700 ${q(`${home}/.mend`)}`,
+    `[ "$root" = 1 ] && chown -h ${owner} ${q(`${home}/.mend`)} ${q(`${home}/.config`)} ${q(`${home}/.config/git`)} || true`,
   ].join("\n");
 };
+
+/**
+ * Each person's Mend session token and git author, written into their home without either
+ * reaching an exec's arguments (decision 4; Core keeps every exec's argv, review of mend#552/#553
+ * P1-1). The exec carries one pickup ticket per person (`pickup-tickets.ts`, purpose
+ * `session-token`), and node, inside the same exec, redeems each over the session channel and
+ * writes the token through a pinned directory (`pinnedPut`) to `~/.mend/session-token`, 0600, then
+ * gives it to the person. Their git author goes into Mend's own file, `~/.mend/git-author`,
+ * rewritten every time (`gitAuthorConfigText`), which their `~/.config/git/config` includes at its
+ * top, added once and as the person, through a link if their dotfiles made one; a failure there
+ * is said and fails nothing. A redemption that fails for a passing reason (Mend not
+ * answering, the channel busy) is tried once more. A person whose `~/.mend` is not there (prepare
+ * did not make them) is skipped and their ticket left unredeemed, so no token is minted for them.
+ * Prints `mend-layout identity <name>` for each person written, and
+ * `mend-layout failed <name> identity: <why>` (also on stderr) for one that could not be, then
+ * exits 1.
+ */
+export const identityPickupScript = (
+  people: ReadonlyArray<{
+    readonly person: LinuxIdentity;
+    readonly ticket: string;
+    /** `R`; the passwd home unless a test names another. */
+    readonly home?: string;
+  }>,
+): string => {
+  if (people.length === 0) return ":";
+  const args = people.flatMap(({ person, ticket, home }) => {
+    assertScriptSafe(person);
+    if (!SAFE_TICKET.test(ticket)) throw new Error("a pickup ticket is 43 base64url characters");
+    return [ticket, person.name, home ?? linuxHomeOf(person), String(person.uid)];
+  });
+  return `node -e ${shellQuote(IDENTITY_PROGRAM)} -- ${args.map(shellQuote).join(" ")}`;
+};
+
+/**
+ * What runs as the person to include Mend's author file at the top of their git config
+ * (`identityPickupScript`), once: `git config --add` on a missing file, else a prepended
+ * `[include]` under git's own lock (`config.lock`, created exclusively and renamed over the file,
+ * re-read under the lock), so a concurrent git writer and a concurrent pickup exclude each other;
+ * a lock untouched for 30 s was left by a writer that died, and is removed.
+ * A leading BOM is dropped (git reads one only at byte 0). The file's mode, group write included,
+ * is kept. A file git cannot parse is left alone and reported. When the include cannot be added,
+ * the author is set in the file directly, only the keys it does not set, and that is reported too.
+ * Exits 0 when the include is there; else says what failed, on one line.
+ */
+const INCLUDE_SOURCE = String.raw`const fs = require("node:fs"), cp = require("node:child_process");
+const [file, include] = process.argv.slice(1);
+const fail = (code, why) => { process.stderr.write(why.replace(/\s+/g, " ").trim() + "\n"); process.exit(code); };
+const git = (args) => cp.spawnSync("git", ["config", "--file", file, ...args], { encoding: "utf8" });
+const lastWords = (run) => ((run.stderr || "").trim().split("\n").filter(Boolean).pop() || (run.error ? run.error.message : "git config failed"));
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const direct = (why) => {
+  for (const key of ["user.name", "user.email"]) {
+    const ours = cp.spawnSync("git", ["config", "--file", include, "--get", key], { encoding: "utf8" });
+    if (ours.status !== 0) continue;
+    if (git(["--get", key]).status === 0) continue;
+    const set = git([key, ours.stdout.replace(/\n$/, "")]);
+    if (set.status !== 0) fail(3, why + "; nor could the author be set in it directly: " + lastWords(set));
+  }
+  fail(3, why + "; the author was set in it directly instead, where it set none");
+};
+const withoutBom = (text) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+const known = git(["--get-all", "include.path"]);
+if (known.status === 0 && known.stdout.split("\n").includes(include)) process.exit(0);
+if (known.status !== 0 && known.status !== 1) {
+  fail(2, "git cannot read " + file + " (" + lastWords(known) + "), so nothing was added to it");
+}
+// No file yet: git makes it. One that exists, even empty or only a BOM, takes the locked prepend,
+// which drops the BOM (git --add would keep it, after its own new lines).
+try { fs.readFileSync(file); } catch (error) {
+  if (error.code !== "ENOENT") direct(error.code + " reading " + file + ": " + error.message);
+  const added = git(["--add", "include.path", include]);
+  if (added.status !== 0) direct("the include could not be added: " + lastWords(added));
+  process.exit(0);
+}
+let real;
+try { real = fs.realpathSync(file); } catch (error) { direct(error.code + " finding " + file + ": " + error.message); }
+const lock = real + ".lock";
+// A lock nobody has touched for 30 s was left by a writer that died: it goes, and so does the wait.
+const stale = () => {
+  try {
+    const held = fs.lstatSync(lock);
+    if (Date.now() - held.mtimeMs > 30000) { fs.unlinkSync(lock); return true; }
+  } catch {}
+  return false;
+};
+let fd = null;
+for (let i = 0; i < 40 && fd === null; i++) {
+  try {
+    fd = fs.openSync(lock, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+  } catch (error) {
+    if (error.code !== "EEXIST") direct(error.code + " taking git's lock " + lock + ": " + error.message);
+    if (!stale()) sleep(50);
+  }
+}
+if (fd === null) direct("git's lock " + lock + " stayed held");
+try {
+  const current = withoutBom(fs.readFileSync(real, "utf8"));
+  const already = current.split(/\r?\n/).some((line) => /^\s*path\s*=\s*/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === include);
+  if (already) {
+    fs.closeSync(fd);
+    fs.unlinkSync(lock);
+    process.exit(0);
+  }
+  const mode = fs.statSync(real).mode & 0o7777;
+  fs.writeSync(fd, "[include]\n\tpath = " + include + "\n" + current);
+  fs.fchmodSync(fd, mode);
+  fs.closeSync(fd);
+  fd = null;
+  fs.renameSync(lock, real);
+} catch (error) {
+  try { if (fd !== null) fs.closeSync(fd); } catch {}
+  try { fs.unlinkSync(lock); } catch {}
+  direct((error.code || "error") + " writing " + real + ": " + error.message);
+}
+`;
+
+const IDENTITY_PROGRAM = [
+  SCRIPT_TRANSPORT_PRELUDE,
+  SCRIPT_PICKUP_FUNCTION,
+  SCRIPT_PINNED_PUT_FUNCTION,
+  `const a = process.argv.slice(1);
+const people = [];
+for (let i = 0; i + 3 < a.length; i += 4) people.push({ ticket: a[i], name: a[i + 1], home: a[i + 2], uid: Number(a[i + 3]) });
+const root = typeof process.getuid === "function" && process.getuid() === 0;
+const say = (line) => process.stdout.write("${LAYOUT_LINE} " + line + "\\n");
+let failed = false;
+const fail = (person, why) => {
+  failed = true;
+  say("failed " + person.name + " identity: " + why);
+  process.stderr.write("mend: " + person.name + "'s Mend identity: " + why + "\\n");
+};
+const made = (person) => { try { return fs.lstatSync(person.home + "/.mend").isDirectory(); } catch { return false; } };
+const write = (person, files, file) => {
+  const bytes = files.get(file);
+  if (bytes === undefined) return null;
+  const dir = file.slice(0, file.lastIndexOf("/"));
+  const name = file.slice(file.lastIndexOf("/") + 1);
+  // A staging name of this exec's own: two first processes of one person never share one.
+  const staging = ".mend-identity-part-" + process.pid + "-" + require("node:crypto").randomBytes(4).toString("hex");
+  const why = pinnedPut(dir, name, staging, bytes);
+  if (why !== null) return file + ": " + why;
+  if (root) { try { fs.lchownSync(file, person.uid, ${MEND_GROUP.gid}); } catch { return file + ": could not give it to its person"; } }
+  return null;
+};
+// Mend's author file, rewritten at every pickup, then included at the top of their git config,
+// once, as the person, through a link their dotfiles made. Never fatal: said on stderr.
+const INCLUDE_PROGRAM = ${JSON.stringify(INCLUDE_SOURCE)};
+const includeAuthor = (person) => {
+  const file = person.home + "/${GIT_CONFIG_IN_HOME}";
+  const include = person.home + "/${GIT_AUTHOR_IN_HOME}";
+  const run = require("node:child_process").spawnSync(process.execPath, ["-e", INCLUDE_PROGRAM, file, include], {
+    cwd: person.home,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin", HOME: person.home },
+    ...(root ? { uid: person.uid, gid: ${MEND_GROUP.gid} } : {}),
+  });
+  if (run.error !== undefined || run.status !== 0) {
+    const why = (run.stderr || "").trim() || String(run.error || "it failed");
+    process.stderr.write("mend: " + person.name + "'s git author was not included in their git config: " + why + "\\n");
+  }
+};
+const setAuthor = (person, files) => {
+  const why = write(person, files, person.home + "/${GIT_AUTHOR_IN_HOME}");
+  if (why !== null) { process.stderr.write("mend: " + person.name + "'s git author was not written: " + why + "\\n"); return; }
+  includeAuthor(person);
+};
+// Passing reasons are tried once more; a ticket refused as spent or as someone else's is not.
+const passing = (reason) => !reason.startsWith("the pickup was refused: this pickup ticket");
+const redeem = (person, done) =>
+  redeemPickup(person.ticket, (reason, files) => {
+    if (reason === null || !passing(reason)) return done(reason, files);
+    setTimeout(() => redeemPickup(person.ticket, done), 500);
+  });
+const next = (index) => {
+  if (index >= people.length) process.exit(failed ? 1 : 0);
+  const person = people[index];
+  if (!made(person)) return next(index + 1);
+  redeem(person, (reason, files) => {
+    if (reason !== null) { fail(person, reason); return next(index + 1); }
+    const why = write(person, files, person.home + "/${SESSION_TOKEN_IN_HOME}");
+    if (why !== null) fail(person, why);
+    else if (!files.has(person.home + "/${SESSION_TOKEN_IN_HOME}")) fail(person, "the pickup carried no token");
+    else { setAuthor(person, files); say("identity " + person.name); }
+    next(index + 1);
+  });
+};
+next(0);
+`,
+].join("\n");
 
 /**
  * What prepare runs in a person-layout executor beside the helper install, as root and in the
@@ -516,6 +803,8 @@ export const personPrepareScript = (
     readonly person: LinuxIdentity;
     /** Made only when their saved directory came back with the restored head (members). */
     readonly ifSaved: boolean;
+    /** Their identity pickup (`identityPickupScript`), redeemed once they are made. */
+    readonly ticket?: string;
   }>,
   options: {
     readonly harnessHome: string;
@@ -541,6 +830,19 @@ export const personPrepareScript = (
   const marker = places.marker ?? REPAIR_MARKER;
   const markerDir = marker.slice(0, marker.lastIndexOf("/"));
   const identities = people.map((entry) => entry.person);
+  const tickets = people.flatMap(({ person, ticket }) =>
+    ticket === undefined
+      ? []
+      : [
+          {
+            person,
+            ticket,
+            ...(places.homesRoot === undefined
+              ? {}
+              : { home: `${places.homesRoot}/${person.name}` }),
+          },
+        ],
+  );
   const homeOptions = {
     harnessHome: options.harnessHome,
     ...(places.tmpRoot === undefined ? {} : { tmpRoot: places.tmpRoot }),
@@ -569,17 +871,27 @@ export const personPrepareScript = (
       const saved = q(savedDirOf(options.harnessHome, person.accountId));
       return (
         `if [ "$layout_failed" = 0 ]${ifSaved ? ` && [ -d ${saved} ]` : ""}; then\n` +
-        `( ${personHomeScript(person, {
+        `person_out=$( ( ${personHomeScript(person, {
           ...homeOptions,
           ...(places.homesRoot === undefined ? {} : { home: `${places.homesRoot}/${person.name}` }),
-        }).replaceAll("\n", "\n  ")}\n)\n` +
+        }).replaceAll("\n", "\n  ")}\n) 2>&1 )\n` +
         `if [ "$?" = 0 ]; then printf '%s made %s\\n' ${LAYOUT_LINE} ${person.name}; ` +
-        `else printf '%s failed %s\\n' ${LAYOUT_LINE} ${person.name}; layout_failed=1; fi\nfi`
+        // What went wrong, in the person's line (review of mend#552, P3-8): its last words.
+        `else printf '%s failed %s %s\\n' ${LAYOUT_LINE} ${person.name} "$(printf '%s' "$person_out" | tail -n 3 | tr '\\n' ' ')"; ` +
+        `layout_failed=1; fi\nfi`
       );
     }),
+    // Each person made gets their Mend token and git author through their own pickup.
+    ...(tickets.length === 0
+      ? []
+      : [
+          `if [ "$layout_failed" = 0 ]; then ${identityPickupScript(tickets)} || layout_failed=1; fi`,
+        ]),
     `if [ "$layout_failed" = 0 ]; then`,
     `chmod 0755 /root 2>/dev/null || true`,
     `git -C ${q(options.repo)} config core.sharedRepository group 2>/dev/null || true`,
+    // Git over HTTPS to GitHub answers with the calling user's own login (decision 4).
+    `git config --system credential.https://github.com.helper ${q(GIT_CREDENTIAL_HELPER_PATH)} 2>/dev/null || true`,
     `mkdir -p ${q(markerDir)} && touch ${q(marker)}`,
     `printf '%s ready\\n' ${LAYOUT_LINE}`,
     `fi`,

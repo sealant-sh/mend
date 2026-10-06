@@ -154,8 +154,11 @@ import {
   AGENT_MEMORY_ROOTS,
   agentMemoryMaxFileBytes,
   type HarnessLayout,
+  type LinuxIdentity,
   linuxHomeOf,
   MEND_GROUP,
+  canSteerSession,
+  canTypeInTerminal,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -255,6 +258,13 @@ import {
 } from "./capture-runtime.ts";
 import { CaptureSeals } from "./capture-seals.ts";
 import {
+  CHANNEL_MAY_NOT_ACT,
+  CHANNEL_NOT_LIVE_HERE,
+  CHANNEL_OWNER_RUNS,
+  CHANNEL_TOKEN_NOT_ACCEPTED,
+  containerTokenRefused,
+} from "./channel-identity.ts";
+import {
   carryConversationsExec,
   codexDatabaseHolds,
   codexMemoryMayStayOn,
@@ -281,7 +291,7 @@ import {
   SHARED_AS_BEFORE,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
-import { processUserOf } from "./harness-layout.ts";
+import { gitAuthorConfigText, identityFilesOf, processUserOf } from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
   CODEX_SHELL_SNAPSHOT_OFF,
@@ -1685,6 +1695,8 @@ export class SessionEngine extends Context.Service<
      */
     readonly openShell: (
       sessionId: SessionId,
+      /** Who opened it: in a person-layout executor it runs as them (docs/adr/0016). */
+      openedBy?: string,
     ) => Effect.Effect<
       SessionProcess,
       SessionNotFoundError | SessionNotLiveError | LegacyBenchReadOnlyError | SealantPlatformError
@@ -1731,6 +1743,8 @@ export class SessionEngine extends Context.Service<
       name: string | null,
       protocol?: "tcp" | "udp",
       browserScheme?: ServiceBrowserScheme,
+      /** Who started it: in a person-layout executor it runs as them, restarts too (docs/adr/0016). */
+      startedBy?: string,
     ) => Effect.Effect<
       ServiceView,
       | SessionNotFoundError
@@ -1756,6 +1770,8 @@ export class SessionEngine extends Context.Service<
     readonly runServiceRecipe: (
       sessionId: SessionId,
       name: string,
+      /** Who started it: in a person-layout executor it runs as them, restarts too (docs/adr/0016). */
+      startedBy?: string,
     ) => Effect.Effect<
       ServiceView,
       | SessionNotFoundError
@@ -1941,6 +1957,12 @@ const markAnswered = (fence: { answered: boolean }) =>
 /** A log about evidence: its failure is its own, never the evidence's. */
 const evidenceLog = (log: Effect.Effect<void>) => log.pipe(Effect.catchCause(() => Effect.void));
 
+/** How long an identity pickup's answer is kept for its own channel's retry (review 4 of mend#553). */
+const IDENTITY_ANSWER_MS = 60_000;
+const ticketKeyOf = (ticket: string) => createHash("sha256").update(ticket).digest("hex");
+const channelKeyOf = (channel: PickupChannel) =>
+  `${channel.sessionId}\u0000${channel.launchId ?? ""}\u0000${channel.accountId ?? ""}`;
+
 export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineRequirements> =
   Layer.effect(
     SessionEngine,
@@ -2008,6 +2030,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Pickups pass through too: a ticket names its session, person and launch already.
         ...(api.pickup === undefined ? {} : { pickup: api.pickup }),
         ...(api.pickupAs === undefined ? {} : { pickupAs: api.pickupAs }),
+        ...(api.channelFor === undefined ? {} : { channelFor: api.channelFor }),
       });
       const conversations = yield* AgentConversationRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
@@ -5965,6 +5988,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // over the session channel (`pickup-tickets.ts`). Held in memory, by this process, which
       // also serves the channel of every session it launches.
       const pickups = makePickupTickets();
+      /**
+       * What each identity ticket answered (docs/adr/0016, decision 4), by the ticket's hash, for
+       * a minute: a retry from the same channel whose first answer was lost gets the same answer
+       * again, never a second token and never a theft warning (review 4 of mend#553, P3-1).
+       */
+      const identityAnswers = new Map<
+        string,
+        {
+          readonly channel: string;
+          readonly answer: ReturnType<typeof pickupAnswerOf>;
+          /** `performance.now()`: a monotonic clock, so no clock step stretches the window. */
+          readonly expiresAt: number;
+        }
+      >();
+      /**
+       * An identity answer still being made, by the ticket's hash: a retry from the same channel
+       * that arrives meanwhile (its first request timed out) waits for it and gets it, never a
+       * refusal (review 5 of mend#553, P3-1).
+       */
+      const identityInFlight = new Map<
+        string,
+        {
+          readonly channel: string;
+          readonly done: Deferred.Deferred<ReturnType<typeof pickupAnswerOf>, Error>;
+        }
+      >();
+      /** A ticket whose exec has ended: forgotten, and so is any identity it answered. */
+      const discardPickup = (ticket: string) => {
+        pickups.discard(ticket);
+        identityAnswers.delete(ticketKeyOf(ticket));
+      };
 
       /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
@@ -5987,13 +6041,79 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * An identity ticket (docs/adr/0016, decision 4): purpose `session-token`, bound to the
+       * person, the session and the launch. It carries no secret: its files are the two paths in
+       * the person's home, and their bytes, the person's Mend token and git author, are made only
+       * when the exec redeems it (`identityFilesAt`), so a person prepare does not make gets no
+       * token. No read: the caller names the worktree.
+       */
+      const mintIdentityTicket = (input: {
+        readonly sessionId: string;
+        readonly worktreeId: string;
+        readonly launchId: string;
+        readonly person: LinuxIdentity;
+      }): Effect.Effect<string> =>
+        Effect.sync(() => {
+          const files = identityFilesOf(linuxHomeOf(input.person));
+          return pickups.mint(
+            {
+              purpose: "session-token",
+              sessionId: input.sessionId,
+              worktreeId: input.worktreeId,
+              personId: input.person.accountId,
+              launchId: input.launchId,
+            },
+            [
+              { path: files.token, bytes: new Uint8Array() },
+              { path: files.gitAuthor, bytes: new Uint8Array() },
+            ],
+          );
+        });
+
+      /**
+       * What an identity ticket answers, made now: the person's Mend token of the launch, and
+       * their git author when they have one. Nothing is minted for a ticket nobody redeems.
+       */
+      const identityFilesAt = Effect.fn("SessionEngine.identityFilesAt")(function* (
+        binding: PickupBinding,
+        files: ReadonlyArray<PickupFile>,
+      ) {
+        if (binding.personId === null || binding.launchId === null) {
+          return yield* Effect.fail(new Error("this identity ticket names no person or launch"));
+        }
+        const [tokenFile, configFile] = files;
+        if (tokenFile === undefined || configFile === undefined) {
+          return yield* Effect.fail(new Error("this identity ticket names no files"));
+        }
+        // The author first: the token is minted last, so nothing after it can fail and leave a
+        // token nobody received.
+        const author = yield* gitAuthors.resolve(binding.personId);
+        const token = yield* channelTokens.issuePerson(binding.launchId, binding.personId);
+        return [
+          { path: tokenFile.path, bytes: new TextEncoder().encode(token) },
+          // Always written: a person who cleared their author gets an empty file, not a stale one.
+          {
+            path: configFile.path,
+            bytes: new TextEncoder().encode(
+              gitAuthorConfigText(
+                author === null ? null : { name: author.name, email: author.email },
+              ),
+            ),
+          },
+        ];
+      });
+
+      /**
        * Redeem a ticket presented through `channel` (`pickupChannelMatch`, `pickupSiblingMatch`).
        * The ticket is spent whatever this answers. A ticket presented a second time, or through a
        * channel it does not belong to, is logged as a possible theft: which channel presented which
        * session's ticket, never the ticket. One Mend does not hold (discarded when its exec ended,
        * past the backstop, from before a restart) is logged plainly: usually an exec that ran late.
        */
-      const redeemPickup = (channel: PickupChannel, ticket: string) =>
+      const redeemPickup = (
+        channel: PickupChannel,
+        ticket: string,
+      ): Effect.Effect<ReturnType<typeof pickupAnswerOf>, Error> =>
         Effect.gen(function* () {
           const taken = pickups.take(ticket);
           const refuse = (binding: PickupBinding | null, reason: string) =>
@@ -6024,6 +6144,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* refuse(null, "this pickup ticket is spent, expired or unknown");
           }
           if (taken.kind === "spent") {
+            const key = ticketKeyOf(ticket);
+            // The same channel asking again while its first answer is still being made: it waits
+            // for that answer. If that one failed, the ticket went back, and this takes it.
+            const making = identityInFlight.get(key);
+            if (making !== undefined && making.channel === channelKeyOf(channel)) {
+              yield* Effect.logInfo(
+                "session engine: pickup asked again while its answer is made · a retry",
+              ).pipe(
+                Effect.annotateLogs({
+                  sessionId: taken.binding.sessionId,
+                  purpose: taken.binding.purpose,
+                }),
+              );
+              return yield* Deferred.await(making.done).pipe(
+                Effect.catch(() => redeemPickup(channel, ticket)),
+              );
+            }
+            // The same channel asking again for an identity it was answered moments ago: its
+            // answer was lost on the way. The same answer, so no second token.
+            const answered = identityAnswers.get(key);
+            if (
+              answered !== undefined &&
+              answered.expiresAt > performance.now() &&
+              answered.channel === channelKeyOf(channel)
+            ) {
+              yield* Effect.logInfo("session engine: pickup answered again · a retry").pipe(
+                Effect.annotateLogs({
+                  sessionId: taken.binding.sessionId,
+                  purpose: taken.binding.purpose,
+                }),
+              );
+              return answered.answer;
+            }
             return yield* refuse(
               taken.binding,
               "this pickup ticket was already redeemed, perhaps through another channel",
@@ -6040,14 +6193,65 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* refuse(entry.binding, "this pickup ticket is another session's");
             }
           }
+          if (entry.binding.purpose === "session-token") {
+            const key = ticketKeyOf(ticket);
+            const done = yield* Deferred.make<ReturnType<typeof pickupAnswerOf>, Error>();
+            identityInFlight.set(key, { channel: channelKeyOf(channel), done });
+            const made = yield* identityFilesAt(entry.binding, entry.files).pipe(
+              // The store failed mid-answer (a typed failure, or a dropped connection's
+              // defect): the ticket goes back, so the exec's retry redeems it rather than
+              // reading as a theft.
+              Effect.catchCause((cause) =>
+                Effect.sync(() => pickups.restore(ticket, entry)).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new Error(
+                        `Mend could not make this identity now: ${
+                          Cause.pretty(cause).split("\n")[0] ?? "the store failed"
+                        }`,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Effect.result,
+            );
+            if (Result.isFailure(made)) {
+              yield* Deferred.fail(done, made.failure);
+              identityInFlight.delete(key);
+              return yield* Effect.fail(made.failure);
+            }
+            const answer = pickupAnswerOf(made.success);
+            const kept = {
+              channel: channelKeyOf(channel),
+              answer,
+              expiresAt: performance.now() + IDENTITY_ANSWER_MS,
+            };
+            identityAnswers.set(key, kept);
+            // Swept on its own: nothing keeps the token's bytes past the window.
+            setTimeout(() => {
+              if (identityAnswers.get(key) === kept) identityAnswers.delete(key);
+            }, IDENTITY_ANSWER_MS).unref();
+            yield* Deferred.succeed(done, answer);
+            identityInFlight.delete(key);
+            yield* Effect.logInfo("session engine: pickup redeemed").pipe(
+              Effect.annotateLogs({
+                sessionId: entry.binding.sessionId,
+                purpose: entry.binding.purpose,
+                files: made.success.length,
+              }),
+            );
+            return answer;
+          }
+          const files = entry.files;
           yield* Effect.logInfo("session engine: pickup redeemed").pipe(
             Effect.annotateLogs({
               sessionId: entry.binding.sessionId,
               purpose: entry.binding.purpose,
-              files: entry.files.length,
+              files: files.length,
             }),
           );
-          return pickupAnswerOf(entry.files);
+          return pickupAnswerOf(files);
         }).pipe(
           Effect.mapError((error) =>
             error instanceof Error ? error : new Error("the pickup could not be answered"),
@@ -6245,6 +6449,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
         fork: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
+        anyRecorded: yield* harnessLayouts.anyRecorded(),
+        identityTicket: (input) => mintIdentityTicket(input),
+        discardTicket: (ticket) => discardPickup(ticket),
       });
       // Service lifecycle calls are rare and may span platform I/O. One engine-local permit keeps
       // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
@@ -6848,6 +7055,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const worktree = yield* ensureWorktreeIn(project, input, input.ownerUserId);
         if (requested !== undefined && joined === null) {
           yield* harnessLayouts.requestLayout(worktree.id, requested);
+          layoutSteps.noteRecorded();
         }
         return yield* provisionInWorktree(project, worktree, input);
       });
@@ -8984,10 +9192,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The layout's own script rides the helper's exec (docs/adr/0016, Performance: no new
         // exec on the cold path): the image probe, and in the person layout every person's user,
         // home and saved directory, made before anything runs as them.
-        const layoutScript = layoutSteps.prepareScript(launchLayout, {
-          harnessHome: HARNESS_HOME_MOUNT_PATH,
-          repo: "/workspace/repo",
-        });
+        // Each person prepare makes gets their Mend token and git author in the same exec
+        // (docs/adr/0016, decision 4), through a pickup ticket of their own: only the ticket
+        // rides the exec's arguments, and the token is minted when the exec redeems it.
+        const identityTickets =
+          input.layout === undefined
+            ? null
+            : yield* layoutSteps.prepareTickets({
+                layout: launchLayout,
+                launchId: input.layout.launchId,
+                sessionId,
+                worktreeId: input.layout.worktreeId,
+              });
+        const layoutScript = layoutSteps.prepareScript(
+          launchLayout,
+          { harnessHome: HARNESS_HOME_MOUNT_PATH, repo: "/workspace/repo" },
+          identityTickets,
+        );
         const stop = (message: string) =>
           input
             .onFailure(message)
@@ -9016,7 +9237,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "session engine: the mend helper and git transport were not installed in the workspace",
           ).pipe(Effect.annotateLogs({ sessionId, ...detail }));
         const helper =
-          `${!input.captured ? "" : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH)} && `}` +
+          `${
+            !input.captured
+              ? ""
+              : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH, {
+                  gitCredentialHelper: launchLayout.layout === "person",
+                })} && `
+          }` +
           `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend && ` +
           `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh && ` +
           `git config --system ssh.variant ssh`;
@@ -9029,6 +9256,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             layoutScript === null ? helper : `( ${helper} ); h=$?\n${layoutScript}\nexit $h`,
           ])
           .pipe(
+            // The exec that carried the identity tickets has ended: none is redeemable after it.
+            Effect.ensuring(
+              Effect.sync(() => {
+                for (const ticket of identityTickets?.values() ?? []) discardPickup(ticket);
+              }),
+            ),
             Effect.tap((result) =>
               result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
             ),
@@ -10973,9 +11206,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * where it runs as root as before. Shells and Services run as the session's owner until the
        * caller is known here (Delivery 13); in a person executor only the owner opens them today.
        */
-      const startAsOwner = (
+      /**
+       * The user a process of `session` starts as in a person-layout executor (docs/adr/0016,
+       * decision 1): `person`'s, read only once the worktree can run the person layout, so a
+       * shared executor asks nothing more than before. Null: it runs as root, as before.
+       */
+      const startAsPerson = (
         session: Session,
         workspace: Workspace,
+        person: Effect.Effect<string | null>,
       ): Effect.Effect<
         { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
         SealantPlatformError
@@ -10983,12 +11222,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           if (capture === null || session.ownerUserId === null) return null;
           if (!(yield* layoutSteps.mayRunPerson(session.worktreeId))) return null;
+          const accountId = (yield* person) ?? session.ownerUserId;
           return yield* layoutSteps.processAs({
             workspace,
             launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
-            accountId: session.ownerUserId,
+            accountId,
+            sessionId: session.id,
+            worktreeId: session.worktreeId,
           });
         });
+      /** An agent of the session: its owner's (steering, Delivery 18, picks the sender). */
+      const startAsOwner = (session: Session, workspace: Workspace) =>
+        startAsPerson(session, workspace, Effect.succeed(session.ownerUserId));
 
       /** The memory in a session's head capture, and what was delivered there; null without one. */
       const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
@@ -12260,7 +12505,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The owner's git author (docs/GIT-ACCESS.md, "Git author"), for a cold workspace and a
         // claimed standby alike: system config, written before the harness starts, so dotfiles
         // and repository config still decide over it.
-        yield* applyGitAuthor(sessionId, workspace, ownerUserId);
+        // In a person-layout executor no `git config --system user.*` is written: each person's
+        // author went into their own `~/.config/git/config` when their user was made
+        // (docs/adr/0016, decision 4), the launcher's at prepare.
+        if (provisioned.executorLayout !== "person") {
+          yield* applyGitAuthor(sessionId, workspace, ownerUserId);
+        }
         // Mend's default shell profile, beside it and for the same launches: dotfiles were
         // applied at boot, so only a file they left absent is written.
         yield* applyDefaultShellProfile(sessionId, workspace, project, workspaceImage);
@@ -12546,10 +12796,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const layoutFallback: string | null = provisioned.layoutFallback;
         const startAs =
           executorLayout === "person"
-            ? yield* layoutSteps.processAs({ workspace, launchId, accountId: ownerUserId }).pipe(
-                Effect.tapError((error) => abandonExecutor(workspace, error.message)),
-                settleOnFailure,
-              )
+            ? yield* layoutSteps
+                .processAs({
+                  workspace,
+                  launchId,
+                  accountId: ownerUserId,
+                  sessionId,
+                  worktreeId: session.worktreeId,
+                })
+                .pipe(
+                  Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+                  settleOnFailure,
+                )
             : null;
 
         // Capture mode: the dependency tree for THIS executor's platform, before the harness.
@@ -14379,7 +14637,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return mergeRecipes(fromFile, yield* projectRecipes.listForProject(session.projectId));
       });
 
-      const openShell = Effect.fn("SessionEngine.openShell")(function* (sessionId: SessionId) {
+      const openShell = Effect.fn("SessionEngine.openShell")(function* (
+        sessionId: SessionId,
+        openedBy?: string,
+      ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
@@ -14395,7 +14656,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }, 0) + 1;
         // The image stamped at launch names the login shell this tab should run.
         const shellArgv = interactiveShellArgv(session.workspaceImage);
-        const startAs = yield* startAsOwner(session, workspace);
+        // A shell runs as the person who opened it (docs/adr/0016, decision 1).
+        const startAs = yield* startAsPerson(
+          session,
+          workspace,
+          Effect.succeed(openedBy ?? session.ownerUserId),
+        );
         const pty = yield* sealant.openSession(
           workspace,
           shellArgv,
@@ -14716,6 +14982,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         protocol: "tcp" | "udp" = "tcp",
         browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-run",
+        startedBy: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -14723,6 +14990,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const workspace = yield* workspaceForSupportingProcess(session);
         const workspaceId = SealantWorkspaceId.make(workspace.id);
+        // A Service runs as the person who started it, across restarts (docs/adr/0016).
+        const runsAs = startedBy ?? session.ownerUserId;
         const label = name ?? argv[0] ?? "service";
         const service = yield* getOrCreateService(
           sessionId,
@@ -14749,7 +15018,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           status: "starting",
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
-        const pty = yield* startAsOwner(session, workspace).pipe(
+        const pty = yield* startAsPerson(session, workspace, Effect.succeed(runsAs)).pipe(
+          // Remembered only where it decides anything: a person executor's restart runs as them.
+          Effect.tap((startAs) =>
+            startAs === null || runsAs === null
+              ? Effect.void
+              : services.setStartedBy(service.id, runsAs),
+          ),
           Effect.flatMap((startAs) =>
             sealant.openSession(
               workspace,
@@ -14810,6 +15085,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         protocol: "tcp" | "udp" = "tcp",
         browserScheme: ServiceBrowserScheme = null,
         declarationSource: ServiceDeclarationSource = "explicit-run",
+        startedBy: string | null = null,
       ) =>
         withServiceLifecycle(
           runServiceUnlocked(
@@ -14820,12 +15096,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             protocol,
             browserScheme,
             declarationSource,
+            startedBy,
           ),
         );
 
       const runServiceRecipe = Effect.fn("SessionEngine.runServiceRecipe")(function* (
         sessionId: SessionId,
         name: string,
+        startedBy: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
         const fromFile = yield* fileRecipesOf(session).pipe(
@@ -14876,6 +15154,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               recipe.protocol,
               recipe.browserScheme,
               declarationSource,
+              startedBy,
             );
       });
 
@@ -14921,7 +15200,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.mapError(
             () => new ServiceStartError({ message: "The Service's session no longer exists." }),
           ),
-          Effect.flatMap((owner) => startAsOwner(owner, workspace)),
+          // As the person who started it (docs/adr/0016), read only in a person executor.
+          Effect.flatMap((owner) =>
+            startAsPerson(owner, workspace, services.startedByOf(service.id)),
+          ),
           Effect.flatMap((startAs) =>
             sealant.openSession(
               workspace,
@@ -14974,219 +15256,343 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * that one session; ownership guards make cross-session ids a 404-shaped
        * error rather than a capability.
        */
-      const socketApiFor = (sessionId: SessionId): SessionSocketApi =>
-        ownedSocketApi(sessionId, {
-          pickup: (ticket) => redeemPickup({ sessionId, launchId: null, accountId: null }, ticket),
-          pickupAs: (grant) => (ticket) =>
-            redeemPickup(
-              { sessionId, launchId: grant.launchId, accountId: grant.accountId },
-              ticket,
-            ),
-          ...(capture === null
-            ? {}
-            : {
-                capture: captureApiFor(sessionId),
-                captureAs: (launchId: string) => captureApiFor(sessionId, launchId),
-              }),
-          recipes: () =>
-            listServiceRecipes(sessionId).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          listServices: () =>
-            services
-              .listForSession(sessionId)
-              .pipe(
-                Effect.flatMap((rows) => Effect.forEach(rows, (row) => readServiceView(row.id))),
-              ),
-          runServiceRecipe: (name) =>
-            runServiceRecipe(sessionId, name).pipe(
-              Effect.mapError((error) => new Error(error.message)),
-              Effect.orDie,
-            ),
-          runService: (argv, port, name, protocol, browserScheme) =>
-            runService(sessionId, argv, port, name, protocol, browserScheme ?? null).pipe(
-              Effect.mapError((error) => new Error(error.message)),
-              Effect.orDie,
-            ),
-          addService: (port, name, protocol, browserScheme) =>
-            addService(sessionId, port, name, protocol, browserScheme ?? null).pipe(
-              Effect.mapError((error) => new Error(error.message)),
-              Effect.orDie,
-            ),
-          stopService: (serviceReference) =>
-            Effect.gen(function* () {
-              const service = yield* services.byReference(serviceReference);
-              if (service === null || service.sessionId !== sessionId) {
-                return yield* new ServiceNotFoundError({ processId: serviceReference });
-              }
-              return yield* stopService(service.id);
-            }).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          restartService: (serviceReference) =>
-            Effect.gen(function* () {
-              const service = yield* services.byReference(serviceReference);
-              if (service === null || service.sessionId !== sessionId) {
-                return yield* new ServiceNotFoundError({ processId: serviceReference });
-              }
-              return yield* restartService(service.id);
-            }).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          stopSession: () =>
-            stop(sessionId).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
-          // cannot be one of the engine's dependencies.
-          land: () => gitHooks.landRequested(sessionId),
-          // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
-          // reaches the helper as its message.
-          listRepositories: () =>
-            listRepositories(sessionId).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          addableProjects: () =>
-            addableProjects(sessionId).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          addRepository: (input) =>
-            addRepository(sessionId, input).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          // The credential seam (docs/GIT-ACCESS.md): session → project → auth
-          // mode, resolved per request so a mode change applies to the next op
-          // without touching the workspace. The op is recorded before the
-          // connection opens — a transport that dies mid-pump still has a row.
-          gitTransport: ({ host, port, command }) =>
-            Effect.gen(function* () {
-              const session = yield* sessions.byId(sessionId);
-              const project = yield* projects.byId(session.projectId);
-              const parsed = parseGitRemoteCommand(command);
-              if (parsed === null) {
-                return yield* Effect.fail(
-                  new Error(
-                    "this socket carries git transport only (git-upload-pack, git-receive-pack, git-upload-archive)",
-                  ),
-                );
-              }
-              if (host.startsWith("-")) {
-                return yield* Effect.fail(
-                  new Error(`refusing ssh target "${host}" — it reads as an option`),
-                );
-              }
-              const origin =
-                project.originUrl === null ? null : gitRemoteLocation(project.originUrl);
-              if (
-                bindTransportToOrigin &&
-                origin !== null &&
-                !isSameGitRemote(origin, { host, port })
-              ) {
-                return yield* Effect.fail(
-                  new Error(
-                    `this session's Git access is bound to ${origin.host}; pushes and fetches to ${host} run without Mend's signer`,
-                  ),
-                );
-              }
-              const mode = project.gitAuthMode;
-              // The session's owner signs: their Mend key, never another user's.
-              const owner = yield* sessions
-                .byId(sessionId)
-                .pipe(Effect.map((ownerRow) => ownerRow.ownerUserId));
-              const keyPath =
-                mode === "mend-key"
-                  ? (yield* mendKeys
-                      .ensure(owner)
-                      .pipe(
-                        Effect.mapError(
-                          (error) => new Error(`could not create the Mend key: ${error.stderr}`),
-                        ),
-                      )).privateKeyPath
-                  : null;
-              // Bridge mode signs on another machine: require the signer NOW —
-              // an honest fast refusal in the workspace terminal beats an ssh
-              // that hangs against an agent socket nobody serves.
-              // The owner's own signer, never another account's (docs/adr/0003).
-              let env: Record<string, string> | undefined;
-              if (mode === "bridge") {
-                if (owner === null) {
-                  return yield* Effect.fail(
-                    new Error("this session has no owner, so no signer can be chosen"),
-                  );
-                }
-                const bridgeStatus = yield* agentBridge.status(owner);
-                if (!bridgeStatus.connected) {
-                  return yield* Effect.fail(new Error(NO_SIGNER_MESSAGE));
-                }
-                env = { SSH_AUTH_SOCK: agentBridge.socketPath(owner) };
-              }
-              const op = yield* gitOps.record({
+      /**
+       * The closures, as `actor` asks (docs/adr/0016, decision 4): null is the workspace itself
+       * (its socket, or its launch's own token in a shared executor), which acts as the session's
+       * owner, as before. A person's token makes `actor` that person: git signs as them, a
+       * command runs only if they may run one in the session and then runs as them, and `mend
+       * land` lands only for the change's owner.
+       */
+      const socketClosures = (sessionId: SessionId, actor: string | null): SessionSocketApi => ({
+        // Pickups (`pickup-tickets.ts`): over the socket, the session's own; over the channel, for
+        // the launch and the person the token names. A person's grant binds its own person, so
+        // their token never redeems anyone else's ticket.
+        pickup: (ticket) => redeemPickup({ sessionId, launchId: null, accountId: actor }, ticket),
+        pickupAs: (grant) => (ticket) =>
+          redeemPickup(
+            { sessionId, launchId: grant.launchId, accountId: actor ?? grant.accountId },
+            ticket,
+          ),
+        ...(capture === null || actor !== null
+          ? {}
+          : {
+              capture: captureApiFor(sessionId),
+              captureAs: (launchId: string) => captureApiFor(sessionId, launchId),
+            }),
+        recipes: () =>
+          listServiceRecipes(sessionId).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        listServices: () =>
+          services
+            .listForSession(sessionId)
+            .pipe(Effect.flatMap((rows) => Effect.forEach(rows, (row) => readServiceView(row.id)))),
+        runServiceRecipe: (name) =>
+          mayRunCommand(sessionId, actor).pipe(
+            Effect.andThen(runServiceRecipe(sessionId, name, actor)),
+            Effect.mapError((error) => new Error(error.message)),
+            Effect.orDie,
+          ),
+        runService: (argv, port, name, protocol, browserScheme) =>
+          mayRunCommand(sessionId, actor).pipe(
+            Effect.andThen(
+              runService(
                 sessionId,
-                projectId: project.id,
-                host,
+                argv,
                 port,
+                name,
+                protocol,
+                browserScheme ?? null,
+                "explicit-run",
+                actor,
+              ),
+            ),
+            Effect.mapError((error) => new Error(error.message)),
+            Effect.orDie,
+          ),
+        addService: (port, name, protocol, browserScheme) =>
+          addService(sessionId, port, name, protocol, browserScheme ?? null).pipe(
+            Effect.mapError((error) => new Error(error.message)),
+            Effect.orDie,
+          ),
+        stopService: (serviceReference) =>
+          Effect.gen(function* () {
+            const service = yield* services.byReference(serviceReference);
+            if (service === null || service.sessionId !== sessionId) {
+              return yield* new ServiceNotFoundError({ processId: serviceReference });
+            }
+            return yield* stopService(service.id);
+          }).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        restartService: (serviceReference) =>
+          Effect.gen(function* () {
+            const service = yield* services.byReference(serviceReference);
+            if (service === null || service.sessionId !== sessionId) {
+              return yield* new ServiceNotFoundError({ processId: serviceReference });
+            }
+            return yield* restartService(service.id);
+          }).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        stopSession: () =>
+          stop(sessionId).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
+        // cannot be one of the engine's dependencies.
+        land: () => gitHooks.landRequested(sessionId, actor),
+        // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
+        // reaches the helper as its message.
+        listRepositories: () =>
+          listRepositories(sessionId).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        addableProjects: () =>
+          addableProjects(sessionId).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        addRepository: (input) =>
+          addRepository(sessionId, input).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        // The credential seam (docs/GIT-ACCESS.md): session → project → auth
+        // mode, resolved per request so a mode change applies to the next op
+        // without touching the workspace. The op is recorded before the
+        // connection opens — a transport that dies mid-pump still has a row.
+        gitTransport: ({ host, port, command }) =>
+          Effect.gen(function* () {
+            const session = yield* sessions.byId(sessionId);
+            const project = yield* projects.byId(session.projectId);
+            const parsed = parseGitRemoteCommand(command);
+            if (parsed === null) {
+              return yield* Effect.fail(
+                new Error(
+                  "this socket carries git transport only (git-upload-pack, git-receive-pack, git-upload-archive)",
+                ),
+              );
+            }
+            if (host.startsWith("-")) {
+              return yield* Effect.fail(
+                new Error(`refusing ssh target "${host}" — it reads as an option`),
+              );
+            }
+            const origin = project.originUrl === null ? null : gitRemoteLocation(project.originUrl);
+            if (
+              bindTransportToOrigin &&
+              origin !== null &&
+              !isSameGitRemote(origin, { host, port })
+            ) {
+              return yield* Effect.fail(
+                new Error(
+                  `this session's Git access is bound to ${origin.host}; pushes and fetches to ${host} run without Mend's signer`,
+                ),
+              );
+            }
+            const mode = project.gitAuthMode;
+            // The session's owner signs: their Mend key, never another user's. In a person
+            // executor the process's person signs (docs/adr/0016, decision 4): the token they
+            // presented is theirs, with their key or their own bridge.
+            const owner = actor ?? session.ownerUserId;
+            const keyPath =
+              mode === "mend-key"
+                ? (yield* mendKeys
+                    .ensure(owner)
+                    .pipe(
+                      Effect.mapError(
+                        (error) => new Error(`could not create the Mend key: ${error.stderr}`),
+                      ),
+                    )).privateKeyPath
+                : null;
+            // Bridge mode signs on another machine: require the signer NOW —
+            // an honest fast refusal in the workspace terminal beats an ssh
+            // that hangs against an agent socket nobody serves.
+            // The owner's own signer, never another account's (docs/adr/0003).
+            let env: Record<string, string> | undefined;
+            if (mode === "bridge") {
+              if (owner === null) {
+                return yield* Effect.fail(
+                  new Error("this session has no owner, so no signer can be chosen"),
+                );
+              }
+              const bridgeStatus = yield* agentBridge.status(owner);
+              if (!bridgeStatus.connected) {
+                return yield* Effect.fail(new Error(NO_SIGNER_MESSAGE));
+              }
+              env = { SSH_AUTH_SOCK: agentBridge.socketPath(owner) };
+            }
+            const op = yield* gitOps.record({
+              sessionId,
+              projectId: project.id,
+              host,
+              port,
+              kind: parsed.kind,
+              command,
+              authMode: mode,
+            });
+            // Attribution for the share CLI: ended in gitTransportDone.
+            if (mode === "bridge" && owner !== null) {
+              const end = yield* agentBridge.begin(
+                owner,
+                `project ${project.name} → ${host} (${parsed.kind})`,
+              );
+              bridgeContexts.set(op.id, end);
+            }
+            yield* Effect.logInfo("session git transport").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                project: project.name,
+                host,
                 kind: parsed.kind,
                 command,
                 authMode: mode,
-              });
-              // Attribution for the share CLI: ended in gitTransportDone.
-              if (mode === "bridge" && owner !== null) {
-                const end = yield* agentBridge.begin(
-                  owner,
-                  `project ${project.name} → ${host} (${parsed.kind})`,
-                );
-                bridgeContexts.set(op.id, end);
-              }
-              yield* Effect.logInfo("session git transport").pipe(
-                Effect.annotateLogs({
-                  sessionId,
-                  project: project.name,
-                  host,
-                  kind: parsed.kind,
-                  command,
-                  authMode: mode,
-                  opId: op.id,
-                }),
-              );
-              return {
                 opId: op.id,
-                kind: parsed.kind,
-                argv: ["ssh", ...sshTransportArgs(mode, keyPath, port), "--", host, command],
-                ...(env === undefined ? {} : { env }),
-              };
-            }).pipe(
-              Effect.mapError((error) => new Error(String(error.message))),
-              Effect.orDie,
-            ),
-          gitTransportDone: (opId, exitCode, refUpdates) =>
-            Effect.gen(function* () {
-              yield* Effect.sync(() => {
-                bridgeContexts.get(opId)?.();
-                bridgeContexts.delete(opId);
-              });
-              yield* gitOps.finish(SessionGitOpId.make(opId), exitCode, refUpdates);
-              yield* Effect.logInfo("session git transport closed").pipe(
-                Effect.annotateLogs({
-                  sessionId,
-                  opId,
-                  exitCode,
-                  refUpdates: refUpdates === null ? undefined : refUpdates.join(", "),
-                }),
+              }),
+            );
+            return {
+              opId: op.id,
+              kind: parsed.kind,
+              argv: ["ssh", ...sshTransportArgs(mode, keyPath, port), "--", host, command],
+              ...(env === undefined ? {} : { env }),
+            };
+          }).pipe(
+            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.orDie,
+          ),
+        gitTransportDone: (opId, exitCode, refUpdates) =>
+          Effect.gen(function* () {
+            yield* Effect.sync(() => {
+              bridgeContexts.get(opId)?.();
+              bridgeContexts.delete(opId);
+            });
+            yield* gitOps.finish(SessionGitOpId.make(opId), exitCode, refUpdates);
+            yield* Effect.logInfo("session git transport closed").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                opId,
+                exitCode,
+                refUpdates: refUpdates === null ? undefined : refUpdates.join(", "),
+              }),
+            );
+            // A push that moved branches on origin: a pull request from one may follow.
+            if (exitCode === 0 && pushedBranches(refUpdates)) {
+              const session = yield* sessions.byId(sessionId);
+              yield* gitHooks.branchesPushed({ sessionId, worktreeId: session.worktreeId });
+            }
+          }).pipe(Effect.ignore),
+      });
+
+      /** Only the session's owner runs a command in its workspace (docs/adr/0013). */
+      const mayRunCommand = (sessionId: SessionId, actor: string | null) =>
+        actor === null
+          ? Effect.void
+          : sessions
+              .byId(sessionId)
+              .pipe(
+                Effect.flatMap((session) =>
+                  canTypeInTerminal(session, actor)
+                    ? Effect.void
+                    : Effect.fail(new Error(CHANNEL_OWNER_RUNS)),
+                ),
               );
-              // A push that moved branches on origin: a pull request from one may follow.
-              if (exitCode === 0 && pushedBranches(refUpdates)) {
-                const session = yield* sessions.byId(sessionId);
-                yield* gitHooks.branchesPushed({ sessionId, worktreeId: session.worktreeId });
-              }
-            }).pipe(Effect.ignore),
-        });
+
+      /**
+       * What the network channel serves a token of a launch (docs/adr/0016, decision 4), keyed on
+       * that launch's recorded layout, so an executor started before this release keeps working:
+       * - the launch's own token: in a shared executor, everything, as before; in a person
+       *   executor, the capture routes only (sealantd's), and git and every helper route refused;
+       * - a person's token: this session's routes as that person, if the session is live in that
+       *   launch's executor and they may act on it; never the capture routes.
+       */
+      const channelGrant = Effect.fn("SessionEngine.channelGrant")(function* (
+        sessionId: SessionId,
+        base: SessionSocketApi,
+        grant: { readonly launchId: string; readonly accountId: string | null },
+      ) {
+        const layout = yield* layoutSteps.layoutOfLaunch(grant.launchId);
+        const launchCapture = base.captureAs?.(grant.launchId);
+        if (grant.accountId === null) {
+          // The launch's own token names nobody: a pickup through it is held to the launch.
+          const launchPickup = base.pickupAs?.({ launchId: grant.launchId, accountId: null });
+          return {
+            ok: true as const,
+            api:
+              layout === "person"
+                ? containerTokenRefused(launchCapture, launchPickup)
+                : { ...base, capture: launchCapture, pickup: launchPickup, channelFor: undefined },
+          };
+        }
+        if (layout !== "person") {
+          return { ok: false as const, status: 401, message: CHANNEL_TOKEN_NOT_ACCEPTED };
+        }
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        const live =
+          session !== null &&
+          session.sealantWorkspaceId !== null &&
+          (yield* executorLaunchIdOf(session, session.sealantWorkspaceId)) === grant.launchId;
+        if (session === null || !live) {
+          return { ok: false as const, status: 409, message: CHANNEL_NOT_LIVE_HERE };
+        }
+        if (!canSteerSession(session, grant.accountId)) {
+          return { ok: false as const, status: 403, message: CHANNEL_MAY_NOT_ACT };
+        }
+        // Still a member who can see the project (review of mend#553, P3-4): a person removed
+        // from the organization, or kept out of a private project, loses their token's reach at
+        // once, not when the launch ends.
+        const project = yield* projects
+          .byId(session.projectId)
+          .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+        const role =
+          project === null
+            ? null
+            : yield* organizations.roleOf(project.organizationId, grant.accountId);
+        if (
+          project === null ||
+          role === null ||
+          (project.visibility === "private" && project.createdByUserId !== grant.accountId)
+        ) {
+          return { ok: false as const, status: 403, message: CHANNEL_MAY_NOT_ACT };
+        }
+        const closures = socketClosures(sessionId, grant.accountId);
+        return {
+          ok: true as const,
+          api: {
+            ...ownedSocketApi(sessionId, closures),
+            // A person's token redeems only that person's tickets, of this launch.
+            pickup: closures.pickupAs?.({ launchId: grant.launchId, accountId: grant.accountId }),
+            channelFor: undefined,
+          },
+        };
+      });
+
+      const socketApiFor = (sessionId: SessionId): SessionSocketApi => {
+        const base = ownedSocketApi(sessionId, socketClosures(sessionId, null));
+        return {
+          ...base,
+          channelFor: (grant) =>
+            channelGrant(sessionId, base, grant).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session channel: a token could not be checked").pipe(
+                  Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                  Effect.as({
+                    ok: false as const,
+                    status: 503,
+                    message: "session channel: this request could not be answered now",
+                  }),
+                ),
+              ),
+            ),
+        };
+      };
 
       const stopServiceUnlocked = Effect.fn("SessionEngine.stopService")(function* (
         serviceId: ServiceId,
@@ -16428,6 +16834,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       if (capture !== null) {
         yield* Effect.forkIn(
           captureReaper().pipe(
+            // Each tick, while nothing is recorded with the flag off, the store is asked again.
+            Effect.andThen(layoutSteps.refreshRecorded()),
             Effect.catchDefect((defect) =>
               Effect.logWarning("session engine: capture reaper died").pipe(
                 Effect.annotateLogs({ defect: String(defect) }),
@@ -16541,13 +16949,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(landingCheckpoint(sessionId, trigger)),
         flushCaptures: (sessionId, why) => owned(sessionId)(flushCaptures(sessionId, why)),
         stop: (sessionId, summary) => owned(sessionId)(stop(sessionId, summary ?? null)),
-        openShell: (sessionId) => owned(sessionId)(openShell(sessionId)),
+        openShell: (sessionId, openedBy) => owned(sessionId)(openShell(sessionId, openedBy)),
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
         addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
-        runService: (sessionId, ...rest) => owned(sessionId)(runService(sessionId, ...rest)),
+        runService: (sessionId, argv, port, name, protocol, browserScheme, startedBy) =>
+          owned(sessionId)(
+            runService(
+              sessionId,
+              argv,
+              port,
+              name,
+              protocol,
+              browserScheme ?? null,
+              "explicit-run",
+              startedBy ?? null,
+            ),
+          ),
         listServiceRecipes: (sessionId) => owned(sessionId)(listServiceRecipes(sessionId)),
-        runServiceRecipe: (sessionId, name) => owned(sessionId)(runServiceRecipe(sessionId, name)),
+        runServiceRecipe: (sessionId, name, startedBy) =>
+          owned(sessionId)(runServiceRecipe(sessionId, name, startedBy ?? null)),
         restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
         stopServices: (sessionId) => owned(sessionId)(stopServices(sessionId)),

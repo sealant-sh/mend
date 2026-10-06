@@ -135,12 +135,13 @@ const layers = (
   endpoint: { listen: string; url: string } | undefined,
   mode: "local" | "kubernetes",
   tokensLayer: Layer.Layer<SessionChannelTokensRepo> = SessionChannelTokensRepoMemory,
+  sessionStore: "colocated" | "captured" = "colocated",
 ) => {
   const registry = SessionChannelRegistryLive;
   const deployment = Layer.succeed(DeploymentConfig, {
     mode,
     sessionEndpoint: endpoint,
-    sessionStore: "colocated",
+    sessionStore,
   });
   const store = StoreConfig.layerFor(storeRoot);
   const tokens = tokensLayer;
@@ -817,6 +818,251 @@ describe("SessionChannelNetworkHost", () => {
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  /**
+   * docs/adr/0016, decision 4: a person's token names the person, and the process names its
+   * session. The channel hands both to the engine's grant and serves what it answers.
+   */
+  it("routes a person's token to the session its process names, as that person, and nothing else", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const scopes: Array<unknown> = [];
+          const asMaria: unknown[] = [];
+          const granted = (session: SessionId): SessionSocketApi => ({
+            ...api([]),
+            channelFor: (scope) =>
+              Effect.sync(() => {
+                scopes.push({ session, ...scope });
+                if (scope.accountId === "user-maria" && session === OTHER) {
+                  return { ok: false, status: 403, message: "not hers" } as const;
+                }
+                return { ok: true, api: api(scope.accountId === null ? [] : asMaria) } as const;
+              }),
+          });
+          yield* sockets.start(SESSION, granted(SESSION));
+          yield* sockets.start(OTHER, granted(OTHER));
+          // Maria's token of the launch whose session is SESSION, used from her own session.
+          const token = yield* tokens.issuePerson("launch-1", "user-maria");
+          const auth = (session: string) => ({
+            authorization: `Bearer ${token}`,
+            "x-mend-session-id": session,
+          });
+          const ran = yield* Effect.promise(() =>
+            call(address, "POST", "/services/run", auth(SESSION), {
+              argv: ["pnpm", "dev"],
+              port: 3000,
+              name: "web",
+            }),
+          );
+          expect(ran.status).toBe(200);
+          expect(asMaria).toContainEqual({ argv: ["pnpm", "dev"], port: 3000, name: "web" });
+          expect(scopes).toEqual([
+            { session: SESSION, launchId: "launch-1", accountId: "user-maria" },
+          ]);
+          // The grant's refusal is the answer, with its status.
+          const refused = yield* Effect.promise(() =>
+            call(address, "GET", "/services", auth(OTHER)),
+          );
+          expect(refused).toEqual({ status: 403, json: { message: "not hers" } });
+          // A person's token names no session by itself.
+          expect(
+            (yield* Effect.promise(() =>
+              call(address, "GET", "/services", { authorization: `Bearer ${token}` }),
+            )).status,
+          ).toBe(401);
+          // A person's token never verifies as the launch's own token.
+          expect(yield* tokens.verify(SESSION, token)).toBeNull();
+          // A session served without a grant takes no person's token.
+          yield* sockets.stop(OTHER);
+          yield* sockets.start(OTHER, api([]));
+          expect(
+            (yield* Effect.promise(() => call(address, "GET", "/services", auth(OTHER)))).status,
+          ).toBe(401);
+          // The launch's own token still names its own session only.
+          const own = yield* tokens.issue(SESSION, "launch-1");
+          expect(
+            (yield* Effect.promise(() =>
+              call(address, "GET", "/services", {
+                authorization: `Bearer ${own}`,
+                "x-mend-session-id": OTHER,
+              }),
+            )).status,
+          ).toBe(401);
+          expect(
+            (yield* Effect.promise(() =>
+              call(address, "GET", "/services", {
+                authorization: `Bearer ${own}`,
+                "x-mend-session-id": SESSION,
+              }),
+            )).status,
+          ).toBe(200);
+          expect(scopes).toContainEqual({
+            session: SESSION,
+            launchId: "launch-1",
+            accountId: null,
+          });
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("the staged scripts present the token in the file a person's process names, never the workspace's", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const accounts: Array<string | null> = [];
+          const dir = yield* sockets.start(SESSION, {
+            ...api([]),
+            channelFor: (scope) =>
+              Effect.sync(() => {
+                accounts.push(scope.accountId);
+                return { ok: true, api: api([]) } as const;
+              }),
+          });
+          const workspaceToken = yield* tokens.issue(SESSION, "launch-1");
+          const personToken = yield* tokens.issuePerson("launch-1", "user-maria");
+          const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-token-home-"));
+          const tokenFile = path.join(home, "session-token");
+          fs.writeFileSync(tokenFile, `${personToken}\n`, { mode: 0o600 });
+          const env = {
+            MEND_SESSION_ENDPOINT: `http://${address}`,
+            MEND_SESSION_ID: SESSION,
+            // The workspace's own token is in every process's environment; the file wins.
+            MEND_SESSION_TOKEN: workspaceToken,
+            MEND_SESSION_TOKEN_FILE: tokenFile,
+          };
+          const list = yield* Effect.promise(() =>
+            runScript(path.join(dir, "bin", "mend"), ["service", "list"], env),
+          );
+          expect(list.code).toBe(0);
+          const shim = yield* Effect.promise(() =>
+            runScript(
+              path.join(dir, "bin", "mend-git-ssh"),
+              ["github.com", "git-upload-pack 'acme/app.git'"],
+              env,
+              Buffer.from("hello pack\n"),
+            ),
+          );
+          expect(shim.code).toBe(3);
+          expect(accounts).toEqual(["user-maria", "user-maria"]);
+          expect(`${list.stdout}${list.stderr}${shim.stderr}`).not.toContain(personToken);
+          // A named file that cannot be read sends nothing, and never falls back to the
+          // workspace's token.
+          fs.rmSync(tokenFile);
+          const unreadable = yield* Effect.promise(() =>
+            runScript(path.join(dir, "bin", "mend"), ["service", "list"], env),
+          );
+          expect(unreadable.code).toBe(1);
+          expect(unreadable.stderr).toContain("Mend session token");
+          expect(unreadable.stderr).toContain("cannot be read");
+          expect(accounts).toEqual(["user-maria", "user-maria"]);
+          fs.rmSync(home, { recursive: true, force: true });
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  // Review of mend#553, P2-1: a setup command or the dependency install runs as the person with
+  // no Mend environment; it still speaks as that person, never with the workspace's token.
+  it.skipIf(process.getuid?.() === 0)(
+    "a person's process with no token file named finds its own in its passwd home, never $HOME",
+    async () => {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const network = yield* SessionChannelNetworkHost;
+            const sockets = yield* SessionSocketHost;
+            const tokens = yield* SessionChannelTokensRepo;
+            const address = network.address ?? "";
+            const accounts: Array<string | null> = [];
+            const dir = yield* sockets.start(SESSION, {
+              ...api([]),
+              channelFor: (scope) =>
+                Effect.sync(() => {
+                  accounts.push(scope.accountId);
+                  return { ok: true, api: api([]) } as const;
+                }),
+            });
+            const workspaceToken = yield* tokens.issue(SESSION, "launch-1");
+            const personToken = yield* tokens.issuePerson("launch-1", "user-maria");
+            const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-passwd-home-"));
+            fs.mkdirSync(path.join(home, ".mend"), { mode: 0o700 });
+            fs.writeFileSync(path.join(home, ".mend/session-token"), personToken, { mode: 0o600 });
+            const passwd = path.join(home, "passwd-home.cjs");
+            fs.writeFileSync(
+              passwd,
+              `const os = require("node:os"); const real = os.userInfo; os.userInfo = (o) => ({ ...real(o), homedir: ${JSON.stringify(home)} });`,
+            );
+            const env = {
+              MEND_SESSION_ENDPOINT: `http://${address}`,
+              MEND_SESSION_ID: SESSION,
+              MEND_SESSION_TOKEN: workspaceToken,
+              MEND_SESSION_TOKEN_FILE: "",
+              HOME: path.join(home, "not-the-home"),
+              NODE_OPTIONS: `--require ${passwd}`,
+            };
+            const list = yield* Effect.promise(() =>
+              runScript(path.join(dir, "bin", "mend"), ["service", "list"], env),
+            );
+            expect(list.code).toBe(0);
+            expect(accounts).toEqual(["user-maria"]);
+            // A user with no token file of their own (a shared executor's non-root image user)
+            // keeps the workspace's token, as before.
+            fs.rmSync(path.join(home, ".mend"), { recursive: true });
+            const shared = yield* Effect.promise(() =>
+              runScript(path.join(dir, "bin", "mend"), ["service", "list"], env),
+            );
+            expect(shared.code).toBe(0);
+            expect(accounts).toEqual(["user-maria", null]);
+            fs.rmSync(home, { recursive: true, force: true });
+          }).pipe(
+            Effect.provide(
+              layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+
+  it("binds no socket in capture mode: the executor speaks over the network channel with a token", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const sockets = yield* SessionSocketHost;
+          const dir = yield* sockets.start(SESSION, api([]));
+          expect(fs.existsSync(path.join(dir, "bin", "mend"))).toBe(true);
+          expect(fs.existsSync(path.join(dir, "mend.sock"))).toBe(false);
+        }).pipe(
+          Effect.provide(
+            layers(
+              { listen: "127.0.0.1:0", url: "http://127.0.0.1:0" },
+              "local",
+              undefined,
+              "captured",
+            ),
           ),
         ),
       ),

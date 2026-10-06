@@ -43,7 +43,10 @@ export const makeWorkspaceLanding = Effect.gen(function* () {
       return install?.webOrigin ?? network.appUrl;
     });
 
-  const land = Effect.fn("WorkspaceLanding.land")(function* (sessionId: SessionId) {
+  const land = Effect.fn("WorkspaceLanding.land")(function* (
+    sessionId: SessionId,
+    requestedBy: string | null,
+  ) {
     const session = yield* sessions
       .byId(sessionId)
       .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -53,6 +56,7 @@ export const makeWorkspaceLanding = Effect.gen(function* () {
       session,
       changeOwnerUserId: owner,
       turns: yield* conversations.listTurns(session.id),
+      requestedBy,
     });
     if (refusal !== null || owner === null) {
       return refused(refusal ?? "not landed · the change has no owner");
@@ -80,8 +84,8 @@ export const makeWorkspaceLanding = Effect.gen(function* () {
   });
 
   return {
-    land: (sessionId: SessionId): Effect.Effect<WorkspaceLandOutcome> =>
-      land(sessionId).pipe(
+    land: (sessionId: SessionId, requestedBy: string | null): Effect.Effect<WorkspaceLandOutcome> =>
+      land(sessionId, requestedBy).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("workspace landing: failed").pipe(
             Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),

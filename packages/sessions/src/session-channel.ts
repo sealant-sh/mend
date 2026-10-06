@@ -423,27 +423,28 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           message: "session channel: missing or malformed credentials",
         };
       }
-      // The token names one launch of one session (cross-repo decision 5): the capture routes it
-      // reaches are that executor's, whichever launch of the session is current.
-      const scope =
-        credentials.sessionId === null
-          ? await Effect.runPromise(tokens.resolve(credentials.token)).then((resolved) =>
-              resolved === null
-                ? null
-                : { sessionId: SessionId.make(resolved.sessionId), launchId: resolved.launchId },
-            )
-          : await Effect.runPromise(tokens.verify(credentials.sessionId, credentials.token)).then(
-              (launchId) =>
-                launchId === null ? null : { sessionId: credentials.sessionId, launchId },
-            );
-      if (scope === null || scope.sessionId === null) {
-        return {
-          ok: false,
-          status: 401,
-          message: "session channel: the session token was not accepted",
-        };
+      // The token names one launch (cross-repo decision 5). The launch's own token names its
+      // session too, and a session id sent with it must be that one. A person's token (docs/adr/
+      // 0016, decision 4) is good for any session live in its launch that the person may act on:
+      // the process names its session, and the engine checks both.
+      const resolved = await Effect.runPromise(tokens.resolve(credentials.token));
+      const notAccepted = {
+        ok: false,
+        status: 401,
+        message: "session channel: the session token was not accepted",
+      } as const;
+      if (resolved === null) return notAccepted;
+      let target: SessionId;
+      if (resolved.accountId === null) {
+        if (credentials.sessionId !== null && credentials.sessionId !== resolved.sessionId) {
+          return notAccepted;
+        }
+        target = SessionId.make(resolved.sessionId);
+      } else {
+        if (credentials.sessionId === null) return notAccepted;
+        target = credentials.sessionId;
       }
-      const api = registry.lookup(scope.sessionId);
+      const api = registry.lookup(target);
       if (api === undefined) {
         return {
           ok: false,
@@ -451,15 +452,23 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           message: "session channel: this session is not live on this Mend instance",
         };
       }
+      const scope = { launchId: resolved.launchId, accountId: resolved.accountId };
+      if (api.channelFor !== undefined) {
+        const grant = await Effect.runPromise(api.channelFor(scope));
+        return grant.ok ? { ok: true, api: grant.api } : grant;
+      }
+      // A session served without a grant takes its launch's own token, as before, and no
+      // person's.
+      if (resolved.accountId !== null) return notAccepted;
       // Launch-bound, always (review 2026-09-28 (4) #10): an authenticated executor reaches only
       // the capture routes of the launch its token names — never the session's unbound view,
       // which answers whichever launch the row names now (or the session id before a create
       // answers). A session served without launch-bound routes serves no capture routes here.
-      const capture = api.captureAs?.(scope.launchId);
+      const capture = api.captureAs?.(resolved.launchId);
       // Pickups likewise: a ticket redeemed here answers only for the launch the token names, and,
       // for a person's token, only for that person (`pickupChannelMatch`). The launch's own token
       // names nobody.
-      const pickup = api.pickupAs?.({ launchId: scope.launchId, accountId: null });
+      const pickup = api.pickupAs?.({ launchId: resolved.launchId, accountId: null });
       return { ok: true, api: { ...api, capture, pickup } };
     };
 

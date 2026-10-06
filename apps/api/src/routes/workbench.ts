@@ -2494,7 +2494,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const steering = yield* SessionSteering;
         yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
-        const shell = yield* engine.openShell(params.id).pipe(
+        // In a person-layout executor the shell runs as whoever opened it (docs/adr/0016).
+        const caller = yield* CurrentUser;
+        const shell = yield* engine.openShell(params.id, caller.user.id).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
@@ -2579,6 +2581,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // Any argv, on whatever login the workspace holds: the owner's alone (docs/adr/0013).
         yield* requireOwnerRuns(yield* steering.session(params.id), "command");
         const engine = yield* SessionEngine;
+        const caller = yield* CurrentUser;
         return yield* engine
           .runService(
             params.id,
@@ -2587,6 +2590,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             payload.name,
             payload.protocol,
             payload.browserScheme,
+            caller.user.id,
           )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
@@ -2615,7 +2619,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // A recipe is a command, and the worktree's copy (which a turn may edit) wins.
         yield* requireOwnerRuns(yield* steering.session(params.id), "command");
         const engine = yield* SessionEngine;
-        return yield* engine.runServiceRecipe(params.id, payload.name).pipe(
+        const caller = yield* CurrentUser;
+        return yield* engine.runServiceRecipe(params.id, payload.name, caller.user.id).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),

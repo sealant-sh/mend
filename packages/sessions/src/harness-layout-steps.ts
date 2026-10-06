@@ -29,7 +29,9 @@ import {
   type PrepareFinding,
   UNKNOWN_CAPABILITY,
   decideHarnessLayout,
+  identityPickupScript,
   imageLayoutKeyOf,
+  identityRefusal,
   layoutProbeScript,
   ownerMapRefusal,
   parseLayoutReport,
@@ -138,12 +140,38 @@ export interface HarnessLayoutSteps {
    * already person. One row read; with neither, a process start asks nothing else here.
    */
   readonly mayRunPerson: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
+  /**
+   * A worktree's layout was just recorded outside these steps (the operator's `harnessLayout`):
+   * from now on the steps read the store again.
+   */
+  readonly noteRecorded: () => void;
+  /**
+   * While nothing is recorded and the flag is off, ask the store again (one `EXISTS` query): the
+   * engine's reaper tick runs it, so a record another engine made is seen within a tick rather
+   * than never (review 5 of mend#553, P3-4). Mend runs one engine; this narrows the gap if two
+   * ever share a database (deploy/aws/issues-for-real-ha.md). Never fails.
+   */
+  readonly refreshRecorded: () => Effect.Effect<void>;
   /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
   readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
+  /**
+   * One identity pickup ticket per person prepare may make (docs/adr/0016, decision 4), by
+   * account: what prepare's exec redeems for each person it makes, their Mend token of this
+   * launch and their git author, minted only at redemption, so a person prepare skips gets none.
+   * Null for a shared launch. Memory only: it rides prepare's exec, so it adds no exec; the
+   * caller discards the tickets when that exec ends.
+   */
+  readonly prepareTickets: (input: {
+    readonly layout: LaunchLayout;
+    readonly launchId: string;
+    readonly sessionId: string;
+    readonly worktreeId: string;
+  }) => Effect.Effect<ReadonlyMap<string, string> | null>;
   /** What prepare runs in the executor's first exec for this layout, after the helper install. */
   readonly prepareScript: (
     layout: LaunchLayout,
     places: { readonly harnessHome: string; readonly repo: string },
+    tickets?: ReadonlyMap<string, string> | null,
   ) => string | null;
   /**
    * What prepare's output says, recorded: the person layout confirmed (the worktree is person
@@ -177,6 +205,10 @@ export interface HarnessLayoutSteps {
     readonly workspace: Workspace;
     readonly launchId: string | null;
     readonly accountId: string;
+    /** The session the process belongs to: what its shim and helper name (`MEND_SESSION_ID`). */
+    readonly sessionId: string;
+    /** That session's worktree, which a person's identity ticket names. */
+    readonly worktreeId: string;
   }) => Effect.Effect<
     { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
     SealantPlatformError
@@ -190,12 +222,20 @@ export interface HarnessLayoutSteps {
 }
 
 /** What prepare runs for a layout (`HarnessLayoutSteps.prepareScript`). */
-export const layoutPrepareScript: HarnessLayoutSteps["prepareScript"] = (layout, places) => {
+export const layoutPrepareScript: HarnessLayoutSteps["prepareScript"] = (
+  layout,
+  places,
+  tickets,
+) => {
   if (layout.layout === "person") {
+    const ticketOf = (person: LinuxIdentity) => {
+      const ticket = tickets?.get(person.accountId);
+      return ticket === undefined ? {} : { ticket };
+    };
     return personPrepareScript(
       [
-        { person: layout.launcher, ifSaved: false },
-        ...layout.members.map((person) => ({ person, ifSaved: true })),
+        { person: layout.launcher, ifSaved: false, ...ticketOf(layout.launcher) },
+        ...layout.members.map((person) => ({ person, ifSaved: true, ...ticketOf(person) })),
       ],
       places,
     );
@@ -210,7 +250,12 @@ const bounded = <K, V>() => {
   return {
     get: (key: K) => map.get(key),
     set: (key: K, value: V) => {
-      if (map.size >= BOUND) map.clear();
+      // The oldest goes, one at a time: live launches are never flushed together.
+      map.delete(key);
+      if (map.size >= BOUND) {
+        const oldest = map.keys().next();
+        if (oldest.done !== true) map.delete(oldest.value);
+      }
       map.set(key, value);
     },
   };
@@ -223,8 +268,26 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly organizations: OrganizationsRepo["Service"];
   readonly sealant: Pick<SealantClientShape, "exec">;
   readonly harnessHome: string;
+  /**
+   * An identity pickup ticket (purpose `session-token`) for `person` in `launchId`, bound to them:
+   * redeemed, it answers their Mend token, minted then, and their git author.
+   */
+  readonly identityTicket: (input: {
+    readonly sessionId: string;
+    readonly worktreeId: string;
+    readonly launchId: string;
+    readonly person: LinuxIdentity;
+  }) => Effect.Effect<string>;
+  /** Forget a ticket the exec that carried it no longer needs (`PickupTickets.discard`). */
+  readonly discardTicket: (ticket: string) => void;
   /** Starts work that nothing waits on (the worktree repair). */
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>;
+  /**
+   * Whether any launch or worktree had a layout recorded when this process started
+   * (`HarnessLayoutsRepo.anyRecorded`, one query). With the flag off and none, every layout
+   * question answers `shared` with no store read, until something is recorded.
+   */
+  readonly anyRecorded: boolean;
 }): HarnessLayoutSteps => {
   const { flag, repo, platform, sealant } = deps;
   const layoutByLaunch = bounded<string, HarnessLayout>();
@@ -232,6 +295,30 @@ export const makeHarnessLayoutSteps = (deps: {
   const madeIn = bounded<string, Set<string>>();
   /** Whose process started last in an executor's worktree, per workspace. */
   const lastIn = bounded<string, string>();
+  /** Some launch or worktree has a layout recorded (at startup, or since). */
+  let layoutsRecorded = deps.anyRecorded;
+  const nothingRecorded = () => flag === "shared" && !layoutsRecorded;
+
+  const prepareTickets: HarnessLayoutSteps["prepareTickets"] = Effect.fn(
+    "HarnessLayoutSteps.prepareTickets",
+  )(function* (input) {
+    const { layout } = input;
+    if (layout.layout !== "person") return null;
+    const tickets = yield* Effect.forEach(
+      [layout.launcher, ...layout.members],
+      (person) =>
+        deps
+          .identityTicket({
+            sessionId: input.sessionId,
+            worktreeId: input.worktreeId,
+            launchId: input.launchId,
+            person,
+          })
+          .pipe(Effect.map((ticket) => [person.accountId, ticket] as const)),
+      { concurrency: 4 },
+    );
+    return new Map(tickets);
+  });
 
   const capabilityFor = Effect.fn("HarnessLayoutSteps.capabilityFor")(function* (
     image: WorkspaceImage,
@@ -270,9 +357,16 @@ export const makeHarnessLayoutSteps = (deps: {
 
   const decide: HarnessLayoutSteps["decide"] = Effect.fn("HarnessLayoutSteps.decide")(
     function* (input) {
+      // The flag off and nothing ever recorded: shared, as before, with no read at all.
+      if (nothingRecorded()) {
+        layoutByLaunch.set(input.launchId, "shared");
+        return SHARED_AS_BEFORE;
+      }
       const worktree = yield* repo.worktreeLayout(input.worktreeId);
       // Nothing asks for person: as before, nothing read, nothing recorded.
       if (worktree.layout === null && worktree.requested === null && flag === "shared") {
+        // Known now, at no cost: the channel never reads this launch's layout from the store.
+        layoutByLaunch.set(input.launchId, "shared");
         return SHARED_AS_BEFORE;
       }
       // The record is written before any person process runs; the head is read as a belt only
@@ -318,6 +412,7 @@ export const makeHarnessLayoutSteps = (deps: {
         imageKey,
         confirmed: false,
       });
+      layoutsRecorded = true;
       layoutByLaunch.set(input.launchId, "person");
       return {
         layout: "person",
@@ -335,6 +430,7 @@ export const makeHarnessLayoutSteps = (deps: {
     "HarnessLayoutSteps.mayRunPerson",
   )(function* (worktreeId) {
     if (flag === "person") return true;
+    if (nothingRecorded()) return false;
     return (yield* repo.worktreeLayout(worktreeId)).layout === "person";
   });
 
@@ -342,6 +438,7 @@ export const makeHarnessLayoutSteps = (deps: {
     "HarnessLayoutSteps.standbyMayServe",
   )(function* (worktreeId) {
     if (flag === "person") return false;
+    if (nothingRecorded()) return true;
     const worktree = yield* repo.worktreeLayout(worktreeId);
     return worktree.layout === null && worktree.requested !== "person";
   });
@@ -368,6 +465,12 @@ export const makeHarnessLayoutSteps = (deps: {
     // The restore, not the image: nothing is recorded against the image, and the launch is
     // refused whatever the worktree, since nobody could edit what came back.
     if (report.unowned !== null) return yield* layoutRefused(ownerMapRefusal(report.unowned));
+    // A person could not be given their Mend identity: usually passing, never the image's fault,
+    // so the launch is refused with words to try again and nothing is recorded against the image.
+    const identityFailures = report.failed.filter((entry) => entry.includes(": identity: "));
+    if (!report.ready && report.missing.length === 0 && identityFailures.length > 0) {
+      return yield* layoutRefused(identityRefusal(identityFailures));
+    }
     if (report.ready) {
       yield* repo.recordCapability({
         imageKey: layout.imageKey,
@@ -376,6 +479,7 @@ export const makeHarnessLayoutSteps = (deps: {
         missing: [],
       });
       yield* repo.confirmPerson(input.launchId, input.worktreeId);
+      layoutByLaunch.set(input.launchId, "person");
       // Only the people this prepare says it made: a member with an identity (made in some other
       // worktree) whose saved directory did not come back with this head was skipped, and is
       // made at their first process here.
@@ -394,7 +498,9 @@ export const makeHarnessLayoutSteps = (deps: {
     const missing =
       report.missing.length > 0
         ? report.missing
-        : [report.probed ? "the users could not be made" : "the image could not be checked"];
+        : report.failed.length > 0
+          ? report.failed
+          : [report.probed ? "the users could not be made" : "the image could not be checked"];
     if (report.probed && report.missing.length > 0) {
       yield* repo.recordCapability({
         imageKey: layout.imageKey,
@@ -439,10 +545,18 @@ export const makeHarnessLayoutSteps = (deps: {
     if (launchId === null) return "shared";
     const known = layoutByLaunch.get(launchId);
     if (known !== undefined) return known;
+    if (nothingRecorded()) return "shared";
     const record = yield* repo.launchLayout(launchId);
-    // Only a confirmed person launch runs as people; anything else ran as root.
+    // A person record is person, confirmed or still in prepare (decide wrote it before create;
+    // a fallback rewrites it as shared): the window between decide and prepare's confirm is
+    // person too, so nothing in it ever reads as a shared executor (review 3 of mend#553, P2-1).
+    // Anything else, a launch from before this release included, ran as root.
     const layout: HarnessLayout =
-      record !== null && record.layout === "person" && record.confirmed ? "person" : "shared";
+      record !== null && record.layout === "person" ? "person" : "shared";
+    // Compare-and-set: what settle wrote while the read was in flight (a fallback's shared, a
+    // confirm's person) is newer than the record read, and stays (review 4 of mend#553, P3-5).
+    const meanwhile = layoutByLaunch.get(launchId);
+    if (meanwhile !== undefined) return meanwhile;
     layoutByLaunch.set(launchId, layout);
     return layout;
   });
@@ -457,11 +571,22 @@ export const makeHarnessLayoutSteps = (deps: {
       if (!made.has(identity.accountId)) {
         // Their first process in this executor: their user, home and saved directory (one exec,
         // idempotent, so a server restart that forgot costs one more and changes nothing).
-        const result = yield* sealant.exec(input.workspace, [
-          "sh",
-          "-c",
-          personHomeScript(identity, { harnessHome: deps.harnessHome }),
-        ]);
+        // Their Mend token and git author ride the same exec through a pickup (decision 4): no
+        // exec of their own, and neither in its arguments.
+        const ticket = yield* deps.identityTicket({
+          sessionId: input.sessionId,
+          worktreeId: input.worktreeId,
+          launchId: input.launchId ?? "",
+          person: identity,
+        });
+        const result = yield* sealant
+          .exec(input.workspace, [
+            "sh",
+            "-c",
+            `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
+              identityPickupScript([{ person: identity, ticket }]),
+          ])
+          .pipe(Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))));
         if (result.exitCode !== 0) {
           return yield* new SealantPlatformError({
             code: "person_user_not_made",
@@ -500,7 +625,7 @@ export const makeHarnessLayoutSteps = (deps: {
       lastIn.set(input.workspace.id, identity.accountId);
       return {
         user: processUserOf(identity),
-        env: personProcessEnv(deps.harnessHome, identity),
+        env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
       };
     },
   );
@@ -516,7 +641,20 @@ export const makeHarnessLayoutSteps = (deps: {
     flag,
     decide,
     mayRunPerson,
+    noteRecorded: () => {
+      layoutsRecorded = true;
+    },
+    refreshRecorded: () =>
+      nothingRecorded()
+        ? repo.anyRecorded().pipe(
+            Effect.map((found) => {
+              if (found) layoutsRecorded = true;
+            }),
+            Effect.catchCause(() => Effect.void),
+          )
+        : Effect.void,
     standbyMayServe,
+    prepareTickets,
     prepareScript: layoutPrepareScript,
     settlePrepare,
     layoutOfLaunch,

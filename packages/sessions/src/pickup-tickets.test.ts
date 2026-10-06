@@ -108,3 +108,21 @@ describe("who may redeem", () => {
     ).toBe(false);
   });
 });
+
+describe("putting a taken ticket back (review 4 of mend#553, P3-1)", () => {
+  it("makes a ticket whose answer failed redeemable once more, and never one its exec has discarded", () => {
+    const tickets = makePickupTickets();
+    const ticket = tickets.mint(binding, files);
+    const taken = tickets.take(ticket);
+    if (taken.kind !== "taken") throw new Error("not taken");
+    // The answer failed: back it goes, and the retry takes it.
+    expect(tickets.restore(ticket, taken.entry)).toBe(true);
+    expect(tickets.take(ticket).kind).toBe("taken");
+    // Once its exec has ended, nothing puts it back, and a late presentation still reads spent.
+    tickets.discard(ticket);
+    expect(tickets.restore(ticket, taken.entry)).toBe(false);
+    expect(tickets.take(ticket).kind).toBe("spent");
+    // A ticket never taken cannot be "put back" into existence.
+    expect(tickets.restore("x".repeat(43), taken.entry)).toBe(false);
+  });
+});

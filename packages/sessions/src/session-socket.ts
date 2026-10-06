@@ -10,6 +10,7 @@ import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import type { SessionCaptureApi } from "./capture-channel.ts";
+import { GIT_CREDENTIAL_HELPER_SCRIPT } from "./git-credential.ts";
 import {
   GIT_SSH_SHIM_SCRIPT,
   type GitTransportPlan,
@@ -143,12 +144,29 @@ export interface SessionSocketApi {
   readonly pickupAs?:
     | ((grant: PickupGrant) => (ticket: string) => Effect.Effect<PickupAnswer, Error>)
     | undefined;
+  /**
+   * What the network channel serves a token of `launchId` (docs/adr/0016, decision 4): the
+   * launch's own token (`accountId` null) or one person's. The engine answers from the launch's
+   * recorded layout: the routes as they are, a narrower set, or a refusal with its status. A
+   * session served without it takes the launch's own token as before and no person's.
+   */
+  readonly channelFor?:
+    | ((scope: {
+        readonly launchId: string;
+        readonly accountId: string | null;
+      }) => Effect.Effect<ChannelGrant>)
+    | undefined;
 }
 
 /** What a redeemed pickup answers: each file's path and its bytes in base64. */
 export interface PickupAnswer {
   readonly files: ReadonlyArray<{ readonly path: string; readonly base64: string }>;
 }
+
+/** The channel's answer to a token (`SessionSocketApi.channelFor`). */
+export type ChannelGrant =
+  | { readonly ok: true; readonly api: SessionSocketApi }
+  | { readonly ok: false; readonly status: number; readonly message: string };
 
 export class SessionSocketHost extends Context.Service<
   SessionSocketHost,
@@ -456,13 +474,29 @@ const encoded = (script: string) => Buffer.from(script).toString("base64");
  * the scripts then talk to this machine over the session endpoint. The payload is base64, so the
  * command carries no quoting of its own beyond the fixed program.
  */
-export const workspaceScriptStaging = (dir: string): string => {
+export const workspaceScriptStaging = (
+  dir: string,
+  options: {
+    /** A person-layout executor also gets `mend-git-credential` (docs/adr/0016, decision 4). */
+    readonly gitCredentialHelper?: boolean;
+  } = {},
+): string => {
+  const names = [
+    "mend",
+    "mend-git-ssh",
+    ...(options.gitCredentialHelper === true ? ["mend-git-credential"] : []),
+  ];
+  const scripts = [
+    HELPER_SCRIPT,
+    GIT_SSH_SHIM_SCRIPT,
+    ...(options.gitCredentialHelper === true ? [GIT_CREDENTIAL_HELPER_SCRIPT] : []),
+  ];
   return (
     `node -e 'const fs=require("fs");const [d,...s]=process.argv.slice(1);` +
     `fs.mkdirSync(d+"/bin",{recursive:true});` +
-    `["mend","mend-git-ssh"].forEach((n,i)=>` +
+    `${JSON.stringify(names)}.forEach((n,i)=>` +
     `fs.writeFileSync(d+"/bin/"+n,Buffer.from(s[i],"base64"),{mode:0o755}))' ` +
-    `'${dir.replaceAll("'", "'\\''")}' ${encoded(HELPER_SCRIPT)} ${encoded(GIT_SSH_SHIM_SCRIPT)}`
+    `'${dir.replaceAll("'", "'\\''")}' ${scripts.map(encoded).join(" ")}`
   );
 };
 
@@ -525,6 +559,13 @@ export const SessionSocketHostLive: Layer.Layer<
         fs.rmSync(socketPath, { force: true });
         if (deployment.mode === "kubernetes") {
           // No socket on a shared RWX claim: the helper finds none and uses the endpoint.
+          return;
+        }
+        if (deployment.sessionStore === "captured") {
+          // Capture mode mounts nothing into the executor (ADR-0002), so a socket here would
+          // reach no workspace; and a token-less socket is what a person executor must never
+          // have (docs/adr/0016, decision 4). The executor speaks over the network channel with
+          // a token, always.
           return;
         }
         // No capture routes on the socket: nothing authenticates a launch there, and the

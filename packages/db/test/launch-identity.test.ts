@@ -121,7 +121,11 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
         };
       }),
     );
-    expect(result.resolved).toEqual({ sessionId: "s-legacy", launchId: "s-legacy" });
+    expect(result.resolved).toEqual({
+      sessionId: "s-legacy",
+      launchId: "s-legacy",
+      accountId: null,
+    });
     expect(result.verified).toBe("s-legacy");
     expect(result.launches).toEqual([
       ["s-idle", null],
@@ -153,11 +157,39 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
       }),
     );
     expect(result.before).toEqual([
-      { sessionId: "s-new", launchId: "launch:s-new:1:a" },
-      { sessionId: "s-new", launchId: "launch:s-new:1:a" },
-      { sessionId: "s-new", launchId: "launch:s-new:2:b" },
+      { sessionId: "s-new", launchId: "launch:s-new:1:a", accountId: null },
+      { sessionId: "s-new", launchId: "launch:s-new:1:a", accountId: null },
+      { sessionId: "s-new", launchId: "launch:s-new:2:b", accountId: null },
     ]);
     expect(result.after).toEqual([null, null, "launch:s-new:2:b", null]);
     expect(result.revoked).toBeNull();
+  });
+
+  it("a person's token names its launch and its person, never verifies as the launch's own, and ends with the launch (docs/adr/0016)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const tokens = yield* SessionChannelTokensRepo;
+        const own = yield* tokens.issue("s-person", "launch:s-person:1:a");
+        const maria = yield* tokens.issuePerson("launch:s-person:1:a", "user-maria");
+        const before = {
+          maria: yield* tokens.resolve(maria),
+          own: yield* tokens.resolve(own),
+          verified: yield* tokens.verify("s-person", maria),
+        };
+        yield* tokens.revokeLaunch("launch:s-person:1:a");
+        return { before, after: yield* tokens.resolve(maria) };
+      }),
+    );
+    expect(result.before).toEqual({
+      // A sentinel session no older server matches (review of mend#553, P3-2).
+      maria: {
+        sessionId: "person:user-maria",
+        launchId: "launch:s-person:1:a",
+        accountId: "user-maria",
+      },
+      own: { sessionId: "s-person", launchId: "launch:s-person:1:a", accountId: null },
+      verified: null,
+    });
+    expect(result.after).toBeNull();
   });
 });

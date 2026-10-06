@@ -3112,6 +3112,19 @@ const harnessLayoutMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * docs/adr/0016, decision 4 (Delivery 13): git and Mend identity per process. A session channel
+ * token is either the launch's own (`account_id` null: sealantd's capture channel, and in a
+ * `shared` executor everything, as before) or one person's in that launch, which the SSH shim and
+ * the `mend` helper present from `~/.mend/session-token`. A Service remembers who started it, so
+ * a restart in a person executor runs as them (null: its session's owner, as before).
+ */
+const personIdentityMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_channel_tokens ADD COLUMN account_id text`;
+  yield* sql`ALTER TABLE services ADD COLUMN started_by text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3225,4 +3238,5 @@ export const migrations = {
   "0110_project_install_enabled": projectInstallEnabledMigration,
   "0111_agent_memory_homes": agentMemoryHomesMigration,
   "0112_harness_layout": harnessLayoutMigration,
+  "0113_person_identity": personIdentityMigration,
 };

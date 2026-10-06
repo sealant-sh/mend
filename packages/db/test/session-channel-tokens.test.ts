@@ -26,7 +26,11 @@ describe("session channel tokens", () => {
         expect(yield* repo.verify("sess-a", b)).toBeNull();
         expect(yield* repo.verify("sess-b", a)).toBeNull();
         expect(yield* repo.verify("sess-c", a)).toBeNull();
-        expect(yield* repo.resolve(b)).toEqual({ sessionId: "sess-b", launchId: "launch-b1" });
+        expect(yield* repo.resolve(b)).toEqual({
+          sessionId: "sess-b",
+          launchId: "launch-b1",
+          accountId: null,
+        });
         yield* repo.revoke("sess-a");
         expect(yield* repo.verify("sess-a", a)).toBeNull();
         const a2 = yield* repo.issue("sess-a", "launch-a2");
@@ -44,13 +48,29 @@ describe("session channel tokens", () => {
         // The same create asked again under its key: a second token for that launch.
         const retried = yield* repo.issue("sess-a", "launch-1");
         const next = yield* repo.issue("sess-a", "launch-2");
-        expect(yield* repo.resolve(first)).toEqual({ sessionId: "sess-a", launchId: "launch-1" });
-        expect(yield* repo.resolve(retried)).toEqual({ sessionId: "sess-a", launchId: "launch-1" });
-        expect(yield* repo.resolve(next)).toEqual({ sessionId: "sess-a", launchId: "launch-2" });
+        expect(yield* repo.resolve(first)).toEqual({
+          sessionId: "sess-a",
+          launchId: "launch-1",
+          accountId: null,
+        });
+        expect(yield* repo.resolve(retried)).toEqual({
+          sessionId: "sess-a",
+          launchId: "launch-1",
+          accountId: null,
+        });
+        expect(yield* repo.resolve(next)).toEqual({
+          sessionId: "sess-a",
+          launchId: "launch-2",
+          accountId: null,
+        });
         yield* repo.revokeLaunch("launch-1");
         expect(yield* repo.resolve(first)).toBeNull();
         expect(yield* repo.resolve(retried)).toBeNull();
-        expect(yield* repo.resolve(next)).toEqual({ sessionId: "sess-a", launchId: "launch-2" });
+        expect(yield* repo.resolve(next)).toEqual({
+          sessionId: "sess-a",
+          launchId: "launch-2",
+          accountId: null,
+        });
       }).pipe(Effect.provide(SessionChannelTokensRepoMemory)),
     );
   });

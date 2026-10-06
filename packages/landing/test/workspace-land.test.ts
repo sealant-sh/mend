@@ -45,6 +45,36 @@ describe("mend land: who it lands for (docs/adr/0007, Who lands)", () => {
     ).toBe("not landed · only the change's owner lands it · someone else sent this turn");
   });
 
+  it("in a person executor, refuses a process that runs as anyone but the change's owner (docs/adr/0016)", () => {
+    // Bob's process in Alice's session (a shell, or a steered process): Alice's own turn, but
+    // the request came from Bob's process, with Bob's token.
+    expect(
+      workspaceLandRefusal({
+        session: session("alice", true),
+        changeOwnerUserId: "alice",
+        turns: [turn("running", "alice")],
+        requestedBy: "bob",
+      }),
+    ).toBe("not landed · only the change's owner lands it · this process runs as someone else");
+    expect(
+      workspaceLandRefusal({
+        session: session("alice"),
+        changeOwnerUserId: "alice",
+        turns: [turn("running", "alice")],
+        requestedBy: "alice",
+      }),
+    ).toBeNull();
+    // The workspace itself asking (a shared executor) is judged as before.
+    expect(
+      workspaceLandRefusal({
+        session: session("alice"),
+        changeOwnerUserId: "alice",
+        turns: [turn("running", "alice")],
+        requestedBy: null,
+      }),
+    ).toBeNull();
+  });
+
   it("in a terminal session, lands only while nobody else can be typing", () => {
     expect(
       workspaceLandRefusal({ session: session("alice"), changeOwnerUserId: "alice", turns: [] }),

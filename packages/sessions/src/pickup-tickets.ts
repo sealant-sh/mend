@@ -31,8 +31,12 @@ export const PICKUP_TICKET_TTL_MS = 10 * 60_000;
 /** A ticket's shape: 32 bytes as unpadded base64url. Anything else is never looked up. */
 export const PICKUP_TICKET_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
-/** What a ticket may be redeemed for. */
-export type PickupPurpose = "secret-files" | "pi-profile" | "workspace-files";
+/**
+ * What a ticket may be redeemed for. `session-token` (docs/adr/0016, decision 4): one person's Mend
+ * session token and git author for their home, minted only when the ticket is redeemed, so a
+ * person prepare skips gets no token.
+ */
+export type PickupPurpose = "secret-files" | "pi-profile" | "workspace-files" | "session-token";
 
 /** What a ticket is bound to. */
 export interface PickupBinding {
@@ -70,6 +74,12 @@ export interface PickupTickets {
   readonly mint: (binding: PickupBinding, files: ReadonlyArray<PickupFile>) => string;
   /** Take the ticket: its entry once, `spent` after that, `unknown` otherwise. */
   readonly take: (ticket: string) => PickupTake;
+  /**
+   * Put a taken ticket back, redeemable again, when what it was taken for could not be answered
+   * (the store failed mid-answer): its exec's retry then redeems it, instead of reading as a
+   * theft. Only a ticket taken and not yet discarded; false otherwise.
+   */
+  readonly restore: (ticket: string, entry: PickupEntry) => boolean;
   /** Forget a ticket not yet redeemed: the exec that carried it has ended. */
   readonly discard: (ticket: string) => void;
   /** Tickets redeemable now (tests). */
@@ -95,7 +105,10 @@ export const makePickupTickets = (
     PickupEntry & { readonly expiresAt: number; readonly timer: ReturnType<typeof setTimeout> }
   >();
   // A redeemed ticket's binding, never its files, until the backstop.
-  const spent = new Map<string, { readonly binding: PickupBinding; readonly expiresAt: number }>();
+  const spent = new Map<
+    string,
+    { readonly binding: PickupBinding; readonly expiresAt: number; discarded?: boolean }
+  >();
   const drop = (key: string) => {
     const entry = held.get(key);
     if (entry === undefined) return;
@@ -127,8 +140,30 @@ export const makePickupTickets = (
       later(() => spent.delete(key), Math.max(0, entry.expiresAt - now()));
       return { kind: "taken", entry: { binding: entry.binding, files: entry.files } };
     },
+    restore: (ticket, entry) => {
+      if (!PICKUP_TICKET_SHAPE.test(ticket)) return false;
+      const key = keyOf(ticket);
+      const tomb = spent.get(key);
+      if (tomb === undefined || tomb.discarded === true || held.has(key)) return false;
+      const remaining = tomb.expiresAt - now();
+      spent.delete(key);
+      if (remaining <= 0) return false;
+      const timer = later(() => held.delete(key), remaining);
+      held.set(key, {
+        binding: entry.binding,
+        files: entry.files,
+        expiresAt: tomb.expiresAt,
+        timer,
+      });
+      return true;
+    },
     discard: (ticket) => {
-      if (PICKUP_TICKET_SHAPE.test(ticket)) drop(keyOf(ticket));
+      if (!PICKUP_TICKET_SHAPE.test(ticket)) return;
+      const key = keyOf(ticket);
+      drop(key);
+      // Its exec has ended: nothing may put it back (its tombstone stays, for a late theft).
+      const tomb = spent.get(key);
+      if (tomb !== undefined) tomb.discarded = true;
     },
     size: () => held.size,
   };
