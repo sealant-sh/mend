@@ -128,6 +128,8 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             .pipe(Effect.catch(() => sealant.forward(workspace, service.workspacePort, "docker")));
           return { ok: true as const, pipe };
         }).pipe(
+          // As the session's owner, after the caller was authorized above; the client asks about
+          // a joined session's executor as its creator (`WorkspaceCaller`).
           asSealantUser(ownerUserId),
           Effect.catch((error) =>
             Effect.succeed({ ok: false as const, message: String(error.message) }),

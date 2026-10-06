@@ -7,15 +7,35 @@
  */
 export const LAUNCH_WAITING_PREFIX = "waiting · the previous session in this worktree";
 export const LAUNCH_WAITING_SAVING = `${LAUNCH_WAITING_PREFIX} is saving`;
-/** The session line while a launch waits on the worktree's previous executor, by how it stands. */
+/**
+ * What a lookup of a live lease holder's workspace observed when it did not find a live one: the
+ * platform's answer to the lookup (`failed`, with its status), or the state it reported
+ * (`not-live`). Absent: Mend could not name the holder's workspace to look up.
+ */
+export type HolderLookupObserved =
+  | { readonly kind: "failed"; readonly status: number | null; readonly code: string }
+  | { readonly kind: "not-live"; readonly state: string };
+
+/**
+ * The session line while a launch waits on the worktree's previous executor, by how it stands. A
+ * holder whose lease is live but whose workspace the platform did not find says exactly that, never
+ * "not answering": the heartbeat says it answers (alpha 2026-10-06, 9e486cfc).
+ */
 export const leaseWaitWords = (holder: {
   readonly kind: "ending" | "unreachable" | "lapsed";
-}): string =>
-  holder.kind === "ending"
-    ? LAUNCH_WAITING_SAVING
-    : holder.kind === "unreachable"
-      ? `${LAUNCH_WAITING_PREFIX} is not answering`
-      : `${LAUNCH_WAITING_PREFIX} has not confirmed its end`;
+  readonly lookup?: HolderLookupObserved | null;
+}): string => {
+  if (holder.kind === "ending") return LAUNCH_WAITING_SAVING;
+  if (holder.kind === "lapsed") return `${LAUNCH_WAITING_PREFIX} has not confirmed its end`;
+  const lookup = holder.lookup ?? null;
+  if (lookup?.kind === "failed" && lookup.status === 404) {
+    return `${LAUNCH_WAITING_PREFIX} renews its lease, but the platform did not find its workspace (404)`;
+  }
+  if (lookup?.kind === "not-live") {
+    return `${LAUNCH_WAITING_PREFIX} renews its lease, but the platform reports its workspace ${lookup.state}`;
+  }
+  return `${LAUNCH_WAITING_PREFIX} is not answering`;
+};
 export const LAUNCH_BOOTING = "booting";
 /**
  * No executor yet, a while into the create. The platform reports no image build (SDK 0.38), so

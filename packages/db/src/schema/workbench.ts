@@ -1435,6 +1435,10 @@ export const agentSessions = pgTable(
       table.ownerUserId,
       table.createdAt.desc(),
     ),
+    // Who created a workspace: the row naming it under a launch of its own (0114).
+    index("agent_sessions_executor_workspace_idx")
+      .on(table.sealantWorkspaceId)
+      .where(sql`${table.executorLaunchId} IS NOT NULL`),
   ],
 );
 

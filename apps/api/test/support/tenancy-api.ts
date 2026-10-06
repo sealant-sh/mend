@@ -61,6 +61,7 @@ import {
   DotfilesCloner,
   FollowUpDelivery,
   SessionEngine,
+  WorkspaceCaller,
   WorktreeReads,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
@@ -174,6 +175,7 @@ export const createTenancyApi = async (
      * still recorded; a method left out still fails as unimplemented.
      */
     readonly implement?: {
+      readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
       readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
       readonly landing?: Layer.PartialEffectful<Landing["Service"]>;
@@ -315,6 +317,23 @@ export const createTenancyApi = async (
         calls,
       ),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
+      // Whose identity a call about a workspace runs as: the principal in context here, since the
+      // harness's platform has one user.
+      recording(
+        WorkspaceCaller,
+        "workspaceCaller",
+        {
+          observe: () => (self) => self,
+          mayAct: () => Effect.void,
+          creatorOf: () => Effect.succeed(null),
+          recorded: () => Effect.void,
+          act: () => (self) => self,
+          observeRun: () => (self) => self,
+          observeRunStream: () => (self) => self,
+          ...options.implement?.workspaceCaller,
+        },
+        calls,
+      ),
       recording(AgentBridge, "agentBridge", { socketPath: () => "/unused/agent.sock" }, calls),
       options.dotfiles === undefined
         ? recording(DotfilesStore, "dotfilesStore", {}, calls)

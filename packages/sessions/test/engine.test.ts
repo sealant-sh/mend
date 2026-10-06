@@ -42,6 +42,8 @@ import {
   SessionsRepo,
   SettingsRepo,
   AgentMemoryRepo,
+  AuditEventsRepo,
+  type NewAuditEvent,
   PiProfilesRepo,
   SecretFilesRepo,
   SkillsRepo,
@@ -138,13 +140,16 @@ import {
 } from "@mend/domain/workbench";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
+  asSealantUser,
   type CaptureFlushKind,
   PersonLayoutPlatform,
   PersonLayoutPlatformLive,
   type PersonSessionOptions,
   SealantClient,
+  type SealantClientShape,
   SealantPlatformError,
   SealantPrincipal,
+  type SealantPrincipalValue,
   type WorkspaceByKey,
   type WorkspaceCreateFence,
   type WorkspaceStopOptions,
@@ -160,6 +165,7 @@ import {
   CaptureSourcesOff,
   CaptureRuntimeLive,
   type CaptureCompletionSeal,
+  type CaptureHold,
   CaptureSeals,
   CaptureSealsNone,
   captureHoldWords,
@@ -167,7 +173,10 @@ import {
   planBlockedWords,
   planWaitingWords,
   CaptureUploadPolicyDefault,
+  STOPPED_LOST_SIGHT,
+  STOPPED_NOT_MEMBER,
   DotfilesCloner,
+  EXECUTOR_RETIRED,
   makeDotfilesClonerLayer,
   HARNESS_HOME_MOUNT_PATH,
   HarnessStateNotFoundError,
@@ -176,6 +185,7 @@ import {
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
+  SealantClientByWorkspaceCreator,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
   SessionChannelNetworkHost,
@@ -186,6 +196,8 @@ import {
   type SessionSocketApi,
   SessionSocketHost,
   WORKSPACE_MEND_TOML,
+  WorkspaceCaller,
+  WorkspaceCallerLive,
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
   secretFilesDeliveredExec,
@@ -1305,6 +1317,8 @@ interface World {
   readonly worktrees: Map<string, Worktree>;
   /** Members of the fixture organization (`org-test`), by account. */
   readonly members: Map<string, "owner" | "member">;
+  /** What Mend recorded in the organization's audit log, in order. */
+  readonly audit: Array<NewAuditEvent>;
   /** Recent owners beyond the world's own sessions, as `recentOwnersForProject` adds them. */
   recentOwners: ReadonlyArray<string>;
   /** A planned relaunch's harness, by session (`planRelaunch`): bookkeeping off the row. */
@@ -1385,7 +1399,12 @@ const makeWorld = (): World => ({
   checkpointHold: { current: null },
   checkpointConflicts: { count: 0 },
   worktrees: new Map(),
-  members: new Map([["user-fixture", "member"]]),
+  // Maria joins other people's executors in many worlds: a member, as only a member can be.
+  audit: [],
+  members: new Map([
+    ["user-fixture", "member"],
+    ["user-maria", "member"],
+  ]),
   recentOwners: ["user-fixture"],
   relaunches: new Map(),
   finalFlushed: new Map(),
@@ -1811,6 +1830,12 @@ const sourcePolicyLayer = Layer.succeed(
     resolve: async () => ["140.82.112.3"],
   }),
 );
+
+/** The organization's audit log, kept in the world. */
+const auditLayer = (world: World) =>
+  Layer.mock(AuditEventsRepo, {
+    record: (event) => Effect.sync(() => void world.audit.push(event)),
+  });
 
 /** One organization, `org-test`, whose members the world names. */
 const organizationsLayer = (world: World) =>
@@ -2439,6 +2464,22 @@ const sessionsLayer = (world: World) => {
           ? null
           : { workspaceId: current, launchId: found.launchId };
       }),
+    executorSessionOf: (workspaceId) => Effect.sync(() => executorSessionIn(world, workspaceId)),
+    executorAccessOf: (workspaceId, askerUserId) =>
+      Effect.sync(() => {
+        const creator = executorSessionIn(world, workspaceId);
+        const project = creator === null ? undefined : world.projects.get(creator.projectId);
+        if (creator === null || creator.ownerUserId === null || project === undefined) return null;
+        // One organization in these worlds, `org-test`: a member's role is theirs in it.
+        const roleOf = (userId: string) =>
+          project.organizationId === "org-test" ? (world.members.get(userId) ?? null) : null;
+        return {
+          creatorUserId: creator.ownerUserId,
+          project,
+          creatorRole: roleOf(creator.ownerUserId),
+          askerRole: roleOf(askerUserId),
+        };
+      }),
     recordExecutorCreate: (id, key) => Effect.sync(() => void world.executorCreates.set(id, key)),
     clearExecutorCreate: (id, key) =>
       Effect.sync(() => {
@@ -2960,6 +3001,44 @@ const countingLaunchLayoutReads = (
     })),
   ).pipe(Layer.provide(harnessLayoutsRepoMemory(state)));
 
+/** The session whose own launch made the executor in `workspaceId` (`executorSessionOf`). */
+const executorSessionIn = (world: World, workspaceId: string): Session | null => {
+  for (const [id, launch] of world.executorLaunches) {
+    const session = world.sessions.get(id);
+    if (launch.workspaceId === workspaceId && session?.sealantWorkspaceId === workspaceId) {
+      return session;
+    }
+  }
+  return null;
+};
+
+/** `SealantClientByWorkspaceCreator` over `inner`, reading the world's sessions and projects. */
+const byWorkspaceCreatorIn = (
+  world: World,
+  inner: Layer.Layer<SealantClient>,
+): Layer.Layer<SealantClient | WorkspaceCaller> =>
+  SealantClientByWorkspaceCreator.pipe(
+    // One caller for the client and the engine, as on the server: its caches are shared.
+    Layer.provideMerge(WorkspaceCallerLive),
+    Layer.provide(inner),
+    Layer.provide(Layer.mergeAll(sessionsLayer(world), sessionRunsLayer(world))),
+  );
+
+/** `layer`, handing the client it builds to `expose` as well. */
+const exposing = (
+  layer: Layer.Layer<SealantClient | WorkspaceCaller>,
+  expose: ((client: SealantClientShape) => void) | undefined,
+): Layer.Layer<SealantClient | WorkspaceCaller> =>
+  expose === undefined
+    ? layer
+    : Layer.effect(
+        SealantClient,
+        Effect.map(SealantClient, (client) => {
+          expose(client);
+          return client;
+        }),
+      ).pipe(Layer.provideMerge(layer));
+
 const withEngine = <A, E>(
   work: (
     world: World,
@@ -2967,6 +3046,8 @@ const withEngine = <A, E>(
   ) => Effect.Effect<A, E, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
   options: {
     readonly sealantLayer?: Layer.Layer<SealantClient>;
+    /** Hands a test the platform client exactly as the engine reaches it (`WorkspaceCaller` on). */
+    readonly exposeSealant?: (client: SealantClientShape) => void;
     readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
     readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
@@ -3100,10 +3181,18 @@ const withEngine = <A, E>(
     Layer.provide(testDrainPolicy(options.drainPolicy)),
     Layer.provide(sessionRepositoryLayer),
     Layer.provide(storeLayer),
+    // The platform as the server reaches it: through the rule for whose identity a call about a
+    // workspace runs as (`WorkspaceCaller`), over the world's own rows.
     Layer.provide(
-      options.captured === undefined || options.sealantLayer === undefined
-        ? (options.sealantLayer ?? sealantDeadLayer)
-        : stampedAnswers(options.sealantLayer, options.captured, world),
+      exposing(
+        byWorkspaceCreatorIn(
+          world,
+          options.captured === undefined || options.sealantLayer === undefined
+            ? (options.sealantLayer ?? sealantDeadLayer)
+            : stampedAnswers(options.sealantLayer, options.captured, world),
+        ),
+        options.exposeSealant,
+      ),
     ),
     Layer.provide(settingsLayer(options.workspaceImage)),
     Layer.provide(projectsLayer(world)),
@@ -3141,6 +3230,7 @@ const withEngine = <A, E>(
         projectLinksEmptyLayer,
         SessionRepositoriesRepoMemory,
         organizationsLayer(world),
+        auditLayer(world),
         sourcePolicyLayer,
         foldersEmptyLayer,
         projectRecipesEmptyLayer,
@@ -6836,7 +6926,7 @@ describe("SessionEngine", () => {
         ),
       ),
       Layer.provide(storeLayer),
-      Layer.provide(sealantDeadLayer),
+      Layer.provide(byWorkspaceCreatorIn(world, sealantDeadLayer)),
       Layer.provide(projectsLayer(world)),
       Layer.provide(sessionsLayer(world)),
       Layer.provide(sessionRunsLayer(world)),
@@ -6863,6 +6953,7 @@ describe("SessionEngine", () => {
           projectLinksEmptyLayer,
           SessionRepositoriesRepoMemory,
           organizationsLayer(world),
+          auditLayer(world),
           sourcePolicyLayer,
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
@@ -14207,6 +14298,43 @@ describe("SessionEngine dotfiles gate", () => {
 });
 
 /** A launch layer for the lifecycle tests: the positional knobs they use, by name. */
+/** `inner`, whose PTY closes wait on `held` before the platform closes them. */
+const slowCloses = (
+  inner: Layer.Layer<SealantClient>,
+  held: () => Promise<void>,
+  /** Once released, the close is refused the way a platform that does not answer refuses it. */
+  refused: () => boolean = () => false,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(
+      SealantClient,
+      (client): SealantClientShape => ({
+        ...client,
+        getSession: (workspace, sessionId) =>
+          client.getSession(workspace, sessionId).pipe(
+            Effect.map(
+              (pty): InteractiveSession => ({
+                ...pty,
+                close: async () => {
+                  await held();
+                  if (refused()) {
+                    throw new SealantPlatformError({
+                      code: "control_plane_unavailable",
+                      status: 503,
+                      message: "the control plane did not answer",
+                      cause: null,
+                    });
+                  }
+                  await pty.close();
+                },
+              }),
+            ),
+          ),
+      }),
+    ),
+  ).pipe(Layer.provide(inner));
+
 const lifecycleLayer = (
   created: Array<CreateOptions>,
   knobs: {
@@ -15246,6 +15374,178 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           }),
         },
       );
+    },
+  );
+
+  it(
+    "the owner's stop wins over a replacement even while its close is slow: one executor, nothing relaunched (review 4 of mend#558)",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let saveNow = false;
+      const close = Promise.withResolvers<void>();
+      const closeHeld = close.promise;
+      const releaseClose = close.resolve;
+      let state: Record<string, unknown> = {};
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "replacement",
+              "the replacement's drain",
+            );
+            // The owner presses Stop; the platform takes its time closing the agent.
+            const stopping = yield* Effect.forkChild(engine.stop(session.id));
+            yield* Effect.sleep(Duration.millis(200));
+            // Meanwhile the replacement saves and ends the executor, and looks to relaunch.
+            saveNow = true;
+            yield* until(() => events.includes("workspace-1"), "the terminate");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the replacement's drain end",
+            );
+            // The lease goes once the end is observed; the replacement then looks to relaunch.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.seconds(3));
+            const createdWhileClosing = created.length;
+            releaseClose();
+            yield* Fiber.join(stopping);
+            yield* Effect.sleep(Duration.seconds(1));
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(300));
+            state = {
+              createdWhileClosing,
+              created: created.length,
+              status: world.sessions.get(session.id)?.status,
+              relaunch: world.relaunches.has(session.id),
+            };
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            executorMaxSeconds: 1000,
+            drainEstimateSeconds: 600,
+            deadlineMarginSeconds: 400,
+            terminationWait: Duration.seconds(5),
+          },
+          sealantLayer: slowCloses(
+            lifecycleLayer(created, {
+              events,
+              captureOps: {
+                flushed: events,
+                flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+              },
+            }),
+            () => closeHeld,
+          ),
+        },
+      );
+      expect(state).toEqual({
+        createdWhileClosing: 1,
+        created: 1,
+        status: "stopped",
+        relaunch: false,
+      });
+    },
+  );
+
+  it(
+    "a refused Stop whose agent the finishing replacement ended anyway is a stop: nothing stranded, nothing relaunched (review 5 of mend#558)",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let saveNow = false;
+      const close = Promise.withResolvers<void>();
+      const closeHeld = close.promise;
+      const releaseClose = close.resolve;
+      let state: Record<string, unknown> = {};
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "replacement",
+              "the replacement's drain",
+            );
+            // The owner presses Stop; the platform takes its time closing the agent.
+            const stopping = yield* Effect.forkChild(engine.stop(session.id));
+            yield* Effect.sleep(Duration.millis(200));
+            // Meanwhile the replacement saves and ends the executor, and looks to relaunch.
+            saveNow = true;
+            yield* until(() => events.includes("workspace-1"), "the terminate");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the replacement's drain end",
+            );
+            // The lease goes once the end is observed; the replacement then looks to relaunch.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.seconds(3));
+            const createdWhileClosing = created.length;
+            releaseClose();
+            yield* Fiber.join(stopping);
+            yield* Effect.sleep(Duration.seconds(1));
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(300));
+            state = {
+              createdWhileClosing,
+              created: created.length,
+              status: world.sessions.get(session.id)?.status,
+              relaunch: world.relaunches.has(session.id),
+              summary: world.sessions.get(session.id)?.summary ?? "",
+            };
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            executorMaxSeconds: 1000,
+            drainEstimateSeconds: 600,
+            deadlineMarginSeconds: 400,
+            terminationWait: Duration.seconds(5),
+          },
+          sealantLayer: slowCloses(
+            lifecycleLayer(created, {
+              events,
+              captureOps: {
+                flushed: events,
+                flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+              },
+            }),
+            () => closeHeld,
+            () => true,
+          ),
+        },
+      );
+      expect(state).toEqual({
+        createdWhileClosing: 1,
+        created: 1,
+        status: "stopped",
+        relaunch: false,
+        // No "stop again" for an agent that has already ended, and nothing "starting".
+        summary: expect.not.stringMatching(/could not be stopped|starting/),
+      });
     },
   );
 
@@ -24395,6 +24695,12 @@ const livePersonJoin = async <A>(options: {
   /** Present every identity ticket again while its first answer is still being made. */
   readonly presentOverlapping?: boolean;
   readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
+  /**
+   * The stand-in platform has one workspace for every create, so a scenario that launches a second
+   * executor cannot keep each workspace its creator's; it runs on one platform user instead. Every
+   * other scenario runs where only a workspace's creator reaches it (`workspacesPerOwner`).
+   */
+  readonly onePlatformUser?: boolean;
   readonly inspect: (
     engine: SessionEngine["Service"],
     join: LiveJoin,
@@ -24484,31 +24790,34 @@ const livePersonJoin = async <A>(options: {
         ? {}
         : { gitHooksLayer: recordingLandings(options.landings) }),
       ...(options.gitAuthorLayer === undefined ? {} : { gitAuthorLayer: options.gitAuthorLayer }),
-      sealantLayer: sealantLaunchLayer(
-        created,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        opened,
-        undefined,
-        execCalls,
-        undefined,
-        person
-          ? {
-              exec: answerLayout(LAYOUT_READY),
-              execEffect: identityExec({
-                pickups,
-                holder: holderOf,
-                launchId: launchIdOf,
-                ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
-                ...(options.presentTwice === true ? { twice: true } : {}),
-                ...(options.presentOverlapping === true ? { overlap: true } : {}),
-              }),
-            }
-          : {},
+      sealantLayer: perOwnerUnless(
+        options.onePlatformUser,
+        sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          execCalls,
+          undefined,
+          person
+            ? {
+                exec: answerLayout(LAYOUT_READY),
+                execEffect: identityExec({
+                  pickups,
+                  holder: holderOf,
+                  launchId: launchIdOf,
+                  ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
+                  ...(options.presentTwice === true ? { twice: true } : {}),
+                  ...(options.presentOverlapping === true ? { overlap: true } : {}),
+                }),
+              }
+            : {},
+        ),
       ),
       harnessLayout: {
         flag: options.flag,
@@ -24910,6 +25219,8 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
   it("a person's token works only for sessions live in its launch that they may act on", async () => {
     await livePersonJoin({
       flag: "person",
+      // Maria's own session in another worktree is a second executor.
+      onePlatformUser: true,
       inspect: (engine, join) =>
         Effect.gen(function* () {
           // Maria may not act on Alice's session while shared control is off.
@@ -24999,5 +25310,1194 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           expect(join.opened.at(-1)?.user?.name).toBe(LAUNCHER);
         }),
     });
+  });
+});
+
+/** Whose principal a platform call is made under, as `workspacesPerOwner` records it. */
+const userOf = (principal: SealantPrincipalValue) =>
+  principal.kind === "none" ? "none" : principal.userId;
+
+/**
+ * The platform as Core serves it to more than one person (`MEND_TENANCY=multi`, each Mend user its
+ * own Sealant user): a workspace, its interactive sessions and their runs belong to the Sealant
+ * user who created the workspace, and every call about them by anyone else is a 404, as
+ * `GET /v1/workspaces/<id>` answered the joiner on alpha. Stricter than Core in one way, so no
+ * path can hide behind a handle: a call through a workspace handle is judged by the principal it
+ * is made under, not by whose client fetched the handle. Every judged call lands in `seen` as
+ * `<user>:<found|404>`, and in `calls` as `<method> <user>:<found|404>`.
+ */
+const workspacesPerOwner = (
+  inner: Layer.Layer<SealantClient>,
+  seen: Array<string>,
+  calls: Array<string> = [],
+  ptys: {
+    /** Every PTY the platform closed, by id: what a test reads to see a process really ended. */
+    readonly closed?: Set<string>;
+    /** While true, closing a PTY fails the way a platform that does not answer does. */
+    readonly closeFails?: () => boolean;
+    /** A defective lookup in one concurrent Stop must not interrupt the others. */
+    readonly getSessionDefect?: (ptyId: string) => boolean;
+  } = {},
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client): SealantClientShape => {
+      const owners = new Map<string, string>();
+      const runOwners = new Map<string, string>();
+      const ptyOwners = new Map<string, string>();
+      const notFound = new SealantPlatformError({
+        code: "WorkspaceNotFoundError",
+        status: 404,
+        message: "workspace not found",
+        cause: null,
+      });
+      const judge = (
+        method: string,
+        owner: string | undefined,
+        principal: SealantPrincipalValue,
+      ) => {
+        const found = owner === undefined || owner === userOf(principal);
+        const entry = `${userOf(principal)}:${found ? "found" : "404"}`;
+        seen.push(entry);
+        calls.push(`${method} ${entry}`);
+        return found;
+      };
+      const guarded = <A>(
+        method: string,
+        ownerOf: () => string | undefined,
+        call: () => Effect.Effect<A, SealantPlatformError>,
+      ): Effect.Effect<A, SealantPlatformError> =>
+        Effect.flatMap(SealantPrincipal, (principal) =>
+          judge(method, ownerOf(), principal) ? call() : Effect.fail(notFound),
+        );
+      const guardedStream = <A>(
+        method: string,
+        ownerOf: () => string | undefined,
+        call: () => Stream.Stream<A, SealantPlatformError>,
+      ): Stream.Stream<A, SealantPlatformError> =>
+        Stream.unwrap(
+          Effect.map(SealantPrincipal, (principal) =>
+            judge(method, ownerOf(), principal) ? call() : Stream.fail(notFound),
+          ),
+        );
+      const ofWorkspace = (id: string) => () => owners.get(id);
+      const ofRun = (id: string) => () => runOwners.get(id);
+      return {
+        createWorkspace: (options, launch, watch) =>
+          Effect.flatMap(SealantPrincipal, (principal) =>
+            client
+              .createWorkspace(options, launch, watch)
+              .pipe(
+                Effect.tap((workspace) =>
+                  Effect.sync(() => owners.set(workspace.id, userOf(principal))),
+                ),
+              ),
+          ),
+        findWorkspaceByKey: (key) => client.findWorkspaceByKey(key),
+        fenceWorkspaceCreate: (key) => client.fenceWorkspaceCreate(key),
+        getWorkspace: (id) =>
+          guarded("getWorkspace", ofWorkspace(id), () => client.getWorkspace(id)),
+        getRun: (runId) => guarded("getRun", ofRun(runId), () => client.getRun(runId)),
+        runHarness: (workspace, prompt, options) =>
+          guarded("runHarness", ofWorkspace(workspace.id), () =>
+            client.runHarness(workspace, prompt, options),
+          ),
+        startHarness: (workspace, prompt, options) =>
+          guarded("startHarness", ofWorkspace(workspace.id), () =>
+            client.startHarness(workspace, prompt, options),
+          ),
+        startHarnessInWorkspace: (workspaceId, harness, prompt) =>
+          guarded("startHarnessInWorkspace", ofWorkspace(workspaceId), () =>
+            client.startHarnessInWorkspace(workspaceId, harness, prompt),
+          ),
+        waitRun: (run) => guarded("waitRun", ofRun(run.id), () => client.waitRun(run)),
+        openSession: (workspace, argv, options) =>
+          guarded("openSession", ofWorkspace(workspace.id), () =>
+            client.openSession(workspace, argv, options).pipe(
+              Effect.tap((pty) =>
+                Effect.sync(() => {
+                  const owner = owners.get(workspace.id);
+                  if (owner === undefined) return;
+                  runOwners.set(pty.runId, owner);
+                  ptyOwners.set(pty.id, owner);
+                }),
+              ),
+            ),
+          ),
+        forward: (workspace, port, host, protocol) =>
+          guarded("forward", ofWorkspace(workspace.id), () =>
+            client.forward(workspace, port, host, protocol),
+          ),
+        stopWorkspace: (workspace, options) =>
+          guarded("stopWorkspace", ofWorkspace(workspace.id), () =>
+            client.stopWorkspace(workspace, options),
+          ),
+        runtimeResourceId: (workspace, launchId) =>
+          guarded("runtimeResourceId", ofWorkspace(workspace.id), () =>
+            client.runtimeResourceId(workspace, launchId),
+          ),
+        captureFlush: (workspace, kind) =>
+          guarded("captureFlush", ofWorkspace(workspace.id), () =>
+            client.captureFlush(workspace, kind),
+          ),
+        captureStatus: (workspace) =>
+          guarded("captureStatus", ofWorkspace(workspace.id), () =>
+            client.captureStatus(workspace),
+          ),
+        captureReplan: (workspace) =>
+          guarded("captureReplan", ofWorkspace(workspace.id), () =>
+            client.captureReplan(workspace),
+          ),
+        runtimeDeadline: (workspace) =>
+          guarded("runtimeDeadline", ofWorkspace(workspace.id), () =>
+            client.runtimeDeadline(workspace),
+          ),
+        expireWorkspace: (workspaceId, ttlSeconds) =>
+          guarded("expireWorkspace", ofWorkspace(workspaceId), () =>
+            client.expireWorkspace(workspaceId, ttlSeconds),
+          ),
+        getSession: (workspace, sessionId) =>
+          guarded("getSession", ofWorkspace(workspace.id), () =>
+            (ptys.getSessionDefect?.(sessionId) === true
+              ? Effect.die("injected process lookup defect")
+              : client.getSession(workspace, sessionId)
+            ).pipe(
+              Effect.map(
+                (pty): InteractiveSession => ({
+                  ...pty,
+                  close: async () => {
+                    if (ptys.closeFails?.() === true) {
+                      throw new SealantPlatformError({
+                        code: "control_plane_unavailable",
+                        status: 503,
+                        message: "the control plane did not answer",
+                        cause: null,
+                      });
+                    }
+                    ptys.closed?.add(pty.id);
+                    await pty.close();
+                  },
+                }),
+              ),
+            ),
+          ),
+        sessionOutput: (sessionId, options) =>
+          guarded(
+            "sessionOutput",
+            () => ptyOwners.get(sessionId),
+            () => client.sessionOutput(sessionId, options),
+          ),
+        exec: (workspace, argv, options) =>
+          guarded("exec", ofWorkspace(workspace.id), () => client.exec(workspace, argv, options)),
+        bindWorkspace: (workspace, options) =>
+          guarded("bindWorkspace", ofWorkspace(workspace.id), () =>
+            client.bindWorkspace(workspace, options),
+          ),
+        diffCommits: (workspaceId, base, head) =>
+          guarded("diffCommits", ofWorkspace(workspaceId), () =>
+            client.diffCommits(workspaceId, base, head),
+          ),
+        inferenceRespond: (options) => client.inferenceRespond(options),
+        recordStream: (run, options) =>
+          guardedStream("recordStream", ofRun(run.id), () => client.recordStream(run, options)),
+        recordTimeline: (run, options) =>
+          guardedStream("recordTimeline", ofRun(run.id), () => client.recordTimeline(run, options)),
+        recordCommands: (run) =>
+          guarded("recordCommands", ofRun(run.id), () => client.recordCommands(run)),
+        recordScrollback: (run, processId, stream) =>
+          guarded("recordScrollback", ofRun(run.id), () =>
+            client.recordScrollback(run, processId, stream),
+          ),
+        runChanges: (run) => guarded("runChanges", ofRun(run.id), () => client.runChanges(run)),
+        connectionCheck: () => client.connectionCheck(),
+        resolveWorkspacePackage: (packageName, targetOs) =>
+          client.resolveWorkspacePackage(packageName, targetOs),
+      };
+    }),
+  ).pipe(Layer.provide(inner));
+
+/** `workspacesPerOwner` over `inner`, unless the scenario runs on one platform user. */
+const perOwnerUnless = (
+  onePlatformUser: boolean | undefined,
+  inner: Layer.Layer<SealantClient>,
+): Layer.Layer<SealantClient> => (onePlatformUser === true ? inner : workspacesPerOwner(inner, []));
+
+/** What a test after a join by another person is handed. */
+interface JoinByAnother {
+  readonly holder: SessionId;
+  readonly joined: SessionId;
+  readonly tmp: string;
+  readonly project: Project;
+  /** The platform client exactly as the engine and the routes reach it. */
+  readonly platform: SealantClientShape;
+  /** Every judged call (`workspacesPerOwner`), in order. */
+  readonly calls: Array<string>;
+  readonly execCalls: Array<ReadonlyArray<string>>;
+  /** Every PTY the platform closed. */
+  readonly closed: Set<string>;
+  /** Every workspace the platform was asked to stop. */
+  readonly stopped: Array<string>;
+  readonly memory: MemoryCaptureStore;
+}
+
+/**
+ * The owner's session runs; Maria, a member, starts one in its worktree and launches it, on a
+ * platform where every call about the owner's workspace by anyone but the owner is a 404.
+ */
+const joinByAnotherPerson = async (
+  then: (
+    engine: SessionEngine["Service"],
+    world: World,
+    join: JoinByAnother,
+  ) => Effect.Effect<void, unknown, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
+  options: {
+    readonly closeFails?: () => boolean;
+    readonly getSessionDefect?: (ptyId: string) => boolean;
+  } = {},
+) => {
+  const closed = new Set<string>();
+  const stopped: Array<string> = [];
+  const memory = makeMemoryCaptureStore();
+  const created: Array<CreateOptions> = [];
+  const execCalls: Array<ReadonlyArray<string>> = [];
+  const seen: Array<string> = [];
+  const calls: Array<string> = [];
+  const logs: Array<string> = [];
+  let failure: string | null = null;
+  let holderWorkspace: string | null = null;
+  let joinedWorkspace: string | null = null;
+  let platform: SealantClientShape | null = null;
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const holder = yield* engine.provision({
+          projectId: project.id,
+          harness: "claude",
+          label: null,
+          name: "together",
+          ownerUserId: "user-fixture",
+          base: null,
+        });
+        yield* engine.launch(holder.id, ["claude"]);
+        holderWorkspace = world.sessions.get(holder.id)?.sealantWorkspaceId ?? null;
+        const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+          harness: "claude",
+          label: null,
+          ownerUserId: MARIA,
+        });
+        const launched = yield* engine.launch(joined.id, ["claude"]).pipe(Effect.result);
+        if (launched._tag === "Failure") failure = launched.failure.message;
+        joinedWorkspace = world.sessions.get(joined.id)?.sealantWorkspaceId ?? null;
+        if (platform === null) throw new Error("the platform client was not handed over");
+        if (failure === null) {
+          yield* then(engine, world, {
+            holder: holder.id,
+            joined: joined.id,
+            tmp,
+            project,
+            platform,
+            calls,
+            execCalls,
+            closed,
+            stopped,
+            memory,
+          });
+        }
+      }),
+    {
+      captured: memory,
+      logs,
+      prepareWorld: (world) => world.members.set(MARIA, "member"),
+      exposeSealant: (client) => {
+        platform = client;
+      },
+      sealantLayer: workspacesPerOwner(
+        sealantLaunchLayer(
+          created,
+          undefined,
+          stopped,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+        ),
+        seen,
+        calls,
+        { closed, ...options },
+      ),
+    },
+  );
+  return { created, seen, calls, logs, failure, holderWorkspace, joinedWorkspace };
+};
+
+/** How long a test lets what a stop forked (its tail, the settle-path cleanup) run. */
+const SETTLE_WAIT = Duration.seconds(3);
+
+/** Whether the holder's agent row still reads live. */
+const holderAgentLive = (world: World, holder: SessionId) =>
+  [...world.processes.values()].some(
+    (process) =>
+      process.sessionId === holder && process.kind === "agent-pty" && process.exitedAt === null,
+  );
+
+/** The mark a refused close of `shell` puts on its session's line, keyed by its id. */
+const wordsOf = (shell: SessionProcess | undefined) =>
+  `(${(shell?.id ?? "").slice(0, 8)}) could not be stopped`;
+
+/** A platform call's outcome in one word: `answered`, or its failure's code. */
+const tell = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
+  effect.pipe(Effect.match({ onSuccess: () => "answered", onFailure: (e) => e.code }));
+
+/** The joiner's agent process, as the terminal route resolves it for `?session=`. */
+const joinedAgentOf = (world: World, joined: SessionId) => {
+  const agent = [...world.processes.values()].find(
+    (process) => process.sessionId === joined && process.kind === "agent-pty",
+  );
+  if (agent === undefined || agent.sealantSessionId === null) {
+    throw new Error("the joined session has no agent PTY");
+  }
+  return { workspaceId: agent.sealantWorkspaceId, ptyId: agent.sealantSessionId };
+};
+
+describe("a join by another person into a live executor (alpha 2026-10-06, 9e486cfc)", () => {
+  it("finds the holder's executor as its owner and joins it, never waiting on a lookup only the owner may make", async () => {
+    const run = await joinByAnotherPerson(() => Effect.void);
+    // On alpha: `holder: 'unreachable'`, the session line "waiting · the previous session in this
+    // worktree is not answering", and after `leaseWait` (30 min) `worktree leased · held by …`.
+    expect(run.failure).toBeNull();
+    expect(run.logs.some((line) => line.includes("joining the lease holder"))).toBe(true);
+    expect(run.created).toHaveLength(1);
+    expect(run.holderWorkspace).not.toBeNull();
+    expect(run.joinedWorkspace).toBe(run.holderWorkspace);
+    // The holder's executor is never asked about as the joiner: every call about it, the join's
+    // own process included, is made as its creator.
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+    expect(run.calls.filter((call) => !call.endsWith("user-fixture:found"))).toEqual([]);
+    expect(run.calls).toContain("openSession user-fixture:found");
+  });
+
+  it("after the join, the joiner's own verbs reach the executor they run in: a shell opens", async () => {
+    let shell: string | null = "not asked";
+    const run = await joinByAnotherPerson((engine, _world, { joined }) =>
+      engine.openShell(joined).pipe(
+        Effect.match({
+          onSuccess: () => {
+            shell = null;
+          },
+          onFailure: (error) => {
+            shell = error.message;
+          },
+        }),
+      ),
+    );
+    expect(run.failure).toBeNull();
+    expect(shell).toBeNull();
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("the joiner's terminal attaches as the terminal route asks for it, as the session's owner", async () => {
+    let attached: string | null = null;
+    let expected: string | null = null;
+    const run = await joinByAnotherPerson((_engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        expected = agent.ptyId;
+        // apps/api/src/routes/tty.ts: the workspace, then the PTY, as the session's owner (the
+        // joiner); the client asks as the workspace's creator.
+        const pty = yield* join.platform.getWorkspace(agent.workspaceId).pipe(
+          Effect.flatMap((workspace) => join.platform.getSession(workspace, agent.ptyId)),
+          asSealantUser(MARIA),
+        );
+        attached = pty.id;
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(attached).not.toBeNull();
+    expect(attached).toBe(expected);
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+    expect(run.calls).toContain("getSession user-fixture:found");
+  });
+
+  it("a Service the joiner runs starts in the executor, and stops there", async () => {
+    let started: string | null = null;
+    let stopped: string | null = null;
+    const run = await joinByAnotherPerson((engine, _world, { joined }) =>
+      Effect.gen(function* () {
+        const service = yield* engine.runService(joined, ["pnpm", "dev"], 3000, "web");
+        started = service.attempts[0]?.status ?? null;
+        const after = yield* engine.stopService(service.service.id);
+        stopped = after.service.id;
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(started).toBe("running");
+    expect(stopped).not.toBeNull();
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("a git op through the workspace: a repository the joiner adds is cloned in the executor", async () => {
+    let listed: ReadonlyArray<readonly [string, string, string | null]> = [];
+    const run = await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        yield* setupSibling(join.tmp, world, "core", join.project.originUrl ?? "");
+        yield* engine.addRepository(join.joined, { project: "core", name: null, worktree: null });
+        yield* until(
+          () => join.execCalls.some((argv) => argv.join("\n").includes("git clone --quiet")),
+          "the clone in the workspace",
+        );
+        let rows = yield* engine.listRepositories(join.joined);
+        for (let i = 0; i < 500 && rows[0]?.state === "adding"; i++) {
+          yield* Effect.sleep(Duration.millis(10));
+          rows = yield* engine.listRepositories(join.joined);
+        }
+        listed = rows.map((row) => [row.name, row.state, row.error] as const);
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(listed).toEqual([["core", "ready", null]]);
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("a checkpoint of the joiner's session flushes the executor it runs in, and its files are read there", async () => {
+    let checkpoint: string | null = null;
+    const run = await joinByAnotherPerson((engine, _world, { joined }) =>
+      Effect.gen(function* () {
+        const taken = yield* engine.checkpointNow(joined, "user-mark");
+        checkpoint = taken.id;
+        // The transcript reads the conversation's file through the executor.
+        yield* engine.transcript(joined);
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(checkpoint).not.toBeNull();
+    expect(run.calls).toContain("captureFlush user-fixture:found");
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("says what it observed when the platform does not find a live holder's workspace: a 404, never 'not answering'", async () => {
+    let lookupsRejected = false;
+    const phases: Array<string> = [];
+    let refusal: string | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "together",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(holder.id, ["claude"]);
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          // The holder's lease stays live; Core answers 404 for its workspace, whoever asks.
+          lookupsRejected = true;
+          const launch = yield* Effect.forkChild(
+            engine.launch(joined.id, ["claude"]).pipe(Effect.result),
+          );
+          yield* until(() => {
+            const summary = world.sessions.get(joined.id)?.summary ?? "";
+            if (summary.includes("waiting")) phases.push(summary);
+            return phases.length > 0;
+          }, "the waiting line");
+          const result = yield* Fiber.join(launch);
+          if (result._tag === "Failure") refusal = result.failure.message;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        drainPolicy: { leaseWait: Duration.seconds(1) },
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          () => lookupsRejected,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+        ),
+      },
+    );
+    expect(phases[0]).toContain(
+      "the previous session in this worktree renews its lease, but the platform did not find its workspace (404)",
+    );
+    expect(phases.join("\n")).not.toContain("is not answering");
+    expect(refusal).toContain("worktree leased");
+  });
+
+  it("refuses to act for a joiner who lost access, while observing and ending still reach the executor", async () => {
+    const outcomes: Record<string, string> = {};
+    const run = await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        const exec = (as: string) =>
+          tell(
+            join.platform.getWorkspace(agent.workspaceId).pipe(
+              Effect.flatMap((workspace) => join.platform.exec(workspace, ["true"])),
+              asSealantUser(as),
+            ),
+          );
+        const lookup = (as: string) =>
+          tell(join.platform.getWorkspace(agent.workspaceId).pipe(asSealantUser(as)));
+        // Removed from the organization: nothing more runs for her there.
+        world.members.delete(MARIA);
+        outcomes["shell"] = yield* engine
+          .openShell(join.joined)
+          .pipe(Effect.match({ onSuccess: () => "opened", onFailure: (error) => error.message }));
+        outcomes["exec"] = yield* exec(MARIA);
+        // Looking it up is observing: as the creator, so a removal check never reads it gone.
+        outcomes["lookup"] = yield* lookup(MARIA);
+        outcomes["creator"] = yield* exec("user-fixture");
+        // Someone outside the organization has no standing either.
+        outcomes["outsider"] = yield* exec("user-outsider");
+        // Nor a member kept out of a private project.
+        world.members.set(MARIA, "member");
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "private", createdByUserId: "user-fixture" }),
+        );
+        outcomes["private"] = yield* exec(MARIA);
+      }),
+    );
+    expect(run.failure).toBeNull();
+    expect(outcomes).toEqual({
+      shell: "you no longer have access to this project, so nothing runs for you in its workspaces",
+      exec: "no_standing",
+      lookup: "answered",
+      creator: "answered",
+      outsider: "no_standing",
+      private: "no_standing",
+    });
+    // Nothing about the executor was ever asked as Maria: she could only have seen a 404.
+    expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+
+  it("removing a joiner ends their agent, shell and Service in the holder's executor, which keeps running", async () => {
+    let ended: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const shell = yield* engine.openShell(join.joined);
+        const service = yield* engine.runService(join.joined, ["pnpm", "dev"], 3000, "web");
+        const agent = joinedAgentOf(world, join.joined);
+        world.members.delete(MARIA);
+        const done = yield* engine.windDownPerson(MARIA);
+        const rows = [...world.processes.values()].filter((p) => p.sessionId === join.joined);
+        const holderLive = [...world.processes.values()].filter(
+          (p) => p.sessionId === join.holder && p.exitedAt === null,
+        );
+        ended = {
+          done,
+          // The platform shows them gone: every PTY of hers was closed.
+          agentClosed: join.closed.has(agent.ptyId),
+          shellClosed: join.closed.has(shell.sealantSessionId ?? ""),
+          serviceClosed: join.closed.has(service.attempts[0]?.sealantSessionId ?? ""),
+          // And Mend recorded them ended.
+          live: rows.filter((p) => p.exitedAt === null).length,
+          holderLive: holderLive.length,
+          stopped: join.stopped,
+        };
+      }),
+    );
+    expect(ended).toEqual({
+      done: { stopped: 1, retired: [], remaining: 0 },
+      agentClosed: true,
+      shellClosed: true,
+      serviceClosed: true,
+      live: 0,
+      // The holder's agent runs on; its executor was never stopped.
+      holderLive: 1,
+      stopped: [],
+    });
+  });
+
+  it("a Stop whose close the platform refuses ends nothing: the joiner's agent and shell stay, and so do the holder's agent and executor", async () => {
+    let closing = false;
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          const agent = joinedAgentOf(world, join.joined);
+          const shell = yield* engine.openShell(join.joined);
+          closing = true;
+          yield* engine.stop(join.joined);
+          // Read once whatever the stop forked has had its time (review 2 of mend#558, P1).
+          yield* Effect.sleep(SETTLE_WAIT);
+          const live = (id: string | null) =>
+            [...world.processes.values()].find((p) => p.sealantSessionId === id)?.exitedAt === null;
+          state = {
+            joinerAgentLive: live(agent.ptyId),
+            joinerShellLive: live(shell.sealantSessionId),
+            holderAgentLive: holderAgentLive(world, join.holder),
+            stopped: [...join.stopped],
+            summary: world.sessions.get(join.joined)?.summary ?? "",
+          };
+          // Once the platform answers, the next stop ends it, and the line forgets the failure.
+          closing = false;
+          yield* engine.stop(join.joined);
+          yield* Effect.sleep(SETTLE_WAIT);
+          state = {
+            ...state,
+            closedAfter: join.closed.has(agent.ptyId),
+            summaryAfter: world.sessions.get(join.joined)?.summary ?? "",
+            holderAgentLiveAfter: holderAgentLive(world, join.holder),
+            stoppedAfter: [...join.stopped],
+          };
+        }),
+      { closeFails: () => closing },
+    );
+    expect(state).toEqual({
+      joinerAgentLive: true,
+      // A failed agent close is not "no agent to close": the person's shells stay.
+      joinerShellLive: true,
+      holderAgentLive: true,
+      stopped: [],
+      summary: expect.stringContaining(
+        "could not be stopped · the platform did not close it · stop again",
+      ),
+      closedAfter: true,
+      summaryAfter: expect.not.stringContaining("could not be stopped"),
+      holderAgentLiveAfter: true,
+      stoppedAfter: [],
+    });
+  }, 30_000);
+
+  it("removing a joiner who has only a shell left in the holder's executor ends the shell, never the holder's agent or executor", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const shell = yield* engine.openShell(join.joined);
+        // Her agent was stopped earlier: a stop that ended a live agent keeps her shell.
+        yield* engine.stop(join.joined);
+        yield* Effect.sleep(SETTLE_WAIT);
+        world.members.delete(MARIA);
+        yield* engine.windDownPerson(MARIA);
+        yield* Effect.sleep(SETTLE_WAIT);
+        state = {
+          shellClosed: join.closed.has(shell.sealantSessionId ?? ""),
+          holderAgentLive: holderAgentLive(world, join.holder),
+          stopped: [...join.stopped],
+        };
+      }),
+    );
+    expect(state).toEqual({ shellClosed: true, holderAgentLive: true, stopped: [] });
+  }, 30_000);
+
+  it("a second Stop of a joiner leaves the holder's agent and executor running", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        yield* engine.stop(join.joined);
+        yield* Effect.sleep(SETTLE_WAIT);
+        yield* engine.stop(join.joined);
+        yield* Effect.sleep(SETTLE_WAIT);
+        state = {
+          joinedStatus: world.sessions.get(join.joined)?.status,
+          holderAgentLive: holderAgentLive(world, join.holder),
+          holderStatus: world.sessions.get(join.holder)?.status,
+          stopped: [...join.stopped],
+        };
+      }),
+    );
+    expect(state).toEqual({
+      joinedStatus: "stopped",
+      holderAgentLive: true,
+      holderStatus: "running",
+      stopped: [],
+    });
+  }, 30_000);
+
+  it("reconciles access: a joiner kept out of a project gone private has their processes ended, the holder's run on", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "private", createdByUserId: "user-fixture" }),
+        );
+        const done = yield* engine.reconcileAccess();
+        yield* Effect.sleep(SETTLE_WAIT);
+        state = {
+          done,
+          joinerClosed: join.closed.has(agent.ptyId),
+          joinerSummary: world.sessions.get(join.joined)?.summary,
+          holderAgentLive: holderAgentLive(world, join.holder),
+          stopped: [...join.stopped],
+          // Nothing left to do on the next tick.
+          again: yield* engine.reconcileAccess(),
+          audit: world.audit.map((event) => ({
+            action: event.action,
+            actorUserId: event.actorUserId,
+            subjectType: event.subjectType,
+            reason: event.data?.["reason"],
+            words: event.data?.["words"],
+          })),
+        };
+      }),
+    );
+    expect(state).toEqual({
+      done: { stopped: 1, refused: 0, retired: [] },
+      joinerClosed: true,
+      joinerSummary: STOPPED_LOST_SIGHT,
+      holderAgentLive: true,
+      stopped: [],
+      again: { stopped: 0, refused: 0, retired: [] },
+      // On the organization's record, as Mend's, with the reason the session line gives.
+      audit: [
+        {
+          action: "session.stopped_no_access",
+          actorUserId: MARIA,
+          subjectType: "session",
+          reason: "no_standing",
+          words: STOPPED_LOST_SIGHT,
+        },
+      ],
+    });
+  }, 30_000);
+
+  it("a project going private stops nobody's own session: the executor's creator and the project's creator keep running, and so does flipping it back", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        // Maria created the project; the executor is user-fixture's, who cannot see it once private.
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "private", createdByUserId: MARIA }),
+        );
+        const whenPrivate = yield* engine.reconcileAccess();
+        yield* Effect.sleep(SETTLE_WAIT);
+        const live = () => ({
+          holderAgentLive: holderAgentLive(world, join.holder),
+          joinerAgentLive:
+            [...world.processes.values()].find((p) => p.sealantSessionId === agent.ptyId)
+              ?.exitedAt === null,
+        });
+        const afterPrivate = live();
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "shared", createdByUserId: MARIA }),
+        );
+        const whenShared = yield* engine.reconcileAccess();
+        state = {
+          whenPrivate,
+          afterPrivate,
+          whenShared,
+          afterShared: live(),
+          stopped: [...join.stopped],
+          audit: world.audit.length,
+          holderSummary: world.sessions.get(join.holder)?.summary ?? null,
+        };
+      }),
+    );
+    expect(state).toEqual({
+      whenPrivate: { stopped: 0, refused: 0, retired: [] },
+      afterPrivate: { holderAgentLive: true, joinerAgentLive: true },
+      whenShared: { stopped: 0, refused: 0, retired: [] },
+      afterShared: { holderAgentLive: true, joinerAgentLive: true },
+      stopped: [],
+      audit: 0,
+      holderSummary: expect.not.stringContaining("stopped"),
+    });
+  }, 30_000);
+
+  it("a refused access stop reports zero ended and writes no stopped audit event", async () => {
+    let refusing = false;
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          world.members.delete(MARIA);
+          refusing = true;
+          for (let round = 0; round < 2; round += 1) {
+            expect(yield* engine.reconcileAccess()).toEqual({
+              stopped: 0,
+              refused: 1,
+              retired: [],
+            });
+            expect(world.audit).toEqual([]);
+            expect(world.sessions.get(join.joined)?.summary).toContain("could not be stopped");
+            expect(holderAgentLive(world, join.holder)).toBe(true);
+          }
+          refusing = false;
+          expect(yield* engine.reconcileAccess()).toEqual({ stopped: 1, refused: 0, retired: [] });
+          expect(world.sessions.get(join.joined)?.summary).toBe(STOPPED_NOT_MEMBER);
+          expect(world.audit).toMatchObject([
+            {
+              subjectId: join.joined,
+              actorUserId: MARIA,
+              data: { reason: "not_member" },
+            },
+          ]);
+        }),
+      { closeFails: () => refusing },
+    );
+  }, 30_000);
+
+  it.each(["replacement", "relaunch"] as const)(
+    "a refused Stop preserves an existing %s drain",
+    async (reason) => {
+      let refusing = false;
+      await joinByAnotherPerson(
+        (engine, world, join) =>
+          Effect.gen(function* () {
+            const session = world.sessions.get(join.joined);
+            if (session === undefined) throw new Error("missing joined session");
+            world.sessions.set(
+              session.id,
+              new Session({
+                ...session,
+                captureDrain: reason,
+                captureDrainRequestedAt: now(),
+                captureDrainProgressAt: now(),
+              }),
+            );
+            if (reason === "relaunch") world.relaunches.set(session.id, "claude");
+            refusing = true;
+            yield* engine.stop(session.id);
+            expect(world.sessions.get(session.id)?.captureDrain).toBe(reason);
+            expect(world.relaunches.has(session.id)).toBe(reason === "relaunch");
+            expect(holderAgentLive(world, join.holder)).toBe(true);
+          }),
+        { closeFails: () => refusing },
+      );
+    },
+    30_000,
+  );
+
+  it("a refused Stop whose agent a finished relaunch drain ended anyway is a stop: nothing stranded, nothing relaunched (review 5 of mend#558)", async () => {
+    // What the relaunch's drain does while the platform refuses the Stop's close: it saves and
+    // ends the agent and its drain is over.
+    let duringClose: (() => void) | null = null;
+    let refusing = false;
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          const session = world.sessions.get(join.joined);
+          if (session === undefined) throw new Error("missing joined session");
+          const agent = joinedAgentOf(world, join.joined);
+          world.sessions.set(
+            session.id,
+            new Session({
+              ...session,
+              captureDrain: "relaunch",
+              captureDrainRequestedAt: now(),
+              captureDrainProgressAt: now(),
+            }),
+          );
+          world.relaunches.set(session.id, "claude");
+          refusing = true;
+          duringClose = () => {
+            duringClose = null;
+            const row = [...world.processes.values()].find(
+              (p) => p.sealantSessionId === agent.ptyId,
+            );
+            if (row !== undefined) {
+              world.processes.set(
+                row.id,
+                new SessionProcess({ ...row, exitedAt: now(), status: "stopped" }),
+              );
+            }
+            const current = world.sessions.get(session.id);
+            if (current !== undefined) {
+              world.sessions.set(session.id, new Session({ ...current, captureDrain: null }));
+            }
+          };
+          yield* engine.stop(session.id);
+          yield* Effect.sleep(SETTLE_WAIT);
+          state = {
+            summary: world.sessions.get(session.id)?.summary ?? "",
+            relaunch: world.relaunches.has(session.id),
+            holderAgentLive: holderAgentLive(world, join.holder),
+          };
+        }),
+      {
+        // Refused on every try; the first try is when the relaunch finishes.
+        closeFails: () => {
+          if (duringClose === null) return refusing;
+          duringClose();
+          return true;
+        },
+      },
+    );
+    expect(state).toEqual({
+      summary: expect.not.stringContaining("could not be stopped"),
+      // The stop superseded the plan: nothing launches after it.
+      relaunch: false,
+      holderAgentLive: true,
+    });
+  }, 30_000);
+
+  it("a renamed shell's refusal words still come off once it is stopped (review 5 of mend#558)", async () => {
+    let refusing = false;
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          const shell = yield* engine.openShell(join.joined);
+          refusing = true;
+          yield* engine.stopShell(shell.id);
+          const refused = world.sessions.get(join.joined)?.summary ?? "";
+          yield* engine.renameShell(shell.id, "renamed");
+          refusing = false;
+          yield* engine.stopShell(shell.id);
+          state = {
+            refused: refused.includes("could not be stopped"),
+            after: world.sessions.get(join.joined)?.summary ?? "",
+            ended: world.processes.get(shell.id)?.exitedAt !== null,
+          };
+        }),
+      { closeFails: () => refusing },
+    );
+    expect(state).toEqual({
+      refused: true,
+      after: expect.not.stringContaining("could not be stopped"),
+      ended: true,
+    });
+  }, 30_000);
+
+  it("reconciliation stops a removed creator's own session with a direct reason and records both people", async () => {
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        world.members.delete("user-fixture");
+        expect(yield* engine.reconcileAccess()).toEqual({
+          stopped: 2,
+          refused: 0,
+          retired: ["workspace-1"],
+        });
+        expect(world.sessions.get(join.holder)?.summary).toBe(STOPPED_NOT_MEMBER);
+        expect(world.sessions.get(join.joined)?.summary).toBe(EXECUTOR_RETIRED);
+        expect(world.audit.map((event) => event.data?.["reason"]).toSorted()).toEqual([
+          "creator_not_member",
+          "not_member",
+        ]);
+        yield* until(() => join.stopped.length === 1, "the saved executor ends");
+      }),
+    );
+  }, 30_000);
+
+  it("one defective Stop leaves sibling Stops running", async () => {
+    let defectivePty: string | null = null;
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          const session = world.sessions.get(join.joined);
+          if (session === undefined) throw new Error("missing joined session");
+          const sibling = yield* engine.provisionSessionIn(session.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(sibling.id, ["claude"]);
+          const siblingPty = joinedAgentOf(world, sibling.id);
+          defectivePty = joinedAgentOf(world, join.joined).ptyId;
+          world.members.delete(MARIA);
+          expect(yield* engine.reconcileAccess()).toEqual({ stopped: 1, refused: 1, retired: [] });
+          expect(join.closed.has(siblingPty.ptyId)).toBe(true);
+          expect(join.closed.has(defectivePty)).toBe(false);
+          expect(holderAgentLive(world, join.holder)).toBe(true);
+          expect(world.audit.map((event) => event.subjectId)).toEqual([sibling.id]);
+        }),
+      { getSessionDefect: (ptyId) => ptyId === defectivePty },
+    );
+  }, 30_000);
+
+  it("failed shell Stops survive restart, each on its own words, until that shell is observed ended", async () => {
+    const fixture = {
+      world: makeWorld(),
+      tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-stop-restart-")),
+    };
+    const memory = makeMemoryCaptureStore();
+    const states = new Map<string, InteractiveSessionStatus>();
+    const shells: Array<SessionProcess> = [];
+    let refusing = false;
+    const platform = workspacesPerOwner(
+      sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
+      [],
+      [],
+      { closeFails: () => refusing },
+    );
+    try {
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["claude"]);
+            shells.push(yield* engine.openShell(session.id), yield* engine.openShell(session.id));
+            refusing = true;
+            for (const shell of shells) yield* engine.stopShell(shell.id);
+            const summary = world.sessions.get(session.id)?.summary ?? "";
+            expect(summary).toContain(wordsOf(shells[0]));
+            expect(summary).toContain(wordsOf(shells[1]));
+          }),
+        { fixture, captured: memory, sealantLayer: platform },
+      );
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            yield* SessionEngine;
+            const first = shells[0];
+            const second = shells[1];
+            if (first?.sealantSessionId == null || second?.sealantSessionId == null)
+              throw new Error("missing shells");
+            const summary = () => world.sessions.get(first.sessionId)?.summary ?? "";
+            expect(summary()).toContain(wordsOf(first));
+            states.set(first.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.processes.get(first.id)?.exitedAt != null,
+              "first shell observed ended",
+            );
+            yield* until(() => !summary().includes(wordsOf(first)), "the first shell's words");
+            // The second shell's refusal is its own, and stays.
+            expect(summary()).toContain(wordsOf(second));
+            states.set(second.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.processes.get(second.id)?.exitedAt != null,
+              "second shell observed ended",
+            );
+            yield* until(() => !summary().includes("stop again"), "refusal cleared");
+            expect(holderAgentLive(world, first.sessionId)).toBe(true);
+          }),
+        { fixture, captured: memory, sealantLayer: platform },
+      );
+    } finally {
+      fs.rmSync(fixture.tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("after a restart a healthy shell is never taken for its refused sibling (review 4 of mend#558)", async () => {
+    const fixture = {
+      world: makeWorld(),
+      tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-stop-sibling-")),
+    };
+    const memory = makeMemoryCaptureStore();
+    const states = new Map<string, InteractiveSessionStatus>();
+    const shells: Array<SessionProcess> = [];
+    let refusing = false;
+    const platform = workspacesPerOwner(
+      sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
+      [],
+      [],
+      { closeFails: () => refusing },
+    );
+    try {
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["claude"]);
+            shells.push(yield* engine.openShell(session.id), yield* engine.openShell(session.id));
+            refusing = true;
+            const refused = shells[0];
+            if (refused === undefined) throw new Error("missing shell");
+            yield* engine.stopShell(refused.id);
+            refusing = false;
+          }),
+        { fixture, captured: memory, sealantLayer: platform },
+      );
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            yield* SessionEngine;
+            const refused = shells[0];
+            const healthy = shells[1];
+            if (refused?.sealantSessionId == null || healthy === undefined)
+              throw new Error("missing shells");
+            states.set(refused.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.processes.get(refused.id)?.exitedAt != null,
+              "the refused shell observed ended",
+            );
+            yield* until(
+              () => !(world.sessions.get(refused.sessionId)?.summary ?? "").includes("stop again"),
+              "its words cleared",
+            );
+            // The healthy shell runs on, never marked refused.
+            expect(world.processes.get(healthy.id)?.exitedAt ?? null).toBeNull();
+          }),
+        { fixture, captured: memory, sealantLayer: platform },
+      );
+    } finally {
+      fs.rmSync(fixture.tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("removing the person who started the executor retires it: the joiner is stopped and told, and it saves and ends", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        world.members.delete("user-fixture");
+        // Nothing new runs in it for anyone: the creator's identity is no longer lent.
+        const refused = yield* engine
+          .openShell(join.joined)
+          .pipe(Effect.match({ onSuccess: () => "opened", onFailure: (error) => error.message }));
+        const done = yield* engine.windDownPerson("user-fixture");
+        yield* until(() => join.stopped.length > 0, "the retired executor's stop");
+        const joined = world.sessions.get(join.joined);
+        state = {
+          refused,
+          retired: done.retired,
+          joinerClosed: join.closed.has(agent.ptyId),
+          joinerStatus: joined?.status,
+          joinerSummary: joined?.summary,
+          // It saved first: the final flush before the stop, through the normal Stop.
+          flushedBeforeStop: join.calls.some((call) => call.startsWith("captureFlush")),
+          stopped: join.stopped,
+        };
+      }),
+    );
+    expect(state).toEqual({
+      refused:
+        "the person who started this workspace is no longer a member of this organization, so nothing new runs in it · start a session of your own in this worktree",
+      retired: ["workspace-1"],
+      joinerClosed: true,
+      joinerStatus: "stopped",
+      joinerSummary: EXECUTOR_RETIRED,
+      flushedBeforeStop: true,
+      stopped: ["workspace-1"],
+    });
+  });
+
+  it("a removed joiner's lookups never read the holder's executor gone: removing the project still waits for it", async () => {
+    let holds: ReadonlyArray<CaptureHold> = [];
+    const run = await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        world.members.delete(MARIA);
+        const session = world.sessions.get(join.joined);
+        if (session === undefined) throw new Error("no joined session");
+        holds = yield* engine.captureHolds(session.worktreeId);
+      }),
+    );
+    // The executor itself holds the worktree, seen as its creator sees it, not only the lease.
+    expect(holds.map((hold) => hold.kind)).toContain("executor");
+    expect(run.seen).not.toContain(`${MARIA}:404`);
   });
 });

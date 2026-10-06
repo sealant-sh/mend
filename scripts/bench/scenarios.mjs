@@ -422,9 +422,22 @@ const joinOtherPerson = async (ctx, primary, run) => {
   if (session.worktreeId !== primary.session.worktreeId) {
     throw new Error("the second account's session did not join the first one's worktree");
   }
-  await ctx.api2.call("POST", `/sessions/${session.id}/launch`, {});
-  const { detail, agent } = await waitForAgent(ctx, session.id, startedAt, 600_000, ctx.api2);
-  await recordJoin(ctx, "join.other", "join-other", { startedAt, session, detail, agent, run });
+  let joined = false;
+  try {
+    await ctx.api2.call("POST", `/sessions/${session.id}/launch`, {});
+    const { detail, agent } = await waitForAgent(ctx, session.id, startedAt, 600_000, ctx.api2);
+    joined = true;
+    await recordJoin(ctx, "join.other", "join-other", { startedAt, session, detail, agent, run });
+  } finally {
+    // A join that failed is stopped too: otherwise the server keeps the launch waiting on the
+    // worktree's holder (up to its 30 min lease wait) until the run's cleanup removes the worktree.
+    // A failed stop never hides the join's own error.
+    if (!joined) {
+      await stopAndSettle(ctx, session.id, 120_000, ctx.api2).catch((error) =>
+        ctx.log(`join.other · the failed join's stop: ${error.message}`),
+      );
+    }
+  }
   await stopAndSettle(ctx, session.id, 1_200_000, ctx.api2);
 };
 

@@ -46,9 +46,6 @@ export class MemberRemoval extends Context.Service<
   }
 >()("@mend/api/MemberRemoval") {}
 
-/** How many of the removed account's sessions stop at once. */
-const STOP_CONCURRENCY = 4;
-
 export const MemberRemovalLive: Layer.Layer<
   MemberRemoval,
   never,
@@ -81,24 +78,20 @@ export const MemberRemovalLive: Layer.Layer<
     const users = yield* UsersRepo;
     const scope = yield* Effect.scope;
 
-    /** Stop what the account left running, then let each pool drop its standbys. */
+    /**
+     * End what the account left running, then let each pool drop its standbys. Every agent, shell
+     * and Service of theirs ends, in their own executors and in others' they joined, and every
+     * executor they started is retired: others working in it are stopped with words to start
+     * their own, and it saves through the normal Stop (`SessionEngine.windDownPerson`, mend#558).
+     */
     const windDown = (input: RemoveMemberInput) =>
       Effect.gen(function* () {
-        const running = yield* sessions.listUnsettledForOwner(input.userId);
-        yield* Effect.forEach(
-          running,
-          (session) =>
-            engine
-              .stop(session.id)
-              .pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("member removal: a session did not stop").pipe(
-                    Effect.annotateLogs({ sessionId: session.id, cause: String(cause) }),
-                  ),
-                ),
-              ),
-          { concurrency: STOP_CONCURRENCY, discard: true },
-        );
+        const done = yield* engine.windDownPerson(input.userId);
+        if (done.remaining > 0) {
+          yield* Effect.logWarning(
+            "member removal: some of the account's processes are still running",
+          ).pipe(Effect.annotateLogs({ userId: input.userId, remaining: done.remaining }));
+        }
         const inOrganization = yield* projects.listForOrganization(input.organizationId);
         yield* Effect.forEach(
           inOrganization,

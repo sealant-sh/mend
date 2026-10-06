@@ -203,6 +203,31 @@ joins while the other person's session is still starting can begin before Mend h
 previous person's memory out of the way: its agent can read that memory, and what it writes there
 ends up kept beside it. Start your session in a worktree of your own to work from your memory.
 
+## A session that joins someone else's executor runs on their logins
+
+Applies until per-person harness homes (ADR 0016, `MEND_HARNESS_LAYOUT=person`) are on, which is the
+default today.
+
+On a server a worktree has one executor, started by whoever launched first. Every process in it runs
+as root in that person's harness home, whoever started the process. A session you start in a
+worktree where another person's session is running joins their executor, so:
+
+- your agent runs on their Claude or Codex login, and a conversation records its turns as billed to
+  them;
+- your shells and Services are root shells and processes in their home: they can read their Claude
+  and Codex credential files and the executor's `GITHUB_TOKEN` and `GH_TOKEN`, which are theirs;
+- `git push` and `git fetch` from the workspace, yours included, sign as them. The executor's own
+  session channel names their session, so Mend's git transport signs with their Mend key, or asks
+  their machine to sign in bridge mode, and records the push on their session;
+- a repository you add to your session is cloned through the same transport, on their git access.
+
+Landing a change is not affected: Mend asks GitHub as the change's owner, never through someone
+else's executor. If the person who started the executor is removed from the organization, Mend stops
+the sessions working in it, saves it and retires it; start again to continue in an executor of your
+own. If a project becomes private and you can no longer see it, a session of yours running in
+someone else's executor stops; sessions in your own executors keep running until they end. Start
+your session in a worktree of your own to run on your own logins.
+
 ## A worktree someone else used before you
 
 A session you start in a worktree someone else used, once their executor has ended, starts from your

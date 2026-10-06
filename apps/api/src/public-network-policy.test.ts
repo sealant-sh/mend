@@ -11,6 +11,7 @@ import { Auth, createAuthHandler } from "@mend/auth";
 import {
   AgentConversationRepo,
   OrganizationsRepo,
+  ProjectsRepo,
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
@@ -24,6 +25,7 @@ import {
 } from "@mend/db";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { SealantClient } from "@mend/sealant";
+import { WorkspaceCaller } from "@mend/sessions";
 import { AgentBridge, AgentBridgeLive, MendKeys, MendKeysConfig, MendKeysLive } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
@@ -110,6 +112,12 @@ const startServer = async () => {
     Layer.mock(UserGitAuthorRepo, {}),
     Layer.mock(AgentConversationRepo, {}),
     Layer.mock(SealantClient, {}),
+    Layer.mock(WorkspaceCaller, {
+      observe: () => (self) => self,
+      act: () => (self) => self,
+      observeRun: () => (self) => self,
+      observeRunStream: () => (self) => self,
+    }),
     Layer.mock(SessionsRepo, {}),
     Layer.mock(SessionProcessesRepo, {}),
     Layer.mock(ServicesRepo, {}),
@@ -136,8 +144,10 @@ const startServer = async () => {
     Layer.provide(Layer.succeed(Budgets, makeBudgets(DEFAULT_BUDGET_LIMITS))),
     Layer.provide(Layer.succeed(UrlBearers, { mode: "accept" as const })),
     Layer.provide(Layer.mock(UpgradeTicketsRepo, {})),
-    Layer.provide(Layer.mock(OrganizationsRepo, {})),
     Layer.provide(SessionSteeringLive),
+    // One stand-in each, below steering: they serve it and the routes above it.
+    Layer.provide(Layer.mock(OrganizationsRepo, {})),
+    Layer.provide(Layer.mock(ProjectsRepo, {})),
     Layer.provide(Layer.mock(ProjectAccess, {})),
   );
   const server = createServer();

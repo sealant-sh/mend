@@ -523,6 +523,8 @@ const testLayer = (world: TestWorld) => {
     listExecutorCreates: () => Effect.succeed([]),
     executorResourceOf: () => Effect.succeed(null),
     executorLaunchOf: () => Effect.succeed(null),
+    executorSessionOf: () => Effect.succeed(null),
+    executorAccessOf: () => Effect.succeed(null),
     requestRemoval: () => Effect.die("not in test"),
     listRemovalRequested: () => Effect.die("not in test"),
   });

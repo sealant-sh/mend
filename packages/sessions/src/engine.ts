@@ -16,6 +16,8 @@ import {
   ProjectMountsRepo,
   ProjectLinksRepo,
   OrganizationsRepo,
+  AuditEventsRepo,
+  type ExecutorAccess,
   FoldersRepo,
   type ProjectNotFoundError,
   SessionRepositoriesRepo,
@@ -438,6 +440,7 @@ import {
   skillsKeptDir,
   vacateSkillsExec,
 } from "./skills.ts";
+import { mayWorkIn, WorkspaceCaller } from "./workspace-caller.ts";
 import {
   parseHomeFileOutcomes,
   type WorkspaceFile,
@@ -1085,8 +1088,97 @@ type WorkspaceLookup =
  */
 const ENDED_DRAIN_STATES: ReadonlySet<string> = new Set(["stopped", "saved", "gone", "discarded"]);
 
+/** How many passes a removed person's wind-down makes over what is still live, and the pause. */
+const WIND_DOWN_ROUNDS = 3;
+const WIND_DOWN_RETRY = Duration.seconds(5);
+
+/** How often the lease reaper's tick also reconciles who may work where (`reconcileAccess`). */
+const ACCESS_RECONCILE_MS = 60_000;
+
+/** How many sessions a wind-down or an access reconciliation ends at once. */
+const WIND_DOWN_CONCURRENCY = 4;
+
+/** The line of a session stopped because its owner is no longer a member of the organization. */
+export const STOPPED_NOT_MEMBER = "stopped · you are no longer a member of this organization";
+
+/** The line of a joined session stopped because its owner can no longer see the project. */
+export const STOPPED_LOST_SIGHT =
+  "stopped · you can no longer see this project, and this session ran in another person's workspace";
+
+/** The line of a session stopped because the person whose executor it ran in lost access. */
+export const EXECUTOR_RETIRED =
+  "stopped · the workspace creator is no longer an organization member · start again in a workspace of your own";
+
+/**
+ * What becomes of a person's live session in an executor once access changes (reconciliation and
+ * the restore of a running agent; review 3 of mend#558, P1). Null: it keeps running. Only lending
+ * ends a session here: a session in its owner's own executor runs on its owner's own logins and
+ * keeps running when the project merely goes private, as the setting promises ("their sessions
+ * keep running until they end"). So:
+ * - its owner is no longer a member of the project's organization: stopped, wherever it runs;
+ * - it runs in someone else's executor and its owner can no longer see the project: stopped;
+ * - it runs in someone else's executor whose creator is no longer a member: stopped, and the
+ *   creator's own sessions stop by the first rule, so the executor is saved and retired.
+ * A creator who is still a member is never retired, whatever they can see.
+ */
+const accessStopReason = (
+  access: ExecutorAccess,
+  owner: string,
+): { readonly code: string; readonly words: string } | null => {
+  if (access.askerRole === null) return { code: "not_member", words: STOPPED_NOT_MEMBER };
+  if (owner === access.creatorUserId) return null;
+  if (!mayWorkIn(access.askerRole, owner, access.project)) {
+    return { code: "no_standing", words: STOPPED_LOST_SIGHT };
+  }
+  if (access.creatorRole === null) return { code: "creator_not_member", words: EXECUTOR_RETIRED };
+  return null;
+};
+
+/**
+ * The mark that keys a refusal's words to one process, by id: a rename does not strand them, and
+ * after a restart they mark exactly that process as refused, never a healthy sibling or a later
+ * process that took its label (reviews 4 and 5 of mend#558).
+ */
+const refusalMark = (processId: string) => `(${processId.slice(0, 8)}) could not be stopped`;
+
+/** What the session line says for one process the platform would not close. */
+const notStoppedWords = (process: Pick<SessionProcess, "id" | "kind" | "label">) => {
+  const kind =
+    process.kind === "shell" ? "shell" : process.kind === "service" ? "Service" : "agent";
+  const named = process.label === null ? kind : `${kind} "${process.label}"`;
+  return `the ${named} ${refusalMark(process.id)} · the platform did not close it · stop again`;
+};
+
+/** The words a refusal of `processId` left on `summary`, whatever the label was then; null if none. */
+const refusalWordsIn = (summary: string | null, processId: string): string | null => {
+  if (summary === null) return null;
+  const at = summary.indexOf(refusalMark(processId));
+  if (at < 0) return null;
+  const tail = " · stop again";
+  const end = summary.indexOf(tail, at);
+  if (end < 0) return null;
+  const before = summary.lastIndexOf(" · the ", at);
+  const start = before < 0 ? 0 : before + 3;
+  return summary.slice(start, end + tail.length);
+};
+
+/** A PTY close that failed is tried again twice, a little later each time. */
+const PTY_CLOSE_RETRY = Schedule.exponential("250 millis").pipe(Schedule.both(Schedule.recurs(2)));
+
 const workspaceIsLive = (status: string) =>
   status === "queued" || status === "running" || status === "ready";
+
+/** What a lookup of a live lease holder's workspace found (`leaseHolderWorkspace`). */
+type HolderLookup =
+  | { readonly kind: "none" }
+  | { readonly kind: "live"; readonly workspace: Workspace }
+  | { readonly kind: "not-live"; readonly state: string }
+  | {
+      readonly kind: "failed";
+      readonly status: number | null;
+      readonly code: string;
+      readonly message: string;
+    };
 
 /**
  * The platform positively says there is no such workspace (a 404, or the contract's
@@ -1874,6 +1966,30 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
     ) => Effect.Effect<"removed" | "pending", SessionNotFoundError>;
     /**
+     * Everything a person who lost access left running, ended (mend#558 review, P1-1 and P1-2):
+     * their agents, shells and Services in every executor, joined ones included, and every
+     * executor they created retired through the normal Stop and capture path, the sessions of
+     * others working in it stopped first with words telling them to start their own. A process
+     * the platform would not close stays recorded live and is tried again; `remaining` counts
+     * what was still live after the last try.
+     */
+    /**
+     * Every live session checked against `accessStopReason`: what a member's removal left running,
+     * after a restart too, and a joiner who can no longer see the project, are stopped; a session
+     * in its owner's own executor never stops for a visibility change. Runs at boot and once a
+     * minute. `stopped` counts what ended; `refused`, what the platform would not close.
+     */
+    readonly reconcileAccess: () => Effect.Effect<{
+      readonly stopped: number;
+      readonly refused: number;
+      readonly retired: ReadonlyArray<SealantWorkspaceId>;
+    }>;
+    readonly windDownPerson: (userId: string) => Effect.Effect<{
+      readonly stopped: number;
+      readonly retired: ReadonlyArray<SealantWorkspaceId>;
+      readonly remaining: number;
+    }>;
+    /**
      * Capture mode: what still holds the worktree's durable identity (`CaptureHold`). A removal
      * that deletes rows goes only when this is empty — once every drain saved and every executor
      * was observed ended — or after the owner's "discard unsaved and stop". Empty co-located.
@@ -1896,6 +2012,8 @@ export class SessionEngine extends Context.Service<
 
 type SessionEngineRequirements =
   | SealantClient
+  | WorkspaceCaller
+  | AuditEventsRepo
   | CaptureRuntime
   | CaptureDrainPolicy
   | SessionChannelTokensRepo
@@ -1968,6 +2086,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
     SessionEngine,
     Effect.gen(function* () {
       const sealant = yield* SealantClient;
+      // Whose platform identity a call about a workspace runs as (`workspace-caller.ts`): the
+      // engine tells it when a creator is recorded, and asks it before restoring a process.
+      const workspaceCaller = yield* WorkspaceCaller;
+      // Mend's own stops for lost access are on the organization's record (`reconcileAccess`).
+      const audit = yield* AuditEventsRepo;
 
       // ── Principals ──────────────────────────────────────────────────────────────
       // A session's platform resources belong to its owner's Sealant user. These
@@ -3572,26 +3695,70 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           return { kind: "ending" as const, sessionId: lease.executorId, epoch: lease.epoch };
         }
-        const workspace =
-          workspaceId === null
-            ? null
+        // The holder's executor is its owner's, whoever asks (`WorkspaceCaller`), so it is looked
+        // up as that owner, like every other holder check here. Asked as a joiner of another
+        // person, Core answered 404, read as `unreachable`, and the join waited `leaseWait` (30
+        // min) on a holder that was running (alpha 2026-10-06, 9e486cfc). The handle it returns
+        // is bound to the owner's client, so the join's own process runs there.
+        const lookup: HolderLookup =
+          workspaceId === null || holder === null
+            ? { kind: "none" }
             : yield* sealant.getWorkspace(workspaceId).pipe(
                 Effect.flatMap((candidate) =>
                   Effect.promise(() => candidate.status()).pipe(
-                    Effect.map((status) => (workspaceIsLive(status) ? candidate : null)),
+                    Effect.map(
+                      (status): HolderLookup =>
+                        workspaceIsLive(status)
+                          ? { kind: "live", workspace: candidate }
+                          : { kind: "not-live", state: status },
+                    ),
                   ),
                 ),
-                Effect.catch(() => Effect.succeed(null)),
-                Effect.catchDefect(() => Effect.succeed(null)),
+                asSealantUser(holder.ownerUserId),
+                Effect.catch((error) =>
+                  Effect.succeed<HolderLookup>({
+                    kind: "failed",
+                    status: error.status,
+                    code: error.code,
+                    message: error.message,
+                  }),
+                ),
+                Effect.catchDefect((defect) =>
+                  Effect.succeed<HolderLookup>({
+                    kind: "failed",
+                    status: null,
+                    code: "defect",
+                    message: String(defect),
+                  }),
+                ),
               );
-        if (workspace !== null) {
-          return { kind: "held" as const, sessionId: lease.executorId, workspace };
+        if (lookup.kind === "live") {
+          return {
+            kind: "held" as const,
+            sessionId: lease.executorId,
+            workspace: lookup.workspace,
+          };
         }
         return {
           kind: "unreachable" as const,
           sessionId: lease.executorId,
           epoch: lease.epoch,
           expiresAt: lease.expiresAt?.toISOString() ?? "never",
+          lookup:
+            lookup.kind === "failed"
+              ? { kind: "failed" as const, status: lookup.status, code: lookup.code }
+              : lookup.kind === "not-live"
+                ? { kind: "not-live" as const, state: lookup.state }
+                : null,
+          // For the log line: what the platform said, in its words.
+          observed:
+            lookup.kind === "failed"
+              ? `${lookup.status ?? "no status"} ${lookup.code} · ${lookup.message}`
+              : lookup.kind === "not-live"
+                ? `workspace ${lookup.state}`
+                : holder === null
+                  ? "the holder's session row is gone"
+                  : "no workspace on record for the lease's launch",
         };
       });
 
@@ -3673,6 +3840,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             const words = leaseWaitWords(holder);
             if (words !== said) {
+              // Why, in the platform's words: a 404 while the holder's heartbeat is live is not
+              // "not answering", and the line says what was observed.
               yield* Effect.logInfo(
                 "session engine: capture mode · the worktree's previous executor has not ended · the launch waits",
               ).pipe(
@@ -3680,6 +3849,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   sessionId: session.id,
                   holderSessionId: holder.sessionId,
                   holder: holder.kind,
+                  ...(holder.kind === "unreachable"
+                    ? { leaseLive: true, observed: holder.observed }
+                    : {}),
                 }),
               );
               yield* sayLaunchPhase(session.id, words);
@@ -4371,7 +4543,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? { at: new Date(attested.sealedAt), n: attested.captureN }
             : null;
         const confirmed = stopState === "stopped" || (yield* awaitTerminated(workspaceId));
-        yield* processes.reapLiveForWorkspace(workspaceId);
+        yield* reapWorkspaceProcesses(workspaceId);
         const session = yield* sessions.byId(sessionId);
         // Ended with nothing attested on the stop (a launch whose worker died before `ready`:
         // the stop found no seal, and the platform's recovery boot sealed while it ended the
@@ -4502,7 +4674,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         workspaceId: SealantWorkspaceId,
       ) {
-        yield* processes.reapLiveForWorkspace(workspaceId);
+        yield* reapWorkspaceProcesses(workspaceId);
         yield* socketHost.stop(sessionId);
         yield* revokeExecutorTokens(sessionId, workspaceId);
         const session = yield* sessions.byId(sessionId);
@@ -5000,6 +5172,225 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * stops it; a running drain yields; the workspace is terminated and the lease released
        * once that is observed. What the executor had not shipped is gone.
        */
+      /**
+       * One session's every live process ended, as its owner (the platform calls that end things
+       * run as each workspace's creator, whoever that is): Services, then shells, then the agent,
+       * with `summary` on the line. What the platform would not close stays live (`notStopped`).
+       */
+      const endEverythingOf = (sessionId: SessionId, summary: string | null) =>
+        owned(sessionId)(
+          Effect.gen(function* () {
+            yield* stopServices(sessionId).pipe(Effect.ignore);
+            for (const shell of yield* processes.listForSession(sessionId)) {
+              if (shell.kind === "shell" && isLiveProcess(shell)) {
+                yield* stopShell(shell.id).pipe(Effect.ignore);
+              }
+            }
+            yield* stop(sessionId, summary).pipe(Effect.ignore);
+          }),
+        );
+
+      const windDownPerson = Effect.fn("SessionEngine.windDownPerson")(function* (userId: string) {
+        const stopped = new Set<SessionId>();
+        const retired = new Set<SealantWorkspaceId>();
+        let remaining = 0;
+        for (let round = 0; round < WIND_DOWN_ROUNDS; round += 1) {
+          if (round > 0) yield* Effect.sleep(WIND_DOWN_RETRY);
+          // Added back meanwhile: nothing of theirs is ended from here on (review 2, P3-3).
+          if ((yield* organizations.membershipOf(userId)) !== null) {
+            remaining = 0;
+            break;
+          }
+          const live = yield* processes.listLive();
+          const owners = new Map<SessionId, string | null>();
+          const ownerOf = (sessionId: SessionId) =>
+            Effect.gen(function* () {
+              if (!owners.has(sessionId)) {
+                const row = yield* sessions
+                  .byId(sessionId)
+                  .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+                owners.set(sessionId, row?.ownerUserId ?? null);
+              }
+              return owners.get(sessionId) ?? null;
+            });
+          // Executors the person created that still run: retired, whoever works in them.
+          const theirs = new Set<SealantWorkspaceId>();
+          for (const workspaceId of new Set(live.map((process) => process.sealantWorkspaceId))) {
+            const creator = yield* sessions.executorSessionOf(workspaceId);
+            if (creator?.ownerUserId === userId) theirs.add(workspaceId);
+          }
+          const own = new Set<SessionId>();
+          const others = new Set<SessionId>();
+          for (const process of live) {
+            if ((yield* ownerOf(process.sessionId)) === userId) own.add(process.sessionId);
+            else if (theirs.has(process.sealantWorkspaceId)) others.add(process.sessionId);
+          }
+          if (round === 0) {
+            // Unsettled sessions with nothing live yet (a launch under way) stop too.
+            for (const session of yield* sessions.listUnsettledForOwner(userId)) {
+              own.add(session.id);
+            }
+          }
+          remaining = own.size + others.size;
+          if (remaining === 0) break;
+          // Others first, so the person's own stop finds the executor free and drains it.
+          yield* endEach(
+            [...others].map((sessionId) => ({ sessionId, summary: EXECUTOR_RETIRED })),
+          );
+          for (const sessionId of others) stopped.add(sessionId);
+          for (const workspaceId of theirs) retired.add(workspaceId);
+          yield* endEach([...own].map((sessionId) => ({ sessionId, summary: STOPPED_NOT_MEMBER })));
+          for (const sessionId of own) stopped.add(sessionId);
+          remaining = 0;
+          for (const process of yield* processes.listLive()) {
+            const owner = yield* ownerOf(process.sessionId);
+            if (owner === userId || theirs.has(process.sealantWorkspaceId)) remaining += 1;
+          }
+          if (remaining === 0) break;
+          yield* Effect.logWarning(
+            "session engine: a removed person's processes are still running · trying again",
+          ).pipe(Effect.annotateLogs({ userId, remaining, round }));
+        }
+        let ended = 0;
+        for (const sessionId of stopped) if (yield* nothingLive(sessionId)) ended += 1;
+        yield* Effect.logInfo("session engine: member wind-down attempted").pipe(
+          Effect.annotateLogs({
+            userId,
+            stopped: ended,
+            retired: [...retired].join(", "),
+            remaining,
+          }),
+        );
+        return { stopped: ended, retired: [...retired], remaining };
+      });
+
+      /**
+       * Whether every process of `sessionId` is recorded ended: what a stop is reported by, never
+       * the attempt (review 3 of mend#558, P3-1).
+       */
+      const nothingLive = (sessionId: SessionId) =>
+        processes
+          .listForSession(sessionId)
+          .pipe(Effect.map((rows) => !rows.some((row) => row.exitedAt === null)));
+
+      /**
+       * `endEverythingOf` for many sessions, four at once, each on its own: one that dies is logged
+       * and the others' stops go on (review 3 of mend#558, P3-4).
+       */
+      const endEach = (
+        targets: ReadonlyArray<{ readonly sessionId: SessionId; readonly summary: string | null }>,
+      ) =>
+        Effect.forEach(
+          targets,
+          ({ sessionId, summary }) =>
+            endEverythingOf(sessionId, summary).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.interrupt
+                  : Effect.logWarning("session engine: a session could not be wound down").pipe(
+                      Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                    ),
+              ),
+            ),
+          { concurrency: WIND_DOWN_CONCURRENCY, discard: true },
+        );
+
+      /**
+       * The wind-down as a reconciliation (review 2 of mend#558, P2-1; scoped in review 3, P1): at
+       * boot and once a minute, every session with a live process in an executor whose creator Mend
+       * recorded is judged by `accessStopReason`, and only lending ends anything: a removed member's
+       * sessions, a joiner who can no longer see the project, and the joiners of a creator who is
+       * no longer a member (sessions in someone else's executor go first, so the last one's Stop
+       * saves and ends it). A session in its owner's own executor never stops for a visibility
+       * change. Each stop puts its reason on the session line, is logged with the session, person
+       * and reason, and is recorded in the organization's audit log as Mend's.
+       */
+      const reconcileAccess = Effect.fn("SessionEngine.reconcileAccess")(function* () {
+        const live = yield* processes.listLive();
+        const inWorkspace = new Map<SealantWorkspaceId, Set<SessionId>>();
+        for (const process of live) {
+          const set = inWorkspace.get(process.sealantWorkspaceId) ?? new Set<SessionId>();
+          set.add(process.sessionId);
+          inWorkspace.set(process.sealantWorkspaceId, set);
+        }
+        const verdicts: Array<{
+          readonly sessionId: SessionId;
+          readonly owner: string;
+          readonly organizationId: ExecutorAccess["project"]["organizationId"];
+          readonly workspaceId: SealantWorkspaceId;
+          readonly ownExecutor: boolean;
+          readonly code: string;
+          readonly words: string;
+        }> = [];
+        for (const [workspaceId, sessionIds] of inWorkspace) {
+          for (const sessionId of sessionIds) {
+            const row = yield* sessions
+              .byId(sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+            const owner = row?.ownerUserId ?? null;
+            if (owner === null) continue;
+            const access = yield* sessions.executorAccessOf(workspaceId, owner);
+            if (access === null) continue;
+            const verdict = accessStopReason(access, owner);
+            if (verdict === null) continue;
+            verdicts.push({
+              sessionId,
+              owner,
+              organizationId: access.project.organizationId,
+              workspaceId,
+              ownExecutor: owner === access.creatorUserId,
+              ...verdict,
+            });
+          }
+        }
+        if (verdicts.length === 0) return { stopped: 0, refused: 0, retired: [] };
+        // Sessions in someone else's executor first: the creator's own Stop then finds it free.
+        yield* endEach(
+          verdicts
+            .filter((verdict) => !verdict.ownExecutor)
+            .map(({ sessionId, words }) => ({ sessionId, summary: words })),
+        );
+        yield* endEach(
+          verdicts
+            .filter((verdict) => verdict.ownExecutor)
+            .map(({ sessionId, words }) => ({ sessionId, summary: words })),
+        );
+        let stopped = 0;
+        let refused = 0;
+        const retired = new Set<SealantWorkspaceId>();
+        for (const verdict of verdicts) {
+          const ended = yield* nothingLive(verdict.sessionId);
+          if (ended) stopped += 1;
+          else refused += 1;
+          if (ended && verdict.code === "creator_not_member") retired.add(verdict.workspaceId);
+          yield* Effect.logInfo(
+            ended
+              ? "session engine: access reconciled · session stopped"
+              : "session engine: access reconciled · session could not be stopped · retry next minute",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: verdict.sessionId,
+              owner: verdict.owner,
+              reason: verdict.code,
+              workspaceId: verdict.workspaceId,
+            }),
+          );
+          if (ended) {
+            // Mend's own act: the person whose session it was is its subject's owner, as the row
+            // shows them; the reason is Mend's words on the session line.
+            yield* audit.record({
+              organizationId: verdict.organizationId,
+              actorUserId: verdict.owner,
+              action: "session.stopped_no_access",
+              subjectType: "session",
+              subjectId: verdict.sessionId,
+              data: { reason: verdict.code, words: verdict.words, by: "mend" },
+            });
+          }
+        }
+        return { stopped, refused, retired: [...retired] };
+      });
+
       const discardUnsavedAndStop = Effect.fn("SessionEngine.discardUnsavedAndStop")(function* (
         sessionId: SessionId,
         discardedBy?: string | null,
@@ -5416,6 +5807,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             createAskedAtOf(key) ?? new Date(),
             key,
           );
+          yield* workspaceCaller.recorded(workspaceId, session.ownerUserId);
           const workspace = yield* sealant.getWorkspace(workspaceId).pipe(Effect.option);
           if (Option.isSome(workspace)) yield* noteExecutorResource(sessionId, workspace.value);
           yield* Effect.logWarning(
@@ -5504,6 +5896,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const statusReading = new Set<SessionId>();
       /** Sessions the owner stopped while this process replaced their executor: none relaunches. */
       const stoppedDuringReplacement = new Set<SessionId>();
+      /** Stops asked and not yet answered: a planned relaunch picked up meanwhile launches nothing. */
+      const stopsUnderWay = new Map<SessionId, number>();
+      const stopUnderWay = (sessionId: SessionId) => (stopsUnderWay.get(sessionId) ?? 0) > 0;
       /** Sessions whose planned relaunch a launch in this process is carrying out. */
       const relaunching = new Set<SessionId>();
 
@@ -5689,7 +6084,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // launch here is carrying it out.
           const finishRelaunch = Effect.gen(function* () {
             const stored = yield* sessions.relaunchOf(session.id);
-            if (stored === null || relaunching.has(session.id)) return;
+            if (stored === null || relaunching.has(session.id) || stopUnderWay(session.id)) {
+              return;
+            }
             const plan = readRelaunchPlan(stored);
             relaunching.add(session.id);
             yield* Effect.logInfo(
@@ -7992,7 +8389,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // The container is gone; no row for it can still be live, and the
           // in-workspace socket has nobody left to serve.
-          yield* processes.reapLiveForWorkspace(workspaceId);
+          yield* reapWorkspaceProcesses(workspaceId);
           yield* socketHost.stop(sessionId);
           yield* channelTokens.revoke(sessionId).pipe(Effect.ignore);
           yield* removeIfRequested(sessionId);
@@ -8007,8 +8404,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /**
-       * The settle-path variant: every caller is the tail of a session settle, so no agent row
-       * can still be live in the workspace — end any straggler before the lease check.
+       * The settle-path variant: every caller is the tail of this session's settle, so no agent
+       * row of THIS session can still be live — any straggler of its own is ended before the
+       * lease check. Only its own: in capture mode other people's sessions run in the same
+       * executor (a join), and their live agents are exactly what the lease check below must see,
+       * so the workspace is saved and ended only once no other session has a live process there,
+       * the same rule as the last session's Stop (review 2 of mend#558, P1). An agent whose close
+       * the platform refused (`closeFailed`) is not a straggler: it still runs.
        */
       const stopWorkspaceQuietly = (
         sessionId: SessionId,
@@ -8017,9 +8419,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           if (session.sealantWorkspaceId === null) return;
-          yield* processes.reapLiveForWorkspace(session.sealantWorkspaceId, [
-            ...AGENT_PROCESS_KINDS,
-          ]);
+          for (const process of yield* processes.listLiveForWorkspace(session.sealantWorkspaceId)) {
+            // Refused, as this process knows or as the session line still says after a restart.
+            const refused =
+              closeFailed.has(process.id) || refusalWordsIn(session.summary, process.id) !== null;
+            if (
+              process.sessionId === sessionId &&
+              AGENT_PROCESS_KINDS.has(process.kind) &&
+              !refused
+            ) {
+              yield* markProcessExited(process.id, "exited", null);
+            }
+          }
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: agent process reap failed").pipe(
@@ -8605,7 +9016,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // ended — never `running` for a harness that is not there.
         let exitedEarly = false;
         const harnessGone = Effect.gen(function* () {
-          yield* processes.markExited(agentProcess.id, end.how, end.exitCode);
+          yield* markProcessExited(agentProcess.id, end.how, end.exitCode);
           exitedEarly = true;
           const session = yield* sessions.byId(sessionId);
           const rows = yield* processes.listForSession(sessionId);
@@ -8649,7 +9060,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : verdict.kind === "ending"
               ? null
               : (lost?.summary ?? verdict.summary);
-        if (!exitedEarly) yield* processes.markExited(agentProcess.id, end.how, end.exitCode);
+        if (!exitedEarly) yield* markProcessExited(agentProcess.id, end.how, end.exitCode);
         if (agentProcess.sealantRunId !== null) {
           yield* sessionRuns.settle(agentProcess.sealantRunId, outcome, summary);
         }
@@ -8788,7 +9199,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               if (recorded) yield* finishAgentProcess(ended, "turn-boundary");
             }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void))
           : closeCurrentServiceForward(ended).pipe(
-              Effect.andThen(processes.markExited(ended.id, how, exitCode)),
+              Effect.andThen(markProcessExited(ended.id, how, exitCode)),
               Effect.andThen(
                 reconcileSession(ended.sessionId, { sweep: true }).pipe(
                   Effect.catchTag("SessionNotFoundError", () => Effect.void),
@@ -11999,7 +12410,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* error;
             }
             // The owner stopped the session while its old executor saved: nothing relaunches.
-            if (capture !== null && (yield* sessions.relaunchOf(sessionId)) === null) {
+            if (
+              capture !== null &&
+              (stopUnderWay(sessionId) || (yield* sessions.relaunchOf(sessionId)) === null)
+            ) {
               return yield* new SealantPlatformError({
                 code: "relaunch_cancelled",
                 status: 409,
@@ -12258,6 +12672,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               executorStartedAt,
               launch,
             );
+            yield* workspaceCaller.recorded(workspace.id, session.ownerUserId);
             yield* noteExecutorResource(sessionId, workspace);
           });
         const abandonExecutor = (workspace: Workspace, message: string) =>
@@ -14237,6 +14652,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return restore(stopUnguarded(sessionId, summary, inFlight)).pipe(
               Effect.ensuring(
                 Effect.sync(() => {
+                  // Once per Stop: another Stop of the session still under way keeps the guard.
+                  const left = (stopsUnderWay.get(sessionId) ?? 1) - 1;
+                  if (left <= 0) stopsUnderWay.delete(sessionId);
+                  else stopsUnderWay.set(sessionId, left);
                   if (inFlight.tail) return;
                   set.delete(inFlight.done);
                   if (set.size === 0) stopTailsDone.delete(sessionId);
@@ -14252,6 +14671,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         inFlight: { readonly done: Deferred.Deferred<void>; tail: boolean },
       ) {
         const session = yield* sessions.byId(sessionId);
+        // The owner's Stop beats a replacement or a planned relaunch from the moment it is asked,
+        // not from when its closes return (review 4 of mend#558, P2): a replacement that saves
+        // and ends meanwhile launches nothing. Withdrawn only if the close is refused below. The
+        // durable conversion still follows the close, so a restart inside that window resumes
+        // the replacement or relaunch it had (accepted: the refused case needs it kept).
+        const guardedReplacement =
+          replacing.has(sessionId) && !stoppedDuringReplacement.has(sessionId);
+        if (guardedReplacement) stoppedDuringReplacement.add(sessionId);
+        stopsUnderWay.set(sessionId, (stopsUnderWay.get(sessionId) ?? 0) + 1);
         // A launch still waiting for the worktree's previous executor launches nothing now.
         if (waitingLaunches.has(sessionId)) stoppedWhileWaiting.add(sessionId);
         // One further along stands down before its agent starts, or is stopped again as it ends.
@@ -14265,11 +14693,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // takes it up after the restart. The owner's stop wins over a relaunch or a replacement
         // still saving the old executor: the drain goes on, and nothing launches after it, here
         // or after a restart.
-        if (capture !== null) {
-          yield* sessions.clearRelaunch(sessionId);
-          yield* sessions.stopCaptureDrain(sessionId);
-          if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
-        }
+        // Whether this very stop began the drain intent (a refused close withdraws only its own).
+        let beganDrain = false;
         if (capture !== null && session.sealantWorkspaceId !== null) {
           const workspaceId = session.sealantWorkspaceId;
           const liveAgents = rows.filter(isLiveAgentProcess);
@@ -14288,20 +14713,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (yield* serviceForwards.listOpen()).filter(
               (forward) => forward.sealantWorkspaceId === workspaceId,
             ).length;
-          if (held === 0) yield* sessions.beginCaptureDrain(sessionId, "stop", new Date());
+          if (held === 0) {
+            beganDrain = session.captureDrain === null;
+            yield* sessions.beginCaptureDrain(sessionId, "stop", new Date());
+          }
         }
         // Stop = end the agent. Every live agent process closes (the daemon reaps its process
         // group) and is recorded as stopped; the fold then reads `idle` while shells or Services
         // hold the workspace, `stopping` while a drain saves it, or settles `stopped` at once.
         const ended: Array<SessionProcess> = [];
+        // Agents the platform would not close: still live, so this stop ends nothing more.
+        const notEnded: Array<SessionProcess> = [];
         for (const agent of rows.filter(isLiveAgentProcess)) {
           if (agent.kind === "agent-protocol") {
             yield* protocolHost.detach(agent.id);
             yield* conversations.cancelOpenForProcess(agent.id);
           }
-          if (agent.sealantSessionId !== null) {
-            yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId);
+          if (
+            agent.sealantSessionId !== null &&
+            !(yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId))
+          ) {
+            yield* notStopped(agent);
+            notEnded.push(agent);
+            continue;
           }
+
           const recorded = yield* endAgentProcess(agent, {
             how: "stopped",
             exitCode: null,
@@ -14309,6 +14745,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             summary,
           });
           if (recorded) ended.push(agent);
+        }
+        // A refused close whose process ended meanwhile anyway (a replacement's terminate reaped
+        // it) is not a refusal: its words come off, and this stop goes on as one that ended it
+        // (review 5 of mend#558, P3-1).
+        const stillRefused: Array<SessionProcess> = [];
+        for (const agent of notEnded) {
+          const row = yield* processes.byId(agent.id);
+          if (row === null || row.exitedAt !== null) yield* stoppedAfterAll(agent);
+          else stillRefused.push(agent);
+        }
+        notEnded.splice(0, notEnded.length, ...stillRefused);
+        if (notEnded.length > 0 && ended.length === 0) {
+          // A close that failed is not "no agent to close" (review 2 of mend#558, P1): the agent
+          // still runs, so its shells stay, its run stays open, nothing settles, and no tail runs
+          // the settle-path cleanup over an executor that is still in use. The drain intent taken
+          // above on the assumption that it would end is withdrawn. The next stop tries again.
+          // Only an intent this stop began: a relaunch's or a replacement's drain stays theirs,
+          // and so do their guards.
+          if (beganDrain) yield* endDrain(sessionId);
+          // Its guards go only if no other Stop of the session is still under way; the count
+          // itself is released once, as this stop ends (`stop`).
+          if (guardedReplacement && (stopsUnderWay.get(sessionId) ?? 0) <= 1) {
+            stoppedDuringReplacement.delete(sessionId);
+          }
+          return;
+        }
+        // A successful Stop supersedes pending launches. A refused close leaves their durable
+        // intent intact so a restart can still resume the replacement or relaunch.
+        if (capture !== null) {
+          yield* sessions.clearRelaunch(sessionId);
+          yield* sessions.stopCaptureDrain(sessionId);
+          if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
+          // A replacement or relaunch this stop beat saved and ended its executor while the close
+          // was under way: its drain is over and launches nothing, so no drain end settles the
+          // session. This stop does, once nothing of it is live and the executor's end is
+          // observed (review 5 of mend#558, P3-2). An end not observed yet is left to the
+          // reaper's observed-end path, as before.
+          if (
+            session.captureDrain !== null &&
+            session.captureDrain !== "stop" &&
+            session.sealantWorkspaceId !== null
+          ) {
+            const now = yield* sessions.byId(sessionId);
+            if (
+              now.captureDrain === null &&
+              foldSessionLiveness(yield* processes.listForSession(sessionId)) === "settled" &&
+              (yield* workspaceState(session.sealantWorkspaceId)) === "dead"
+            ) {
+              yield* settleSession(sessionId, "stopped", summary);
+            }
+          }
         }
         if (ended.length === 0) {
           // No agent to close — a run attached without a process, a launch still in flight,
@@ -14320,10 +14807,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Services stay either way — declared infrastructure with its own verb.
           const liveShells = rows.filter((row) => row.kind === "shell" && isLiveProcess(row));
           for (const shell of liveShells) {
-            if (shell.sealantSessionId !== null) {
-              yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId);
+            if (
+              shell.sealantSessionId !== null &&
+              !(yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId))
+            ) {
+              yield* notStopped(shell);
+              continue;
             }
-            yield* processes.markExited(shell.id, "stopped", null);
+
+            yield* markProcessExited(shell.id, "stopped", null);
           }
           if (activeRun !== null) {
             yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", summary);
@@ -14512,9 +15004,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* protocolHost.detach(agent.id);
             yield* conversations.cancelOpenForProcess(agent.id);
           }
-          if (agent.sealantSessionId !== null) {
-            yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId);
+          if (
+            agent.sealantSessionId !== null &&
+            !(yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId))
+          ) {
+            yield* notStopped(agent);
+            continue;
           }
+
           const recorded = yield* endAgentProcess(agent, {
             how: "stopped",
             exitCode: null,
@@ -14694,8 +15191,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (shell.sealantSessionId === null) {
           return yield* new ShellProcessNotFoundError({ processId });
         }
-        yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId);
-        yield* processes.markExited(processId, "stopped", null);
+        if (!(yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId))) {
+          yield* notStopped(shell);
+          return shell;
+        }
+        yield* markProcessExited(processId, "stopped", null);
         yield* reconcileSession(shell.sessionId, { sweep: true }).pipe(
           Effect.catchTag("SessionNotFoundError", () => Effect.void),
         );
@@ -14916,15 +15416,127 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      /** Close a process PTY; the daemon reaps its foreground process group. */
-      const closeProcessPty = (workspaceId: SealantWorkspaceId, ptyId: string) =>
+      /** Processes whose close the platform refused, still recorded live (`notStopped`). */
+      const closeFailed = new Map<SessionProcessId, string>();
+
+      /**
+       * Close a process PTY; the daemon reaps its foreground process group. True once it is closed,
+       * or the platform says it (or its workspace) is gone. The lookup and the close run as the
+       * workspace's creator whoever asks (`WorkspaceCaller.observe`), so a person who lost access
+       * still has their processes ended. A close that keeps failing is tried again, then answers
+       * false and is logged: the caller never records such a process as stopped (mend#558 review,
+       * P1-1), and the next stop tries again. Meanwhile the process holds the workspace (in use,
+       * a capture hold, project removal waits), as a running one should. It cannot stick for
+       * good: Core settles a close on a stopped runtime, or of a session its daemon no longer has,
+       * as done; only a runtime that is ready with a daemon it cannot reach keeps refusing.
+       */
+      const closeProcessPty = (
+        workspaceId: SealantWorkspaceId,
+        ptyId: string,
+      ): Effect.Effect<boolean> =>
+        Effect.gen(function* () {
+          // A 404 says "gone" only when the call was made as someone who could see it: the
+          // recorded creator, or anyone outside capture mode, where a session's workspace is its
+          // own. With no creator recorded it says nothing (review 2 of mend#558, P3-4).
+          const goneMeansClosed =
+            capture === null || (yield* workspaceCaller.creatorOf(workspaceId)) !== null;
+          return yield* closePty(workspaceId, ptyId, goneMeansClosed);
+        });
+      const closePty = (
+        workspaceId: SealantWorkspaceId,
+        ptyId: string,
+        goneMeansClosed: boolean,
+      ): Effect.Effect<boolean> =>
         sealant.getWorkspace(workspaceId).pipe(
           Effect.flatMap((workspace) => sealant.getSession(workspace, ptyId)),
           Effect.flatMap((pty) =>
-            Effect.tryPromise({ try: () => pty.close(), catch: () => new Error("close failed") }),
+            Effect.tryPromise({
+              try: () => pty.close(),
+              catch: (cause) =>
+                new SealantPlatformError({
+                  code: "pty_close_failed",
+                  status: workspaceMissing(cause) ? 404 : null,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                  cause,
+                }),
+            }),
           ),
-          Effect.ignore,
+          Effect.as(true),
+          Effect.catchIf(
+            (error) => goneMeansClosed && workspaceMissing(error),
+            () => Effect.succeed(true),
+          ),
+          Effect.retry(PTY_CLOSE_RETRY),
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: a process could not be stopped").pipe(
+              Effect.annotateLogs({ workspaceId, ptyId, code: error.code, message: error.message }),
+              Effect.as(false),
+            ),
+          ),
         );
+
+      /** A process a stop could not end stays live, and the session line says so. */
+      /**
+       * A process a stop could not end stays live, and the session line says so. While it is in
+       * here, no settle-path cleanup records it ended either (`stopWorkspaceQuietly`).
+       */
+      const notStopped = Effect.fn("SessionEngine.notStopped")(function* (process: SessionProcess) {
+        const words = closeFailed.get(process.id) ?? notStoppedWords(process);
+        closeFailed.set(process.id, words);
+        const session = yield* sessions
+          .byId(process.sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null) return;
+        if ((session.summary ?? "").includes(words)) return;
+        yield* sessions.setSummary(
+          process.sessionId,
+          session.summary === null ? words : `${session.summary} · ${words}`,
+        );
+      });
+      /**
+       * A process whose close failed earlier was closed after all: its words come off the line once
+       * no other process of its kind in the session is still waiting (review 2 of mend#558, P3-1).
+       */
+      const stoppedAfterAll = Effect.fn("SessionEngine.stoppedAfterAll")(function* (
+        process: SessionProcess,
+      ) {
+        // Nothing was refused (the set is restored from the session line at boot): no read at all
+        // on an ordinary end (review 4 of mend#558, P3-2).
+        if (!closeFailed.delete(process.id)) return;
+        const session = yield* sessions
+          .byId(process.sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        const summary = session?.summary ?? null;
+        // The words as the refusal wrote them, found by the process's id: a rename since changes
+        // nothing.
+        const words = refusalWordsIn(summary, process.id);
+        if (summary === null || words === null) return;
+        const rest =
+          summary === words ? "" : summary.replace(` · ${words}`, "").replace(`${words} · `, "");
+        yield* sessions.setSummary(process.sessionId, rest === "" ? null : rest);
+      });
+
+      /** Record an observed end and clear any earlier refusal, including after a restart. */
+      const markProcessExited = Effect.fn("SessionEngine.markProcessExited")(function* (
+        processId: SessionProcessId,
+        how: "exited" | "stopped",
+        exitCode: number | null,
+      ) {
+        yield* processes.markExited(processId, how, exitCode);
+        if (!closeFailed.has(processId)) return;
+        const process = yield* processes.byId(processId);
+        if (process !== null) yield* stoppedAfterAll(process);
+      });
+
+      /** A whole executor ended: clear refusals for the rows its bulk reap ends too. */
+      const reapWorkspaceProcesses = Effect.fn("SessionEngine.reapWorkspaceProcesses")(function* (
+        workspaceId: SealantWorkspaceId,
+      ) {
+        if (closeFailed.size === 0) return yield* processes.reapLiveForWorkspace(workspaceId);
+        const live = yield* processes.listLiveForWorkspace(workspaceId);
+        yield* processes.reapLiveForWorkspace(workspaceId);
+        for (const process of live) yield* stoppedAfterAll(process);
+      });
 
       /**
        * A supervised Service is ready when its port answers — poll the
@@ -14956,7 +15568,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               catch: () => new Error("status failed"),
             }).pipe(Effect.orElseSucceed(() => null));
             if (status !== null && status.status !== "running" && status.status !== "starting") {
-              yield* processes.markExited(processId, "exited", status.exitCode ?? null);
+              yield* markProcessExited(processId, "exited", status.exitCode ?? null);
               yield* reconcileSession(sessionId, { sweep: false }).pipe(
                 Effect.catchTag("SessionNotFoundError", () => Effect.void),
               );
@@ -15032,7 +15644,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               startAs === null ? undefined : { user: startAs.user, env: startAs.env },
             ),
           ),
-          Effect.tapError(() => processes.markExited(attempt.id, "exited", null)),
+          Effect.tapError(() => markProcessExited(attempt.id, "exited", null)),
         );
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
         yield* renewWorkspaceLease(sessionId, workspaceId);
@@ -15048,7 +15660,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             catch: () => new Error("status failed"),
           }).pipe(Effect.orElseSucceed(() => null));
           if (early !== null && early.status !== "running" && early.status !== "starting") {
-            yield* processes.markExited(attempt.id, "exited", early.exitCode ?? null);
+            yield* markProcessExited(attempt.id, "exited", early.exitCode ?? null);
             const tail = yield* ptyOutputTail(pty);
             return yield* new ServiceStartError({
               message:
@@ -15177,8 +15789,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // lookup therefore leaves nothing for boot recovery or the one-live-attempt index.
         const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
         if (previous.exitedAt === null && previous.sealantSessionId !== null) {
-          yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId);
-          yield* processes.markExited(previous.id, "stopped", null);
+          if (!(yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId))) {
+            yield* notStopped(previous);
+            return yield* new SealantPlatformError({
+              code: "pty_close_failed",
+              status: null,
+              message: "the Service's running attempt could not be stopped · nothing restarted",
+              cause: null,
+            });
+          }
+          yield* markProcessExited(previous.id, "stopped", null);
         }
         const attemptOrdinal =
           attempts.reduce((largest, attempt) => Math.max(largest, attempt.attemptOrdinal ?? 0), 0) +
@@ -15211,7 +15831,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               startAs === null ? undefined : { user: startAs.user, env: startAs.env },
             ),
           ),
-          Effect.tapError(() => processes.markExited(attempt.id, "exited", null)),
+          Effect.tapError(() => markProcessExited(attempt.id, "exited", null)),
         );
         yield* processes.setSealantSessionId(attempt.id, pty.id, SealantRunId.make(pty.runId));
         yield* renewWorkspaceLease(service.sessionId, previous.sealantWorkspaceId);
@@ -15604,10 +16224,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* processes.byId(service.currentAttemptId);
         if (attempt !== null && attempt.exitedAt === null) {
-          if (attempt.sealantSessionId !== null) {
-            yield* closeProcessPty(attempt.sealantWorkspaceId, attempt.sealantSessionId);
+          if (
+            attempt.sealantSessionId !== null &&
+            !(yield* closeProcessPty(attempt.sealantWorkspaceId, attempt.sealantSessionId))
+          ) {
+            // Still running: recorded live, its pointers kept, so a stop again reaches it.
+            yield* notStopped(attempt);
+            return yield* readServiceView(service.id);
           }
-          yield* processes.markExited(attempt.id, "stopped", null);
+          yield* markProcessExited(attempt.id, "stopped", null);
         }
         yield* serviceHost.stop(service.id);
         if (service.currentForwardId !== null) {
@@ -16241,6 +16866,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // end (and the sweep releases the lease); nothing to rehydrate.
             return;
           }
+          // A pipe whose session may no longer run where it does (`accessStopReason`: a removed
+          // member, or a joiner who lost access) is not restored, and no further turn reaches it:
+          // it is ended with the reason. A session in its owner's own executor is restored as
+          // ever (review 3 of mend#558, P1).
+          const owner =
+            (yield* sessions
+              .byId(protocolProcess.sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null))))
+              ?.ownerUserId ?? null;
+          const access =
+            owner === null
+              ? null
+              : yield* sessions.executorAccessOf(protocolProcess.sealantWorkspaceId, owner);
+          const verdict =
+            access === null || owner === null ? null : accessStopReason(access, owner);
+          if (verdict !== null) {
+            yield* Effect.logInfo("session engine: protocol process not restored · no access").pipe(
+              Effect.annotateLogs({ processId: protocolProcess.id, reason: verdict.code }),
+            );
+            // The boot access sweep owns the Stop, capture and audit record. Do not end only
+            // this agent here and leave its shells or Services out of that reconciliation.
+            return;
+          }
           const { pipe, status } = probed.value;
           const options = protocolProcess.protocolOptions;
           yield* protocolHost
@@ -16395,6 +17043,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         else recovering.set(sessionId, left);
       };
       const resume = Effect.fn("SessionEngine.resume")(function* () {
+        // The session line persists a refused close. Restore the guard before watchers and
+        // drain recovery start; their platform observations clear it through markProcessExited.
+        const liveProcesses = yield* processes.listLive();
+        for (const process of liveProcesses) {
+          const session = yield* sessions
+            .byId(process.sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          const words = refusalWordsIn(session?.summary ?? null, process.id);
+          if (words !== null) {
+            closeFailed.set(process.id, words);
+          }
+        }
         // A run left open under a session that settled is settled with the session's words
         // before anything re-attaches to it: it is not live work, and the next resume of its
         // session would otherwise meet the one-active-run index.
@@ -16422,7 +17082,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // them again — the watcher itself records the end if the workspace is
         // gone. Protocol rows are watched once their pipe is rehydrated, at
         // the end of this pass.
-        const liveProcesses = yield* processes.listLive();
         const sessionsWithLiveProcesses = new Set(
           liveProcesses.map((liveProcess) => liveProcess.sessionId),
         );
@@ -16498,7 +17157,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             liveProcess.serviceId !== null &&
             liveProcess.sealantSessionId === null
           ) {
-            yield* processes.markExited(liveProcess.id, "exited", null);
+            yield* markProcessExited(liveProcess.id, "exited", null);
           }
         }
         const selectedForwardIds = new Set(
@@ -16595,7 +17254,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* serviceForwards.markFailed(forward.id, `workspace observed ${status}`);
                 yield* services.compareAndSetCurrentForward(service.id, forward.id, null);
                 if (service.currentAttemptId !== null) {
-                  yield* processes.markExited(service.currentAttemptId, "exited", null);
+                  yield* markProcessExited(service.currentAttemptId, "exited", null);
                 }
                 return;
               }
@@ -16774,7 +17433,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (status !== "queued" && status !== "running" && status !== "ready") {
               // The container is gone (stopped externally or reaped by TTL) —
               // no process row for it can still be live. Reconcile the leases.
-              yield* processes.reapLiveForWorkspace(workspaceId);
+              yield* reapWorkspaceProcesses(workspaceId);
               yield* removeIfRequested(session.id);
               return;
             }
@@ -16829,6 +17488,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ),
         scope,
       );
+      let lastAccessReconcile = Number.NEGATIVE_INFINITY;
       // Capture mode: the lease reaper (expiry → confirmed platform termination → the session
       // settles honestly; the next resume is a pickup) and replacement before the 8 h cap.
       if (capture !== null) {
@@ -16836,6 +17496,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           captureReaper().pipe(
             // Each tick, while nothing is recorded with the flag off, the store is asked again.
             Effect.andThen(layoutSteps.refreshRecorded()),
+            // And whoever lost access has nothing left running (review 2 of mend#558, P2-1): at
+            // boot, then once a minute, not on every tick.
+            Effect.andThen(
+              Effect.suspend(() => {
+                const now = Date.now();
+                if (now - lastAccessReconcile < ACCESS_RECONCILE_MS) return Effect.void;
+                lastAccessReconcile = now;
+                return reconcileAccess();
+              }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("session engine: access reconciliation failed").pipe(
+                    Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+                  ),
+                ),
+              ),
+            ),
             Effect.catchDefect((defect) =>
               Effect.logWarning("session engine: capture reaper died").pipe(
                 Effect.annotateLogs({ defect: String(defect) }),
@@ -16990,6 +17666,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         refreshCaptureStatus,
         readCaptures: (sessionId) => owned(sessionId)(readCaptures(sessionId)),
         removeWhenStopped: (sessionId) => owned(sessionId)(removeWhenStopped(sessionId)),
+        windDownPerson,
+        reconcileAccess,
         captureHolds,
         transcript,
       };

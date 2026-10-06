@@ -125,6 +125,8 @@ export const ids = (project: HarnessProject) => ({
 /** Carol's own session inside alice's shared project, alone in its own worktree. */
 export const CAROL_SESSION_IN_SHARED_A = SessionId.make("session-shared-a-carol");
 export const CAROL_WORKTREE_IN_SHARED_A = WorktreeId.make("worktree-shared-a-carol");
+/** A live shell in Carol's own session in shared-a. */
+export const CAROL_SHELL_IN_SHARED_A = SessionProcessId.make("process-shared-a-carol-shell");
 /** A pre-organizations session with no owner in `shared-a`; nobody steers it. */
 export const NULL_OWNER_SESSION = SessionId.make("session-shared-a-null-owner");
 /** An agent-protocol process and a UDP Service on alice's session in `shared-a`. */
@@ -546,6 +548,20 @@ export const createTenancyWorld = async (
         harness: "codex",
         label: "codex",
         argv: ["codex", "app-server"],
+      }),
+    );
+  }
+  if (aliceProcess !== undefined) {
+    processes.set(
+      CAROL_SHELL_IN_SHARED_A,
+      new SessionProcess({
+        ...aliceProcess,
+        id: CAROL_SHELL_IN_SHARED_A,
+        sessionId: CAROL_SESSION_IN_SHARED_A,
+        sealantSessionId: "platform-process-shared-a-carol-shell",
+        status: "running",
+        exitCode: null,
+        exitedAt: null,
       }),
     );
   }
