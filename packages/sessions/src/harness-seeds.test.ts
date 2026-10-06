@@ -17,6 +17,7 @@ import {
   withCodexMemory,
   launchesCodex,
   withCodexMemoryOff,
+  withoutCodexShellSnapshot,
   withHarnessSetup,
   withoutCodexDaemon,
 } from "./harness-seeds.ts";
@@ -461,8 +462,10 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
       "resume",
       "abc",
     ]);
-    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-6)).toEqual([
+    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-8)).toEqual([
       "codex",
+      "-c",
+      "features.shell_snapshot=false",
       "-c",
       "features.daemon_auto_start=false",
       "-c",
@@ -475,6 +478,28 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
   });
 });
 
+describe("Codex's shell snapshot", () => {
+  it("is off in every Codex launch, unless the launch names it itself", () => {
+    expect(withoutCodexShellSnapshot(["codex", "resume", "abc"])).toEqual([
+      "codex",
+      "-c",
+      "features.shell_snapshot=false",
+      "resume",
+      "abc",
+    ]);
+    const own = ["codex", "-c", "features.shell_snapshot=true"];
+    expect(withoutCodexShellSnapshot(own)).toEqual(own);
+    expect(withoutCodexShellSnapshot(["claude"])).toEqual(["claude"]);
+    // Another feature whose name starts the same is not this one.
+    expect(withoutCodexShellSnapshot(["codex", "-c", "features.shell_snapshot_v2=true"])).toEqual([
+      "codex",
+      "-c",
+      "features.shell_snapshot=false",
+      "-c",
+      "features.shell_snapshot_v2=true",
+    ]);
+  });
+});
 const mcpAuth = (home: string) => path.join(home, ".local", "share", "opencode", "mcp-auth.json");
 const kept = (home: string) => path.join(home, ".mend", "opencode", "mcp-auth.json");
 
@@ -578,7 +603,14 @@ describe("opencode's seed: MCP logins stay out of saved state", () => {
 
 describe("Codex's background server", () => {
   it("is never started by a Codex launch: terminal, resume or app-server", () => {
-    const flags = ["-c", "features.daemon_auto_start=false", "-c", "features.memories=true"];
+    const flags = [
+      "-c",
+      "features.shell_snapshot=false",
+      "-c",
+      "features.daemon_auto_start=false",
+      "-c",
+      "features.memories=true",
+    ];
     for (const tail of [[], ["resume", "abc"], ["app-server"]]) {
       expect(withHarnessSetup("codex", ["codex", ...tail]).slice(4)).toEqual([
         "codex",

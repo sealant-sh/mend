@@ -948,6 +948,46 @@ const skillsStubLayer = Layer.succeed(SkillsRepo, {
 });
 
 /** The owner's pi profile; none unless a test brings one. */
+/** A live process row in a workspace, as the engine records one. */
+const liveProcessRow = (
+  id: string,
+  sessionId: SessionId,
+  workspaceId: SealantWorkspaceId,
+  kind: "shell" | "agent-pty",
+  harness: string | null,
+) =>
+  new SessionProcess({
+    id: SessionProcessId.make(id),
+    sessionId,
+    sealantWorkspaceId: workspaceId,
+    sealantSessionId: `pty-${id}`,
+    sealantRunId: null,
+    launchCorrelationId: null,
+    serviceId: null,
+    attemptOrdinal: null,
+    kind,
+    harness,
+    providerSessionId: null,
+    protocolOptions: null,
+    label: kind,
+    argv: kind === "shell" ? ["bash", "-i"] : [harness ?? "pi"],
+    status: "running",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: now(),
+    exitedAt: null,
+    updatedAt: now(),
+  });
+
+/** Another person's pi profile, as a restored harness home brings it. */
+const plantForeignPiProfile = (home: string) => {
+  const file = path.join(home, ".pi/agent/mend/profile/extensions/theirs/index.ts");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "export default () => {};\n");
+};
+
 const piProfilesLayerOf = (
   saved: PiProfilesRepo["Service"]["forUser"] = () => Effect.succeed(null),
 ): Layer.Layer<PiProfilesRepo> =>
@@ -3249,6 +3289,151 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("refuses a pi launch whose owner's profile cannot be delivered", async () => {
+    const created: CreateOptions[] = [];
+    const files = [
+      { path: "extensions/mine/index.ts", encoding: "utf8", contents: "export default 1;\n" },
+    ] as const;
+    const piProfilesLayer = piProfilesLayerOf(() =>
+      Effect.succeed({
+        profile: new PiProfile({
+          fileCount: 1,
+          bytes: files[0].contents.length,
+          extensions: ["mine"],
+          packages: [],
+          digest: piProfileDigest(files),
+          revision: 1,
+          updatedAt: new Date(0),
+        }),
+        files,
+      }),
+    );
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "pi",
+            label: null,
+            name: null,
+            ownerUserId: "owner-with-profile",
+            base: null,
+          });
+          const home = harnessHomePathOf(project.storePath, session.id);
+          plantForeignPiProfile(home);
+          fs.writeFileSync(path.join(home, ".mend"), "not a directory");
+          const failure = yield* engine.launch(session.id, ["pi"]).pipe(Effect.flip);
+          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
+          expect(platformFailure?.code).toBe("PI_PROFILE_NOT_DELIVERED");
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+        }),
+      { sealantLayer: sealantLaunchLayer(created), piProfilesLayer },
+    );
+  });
+
+  it("a pi follow-up in a retained workspace runs on its owner's profile, and on the one there beside a live pi", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const provision = (ownerUserId: string) =>
+            engine.provision({
+              projectId: project.id,
+              harness: "pi",
+              label: null,
+              name: null,
+              ownerUserId,
+              base: null,
+            });
+          const session = yield* provision("owner-a");
+          yield* engine.launch(session.id, ["pi"]);
+          const workspaceId =
+            [...world.processes.values()].find((process) => process.sessionId === session.id)
+              ?.sealantWorkspaceId ?? SealantWorkspaceId.make("workspace-1");
+          const shell = liveProcessRow("shell-a", session.id, workspaceId, "shell", null);
+          world.processes.set(shell.id, shell);
+          const stopAgent = Effect.gen(function* () {
+            yield* engine.stop(session.id);
+            const agentLive = () =>
+              [...world.processes.values()].some(
+                (process) =>
+                  process.sessionId === session.id &&
+                  process.kind === "agent-pty" &&
+                  process.exitedAt === null,
+              );
+            for (let i = 0; i < 200 && agentLive(); i++) yield* Effect.sleep(Duration.millis(10));
+            expect(agentLive()).toBe(false);
+          });
+          const home = harnessHomePathOf(project.storePath, session.id);
+          const profile = path.join(home, ".pi/agent/mend/profile");
+
+          // No pi runs there: the profile the harness home holds is moved aside, as at a launch.
+          yield* stopAgent;
+          plantForeignPiProfile(home);
+          yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-1", "owner-a");
+          expect(fs.existsSync(profile)).toBe(false);
+          expect(fs.readdirSync(path.join(home, ".mend/pi-profile-kept")).length).toBeGreaterThan(
+            0,
+          );
+
+          // Another person's pi runs in the workspace: the launch runs on the profile already
+          // there, which is left as it is.
+          yield* stopAgent;
+          plantForeignPiProfile(home);
+          const other = yield* provision("owner-b");
+          const theirs = liveProcessRow("pi-b", other.id, workspaceId, "agent-pty", "pi");
+          world.processes.set(theirs.id, theirs);
+          yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-2", "owner-a");
+          expect(fs.existsSync(profile)).toBe(true);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
+  it("moves aside a pi profile that is not the owner's, and refuses the launch when it cannot", async () => {
+    // A pi launch runs on its owner's freshly delivered profile, on no profile, or not at all.
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const start = () =>
+            engine.provision({
+              projectId: project.id,
+              harness: "pi",
+              label: null,
+              name: null,
+              ownerUserId: "owner-without-profile",
+              base: null,
+            });
+          const moved = yield* start();
+          const movedHome = harnessHomePathOf(project.storePath, moved.id);
+          plantForeignPiProfile(movedHome);
+          yield* engine.launch(moved.id, ["pi"]);
+          expect(fs.existsSync(path.join(movedHome, ".pi/agent/mend/profile"))).toBe(false);
+          const kept = fs.readdirSync(path.join(movedHome, ".mend/pi-profile-kept"));
+          expect(kept).toHaveLength(1);
+
+          // The profile cannot be moved: the session fails instead of running it.
+          const stuck = yield* start();
+          const stuckHome = harnessHomePathOf(project.storePath, stuck.id);
+          plantForeignPiProfile(stuckHome);
+          fs.writeFileSync(path.join(stuckHome, ".mend"), "not a directory");
+          const failure = yield* engine.launch(stuck.id, ["pi"]).pipe(Effect.flip);
+          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
+          expect(platformFailure?.code).toBe("PI_PROFILE_NOT_DELIVERED");
+          expect(world.sessions.get(stuck.id)?.status).toBe("failed");
+          expect(fs.existsSync(path.join(stuckHome, ".pi/agent/mend/profile"))).toBe(true);
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it("delivers the owner's agent memory at launch and reads back what the agent learned when it stops", async () => {
     const created: CreateOptions[] = [];
     const root = ".claude/projects/-workspace-repo/memory";
@@ -3435,9 +3620,12 @@ describe("SessionEngine", () => {
 
           expect(openedOptions).toEqual([{ mode: "pipe" }]);
           // Codex's memory is on in every Codex session Mend starts (docs/adr/0009, "Codex").
-          // Its background server is off: it copies Codex's release into the harness home.
-          expect(spawned[0]?.slice(-6)).toEqual([
+          // Its shell snapshot is off: it writes exported values into the harness home. Its
+          // background server is off: it copies Codex's release into the harness home.
+          expect(spawned[0]?.slice(-8)).toEqual([
             "codex",
+            "-c",
+            "features.shell_snapshot=false",
             "-c",
             "features.daemon_auto_start=false",
             "-c",
@@ -4601,7 +4789,7 @@ describe("SessionEngine", () => {
           const transportArgv = deliveryProcess?.argv ?? [];
           expect(transportArgv.slice(0, 2)).toEqual(["sh", "-c"]);
           expect(transportArgv[2]).toContain(
-            "exec codex -c features.daemon_auto_start=false -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
+            "exec codex -c features.shell_snapshot=false -c features.daemon_auto_start=false -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
           );
           expect(Buffer.from(transportArgv.slice(4).join(""), "base64").toString("utf8")).toBe(
             instruction,
@@ -9764,7 +9952,22 @@ describe("SessionEngine capture mode", () => {
             expect(resumed?.argv.slice(0, 3)).toEqual([...resumeFlags, providerSessionId]);
             expect(resumed?.providerSessionId).toBe(providerSessionId);
           }),
-        { captured: memory, sealantLayer: sealantLaunchLayer(created) },
+        {
+          captured: memory,
+          // A pi launch prepares the harness home's pi profile through exec (no live pi there).
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            harness === "pi" ? [] : undefined,
+          ),
+        },
       );
     },
   );

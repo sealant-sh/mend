@@ -270,6 +270,7 @@ import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   CODEX_DAEMON_OFF,
+  CODEX_SHELL_SNAPSHOT_OFF,
   HARNESS_UPDATES_OFF_ENV,
   launchesCodex,
   withCodexMemoryOff,
@@ -334,7 +335,7 @@ import {
   piProfileFilesToWrite,
   piProfileKeptDir,
   planPiProfile,
-  vacatePiProfileExec,
+  preparePiProfileExec,
 } from "./pi-profile.ts";
 import {
   ProtocolHost,
@@ -505,7 +506,7 @@ const promptArgv = (
       case "claude":
         return `exec claude --dangerously-skip-permissions${model}${effort === null ? "" : ` --effort ${effort}`} "$prompt"`;
       case "codex":
-        return `exec codex ${CODEX_DAEMON_OFF.join(" ")} -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
+        return `exec codex ${CODEX_SHELL_SNAPSHOT_OFF.join(" ")} ${CODEX_DAEMON_OFF.join(" ")} -c features.memories=true --dangerously-bypass-approvals-and-sandbox${model}${effort === null ? "" : ` -c model_reasoning_effort=${effort}`} "$prompt"`;
       case "opencode":
         return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode${model} --prompt "$prompt"`;
       case "pi":
@@ -691,6 +692,18 @@ const logAgentMemoryDelivered = (
         }),
       );
 };
+
+/**
+ * A pi session's harness home could not be made to hold its owner's profile, or none: the launch
+ * stops rather than run pi on another person's profile, or on the owner's half delivered.
+ */
+const piProfileNotDelivered = (message: string) =>
+  new SealantPlatformError({
+    code: "PI_PROFILE_NOT_DELIVERED",
+    status: null,
+    message: `the pi profile could not be set up for this session: ${message}`,
+    cause: null,
+  });
 
 /**
  * Whether a flush answer says the home a memory hand-over moved is saved: caught up
@@ -8907,7 +8920,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
-        // durability for this launch, never the launch itself.
+        // durability for this launch, never the launch itself, except a pi launch's: its profile
+        // cannot be set up in a home that is not there, and it refuses (`deliverPiProfile`).
         const harnessHome = harnessHomePathOf(project.storePath, sessionId);
         const harnessHomeReady = yield* Effect.promise(() =>
           fs.mkdir(harnessHome, { recursive: true }).then(
@@ -9931,47 +9945,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       );
 
       /**
-       * The owner's pi profile (`pi-profile.ts`), into a pi session's harness home, after the
-       * relocation so it lands where pi reads: beside the mounted harness home in the co-located
-       * store, through exec in capture mode. Best-effort like skills: pi starts without it.
+       * A pi session's harness home, made to hold its owner's freshly delivered profile, or none
+       * (`preparePiProfileExec`, pi-profile.ts): in capture mode the harness home is the
+       * worktree's, so the profile and settings there are whoever's session delivered last. What
+       * is there is moved aside, never deleted, then the owner's profile is written. After the
+       * relocation, so it lands where pi reads: beside the mounted harness home in the co-located
+       * store, through exec in capture mode. Not best-effort: any failure stops the launch, since
+       * pi would otherwise run on another person's profile, or on the owner's half delivered.
        */
       const deliverPiProfile = Effect.fn("SessionEngine.deliverPiProfile")(function* (
         session: Session,
         project: Project,
         workspace: Workspace,
       ) {
-        if (session.harness !== "pi" || session.ownerUserId === null) return;
-        const saved = yield* piProfiles.forUser(session.ownerUserId);
-        if (saved === null) return;
-        const plan = planPiProfile({ digest: saved.profile.digest, files: saved.files });
+        if (session.harness !== "pi") return;
+        const saved =
+          session.ownerUserId === null ? null : yield* piProfiles.forUser(session.ownerUserId);
+        const plan =
+          saved === null
+            ? null
+            : planPiProfile({ digest: saved.profile.digest, files: saved.files });
         if (capture === null) {
           const outcomes = yield* materializePiProfile(
             harnessHomePathOf(project.storePath, session.id),
             plan,
-          );
+          ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
           yield* logPiProfileVacated(session.id, outcomes);
           return;
         }
         const home = HARNESS_HOME_MOUNT_PATH;
-        const prepared = yield* sealant.exec(
-          workspace,
-          vacatePiProfileExec(home, piProfileKeptDir(), plan),
-        );
+        const prepared = yield* sealant
+          .exec(workspace, preparePiProfileExec(home, piProfileKeptDir(), plan))
+          .pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
         const vacated = parseSkillsVacateOutcomes(prepared.stdout);
         yield* logPiProfileVacated(session.id, vacated);
         if (prepared.exitCode !== 0) {
-          return yield* new WorkspaceFileError({
-            path: home,
-            message: `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
-          });
+          return yield* piProfileNotDelivered(
+            `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
+          );
         }
+        if (plan === null) return;
         yield* writeWorkspaceFiles(
           workspace,
           piProfileFilesToWrite(plan, vacated).map((file) => ({
             path: path.posix.join(home, file.path),
             bytes: file.bytes,
           })),
-        );
+        ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
       });
 
       /**
@@ -12013,12 +12033,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         const codexMemoryOn = yield* withholdCodexThreads(session, workspace, shapedArgv, carried);
+        // Every failure stops the launch, and the workspace is reaped in both modes: its id is not
+        // on the row yet.
         yield* deliverPiProfile(session, project, workspace).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: the pi profile was not delivered").pipe(
-              Effect.annotateLogs({ sessionId, message: error.message }),
-            ),
-          ),
+          Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+          settleOnFailure,
         );
         // The owner's secret files (docs/adr/0010): into the executor's own home, which no capture
         // root covers, before the harness starts.
@@ -12832,6 +12851,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           const interactiveShell = argv[0] === "bash";
+          // With no pi live here, a pi launch runs on its owner's freshly delivered profile, on
+          // none, or not at all, as a fresh launch does (`deliverPiProfile`): the harness home may
+          // hold whoever's pi ran here last. With a pi live here, whoever's it is, the launch runs
+          // on the profile already there; pi reads one profile per harness home, and per-person
+          // homes (docs/adr/0016) are what give each person their own.
+          if (session.harness === "pi" && !interactiveShell) {
+            const piLive = (yield* processes.listLiveForWorkspace(
+              SealantWorkspaceId.make(workspace.id),
+            )).some((process) => process.harness === "pi" && AGENT_PROCESS_KINDS.has(process.kind));
+            if (!piLive) {
+              yield* deliverPiProfile(session, project, workspace).pipe(
+                Effect.tapError((error) =>
+                  settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
+                    Effect.ignore,
+                  ),
+                ),
+              );
+            }
+          }
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
             : argv;

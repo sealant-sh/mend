@@ -32,6 +32,7 @@ import * as path from "node:path";
 import { Effect, Schema } from "effect";
 
 import { OPENCODE_DATABASE, readOpencodeHome } from "./opencode-state.ts";
+import { PI_PROFILE_HOME_DIR, PI_PROFILE_KEPT_DIR, PI_PROFILE_SECRET_FILE } from "./pi-profile.ts";
 
 export const HarnessStateManifest = Schema.Struct({
   harness: Schema.String,
@@ -231,35 +232,225 @@ const CODEX_ROLLOUT =
 /** pi: `<ISO time>_<session id>.jsonl` under `sessions/<encoded working directory>/`. */
 const PI_SESSION = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 
-/**
- * Provider credentials that can appear inside a session's harness home, because the platform
- * injects them at `$HOME/<dir>/…` and `<dir>` is a symlink onto the mount. They are the one thing
- * the mode keeper must not open up (ADR 0005). Paths, not globs: a guess here would either miss a
- * credential or tighten a transcript.
- */
-export const HARNESS_HOME_CREDENTIALS: ReadonlyArray<string> = [
-  ".claude/.credentials.json",
-  ".codex/auth.json",
-  ".pi/agent/auth.json",
-  ".local/share/opencode/auth.json",
-  // opencode keeps the logins of the MCP servers it connects to beside its own (`mcp/auth.ts`).
-  ".local/share/opencode/mcp-auth.json",
-];
+/** One path under the harness home where a harness keeps a credential. */
+export interface HarnessCredential {
+  /** Relative to the harness home. */
+  readonly path: string;
+  /**
+   * A file, with every sibling named after it with a suffix (`<path>.<suffix>`: a write's
+   * temporary such as `auth.json.mend-seed-<pid>`, a lock, a backup copy); or a directory and
+   * everything under it.
+   */
+  readonly kind: "file" | "directory";
+  /** What it holds, as the provider-logins docs page lists it. */
+  readonly holds: string;
+}
 
-/** `chmod go-rwx` over every credential that exists, quiet about the ones that do not. */
-const tightenCredentials = (mountPath: string): string =>
+/**
+ * Every credential a harness can write into its home: logins, OAuth and MCP tokens, keys, and
+ * files that copy them. The harness home is the worktree's in capture mode, so what one session
+ * leaves there reaches the next session in the worktree, whoever's that is. None of these may.
+ *
+ * sealantd's `HARNESS_CREDENTIALS` (`crates/sealant-capture/src/index.rs`) is what keeps them out
+ * of captures and restores, and must list the same paths; a test holds this table to a copy of it.
+ * Mend uses this one for the mode keeper (ADR 0005). Made on 2026-10-04 from each harness's source
+ * at the version workspace images install (Claude Code 2.1.289, Codex 0.160.0, opencode 1.18.34,
+ * pi 1.0.2) and from what each wrote in an unprivileged container with no OS keyring. The list
+ * fails open: a credential missing from it is captured.
+ *
+ * Made both from what each left after a clean exit and from what it left killed in the middle of a
+ * turn: a file a harness removes when it exits (Codex's and Claude Code's shell snapshots) is saved
+ * while it exists, and stays when the process is killed.
+ *
+ * Settings that can also hold a secret a person typed in (`.codex/config.toml`,
+ * `.claude/settings.json`, pi's `models.json` and `settings.json`) are not listed: they are the
+ * person's configuration as much as a secret. pi's `mcp.json` is, because Mend delivers it from the
+ * person's pi profile at every launch, so leaving it out loses nothing of theirs.
+ */
+export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessCredential>>> = {
+  claude: [
+    {
+      path: ".claude/.credentials.json",
+      kind: "file",
+      holds: "the Claude login, MCP server OAuth tokens and client secrets, plugin secrets",
+    },
+    {
+      path: ".claude/.device-keys.json",
+      kind: "file",
+      holds: "device private keys (Remote Control, trusted devices)",
+    },
+    {
+      path: ".claude/backups",
+      kind: "directory",
+      holds: "copies of `~/.claude.json`: a Console API key, MCP server headers and env",
+    },
+    {
+      path: ".claude/shell-snapshots",
+      kind: "directory",
+      holds: "the shell's functions and aliases, any secret written in them included",
+    },
+    { path: ".claude/session-env", kind: "directory", holds: "what hooks export for the session" },
+    { path: ".claude/ide", kind: "directory", holds: "IDE connection tokens" },
+    {
+      path: ".claude/sessions",
+      kind: "directory",
+      holds: "each running process's local messaging token",
+    },
+    {
+      path: ".claude/file-history",
+      kind: "directory",
+      holds: "a copy of every file Claude Code edits, a secret file included",
+    },
+    {
+      path: ".claude/remote-settings.json",
+      kind: "file",
+      holds: "an organization's managed settings, `env` included",
+    },
+  ],
+  codex: [
+    { path: ".codex/auth.json", kind: "file", holds: "the ChatGPT login or API key" },
+    {
+      path: ".codex/.credentials.json",
+      kind: "file",
+      holds: "MCP server OAuth tokens, where no OS keyring is available (every workspace)",
+    },
+    {
+      path: ".codex/secrets",
+      kind: "directory",
+      holds: "encrypted logins and MCP tokens (the key is in the OS keyring)",
+    },
+    {
+      path: ".codex/shell_snapshots",
+      kind: "directory",
+      holds: "every exported environment variable with its value (a token, a dotfile's export)",
+    },
+  ],
+  opencode: [
+    {
+      path: ".local/share/opencode/auth.json",
+      kind: "file",
+      holds: "provider logins and API keys",
+    },
+    {
+      path: ".local/share/opencode/mcp-auth.json",
+      kind: "file",
+      holds: "MCP server OAuth tokens and client secrets",
+    },
+    {
+      path: ".local/share/opencode/repos",
+      kind: "directory",
+      holds: "reference repositories, a clone URL's credentials in their git config",
+    },
+    {
+      path: ".local/share/opencode/log",
+      kind: "directory",
+      holds: "logs, a failed clone's URL with its credentials included",
+    },
+  ],
+  pi: [
+    { path: ".pi/agent/auth.json", kind: "file", holds: "provider logins and API keys" },
+    {
+      path: ".pi/agent/mcp-auth.json",
+      kind: "file",
+      holds: "MCP server OAuth tokens and client secrets",
+    },
+    {
+      path: ".pi/agent/oauth.json",
+      kind: "file",
+      holds:
+        "provider OAuth tokens from before pi moved them to `auth.json`, and its `.migrated` copy",
+    },
+    {
+      path: ".pi/agent/mcp-oauth",
+      kind: "directory",
+      holds: "MCP OAuth tokens of the pi-mcp-adapter extension",
+    },
+    {
+      path: ".pi/agent/mcp-oauth-encrypted",
+      kind: "directory",
+      holds: "the same, encrypted with a person's key",
+    },
+    {
+      path: ".pi/agent/mcp.json",
+      kind: "file",
+      holds: "MCP servers, with the headers, env and client secrets typed into them",
+    },
+    {
+      path: ".pi/agent/tmp",
+      kind: "directory",
+      holds:
+        "packages a launch loads for itself from git, a source URL's credentials in their git config",
+    },
+    {
+      path: ".pi/agent/crashes.json",
+      kind: "file",
+      holds: "error messages and stacks as they were, a secret in one included",
+    },
+    {
+      path: path.posix.join(PI_PROFILE_HOME_DIR, PI_PROFILE_SECRET_FILE),
+      kind: "file",
+      holds: "the same, as Mend delivered it from a person's pi profile",
+    },
+    {
+      path: PI_PROFILE_KEPT_DIR,
+      kind: "directory",
+      holds: "pi profiles Mend set aside, their `mcp.json` included",
+    },
+  ],
+};
+
+/**
+ * A harness's own state that belongs to the machine it ran on, not to the work: never saved with
+ * the session, though none of it is a credential, and so kept apart from `HARNESS_CREDENTIALS`
+ * (the mode keeper leaves it alone). A `codex` typed by hand in a shell unpacks its runtime into
+ * `.codex/packages/` (about 427 MB) and starts an app-server daemon that keeps its state and
+ * control socket beside it; saved, every later executor of the worktree would restore the runtime
+ * and a dead daemon's state. Codex rebuilds each when it next needs it. sealantd's
+ * `HARNESS_MACHINE_STATE` keeps them out of captures and restores; a test holds this table to a
+ * copy of it, and the provider-logins docs page lists it.
+ */
+export const HARNESS_MACHINE_STATE: Readonly<Record<string, ReadonlyArray<HarnessCredential>>> = {
+  codex: [
+    {
+      path: ".codex/packages",
+      kind: "directory",
+      holds: "the Codex runtime a hand-run `codex` unpacks (about 427 MB)",
+    },
+    {
+      path: ".codex/app-server-daemon",
+      kind: "directory",
+      holds: "the state of an app-server daemon running on that machine",
+    },
+    {
+      path: ".codex/app-server-control",
+      kind: "directory",
+      holds: "that daemon's control socket",
+    },
+  ],
+};
+
+/**
+ * Every path in `HARNESS_CREDENTIALS`, relative to the harness home: the one thing the mode keeper
+ * must not open up (ADR 0005). Paths, not globs: a guess here would either miss a credential or
+ * tighten a transcript.
+ */
+export const HARNESS_HOME_CREDENTIALS: ReadonlyArray<string> = Object.values(
+  HARNESS_CREDENTIALS,
+).flatMap((credentials) => credentials.map((credential) => credential.path));
+
+/**
+ * `chmod go-rwx` over every credential that exists and, as the table's rule has it, every sibling
+ * named after it with a suffix (`oauth.json.migrated`, a seed's `auth.json.mend-seed-<pid>`); quiet
+ * about the ones that do not exist. A directory entry's siblings are tightened too: tightening a
+ * path that holds nothing secret only narrows who reads it.
+ */
+export const tightenCredentials = (mountPath: string): string =>
   `for c in ${HARNESS_HOME_CREDENTIALS.map((file) => `"${file}"`).join(" ")}; ` +
-  `do chmod go-rwx "${mountPath}/$c" 2>/dev/null || true; done`;
+  `do chmod go-rwx "${mountPath}/$c" "${mountPath}/$c".* 2>/dev/null || true; done`;
 
 export const HARNESS_STATE: Record<string, HarnessStateShape> = {
   claude: {
-    paths: [
-      ".claude/projects",
-      ".claude/todos",
-      ".claude/sessions",
-      ".claude/settings.json",
-      ".claude.json",
-    ],
+    paths: [".claude/projects", ".claude/todos", ".claude/settings.json", ".claude.json"],
     homeDirs: [".claude"],
     latestTranscript: 'ls -t "$HOME"/.claude/projects/*/*.jsonl 2>/dev/null | head -1',
     liveTranscript: /^\.claude\/projects\/[^/]+\/[^/]+\.jsonl$/,

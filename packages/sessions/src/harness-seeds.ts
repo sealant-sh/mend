@@ -358,6 +358,25 @@ export const withoutCodexDaemon = (argv: ReadonlyArray<string>): ReadonlyArray<s
 };
 
 /**
+ * Codex's shell snapshot, off in every Codex session Mend starts. Codex 0.160 writes each exported
+ * variable with its value (a `GH_TOKEN`, what the person's dotfiles export, a secret file's value
+ * read into the environment) to `.codex/shell_snapshots/`, and removes it only when it exits
+ * cleanly: a session that is stopped or killed leaves it in the harness home, which the next
+ * session in the worktree receives. The platform leaves that directory out of what it saves too
+ * (sealantd's `HARNESS_CREDENTIALS`); this keeps it from being written at all. Observed
+ * 2026-10-04: with the flag no snapshot is written and commands run as before.
+ */
+export const CODEX_SHELL_SNAPSHOT_OFF = ["-c", "features.shell_snapshot=false"] as const;
+
+export const withoutCodexShellSnapshot = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const [head, ...rest] = argv;
+  if (head !== "codex" || argv.some((arg) => /^features\.shell_snapshot(=|$)/.test(arg))) {
+    return argv;
+  }
+  return [head, ...CODEX_SHELL_SNAPSHOT_OFF, ...rest];
+};
+
+/**
  * `argv` behind its harness's seed; a harness without one runs as it is. `captured`: a capture
  * launch, whose harness home the next session in the worktree materialises (opencode keeps its MCP
  * logins out of it then, `OPENCODE_CAPTURED_SEED`).
@@ -369,7 +388,13 @@ export const withHarnessSetup = (
 ): ReadonlyArray<string> => {
   if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
   if (harness === "codex") {
-    return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...withoutCodexDaemon(withCodexMemory(argv))];
+    return [
+      "sh",
+      "-c",
+      CODEX_TRUST_SEED,
+      "sh",
+      ...withoutCodexShellSnapshot(withoutCodexDaemon(withCodexMemory(argv))),
+    ];
   }
   if (harness === "opencode") {
     const seed = options.captured === true ? OPENCODE_CAPTURED_SEED : OPENCODE_SEED;

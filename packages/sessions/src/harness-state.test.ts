@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 import { writeOpencodeDatabase } from "../test/opencode-db.ts";
 import {
   CAPTURED_LOGIN_FILES,
+  HARNESS_CREDENTIALS,
   HARNESS_HOME_MOUNT_PATH,
+  HARNESS_MACHINE_STATE,
   HARNESS_STATE,
   distillOpeningPrompt,
   extractTranscript,
@@ -17,10 +19,148 @@ import {
   hasLiveHarnessState,
   harvestHarnessStateScript,
   locateLiveTranscript,
+  tightenCredentials,
   HARNESS_HOME_CREDENTIALS,
   nativeResumeArgv,
   relocateHarnessHomeScript,
 } from "./harness-state.ts";
+
+/**
+ * sealantd's `HARNESS_CREDENTIALS` (`crates/sealant-capture/src/index.rs`, sealantd#136), which
+ * keeps these paths out of captures and restores; a directory ends in `/`. Mend's table must name
+ * the same paths: change both together, and pin a sealantd that has the change.
+ */
+const SEALANTD_HARNESS_CREDENTIALS = [
+  ".claude/.credentials.json",
+  ".claude/.device-keys.json",
+  ".claude/backups/",
+  ".claude/shell-snapshots/",
+  ".claude/session-env/",
+  ".claude/ide/",
+  ".claude/sessions/",
+  ".claude/file-history/",
+  ".claude/remote-settings.json",
+  ".codex/auth.json",
+  ".codex/.credentials.json",
+  ".codex/secrets/",
+  ".codex/shell_snapshots/",
+  ".local/share/opencode/auth.json",
+  ".local/share/opencode/mcp-auth.json",
+  ".local/share/opencode/repos/",
+  ".local/share/opencode/log/",
+  ".pi/agent/auth.json",
+  ".pi/agent/mcp-auth.json",
+  ".pi/agent/oauth.json",
+  ".pi/agent/mcp-oauth/",
+  ".pi/agent/mcp-oauth-encrypted/",
+  ".pi/agent/mcp.json",
+  ".pi/agent/tmp/",
+  ".pi/agent/crashes.json",
+  ".pi/agent/mend/profile/root/mcp.json",
+  ".mend/pi-profile-kept/",
+];
+
+/** sealantd's `HARNESS_MACHINE_STATE`, the same way: never saved, and not credentials. */
+const SEALANTD_HARNESS_MACHINE_STATE = [
+  ".codex/packages/",
+  ".codex/app-server-daemon/",
+  ".codex/app-server-control/",
+];
+
+const machineStateEntries = Object.entries(HARNESS_MACHINE_STATE).flatMap(([harness, entries]) =>
+  entries.map((entry) => ({ harness, ...entry })),
+);
+const credentialEntries = Object.entries(HARNESS_CREDENTIALS).flatMap(([harness, credentials]) =>
+  credentials.map((credential) => ({ harness, ...credential })),
+);
+const shownPath = (credential: { readonly path: string; readonly kind: string }) =>
+  credential.kind === "directory" ? `${credential.path}/` : credential.path;
+
+/** The first cell of each table row in a piece of markdown, without its backticks. */
+const tableRows = (text: string) =>
+  text
+    .split("\n")
+    .filter((line) => line.startsWith("| `"))
+    .map((line) => line.split("`")[1]);
+
+describe("harness credentials", () => {
+  it("lists every harness Mend runs, and only those", () => {
+    expect(Object.keys(HARNESS_CREDENTIALS).toSorted()).toEqual(
+      Object.keys(HARNESS_STATE).toSorted(),
+    );
+  });
+
+  it("names paths in the harness home: under the harness's own directories, or Mend's", () => {
+    for (const credential of credentialEntries) {
+      const roots = [...(HARNESS_STATE[credential.harness]?.homeDirs ?? []), ".mend"];
+      expect(
+        roots.some((root) => credential.path.startsWith(`${root}/`)),
+        credential.path,
+      ).toBe(true);
+    }
+    expect(new Set(HARNESS_HOME_CREDENTIALS).size).toBe(HARNESS_HOME_CREDENTIALS.length);
+  });
+
+  it("names exactly what sealantd keeps out of captures", () => {
+    expect(credentialEntries.map(shownPath)).toEqual(SEALANTD_HARNESS_CREDENTIALS);
+    expect(machineStateEntries.map(shownPath)).toEqual(SEALANTD_HARNESS_MACHINE_STATE);
+  });
+
+  it("keeps machine state apart from the credentials, inside the harness's own directories", () => {
+    for (const entry of machineStateEntries) {
+      const roots = HARNESS_STATE[entry.harness]?.homeDirs ?? [];
+      expect(
+        roots.some((root) => entry.path.startsWith(`${root}/`)),
+        entry.path,
+      ).toBe(true);
+      expect(HARNESS_HOME_CREDENTIALS).not.toContain(entry.path);
+    }
+  });
+
+  it("are closed to group and other by the mode keeper, with their suffixed siblings", () => {
+    const mount = fs.mkdtempSync(path.join(os.tmpdir(), "mend-tighten-"));
+    try {
+      const files = [
+        ".pi/agent/oauth.json.migrated",
+        ".pi/agent/auth.json.mend-seed-42",
+        ".local/share/opencode/auth.json",
+        ".codex/shell_snapshots/thread.1.sh",
+        ".pi/agent/settings.json",
+      ];
+      for (const file of files) {
+        fs.mkdirSync(path.dirname(path.join(mount, file)), { recursive: true });
+        fs.writeFileSync(path.join(mount, file), "x", { mode: 0o644 });
+        fs.chmodSync(path.join(mount, file), 0o644);
+      }
+      fs.chmodSync(path.join(mount, ".codex/shell_snapshots"), 0o755);
+      const run = spawnSync("sh", ["-c", tightenCredentials(mount)], { encoding: "utf8" });
+      expect(run.status).toBe(0);
+      const mode = (file: string) => fs.statSync(path.join(mount, file)).mode & 0o777;
+      expect(mode(".pi/agent/oauth.json.migrated")).toBe(0o600);
+      expect(mode(".pi/agent/auth.json.mend-seed-42")).toBe(0o600);
+      expect(mode(".local/share/opencode/auth.json")).toBe(0o600);
+      expect(mode(".codex/shell_snapshots")).toBe(0o700);
+      // Not a credential: left as it was.
+      expect(mode(".pi/agent/settings.json")).toBe(0o644);
+    } finally {
+      fs.rmSync(mount, { recursive: true, force: true });
+    }
+  });
+
+  it("are all listed on the provider-logins docs page", () => {
+    const page = fs.readFileSync(
+      path.join(
+        import.meta.dirname,
+        "../../../apps/docs/src/content/docs/concepts/provider-logins.md",
+      ),
+      "utf8",
+    );
+    const section = page.split("## What a session never saves")[1]?.split("\n## ")[0] ?? "";
+    const [credentials = "", machine = ""] = section.split("### Never saved, and not logins");
+    expect(tableRows(credentials)).toEqual(credentialEntries.map(shownPath));
+    expect(tableRows(machine)).toEqual(machineStateEntries.map(shownPath));
+  });
+});
 
 const claudeJsonl = [
   JSON.stringify({ type: "summary", summary: "ignored" }),
@@ -242,7 +382,8 @@ describe("harness home", () => {
     // Credentials are exempt from the widening, in the loop and on the first pass: the harness
     // home holds the injected provider credential, and `go+rX` made a refresh token
     // world-readable on the store (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
-    expect(script).toContain('for c in ".claude/.credentials.json" ".codex/auth.json"');
+    expect(script).toContain('for c in ".claude/.credentials.json" ');
+    for (const credential of HARNESS_HOME_CREDENTIALS) expect(script).toContain(`"${credential}"`);
     expect(script).toContain("chmod go-rwx");
     const widens = script.split("chmod -R go+rX").length - 1;
     const tightens = script.split("chmod go-rwx").length - 1;
