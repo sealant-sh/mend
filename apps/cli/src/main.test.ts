@@ -8,7 +8,16 @@ import * as path from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+
+// Every test here spawns the CLI from source; on a loaded CI runner one start has taken 4 s, so
+// vitest's 5 s default left no headroom.
+const spawning = { timeout: 30_000 };
+
+// Each spawn strips and compiles some 500 modules. One compile cache for the file lets every
+// spawn after the first reuse that work (about half of each start's CPU).
+const compileCache = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-compile-cache-"));
+afterAll(() => fs.rmSync(compileCache, { recursive: true, force: true }));
 
 const project = {
   id: "project-1",
@@ -122,7 +131,13 @@ const startCli = (
 ) => {
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
   const child = spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
-    env: { ...process.env, MEND_URL: url, MEND_DETACH_KEY: "none", ...env },
+    env: {
+      ...process.env,
+      NODE_COMPILE_CACHE: compileCache,
+      MEND_URL: url,
+      MEND_DETACH_KEY: "none",
+      ...env,
+    },
     stdio: ["ignore", "pipe", "pipe"],
     ...(cwd === undefined ? {} : { cwd }),
   });
@@ -162,7 +177,7 @@ const expectFastExit = async (
   expect(outcome, stderr()).toEqual({ kind: "exit", code: 0 });
 };
 
-describe("mend adopt", () => {
+describe("mend adopt", spawning, () => {
   it.each(["/tmp/repository", "../repository", "file:///tmp/repository"])(
     "rejects local source %s before an API call",
     async (source) => {
@@ -174,7 +189,7 @@ describe("mend adopt", () => {
   );
 });
 
-describe("Mend CLI session selection", () => {
+describe("Mend CLI session selection", spawning, () => {
   const retained = (request: IncomingMessage, response: ServerResponse): boolean => {
     if (request.url?.startsWith("/api/sessions?retained") === true) {
       json(response, [session]);
@@ -299,7 +314,7 @@ describe("Mend CLI session selection", () => {
   });
 });
 
-describe("Mend CLI session exit", () => {
+describe("Mend CLI session exit", spawning, () => {
   it("returns on the terminal end frame without waiting for the socket to close", async () => {
     const fake = await startFakeMend((request, response) => {
       if (request.url === "/api/sessions") json(response, [session]);
@@ -344,7 +359,7 @@ describe("Mend CLI session exit", () => {
   });
 });
 
-describe("Mend CLI session lifecycle", () => {
+describe("Mend CLI session lifecycle", spawning, () => {
   const launchRoutes = (routes: Array<string>): HttpHandler => {
     return (request, response) => {
       const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
@@ -439,7 +454,7 @@ describe("Mend CLI session lifecycle", () => {
   });
 });
 
-describe("a long launch", () => {
+describe("a long launch", spawning, () => {
   it("follows the session when the launch request is cut, and never says the server cannot be reached", async () => {
     let reads = 0;
     const agent = {
@@ -503,7 +518,7 @@ const withBody = (request: IncomingMessage, reply: (body: unknown) => void): voi
   void bodyOf(request).then(reply);
 };
 
-describe("mend codex --land", () => {
+describe("mend codex --land", spawning, () => {
   it("sends the session's own override and says what it did", async () => {
     const bodies: Array<unknown> = [];
     const fake = await startFakeMend((request, response) => {
@@ -538,7 +553,7 @@ describe("mend codex --land", () => {
   });
 });
 
-describe("mend land", () => {
+describe("mend land", spawning, () => {
   const PUSHED = "3f2a1c0".padEnd(40, "0");
   const landed = {
     id: "landing-1",
@@ -703,7 +718,7 @@ const git = (cwd: string, args: ReadonlyArray<string>): string =>
     { cwd, encoding: "utf8" },
   ).trim();
 
-describe("mend pull", () => {
+describe("mend pull", spawning, () => {
   /** A bare origin, a store clone holding the session's branch, a bundle of it, and two clones. */
   const repositories = () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-pull-e2e-"));
@@ -847,7 +862,7 @@ describe("mend pull", () => {
   });
 });
 
-describe("mend help", () => {
+describe("mend help", spawning, () => {
   it("sequences the start block first and still lists every command", async () => {
     const cli = startCli("http://127.0.0.1:1", ["help"]);
     await cli.exited;
@@ -928,7 +943,7 @@ describe("mend help", () => {
   });
 });
 
-describe("mend dotfiles", () => {
+describe("mend dotfiles", spawning, () => {
   const repository = {
     url: "git@github.com:me/dots.git",
     ref: null,
@@ -1108,7 +1123,7 @@ const decoded = (body: SyncBody | undefined) =>
     mode: entry.mode,
   }));
 
-describe("mend secrets", () => {
+describe("mend secrets", spawning, () => {
   /** A fake that records every secret-file request and never answers with a file's content. */
   const startSecretsFake = async () => {
     const requests: Array<{
@@ -1220,7 +1235,7 @@ describe("mend secrets", () => {
   });
 });
 
-describe("mend dotfiles sync", () => {
+describe("mend dotfiles sync", spawning, () => {
   /** A server that keeps every snapshot POST, and answers with the snapshot it would store. */
   const startSyncFake = async (refuse?: string) => {
     const posts: Array<SyncBody> = [];
@@ -1376,7 +1391,7 @@ describe("mend dotfiles sync", () => {
   });
 });
 
-describe("mend connect claude", () => {
+describe("mend connect claude", spawning, () => {
   /**
    * The finding this pins: the credential document Claude Code writes holds `mcpOAuth` beside the
    * Claude grant, and the whole file used to travel — so a person's Figma, Atlassian and Linear
@@ -1446,7 +1461,7 @@ describe("mend connect claude", () => {
   });
 });
 
-describe("mend connect claude, a grant of Mend's own", () => {
+describe("mend connect claude, a grant of Mend's own", spawning, () => {
   /**
    * The flow ADR 0005 commits to: Mend logs in against its own config directory and sends THAT
    * grant, so its scheduled refresh never rotates the token this machine's Claude is holding.

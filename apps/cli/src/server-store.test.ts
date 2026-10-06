@@ -299,7 +299,9 @@ describe("server filesystem transactions", () => {
   });
 });
 
-describe("setup across processes", () => {
+// Each test here spawns Node processes that load TypeScript; on a loaded CI runner one has taken
+// 3.7 s, so vitest's 5 s default left little headroom.
+describe("setup across processes", { timeout: 30_000 }, () => {
   it("excludes contenders before state creation, during Compose, and through health, then reuses credentials", async () => {
     const root = temporary();
     const rendezvous = temporary();
