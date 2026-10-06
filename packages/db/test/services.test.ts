@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, ServiceId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -158,5 +158,25 @@ describe.skipIf(!reachable)("Services that keep a workspace up, in Postgres", ()
         expect(rows.map((row) => row.kind)).toEqual(["services-stop"]);
       }),
     );
+  });
+
+  it("remembers who started a Service, and reads it without changing the Service (docs/adr/0016)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const services = yield* ServicesRepo;
+        yield* sql`
+          INSERT INTO services (id, session_id, name, declaration_source, workspace_port)
+          VALUES ('svc-person', ${HELD}, 'person', 'explicit-run', 3001)`;
+        const before = yield* services.startedByOf(ServiceId.make("svc-person"));
+        yield* services.setStartedBy(ServiceId.make("svc-person"), "user-maria");
+        return {
+          before,
+          after: yield* services.startedByOf(ServiceId.make("svc-person")),
+          service: (yield* services.byId(ServiceId.make("svc-person")))?.name ?? null,
+        };
+      }),
+    );
+    expect(result).toEqual({ before: null, after: "user-maria", service: "person" });
   });
 });

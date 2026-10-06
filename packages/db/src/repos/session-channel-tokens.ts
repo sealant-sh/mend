@@ -45,18 +45,34 @@ export class SessionChannelTokensRepo extends Context.Service<
      */
     readonly issue: (sessionId: string, launchId: string) => Effect.Effect<string>;
     /**
-     * The launch a live (unrevoked) token of that session was issued for, or null. The token is
-     * verified before anything is resolved from it.
+     * Mint one person's token in a launch (docs/adr/0016, decision 4): what the SSH shim and the
+     * `mend` helper of that person's processes present, from `~/.mend/session-token`, so the
+     * server signs and acts as `accountId`. `sessionId` is the session whose process asked for
+     * it; the token is good for any session live in the launch that the person may act on, which
+     * the server checks per request. Revoked with the launch.
+     */
+    readonly issuePerson: (
+      sessionId: string,
+      launchId: string,
+      accountId: string,
+    ) => Effect.Effect<string>;
+    /**
+     * The launch a live (unrevoked) launch token of that session was issued for, or null. The
+     * token is verified before anything is resolved from it. A person's token never verifies
+     * here: it is resolved (`resolve`) and checked against the session it names.
      */
     readonly verify: (sessionId: string, token: string) => Effect.Effect<string | null>;
     /**
-     * The session and the launch a bare token belongs to, or null. sealantd's capture registrar
-     * presents the token alone (ADR-0002 "Session channel routes": one token, two names); the hash
-     * is the lookup key, so the secret never meets a comparison the database could time.
+     * The session, the launch and the person (null for the launch's own token) a bare token
+     * belongs to, or null. sealantd's capture registrar presents the token alone (ADR-0002
+     * "Session channel routes": one token, two names); the hash is the lookup key, so the secret
+     * never meets a comparison the database could time.
      */
-    readonly resolve: (
-      token: string,
-    ) => Effect.Effect<{ readonly sessionId: string; readonly launchId: string } | null>;
+    readonly resolve: (token: string) => Effect.Effect<{
+      readonly sessionId: string;
+      readonly launchId: string;
+      readonly accountId: string | null;
+    } | null>;
     /** Revoke every token of the session. Idempotent. */
     readonly revoke: (sessionId: string) => Effect.Effect<void>;
     /** Revoke the tokens of one launch — its executor's end was observed. Idempotent. */
@@ -83,11 +99,33 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         return token;
       });
 
+      const issuePerson = Effect.fn("SessionChannelTokensRepo.issuePerson")(function* (
+        sessionId: string,
+        launchId: string,
+        accountId: string,
+      ) {
+        const token = mintSessionChannelToken();
+        const tokenHash = hashSessionChannelToken(token);
+        yield* db
+          .insert(sessionChannelTokens)
+          .values({
+            tokenHash,
+            sessionId,
+            launchId,
+            accountId,
+            createdAt: new Date(),
+            revokedAt: null,
+          })
+          .pipe(Effect.orDie);
+        return token;
+      });
+
       const liveRowOf = (token: string) =>
         db
           .select({
             sessionId: sessionChannelTokens.sessionId,
             launchId: sessionChannelTokens.launchId,
+            accountId: sessionChannelTokens.accountId,
           })
           .from(sessionChannelTokens)
           .where(
@@ -107,7 +145,11 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         token: string,
       ) {
         const row = yield* liveRowOf(token);
-        return row !== null && constantTimeEquals(row.sessionId, sessionId) ? row.launchId : null;
+        return row !== null &&
+          row.accountId === null &&
+          constantTimeEquals(row.sessionId, sessionId)
+          ? row.launchId
+          : null;
       });
 
       const resolve = Effect.fn("SessionChannelTokensRepo.resolve")(function* (token: string) {
@@ -142,7 +184,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      return { issue, verify, resolve, revoke, revokeLaunch };
+      return { issue, issuePerson, verify, resolve, revoke, revokeLaunch };
     }),
   );
 
@@ -155,7 +197,12 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
   () => {
     const rows = new Map<
       string,
-      { readonly sessionId: string; readonly launchId: string; revoked: boolean }
+      {
+        readonly sessionId: string;
+        readonly launchId: string;
+        readonly accountId: string | null;
+        revoked: boolean;
+      }
     >();
     const liveRowOf = (token: string) => {
       const row = rows.get(hashSessionChannelToken(token));
@@ -171,18 +218,38 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
       issue: (sessionId, launchId) =>
         Effect.sync(() => {
           const token = mintSessionChannelToken();
-          rows.set(hashSessionChannelToken(token), { sessionId, launchId, revoked: false });
+          rows.set(hashSessionChannelToken(token), {
+            sessionId,
+            launchId,
+            accountId: null,
+            revoked: false,
+          });
+          return token;
+        }),
+      issuePerson: (sessionId, launchId, accountId) =>
+        Effect.sync(() => {
+          const token = mintSessionChannelToken();
+          rows.set(hashSessionChannelToken(token), {
+            sessionId,
+            launchId,
+            accountId,
+            revoked: false,
+          });
           return token;
         }),
       verify: (sessionId, token) =>
         Effect.sync(() => {
           const row = liveRowOf(token);
-          return row !== null && row.sessionId === sessionId ? row.launchId : null;
+          return row !== null && row.accountId === null && row.sessionId === sessionId
+            ? row.launchId
+            : null;
         }),
       resolve: (token) =>
         Effect.sync(() => {
           const row = liveRowOf(token);
-          return row === null ? null : { sessionId: row.sessionId, launchId: row.launchId };
+          return row === null
+            ? null
+            : { sessionId: row.sessionId, launchId: row.launchId, accountId: row.accountId };
         }),
       revoke: (sessionId) => revokeWhere((row) => row.sessionId === sessionId),
       revokeLaunch: (launchId) => revokeWhere((row) => row.launchId === launchId),

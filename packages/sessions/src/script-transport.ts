@@ -1,7 +1,13 @@
 /**
  * Shared transport prelude for the staged scripts: the session socket when it is mounted,
  * else the network endpoint the launch env names. Dependency-free node. The token is read from
- * the environment and only ever placed in an Authorization header — never printed, never logged.
+ * the environment, or from the file `MEND_SESSION_TOKEN_FILE` names, and only ever placed in an
+ * Authorization header — never printed, never logged.
+ *
+ * In a person-layout executor (docs/adr/0016, decision 4) every process Mend starts names its
+ * person's token file: the script then speaks as that person, over the endpoint only, and never
+ * through a socket (a socket carries no token, so whoever answers on it would decide who pushes)
+ * nor with the workspace's own token, which the server refuses there anyway.
  */
 export const SCRIPT_TRANSPORT_PRELUDE = `const http = require("node:http");
 const https = require("node:https");
@@ -10,11 +16,19 @@ const fs = require("node:fs");
 const SOCKET = "/run/mend/mend.sock";
 const ENDPOINT = process.env.MEND_SESSION_ENDPOINT || "";
 const SESSION_ID = process.env.MEND_SESSION_ID || "";
-const TOKEN = process.env.MEND_SESSION_TOKEN || "";
+const TOKEN_FILE = process.env.MEND_SESSION_TOKEN_FILE || "";
+const TOKEN = (() => {
+  if (TOKEN_FILE === "") return process.env.MEND_SESSION_TOKEN || "";
+  try { return fs.readFileSync(TOKEN_FILE, "utf8").trim(); } catch { return ""; }
+})();
 
-// Transport selection: the Docker bind mount first, then the Kubernetes network endpoint.
+// Transport selection: the Docker bind mount first, then the Kubernetes network endpoint. A
+// person's process (a token file named) takes the endpoint alone.
 const transport = (() => {
-  if (fs.existsSync(SOCKET)) return { kind: "socket" };
+  if (TOKEN_FILE === "" && fs.existsSync(SOCKET)) return { kind: "socket" };
+  if (TOKEN_FILE !== "" && TOKEN === "") {
+    return { kind: "broken", reason: "this process's Mend session token (" + TOKEN_FILE + ") cannot be read" };
+  }
   if (ENDPOINT !== "" && SESSION_ID !== "" && TOKEN !== "") {
     let url;
     try { url = new URL(ENDPOINT); } catch { return { kind: "broken", reason: "MEND_SESSION_ENDPOINT is not a URL" }; }

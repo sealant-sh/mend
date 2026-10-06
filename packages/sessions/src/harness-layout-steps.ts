@@ -26,6 +26,7 @@ import * as Context from "effect/Context";
 
 import {
   type LayoutCapability,
+  type PersonIdentity,
   type PrepareFinding,
   UNKNOWN_CAPABILITY,
   decideHarnessLayout,
@@ -140,10 +141,21 @@ export interface HarnessLayoutSteps {
   readonly mayRunPerson: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
   readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
+  /**
+   * What each person prepare makes receives in their home (docs/adr/0016, decision 4): a Mend
+   * session token of this launch, and their git author. Null for a shared launch, which mints
+   * nothing. Database work only: it rides prepare's exec, so it adds none.
+   */
+  readonly prepareIdentities: (input: {
+    readonly layout: LaunchLayout;
+    readonly launchId: string;
+    readonly sessionId: string;
+  }) => Effect.Effect<ReadonlyMap<string, PersonIdentity> | null>;
   /** What prepare runs in the executor's first exec for this layout, after the helper install. */
   readonly prepareScript: (
     layout: LaunchLayout,
     places: { readonly harnessHome: string; readonly repo: string },
+    identities?: ReadonlyMap<string, PersonIdentity> | null,
   ) => string | null;
   /**
    * What prepare's output says, recorded: the person layout confirmed (the worktree is person
@@ -177,6 +189,8 @@ export interface HarnessLayoutSteps {
     readonly workspace: Workspace;
     readonly launchId: string | null;
     readonly accountId: string;
+    /** The session the process belongs to: what its shim and helper name (`MEND_SESSION_ID`). */
+    readonly sessionId: string;
   }) => Effect.Effect<
     { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
     SealantPlatformError
@@ -190,12 +204,20 @@ export interface HarnessLayoutSteps {
 }
 
 /** What prepare runs for a layout (`HarnessLayoutSteps.prepareScript`). */
-export const layoutPrepareScript: HarnessLayoutSteps["prepareScript"] = (layout, places) => {
+export const layoutPrepareScript: HarnessLayoutSteps["prepareScript"] = (
+  layout,
+  places,
+  identities,
+) => {
   if (layout.layout === "person") {
+    const identityOf = (person: LinuxIdentity) => {
+      const identity = identities?.get(person.accountId);
+      return identity === undefined ? {} : { identity };
+    };
     return personPrepareScript(
       [
-        { person: layout.launcher, ifSaved: false },
-        ...layout.members.map((person) => ({ person, ifSaved: true })),
+        { person: layout.launcher, ifSaved: false, ...identityOf(layout.launcher) },
+        ...layout.members.map((person) => ({ person, ifSaved: true, ...identityOf(person) })),
       ],
       places,
     );
@@ -223,6 +245,16 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly organizations: OrganizationsRepo["Service"];
   readonly sealant: Pick<SealantClientShape, "exec">;
   readonly harnessHome: string;
+  /** A person's Mend session token in a launch (`SessionChannelTokensRepo.issuePerson`). */
+  readonly issueToken: (input: {
+    readonly sessionId: string;
+    readonly launchId: string;
+    readonly accountId: string;
+  }) => Effect.Effect<string>;
+  /** A person's git author, as `applyGitAuthor` resolves it; null when they have none. */
+  readonly authorOf: (
+    accountId: string,
+  ) => Effect.Effect<{ readonly name: string; readonly email: string } | null>;
   /** Starts work that nothing waits on (the worktree repair). */
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>;
 }): HarnessLayoutSteps => {
@@ -232,6 +264,37 @@ export const makeHarnessLayoutSteps = (deps: {
   const madeIn = bounded<string, Set<string>>();
   /** Whose process started last in an executor's worktree, per workspace. */
   const lastIn = bounded<string, string>();
+
+  const identityFor = Effect.fn("HarnessLayoutSteps.identityFor")(function* (input: {
+    readonly sessionId: string;
+    readonly launchId: string;
+    readonly accountId: string;
+  }) {
+    const [token, author] = yield* Effect.all(
+      [deps.issueToken(input), deps.authorOf(input.accountId)],
+      { concurrency: "unbounded" },
+    );
+    return { token, author } satisfies PersonIdentity;
+  });
+
+  const prepareIdentities: HarnessLayoutSteps["prepareIdentities"] = Effect.fn(
+    "HarnessLayoutSteps.prepareIdentities",
+  )(function* (input) {
+    const { layout } = input;
+    if (layout.layout !== "person") return null;
+    const people = [layout.launcher, ...layout.members];
+    const identities = yield* Effect.forEach(
+      people,
+      (person) =>
+        identityFor({
+          sessionId: input.sessionId,
+          launchId: input.launchId,
+          accountId: person.accountId,
+        }).pipe(Effect.map((identity) => [person.accountId, identity] as const)),
+      { concurrency: "unbounded" },
+    );
+    return new Map(identities);
+  });
 
   const capabilityFor = Effect.fn("HarnessLayoutSteps.capabilityFor")(function* (
     image: WorkspaceImage,
@@ -457,10 +520,16 @@ export const makeHarnessLayoutSteps = (deps: {
       if (!made.has(identity.accountId)) {
         // Their first process in this executor: their user, home and saved directory (one exec,
         // idempotent, so a server restart that forgot costs one more and changes nothing).
+        // Their Mend token and git author ride the same exec (decision 4): no exec of their own.
+        const personIdentity = yield* identityFor({
+          sessionId: input.sessionId,
+          launchId: input.launchId ?? "",
+          accountId: identity.accountId,
+        });
         const result = yield* sealant.exec(input.workspace, [
           "sh",
           "-c",
-          personHomeScript(identity, { harnessHome: deps.harnessHome }),
+          personHomeScript(identity, { harnessHome: deps.harnessHome, identity: personIdentity }),
         ]);
         if (result.exitCode !== 0) {
           return yield* new SealantPlatformError({
@@ -500,7 +569,7 @@ export const makeHarnessLayoutSteps = (deps: {
       lastIn.set(input.workspace.id, identity.accountId);
       return {
         user: processUserOf(identity),
-        env: personProcessEnv(deps.harnessHome, identity),
+        env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
       };
     },
   );
@@ -517,6 +586,7 @@ export const makeHarnessLayoutSteps = (deps: {
     decide,
     mayRunPerson,
     standbyMayServe,
+    prepareIdentities,
     prepareScript: layoutPrepareScript,
     settlePrepare,
     layoutOfLaunch,

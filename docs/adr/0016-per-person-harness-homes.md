@@ -208,12 +208,14 @@ refuses it (decision 14).
 ### 4. Git, SSH and the Mend identity
 
 - **The Mend identity.** Each (launch, person) gets its own session-channel token, written 0600 to
-  `~/.mend/session-token`; `MEND_SESSION_ID` names the session the process belongs to. The shim and
-  the helper read the token from there. The server accepts it only with a session id that is live in
-  that launch's executor and that the token's person may act on, and revokes it when the person's
-  logins are released. The container-wide token is for sealantd's capture channel only, and the
-  server refuses it on `/git/transport` and on every helper route. A capture-mode executor has no
-  token-less `/run/mend/mend.sock`.
+  `~/.mend/session-token`; `MEND_SESSION_ID` names the session the process belongs to, and
+  `MEND_SESSION_TOKEN_FILE` names the token's file, since a process may run with another `HOME` (a
+  shared Codex conversation's app-server). The shim and the helper read the token from there, and
+  never fall back to the container-wide token or a socket. The server accepts it only with a session
+  id that is live in that launch's executor and that the token's person may act on, and revokes it
+  when the person's logins are released. The container-wide token is for sealantd's capture channel
+  only, and the server refuses it on `/git/transport` and on every helper route. A capture-mode
+  executor has no token-less `/run/mend/mend.sock`.
 - **Git over SSH** to origin goes through the shim; the server signs as the token's person, with
   their Mend key or their own bridge.
 - **The helper** (`mend land`, `repo add`, `runService`, `runServiceRecipe`) authorises the token's

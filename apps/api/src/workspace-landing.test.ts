@@ -174,11 +174,11 @@ const layer = Layer.mergeAll(
 );
 
 /** What the helper would hear: the engine's hook, after the worker registered its answer. */
-const askToLand = (register = true) =>
+const askToLand = (register = true, requestedBy: string | null = null) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const hooks = yield* WorkspaceGitHooks;
-      return yield* hooks.landRequested(SESSION);
+      return yield* hooks.landRequested(SESSION, requestedBy);
     }).pipe(
       Effect.provide(
         register
@@ -245,6 +245,19 @@ describe("mend land in a workspace (docs/adr/0007, Surfaces)", () => {
       lines: ["not landed · only the change's owner lands it · this session is not theirs"],
     });
     expect(world.lands).toEqual([]);
+  });
+
+  it("lands nothing for a person's process that is not the change's owner's (docs/adr/0016)", async () => {
+    // Bob's process in a person executor, with Bob's token, in Alice's session: Alice's own turn
+    // is running, but the request is Bob's.
+    world.turns = [turn("running", "alice")];
+    expect(await askToLand(true, "bob")).toEqual({
+      landed: false,
+      lines: ["not landed · only the change's owner lands it · this process runs as someone else"],
+    });
+    expect(world.lands).toEqual([]);
+    // Alice's own process lands.
+    expect((await askToLand(true, "alice")).landed).toBe(true);
   });
 
   it("says why a landing did not start, in the landing's words", async () => {

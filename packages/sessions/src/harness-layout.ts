@@ -17,6 +17,7 @@ import {
   linuxHomeOf,
 } from "@mend/domain/workbench";
 
+import { GIT_CREDENTIAL_HELPER_PATH } from "./git-credential.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 // ─── the decision ────────────────────────────────────────────────────────────
@@ -265,22 +266,49 @@ export const processUserOf = (identity: LinuxIdentity): ProcessUser => ({
 });
 
 /**
- * The environment a person's agent process gets beside what sealantd derives from the passwd
- * entry: Codex's databases in the person's saved directory, so a first start does not re-index
- * and the person's thread index is saved with their conversations (decision 2, Performance).
+ * Where a person's Mend session token lives in their home (decision 4): `~/.mend/session-token`,
+ * 0600, in a real `~/.mend` (0700), never linked into anything saved.
+ */
+export const SESSION_TOKEN_IN_HOME = ".mend/session-token";
+
+export const sessionTokenFileOf = (identity: LinuxIdentity): string =>
+  `${linuxHomeOf(identity)}/${SESSION_TOKEN_IN_HOME}`;
+
+/**
+ * The environment a person's process gets beside what sealantd derives from the passwd entry:
+ * Codex's databases in the person's saved directory, so a first start does not re-index and the
+ * person's thread index is saved with their conversations (decision 2, Performance); and the Mend
+ * identity the SSH shim and the `mend` helper present (decision 4): the session the process
+ * belongs to, and the file holding its person's token. The file is named, not found through
+ * `$HOME`, because a process may run with another `HOME` (a shared Codex conversation's
+ * app-server runs with `HOME` at its conversation home).
  */
 export const personProcessEnv = (
   harnessHome: string,
   identity: LinuxIdentity,
+  sessionId: string,
 ): Readonly<Record<string, string>> => ({
   CODEX_SQLITE_HOME: codexDatabaseDirOf(harnessHome, identity.accountId),
   TMPDIR: privateTmpOf(identity.uid),
   XDG_RUNTIME_DIR: privateRuntimeOf(identity.uid),
+  MEND_SESSION_ID: sessionId,
+  MEND_SESSION_TOKEN_FILE: sessionTokenFileOf(identity),
 });
+
+/**
+ * What a person's home receives when their user is made in an executor (decision 4): their Mend
+ * session token for this launch, and their git author, written to `~/.config/git/config` (their
+ * dotfiles' `~/.gitconfig` wins over it, as global config won over system config before).
+ */
+export interface PersonIdentity {
+  readonly token: string;
+  readonly author: { readonly name: string; readonly email: string } | null;
+}
 
 // ─── the scripts ─────────────────────────────────────────────────────────────
 
 const SAFE_ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SAFE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_LOGIN = /^m[a-z2-7]{8}$/;
 
 /** Account ids and login names go into scripts unquoted only after this. */
@@ -425,9 +453,14 @@ export const personHomeScript = (
     readonly runRoot?: string;
     /** The skeleton a new home is made from; `/etc/skel` unless a test names another. */
     readonly skel?: string;
+    /** Their Mend session token and git author for this executor (decision 4). */
+    readonly identity?: PersonIdentity;
   },
 ): string => {
   assertScriptSafe(person);
+  if (options.identity !== undefined && !SAFE_TOKEN.test(options.identity.token)) {
+    throw new Error("a session token is 43 base64url characters");
+  }
   const home = options.home ?? linuxHomeOf(person);
   const skel = options.skel ?? "/etc/skel";
   const saved = savedDirOf(options.harnessHome, person.accountId);
@@ -495,7 +528,40 @@ export const personHomeScript = (
       `${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)}; ` +
       `chgrp ${MEND_GROUP.gid} ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}; fi`,
     `chmod 0711 ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}`,
+    ...(options.identity === undefined ? [] : identityLines(home, owner, options.identity)),
   ].join("\n");
+};
+
+/**
+ * The Mend token and the git author in a person's home (decision 4), as root then given to the
+ * user: `~/.mend` a real directory (0700) and the token written beside it then renamed over
+ * `session-token` (0600), so a reader never sees half a token; the author with `git config
+ * --file ~/.config/git/config`, where git reads it for that user whatever `HOME` a tool sets.
+ */
+const identityLines = (
+  home: string,
+  owner: string,
+  identity: PersonIdentity,
+): ReadonlyArray<string> => {
+  const q = shellQuote;
+  const mend = `${home}/.mend`;
+  const token = `${home}/${SESSION_TOKEN_IN_HOME}`;
+  const gitDir = `${home}/.config/git`;
+  return [
+    `[ -L ${q(mend)} ] && fail "unexpected link: ${mend}"`,
+    `mkdir -p ${q(mend)} && chmod 0700 ${q(mend)}`,
+    `( umask 077; printf '%s' ${q(identity.token)} > ${q(`${token}.next`)} )`,
+    `[ "$root" = 1 ] && chown ${owner} ${q(mend)} ${q(`${token}.next`)} || true`,
+    `mv -f ${q(`${token}.next`)} ${q(token)}`,
+    ...(identity.author === null
+      ? []
+      : [
+          `if command -v git >/dev/null 2>&1; then mkdir -p ${q(gitDir)} && ` +
+            `git config --file ${q(`${gitDir}/config`)} user.name ${q(identity.author.name)} && ` +
+            `git config --file ${q(`${gitDir}/config`)} user.email ${q(identity.author.email)} && ` +
+            `{ [ "$root" = 1 ] && chown ${owner} ${q(`${home}/.config`)} ${q(gitDir)} ${q(`${gitDir}/config`)} || true; }; fi`,
+        ]),
+  ];
 };
 
 /**
@@ -516,6 +582,8 @@ export const personPrepareScript = (
     readonly person: LinuxIdentity;
     /** Made only when their saved directory came back with the restored head (members). */
     readonly ifSaved: boolean;
+    /** Their Mend token and git author, written into their home when they are made. */
+    readonly identity?: PersonIdentity;
   }>,
   options: {
     readonly harnessHome: string;
@@ -565,13 +633,14 @@ export const personPrepareScript = (
     // a person this prepare made is reported made. The subshell is a statement of its own, never
     // the left side of `&&` or `||`, where the shell would ignore its `set -e` and a failed
     // `useradd` would pass for made.
-    ...people.map(({ person, ifSaved }) => {
+    ...people.map(({ person, ifSaved, identity }) => {
       const saved = q(savedDirOf(options.harnessHome, person.accountId));
       return (
         `if [ "$layout_failed" = 0 ]${ifSaved ? ` && [ -d ${saved} ]` : ""}; then\n` +
         `( ${personHomeScript(person, {
           ...homeOptions,
           ...(places.homesRoot === undefined ? {} : { home: `${places.homesRoot}/${person.name}` }),
+          ...(identity === undefined ? {} : { identity }),
         }).replaceAll("\n", "\n  ")}\n)\n` +
         `if [ "$?" = 0 ]; then printf '%s made %s\\n' ${LAYOUT_LINE} ${person.name}; ` +
         `else printf '%s failed %s\\n' ${LAYOUT_LINE} ${person.name}; layout_failed=1; fi\nfi`
@@ -580,6 +649,8 @@ export const personPrepareScript = (
     `if [ "$layout_failed" = 0 ]; then`,
     `chmod 0755 /root 2>/dev/null || true`,
     `git -C ${q(options.repo)} config core.sharedRepository group 2>/dev/null || true`,
+    // Git over HTTPS to GitHub answers with the calling user's own login (decision 4).
+    `git config --system credential.https://github.com.helper ${q(GIT_CREDENTIAL_HELPER_PATH)} 2>/dev/null || true`,
     `mkdir -p ${q(markerDir)} && touch ${q(marker)}`,
     `printf '%s ready\\n' ${LAYOUT_LINE}`,
     `fi`,

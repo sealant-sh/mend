@@ -33,7 +33,10 @@ export interface WorkspaceLandOutcome {
 }
 
 /** What answers `mend land`; the landing worker registers it. */
-export type WorkspaceLandHandler = (sessionId: SessionId) => Effect.Effect<WorkspaceLandOutcome>;
+export type WorkspaceLandHandler = (
+  sessionId: SessionId,
+  requestedBy: string | null,
+) => Effect.Effect<WorkspaceLandOutcome>;
 
 const NO_LANDING: WorkspaceLandOutcome = {
   landed: false,
@@ -61,7 +64,14 @@ export class WorkspaceGitHooks extends Context.Service<
      * "Surfaces"): land the change as its owner, as the Land panel does, and say how it ended.
      * With nothing registered, it lands nothing and says so.
      */
-    readonly landRequested: (sessionId: SessionId) => Effect.Effect<WorkspaceLandOutcome>;
+    readonly landRequested: (
+      sessionId: SessionId,
+      /**
+       * The person whose process asked, in a person-layout executor (docs/adr/0016, decision 4):
+       * only the change's owner lands. Null: the workspace itself asked, as before.
+       */
+      requestedBy?: string | null,
+    ) => Effect.Effect<WorkspaceLandOutcome>;
     /** Replaces whatever answered `mend land` before. */
     readonly registerLanding: (handler: WorkspaceLandHandler) => Effect.Effect<void>;
   }
@@ -86,9 +96,9 @@ export const WorkspaceGitHooksLive: Layer.Layer<WorkspaceGitHooks> = Layer.effec
           handlers === null ? Effect.void : handlers.pullRequestOpened(event),
         ),
       register: (handlers) => Ref.set(registered, handlers),
-      landRequested: (sessionId) =>
+      landRequested: (sessionId, requestedBy) =>
         Effect.flatMap(Ref.get(landing), (handler) =>
-          handler === null ? Effect.succeed(NO_LANDING) : handler(sessionId),
+          handler === null ? Effect.succeed(NO_LANDING) : handler(sessionId, requestedBy ?? null),
         ),
       registerLanding: (handler) => Ref.set(landing, handler),
     };

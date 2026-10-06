@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import { SessionId } from "@mend/domain";
 import { SessionSocketHost, SessionSocketHostLive, makeFrameFeed, frame } from "@mend/sessions";
-import { DeploymentConfigLocal, StoreConfig } from "@mend/store";
+import { DeploymentConfigColocated, StoreConfig } from "@mend/store";
 import { Layer } from "effect";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
@@ -21,7 +21,8 @@ process.env["MEND_RUN_DIR"] = path.join(os.tmpdir(), `mend-socket-test-${process
 
 const SocketHostLayer = SessionSocketHostLive.pipe(
   Layer.provide(StoreConfig.layerFor(path.join(os.tmpdir(), `mend-socket-store-${process.pid}`))),
-  Layer.provide(DeploymentConfigLocal),
+  // The socket is the co-located store's transport: capture mode binds none (docs/adr/0016).
+  Layer.provide(DeploymentConfigColocated),
   Layer.provide(SessionChannelRegistryLive),
 );
 

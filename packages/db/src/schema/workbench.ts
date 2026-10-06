@@ -1039,6 +1039,9 @@ export const sessionChannelTokens = pgTable(
     sessionId: text().notNull(),
     // The physical executor the token was issued for: its create's idempotency key (0083).
     launchId: text().notNull(),
+    // Null: the launch's own token. Else one person's token in that launch (docs/adr/0016,
+    // decision 4; 0113): the shim and the helper sign and act as this account.
+    accountId: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     revokedAt: timestamp({ mode: "date", withTimezone: true }),
   },
@@ -1495,6 +1498,9 @@ export const services = pgTable(
     attemptHistoryComplete: boolean().notNull().default(true),
     forwardHistoryComplete: boolean().notNull().default(true),
     observationHistoryComplete: boolean().notNull().default(true),
+    // Who started it, recorded in a person executor only (docs/adr/0016, decision 1; 0113): a
+    // restart runs as them. Null: the session's owner, as before.
+    startedBy: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },

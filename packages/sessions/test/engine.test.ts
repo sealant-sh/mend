@@ -58,6 +58,7 @@ import {
   type NewSessionRun,
   SessionChannelTokensRepo,
   SessionChannelTokensRepoMemory,
+  HarnessLayoutsRepo,
   type HarnessLayoutsMemoryState,
   harnessLayoutsRepoMemory,
   linuxLoginNameOf,
@@ -99,6 +100,7 @@ import {
   HotWorkspace,
   Organization,
   OrganizationMember,
+  type GitAuthMode,
   Project,
   ProjectClusterBinding,
   ProjectClusterBindingsSnapshot,
@@ -245,6 +247,7 @@ import {
   type Scope,
 } from "effect";
 
+import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
 import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
@@ -1286,6 +1289,8 @@ interface World {
   readonly sessionRuns: Map<string, SessionRun>;
   readonly processes: Map<string, SessionProcess>;
   readonly services: Map<string, Service>;
+  /** Who started each Service, as a person executor records it (docs/adr/0016). */
+  readonly serviceStarters: Map<string, string>;
   readonly serviceForwards: Map<string, ServiceForward>;
   readonly serviceObservations: Map<string, ServiceObservation>;
   readonly changes: Map<string, Change>;
@@ -1371,6 +1376,7 @@ const makeWorld = (): World => ({
   sessionRuns: new Map(),
   processes: new Map(),
   services: new Map(),
+  serviceStarters: new Map(),
   serviceForwards: new Map(),
   serviceObservations: new Map(),
   changes: new Map(),
@@ -1643,6 +1649,11 @@ const servicesLayer = (world: World) =>
         );
         return true;
       }),
+    setStartedBy: (id, accountId) =>
+      Effect.sync(() => {
+        world.serviceStarters.set(id, accountId);
+      }),
+    startedByOf: (id) => Effect.sync(() => world.serviceStarters.get(id) ?? null),
   });
 
 const serviceForwardsLayer = (world: World) =>
@@ -2911,6 +2922,14 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
         Effect.sync(() => events.push(`issue:${launchId}`)).pipe(
           Effect.andThen(inner.issue(sessionId, launchId)),
         ),
+      issuePerson: (sessionId: string, launchId: string, accountId: string) =>
+        inner
+          .issuePerson(sessionId, launchId, accountId)
+          .pipe(
+            Effect.tap((token) =>
+              Effect.sync(() => events.push(`issuePerson:${launchId}:${accountId}:${token}`)),
+            ),
+          ),
       revoke: (sessionId: string) =>
         Effect.sync(() => events.push(`revoke:${sessionId}`)).pipe(
           Effect.andThen(inner.revoke(sessionId)),
@@ -2921,6 +2940,20 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
         ),
     })),
   ).pipe(Layer.provide(SessionChannelTokensRepoMemory));
+
+/** The in-memory layouts repo, recording every launch layout it is asked for. */
+const countingLaunchLayoutReads = (
+  reads: Array<string>,
+  state?: HarnessLayoutsMemoryState,
+): Layer.Layer<HarnessLayoutsRepo> =>
+  Layer.effect(
+    HarnessLayoutsRepo,
+    Effect.map(HarnessLayoutsRepo, (inner) => ({
+      ...inner,
+      launchLayout: (launchId: string) =>
+        Effect.sync(() => reads.push(launchId)).pipe(Effect.andThen(inner.launchLayout(launchId))),
+    })),
+  ).pipe(Layer.provide(harnessLayoutsRepoMemory(state)));
 
 const withEngine = <A, E>(
   work: (
@@ -2981,6 +3014,10 @@ const withEngine = <A, E>(
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
     /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
     readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
+    /** Every account's Mend key; one shared stub path unless a test says. */
+    readonly mendKeysLayer?: Layer.Layer<MendKeys>;
+    /** Every account's signer; never connected unless a test says. */
+    readonly agentBridgeLayer?: Layer.Layer<AgentBridge>;
     /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
     readonly verifier?: Layer.Layer<CaptureGitVerifier>;
     readonly transformBlobs?: (base: Layer.Layer<BlobStore>) => Layer.Layer<BlobStore>;
@@ -2994,6 +3031,8 @@ const withEngine = <A, E>(
       readonly flag?: HarnessLayout;
       readonly state?: HarnessLayoutsMemoryState;
       readonly platform?: Layer.Layer<PersonLayoutPlatform>;
+      /** Every launch whose recorded layout was read from the repo, in order. */
+      readonly launchLayoutReads?: Array<string>;
     };
   } = {},
 ): Promise<A> => {
@@ -3086,8 +3125,8 @@ const withEngine = <A, E>(
     Layer.provide(
       // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
       Layer.mergeAll(
-        mendKeysStubLayer,
-        agentBridgeStubLayer,
+        options.mendKeysLayer ?? mendKeysStubLayer,
+        options.agentBridgeLayer ?? agentBridgeStubLayer,
         gitOpsStubLayer,
         changesLayer(world),
         worktreesLayer(world),
@@ -3123,7 +3162,12 @@ const withEngine = <A, E>(
     ),
     Layer.provide(
       Layer.mergeAll(
-        harnessLayoutsRepoMemory(options.harnessLayout?.state),
+        options.harnessLayout?.launchLayoutReads === undefined
+          ? harnessLayoutsRepoMemory(options.harnessLayout?.state)
+          : countingLaunchLayoutReads(
+              options.harnessLayout.launchLayoutReads,
+              options.harnessLayout.state,
+            ),
         options.harnessLayout?.platform ?? PersonLayoutPlatformLive,
         Layer.succeed(HarnessLayoutConfig, { flag: options.harnessLayout?.flag ?? "shared" }),
       ),
@@ -24132,5 +24176,490 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
         }),
       },
     );
+  });
+});
+
+// ─── git and Mend identity per process (docs/adr/0016, decision 4) ─────────
+
+/** Each account's own Mend key, and who asked for one. */
+const perAccountKeys = (asked: Array<string>): Layer.Layer<MendKeys> =>
+  Layer.succeed(MendKeys, {
+    ensure: (userId) =>
+      Effect.sync(() => {
+        asked.push(String(userId));
+        return {
+          publicKey: `ssh-ed25519 ${userId}`,
+          fingerprint: `256 SHA256:${userId}`,
+          privateKeyPath: `/keys/${userId}`,
+        };
+      }),
+    read: () => Effect.succeed(null),
+  });
+
+/** Every account's own signer is connected; whose was asked for is recorded. */
+const perAccountBridge = (asked: Array<string>): Layer.Layer<AgentBridge> =>
+  Layer.succeed(AgentBridge, {
+    attach: () => Effect.die("not in test"),
+    status: (userId) =>
+      Effect.sync(() => {
+        asked.push(`status:${userId}`);
+        return { connected: true, clientName: "laptop", since: null };
+      }),
+    socketPath: (userId) => `/bridge/${userId}.sock`,
+    begin: (userId) =>
+      Effect.sync(() => {
+        asked.push(`begin:${userId}`);
+        return () => {};
+      }),
+  });
+
+/** `mend land` requests, with who asked. */
+const recordingLandings = (asked: Array<string>): Layer.Layer<WorkspaceGitHooks> =>
+  Layer.effect(
+    WorkspaceGitHooks,
+    Effect.map(WorkspaceGitHooks, (inner) => ({
+      ...inner,
+      landRequested: (sessionId: SessionId, requestedBy?: string | null) =>
+        Effect.sync(() => {
+          asked.push(`${sessionId}:${requestedBy ?? "workspace"}`);
+          return { landed: false, lines: ["not landed · recorded"] };
+        }),
+    })),
+  ).pipe(Layer.provide(WorkspaceGitHooksLive));
+
+/** What a person-home or prepare script wrote as a token into `home`. */
+const tokenWrittenFor = (script: string, home: string): string | null => {
+  const match = new RegExp(
+    `printf '%s' '([A-Za-z0-9_-]{43})' > '${home}/\\.mend/session-token\\.next'`,
+  ).exec(script);
+  return match?.[1] ?? null;
+};
+
+interface LiveJoin {
+  readonly world: World;
+  readonly holder: Session;
+  readonly joined: Session;
+  readonly launchId: string;
+  readonly origin: string;
+  readonly execs: ReadonlyArray<ReadonlyArray<string>>;
+  readonly opened: ReadonlyArray<SessionOptions & ProcessUserOption>;
+  readonly tokenEvents: ReadonlyArray<string>;
+}
+
+/**
+ * A holder's cold launch and a join by Maria into its executor, both live: then `inspect` runs
+ * with the engine, the sessions and the launch.
+ */
+const livePersonJoin = async <A>(options: {
+  readonly flag: HarnessLayout;
+  readonly gitAuthMode?: GitAuthMode;
+  readonly keysAsked?: Array<string>;
+  readonly bridgeAsked?: Array<string>;
+  readonly landings?: Array<string>;
+  readonly launchLayoutReads?: Array<string>;
+  readonly inspect: (
+    engine: SessionEngine["Service"],
+    join: LiveJoin,
+  ) => Effect.Effect<A, unknown, SessionEngine>;
+}): Promise<A> => {
+  const created: Array<CreateOptions> = [];
+  const execCalls: Array<ReadonlyArray<string>> = [];
+  const opened: Array<SessionOptions & ProcessUserOption> = [];
+  const tokenEvents: Array<string> = [];
+  const person = options.flag === "person";
+  let result: { readonly value: A } | null = null;
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        if (options.gitAuthMode !== undefined) {
+          world.projects.set(
+            project.id,
+            new Project({ ...project, gitAuthMode: options.gitAuthMode }),
+          );
+        }
+        const engine = yield* SessionEngine;
+        const holder = yield* engine.provision({
+          projectId: project.id,
+          harness: "claude",
+          label: null,
+          name: "shared",
+          ownerUserId: "user-fixture",
+          base: null,
+        });
+        yield* engine.launch(holder.id, ["claude"]);
+        const joinedRow = yield* engine.provisionSessionIn(holder.worktreeId, {
+          harness: "claude",
+          label: null,
+          ownerUserId: MARIA,
+        });
+        yield* engine.launch(joinedRow.id, ["claude"]);
+        const launchId = tokenEvents.find((event) => event.startsWith("issue:"))?.slice(6) ?? "";
+        const holderNow = world.sessions.get(holder.id) ?? holder;
+        const joinedNow = world.sessions.get(joinedRow.id) ?? joinedRow;
+        result = {
+          value: yield* options.inspect(engine, {
+            world,
+            holder: holderNow,
+            joined: joinedNow,
+            launchId,
+            origin: new URL(project.originUrl ?? "").hostname,
+            execs: execCalls,
+            opened,
+            tokenEvents,
+          }),
+        };
+      }),
+    {
+      captured: makeMemoryCaptureStore(),
+      prepareWorld: (world) => world.members.set(MARIA, "member"),
+      tokenEvents,
+      ...(options.keysAsked === undefined
+        ? {}
+        : { mendKeysLayer: perAccountKeys(options.keysAsked) }),
+      ...(options.bridgeAsked === undefined
+        ? {}
+        : { agentBridgeLayer: perAccountBridge(options.bridgeAsked) }),
+      ...(options.landings === undefined
+        ? {}
+        : { gitHooksLayer: recordingLandings(options.landings) }),
+      sealantLayer: sealantLaunchLayer(
+        created,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        opened,
+        undefined,
+        execCalls,
+        undefined,
+        person ? { exec: answerLayout(LAYOUT_READY) } : {},
+      ),
+      harnessLayout: {
+        flag: options.flag,
+        ...(person ? { platform: personPlatform([], { person: true }) } : {}),
+        ...(options.launchLayoutReads === undefined
+          ? {}
+          : { launchLayoutReads: options.launchLayoutReads }),
+      },
+    },
+  );
+  if (result === null) throw new Error("the scenario did not run");
+  return (result as { readonly value: A }).value;
+};
+
+/** Shared control on for `session` (docs/adr/0003): anyone in its organization may steer. */
+const shareControl = (world: World, session: Session): Session => {
+  const shared = new Session({ ...session, sharedControlEnabledAt: now() });
+  world.sessions.set(session.id, shared);
+  return shared;
+};
+
+const grantOf = (
+  session: Session,
+  scope: { readonly launchId: string; readonly accountId: string | null },
+) =>
+  Effect.gen(function* () {
+    const api = servedSocketApis.get(session.id);
+    if (api?.channelFor === undefined) throw new Error("the session serves no channel grant");
+    return yield* api.channelFor(scope);
+  });
+
+/** A push to the project's own origin, as git asks the shim for it. */
+const push = (origin: string) => ({
+  host: origin,
+  port: null,
+  command: "git-receive-pack 'fixture.git'",
+});
+
+describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => {
+  const LAUNCHER = linuxLoginNameOf("user-fixture");
+  const JOINER = linuxLoginNameOf(MARIA);
+
+  it("gives each person of a launch their own token and git author, in the execs it already makes", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (_engine, join) =>
+        Effect.sync(() => {
+          const prepare = join.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+          const home = join.execs.find(isPersonHome);
+          const issued = join.tokenEvents.filter((event) => event.startsWith("issuePerson:"));
+          // One token per (launch, person): the launcher's at prepare, Maria's at her first
+          // process; each written into that person's own home and nowhere else.
+          const launcherToken = tokenWrittenFor(prepare?.[2] ?? "", `/home/${LAUNCHER}`);
+          const joinerToken = tokenWrittenFor(home?.[2] ?? "", `/home/${JOINER}`);
+          expect(issued).toEqual(
+            expect.arrayContaining([
+              `issuePerson:${join.launchId}:user-fixture:${launcherToken}`,
+              `issuePerson:${join.launchId}:${MARIA}:${joinerToken}`,
+            ]),
+          );
+          expect(launcherToken).not.toBe(joinerToken);
+          expect(prepare?.[2]).not.toContain(`/home/${JOINER}/.mend`);
+          // Their git author in their own git config; no system author in a person executor.
+          expect(prepare?.[2]).toContain(
+            `git config --file '/home/${LAUNCHER}/.config/git/config' user.name 'Account user-fixture'`,
+          );
+          expect(home?.[2]).toContain(
+            `git config --file '/home/${JOINER}/.config/git/config' user.email '${MARIA}@accounts.example'`,
+          );
+          expect(join.execs.some((argv) => (argv[2] ?? "").includes("--system user.name"))).toBe(
+            false,
+          );
+          // GitHub over HTTPS answers from each user's own login.
+          expect(prepare?.[2]).toContain(
+            "git config --system credential.https://github.com.helper '/run/mend/bin/mend-git-credential'",
+          );
+          expect(prepare?.[2]).toContain("mend-git-credential");
+          // Each process names its session and its person's token file.
+          const env = (name: string) =>
+            join.opened.filter((options) => options.user?.name === name).map((o) => o.env);
+          expect(env(LAUNCHER)).toContainEqual(
+            expect.objectContaining({
+              MEND_SESSION_ID: join.holder.id,
+              MEND_SESSION_TOKEN_FILE: `/home/${LAUNCHER}/.mend/session-token`,
+            }),
+          );
+          expect(env(JOINER)).toContainEqual(
+            expect.objectContaining({
+              MEND_SESSION_ID: join.joined.id,
+              MEND_SESSION_TOKEN_FILE: `/home/${JOINER}/.mend/session-token`,
+            }),
+          );
+        }),
+    });
+  });
+
+  it("with the flag off mints no person token, names no token file and keeps the system author", async () => {
+    await livePersonJoin({
+      flag: "shared",
+      inspect: (_engine, join) =>
+        Effect.sync(() => {
+          expect(join.tokenEvents.some((event) => event.startsWith("issuePerson:"))).toBe(false);
+          expect(
+            join.opened.some((options) => options.env?.["MEND_SESSION_TOKEN_FILE"] !== undefined),
+          ).toBe(false);
+          expect(join.execs.some((argv) => (argv[2] ?? "").includes("--system user.name"))).toBe(
+            true,
+          );
+          expect(join.execs.some((argv) => (argv[2] ?? "").includes("mend-git-credential"))).toBe(
+            false,
+          );
+        }),
+    });
+  });
+
+  it("a joiner's push signs as the joiner, with their own Mend key", async () => {
+    const keysAsked: Array<string> = [];
+    await livePersonJoin({
+      flag: "person",
+      gitAuthMode: "mend-key",
+      keysAsked,
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const grant = yield* grantOf(join.joined, { launchId: join.launchId, accountId: MARIA });
+          if (!grant.ok) throw new Error(grant.message);
+          keysAsked.length = 0;
+          const plan = yield* grant.api.gitTransport(push(join.origin));
+          expect(keysAsked).toEqual([MARIA]);
+          expect(plan.argv).toContain(`/keys/${MARIA}`);
+          expect(plan.argv).not.toContain("/keys/user-fixture");
+          // Steering Alice's session from her own process (shared control on), Maria still signs
+          // as Maria: the token says who pushes, not the session.
+          const steered = yield* grantOf(shareControl(join.world, join.holder), {
+            launchId: join.launchId,
+            accountId: MARIA,
+          });
+          if (!steered.ok) throw new Error(steered.message);
+          keysAsked.length = 0;
+          expect((yield* steered.api.gitTransport(push(join.origin))).argv).toContain(
+            `/keys/${MARIA}`,
+          );
+          expect(keysAsked).toEqual([MARIA]);
+          // The launcher's own push in the same executor still signs as the launcher.
+          const own = yield* grantOf(join.holder, {
+            launchId: join.launchId,
+            accountId: "user-fixture",
+          });
+          if (!own.ok) throw new Error(own.message);
+          expect((yield* own.api.gitTransport(push(join.origin))).argv).toContain(
+            "/keys/user-fixture",
+          );
+        }),
+    });
+  });
+
+  it("a joiner's push signs as the joiner over their own bridge", async () => {
+    const bridgeAsked: Array<string> = [];
+    await livePersonJoin({
+      flag: "person",
+      gitAuthMode: "bridge",
+      bridgeAsked,
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const grant = yield* grantOf(shareControl(join.world, join.holder), {
+            launchId: join.launchId,
+            accountId: MARIA,
+          });
+          if (!grant.ok) throw new Error(grant.message);
+          bridgeAsked.length = 0;
+          const plan = yield* grant.api.gitTransport(push(join.origin));
+          expect(plan.env).toEqual({ SSH_AUTH_SOCK: `/bridge/${MARIA}.sock` });
+          expect(bridgeAsked).toEqual([`status:${MARIA}`, `begin:${MARIA}`]);
+        }),
+    });
+  });
+
+  it("refuses the workspace's own token for git and the helper in a person executor, and keeps its capture routes", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const grant = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+          if (!grant.ok) throw new Error(grant.message);
+          expect(grant.api.capture).toBeDefined();
+          const refused = yield* grant.api.gitTransport(push(join.origin)).pipe(Effect.exit);
+          expect(failureText(refused)).toContain(CONTAINER_TOKEN_REFUSED);
+          expect(failureText(yield* grant.api.land().pipe(Effect.exit))).toContain(
+            CONTAINER_TOKEN_REFUSED,
+          );
+          expect(failureText(yield* grant.api.listServices().pipe(Effect.exit))).toContain(
+            CONTAINER_TOKEN_REFUSED,
+          );
+        }),
+    });
+  });
+
+  it("a shared executor's push with the workspace's token still works, as its owner", async () => {
+    const keysAsked: Array<string> = [];
+    await livePersonJoin({
+      flag: "shared",
+      gitAuthMode: "mend-key",
+      keysAsked,
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const grant = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+          if (!grant.ok) throw new Error(grant.message);
+          expect(grant.api.capture).toBeDefined();
+          keysAsked.length = 0;
+          const plan = yield* grant.api.gitTransport(push(join.origin));
+          expect(plan.argv).toContain("/keys/user-fixture");
+          expect(keysAsked).toEqual(["user-fixture"]);
+          // No person token is ever good in a shared executor.
+          const person = yield* grantOf(join.holder, {
+            launchId: join.launchId,
+            accountId: "user-fixture",
+          });
+          expect(person.ok).toBe(false);
+        }),
+    });
+  });
+
+  it("with the flag off, a push or fetch reads its launch's layout once, then never again", async () => {
+    const reads: Array<string> = [];
+    await livePersonJoin({
+      flag: "shared",
+      launchLayoutReads: reads,
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const before = reads.length;
+          for (let i = 0; i < 5; i++) {
+            const grant = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+            if (!grant.ok) throw new Error(grant.message);
+            yield* grant.api.gitTransport(push(join.origin)).pipe(Effect.exit);
+          }
+          // Five git ops: at most the one read that fills the cache (none when the launch
+          // already asked), and nothing per op after it.
+          expect(reads.length - before).toBeLessThanOrEqual(1);
+        }),
+    });
+  });
+
+  it("a person's token works only for sessions live in its launch that they may act on", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (engine, join) =>
+        Effect.gen(function* () {
+          // Maria may not act on Alice's session while shared control is off.
+          const notHers = yield* grantOf(join.holder, {
+            launchId: join.launchId,
+            accountId: MARIA,
+          });
+          expect(notHers).toMatchObject({ ok: false, status: 403 });
+          // Her own session in another worktree runs in another executor: this launch's token
+          // reaches nothing there.
+          const own = yield* engine.provision({
+            projectId: join.holder.projectId,
+            harness: "claude",
+            label: null,
+            name: "maria-own",
+            ownerUserId: MARIA,
+            base: null,
+          });
+          yield* engine.launch(own.id, ["claude"]);
+          const elsewhere = yield* grantOf(own, { launchId: join.launchId, accountId: MARIA });
+          expect(elsewhere).toMatchObject({ ok: false, status: 409 });
+          // A token of a launch Mend never made person is not accepted at all.
+          const unknown = yield* grantOf(join.joined, {
+            launchId: "launch-elsewhere",
+            accountId: MARIA,
+          });
+          expect(unknown).toMatchObject({ ok: false, status: 401 });
+          // And a person's token never reaches the capture routes.
+          const hers = yield* grantOf(join.joined, { launchId: join.launchId, accountId: MARIA });
+          expect(hers.ok && hers.api.capture === undefined).toBe(true);
+        }),
+    });
+  });
+
+  it("a joiner's mend land asks as the joiner, and the workspace's land as before", async () => {
+    const landings: Array<string> = [];
+    await livePersonJoin({
+      flag: "person",
+      landings,
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const grant = yield* grantOf(join.joined, { launchId: join.launchId, accountId: MARIA });
+          if (!grant.ok) throw new Error(grant.message);
+          yield* grant.api.land();
+          expect(landings).toEqual([`${join.joined.id}:${MARIA}`]);
+        }),
+    });
+  });
+
+  it("a shell and a Service run as the person who opened them, and a restart as its starter", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (engine, join) =>
+        Effect.gen(function* () {
+          const before = join.opened.length;
+          yield* engine.openShell(join.holder.id, MARIA);
+          const shell = join.opened.at(before);
+          expect(shell?.user?.name).toBe(JOINER);
+          expect(shell?.env).toMatchObject({
+            MEND_SESSION_ID: join.holder.id,
+            MEND_SESSION_TOKEN_FILE: `/home/${JOINER}/.mend/session-token`,
+          });
+          const started = join.opened.length;
+          const service = yield* engine.runService(
+            join.holder.id,
+            ["pnpm", "dev"],
+            3000,
+            "web",
+            "tcp",
+            null,
+            MARIA,
+          );
+          expect(join.opened.at(started)?.user?.name).toBe(JOINER);
+          const restarted = join.opened.length;
+          yield* engine.restartService(service.service.id);
+          expect(join.opened.at(restarted)?.user?.name).toBe(JOINER);
+          // Without a starter named, the session's owner, as before.
+          yield* engine.openShell(join.holder.id);
+          expect(join.opened.at(-1)?.user?.name).toBe(LAUNCHER);
+        }),
+    });
   });
 });

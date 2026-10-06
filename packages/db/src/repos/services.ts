@@ -82,6 +82,12 @@ export class ServicesRepo extends Context.Service<
       expected: ServiceForwardId | null,
       next: ServiceForwardId | null,
     ) => Effect.Effect<boolean>;
+    /**
+     * Who started the Service, in a person executor (docs/adr/0016, decision 1): its restarts
+     * run as them. Recorded only there; null otherwise, which means the session's owner.
+     */
+    readonly setStartedBy: (id: ServiceId, accountId: string) => Effect.Effect<void>;
+    readonly startedByOf: (id: ServiceId) => Effect.Effect<string | null>;
   }
 >()("@mend/db/ServicesRepo") {}
 
@@ -133,7 +139,8 @@ export class ServiceObservationsRepo extends Context.Service<
   }
 >()("@mend/db/ServiceObservationsRepo") {}
 
-const toService = (row: typeof services.$inferSelect): Service => new Service(row);
+const toService = ({ startedBy: _startedBy, ...row }: typeof services.$inferSelect): Service =>
+  new Service(row);
 const toForward = (row: typeof serviceForwards.$inferSelect): ServiceForward =>
   new ServiceForward(row);
 const toObservation = (row: typeof serviceObservations.$inferSelect): ServiceObservation =>
@@ -279,6 +286,27 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return new Map(rows.map((row) => [row.sessionId, row.live]));
       });
 
+      const setStartedBy = Effect.fn("ServicesRepo.setStartedBy")(function* (
+        id: ServiceId,
+        accountId: string,
+      ) {
+        yield* db
+          .update(services)
+          .set({ startedBy: accountId })
+          .where(eq(services.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const startedByOf = Effect.fn("ServicesRepo.startedByOf")(function* (id: ServiceId) {
+        const rows = yield* db
+          .select({ startedBy: services.startedBy })
+          .from(services)
+          .where(eq(services.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return rows[0]?.startedBy ?? null;
+      });
+
       const setCurrentAttempt = Effect.fn("ServicesRepo.setCurrentAttempt")(function* (
         id: ServiceId,
         attemptId: SessionProcessId | null,
@@ -371,6 +399,8 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         setCurrentForward,
         compareAndSetCurrentAttempt,
         compareAndSetCurrentForward,
+        setStartedBy,
+        startedByOf,
       };
     }),
   );

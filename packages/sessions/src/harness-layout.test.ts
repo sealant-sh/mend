@@ -7,6 +7,7 @@ import { defaultWorkspaceImage } from "@mend/domain";
 import { LinuxIdentity } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { GIT_CREDENTIAL_HELPER_SCRIPT } from "./git-credential.ts";
 import {
   PERSON_SAVED_STATE,
   UNKNOWN_CAPABILITY,
@@ -17,6 +18,7 @@ import {
   personHomeScript,
   personLayoutRefusal,
   personPrepareScript,
+  personProcessEnv,
   processUserOf,
   staticLayoutObstacle,
   worktreeRepairScript,
@@ -646,5 +648,132 @@ describe("the worktree repair (decision 2)", () => {
     expect(run.status).toBe(0);
     expect(changed(run.stdout)).toEqual([]);
     expect(fs.existsSync(marker)).toBe(true);
+  });
+});
+
+describe("a person's Mend identity in their home (decision 4)", () => {
+  const TOKEN = "t".repeat(40) + "abc";
+  const identityHome = (root: ReturnType<typeof fakeRoot> | null) => {
+    const dir = root?.dir ?? tempDir("mend-identity-");
+    const harnessHome = path.join(dir, "harness-home");
+    const home = path.join(dir, "home", alice.name);
+    fs.mkdirSync(harnessHome, { recursive: true });
+    const script = personHomeScript(alice, {
+      harnessHome,
+      home,
+      tmpRoot: path.join(dir, "tmp"),
+      runRoot: path.join(dir, "run"),
+      ...(root === null ? {} : { skel: root.skel }),
+      identity: { token: TOKEN, author: { name: "Alice O'Neil", email: "alice@example.com" } },
+    });
+    return { home, script };
+  };
+
+  it("writes their session token 0600 in a real ~/.mend, and their git author in ~/.config/git/config", () => {
+    const { home, script } = identityHome(null);
+    const run = sh(script);
+    expect(run.stderr).toBe("");
+    expect(run.status).toBe(0);
+    const token = path.join(home, ".mend/session-token");
+    expect(fs.readFileSync(token, "utf8")).toBe(TOKEN);
+    expect(fs.statSync(token).mode & 0o777).toBe(0o600);
+    expect(fs.lstatSync(path.join(home, ".mend")).isDirectory()).toBe(true);
+    expect(fs.statSync(path.join(home, ".mend")).mode & 0o777).toBe(0o700);
+    expect(fs.existsSync(`${token}.next`)).toBe(false);
+    const config = (key: string) =>
+      spawnSync("git", ["config", "--file", path.join(home, ".config/git/config"), key], {
+        encoding: "utf8",
+      }).stdout.trim();
+    expect(config("user.name")).toBe("Alice O'Neil");
+    expect(config("user.email")).toBe("alice@example.com");
+    // Written again (a later executor, a new token), it replaces the token in place.
+    expect(sh(script.replace(TOKEN, "n".repeat(43))).status).toBe(0);
+    expect(fs.readFileSync(token, "utf8")).toBe("n".repeat(43));
+  });
+
+  it("as root gives the user their token, ~/.mend and their git config", () => {
+    const root = fakeRoot();
+    const { home, script } = identityHome(root);
+    expect(root.run(script).status).toBe(0);
+    const log = root.log();
+    expect(log).toContain(`chown 40012:40000 ${home}/.mend ${home}/.mend/session-token.next`);
+    expect(log).toContain(
+      `chown 40012:40000 ${home}/.config ${home}/.config/git ${home}/.config/git/config`,
+    );
+  });
+
+  it("refuses a ~/.mend that is a link, and anything but a token", () => {
+    const { home, script } = identityHome(null);
+    fs.mkdirSync(home, { recursive: true });
+    fs.symlinkSync(tempDir("elsewhere-"), path.join(home, ".mend"));
+    const run = sh(script);
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("unexpected link");
+    expect(() =>
+      personHomeScript(alice, {
+        harnessHome: "/hh",
+        identity: { token: "x'; rm -rf / #", author: null },
+      }),
+    ).toThrow("a session token");
+  });
+
+  it("names the process's session and its person's token file in every process's environment", () => {
+    expect(personProcessEnv("/workspace/harness-home", alice, "sess-1")).toMatchObject({
+      MEND_SESSION_ID: "sess-1",
+      MEND_SESSION_TOKEN_FILE: "/home/m3kq7xj2a/.mend/session-token",
+    });
+  });
+});
+
+describe("mend-git-credential (decision 4)", () => {
+  const helper = () => {
+    const dir = tempDir("mend-git-credential-");
+    const script = path.join(dir, "mend-git-credential");
+    fs.writeFileSync(script, GIT_CREDENTIAL_HELPER_SCRIPT, { mode: 0o755 });
+    const home = path.join(dir, "home");
+    fs.mkdirSync(path.join(home, ".config/gh"), { recursive: true });
+    const run = (args: ReadonlyArray<string>, input = "") =>
+      spawnSync(process.execPath, [script, ...args], {
+        encoding: "utf8",
+        input,
+        env: { ...process.env, HOME: home },
+      });
+    const hosts = (text: string) => fs.writeFileSync(path.join(home, ".config/gh/hosts.yml"), text);
+    return { run, hosts };
+  };
+
+  it("answers github.com over HTTPS with the user's own login, and nothing else", () => {
+    const { run, hosts } = helper();
+    hosts(
+      [
+        "github.com:",
+        "    users:",
+        "        someone-else:",
+        "            oauth_token: gho_not_this_one",
+        "    oauth_token: gho_alices",
+        "    git_protocol: https",
+        "    user: alice",
+        "gitlab.com:",
+        "    oauth_token: glpat_other",
+        "",
+      ].join("\n"),
+    );
+    const get = run(["get"], "protocol=https\nhost=github.com\n\n");
+    expect(get.status).toBe(0);
+    expect(get.stdout).toBe("username=alice\npassword=gho_alices\n");
+    expect(run(["get"], "protocol=https\nhost=gitlab.com\n\n").stdout).toBe("");
+    expect(run(["get"], "protocol=http\nhost=github.com\n\n").stdout).toBe("");
+    expect(run(["store"], "protocol=https\nhost=github.com\n\n").stdout).toBe("");
+    expect(run(["token"]).stdout).toBe("gho_alices\n");
+  });
+
+  it("says nothing to git without a login, and fails `token` with why", () => {
+    const { run } = helper();
+    const get = run(["get"], "protocol=https\nhost=github.com\n\n");
+    expect(get.status).toBe(0);
+    expect(get.stdout).toBe("");
+    const token = run(["token"]);
+    expect(token.status).toBe(1);
+    expect(token.stderr).toContain("no GitHub login");
   });
 });
