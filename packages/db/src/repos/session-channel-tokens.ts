@@ -25,6 +25,12 @@ import { sessionChannelTokens } from "../schema/workbench.ts";
 export const hashSessionChannelToken = (token: string): string =>
   createHash("sha256").update(token, "utf8").digest("hex");
 
+/**
+ * The session a person's token row names (docs/adr/0016, decision 4): no session's id, ever
+ * (session ids carry no colon), so a server that predates person tokens never matches it.
+ */
+export const personTokenSession = (accountId: string): string => `person:${accountId}`;
+
 /** 32 random bytes, base64url: 43 characters, no padding, safe in env and headers. */
 export const mintSessionChannelToken = (): string => randomBytes(32).toString("base64url");
 
@@ -47,15 +53,12 @@ export class SessionChannelTokensRepo extends Context.Service<
     /**
      * Mint one person's token in a launch (docs/adr/0016, decision 4): what the SSH shim and the
      * `mend` helper of that person's processes present, from `~/.mend/session-token`, so the
-     * server signs and acts as `accountId`. `sessionId` is the session whose process asked for
-     * it; the token is good for any session live in the launch that the person may act on, which
-     * the server checks per request. Revoked with the launch.
+     * server signs and acts as `accountId`. The token is good for any session live in the launch
+     * that the person may act on, which the server checks per request; its row names no session
+     * but `personTokenSession(accountId)`, so a server that predates person tokens (and ignores
+     * `account_id`) never takes it for any session's own token. Revoked with the launch.
      */
-    readonly issuePerson: (
-      sessionId: string,
-      launchId: string,
-      accountId: string,
-    ) => Effect.Effect<string>;
+    readonly issuePerson: (launchId: string, accountId: string) => Effect.Effect<string>;
     /**
      * The launch a live (unrevoked) launch token of that session was issued for, or null. The
      * token is verified before anything is resolved from it. A person's token never verifies
@@ -100,7 +103,6 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
       });
 
       const issuePerson = Effect.fn("SessionChannelTokensRepo.issuePerson")(function* (
-        sessionId: string,
         launchId: string,
         accountId: string,
       ) {
@@ -110,7 +112,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .insert(sessionChannelTokens)
           .values({
             tokenHash,
-            sessionId,
+            sessionId: personTokenSession(accountId),
             launchId,
             accountId,
             createdAt: new Date(),
@@ -226,11 +228,11 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
           });
           return token;
         }),
-      issuePerson: (sessionId, launchId, accountId) =>
+      issuePerson: (launchId, accountId) =>
         Effect.sync(() => {
           const token = mintSessionChannelToken();
           rows.set(hashSessionChannelToken(token), {
-            sessionId,
+            sessionId: personTokenSession(accountId),
             launchId,
             accountId,
             revoked: false,

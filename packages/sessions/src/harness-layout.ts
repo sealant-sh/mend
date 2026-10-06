@@ -18,6 +18,11 @@ import {
 } from "@mend/domain/workbench";
 
 import { GIT_CREDENTIAL_HELPER_PATH } from "./git-credential.ts";
+import {
+  SCRIPT_PICKUP_FUNCTION,
+  SCRIPT_PINNED_PUT_FUNCTION,
+  SCRIPT_TRANSPORT_PRELUDE,
+} from "./script-transport.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 // ─── the decision ────────────────────────────────────────────────────────────
@@ -293,22 +298,50 @@ export const personProcessEnv = (
   XDG_RUNTIME_DIR: privateRuntimeOf(identity.uid),
   MEND_SESSION_ID: sessionId,
   MEND_SESSION_TOKEN_FILE: sessionTokenFileOf(identity),
+  // Never another person's login through the container's environment (decision 5): until Core
+  // stops putting the launcher's tokens there (Deliveries 7–8), a person's process sees none.
+  GH_TOKEN: "",
+  GITHUB_TOKEN: "",
+  CLAUDE_CODE_OAUTH_TOKEN: "",
 });
 
+/** Where a person's git author goes in their home (decision 4). */
+export const GIT_CONFIG_IN_HOME = ".config/git/config";
+
+/** The files a person's identity pickup writes into `home`: their token, then their git author. */
+export const identityFilesOf = (
+  home: string,
+): { readonly token: string; readonly gitConfig: string } => ({
+  token: `${home}/${SESSION_TOKEN_IN_HOME}`,
+  gitConfig: `${home}/${GIT_CONFIG_IN_HOME}`,
+});
+
+/** A git config value, quoted: backslash and double quote escaped, control characters dropped. */
+const gitConfigValue = (value: string): string =>
+  `"${[...value]
+    .filter((char) => {
+      const code = char.codePointAt(0) ?? 0;
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("")
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')}"`;
+
 /**
- * What a person's home receives when their user is made in an executor (decision 4): their Mend
- * session token for this launch, and their git author, written to `~/.config/git/config` (their
- * dotfiles' `~/.gitconfig` wins over it, as global config won over system config before).
+ * A person's git author as `~/.config/git/config` holds it (decision 4). Git reads that file for
+ * the user through `$XDG_CONFIG_HOME` or `$HOME`, so a tool that moves either reads no author;
+ * their dotfiles' `~/.gitconfig` wins over it, as global config won over system config before.
  */
-export interface PersonIdentity {
-  readonly token: string;
-  readonly author: { readonly name: string; readonly email: string } | null;
-}
+export const gitAuthorConfigText = (author: {
+  readonly name: string;
+  readonly email: string;
+}): string =>
+  `[user]\n\tname = ${gitConfigValue(author.name)}\n\temail = ${gitConfigValue(author.email)}\n`;
 
 // ─── the scripts ─────────────────────────────────────────────────────────────
 
 const SAFE_ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const SAFE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const SAFE_TICKET = /^[A-Za-z0-9_-]{43}$/;
 const SAFE_LOGIN = /^m[a-z2-7]{8}$/;
 
 /** Account ids and login names go into scripts unquoted only after this. */
@@ -391,6 +424,8 @@ export interface LayoutReport {
    * worktree came back root's, 0644, which nobody could edit and the repair never reaches.
    */
   readonly unowned: string | null;
+  /** Who could not be made, and why (`mend-layout failed <name> <words>`). */
+  readonly failed: ReadonlyArray<string>;
 }
 
 export const parseLayoutReport = (stdout: string): LayoutReport => {
@@ -399,12 +434,18 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
   let probed = false;
   let ready = false;
   let unowned: string | null = null;
+  const failed: Array<string> = [];
   for (const line of stdout.split("\n")) {
     if (!line.startsWith(`${LAYOUT_LINE} `)) continue;
     const rest = line.slice(LAYOUT_LINE.length + 1).trim();
     if (rest === "probed") probed = true;
     else if (rest === "ready") ready = true;
-    else if (rest.startsWith("unowned ")) {
+    else if (rest.startsWith("failed ")) {
+      const words = rest.slice("failed ".length).trim();
+      const name = words.split(" ")[0] ?? "";
+      const why = words.slice(name.length).trim();
+      if (name !== "") failed.push(why === "" ? `${name} could not be made` : `${name}: ${why}`);
+    } else if (rest.startsWith("unowned ")) {
       unowned = rest.slice("unowned ".length).trim() || "the worktree is not group mend's";
     } else if (rest.startsWith("made ")) {
       const name = rest.slice("made ".length).trim();
@@ -414,7 +455,7 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
       if (words !== "" && !missing.includes(words)) missing.push(words);
     }
   }
-  return { probed, missing, ready, made, unowned };
+  return { probed, missing, ready, made, unowned, failed };
 };
 
 /** Every parent directory of these relative paths, shallowest first, once each. */
@@ -453,14 +494,9 @@ export const personHomeScript = (
     readonly runRoot?: string;
     /** The skeleton a new home is made from; `/etc/skel` unless a test names another. */
     readonly skel?: string;
-    /** Their Mend session token and git author for this executor (decision 4). */
-    readonly identity?: PersonIdentity;
   },
 ): string => {
   assertScriptSafe(person);
-  if (options.identity !== undefined && !SAFE_TOKEN.test(options.identity.token)) {
-    throw new Error("a session token is 43 base64url characters");
-  }
   const home = options.home ?? linuxHomeOf(person);
   const skel = options.skel ?? "/etc/skel";
   const saved = savedDirOf(options.harnessHome, person.accountId);
@@ -487,7 +523,9 @@ export const personHomeScript = (
       // What Core wrote before the user existed is root's, and useradd copied no skeleton into
       // a home that was already there: both become the user's, nothing already there replaced.
       `if [ "$pre" = 1 ]; then ` +
-      `[ -d ${q(skel)} ] && cp -an ${q(`${skel}/.`)} ${q(home)}/; ` +
+      // `|| true`: a coreutils whose `-n` exits 1 when it skips (upstream 9.2) must not fail the
+      // person.
+      `if [ -d ${q(skel)} ]; then cp -an ${q(`${skel}/.`)} ${q(home)}/ || true; fi; ` +
       `chown -hR ${owner} ${q(home)}; fi; ` +
       `fi; fi`,
     `mkdir -p ${q(home)}`,
@@ -528,41 +566,86 @@ export const personHomeScript = (
       `${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)}; ` +
       `chgrp ${MEND_GROUP.gid} ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}; fi`,
     `chmod 0711 ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}`,
-    ...(options.identity === undefined ? [] : identityLines(home, owner, options.identity)),
+    // Where their Mend token and git author go (decision 4): real directories, theirs. What goes
+    // in them arrives through a pickup (`identityPickupScript`), never in this script.
+    `[ -L ${q(`${home}/.mend`)} ] && fail "unexpected link: ${home}/.mend"`,
+    `mkdir -p ${q(`${home}/.mend`)} ${q(`${home}/.config/git`)}`,
+    `chmod 0700 ${q(`${home}/.mend`)}`,
+    `[ "$root" = 1 ] && chown ${owner} ${q(`${home}/.mend`)} ${q(`${home}/.config`)} ${q(`${home}/.config/git`)} || true`,
   ].join("\n");
 };
 
 /**
- * The Mend token and the git author in a person's home (decision 4), as root then given to the
- * user: `~/.mend` a real directory (0700) and the token written beside it then renamed over
- * `session-token` (0600), so a reader never sees half a token; the author with `git config
- * --file ~/.config/git/config`, where git reads it for that user whatever `HOME` a tool sets.
+ * Each person's Mend session token and git author, written into their home without either
+ * reaching an exec's arguments (decision 4; Core keeps every exec's argv, review of mend#552/#553
+ * P1-1). The exec carries one pickup ticket per person (`pickup-tickets.ts`, purpose
+ * `session-token`), and node, inside the same exec, redeems each over the session channel and
+ * writes what it got through a pinned directory (`pinnedPut`): `~/.mend/session-token` and
+ * `~/.config/git/config`, 0600, then given to the person. A person whose `~/.mend` is not there
+ * (prepare did not make them) is skipped and their ticket left unredeemed, so no token is minted
+ * for them. Prints `mend-layout identity <name>` for each person written, and
+ * `mend-layout failed <name> identity: <why>` (also on stderr) for one that could not be, then
+ * exits 1.
  */
-const identityLines = (
-  home: string,
-  owner: string,
-  identity: PersonIdentity,
-): ReadonlyArray<string> => {
-  const q = shellQuote;
-  const mend = `${home}/.mend`;
-  const token = `${home}/${SESSION_TOKEN_IN_HOME}`;
-  const gitDir = `${home}/.config/git`;
-  return [
-    `[ -L ${q(mend)} ] && fail "unexpected link: ${mend}"`,
-    `mkdir -p ${q(mend)} && chmod 0700 ${q(mend)}`,
-    `( umask 077; printf '%s' ${q(identity.token)} > ${q(`${token}.next`)} )`,
-    `[ "$root" = 1 ] && chown ${owner} ${q(mend)} ${q(`${token}.next`)} || true`,
-    `mv -f ${q(`${token}.next`)} ${q(token)}`,
-    ...(identity.author === null
-      ? []
-      : [
-          `if command -v git >/dev/null 2>&1; then mkdir -p ${q(gitDir)} && ` +
-            `git config --file ${q(`${gitDir}/config`)} user.name ${q(identity.author.name)} && ` +
-            `git config --file ${q(`${gitDir}/config`)} user.email ${q(identity.author.email)} && ` +
-            `{ [ "$root" = 1 ] && chown ${owner} ${q(`${home}/.config`)} ${q(gitDir)} ${q(`${gitDir}/config`)} || true; }; fi`,
-        ]),
-  ];
+export const identityPickupScript = (
+  people: ReadonlyArray<{
+    readonly person: LinuxIdentity;
+    readonly ticket: string;
+    /** `R`; the passwd home unless a test names another. */
+    readonly home?: string;
+  }>,
+): string => {
+  if (people.length === 0) return ":";
+  const args = people.flatMap(({ person, ticket, home }) => {
+    assertScriptSafe(person);
+    if (!SAFE_TICKET.test(ticket)) throw new Error("a pickup ticket is 43 base64url characters");
+    return [ticket, person.name, home ?? linuxHomeOf(person), String(person.uid)];
+  });
+  return `node -e ${shellQuote(IDENTITY_PROGRAM)} -- ${args.map(shellQuote).join(" ")}`;
 };
+
+const IDENTITY_PROGRAM = [
+  SCRIPT_TRANSPORT_PRELUDE,
+  SCRIPT_PICKUP_FUNCTION,
+  SCRIPT_PINNED_PUT_FUNCTION,
+  `const a = process.argv.slice(1);
+const people = [];
+for (let i = 0; i + 3 < a.length; i += 4) people.push({ ticket: a[i], name: a[i + 1], home: a[i + 2], uid: Number(a[i + 3]) });
+const root = typeof process.getuid === "function" && process.getuid() === 0;
+const say = (line) => process.stdout.write("${LAYOUT_LINE} " + line + "\\n");
+let failed = false;
+const fail = (person, why) => {
+  failed = true;
+  say("failed " + person.name + " identity: " + why);
+  process.stderr.write("mend: " + person.name + "'s Mend identity: " + why + "\\n");
+};
+const made = (person) => { try { return fs.lstatSync(person.home + "/.mend").isDirectory(); } catch { return false; } };
+const write = (person, files, file) => {
+  const bytes = files.get(file);
+  if (bytes === undefined) return null;
+  const dir = file.slice(0, file.lastIndexOf("/"));
+  const name = file.slice(file.lastIndexOf("/") + 1);
+  const why = pinnedPut(dir, name, ".mend-identity-part", bytes);
+  if (why !== null) return file + ": " + why;
+  if (root) { try { fs.lchownSync(file, person.uid, ${MEND_GROUP.gid}); } catch { return file + ": could not give it to its person"; } }
+  return null;
+};
+const next = (index) => {
+  if (index >= people.length) process.exit(failed ? 1 : 0);
+  const person = people[index];
+  if (!made(person)) return next(index + 1);
+  redeemPickup(person.ticket, (reason, files) => {
+    if (reason !== null) { fail(person, reason); return next(index + 1); }
+    const why = write(person, files, person.home + "/${SESSION_TOKEN_IN_HOME}") ?? write(person, files, person.home + "/${GIT_CONFIG_IN_HOME}");
+    if (why !== null) fail(person, why);
+    else if (!files.has(person.home + "/${SESSION_TOKEN_IN_HOME}")) fail(person, "the pickup carried no token");
+    else say("identity " + person.name);
+    next(index + 1);
+  });
+};
+next(0);
+`,
+].join("\n");
 
 /**
  * What prepare runs in a person-layout executor beside the helper install, as root and in the
@@ -582,8 +665,8 @@ export const personPrepareScript = (
     readonly person: LinuxIdentity;
     /** Made only when their saved directory came back with the restored head (members). */
     readonly ifSaved: boolean;
-    /** Their Mend token and git author, written into their home when they are made. */
-    readonly identity?: PersonIdentity;
+    /** Their identity pickup (`identityPickupScript`), redeemed once they are made. */
+    readonly ticket?: string;
   }>,
   options: {
     readonly harnessHome: string;
@@ -609,6 +692,19 @@ export const personPrepareScript = (
   const marker = places.marker ?? REPAIR_MARKER;
   const markerDir = marker.slice(0, marker.lastIndexOf("/"));
   const identities = people.map((entry) => entry.person);
+  const tickets = people.flatMap(({ person, ticket }) =>
+    ticket === undefined
+      ? []
+      : [
+          {
+            person,
+            ticket,
+            ...(places.homesRoot === undefined
+              ? {}
+              : { home: `${places.homesRoot}/${person.name}` }),
+          },
+        ],
+  );
   const homeOptions = {
     harnessHome: options.harnessHome,
     ...(places.tmpRoot === undefined ? {} : { tmpRoot: places.tmpRoot }),
@@ -633,19 +729,26 @@ export const personPrepareScript = (
     // a person this prepare made is reported made. The subshell is a statement of its own, never
     // the left side of `&&` or `||`, where the shell would ignore its `set -e` and a failed
     // `useradd` would pass for made.
-    ...people.map(({ person, ifSaved, identity }) => {
+    ...people.map(({ person, ifSaved }) => {
       const saved = q(savedDirOf(options.harnessHome, person.accountId));
       return (
         `if [ "$layout_failed" = 0 ]${ifSaved ? ` && [ -d ${saved} ]` : ""}; then\n` +
-        `( ${personHomeScript(person, {
+        `person_out=$( ( ${personHomeScript(person, {
           ...homeOptions,
           ...(places.homesRoot === undefined ? {} : { home: `${places.homesRoot}/${person.name}` }),
-          ...(identity === undefined ? {} : { identity }),
-        }).replaceAll("\n", "\n  ")}\n)\n` +
+        }).replaceAll("\n", "\n  ")}\n) 2>&1 )\n` +
         `if [ "$?" = 0 ]; then printf '%s made %s\\n' ${LAYOUT_LINE} ${person.name}; ` +
-        `else printf '%s failed %s\\n' ${LAYOUT_LINE} ${person.name}; layout_failed=1; fi\nfi`
+        // What went wrong, in the person's line (review of mend#552, P3-8): its last words.
+        `else printf '%s failed %s %s\\n' ${LAYOUT_LINE} ${person.name} "$(printf '%s' "$person_out" | tail -n 3 | tr '\\n' ' ')"; ` +
+        `layout_failed=1; fi\nfi`
       );
     }),
+    // Each person made gets their Mend token and git author through their own pickup.
+    ...(tickets.length === 0
+      ? []
+      : [
+          `if [ "$layout_failed" = 0 ]; then ${identityPickupScript(tickets)} || layout_failed=1; fi`,
+        ]),
     `if [ "$layout_failed" = 0 ]; then`,
     `chmod 0755 /root 2>/dev/null || true`,
     `git -C ${q(options.repo)} config core.sharedRepository group 2>/dev/null || true`,

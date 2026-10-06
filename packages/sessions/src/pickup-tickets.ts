@@ -31,8 +31,12 @@ export const PICKUP_TICKET_TTL_MS = 10 * 60_000;
 /** A ticket's shape: 32 bytes as unpadded base64url. Anything else is never looked up. */
 export const PICKUP_TICKET_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
-/** What a ticket may be redeemed for. */
-export type PickupPurpose = "secret-files" | "pi-profile" | "workspace-files";
+/**
+ * What a ticket may be redeemed for. `session-token` (docs/adr/0016, decision 4): one person's Mend
+ * session token and git author for their home, minted only when the ticket is redeemed, so a
+ * person prepare skips gets no token.
+ */
+export type PickupPurpose = "secret-files" | "pi-profile" | "workspace-files" | "session-token";
 
 /** What a ticket is bound to. */
 export interface PickupBinding {

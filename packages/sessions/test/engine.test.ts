@@ -1815,6 +1815,7 @@ const sourcePolicyLayer = Layer.succeed(
 /** One organization, `org-test`, whose members the world names. */
 const organizationsLayer = (world: World) =>
   Layer.mock(OrganizationsRepo, {
+    roleOf: (_organizationId, userId) => Effect.sync(() => world.members.get(userId) ?? null),
     membershipOf: (userId) =>
       Effect.sync(() => {
         const role = world.members.get(userId);
@@ -2922,9 +2923,9 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
         Effect.sync(() => events.push(`issue:${launchId}`)).pipe(
           Effect.andThen(inner.issue(sessionId, launchId)),
         ),
-      issuePerson: (sessionId: string, launchId: string, accountId: string) =>
+      issuePerson: (launchId: string, accountId: string) =>
         inner
-          .issuePerson(sessionId, launchId, accountId)
+          .issuePerson(launchId, accountId)
           .pipe(
             Effect.tap((token) =>
               Effect.sync(() => events.push(`issuePerson:${launchId}:${accountId}:${token}`)),
@@ -23106,15 +23107,15 @@ const MARIA = "user-maria";
 /** A prepare that made the launcher (`user-fixture`) and nobody else, as a fresh head does. */
 const LAYOUT_READY = `mend-layout probed\nmend-layout made ${linuxLoginNameOf("user-fixture")}\nmend-layout ready\n`;
 const isRepair = (argv: ReadonlyArray<string>) => (argv[2] ?? "").includes("mend-repair");
+/** The executor's first exec, carrying the layout's probe (a person's home exec carries none). */
+const isPrepare = (argv: ReadonlyArray<string>) => (argv[2] ?? "").includes("layout_missing=0");
 const isPersonHome = (argv: ReadonlyArray<string>) =>
-  (argv[2] ?? "").includes("useradd") && !(argv[2] ?? "").includes("mend-layout");
+  (argv[2] ?? "").includes("useradd") && !isPrepare(argv);
 /** Every exec whose script carries the layout's own lines answers with `stdout`. */
 const answerLayout =
   (stdout: string) =>
   (argv: ReadonlyArray<string>): { exitCode: number; stdout: string; stderr: string } | undefined =>
-    argv[0] === "sh" && (argv[2] ?? "").includes("mend-layout")
-      ? { exitCode: 0, stdout, stderr: "" }
-      : undefined;
+    argv[0] === "sh" && isPrepare(argv) ? { exitCode: 0, stdout, stderr: "" } : undefined;
 const personPlatform = (
   calls: Array<string>,
   report: { readonly person?: boolean | null; readonly missing?: ReadonlyArray<string> } = {},
@@ -24227,13 +24228,84 @@ const recordingLandings = (asked: Array<string>): Layer.Layer<WorkspaceGitHooks>
     })),
   ).pipe(Layer.provide(WorkspaceGitHooksLive));
 
-/** What a person-home or prepare script wrote as a token into `home`. */
-const tokenWrittenFor = (script: string, home: string): string | null => {
-  const match = new RegExp(
-    `printf '%s' '([A-Za-z0-9_-]{43})' > '${home}/\\.mend/session-token\\.next'`,
-  ).exec(script);
-  return match?.[1] ?? null;
+/** The identity pickups an exec carries (`identityPickupScript`): ticket, name, home, uid each. */
+const identityArgsOf = (
+  script: string,
+): ReadonlyArray<{ readonly ticket: string; readonly name: string; readonly home: string }> => {
+  const tail = [...script.matchAll(/ -- ((?:'[A-Za-z0-9_./-]+' ?){4,})/g)].at(-1)?.[1] ?? "";
+  const words = [...tail.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? "");
+  const people: Array<{ ticket: string; name: string; home: string }> = [];
+  for (let i = 0; i + 3 < words.length; i += 4) {
+    people.push({ ticket: words[i] ?? "", name: words[i + 1] ?? "", home: words[i + 2] ?? "" });
+  }
+  return people;
 };
+
+/** What each identity pickup answered, by home; and why one was refused, by name. */
+interface IdentityPickups {
+  readonly written: Map<string, ReadonlyArray<{ readonly path: string; readonly base64: string }>>;
+  readonly refused: Map<string, string>;
+}
+
+/**
+ * The executor's side of an identity pickup: for an exec that carries identity tickets, redeem
+ * each person's that the exec made (prepare: the people its report says it made; a person's home:
+ * that person) over the channel its container env names, the workspace's own token, as node does
+ * there. `presentAs` may present a person's ticket through another person's token instead.
+ */
+const identityExec =
+  (options: {
+    readonly pickups: IdentityPickups;
+    readonly holder: () => SessionId | null;
+    readonly launchId: () => string;
+    readonly presentAs?: (name: string) => string | null;
+  }) =>
+  (argv: ReadonlyArray<string>) => {
+    const script = argv[2] ?? "";
+    if (argv[0] !== "sh" || !script.includes("/pickup")) {
+      return undefined;
+    }
+    const people = identityArgsOf(script);
+    if (people.length === 0) return undefined;
+    const prepare = isPrepare(argv);
+    const madeHere = prepare ? [linuxLoginNameOf("user-fixture")] : people.map((p) => p.name);
+    return Effect.gen(function* () {
+      const holder = options.holder();
+      const api = holder === null ? undefined : servedSocketApis.get(holder);
+      let failed = false;
+      for (const person of people.filter((p) => madeHere.includes(p.name))) {
+        const accountId = options.presentAs?.(person.name) ?? null;
+        const grant =
+          api?.channelFor === undefined
+            ? null
+            : yield* api.channelFor({ launchId: options.launchId(), accountId });
+        if (grant === null || !grant.ok || grant.api.pickup === undefined) {
+          failed = true;
+          options.pickups.refused.set(person.name, "no pickup on this channel");
+          continue;
+        }
+        const answer = yield* grant.api.pickup(person.ticket).pipe(Effect.result);
+        if (answer._tag === "Failure") {
+          failed = true;
+          options.pickups.refused.set(person.name, answer.failure.message);
+        } else {
+          options.pickups.written.set(person.home, answer.success.files);
+        }
+      }
+      return {
+        exitCode: !prepare && failed ? 1 : 0,
+        stdout: prepare ? (failed ? "mend-layout probed\n" : LAYOUT_READY) : "",
+        stderr: failed ? "mend: identity: refused\n" : "",
+      };
+    });
+  };
+
+const decoded = (
+  files: ReadonlyArray<{ readonly path: string; readonly base64: string }> | undefined,
+) =>
+  new Map(
+    (files ?? []).map((file) => [file.path, Buffer.from(file.base64, "base64").toString("utf8")]),
+  );
 
 interface LiveJoin {
   readonly world: World;
@@ -24244,6 +24316,9 @@ interface LiveJoin {
   readonly execs: ReadonlyArray<ReadonlyArray<string>>;
   readonly opened: ReadonlyArray<SessionOptions & ProcessUserOption>;
   readonly tokenEvents: ReadonlyArray<string>;
+  readonly pickups: IdentityPickups;
+  /** Why the join failed, or null. */
+  readonly joinFailure: string | null;
 }
 
 /**
@@ -24257,6 +24332,10 @@ const livePersonJoin = async <A>(options: {
   readonly bridgeAsked?: Array<string>;
   readonly landings?: Array<string>;
   readonly launchLayoutReads?: Array<string>;
+  /** Present a person's identity ticket through another person's token (by login name). */
+  readonly presentAs?: (name: string) => string | null;
+  /** Maria has an identity already (from another worktree), so prepare names her too. */
+  readonly mariaKnown?: boolean;
   readonly inspect: (
     engine: SessionEngine["Service"],
     join: LiveJoin,
@@ -24267,6 +24346,20 @@ const livePersonJoin = async <A>(options: {
   const opened: Array<SessionOptions & ProcessUserOption> = [];
   const tokenEvents: Array<string> = [];
   const person = options.flag === "person";
+  const pickups: IdentityPickups = { written: new Map(), refused: new Map() };
+  const state = makeHarnessLayoutsMemoryState();
+  if (options.mariaKnown === true) {
+    state.identities.set(
+      MARIA,
+      new LinuxIdentity({ accountId: MARIA, name: linuxLoginNameOf(MARIA), uid: 40_001 }),
+    );
+  }
+  const launchIdOf = () =>
+    tokenEvents.find((event) => event.startsWith("issue:"))?.slice("issue:".length) ?? "";
+  const holderOf = () => {
+    const id = created[0]?.env?.["MEND_SESSION_ID"];
+    return id === undefined ? null : SessionId.make(id);
+  };
   let result: { readonly value: A } | null = null;
   await withEngine(
     (world, tmp) =>
@@ -24293,8 +24386,8 @@ const livePersonJoin = async <A>(options: {
           label: null,
           ownerUserId: MARIA,
         });
-        yield* engine.launch(joinedRow.id, ["claude"]);
-        const launchId = tokenEvents.find((event) => event.startsWith("issue:"))?.slice(6) ?? "";
+        const joinExit = yield* engine.launch(joinedRow.id, ["claude"]).pipe(Effect.exit);
+        const launchId = launchIdOf();
         const holderNow = world.sessions.get(holder.id) ?? holder;
         const joinedNow = world.sessions.get(joinedRow.id) ?? joinedRow;
         result = {
@@ -24307,6 +24400,8 @@ const livePersonJoin = async <A>(options: {
             execs: execCalls,
             opened,
             tokenEvents,
+            pickups,
+            joinFailure: Exit.isSuccess(joinExit) ? null : failureText(joinExit),
           }),
         };
       }),
@@ -24335,10 +24430,21 @@ const livePersonJoin = async <A>(options: {
         undefined,
         execCalls,
         undefined,
-        person ? { exec: answerLayout(LAYOUT_READY) } : {},
+        person
+          ? {
+              exec: answerLayout(LAYOUT_READY),
+              execEffect: identityExec({
+                pickups,
+                holder: holderOf,
+                launchId: launchIdOf,
+                ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
+              }),
+            }
+          : {},
       ),
       harnessLayout: {
         flag: options.flag,
+        state,
         ...(person ? { platform: personPlatform([], { person: true }) } : {}),
         ...(options.launchLayoutReads === undefined
           ? {}
@@ -24378,33 +24484,44 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
   const LAUNCHER = linuxLoginNameOf("user-fixture");
   const JOINER = linuxLoginNameOf(MARIA);
 
-  it("gives each person of a launch their own token and git author, in the execs it already makes", async () => {
+  it("gives each person their own token and git author through a pickup, minted when redeemed, never in argv", async () => {
     await livePersonJoin({
       flag: "person",
       inspect: (_engine, join) =>
         Effect.sync(() => {
           const prepare = join.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
-          const home = join.execs.find(isPersonHome);
           const issued = join.tokenEvents.filter((event) => event.startsWith("issuePerson:"));
-          // One token per (launch, person): the launcher's at prepare, Maria's at her first
-          // process; each written into that person's own home and nowhere else.
-          const launcherToken = tokenWrittenFor(prepare?.[2] ?? "", `/home/${LAUNCHER}`);
-          const joinerToken = tokenWrittenFor(home?.[2] ?? "", `/home/${JOINER}`);
-          expect(issued).toEqual(
-            expect.arrayContaining([
-              `issuePerson:${join.launchId}:user-fixture:${launcherToken}`,
-              `issuePerson:${join.launchId}:${MARIA}:${joinerToken}`,
-            ]),
-          );
+          const tokenOf = (account: string) =>
+            issued
+              .find((event) => event.startsWith(`issuePerson:${join.launchId}:${account}:`))
+              ?.split(":")
+              .at(-1);
+          const launcherToken = tokenOf("user-fixture");
+          const joinerToken = tokenOf(MARIA);
+          // One token per (launch, person), each minted when its pickup was redeemed.
+          expect(issued).toHaveLength(2);
+          expect(launcherToken).toBeDefined();
+          expect(joinerToken).toBeDefined();
           expect(launcherToken).not.toBe(joinerToken);
-          expect(prepare?.[2]).not.toContain(`/home/${JOINER}/.mend`);
-          // Their git author in their own git config; no system author in a person executor.
-          expect(prepare?.[2]).toContain(
-            `git config --file '/home/${LAUNCHER}/.config/git/config' user.name 'Account user-fixture'`,
+          // Each arrived in its own person's home, with their git author beside it.
+          const launcherFiles = decoded(join.pickups.written.get(`/home/${LAUNCHER}`));
+          const joinerFiles = decoded(join.pickups.written.get(`/home/${JOINER}`));
+          expect(launcherFiles.get(`/home/${LAUNCHER}/.mend/session-token`)).toBe(launcherToken);
+          expect(joinerFiles.get(`/home/${JOINER}/.mend/session-token`)).toBe(joinerToken);
+          expect(launcherFiles.get(`/home/${LAUNCHER}/.config/git/config`)).toBe(
+            '[user]\n\tname = "Account user-fixture"\n\temail = "user-fixture@accounts.example"\n',
           );
-          expect(home?.[2]).toContain(
-            `git config --file '/home/${JOINER}/.config/git/config' user.email '${MARIA}@accounts.example'`,
+          expect(joinerFiles.get(`/home/${JOINER}/.config/git/config`)).toContain(
+            `email = "${MARIA}@accounts.example"`,
           );
+          // Neither token nor author ever rides an exec's arguments; only tickets do.
+          for (const argv of join.execs) {
+            for (const arg of argv) {
+              expect(arg).not.toContain(launcherToken ?? "-");
+              expect(arg).not.toContain(joinerToken ?? "-");
+              expect(arg).not.toContain("accounts.example");
+            }
+          }
           expect(join.execs.some((argv) => (argv[2] ?? "").includes("--system user.name"))).toBe(
             false,
           );
@@ -24412,7 +24529,6 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           expect(prepare?.[2]).toContain(
             "git config --system credential.https://github.com.helper '/run/mend/bin/mend-git-credential'",
           );
-          expect(prepare?.[2]).toContain("mend-git-credential");
           // Each process names its session and its person's token file.
           const env = (name: string) =>
             join.opened.filter((options) => options.user?.name === name).map((o) => o.env);
@@ -24428,6 +24544,39 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
               MEND_SESSION_TOKEN_FILE: `/home/${JOINER}/.mend/session-token`,
             }),
           );
+        }),
+    });
+  });
+
+  it("mints no token for a member prepare does not make; they get theirs at their first process", async () => {
+    await livePersonJoin({
+      flag: "person",
+      mariaKnown: true,
+      inspect: (_engine, join) =>
+        Effect.sync(() => {
+          const prepare = join.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+          // Prepare carried Maria's ticket, in case her saved directory came back; it did not,
+          // so her ticket was never presented, and the only token she has is her join's.
+          expect(identityArgsOf(prepare?.[2] ?? "").map((p) => p.name)).toEqual([LAUNCHER, JOINER]);
+          const issued = join.tokenEvents.filter((event) => event.startsWith("issuePerson:"));
+          expect(issued.filter((event) => event.includes(`:${MARIA}:`))).toHaveLength(1);
+          expect(issued).toHaveLength(2);
+        }),
+    });
+  });
+
+  it("refuses a person's identity ticket presented through another person's token", async () => {
+    await livePersonJoin({
+      flag: "person",
+      // Maria's ticket, presented with the launcher's token.
+      presentAs: (name) => (name === JOINER ? "user-fixture" : null),
+      inspect: (_engine, join) =>
+        Effect.sync(() => {
+          expect(join.pickups.refused.get(JOINER)).toBe("this pickup ticket is another person's");
+          expect(join.pickups.written.has(`/home/${JOINER}`)).toBe(false);
+          // Nothing was minted for Maria, and her join stopped rather than run without her token.
+          expect(join.tokenEvents.some((event) => event.includes(`:${MARIA}:`))).toBe(false);
+          expect(join.joinFailure).toContain("could not be made");
         }),
     });
   });
@@ -24520,6 +24669,8 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           const grant = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
           if (!grant.ok) throw new Error(grant.message);
           expect(grant.api.capture).toBeDefined();
+          // Its launch's pickups stay: every workspace write and identity arrives through one.
+          expect(grant.api.pickup).toBeDefined();
           const refused = yield* grant.api.gitTransport(push(join.origin)).pipe(Effect.exit);
           expect(failureText(refused)).toContain(CONTAINER_TOKEN_REFUSED);
           expect(failureText(yield* grant.api.land().pipe(Effect.exit))).toContain(
@@ -24610,6 +24761,14 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           // And a person's token never reaches the capture routes.
           const hers = yield* grantOf(join.joined, { launchId: join.launchId, accountId: MARIA });
           expect(hers.ok && hers.api.capture === undefined).toBe(true);
+          // Removed from the organization mid-launch, her token reaches nothing from then on
+          // (review of mend#553, P3-4), not only once the launch ends.
+          join.world.members.delete(MARIA);
+          const removed = yield* grantOf(join.joined, {
+            launchId: join.launchId,
+            accountId: MARIA,
+          });
+          expect(removed).toMatchObject({ ok: false, status: 403 });
         }),
     });
   });

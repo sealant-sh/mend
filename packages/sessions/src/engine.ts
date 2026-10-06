@@ -154,6 +154,7 @@ import {
   AGENT_MEMORY_ROOTS,
   agentMemoryMaxFileBytes,
   type HarnessLayout,
+  type LinuxIdentity,
   linuxHomeOf,
   MEND_GROUP,
   canSteerSession,
@@ -290,7 +291,7 @@ import {
   SHARED_AS_BEFORE,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
-import { processUserOf } from "./harness-layout.ts";
+import { gitAuthorConfigText, identityFilesOf, processUserOf } from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
   CODEX_SHELL_SNAPSHOT_OFF,
@@ -6003,6 +6004,72 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * An identity ticket (docs/adr/0016, decision 4): purpose `session-token`, bound to the
+       * person, the session and the launch. It carries no secret: its files are the two paths in
+       * the person's home, and their bytes, the person's Mend token and git author, are made only
+       * when the exec redeems it (`identityFilesAt`), so a person prepare does not make gets no
+       * token. One session read, for the worktree the binding names.
+       */
+      const mintIdentityTicket = Effect.fn("SessionEngine.mintIdentityTicket")(function* (input: {
+        readonly sessionId: string;
+        readonly launchId: string;
+        readonly person: LinuxIdentity;
+      }) {
+        const session = yield* sessions
+          .byId(SessionId.make(input.sessionId))
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        const files = identityFilesOf(linuxHomeOf(input.person));
+        return pickups.mint(
+          {
+            purpose: "session-token",
+            sessionId: input.sessionId,
+            worktreeId: session?.worktreeId ?? "",
+            personId: input.person.accountId,
+            launchId: input.launchId,
+          },
+          [
+            { path: files.token, bytes: new Uint8Array() },
+            { path: files.gitConfig, bytes: new Uint8Array() },
+          ],
+        );
+      });
+
+      /**
+       * What an identity ticket answers, made now: the person's Mend token of the launch, and
+       * their git author when they have one. Nothing is minted for a ticket nobody redeems.
+       */
+      const identityFilesAt = Effect.fn("SessionEngine.identityFilesAt")(function* (
+        binding: PickupBinding,
+        files: ReadonlyArray<PickupFile>,
+      ) {
+        if (binding.personId === null || binding.launchId === null) {
+          return yield* Effect.fail(new Error("this identity ticket names no person or launch"));
+        }
+        const [tokenFile, configFile] = files;
+        if (tokenFile === undefined || configFile === undefined) {
+          return yield* Effect.fail(new Error("this identity ticket names no files"));
+        }
+        const [token, author] = yield* Effect.all(
+          [
+            channelTokens.issuePerson(binding.launchId, binding.personId),
+            gitAuthors.resolve(binding.personId),
+          ],
+          { concurrency: "unbounded" },
+        );
+        return [
+          { path: tokenFile.path, bytes: new TextEncoder().encode(token) },
+          ...(author === null
+            ? []
+            : [
+                {
+                  path: configFile.path,
+                  bytes: new TextEncoder().encode(gitAuthorConfigText(author)),
+                },
+              ]),
+        ];
+      });
+
+      /**
        * Redeem a ticket presented through `channel` (`pickupChannelMatch`, `pickupSiblingMatch`).
        * The ticket is spent whatever this answers. A ticket presented a second time, or through a
        * channel it does not belong to, is logged as a possible theft: which channel presented which
@@ -6056,14 +6123,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* refuse(entry.binding, "this pickup ticket is another session's");
             }
           }
+          const files =
+            entry.binding.purpose === "session-token"
+              ? yield* identityFilesAt(entry.binding, entry.files)
+              : entry.files;
           yield* Effect.logInfo("session engine: pickup redeemed").pipe(
             Effect.annotateLogs({
               sessionId: entry.binding.sessionId,
               purpose: entry.binding.purpose,
-              files: entry.files.length,
+              files: files.length,
             }),
           );
-          return pickupAnswerOf(entry.files);
+          return pickupAnswerOf(files);
         }).pipe(
           Effect.mapError((error) =>
             error instanceof Error ? error : new Error("the pickup could not be answered"),
@@ -6261,16 +6332,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
         fork: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
-        issueToken: (input) =>
-          channelTokens.issuePerson(input.sessionId, input.launchId, input.accountId),
-        authorOf: (accountId) =>
-          gitAuthors
-            .resolve(accountId)
-            .pipe(
-              Effect.map((author) =>
-                author === null ? null : { name: author.name, email: author.email },
-              ),
-            ),
+        identityTicket: (input) => mintIdentityTicket(input),
+        discardTicket: (ticket) => pickups.discard(ticket),
       });
       // Service lifecycle calls are rare and may span platform I/O. One engine-local permit keeps
       // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
@@ -9011,11 +9074,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // exec on the cold path): the image probe, and in the person layout every person's user,
         // home and saved directory, made before anything runs as them.
         // Each person prepare makes gets their Mend token and git author in the same exec
-        // (docs/adr/0016, decision 4): minted here, written into their home there.
-        const identities =
+        // (docs/adr/0016, decision 4), through a pickup ticket of their own: only the ticket
+        // rides the exec's arguments, and the token is minted when the exec redeems it.
+        const identityTickets =
           input.layout === undefined
             ? null
-            : yield* layoutSteps.prepareIdentities({
+            : yield* layoutSteps.prepareTickets({
                 layout: launchLayout,
                 launchId: input.layout.launchId,
                 sessionId,
@@ -9023,7 +9087,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const layoutScript = layoutSteps.prepareScript(
           launchLayout,
           { harnessHome: HARNESS_HOME_MOUNT_PATH, repo: "/workspace/repo" },
-          identities,
+          identityTickets,
         );
         const stop = (message: string) =>
           input
@@ -9072,6 +9136,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             layoutScript === null ? helper : `( ${helper} ); h=$?\n${layoutScript}\nexit $h`,
           ])
           .pipe(
+            // The exec that carried the identity tickets has ended: none is redeemable after it.
+            Effect.ensuring(
+              Effect.sync(() => {
+                for (const ticket of identityTickets?.values() ?? []) pickups.discard(ticket);
+              }),
+            ),
             Effect.tap((result) =>
               result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
             ),
@@ -15322,12 +15392,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const layout = yield* layoutSteps.layoutOfLaunch(grant.launchId);
         const launchCapture = base.captureAs?.(grant.launchId);
         if (grant.accountId === null) {
+          // The launch's own token names nobody: a pickup through it is held to the launch.
+          const launchPickup = base.pickupAs?.({ launchId: grant.launchId, accountId: null });
           return {
             ok: true as const,
             api:
               layout === "person"
-                ? containerTokenRefused(launchCapture)
-                : { ...base, capture: launchCapture, channelFor: undefined },
+                ? containerTokenRefused(launchCapture, launchPickup)
+                : { ...base, capture: launchCapture, pickup: launchPickup, channelFor: undefined },
           };
         }
         if (layout !== "person") {
@@ -15346,9 +15418,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (!canSteerSession(session, grant.accountId)) {
           return { ok: false as const, status: 403, message: CHANNEL_MAY_NOT_ACT };
         }
+        // Still a member who can see the project (review of mend#553, P3-4): a person removed
+        // from the organization, or kept out of a private project, loses their token's reach at
+        // once, not when the launch ends.
+        const project = yield* projects
+          .byId(session.projectId)
+          .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+        const role =
+          project === null
+            ? null
+            : yield* organizations.roleOf(project.organizationId, grant.accountId);
+        if (
+          project === null ||
+          role === null ||
+          (project.visibility === "private" && project.createdByUserId !== grant.accountId)
+        ) {
+          return { ok: false as const, status: 403, message: CHANNEL_MAY_NOT_ACT };
+        }
+        const closures = socketClosures(sessionId, grant.accountId);
         return {
           ok: true as const,
-          api: ownedSocketApi(sessionId, socketClosures(sessionId, grant.accountId)),
+          api: {
+            ...ownedSocketApi(sessionId, closures),
+            // A person's token redeems only that person's tickets, of this launch.
+            pickup: closures.pickupAs?.({ launchId: grant.launchId, accountId: grant.accountId }),
+            channelFor: undefined,
+          },
         };
       });
 

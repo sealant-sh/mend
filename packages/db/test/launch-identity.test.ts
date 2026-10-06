@@ -170,7 +170,7 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
       Effect.gen(function* () {
         const tokens = yield* SessionChannelTokensRepo;
         const own = yield* tokens.issue("s-person", "launch:s-person:1:a");
-        const maria = yield* tokens.issuePerson("s-person", "launch:s-person:1:a", "user-maria");
+        const maria = yield* tokens.issuePerson("launch:s-person:1:a", "user-maria");
         const before = {
           maria: yield* tokens.resolve(maria),
           own: yield* tokens.resolve(own),
@@ -181,7 +181,12 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
       }),
     );
     expect(result.before).toEqual({
-      maria: { sessionId: "s-person", launchId: "launch:s-person:1:a", accountId: "user-maria" },
+      // A sentinel session no older server matches (review of mend#553, P3-2).
+      maria: {
+        sessionId: "person:user-maria",
+        launchId: "launch:s-person:1:a",
+        accountId: "user-maria",
+      },
       own: { sessionId: "s-person", launchId: "launch:s-person:1:a", accountId: null },
       verified: null,
     });

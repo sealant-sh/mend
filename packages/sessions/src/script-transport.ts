@@ -5,7 +5,8 @@
  * Authorization header — never printed, never logged.
  *
  * In a person-layout executor (docs/adr/0016, decision 4) every process Mend starts names its
- * person's token file: the script then speaks as that person, over the endpoint only, and never
+ * person's token file, and any other process of a person finds it in their passwd home (review
+ * of mend#553, P2-1): the script then speaks as that person, over the endpoint only, and never
  * through a socket (a socket carries no token, so whoever answers on it would decide who pushes)
  * nor with the workspace's own token, which the server refuses there anyway.
  */
@@ -16,7 +17,18 @@ const fs = require("node:fs");
 const SOCKET = "/run/mend/mend.sock";
 const ENDPOINT = process.env.MEND_SESSION_ENDPOINT || "";
 const SESSION_ID = process.env.MEND_SESSION_ID || "";
-const TOKEN_FILE = process.env.MEND_SESSION_TOKEN_FILE || "";
+// A person's process Mend started without its environment (a setup command, the dependency
+// install, a Remote-SSH login) still speaks as its own user: the token file in its passwd home,
+// from passwd, never $HOME. Root, and a user with no such file, use the workspace's token as before.
+const TOKEN_FILE = (() => {
+  const named = process.env.MEND_SESSION_TOKEN_FILE || "";
+  if (named !== "") return named;
+  if (typeof process.getuid !== "function" || process.getuid() === 0) return "";
+  let home = "";
+  try { home = require("node:os").userInfo().homedir; } catch { return ""; }
+  const own = home + "/.mend/session-token";
+  return home !== "" && fs.existsSync(own) ? own : "";
+})();
 const TOKEN = (() => {
   if (TOKEN_FILE === "") return process.env.MEND_SESSION_TOKEN || "";
   try { return fs.readFileSync(TOKEN_FILE, "utf8").trim(); } catch { return ""; }

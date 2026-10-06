@@ -3072,19 +3072,6 @@ const agentMemoryHomesMigration = Effect.gen(function* () {
  * - `image_layout_capabilities`: what an executor's prepare found about its image and runtime,
  *   per image key, which wins over Core's report for the same image.
  */
-/**
- * docs/adr/0016, decision 4 (Delivery 13): git and Mend identity per process. A session channel
- * token is either the launch's own (`account_id` null: sealantd's capture channel, and in a
- * `shared` executor everything, as before) or one person's in that launch, which the SSH shim and
- * the `mend` helper present from `~/.mend/session-token`. A Service remembers who started it, so
- * a restart in a person executor runs as them (null: its session's owner, as before).
- */
-const personIdentityMigration = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* sql`ALTER TABLE session_channel_tokens ADD COLUMN account_id text`;
-  yield* sql`ALTER TABLE services ADD COLUMN started_by text`;
-});
-
 const harnessLayoutMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -3123,6 +3110,19 @@ const harnessLayoutMigration = Effect.gen(function* () {
       observed_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (image_key, runtime)
     )`;
+});
+
+/**
+ * docs/adr/0016, decision 4 (Delivery 13): git and Mend identity per process. A session channel
+ * token is either the launch's own (`account_id` null: sealantd's capture channel, and in a
+ * `shared` executor everything, as before) or one person's in that launch, which the SSH shim and
+ * the `mend` helper present from `~/.mend/session-token`. A Service remembers who started it, so
+ * a restart in a person executor runs as them (null: its session's owner, as before).
+ */
+const personIdentityMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_channel_tokens ADD COLUMN account_id text`;
+  yield* sql`ALTER TABLE services ADD COLUMN started_by text`;
 });
 
 export const migrations = {

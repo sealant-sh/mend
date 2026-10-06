@@ -27,13 +27,19 @@ export const CHANNEL_OWNER_RUNS =
   "only the session owner runs commands in its workspace, even while control is shared";
 
 /**
- * What the workspace's own token reaches in a person executor: the capture routes of its launch,
- * and nothing else. Every other route answers with why.
+ * What the workspace's own token reaches in a person executor: the capture routes of its launch
+ * and the pickups of its launch (every workspace write and every person's identity arrives
+ * through one; a ticket carries its own binding), and nothing else. Every other route answers
+ * with why.
  */
-export const containerTokenRefused = (capture: SessionCaptureApi | undefined): SessionSocketApi => {
+export const containerTokenRefused = (
+  capture: SessionCaptureApi | undefined,
+  pickup: SessionSocketApi["pickup"],
+): SessionSocketApi => {
   const refused = () => Effect.die(new Error(CONTAINER_TOKEN_REFUSED));
   return {
     capture,
+    pickup,
     recipes: refused,
     listServices: refused,
     runServiceRecipe: refused,

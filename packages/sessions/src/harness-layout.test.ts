@@ -7,6 +7,7 @@ import { defaultWorkspaceImage } from "@mend/domain";
 import { LinuxIdentity } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { runExec, startPickupChannel } from "../test/pickup-channel.ts";
 import { GIT_CREDENTIAL_HELPER_SCRIPT } from "./git-credential.ts";
 import {
   PERSON_SAVED_STATE,
@@ -17,6 +18,9 @@ import {
   parseLayoutReport,
   personHomeScript,
   personLayoutRefusal,
+  gitAuthorConfigText,
+  identityFilesOf,
+  identityPickupScript,
   personPrepareScript,
   personProcessEnv,
   processUserOf,
@@ -313,6 +317,7 @@ describe("the image probe (decision 1)", () => {
       ready: true,
       made: ["m3kq7xj2a", "mf9t2bw4c"],
       unowned: null,
+      failed: [],
     });
     expect(parseLayoutReport("mend-layout probed\nmend-layout ready\n").made).toEqual([]);
   });
@@ -653,7 +658,8 @@ describe("the worktree repair (decision 2)", () => {
 
 describe("a person's Mend identity in their home (decision 4)", () => {
   const TOKEN = "t".repeat(40) + "abc";
-  const identityHome = (root: ReturnType<typeof fakeRoot> | null) => {
+  const AUTHOR = { name: 'Alice "Al" O\'Neil\\', email: "alice@example.com" };
+  const homeOf = (root: ReturnType<typeof fakeRoot> | null) => {
     const dir = root?.dir ?? tempDir("mend-identity-");
     const harnessHome = path.join(dir, "harness-home");
     const home = path.join(dir, "home", alice.name);
@@ -664,64 +670,136 @@ describe("a person's Mend identity in their home (decision 4)", () => {
       tmpRoot: path.join(dir, "tmp"),
       runRoot: path.join(dir, "run"),
       ...(root === null ? {} : { skel: root.skel }),
-      identity: { token: TOKEN, author: { name: "Alice O'Neil", email: "alice@example.com" } },
     });
-    return { home, script };
+    return { dir, home, script };
+  };
+  const channels: Array<{ close: () => Promise<void> }> = [];
+  afterEach(async () => {
+    for (const channel of channels.splice(0)) await channel.close();
+  });
+  const channel = async () => {
+    const opened = await startPickupChannel();
+    channels.push(opened);
+    return opened;
+  };
+  const identityTicket = (
+    opened: Awaited<ReturnType<typeof startPickupChannel>>,
+    home: string,
+    author: { readonly name: string; readonly email: string } | null = AUTHOR,
+  ) => {
+    const files = identityFilesOf(home);
+    return opened.mint([
+      { path: files.token, bytes: new TextEncoder().encode(TOKEN) },
+      ...(author === null
+        ? []
+        : [
+            { path: files.gitConfig, bytes: new TextEncoder().encode(gitAuthorConfigText(author)) },
+          ]),
+    ]);
   };
 
-  it("writes their session token 0600 in a real ~/.mend, and their git author in ~/.config/git/config", () => {
-    const { home, script } = identityHome(null);
-    const run = sh(script);
+  it("makes a real ~/.mend (0700) and ~/.config/git for them, with nothing in either yet", () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    expect(fs.lstatSync(path.join(home, ".mend")).isDirectory()).toBe(true);
+    expect(fs.statSync(path.join(home, ".mend")).mode & 0o777).toBe(0o700);
+    expect(fs.lstatSync(path.join(home, ".config/git")).isDirectory()).toBe(true);
+    expect(fs.readdirSync(path.join(home, ".mend"))).toEqual([]);
+  });
+
+  it("writes their token 0600 and their git author from a pickup, and neither rides the exec's arguments", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const opened = await channel();
+    const ticket = identityTicket(opened, home);
+    const argv = ["sh", "-c", identityPickupScript([{ person: alice, ticket, home }])];
+    for (const arg of argv) {
+      expect(arg).not.toContain(TOKEN);
+      expect(arg).not.toContain("alice@example.com");
+    }
+    const run = await runExec(argv, opened.env);
     expect(run.stderr).toBe("");
     expect(run.status).toBe(0);
+    expect(run.stdout).toBe(`mend-layout identity ${alice.name}\n`);
     const token = path.join(home, ".mend/session-token");
     expect(fs.readFileSync(token, "utf8")).toBe(TOKEN);
     expect(fs.statSync(token).mode & 0o777).toBe(0o600);
-    expect(fs.lstatSync(path.join(home, ".mend")).isDirectory()).toBe(true);
-    expect(fs.statSync(path.join(home, ".mend")).mode & 0o777).toBe(0o700);
-    expect(fs.existsSync(`${token}.next`)).toBe(false);
+    expect(fs.readdirSync(path.join(home, ".mend"))).toEqual(["session-token"]);
+    // Git reads the author back exactly, quotes and backslash included.
     const config = (key: string) =>
       spawnSync("git", ["config", "--file", path.join(home, ".config/git/config"), key], {
         encoding: "utf8",
-      }).stdout.trim();
-    expect(config("user.name")).toBe("Alice O'Neil");
-    expect(config("user.email")).toBe("alice@example.com");
-    // Written again (a later executor, a new token), it replaces the token in place.
-    expect(sh(script.replace(TOKEN, "n".repeat(43))).status).toBe(0);
-    expect(fs.readFileSync(token, "utf8")).toBe("n".repeat(43));
+      }).stdout.replace(/\n$/, "");
+    expect(config("user.name")).toBe(AUTHOR.name);
+    expect(config("user.email")).toBe(AUTHOR.email);
+    // The ticket is spent: presented again, it is refused, and nothing is written.
+    const again = await runExec(argv, opened.env);
+    expect(again.status).toBe(1);
+    expect(again.stdout).toContain(
+      `mend-layout failed ${alice.name} identity: the pickup was refused`,
+    );
+    expect(opened.redemptions()).toBe(2);
   });
 
-  it("as root gives the user their token, ~/.mend and their git config", () => {
+  it("skips a person prepare did not make, and never presents their ticket", async () => {
+    const opened = await channel();
+    const home = path.join(tempDir("mend-identity-"), "home", alice.name);
+    const ticket = identityTicket(opened, home);
+    const run = await runExec(
+      ["sh", "-c", identityPickupScript([{ person: alice, ticket, home }])],
+      opened.env,
+    );
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe("");
+    expect(opened.redemptions()).toBe(0);
+    expect(opened.tickets.size()).toBe(1);
+  });
+
+  it("as root gives the files to their person", async () => {
+    // Under a fake root, `id -u` says 0; node's own uid decides the chown, so as a non-root test
+    // it only shows the files are written where a root run would give them away.
     const root = fakeRoot();
-    const { home, script } = identityHome(root);
+    const { home, script } = homeOf(root);
     expect(root.run(script).status).toBe(0);
-    const log = root.log();
-    expect(log).toContain(`chown 40012:40000 ${home}/.mend ${home}/.mend/session-token.next`);
-    expect(log).toContain(
-      `chown 40012:40000 ${home}/.config ${home}/.config/git ${home}/.config/git/config`,
+    expect(root.log()).toContain(
+      `chown 40012:40000 ${home}/.mend ${home}/.config ${home}/.config/git`,
     );
   });
 
-  it("refuses a ~/.mend that is a link, and anything but a token", () => {
-    const { home, script } = identityHome(null);
+  it("refuses a ~/.mend that is a link, and a ticket that is not one", () => {
+    const { home, script } = homeOf(null);
     fs.mkdirSync(home, { recursive: true });
     fs.symlinkSync(tempDir("elsewhere-"), path.join(home, ".mend"));
     const run = sh(script);
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain("unexpected link");
-    expect(() =>
-      personHomeScript(alice, {
-        harnessHome: "/hh",
-        identity: { token: "x'; rm -rf / #", author: null },
-      }),
-    ).toThrow("a session token");
+    expect(() => identityPickupScript([{ person: alice, ticket: "x'; rm -rf / #" }])).toThrow(
+      "a pickup ticket",
+    );
   });
 
-  it("names the process's session and its person's token file in every process's environment", () => {
+  it("names the process's session and its person's token file, and blanks shared logins", () => {
     expect(personProcessEnv("/workspace/harness-home", alice, "sess-1")).toMatchObject({
       MEND_SESSION_ID: "sess-1",
       MEND_SESSION_TOKEN_FILE: "/home/m3kq7xj2a/.mend/session-token",
+      GH_TOKEN: "",
+      GITHUB_TOKEN: "",
+      CLAUDE_CODE_OAUTH_TOKEN: "",
     });
+  });
+});
+
+describe("a person who cannot be made says why (review of mend#552, P3-8)", () => {
+  it("names the person and their last words in the report", () => {
+    const root = fakeRoot();
+    root.failUseradd();
+    const { script } = prepare(root, [{ person: alice, ifSaved: false }]);
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.failed).toHaveLength(1);
+    expect(report.failed[0]).toMatch(new RegExp(`^${alice.name}`));
+    expect(
+      parseLayoutReport("mend-layout failed m3kq7xj2a useradd: uid 40012 is not unique\n").failed,
+    ).toEqual(["m3kq7xj2a: useradd: uid 40012 is not unique"]);
   });
 });
 
@@ -732,11 +810,18 @@ describe("mend-git-credential (decision 4)", () => {
     fs.writeFileSync(script, GIT_CREDENTIAL_HELPER_SCRIPT, { mode: 0o755 });
     const home = path.join(dir, "home");
     fs.mkdirSync(path.join(home, ".config/gh"), { recursive: true });
+    // The helper reads the passwd home, never $HOME: the test hands it one through os.userInfo,
+    // and points HOME elsewhere to show HOME is not what it reads.
+    const passwd = path.join(dir, "passwd-home.cjs");
+    fs.writeFileSync(
+      passwd,
+      `const os = require("node:os"); const real = os.userInfo; os.userInfo = (o) => ({ ...real(o), homedir: ${JSON.stringify(home)} });`,
+    );
     const run = (args: ReadonlyArray<string>, input = "") =>
-      spawnSync(process.execPath, [script, ...args], {
+      spawnSync(process.execPath, ["--require", passwd, script, ...args], {
         encoding: "utf8",
         input,
-        env: { ...process.env, HOME: home },
+        env: { ...process.env, HOME: path.join(dir, "not-the-home") },
       });
     const hosts = (text: string) => fs.writeFileSync(path.join(home, ".config/gh/hosts.yml"), text);
     return { run, hosts };

@@ -26,10 +26,10 @@ import * as Context from "effect/Context";
 
 import {
   type LayoutCapability,
-  type PersonIdentity,
   type PrepareFinding,
   UNKNOWN_CAPABILITY,
   decideHarnessLayout,
+  identityPickupScript,
   imageLayoutKeyOf,
   layoutProbeScript,
   ownerMapRefusal,
@@ -142,20 +142,22 @@ export interface HarnessLayoutSteps {
   /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
   readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
-   * What each person prepare makes receives in their home (docs/adr/0016, decision 4): a Mend
-   * session token of this launch, and their git author. Null for a shared launch, which mints
-   * nothing. Database work only: it rides prepare's exec, so it adds none.
+   * One identity pickup ticket per person prepare may make (docs/adr/0016, decision 4), by
+   * account: what prepare's exec redeems for each person it makes, their Mend token of this
+   * launch and their git author, minted only at redemption, so a person prepare skips gets none.
+   * Null for a shared launch. Memory only: it rides prepare's exec, so it adds no exec; the
+   * caller discards the tickets when that exec ends.
    */
-  readonly prepareIdentities: (input: {
+  readonly prepareTickets: (input: {
     readonly layout: LaunchLayout;
     readonly launchId: string;
     readonly sessionId: string;
-  }) => Effect.Effect<ReadonlyMap<string, PersonIdentity> | null>;
+  }) => Effect.Effect<ReadonlyMap<string, string> | null>;
   /** What prepare runs in the executor's first exec for this layout, after the helper install. */
   readonly prepareScript: (
     layout: LaunchLayout,
     places: { readonly harnessHome: string; readonly repo: string },
-    identities?: ReadonlyMap<string, PersonIdentity> | null,
+    tickets?: ReadonlyMap<string, string> | null,
   ) => string | null;
   /**
    * What prepare's output says, recorded: the person layout confirmed (the worktree is person
@@ -207,17 +209,17 @@ export interface HarnessLayoutSteps {
 export const layoutPrepareScript: HarnessLayoutSteps["prepareScript"] = (
   layout,
   places,
-  identities,
+  tickets,
 ) => {
   if (layout.layout === "person") {
-    const identityOf = (person: LinuxIdentity) => {
-      const identity = identities?.get(person.accountId);
-      return identity === undefined ? {} : { identity };
+    const ticketOf = (person: LinuxIdentity) => {
+      const ticket = tickets?.get(person.accountId);
+      return ticket === undefined ? {} : { ticket };
     };
     return personPrepareScript(
       [
-        { person: layout.launcher, ifSaved: false, ...identityOf(layout.launcher) },
-        ...layout.members.map((person) => ({ person, ifSaved: true, ...identityOf(person) })),
+        { person: layout.launcher, ifSaved: false, ...ticketOf(layout.launcher) },
+        ...layout.members.map((person) => ({ person, ifSaved: true, ...ticketOf(person) })),
       ],
       places,
     );
@@ -245,16 +247,17 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly organizations: OrganizationsRepo["Service"];
   readonly sealant: Pick<SealantClientShape, "exec">;
   readonly harnessHome: string;
-  /** A person's Mend session token in a launch (`SessionChannelTokensRepo.issuePerson`). */
-  readonly issueToken: (input: {
+  /**
+   * An identity pickup ticket (purpose `session-token`) for `person` in `launchId`, bound to them:
+   * redeemed, it answers their Mend token, minted then, and their git author.
+   */
+  readonly identityTicket: (input: {
     readonly sessionId: string;
     readonly launchId: string;
-    readonly accountId: string;
+    readonly person: LinuxIdentity;
   }) => Effect.Effect<string>;
-  /** A person's git author, as `applyGitAuthor` resolves it; null when they have none. */
-  readonly authorOf: (
-    accountId: string,
-  ) => Effect.Effect<{ readonly name: string; readonly email: string } | null>;
+  /** Forget a ticket the exec that carried it no longer needs (`PickupTickets.discard`). */
+  readonly discardTicket: (ticket: string) => void;
   /** Starts work that nothing waits on (the worktree repair). */
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>;
 }): HarnessLayoutSteps => {
@@ -265,35 +268,20 @@ export const makeHarnessLayoutSteps = (deps: {
   /** Whose process started last in an executor's worktree, per workspace. */
   const lastIn = bounded<string, string>();
 
-  const identityFor = Effect.fn("HarnessLayoutSteps.identityFor")(function* (input: {
-    readonly sessionId: string;
-    readonly launchId: string;
-    readonly accountId: string;
-  }) {
-    const [token, author] = yield* Effect.all(
-      [deps.issueToken(input), deps.authorOf(input.accountId)],
-      { concurrency: "unbounded" },
-    );
-    return { token, author } satisfies PersonIdentity;
-  });
-
-  const prepareIdentities: HarnessLayoutSteps["prepareIdentities"] = Effect.fn(
-    "HarnessLayoutSteps.prepareIdentities",
+  const prepareTickets: HarnessLayoutSteps["prepareTickets"] = Effect.fn(
+    "HarnessLayoutSteps.prepareTickets",
   )(function* (input) {
     const { layout } = input;
     if (layout.layout !== "person") return null;
-    const people = [layout.launcher, ...layout.members];
-    const identities = yield* Effect.forEach(
-      people,
+    const tickets = yield* Effect.forEach(
+      [layout.launcher, ...layout.members],
       (person) =>
-        identityFor({
-          sessionId: input.sessionId,
-          launchId: input.launchId,
-          accountId: person.accountId,
-        }).pipe(Effect.map((identity) => [person.accountId, identity] as const)),
-      { concurrency: "unbounded" },
+        deps
+          .identityTicket({ sessionId: input.sessionId, launchId: input.launchId, person })
+          .pipe(Effect.map((ticket) => [person.accountId, ticket] as const)),
+      { concurrency: 4 },
     );
-    return new Map(identities);
+    return new Map(tickets);
   });
 
   const capabilityFor = Effect.fn("HarnessLayoutSteps.capabilityFor")(function* (
@@ -457,7 +445,9 @@ export const makeHarnessLayoutSteps = (deps: {
     const missing =
       report.missing.length > 0
         ? report.missing
-        : [report.probed ? "the users could not be made" : "the image could not be checked"];
+        : report.failed.length > 0
+          ? report.failed
+          : [report.probed ? "the users could not be made" : "the image could not be checked"];
     if (report.probed && report.missing.length > 0) {
       yield* repo.recordCapability({
         imageKey: layout.imageKey,
@@ -520,17 +510,21 @@ export const makeHarnessLayoutSteps = (deps: {
       if (!made.has(identity.accountId)) {
         // Their first process in this executor: their user, home and saved directory (one exec,
         // idempotent, so a server restart that forgot costs one more and changes nothing).
-        // Their Mend token and git author ride the same exec (decision 4): no exec of their own.
-        const personIdentity = yield* identityFor({
+        // Their Mend token and git author ride the same exec through a pickup (decision 4): no
+        // exec of their own, and neither in its arguments.
+        const ticket = yield* deps.identityTicket({
           sessionId: input.sessionId,
           launchId: input.launchId ?? "",
-          accountId: identity.accountId,
+          person: identity,
         });
-        const result = yield* sealant.exec(input.workspace, [
-          "sh",
-          "-c",
-          personHomeScript(identity, { harnessHome: deps.harnessHome, identity: personIdentity }),
-        ]);
+        const result = yield* sealant
+          .exec(input.workspace, [
+            "sh",
+            "-c",
+            `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
+              identityPickupScript([{ person: identity, ticket }]),
+          ])
+          .pipe(Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))));
         if (result.exitCode !== 0) {
           return yield* new SealantPlatformError({
             code: "person_user_not_made",
@@ -586,7 +580,7 @@ export const makeHarnessLayoutSteps = (deps: {
     decide,
     mayRunPerson,
     standbyMayServe,
-    prepareIdentities,
+    prepareTickets,
     prepareScript: layoutPrepareScript,
     settlePrepare,
     layoutOfLaunch,
