@@ -202,7 +202,8 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   }
   const delivery = deliveryWindow(milestones);
   if (delivery !== null) {
-    rec.sample(`${prefix}.delivery`, delivery, "ms", "delivery");
+    // A join that launched cold is kept apart, unbudgeted, like its first output.
+    rec.sample(`${prefix}.delivery`, delivery, "ms", prefix.endsWith(".cold") ? null : "delivery");
   } else {
     rec.notRun(`${prefix}.delivery`, "the delivery milestones were not in the log");
   }
