@@ -139,7 +139,7 @@ import {
   type CaptureFlushKind,
   PersonLayoutPlatform,
   PersonLayoutPlatformLive,
-  type ProcessUserOption,
+  type PersonSessionOptions,
   SealantClient,
   SealantPlatformError,
   SealantPrincipal,
@@ -383,7 +383,8 @@ const sealantLaunchLayer = (
     Effect.succeed(new Date("2030-01-01T00:00:00.000Z")),
   /** Per-PTY observed state a test flips to simulate an exit the watcher must notice. */
   ptyStates?: Map<string, InteractiveSessionStatus>,
-  openedOptions?: Array<SessionOptions & ProcessUserOption>,
+  /** What the platform's `sessions.open` and Mend's `openSession` were each given. */
+  openedOptions?: Array<SessionOptions | PersonSessionOptions>,
   createWorkspaceOverride?: (
     options: CreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>,
@@ -582,6 +583,16 @@ const sealantLaunchLayer = (
       return this;
     },
     expire: async () => undefined,
+    image: async () => null,
+    credentials: {
+      put: async () => {
+        throw new Error("not in test");
+      },
+      release: async () => {
+        throw new Error("not in test");
+      },
+      list: async () => [],
+    },
   };
   return Layer.succeed(SealantClient, {
     createWorkspace: (options, launch) =>
@@ -23095,7 +23106,7 @@ interface Scenario {
   readonly resume: number;
   readonly created: number;
   readonly homes: ReadonlyArray<string | undefined>;
-  readonly opened: ReadonlyArray<SessionOptions & ProcessUserOption>;
+  readonly opened: ReadonlyArray<PersonSessionOptions>;
   readonly users: ReadonlyArray<string | null>;
   readonly execs: ReadonlyArray<ReadonlyArray<string>>;
   readonly worktreeId: string;
@@ -23117,7 +23128,7 @@ const coldJoinResume = async (options: {
 }): Promise<Scenario> => {
   const created: Array<CreateOptions> = [];
   const execCalls: Array<ReadonlyArray<string>> = [];
-  const opened: Array<SessionOptions & ProcessUserOption> = [];
+  const opened: Array<PersonSessionOptions> = [];
   const users: Array<string | null> = [];
   const homes: Array<string | undefined> = [];
   const memory = makeMemoryCaptureStore();
@@ -23354,7 +23365,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     readonly harnessLayout?: HarnessLayout;
   }) => {
     const created: Array<CreateOptions> = [];
-    const opened: Array<SessionOptions & ProcessUserOption> = [];
+    const opened: Array<PersonSessionOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
     const stops: Array<"drain" | "discard"> = [];
     const order: Array<string> = [];

@@ -95,6 +95,12 @@ const fakeWorkspace: Workspace = {
     return this;
   },
   expire: async () => undefined,
+  image: async () => null,
+  credentials: {
+    put: async () => new Promise(() => {}),
+    release: async () => new Promise(() => {}),
+    list: async () => [],
+  },
 };
 
 const sealantFakeLayer = Layer.succeed(SealantClient, {

@@ -84,6 +84,12 @@ const fakeWorkspace = (id: string): Workspace => ({
     return this;
   },
   expire: async () => undefined,
+  image: async () => null,
+  credentials: {
+    put: async () => new Promise(() => {}),
+    release: async () => new Promise(() => {}),
+    list: async () => [],
+  },
 });
 
 const process = (overrides: Partial<SessionProcess>): SessionProcess =>
