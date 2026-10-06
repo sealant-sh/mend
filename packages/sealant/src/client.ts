@@ -7,7 +7,6 @@ import type {
   InferenceRespondOptions,
   InferenceResponse,
   InteractiveSession,
-  SessionOptions,
   Run,
   RunChanges,
   RunCommand,
@@ -17,7 +16,6 @@ import type {
   Workspace,
   WorkspaceCaptureReplanned,
   WorkspaceCaptureStatus,
-  WorkspaceExecOptions,
   WorkspaceExecResult,
   WorkspaceForward,
 } from "@sealant/sdk";
@@ -50,7 +48,8 @@ import { SealantPlatformError } from "./errors.ts";
 import { SealantIdentityStore } from "./identity.ts";
 import {
   credentialsHomeUnsupported,
-  type ProcessUserOption,
+  type PersonExecOptions,
+  type PersonSessionOptions,
   withoutProcessUser,
 } from "./person-layout.ts";
 import { SealantPrincipal } from "./principal.ts";
@@ -643,7 +642,7 @@ export interface SealantClientShape {
   readonly openSession: (
     workspace: Workspace,
     argv: ReadonlyArray<string>,
-    options?: SessionOptions & ProcessUserOption,
+    options?: PersonSessionOptions,
   ) => Effect.Effect<InteractiveSession, SealantPlatformError>;
   /**
    * A raw TCP byte pipe — or a UDP datagram pipe, where one WS frame is
@@ -747,7 +746,7 @@ export interface SealantClientShape {
   readonly exec: (
     workspace: Workspace,
     argv: readonly string[],
-    options?: WorkspaceExecOptions & ProcessUserOption,
+    options?: PersonExecOptions,
   ) => Effect.Effect<WorkspaceExecResult, SealantPlatformError>;
   /**
    * Point a standby workspace's working directory (or a bindable extra mount) at one
@@ -921,10 +920,10 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     const openSession = Effect.fn("SealantClient.openSession")((
       workspace: Workspace,
       argv: ReadonlyArray<string>,
-      options?: SessionOptions & ProcessUserOption,
+      options?: PersonSessionOptions,
     ) => {
-      return withoutProcessUser(argv, options, () =>
-        wrap(() => workspace.sessions.open(argv, options)),
+      return withoutProcessUser(argv, options, (sdkOptions) =>
+        wrap(() => workspace.sessions.open(argv, sdkOptions)),
       );
     });
 
@@ -1027,9 +1026,11 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     const exec = Effect.fn("SealantClient.exec")((
       workspace: Workspace,
       argv: readonly string[],
-      options?: WorkspaceExecOptions & ProcessUserOption,
+      options?: PersonExecOptions,
     ) => {
-      return withoutProcessUser(argv, options, () => wrap(() => workspace.exec(argv, options)));
+      return withoutProcessUser(argv, options, (sdkOptions) =>
+        wrap(() => workspace.exec(argv, sdkOptions)),
+      );
     });
     const bindWorkspace = Effect.fn("SealantClient.bindWorkspace")(
       (workspace: Workspace, options: WorkspaceBindOptions) =>

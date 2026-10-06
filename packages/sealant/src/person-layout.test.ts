@@ -67,6 +67,8 @@ describe("today's platform", () => {
       stop: never,
       restart: never,
       expire: never,
+      image: never,
+      credentials: { put: never, release: never, list: never },
     };
     for (const call of [
       platform.postCredentials(workspace, { onBehalfOf: "a", home: "/root", credentials: {} }),

@@ -1,5 +1,10 @@
 import type { WorkspaceImage } from "@mend/domain";
-import type { Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
+import type {
+  SessionOptions,
+  Workspace,
+  WorkspaceCredentialsOptions,
+  WorkspaceExecOptions,
+} from "@sealant/sdk";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -25,6 +30,16 @@ export interface ProcessUserOption {
   /** Absent: root, as every process ran before 0.36. */
   readonly user?: ProcessUser;
 }
+
+/**
+ * A session's options: the SDK's, with Mend's `ProcessUser` in place of the SDK's `user` (a passwd
+ * name or uid, Core 0.39.0-next.694). Mend sends the SDK no `user` until the person layout's
+ * platform layer passes it through.
+ */
+export type PersonSessionOptions = Omit<SessionOptions, "user"> & ProcessUserOption;
+
+/** An exec's options, the same way (`PersonSessionOptions`). */
+export type PersonExecOptions = Omit<WorkspaceExecOptions, "user"> & ProcessUserOption;
 
 /**
  * Core's report on an image, read before create (decision 1; Core Delivery 8, from the image
@@ -148,12 +163,16 @@ export const credentialsHomeUnsupported = () =>
   });
 
 /**
- * Runs `run` only when no user is asked for: today's SDK starts every process as root, so a
- * process asked for as a person is refused before anything reaches the platform.
+ * Runs `run` only when no user is asked for, with the options minus `user`: Mend starts every
+ * process as root until the person layout's platform layer passes a user through, so a process
+ * asked for as a person is refused before anything reaches the platform.
  */
-export const withoutProcessUser = <A, E>(
+export const withoutProcessUser = <O extends ProcessUserOption, A, E>(
   argv: ReadonlyArray<string>,
-  options: ProcessUserOption | undefined,
-  run: () => Effect.Effect<A, E>,
-): Effect.Effect<A, E | SealantPlatformError> =>
-  options?.user === undefined ? run() : Effect.fail(processUserUnsupported(argv));
+  options: O | undefined,
+  run: (options: Omit<O, "user"> | undefined) => Effect.Effect<A, E>,
+): Effect.Effect<A, E | SealantPlatformError> => {
+  if (options === undefined) return run(undefined);
+  const { user, ...rest } = options;
+  return user === undefined ? run(rest) : Effect.fail(processUserUnsupported(argv));
+};
