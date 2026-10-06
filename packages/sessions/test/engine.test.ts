@@ -2983,15 +2983,21 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
     })),
   ).pipe(Layer.provide(SessionChannelTokensRepoMemory));
 
-/** The in-memory layouts repo, recording every launch and worktree layout it is asked for. */
+/**
+ * The in-memory layouts repo, recording every launch and worktree layout it is asked for, and
+ * every "is anything recorded" query (`anyRecorded`) in `queries`.
+ */
 const countingLaunchLayoutReads = (
   reads: Array<string>,
   state?: HarnessLayoutsMemoryState,
+  queries: Array<string> = [],
 ): Layer.Layer<HarnessLayoutsRepo> =>
   Layer.effect(
     HarnessLayoutsRepo,
     Effect.map(HarnessLayoutsRepo, (inner) => ({
       ...inner,
+      anyRecorded: () =>
+        Effect.sync(() => queries.push("anyRecorded")).pipe(Effect.andThen(inner.anyRecorded())),
       launchLayout: (launchId: string) =>
         Effect.sync(() => reads.push(launchId)).pipe(Effect.andThen(inner.launchLayout(launchId))),
       worktreeLayout: (worktreeId: WorktreeId) =>
@@ -3038,6 +3044,20 @@ const exposing = (
           return client;
         }),
       ).pipe(Layer.provideMerge(layer));
+
+/** The sessions repo given, recording every session read by id in `reads`. */
+const countingSessionReads = (
+  reads: Array<string>,
+  base: Layer.Layer<SessionsRepo>,
+): Layer.Layer<SessionsRepo> =>
+  Layer.effect(
+    SessionsRepo,
+    Effect.map(SessionsRepo, (inner) => ({
+      ...inner,
+      byId: (id: SessionId) =>
+        Effect.sync(() => reads.push(id)).pipe(Effect.andThen(inner.byId(id))),
+    })),
+  ).pipe(Layer.provide(base));
 
 const withEngine = <A, E>(
   work: (
@@ -3119,7 +3139,11 @@ const withEngine = <A, E>(
       readonly platform?: Layer.Layer<PersonLayoutPlatform>;
       /** Every launch whose recorded layout was read from the repo, in order. */
       readonly launchLayoutReads?: Array<string>;
+      /** Every `anyRecorded` query the engine made, in order. */
+      readonly anyRecordedQueries?: Array<string>;
     };
+    /** Every session row read by id (`SessionsRepo.byId`), in order. */
+    readonly sessionReads?: Array<string>;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -3196,7 +3220,11 @@ const withEngine = <A, E>(
     ),
     Layer.provide(settingsLayer(options.workspaceImage)),
     Layer.provide(projectsLayer(world)),
-    Layer.provide(sessionsLayer(world)),
+    Layer.provide(
+      options.sessionReads === undefined
+        ? sessionsLayer(world)
+        : countingSessionReads(options.sessionReads, sessionsLayer(world)),
+    ),
     Layer.provide(sessionRunsLayer(world)),
     Layer.provide(sessionProcessesLayer(world)),
     Layer.provide(
@@ -3257,11 +3285,13 @@ const withEngine = <A, E>(
     ),
     Layer.provide(
       Layer.mergeAll(
-        options.harnessLayout?.launchLayoutReads === undefined
+        options.harnessLayout?.launchLayoutReads === undefined &&
+          options.harnessLayout?.anyRecordedQueries === undefined
           ? harnessLayoutsRepoMemory(options.harnessLayout?.state)
           : countingLaunchLayoutReads(
-              options.harnessLayout.launchLayoutReads,
-              options.harnessLayout.state,
+              options.harnessLayout?.launchLayoutReads ?? [],
+              options.harnessLayout?.state,
+              options.harnessLayout?.anyRecordedQueries,
             ),
         options.harnessLayout?.platform ?? PersonLayoutPlatformLive,
         Layer.succeed(HarnessLayoutConfig, { flag: options.harnessLayout?.flag ?? "shared" }),
@@ -23989,6 +24019,49 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(outcome._tag).toBe("SessionTurnRefusedError");
     expect(authors).toEqual(["user-fixture"]);
     expect(submitted).toEqual(["mine"]);
+  });
+
+  it("with the flag off and nothing recorded, a steered turn reads nothing and nothing polls the store", async () => {
+    const authors: Array<string | null> = [];
+    const submitted: Array<string> = [];
+    const sessionReads: Array<string> = [];
+    const anyRecordedQueries: Array<string> = [];
+    const turnReads = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          // The capture reaper's first tick runs as the engine starts: let it.
+          yield* Effect.sleep(Duration.millis(50));
+          const before = sessionReads.length;
+          for (const author of [MARIA, "user-fixture", MARIA]) {
+            yield* engine.submitTurn(session.id, `from ${author}`, author);
+          }
+          return sessionReads.length - before;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        protocolHostLayer: recordingProtocolHostLayer([], submitted, authors),
+        sealantLayer: sealantLaunchLayer([]),
+        sessionReads,
+        harnessLayout: { flag: "shared", anyRecordedQueries },
+      },
+    );
+    expect(authors).toEqual([MARIA, "user-fixture", MARIA]);
+    // Three steered turns, another person's among them: each reads the session once, to run as
+    // its owner (`owned`), as before mend#551, and no read for the layout on top.
+    expect(turnReads).toBe(3);
+    // The one query at startup, and none on any reaper tick since.
+    expect(anyRecordedQueries).toEqual(["anyRecorded"]);
   });
 });
 

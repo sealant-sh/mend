@@ -110,7 +110,12 @@ export const SHARED_AS_BEFORE: LaunchLayout = {
 
 /** A launch refused before create, with the line the session settles on (decision 14). */
 export const layoutRefused = (message: string) =>
-  new SealantPlatformError({ code: "harness_layout_refused", status: 409, message, cause: null });
+  new SealantPlatformError({
+    code: "harness_layout_refused",
+    status: 409,
+    message,
+    cause: null,
+  });
 
 /** What prepare found, once the executor exists. */
 export type PrepareOutcome =
@@ -141,17 +146,19 @@ export interface HarnessLayoutSteps {
    */
   readonly mayRunPerson: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
+   * Whether any worktree may run the person layout at all: the flag on, or a layout recorded (at
+   * startup, or since). Answered from memory. False means `mayRunPerson` answers false for every
+   * worktree without a read, so a caller may skip the reads it would make to ask it.
+   */
+  readonly personPossible: () => boolean;
+  /**
    * A worktree's layout was just recorded outside these steps (the operator's `harnessLayout`):
-   * from now on the steps read the store again.
+   * from now on the steps read the store again. With the flag off and nothing recorded, it is the
+   * only way a layout gets recorded (`decide` records nothing then), so nothing polls the store for
+   * one (docs/adr/0016). Mend runs one engine; a record another engine made over the same database
+   * is not seen until a restart (deploy/aws/issues-for-real-ha.md, A6).
    */
   readonly noteRecorded: () => void;
-  /**
-   * While nothing is recorded and the flag is off, ask the store again (one `EXISTS` query): the
-   * engine's reaper tick runs it, so a record another engine made is seen within a tick rather
-   * than never (review 5 of mend#553, P3-4). Mend runs one engine; this narrows the gap if two
-   * ever share a database (deploy/aws/issues-for-real-ha.md). Never fails.
-   */
-  readonly refreshRecorded: () => Effect.Effect<void>;
   /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
   readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
@@ -210,7 +217,10 @@ export interface HarnessLayoutSteps {
     /** That session's worktree, which a person's identity ticket names. */
     readonly worktreeId: string;
   }) => Effect.Effect<
-    { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
+    {
+      readonly user: ProcessUser;
+      readonly env: Readonly<Record<string, string>>;
+    } | null,
     SealantPlatformError
   >;
   /** The refusal of a turn whose author is not the process's person, in a person executor. */
@@ -234,8 +244,16 @@ export const layoutPrepareScript: HarnessLayoutSteps["prepareScript"] = (
     };
     return personPrepareScript(
       [
-        { person: layout.launcher, ifSaved: false, ...ticketOf(layout.launcher) },
-        ...layout.members.map((person) => ({ person, ifSaved: true, ...ticketOf(person) })),
+        {
+          person: layout.launcher,
+          ifSaved: false,
+          ...ticketOf(layout.launcher),
+        },
+        ...layout.members.map((person) => ({
+          person,
+          ifSaved: true,
+          ...ticketOf(person),
+        })),
       ],
       places,
     );
@@ -323,10 +341,16 @@ export const makeHarnessLayoutSteps = (deps: {
   const capabilityFor = Effect.fn("HarnessLayoutSteps.capabilityFor")(function* (
     image: WorkspaceImage,
   ) {
-    const obstacle = staticLayoutObstacle(image, { processUser: platform.processUser });
+    const obstacle = staticLayoutObstacle(image, {
+      processUser: platform.processUser,
+    });
     if (obstacle !== null) {
       return {
-        capability: { person: false, missing: [obstacle], source: "static" } as const,
+        capability: {
+          person: false,
+          missing: [obstacle],
+          source: "static",
+        } as const,
         imageKey: imageLayoutKeyOf(image, null),
         runtime: "unknown",
       };
@@ -338,7 +362,11 @@ export const makeHarnessLayoutSteps = (deps: {
     const recorded = yield* repo.capabilityOf(imageKey, runtime);
     const capability: LayoutCapability =
       recorded !== null
-        ? { person: recorded.person, missing: recorded.missing, source: "mend" }
+        ? {
+            person: recorded.person,
+            missing: recorded.missing,
+            source: "mend",
+          }
         : report.person !== null
           ? { person: report.person, missing: report.missing, source: "core" }
           : UNKNOWN_CAPABILITY;
@@ -374,7 +402,12 @@ export const makeHarnessLayoutSteps = (deps: {
       const headHasPeople =
         worktree.layout === null && flag === "person" ? yield* input.headHasPeople : false;
       const { capability, imageKey, runtime } = yield* capabilityFor(yield* input.image);
-      const decision = decideHarnessLayout({ flag, worktree, headHasPeople, capability });
+      const decision = decideHarnessLayout({
+        flag,
+        worktree,
+        headHasPeople,
+        capability,
+      });
       if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
       if (decision.layout === "shared") {
         yield* repo.recordLaunch({
@@ -615,7 +648,10 @@ export const makeHarnessLayoutSteps = (deps: {
             ),
             Effect.catch((error) =>
               Effect.logWarning("session engine: worktree repair did not run").pipe(
-                Effect.annotateLogs({ workspaceId: input.workspace.id, message: error.message }),
+                Effect.annotateLogs({
+                  workspaceId: input.workspace.id,
+                  message: error.message,
+                }),
               ),
             ),
             Effect.asVoid,
@@ -641,18 +677,10 @@ export const makeHarnessLayoutSteps = (deps: {
     flag,
     decide,
     mayRunPerson,
+    personPossible: () => !nothingRecorded(),
     noteRecorded: () => {
       layoutsRecorded = true;
     },
-    refreshRecorded: () =>
-      nothingRecorded()
-        ? repo.anyRecorded().pipe(
-            Effect.map((found) => {
-              if (found) layoutsRecorded = true;
-            }),
-            Effect.catchCause(() => Effect.void),
-          )
-        : Effect.void,
     standbyMayServe,
     prepareTickets,
     prepareScript: layoutPrepareScript,

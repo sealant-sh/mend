@@ -13599,8 +13599,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         input: string,
         author: string | null,
       ) {
-        // The owner's own turns ask nothing more; only another person's turn reads the layout.
-        if (capture !== null && author !== null) {
+        // The owner's own turns ask nothing more; only another person's turn reads the layout,
+        // and only once some worktree may run person: with the flag off and nothing recorded, a
+        // turn reads nothing here (docs/adr/0016).
+        if (capture !== null && author !== null && layoutSteps.personPossible()) {
           const session = yield* sessions
             .byId(sessionId)
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -17494,10 +17496,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       if (capture !== null) {
         yield* Effect.forkIn(
           captureReaper().pipe(
-            // Each tick, while nothing is recorded with the flag off, the store is asked again.
-            Effect.andThen(layoutSteps.refreshRecorded()),
-            // And whoever lost access has nothing left running (review 2 of mend#558, P2-1): at
-            // boot, then once a minute, not on every tick.
+            // Whoever lost access has nothing left running (review 2 of mend#558, P2-1): at boot,
+            // then once a minute, not on every tick.
             Effect.andThen(
               Effect.suspend(() => {
                 const now = Date.now();

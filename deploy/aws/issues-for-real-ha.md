@@ -107,9 +107,12 @@ and two engines over one database would disagree about it:
   has a layout recorded. With the flag off and none, it answers `shared` for every launch with no
   store read. An engine started before another one records the first person launch would treat that
   worktree and its launches as `shared`: the workspace token would get git and the helper there, and
-  joiners would run as root on the owner's login. Today it re-asks on every capture reaper tick (10
-  s) while the answer is still "none", which narrows that gap to one tick. It does not close it.
-  Under ownership, the engine that records a layout should notify the others, or the flag goes.
+  joiners would run as root on the owner's login. The engine does not ask again later: with the flag
+  off and nothing recorded, a layout is recorded only through that engine's own write path (an
+  operator's `harnessLayout` on a start that makes a worktree), which updates the flag in memory, so
+  a single engine does no periodic query. A second engine would not see the record until it
+  restarts. Under ownership, the engine that records a layout should notify the others (Postgres
+  `LISTEN`/`NOTIFY` fits), or the flag goes.
 - **The layout cache** (`layoutByLaunch`), **who is made in each executor** (`madeIn`, `lastIn`),
   **pickup tickets** and **cached identity answers**. Each answers only for launches this engine
   made, so under ownership (A2) they stay valid. Without ownership, a pickup minted by one pod and

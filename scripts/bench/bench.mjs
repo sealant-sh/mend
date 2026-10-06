@@ -12,6 +12,19 @@
 //
 // `node scripts/bench/bench.mjs help` lists the options. Everything the benchmark creates is named
 // `st-bench-…` and removed when it ends, whatever happened, and by `cleanup`.
+//
+// What the record keeps apart, so one run's accident does not read as a regression:
+// - An executor's size (`executor.<harness>.*_bytes`) is taken at the launch's first output, a fixed
+//   point; `memory_after_answer_bytes` is what it holds once the answer is in. Records before
+//   `method.executorResources` took it after the answer wait, so `compare` calls the two not
+//   comparable instead of checking one against the other.
+// - A launch whose executor runs a workspace image Docker made during that launch waited for the
+//   build: its numbers go under `new.<harness>.image_built.*` (or `resume.image_built.*`),
+//   unbudgeted, with a note. Every image made during the run is listed in `imageBuilds`. Needs the
+//   host.
+// - A harness that says its account hit a usage limit ("You've hit your weekly limit", "Usage
+//   limit reached") will not answer: the wait ends there, the run gets a note, and `first_turn` is
+//   recorded as not run with that reason, which `compare` prints in place of MISSING.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -27,6 +40,7 @@ import {
   mergeResults,
   parseOptions,
   scenarioOf,
+  RESOURCES_AT_FIRST_OUTPUT,
   settleNotRun,
   withCompanion,
 } from "./lib.mjs";
@@ -63,7 +77,17 @@ output and comparison
   --out <path>                where the record goes (default: /tmp/st-bench-<id>.json)
   --stats <a,b>               compared statistics (default: median,p90)
   --rerun                     compare: run each missed measure's scenario once more (needs the server
-                              options) and fail only on a repeated miss`;
+                              options) and fail only on a repeated miss
+
+what the record keeps apart
+  executor sizes              taken at each launch's first output; memory_after_answer_bytes is what
+                              the executor holds once the answer is in. compare calls a record that took
+                              them after the answer wait (before method.executorResources) not comparable
+  image builds                a launch whose workspace image was built during it (Docker's Created, read
+                              on the host) goes under new.<harness>.image_built.*, unbudgeted; every
+                              image built during the run is listed in imageBuilds
+  usage limits                a harness that says its account hit a usage limit is not waited on:
+                              first_turn is not run, with its words as the reason`;
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const log = (text) => process.stderr.write(`[${new Date().toISOString().slice(11, 19)}] ${text}\n`);
@@ -180,9 +204,13 @@ const newResult = (opts) => ({
     apiRuns: opts.apiRuns,
     secretFile: opts.secretFile,
   },
+  // Where each launch harness's executor size was taken (`compare` reads it).
+  method: { executorResources: RESOURCES_AT_FIRST_OUTPUT },
   measures: {},
   notRun: [],
   notes: [],
+  // Workspace images Docker made during the run; a launch that waited for one is kept apart.
+  imageBuilds: [],
   errors: [],
 });
 

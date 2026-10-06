@@ -173,19 +173,41 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
     });
   });
 
-  it("with the flag off, sees on the reaper tick a layout another engine recorded", async () => {
+  it("with the flag off, asks nothing until Mend itself records a layout, then reads it", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();
         const { steps, reads } = yield* stepsWith("shared", state);
-        const before = yield* steps.mayRunPerson(WorktreeId.make("wt-1"));
-        // Another engine over the same store makes the worktree person.
+        const before = {
+          possible: steps.personPossible(),
+          runsPerson: yield* steps.mayRunPerson(WorktreeId.make("wt-1")),
+        };
+        // The operator's `harnessLayout` on a start that made the worktree: the engine's own
+        // write path notes it, and from then on the steps read the store.
         state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
-        yield* steps.refreshRecorded();
-        return { before, after: yield* steps.mayRunPerson(WorktreeId.make("wt-1")), reads };
+        steps.noteRecorded();
+        const after = {
+          possible: steps.personPossible(),
+          runsPerson: yield* steps.mayRunPerson(WorktreeId.make("wt-1")),
+        };
+        return { before, after, reads };
       }),
     );
-    expect(result).toEqual({ before: false, after: true, reads: ["worktree:wt-1"] });
+    expect(result).toEqual({
+      before: { possible: false, runsPerson: false },
+      after: { possible: true, runsPerson: true },
+      reads: ["worktree:wt-1"],
+    });
+  });
+
+  it("with the flag on, a person layout is always possible", async () => {
+    const possible = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
+        return steps.personPossible();
+      }),
+    );
+    expect(possible).toBe(true);
   });
 
   it("with the flag off, a person worktree recorded before a restart is still read, and still person", async () => {
