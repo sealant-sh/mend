@@ -323,6 +323,9 @@ export const createTenancyApi = async (
         "workspaceCaller",
         {
           observe: () => (self) => self,
+          mayAct: () => Effect.void,
+          creatorOf: () => Effect.succeed(null),
+          recorded: () => Effect.void,
           act: () => (self) => self,
           observeRun: () => (self) => self,
           observeRunStream: () => (self) => self,

@@ -71,6 +71,19 @@ export class WorkspaceCaller extends Context.Service<
       runId: string,
     ) => <A, E, R>(self: Stream.Stream<A, E, R>) => Stream.Stream<A, E, R>;
     /**
+     * Succeeds when the principal in context may act in `workspaceId` (the act rule, with nothing
+     * run): what a caller checks before input reaches a process that already exists, such as a
+     * terminal attached for typing.
+     */
+    readonly mayAct: (workspaceId: string) => Effect.Effect<void, SealantPlatformError>;
+    /** The Mend user Mend recorded as `workspaceId`'s creator; null when none is recorded. */
+    readonly creatorOf: (workspaceId: string) => Effect.Effect<string | null>;
+    /**
+     * Mend just recorded `userId` as the creator of `workspaceId` (an accepted create or a
+     * claimed standby): an earlier "none on record" no longer stands (mend#558 review 2, P2-2).
+     */
+    readonly recorded: (workspaceId: string, userId: string | null) => Effect.Effect<void>;
+    /**
      * Fails when the principal in context is someone other than the workspace's known creator: a
      * harness run started through the platform spends the creator's logins.
      */
@@ -98,12 +111,17 @@ const asLent =
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     Effect.flatMap(lender, (userId) => as(userId)(self));
 
-const mayWork = (role: OrganizationRole | null, userId: string, project: ProjectTenancy) =>
+/** Whether `userId`, with `role` in the project's organization, may work in its executors. */
+export const mayWorkIn = (role: OrganizationRole | null, userId: string, project: ProjectTenancy) =>
   role !== null && canSeeProject(project, { userId, organizationId: project.organizationId, role });
 
-/** Why an act is not lent, in the words the session line and the refusal carry. */
-const refusalOf = (access: ExecutorAccess, asker: string): SealantPlatformError | null => {
-  if (!mayWork(access.askerRole, asker, access.project)) {
+/**
+ * Why an act in another person's executor is not lent, in the words the session line and the
+ * refusal carry; null when it is. The one test of standing: the routes, the engine's restore of a
+ * running agent and its access reconciliation all ask it.
+ */
+export const actRefusal = (access: ExecutorAccess, asker: string): SealantPlatformError | null => {
+  if (!mayWorkIn(access.askerRole, asker, access.project)) {
     return new SealantPlatformError({
       code: "no_standing",
       status: 403,
@@ -112,7 +130,7 @@ const refusalOf = (access: ExecutorAccess, asker: string): SealantPlatformError 
       cause: null,
     });
   }
-  if (!mayWork(access.creatorRole, access.creatorUserId, access.project)) {
+  if (!mayWorkIn(access.creatorRole, access.creatorUserId, access.project)) {
     return new SealantPlatformError({
       code: "creator_no_access",
       status: 403,
@@ -144,12 +162,13 @@ export const WorkspaceCallerLive: Layer.Layer<
     const unknownSince = new Map<string, number>();
     const runWorkspaces = new Map<string, string>();
 
-    const creatorOf = (workspaceId: string): Effect.Effect<string | null> =>
+    /** `trustUnknown` false: an act never rests on a cached "none on record" (review 2, P2-2). */
+    const creatorOf = (workspaceId: string, trustUnknown = true): Effect.Effect<string | null> =>
       Effect.suspend(() => {
         const known = creators.get(workspaceId);
         if (known !== undefined) return Effect.succeed(known);
         const since = unknownSince.get(workspaceId);
-        if (since !== undefined && Date.now() - since < UNKNOWN_CREATOR_MS) {
+        if (trustUnknown && since !== undefined && Date.now() - since < UNKNOWN_CREATOR_MS) {
           return Effect.succeed(null);
         }
         return sessions.executorSessionOf(SealantWorkspaceId.make(workspaceId)).pipe(
@@ -180,14 +199,14 @@ export const WorkspaceCallerLive: Layer.Layer<
       Effect.gen(function* () {
         const principal = yield* SealantPrincipal;
         if (principal.kind === "none") return null;
-        const creator = yield* creatorOf(workspaceId);
+        const creator = yield* creatorOf(workspaceId, false);
         if (creator === null || creator === principal.userId) return null;
         const access = yield* sessions.executorAccessOf(
           SealantWorkspaceId.make(workspaceId),
           principal.userId,
         );
         if (access === null) return null;
-        const refusal = refusalOf(access, principal.userId);
+        const refusal = actRefusal(access, principal.userId);
         if (refusal === null) return access.creatorUserId;
         yield* Effect.logInfo(
           "workspace caller: an act in another person's workspace refused",
@@ -216,6 +235,13 @@ export const WorkspaceCallerLive: Layer.Layer<
       );
 
     return {
+      creatorOf: (workspaceId) => creatorOf(workspaceId),
+      recorded: (workspaceId, userId) =>
+        Effect.sync(() => {
+          unknownSince.delete(workspaceId);
+          if (userId !== null) remember(creators, workspaceId, userId);
+        }),
+      mayAct: (workspaceId) => Effect.asVoid(actor(workspaceId)),
       observe: (workspaceId) => asLent(observer(workspaceId)),
       act:
         (workspaceId) =>

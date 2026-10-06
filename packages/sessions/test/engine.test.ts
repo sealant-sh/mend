@@ -171,6 +171,7 @@ import {
   planBlockedWords,
   planWaitingWords,
   CaptureUploadPolicyDefault,
+  ACCESS_LOST,
   DotfilesCloner,
   EXECUTOR_RETIRED,
   makeDotfilesClonerLayer,
@@ -192,6 +193,7 @@ import {
   type SessionSocketApi,
   SessionSocketHost,
   WORKSPACE_MEND_TOML,
+  WorkspaceCaller,
   WorkspaceCallerLive,
   WorkspaceGitHooks,
   WorkspaceGitHooksLive,
@@ -3002,18 +3004,19 @@ const executorSessionIn = (world: World, workspaceId: string): Session | null =>
 const byWorkspaceCreatorIn = (
   world: World,
   inner: Layer.Layer<SealantClient>,
-): Layer.Layer<SealantClient> =>
+): Layer.Layer<SealantClient | WorkspaceCaller> =>
   SealantClientByWorkspaceCreator.pipe(
-    Layer.provide(WorkspaceCallerLive),
+    // One caller for the client and the engine, as on the server: its caches are shared.
+    Layer.provideMerge(WorkspaceCallerLive),
     Layer.provide(inner),
     Layer.provide(Layer.mergeAll(sessionsLayer(world), sessionRunsLayer(world))),
   );
 
 /** `layer`, handing the client it builds to `expose` as well. */
 const exposing = (
-  layer: Layer.Layer<SealantClient>,
+  layer: Layer.Layer<SealantClient | WorkspaceCaller>,
   expose: ((client: SealantClientShape) => void) | undefined,
-): Layer.Layer<SealantClient> =>
+): Layer.Layer<SealantClient | WorkspaceCaller> =>
   expose === undefined
     ? layer
     : Layer.effect(
@@ -3022,7 +3025,7 @@ const exposing = (
           expose(client);
           return client;
         }),
-      ).pipe(Layer.provide(layer));
+      ).pipe(Layer.provideMerge(layer));
 
 const withEngine = <A, E>(
   work: (
@@ -6910,7 +6913,7 @@ describe("SessionEngine", () => {
         ),
       ),
       Layer.provide(storeLayer),
-      Layer.provide(sealantDeadLayer),
+      Layer.provide(byWorkspaceCreatorIn(world, sealantDeadLayer)),
       Layer.provide(projectsLayer(world)),
       Layer.provide(sessionsLayer(world)),
       Layer.provide(sessionRunsLayer(world)),
@@ -25401,6 +25404,16 @@ const joinByAnotherPerson = async (
   return { created, seen, calls, logs, failure, holderWorkspace, joinedWorkspace };
 };
 
+/** How long a test lets what a stop forked (its tail, the settle-path cleanup) run. */
+const SETTLE_WAIT = Duration.seconds(3);
+
+/** Whether the holder's agent row still reads live. */
+const holderAgentLive = (world: World, holder: SessionId) =>
+  [...world.processes.values()].some(
+    (process) =>
+      process.sessionId === holder && process.kind === "agent-pty" && process.exitedAt === null,
+  );
+
 /** A platform call's outcome in one word: `answered`, or its failure's code. */
 const tell = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
   effect.pipe(Effect.match({ onSuccess: () => "answered", onFailure: (e) => e.code }));
@@ -25677,40 +25690,133 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     });
   });
 
-  it("a process the platform will not close stays recorded live, and the line says so", async () => {
+  it("a Stop whose close the platform refuses ends nothing: the joiner's agent and shell stay, and so do the holder's agent and executor", async () => {
     let closing = false;
     let state: Record<string, unknown> = {};
     await joinByAnotherPerson(
       (engine, world, join) =>
         Effect.gen(function* () {
           const agent = joinedAgentOf(world, join.joined);
+          const shell = yield* engine.openShell(join.joined);
           closing = true;
           yield* engine.stop(join.joined);
-          const row = [...world.processes.values()].find((p) => p.sealantSessionId === agent.ptyId);
+          // Read once whatever the stop forked has had its time (review 2 of mend#558, P1).
+          yield* Effect.sleep(SETTLE_WAIT);
+          const live = (id: string | null) =>
+            [...world.processes.values()].find((p) => p.sealantSessionId === id)?.exitedAt === null;
           state = {
-            exitedAt: row?.exitedAt ?? null,
-            closed: join.closed.has(agent.ptyId),
+            joinerAgentLive: live(agent.ptyId),
+            joinerShellLive: live(shell.sealantSessionId),
+            holderAgentLive: holderAgentLive(world, join.holder),
+            stopped: [...join.stopped],
             summary: world.sessions.get(join.joined)?.summary ?? "",
           };
-          // Once the platform answers, the next stop ends it.
+          // Once the platform answers, the next stop ends it, and the line forgets the failure.
           closing = false;
           yield* engine.stop(join.joined);
+          yield* Effect.sleep(SETTLE_WAIT);
           state = {
             ...state,
-            after: join.closed.has(agent.ptyId),
+            closedAfter: join.closed.has(agent.ptyId),
+            summaryAfter: world.sessions.get(join.joined)?.summary ?? "",
+            holderAgentLiveAfter: holderAgentLive(world, join.holder),
+            stoppedAfter: [...join.stopped],
           };
         }),
       { closeFails: () => closing },
     );
     expect(state).toEqual({
-      exitedAt: null,
-      closed: false,
+      joinerAgentLive: true,
+      // A failed agent close is not "no agent to close": the person's shells stay.
+      joinerShellLive: true,
+      holderAgentLive: true,
+      stopped: [],
       summary: expect.stringContaining(
         "the agent could not be stopped · the platform did not close it · stop again",
       ),
-      after: true,
+      closedAfter: true,
+      summaryAfter: expect.not.stringContaining("could not be stopped"),
+      holderAgentLiveAfter: true,
+      stoppedAfter: [],
     });
-  });
+  }, 30_000);
+
+  it("removing a joiner who has only a shell left in the holder's executor ends the shell, never the holder's agent or executor", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const shell = yield* engine.openShell(join.joined);
+        // Her agent was stopped earlier: a stop that ended a live agent keeps her shell.
+        yield* engine.stop(join.joined);
+        yield* Effect.sleep(SETTLE_WAIT);
+        world.members.delete(MARIA);
+        yield* engine.windDownPerson(MARIA);
+        yield* Effect.sleep(SETTLE_WAIT);
+        state = {
+          shellClosed: join.closed.has(shell.sealantSessionId ?? ""),
+          holderAgentLive: holderAgentLive(world, join.holder),
+          stopped: [...join.stopped],
+        };
+      }),
+    );
+    expect(state).toEqual({ shellClosed: true, holderAgentLive: true, stopped: [] });
+  }, 30_000);
+
+  it("a second Stop of a joiner leaves the holder's agent and executor running", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        yield* engine.stop(join.joined);
+        yield* Effect.sleep(SETTLE_WAIT);
+        yield* engine.stop(join.joined);
+        yield* Effect.sleep(SETTLE_WAIT);
+        state = {
+          joinedStatus: world.sessions.get(join.joined)?.status,
+          holderAgentLive: holderAgentLive(world, join.holder),
+          holderStatus: world.sessions.get(join.holder)?.status,
+          stopped: [...join.stopped],
+        };
+      }),
+    );
+    expect(state).toEqual({
+      joinedStatus: "stopped",
+      holderAgentLive: true,
+      holderStatus: "running",
+      stopped: [],
+    });
+  }, 30_000);
+
+  it("reconciles access: a joiner kept out of a project gone private has their processes ended, the holder's run on", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "private", createdByUserId: "user-fixture" }),
+        );
+        const done = yield* engine.reconcileAccess();
+        yield* Effect.sleep(SETTLE_WAIT);
+        state = {
+          done,
+          joinerClosed: join.closed.has(agent.ptyId),
+          joinerSummary: world.sessions.get(join.joined)?.summary,
+          holderAgentLive: holderAgentLive(world, join.holder),
+          stopped: [...join.stopped],
+          // Nothing left to do on the next tick.
+          again: yield* engine.reconcileAccess(),
+        };
+      }),
+    );
+    expect(state).toEqual({
+      done: { stopped: 1, retired: [] },
+      joinerClosed: true,
+      joinerSummary: ACCESS_LOST,
+      holderAgentLive: true,
+      stopped: [],
+      again: { stopped: 0, retired: [] },
+    });
+  }, 30_000);
 
   it("removing the person who started the executor retires it: the joiner is stopped and told, and it saves and ends", async () => {
     let state: Record<string, unknown> = {};

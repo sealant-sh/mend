@@ -19,7 +19,11 @@ import type { Run, Workspace } from "@sealant/sdk";
 import { Effect, Layer, ManagedRuntime, Result, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { SealantClientByWorkspaceCreator, WorkspaceCallerLive } from "../src/workspace-caller.ts";
+import {
+  SealantClientByWorkspaceCreator,
+  WorkspaceCaller,
+  WorkspaceCallerLive,
+} from "../src/workspace-caller.ts";
 
 const now = () => new Date("2026-10-06T10:00:00.000Z");
 const WORKTREE = WorktreeId.make("wt-1");
@@ -94,7 +98,13 @@ const joinedRun = new SessionRun({
  * worktree. The platform beneath records whose principal each call was made under, and how often
  * Mend asked who created a workspace.
  */
-const world = (options: { readonly visibility?: "shared" | "private" } = {}) => {
+const world = (
+  options: {
+    readonly visibility?: "shared" | "private";
+    /** The holder's executor is a standby nobody has claimed yet: no creator on record. */
+    readonly unclaimed?: { claimed: boolean };
+  } = {},
+) => {
   const asked: Array<string> = [];
   const creatorReads: Array<string> = [];
   const members = new Set(["alice", "bob", "carol"]);
@@ -121,11 +131,13 @@ const world = (options: { readonly visibility?: "shared" | "private" } = {}) => 
       executorSessionOf: (workspaceId) =>
         Effect.sync(() => {
           creatorReads.push(workspaceId);
-          return workspaceId === HOLDER_WORKSPACE ? holder : null;
+          return workspaceId === HOLDER_WORKSPACE && options.unclaimed?.claimed !== false
+            ? holder
+            : null;
         }),
       executorAccessOf: (workspaceId, asker) =>
         Effect.succeed(
-          workspaceId === HOLDER_WORKSPACE
+          workspaceId === HOLDER_WORKSPACE && options.unclaimed?.claimed !== false
             ? {
                 creatorUserId: "alice",
                 project: {
@@ -144,14 +156,16 @@ const world = (options: { readonly visibility?: "shared" | "private" } = {}) => 
     }),
   );
   const layer = SealantClientByWorkspaceCreator.pipe(
-    Layer.provide(WorkspaceCallerLive),
+    Layer.provideMerge(WorkspaceCallerLive),
     Layer.provide(platform),
     Layer.provide(repos),
   );
   // One client for the whole world, as the server has: its caches live as long as it does.
   const runtime = ManagedRuntime.make(layer);
-  const runAs = <A, E>(userId: string | null, effect: Effect.Effect<A, E, SealantClient>) =>
-    runtime.runPromise(effect.pipe(asSealantUser(userId), Effect.result));
+  const runAs = <A, E>(
+    userId: string | null,
+    effect: Effect.Effect<A, E, SealantClient | WorkspaceCaller>,
+  ) => runtime.runPromise(effect.pipe(asSealantUser(userId), Effect.result));
   return { asked, creatorReads, members, runAs };
 };
 
@@ -246,5 +260,37 @@ describe("WorkspaceCaller: whose platform identity a call about a workspace runs
     ]);
     // One read each: "none on record" is kept for a while, a creator for good.
     expect(creatorReads).toEqual(["ws-unknown", HOLDER_WORKSPACE]);
+  });
+
+  it('a join right after a standby\'s claim reaches the creator: the claim clears the earlier "none on record"', async () => {
+    const standby = { claimed: false };
+    const { asked, runAs } = world({ unclaimed: standby });
+    // The pool probes its standby as its owner before any session names it: none on record.
+    await runAs("alice", lookup);
+    // Alice's launch claims it; Mend records her as its creator and says so.
+    standby.claimed = true;
+    await runAs(
+      null,
+      Effect.flatMap(WorkspaceCaller, (caller) => caller.recorded(HOLDER_WORKSPACE, "alice")),
+    );
+    // Bob joins within the 10 s a miss is believed for.
+    await runAs("bob", Effect.andThen(lookup, exec));
+    expect(asked).toEqual(["getWorkspace alice", "getWorkspace alice", "exec alice"]);
+  });
+
+  it("an act never rests on a cached miss, and mayAct checks without running anything", async () => {
+    const standby = { claimed: false };
+    const { asked, members, runAs } = world({ unclaimed: standby });
+    await runAs("bob", lookup);
+    standby.claimed = true;
+    // No word of the claim reached this caller: the act reads the record again.
+    await runAs("bob", exec);
+    members.delete("bob");
+    const may = await runAs(
+      "bob",
+      Effect.flatMap(WorkspaceCaller, (caller) => caller.mayAct(HOLDER_WORKSPACE)),
+    );
+    expect(asked).toEqual(["getWorkspace bob", "exec alice"]);
+    expect(codeOf(may)).toBe("no_standing");
   });
 });

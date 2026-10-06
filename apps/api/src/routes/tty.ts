@@ -8,7 +8,8 @@ import {
 } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
-import { asSealantUser, SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
+import { WorkspaceCaller } from "@mend/sessions";
 import { Duration, Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
@@ -100,6 +101,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
     const processes = yield* SessionProcessesRepo;
     const steering = yield* SessionSteering;
     const sealant = yield* SealantClient;
+    const workspaces = yield* WorkspaceCaller;
     const controlEvents = yield* SessionControlEventsRepo;
 
     yield* router.add("GET", "/api/tty", (request) =>
@@ -229,6 +231,10 @@ export const TtyRoutes = HttpRouter.use((router) =>
         // An attachment the platform hands over after the bound below has nobody to pump it.
         let closeLate: (() => void) | null = null;
         const resolved = yield* Effect.gen(function* () {
+          // Typing into an existing terminal is acting in its workspace: refused, before anything
+          // attaches, for an owner who may no longer work there (review 2 of mend#558, P2-1).
+          // Watching only reads its output.
+          if (caller.userId === ownerUserId) yield* workspaces.mayAct(sealantWorkspaceId);
           const workspace = yield* sealant.getWorkspace(sealantWorkspaceId);
           const pty = yield* sealant.getSession(workspace, sealantSessionId);
           const attaching = pty.attach({ from });
@@ -249,7 +255,11 @@ export const TtyRoutes = HttpRouter.use((router) =>
           // creator, for an owner who may work there (`WorkspaceCaller`, alpha 2026-10-06).
           asSealantUser(ownerUserId),
           Effect.catch((error) =>
-            Effect.succeed({ ok: false as const, status: 502, message: String(error.message) }),
+            Effect.succeed({
+              ok: false as const,
+              status: error instanceof SealantPlatformError && error.status === 403 ? 403 : 502,
+              message: String(error.message),
+            }),
           ),
           // Bounded, so the upgrade is answered before a client gives up on it (the CLI waits
           // 30 s): a platform slow to attach reads as that, and the session keeps running.

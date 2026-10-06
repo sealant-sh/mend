@@ -24,6 +24,7 @@ import {
 } from "@mend/db";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { SealantClient } from "@mend/sealant";
+import { WorkspaceCaller } from "@mend/sessions";
 import { AgentBridge, AgentBridgeLive, MendKeys, MendKeysConfig, MendKeysLive } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter } from "effect/unstable/http";
@@ -110,6 +111,12 @@ const startServer = async () => {
     Layer.mock(UserGitAuthorRepo, {}),
     Layer.mock(AgentConversationRepo, {}),
     Layer.mock(SealantClient, {}),
+    Layer.mock(WorkspaceCaller, {
+      observe: () => (self) => self,
+      act: () => (self) => self,
+      observeRun: () => (self) => self,
+      observeRunStream: () => (self) => self,
+    }),
     Layer.mock(SessionsRepo, {}),
     Layer.mock(SessionProcessesRepo, {}),
     Layer.mock(ServicesRepo, {}),

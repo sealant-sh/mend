@@ -38,3 +38,9 @@ person who joins someone else's executor therefore:
   cloned the same way.
 
 Landing a change is not affected. See Known issues in the docs.
+
+Mend also checks access again at startup and every minute. Processes of anyone who can no longer
+work in a project, removed or kept out of a project that went private, are ended, and so are the
+executors their creators can no longer use. Typing into an existing terminal and restoring a running
+agent after a restart are refused for them too. A Stop of one person's session in a shared executor
+no longer ends anyone else's agent or the executor itself while someone else still works there.
