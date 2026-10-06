@@ -305,7 +305,13 @@ describe("the image probe (decision 1)", () => {
       parseLayoutReport(
         "mend-layout probed\nmend-layout made m3kq7xj2a\nmend-layout made mf9t2bw4c\nmend-layout ready\n",
       ),
-    ).toEqual({ probed: true, missing: [], ready: true, made: ["m3kq7xj2a", "mf9t2bw4c"] });
+    ).toEqual({
+      probed: true,
+      missing: [],
+      ready: true,
+      made: ["m3kq7xj2a", "mf9t2bw4c"],
+      unowned: null,
+    });
     expect(parseLayoutReport("mend-layout probed\nmend-layout ready\n").made).toEqual([]);
   });
 
@@ -329,13 +335,17 @@ describe("the image probe (decision 1)", () => {
 const prepare = (
   root: ReturnType<typeof fakeRoot>,
   people: Parameters<typeof personPrepareScript>[0],
+  // The restored worktree's group, as sealantd's owner map leaves it: the test's own gid.
+  worktreeGid: number = process.getgid?.() ?? 0,
 ) => {
   const harnessHome = path.join(root.dir, "harness-home");
   fs.mkdirSync(harnessHome, { recursive: true });
   const homesRoot = path.join(root.dir, "home");
+  const repo = path.join(root.dir, "repo");
+  fs.mkdirSync(repo, { recursive: true });
   const script = personPrepareScript(people, {
     harnessHome,
-    repo: path.join(root.dir, "repo"),
+    repo,
     places: {
       homesRoot,
       tmpRoot: path.join(root.dir, "tmp"),
@@ -345,6 +355,7 @@ const prepare = (
       passwd: root.passwd,
       group: root.group,
       aclDir: root.dir,
+      worktreeGid,
     },
   });
   return { harnessHome, homesRoot, script };
@@ -370,6 +381,22 @@ describe("what prepare makes (decision 1)", () => {
     expect(report.made).toEqual([alice.name, maria.name]);
     expect(report.ready).toBe(true);
     expect(fs.existsSync(path.join(homesRoot, bob.name))).toBe(false);
+  });
+
+  it("refuses a restore that did not apply the owner map: nobody is made, and it says what it found", () => {
+    const root = fakeRoot();
+    // sealantd gave the worktree to another group (or to none): root's 0644 files, which nobody
+    // could edit.
+    const { homesRoot, script } = prepare(root, [{ person: alice, ifSaved: false }], 40_000);
+    const run = root.run(`( exit 0 ); h=$?\n${script}\nexit $h`);
+    const report = parseLayoutReport(run.stdout);
+    expect(report.unowned).toBe(
+      `the restored worktree's group is ${process.getgid?.() ?? 0}, not mend (40000)`,
+    );
+    expect(report.made).toEqual([]);
+    expect(report.ready).toBe(false);
+    expect(fs.existsSync(path.join(homesRoot, alice.name))).toBe(false);
+    expect(run.status).toBe(0);
   });
 
   it("a person who cannot be made fails the layout, makes nobody after them, and keeps the helper's status", () => {
@@ -485,6 +512,15 @@ describe("a person's home and saved directory (decision 2)", () => {
     expect(fs.existsSync(path.join(saved, ".claude/history.jsonl"))).toBe(true);
     expect(fs.existsSync(path.join(saved, ".claude/.credentials.json"))).toBe(false);
     expect(fs.existsSync(path.join(saved, ".codex/auth.json"))).toBe(false);
+  });
+
+  it("keeps Claude's file history in the home, never in P: it holds copies of edited secret files", () => {
+    const { home, saved, script } = layout();
+    expect(sh(script).status).toBe(0);
+    fs.mkdirSync(path.join(home, ".claude/file-history/s1"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".claude/file-history/s1/.env@v1"), "SECRET=1");
+    expect(fs.lstatSync(path.join(home, ".claude/file-history")).isSymbolicLink()).toBe(false);
+    expect(fs.existsSync(path.join(saved, ".claude/file-history"))).toBe(false);
   });
 
   it("is idempotent, and moves what the image left in R into P without overwriting P", () => {

@@ -83,6 +83,15 @@ export const personLayoutRefusal = (missing: ReadonlyArray<string>): string =>
   `This worktree's sessions are saved per person, and its image cannot run per-person users` +
   `${missing.length === 0 ? "" : ` (${missing.join(", ")})`}. Pick an image that can, or start a new worktree.`;
 
+/**
+ * A person launch whose restore did not apply the owner map (decision 8): its worktree came back
+ * root's, 0644, so nobody could edit a restored file and the repair would never reach them.
+ * Refused whatever the worktree, before anything runs: nothing is changed, and an executor whose
+ * sealantd applies the map makes the next launch work.
+ */
+export const ownerMapRefusal = (found: string): string =>
+  `This workspace's restore did not give its files to the people working in it (${found}), so nobody could edit them. Nothing was started; the next launch tries again.`;
+
 /** The operator asked for person on an image that cannot run it (decision 14, the benchmark). */
 export const operatorPersonRefusal = (missing: ReadonlyArray<string>): string =>
   `harnessLayout person was asked for, and this image cannot run per-person users` +
@@ -195,12 +204,13 @@ export const PERSON_SAVED_STATE: ReadonlyArray<{
   readonly kind: "directory" | "file";
 }> = [
   // Claude: transcripts, tool results, sub-agents and auto memory; plans; todos; the task list;
-  // `/rewind`'s file history; what the agent writes of its own agents, commands and skills.
+  // what the agent writes of its own agents, commands and skills. Not `/rewind`'s file history:
+  // it holds a copy of every file Claude edits, secret files included, so it is never saved
+  // (`HARNESS_CREDENTIALS`) and stays in the home, ending with the executor.
   { path: ".claude/projects", kind: "directory" },
   { path: ".claude/plans", kind: "directory" },
   { path: ".claude/todos", kind: "directory" },
   { path: ".claude/tasks", kind: "directory" },
-  { path: ".claude/file-history", kind: "directory" },
   { path: ".claude/agents", kind: "directory" },
   { path: ".claude/commands", kind: "directory" },
   { path: ".claude/skills", kind: "directory" },
@@ -348,6 +358,11 @@ export interface LayoutReport {
    * so their first process makes them.
    */
   readonly made: ReadonlyArray<string>;
+  /**
+   * Why the restore did not apply the owner map (`mend-layout unowned <words>`), or null: the
+   * worktree came back root's, 0644, which nobody could edit and the repair never reaches.
+   */
+  readonly unowned: string | null;
 }
 
 export const parseLayoutReport = (stdout: string): LayoutReport => {
@@ -355,12 +370,15 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
   const made: Array<string> = [];
   let probed = false;
   let ready = false;
+  let unowned: string | null = null;
   for (const line of stdout.split("\n")) {
     if (!line.startsWith(`${LAYOUT_LINE} `)) continue;
     const rest = line.slice(LAYOUT_LINE.length + 1).trim();
     if (rest === "probed") probed = true;
     else if (rest === "ready") ready = true;
-    else if (rest.startsWith("made ")) {
+    else if (rest.startsWith("unowned ")) {
+      unowned = rest.slice("unowned ".length).trim() || "the worktree is not group mend's";
+    } else if (rest.startsWith("made ")) {
       const name = rest.slice("made ".length).trim();
       if (name !== "" && !made.includes(name)) made.push(name);
     } else if (rest.startsWith("missing ")) {
@@ -368,7 +386,7 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
       if (words !== "" && !missing.includes(words)) missing.push(words);
     }
   }
-  return { probed, missing, ready, made };
+  return { probed, missing, ready, made, unowned };
 };
 
 /** Every parent directory of these relative paths, shallowest first, once each. */
@@ -485,7 +503,10 @@ export const personHomeScript = (
  * same exec (decision 1): the probe, then, only when nothing is missing, every person's user and
  * home (`personHomeScript`), `/root` made traversable (0755: a custom image's toolchains under
  * `/root` still run for everyone), `core.sharedRepository=group` in the worktree's git config, and
- * the repair marker. Prints `mend-layout made <name>` for each person it made, and
+ * the repair marker. First it checks that the restore applied the owner map (sealantd gives the
+ * worktree to the change's owner and group `mend`, decision 8): a worktree whose group is not
+ * `mend` came back root's, 0644, which nobody could edit, so it prints `mend-layout unowned`
+ * with what it found and makes nobody. Prints `mend-layout made <name>` for each person it made, and
  * `mend-layout ready` when all of that was made. People are made one at a time; a person who
  * cannot be made prints `mend-layout failed <name>`, and nobody after them is made. The script
  * never exits itself, so the helper install's status it rides with is still the exec's.
@@ -509,11 +530,14 @@ export const personPrepareScript = (
       readonly passwd?: string;
       readonly group?: string;
       readonly aclDir?: string;
+      /** The group the restored worktree must have; `mend`'s unless a test names another. */
+      readonly worktreeGid?: number;
     };
   },
 ): string => {
   const q = shellQuote;
   const places = options.places ?? {};
+  const worktreeGid = places.worktreeGid ?? MEND_GROUP.gid;
   const marker = places.marker ?? REPAIR_MARKER;
   const markerDir = marker.slice(0, marker.lastIndexOf("/"));
   const identities = people.map((entry) => entry.person);
@@ -530,6 +554,12 @@ export const personPrepareScript = (
       ...(places.aclDir === undefined ? {} : { aclDir: places.aclDir }),
     }),
     `layout_failed=0`,
+    // The owner map applied: the restored worktree is group mend's. Nobody is made otherwise.
+    `if [ "$layout_missing" = 0 ]; then ` +
+      `wg=$(stat -c %g ${q(options.repo)} 2>/dev/null || echo missing); ` +
+      `if [ "$wg" != ${worktreeGid} ]; then ` +
+      `printf '%s unowned %s\\n' ${LAYOUT_LINE} "the restored worktree's group is $wg, not ${MEND_GROUP.name} (${worktreeGid})"; ` +
+      `layout_missing=1; fi; fi`,
     `if [ "$layout_missing" = 0 ]; then`,
     // One person at a time, each in a subshell of its own: a failure names its person, and only
     // a person this prepare made is reported made. The subshell is a statement of its own, never

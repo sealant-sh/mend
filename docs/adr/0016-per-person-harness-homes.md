@@ -130,8 +130,8 @@ starts. A person's live process, Services included, keeps their user's logins he
   every capture. It holds everything of a harness's home that is conversation state, as today's
   relocated home saves it, each reached from `R` through a link (sealantd stores a link as a link):
   - Claude: `projects/` (transcripts, tool results, sub-agents, auto memory), `plans/`, `todos/`,
-    `tasks/` (the agent's task list), `file-history/` (`/rewind`), the `agents/`, `commands/` and
-    `skills/` the agent writes (Mend's delivered skills are delivered again), `history.jsonl`;
+    `tasks/` (the agent's task list), the `agents/`, `commands/` and `skills/` the agent writes
+    (Mend's delivered skills are delivered again), `history.jsonl`;
   - Codex: `sessions/`, `archived_sessions/`, `memories/`, `session_index.jsonl`, `history.jsonl`,
     `rules/` (approvals), and its thread index and memory database (`P/codex-db`, named by
     `CODEX_SQLITE_HOME`; see Performance);
@@ -139,8 +139,11 @@ starts. A person's live process, Services included, keeps their user's logins he
   - opencode: its data directory and `.local/state/opencode`.
 
   Logins stay out: they are files in `R`, not under these links, and sealantd's tables are the
-  backstop. Mend's per-person saved records are `P/.mend-saved/`, addressed by their absolute path,
-  never through `~/.mend`.
+  backstop. So does Claude's file history (`file-history/`, what `/rewind` restores): it holds a
+  copy of every file Claude edits, secret files included, so it is never saved, here or anywhere
+  else, `people/*/` included (`HARNESS_CREDENTIALS`, sealantd#136 and #144). It stays in `R` and
+  ends with the executor. Mend's per-person saved records are `P/.mend-saved/`, addressed by their
+  absolute path, never through `~/.mend`.
 
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,
@@ -288,25 +291,26 @@ the new sender's user, on their login.
 - **The conversation moves into `C` when shared control is turned on.** At the conversation's next
   quiescent point (below), Mend moves its files from Alice's saved directory into
   `C = P_alice/conversations/<session id>/`, never overwriting: Claude's transcript, its `<id>/`
-  directory, its task list and file history; Codex's rollout and its sub-agents' rollouts. From then
-  on every process of the session reaches it there. The files belong to the session. Nothing is
-  deleted when a steer ends. A session that has been under shared control ("once shared": from the
-  move into `C` on) keeps its conversation in `C` and its agent in the neutral context until the
-  session ends (it is archived or deleted; a Stop does not end it), also once control is turned off,
-  so its files never split between `C` and a personal directory (Known limits). Everything below
-  that says "a shared session" means a once-shared protocol session.
+  directory and its task list; Codex's rollout and its sub-agents' rollouts. From then on every
+  process of the session reaches it there. The files belong to the session. Nothing is deleted when
+  a steer ends. A session that has been under shared control ("once shared": from the move into `C`
+  on) keeps its conversation in `C` and its agent in the neutral context until the session ends (it
+  is archived or deleted; a Stop does not end it), also once control is turned off, so its files
+  never split between `C` and a personal directory (Known limits). Everything below that says "a
+  shared session" means a once-shared protocol session.
 - **The conversation home.** Every agent process of a once-shared session runs with its harness
   directory at one fixed path, `/run/mend/conv/<session id>` (`H`), outside every capture root:
   `CLAUDE_CONFIG_DIR=H/.claude`, or `CODEX_HOME=H/.codex` and `CODEX_SQLITE_HOME=H/.codex`, never
   the sender's saved Codex index (so the owner's thread never enters the steerer's saved index or
   memory). `H` holds:
   - links that place the conversation in `C`: Claude `projects/`, `plans/`, `todos/`, `tasks/`,
-    `file-history/`, `jobs/` and `teams/`; Codex `sessions/`, `archived_sessions/` and
-    `session_index.jsonl`. Each is one link at the top; everything below is a real directory in `C`,
-    which Claude requires for tool results and where Codex writes sub-agent rollouts. The task list
-    survives a change of sender. Codex's `history.jsonl` (the TUI's prompt history, which Codex
-    re-`chmod`s to 0600 on every append) is not linked: it stays in `H` and ends at the next change
-    of sender;
+    `jobs/` and `teams/`; Codex `sessions/`, `archived_sessions/` and `session_index.jsonl`. Each is
+    one link at the top; everything below is a real directory in `C`, which Claude requires for tool
+    results and where Codex writes sub-agent rollouts. The task list survives a change of sender.
+    Codex's `history.jsonl` (the TUI's prompt history, which Codex re-`chmod`s to 0600 on every
+    append) is not linked: it stays in `H` and ends at the next change of sender. Neither is
+    Claude's `file-history/`, which is never saved (decision 2): it stays in `H` and ends at the
+    next change of sender too;
   - the sender's login, written by Core (POST with `home: H`, `onBehalfOf: sender`), owned by the
     sender;
   - Mend's seeded settings for the neutral context below.
@@ -476,6 +480,14 @@ agent writes goes to the executor's owner" no longer hold.
   path and the map, so a uid can change without touching a capture. A removed member's directory
   gets no entry in the map: it stays in the captures, owned by root, and no user is made for it.
 
+- **Prepare checks that the restore applied the map.** In a `person` executor, before anyone is
+  made, prepare reads the restored worktree's group (sealantd gives `/workspace/repo` to the
+  change's owner and group `mend`, and reports the restore, sealantd#145). A worktree that is not
+  `mend`'s came back root's, 0644: nobody could edit a restored file and the worktree repair never
+  reaches it. The launch is refused with what was found, whatever the worktree, and nothing runs:
+  "This workspace's restore did not give its files to the people working in it (the restored
+  worktree's group is 0, not mend (40000)), so nobody could edit them. Nothing was started; the next
+  launch tries again." Nothing is recorded against the image, and there is no fallback to `shared`.
 - **sealantd reports what it can do** (`exec.user`, `dotfiles.user`, `restore.owner_map`), and Mend
   records the `person` layout only when it does (decision 1).
 - **Logins are never saved.** The homes, conversation homes and `/run` are outside every capture
@@ -795,6 +807,8 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
 - **Pre-release executors** keep the shared home until replaced; pre-release opencode conversations
   are not resumable in the person layout.
 - **opencode is one person's:** shared control is refused for opencode sessions.
+- **Claude's `/rewind` file history is never saved:** it ends with the executor, and in a shared
+  session at the next change of sender.
 - **A login made inside opencode** (`opencode console login`, the integration routes) is saved in
   the captures taken while that opencode process ran, in that person's own directory; Mend deletes
   it when opencode exits (decision 8a).
@@ -981,9 +995,9 @@ launches.
     by the last `shared` executor after an earlier capture is the one copied. M, ~600. Perf: Stop
     and resume scenarios.
 17. **Mend · the conversation home and the restart path.** `C` and the move into it (sub-agent
-    rollouts, task list and file history included) when shared control turns on, kept for the rest
-    of the session; `H` with its links (Claude `projects/`, `plans/`, `todos/`, `tasks/`,
-    `file-history/`, `jobs/`, `teams/`; Codex `sessions/`, `archived_sessions/`,
+    rollouts and the task list included; never file history, which is not saved) when shared control
+    turns on, kept for the rest of the session; `H` with its links (Claude `projects/`, `plans/`,
+    `todos/`, `tasks/`, `jobs/`, `teams/`; Codex `sessions/`, `archived_sessions/`,
     `session_index.jsonl`), `CODEX_SQLITE_HOME=H/.codex`, the neutral seed and the Claude settings
     files passed with `--settings` (`neutral.json`: `autoMemoryEnabled: false` and `env` with
     `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, `CLAUDE_CODE_DISABLE_ORG_MEMORY`, `CLAUDE_CODE_DISABLE_CRON`
@@ -1121,4 +1135,7 @@ benchmark once more, before 0.36 is tagged.
   this one is made at their first process here; the create names the launcher's home owner by
   number, and a home that exists before its user becomes the user's with the skeleton copied in
   (decision 5).
+- 2026-10-06 (owner): Claude's file history is never saved anywhere, `people/*/` included, since it
+  holds copies of edited secret files; it is not part of `P`, `C` or `H`'s links. A `person` launch
+  whose restore did not apply the owner map is refused at prepare (decision 8).
 - Open: gate B's history record.

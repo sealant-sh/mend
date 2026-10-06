@@ -31,6 +31,7 @@ import {
   decideHarnessLayout,
   imageLayoutKeyOf,
   layoutProbeScript,
+  ownerMapRefusal,
   parseLayoutReport,
   personHomeScript,
   personPrepareScript,
@@ -364,6 +365,9 @@ export const makeHarnessLayoutSteps = (deps: {
       return { layout: "shared", fallback: null };
     }
     const report = parseLayoutReport(input.stdout);
+    // The restore, not the image: nothing is recorded against the image, and the launch is
+    // refused whatever the worktree, since nobody could edit what came back.
+    if (report.unowned !== null) return yield* layoutRefused(ownerMapRefusal(report.unowned));
     if (report.ready) {
       yield* repo.recordCapability({
         imageKey: layout.imageKey,

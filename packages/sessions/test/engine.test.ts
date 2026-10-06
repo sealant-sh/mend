@@ -23302,6 +23302,37 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout).toBe("person");
   });
 
+  it("refuses a person launch whose restore did not apply the owner map, fresh worktree or not: nothing starts", async () => {
+    for (const fresh of [true, false]) {
+      const state = makeHarnessLayoutsMemoryState();
+      const calls: Array<string> = [];
+      const run = await launchPersonOnce({
+        flag: "person",
+        state,
+        platform: personPlatform(calls, { person: true }),
+        exec: answerLayout(
+          "mend-layout probed\nmend-layout unowned the restored worktree's group is 0, not mend (40000)\n",
+        ),
+        ...(fresh
+          ? {}
+          : {
+              before: (worktreeId: string) =>
+                state.worktrees.set(worktreeId, { layout: "person", requested: null }),
+            }),
+      });
+      expect(run.failure).toContain("did not give its files to the people working in it");
+      expect(run.failure).toContain("the restored worktree's group is 0, not mend (40000)");
+      expect(run.opened).toHaveLength(0);
+      expect(run.order).toEqual([]);
+      // Never a fallback to shared, and nothing recorded against the image.
+      expect(calls).toEqual([]);
+      expect(state.capabilities.get(IMAGE)).toBeUndefined();
+      expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBe(
+        fresh ? null : "person",
+      );
+    }
+  });
+
   it("with the flag on and the image unknown, launches shared, probes, and records what it found", async () => {
     const state = makeHarnessLayoutsMemoryState();
     const run = await launchPersonOnce({
