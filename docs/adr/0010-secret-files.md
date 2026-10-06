@@ -100,10 +100,27 @@ base64 (`workspace-files.ts`).
    - The test `secret-files.test.ts` builds the executor's listing over a relocated home with such
      links and shows the written file in neither the capture listing nor the harvest archive.
 
-5. **The exec channel carries the bytes.** Base64 on argv of the platform's authenticated exec,
-   decoded inside, like every other file Mend places. A launch-time injection the caller supplies,
-   on the channel Core uses for its own credential files, would keep the bytes off argv and write
-   them before readiness; it is asked for in PLATFORM-FEEDBACK.md and taken when it ships.
+5. **The session channel carries the bytes; the exec carries a ticket.** (Amended 2026-10-06.) Core
+   keeps every exec's argv in plaintext and for good: in `telemetry_events`, in `telemetry_timeline`
+   (`ref_json` and `summary`) and in the job row. So the bytes never ride it.
+   - Mend mints a pickup ticket (`pickup-tickets.ts`) for the launch's files: 32 random bytes,
+     single-use, redeemable for 30 seconds. It is bound to the session and its worktree, to the
+     owner, and to the launch of the executor it is written into. Mend keeps the ticket's hash and
+     never logs it.
+   - One exec carries the ticket and the paths. Inside it, after the shell proves each path, node
+     redeems the ticket once over the session channel (`POST /pickup`, on the authenticated
+     connection the workspace already uses) and writes each file's bytes into its 0600 staging file.
+     The shell proves the path again and renames the file into place.
+   - The network channel answers only a ticket whose launch is the one its token names. Over the
+     Unix socket, the socket's session must be the ticket's, or another session of the same worktree
+     and the same owner. Any presentation spends the ticket.
+   - What Core records is a ticket that is spent or expired. The pi profile, whose `mcp.json` holds
+     the person's MCP keys, is written the same way (`writeFilesPickupExec`).
+
+   Before 2026-10-06 the bytes rode argv as base64, so every delivery since this ADR shipped is in
+   Core's database. Core's side, a purge of those rows and argv redaction, is asked for in
+   PLATFORM-FEEDBACK.md (2026-10-06). A launch-time injection on Core's credential-file channel is
+   still asked for there too.
 
 6. **Surfaces.** `mend secrets`, `mend secrets add <path> [--from <file>]` (stdin without `--from`),
    `mend secrets rm <path>`; the settings page lists, adds and removes; the phone lists.
@@ -123,9 +140,11 @@ base64 (`workspace-files.ts`).
 
 - A session the person owns has `~/.aws/credentials` and the rest where the tools read them, in
   every project, from the next launch after a save.
-- The bytes cross the platform's exec as base64 argv for the duration of one exec, as skills and
-  memory do, and are not persisted by the platform. A logger of exec argv would see them; the SDK
-  has none, and the launch-time channel is requested.
+- The bytes cross the session channel once per launch, and never the platform's exec arguments. The
+  exec's argv holds a ticket that is spent before Core stores it. A delivery costs the same one exec
+  as before, or fewer for a file over 90 KB (which took several), plus one round trip from the
+  executor to Mend inside it.
+- The deliveries made before 2026-10-06 are stored in Core in plaintext until Core purges them.
 - A file on a path dotfiles turned into a symlink is not written; the session summary names it.
 - In capture mode, the executor of a leased worktree is one person's home. A second person's session
   joining it runs beside the holder's files and without its own; this was already true of the
@@ -134,6 +153,10 @@ base64 (`workspace-files.ts`).
 - Running sessions keep the files they have; a removed file is removed from the next launch on.
 
 ## Decision log
+
+- 2026-10-06: secret files and the pi profile leave exec argv for a single-use pickup ticket
+  redeemed over the session channel (review of mend#552/#553, P1-1). Core's purge and argv redaction
+  are recorded in PLATFORM-FEEDBACK.md.
 
 - 2026-10-03: exec after relocation, not a dotfiles archive or a platform injection that does not
   exist; both stores share one path.

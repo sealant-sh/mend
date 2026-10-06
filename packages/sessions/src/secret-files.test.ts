@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  SECRET_FILE_MAX_BYTES,
   SECRET_FILE_RESERVED_PATHS,
   reservedSecretFileRoot,
   validateSecretFilePath,
@@ -12,8 +13,14 @@ import {
 import { BlobStore, BlobStoreFsLive, captureKeys, listCaptureFiles } from "@mend/store";
 import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { Effect } from "effect";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import {
+  runExec,
+  secretForms,
+  startPickupChannel,
+  type PickupChannel,
+} from "../test/pickup-channel.ts";
 import {
   HARNESS_STATE,
   harvestHarnessStateScript,
@@ -30,15 +37,13 @@ import {
   planSecretFiles,
   secretFilesCleanupExec,
   secretFilesDeliveredExec,
-  secretFilesExecs,
+  secretFilesPickupExec,
   secretFilesRecordExec,
   secretFilesRemoveExec,
   secretFilesSetAsideExec,
   SECRET_FILES_SET_ASIDE,
-  type SecretFileOutcome,
   type SecretFileToWrite,
 } from "./secret-files.ts";
-import { WORKSPACE_EXEC_ARG_CHARS } from "./workspace-files.ts";
 
 const dirs: Array<string> = [];
 afterEach(() => {
@@ -71,13 +76,38 @@ const run = (home: string, argv: ReadonlyArray<string>, env: Record<string, stri
   return result.stdout;
 };
 
-/** Run every write exec of one delivery, folding outcomes as the engine does. */
-const write = (home: string, files: ReadonlyArray<SecretFileToWrite>, stamp = STAMP) => {
-  const outcomes: Array<SecretFileOutcome> = [];
-  for (const argv of secretFilesExecs(files, stamp)) {
-    outcomes.push(...parseSecretFileOutcomes(run(home, argv)));
+/** The session channel the delivery exec redeems its ticket over, as a workspace reaches it. */
+let channel: PickupChannel;
+beforeAll(async () => {
+  channel = await startPickupChannel();
+});
+afterAll(() => channel.close());
+
+/**
+ * Run one delivery's exec as the engine does, redeeming its ticket over `over`, and fold its
+ * outcomes. Whatever the files hold, none of it is in the argv the platform would keep.
+ */
+const write = async (
+  home: string,
+  files: ReadonlyArray<SecretFileToWrite>,
+  stamp = STAMP,
+  over: PickupChannel = channel,
+  env: Record<string, string> = {},
+) => {
+  const ticket = over.mint(files);
+  const argv = secretFilesPickupExec(
+    files.map((file) => file.path),
+    stamp,
+    ticket,
+  );
+  const joined = argv.join("\u0000");
+  for (const file of files) {
+    for (const form of secretForms(file.bytes)) expect(joined).not.toContain(form);
   }
-  return foldSecretFileOutcomes(outcomes);
+  const result = await runExec(argv, { ...over.env, HOME: home, ...env });
+  over.tickets.discard(ticket);
+  expect(result.status, result.stderr).toBe(0);
+  return foldSecretFileOutcomes(parseSecretFileOutcomes(result.stdout));
 };
 
 const mode = (file: string) => (fs.statSync(file).mode & 0o777).toString(8);
@@ -125,9 +155,9 @@ const TOKEN = ".local/state/opencode/token";
 const SET_ASIDE = `${SECRET_FILES_SET_ASIDE}/${STAMP}/${TOKEN}`;
 
 describe("writing secret files into a workspace home", () => {
-  it("writes each file 0600 in a directory made 0700, and leaves no staging file", () => {
+  it("writes each file 0600 in a directory made 0700, and leaves no staging file", async () => {
     const home = tempDir("mend-secret-home-");
-    const outcomes = write(home, [
+    const outcomes = await write(home, [
       utf8(".aws/credentials", "[default]\naws_access_key_id = AKIA\n"),
       utf8(".npmrc", "//registry.npmjs.org/:_authToken=t\n"),
     ]);
@@ -144,20 +174,20 @@ describe("writing secret files into a workspace home", () => {
     expect(filesUnder(home)).toEqual([".aws/credentials", ".npmrc"]);
   });
 
-  it("takes a path with spaces, quotes and a leading dash as it is", () => {
+  it("takes a path with spaces, quotes and a leading dash as it is", async () => {
     const home = tempDir("mend-secret-home-");
     const odd = '-odd dir/it\'s "quoted"/$HOME `x` *.txt';
     expect(validateSecretFilePath(odd)).toBeNull();
-    const outcomes = write(home, [utf8(odd, "fine\n")]);
+    const outcomes = await write(home, [utf8(odd, "fine\n")]);
     expect(outcomes).toEqual([{ path: odd, outcome: "written" }]);
     expect(fs.readFileSync(path.join(home, odd), "utf8")).toBe("fine\n");
     expect(filesUnder(home)).toEqual([odd]);
   });
 
-  it("replaces a file something else left there, and the replacement is 0600", () => {
+  it("replaces a file something else left there, and the replacement is 0600", async () => {
     const home = tempDir("mend-secret-home-");
     fs.writeFileSync(path.join(home, ".npmrc"), "registry=https://example.test\n", { mode: 0o644 });
-    const outcomes = write(home, [utf8(".npmrc", "//registry.npmjs.org/:_authToken=t\n")]);
+    const outcomes = await write(home, [utf8(".npmrc", "//registry.npmjs.org/:_authToken=t\n")]);
     expect(outcomes).toEqual([{ path: ".npmrc", outcome: "written" }]);
     expect(fs.readFileSync(path.join(home, ".npmrc"), "utf8")).toBe(
       "//registry.npmjs.org/:_authToken=t\n",
@@ -165,53 +195,100 @@ describe("writing secret files into a workspace home", () => {
     expect(mode(path.join(home, ".npmrc"))).toBe("600");
   });
 
-  it("assembles a file larger than one exec carries, chunk by chunk, with no part left", () => {
+  it("writes a file of the largest size a person may keep from one exec, its bytes never in the argv", async () => {
     const home = tempDir("mend-secret-home-");
-    const bytes = new Uint8Array(randomBytes(200 * 1024));
-    const execs = secretFilesExecs([{ path: ".kube/config", bytes }], STAMP);
-    expect(execs.length).toBeGreaterThan(2);
-    for (const argv of execs) {
-      expect(argv.join("").length).toBeLessThan(WORKSPACE_EXEC_ARG_CHARS + 3000);
-    }
-    const outcomes = write(home, [{ path: ".kube/config", bytes }]);
+    const bytes = new Uint8Array(randomBytes(SECRET_FILE_MAX_BYTES));
+    const before = channel.redemptions();
+    const outcomes = await write(home, [{ path: ".kube/config", bytes }]);
     expect(outcomes).toEqual([{ path: ".kube/config", outcome: "written" }]);
+    // One round trip to the channel, however large the file.
+    expect(channel.redemptions() - before).toBe(1);
     expect([...fs.readFileSync(path.join(home, ".kube/config"))]).toEqual([...bytes]);
     expect(mode(path.join(home, ".kube/config"))).toBe("600");
     expect(filesUnder(home)).toEqual([".kube/config"]);
   });
 
-  it("two deliveries into one home at once each leave a whole file, never a mixed one", () => {
+  it("two deliveries into one home at once each leave a whole file, never a mixed one", async () => {
     const home = tempDir("mend-secret-home-");
     const a = new Uint8Array(randomBytes(100 * 1024));
     const b = new Uint8Array(randomBytes(100 * 1024));
-    const execsA = secretFilesExecs([{ path: ".kube/config", bytes: a }], "aaaa1111");
-    const execsB = secretFilesExecs([{ path: ".kube/config", bytes: b }], "bbbb2222");
-    // A first, B first, A rest, B rest, interleaved to the end.
-    const order = [execsA[0], execsB[0]];
-    for (let i = 1; i < Math.max(execsA.length, execsB.length); i++) {
-      if (execsA[i] !== undefined) order.push(execsA[i]);
-      if (execsB[i] !== undefined) order.push(execsB[i]);
-    }
-    const outcomes: Array<SecretFileOutcome> = [];
-    for (const argv of order) {
-      if (argv !== undefined) outcomes.push(...parseSecretFileOutcomes(run(home, argv)));
-    }
-    expect(outcomes).toEqual([
-      { path: ".kube/config", outcome: "written" },
-      { path: ".kube/config", outcome: "written" },
+    const [outcomesA, outcomesB] = await Promise.all([
+      write(home, [{ path: ".kube/config", bytes: a }], "aaaa1111"),
+      write(home, [{ path: ".kube/config", bytes: b }], "bbbb2222"),
     ]);
+    expect(outcomesA).toEqual([{ path: ".kube/config", outcome: "written" }]);
+    expect(outcomesB).toEqual([{ path: ".kube/config", outcome: "written" }]);
     const final = fs.readFileSync(path.join(home, ".kube/config"));
     expect(final.byteLength).toBe(100 * 1024);
-    expect(final.equals(Buffer.from(b))).toBe(true);
+    expect(final.equals(Buffer.from(a)) || final.equals(Buffer.from(b))).toBe(true);
     expect(filesUnder(home)).toEqual([".kube/config"]);
   });
 
-  it("refuses a directory that is a symlink, so dotfiles cannot redirect a file into the worktree", () => {
+  it("a ticket redeems once: a second exec carrying it writes nothing, and says why", async () => {
+    const home = tempDir("mend-secret-home-");
+    fs.writeFileSync(path.join(home, ".npmrc"), "mine\n");
+    const files = [utf8(".npmrc", "//registry.npmjs.org/:_authToken=t\n")];
+    const ticket = channel.mint(files);
+    const argv = secretFilesPickupExec([".npmrc"], STAMP, ticket);
+    const first = await runExec(argv, { ...channel.env, HOME: home });
+    expect(parseSecretFileOutcomes(first.stdout)).toEqual([{ path: ".npmrc", outcome: "written" }]);
+    fs.writeFileSync(path.join(home, ".npmrc"), "mine again\n");
+    const second = await runExec(argv, { ...channel.env, HOME: home });
+    expect(second.status).toBe(0);
+    expect(parseSecretFileOutcomes(second.stdout)).toEqual([
+      {
+        path: ".npmrc",
+        outcome: "refused",
+        reason: "the pickup was refused: this pickup ticket is spent, expired or unknown",
+      },
+    ]);
+    expect(fs.readFileSync(path.join(home, ".npmrc"), "utf8")).toBe("mine again\n");
+    expect(filesUnder(home)).toEqual([".npmrc"]);
+  });
+
+  it("with no session channel, refuses every file and leaves the home as it was", async () => {
+    const home = tempDir("mend-secret-home-");
+    const ticket = channel.mint([utf8(".npmrc", "secret")]);
+    const result = await runExec(
+      secretFilesPickupExec([".npmrc", ".aws/credentials"], STAMP, ticket),
+      {
+        HOME: home,
+        MEND_SESSION_ENDPOINT: "",
+        MEND_SESSION_TOKEN: "",
+      },
+    );
+    channel.tickets.discard(ticket);
+    expect(result.status).toBe(0);
+    const outcomes = parseSecretFileOutcomes(result.stdout);
+    expect(outcomes.map((outcome) => [outcome.path, outcome.outcome])).toEqual([
+      [".npmrc", "refused"],
+      [".aws/credentials", "refused"],
+    ]);
+    expect(outcomes[0]?.reason).toContain("the pickup could not run: no session channel");
+    // The directory the proof made stays; no file, no staging file.
+    expect(filesUnder(home)).toEqual([]);
+  });
+
+  it("a pickup that cannot run at all refuses every file and leaves no staging file", async () => {
+    const home = tempDir("mend-secret-home-");
+    // An image whose `node` fails before it writes anything.
+    const bin = tempDir("mend-secret-bin-");
+    fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 7\n", { mode: 0o755 });
+    const outcomes = await write(home, [utf8(".npmrc", "secret-bytes")], STAMP, channel, {
+      PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+    });
+    expect(outcomes).toEqual([
+      { path: ".npmrc", outcome: "refused", reason: "the pickup did not run (exit 7)" },
+    ]);
+    expect(filesUnder(home)).toEqual([]);
+  });
+
+  it("refuses a directory that is a symlink, so dotfiles cannot redirect a file into the worktree", async () => {
     const home = tempDir("mend-secret-home-");
     const worktree = tempDir("mend-secret-worktree-");
     fs.symlinkSync(worktree, path.join(home, ".aws"));
     fs.symlinkSync(path.join(worktree, "token"), path.join(home, ".npmrc"));
-    const outcomes = write(home, [
+    const outcomes = await write(home, [
       utf8(".aws/credentials", "secret"),
       utf8(".npmrc", "secret"),
       utf8(".config/plain/ok", "fine"),
@@ -225,14 +302,14 @@ describe("writing secret files into a workspace home", () => {
     expect(fs.existsSync(path.join(worktree, "token"))).toBe(false);
   });
 
-  it("refuses a chunked file whose directory is a symlink, even with a staging file planted there", () => {
+  it("refuses a file whose directory is a symlink, even with a staging file planted there", async () => {
     const home = tempDir("mend-secret-home-");
     const worktree = tempDir("mend-secret-worktree-");
     fs.symlinkSync(worktree, path.join(home, ".kube"));
     // A staging file left where this delivery would stage, through the link (Astra review 1).
     fs.writeFileSync(path.join(worktree, `config${SECRET_FILE_PART_PREFIX}${STAMP}`), "");
-    const bytes = new Uint8Array(randomBytes(120 * 1024));
-    const outcomes = write(home, [{ path: ".kube/config", bytes }]);
+    const bytes = new Uint8Array(randomBytes(4 * 1024));
+    const outcomes = await write(home, [{ path: ".kube/config", bytes }]);
     expect(outcomes).toEqual([
       { path: ".kube/config", outcome: "refused", reason: ".kube is a symlink" },
     ]);
@@ -243,48 +320,56 @@ describe("writing secret files into a workspace home", () => {
     ).toBe(0);
   });
 
-  it("a directory turned into a symlink between chunks takes no later chunk and no rename", () => {
+  it("a directory turned into a symlink while the pickup is in flight takes no bytes and no rename", async () => {
     const home = tempDir("mend-secret-home-");
     const worktree = tempDir("mend-secret-worktree-");
-    const bytes = new Uint8Array(randomBytes(120 * 1024));
-    const execs = secretFilesExecs([{ path: ".kube/config", bytes }], STAMP);
-    const outcomes: Array<SecretFileOutcome> = [];
-    outcomes.push(...parseSecretFileOutcomes(run(home, execs[0] ?? [])));
-    // The first chunk staged; now the directory becomes a link into the worktree.
-    const staged = path.join(home, ".kube", `config${SECRET_FILE_PART_PREFIX}${STAMP}`);
-    expect(fs.existsSync(staged)).toBe(true);
-    fs.renameSync(path.join(home, ".kube"), path.join(home, ".kube-real"));
-    fs.symlinkSync(worktree, path.join(home, ".kube"));
-    for (const argv of execs.slice(1)) outcomes.push(...parseSecretFileOutcomes(run(home, argv)));
-    expect(outcomes).toEqual([
-      { path: ".kube/config", outcome: "refused", reason: ".kube is a symlink" },
-    ]);
+    fs.mkdirSync(path.join(home, ".kube"), { mode: 0o700 });
+    // The proof passed; now, before the channel answers, the directory becomes a link into the
+    // worktree.
+    const racing = await startPickupChannel({
+      beforeAnswer: () => {
+        fs.renameSync(path.join(home, ".kube"), path.join(home, ".kube-real"));
+        fs.symlinkSync(worktree, path.join(home, ".kube"));
+      },
+    });
+    try {
+      const outcomes = await write(
+        home,
+        [{ path: ".kube/config", bytes: new Uint8Array(randomBytes(4 * 1024)) }],
+        STAMP,
+        racing,
+      );
+      expect(outcomes).toEqual([
+        {
+          path: ".kube/config",
+          outcome: "refused",
+          reason: `its directory is really ${fs.realpathSync(worktree)}`,
+        },
+      ]);
+    } finally {
+      await racing.close();
+    }
     expect(filesUnder(worktree)).toEqual([]);
-    // The staged chunk stays where it was, under the renamed directory: never removed through the
-    // link, and never reached by this delivery's cleanup either.
-    run(home, secretFilesCleanupExec([".kube/config"], STAMP));
-    expect(filesUnder(worktree)).toEqual([]);
-    expect(
-      fs.existsSync(path.join(home, ".kube-real", `config${SECRET_FILE_PART_PREFIX}${STAMP}`)),
-    ).toBe(true);
+    expect(filesUnder(path.join(home, ".kube-real"))).toEqual([]);
   });
 
   it("cleans this delivery's staging files, and only this delivery's", () => {
     const home = tempDir("mend-secret-home-");
-    const execs = secretFilesExecs(
-      [{ path: ".kube/config", bytes: new Uint8Array(randomBytes(120 * 1024)) }],
-      STAMP,
-    );
-    run(home, execs[0] ?? []);
+    fs.mkdirSync(path.join(home, ".kube"));
+    fs.writeFileSync(path.join(home, ".kube", `config${SECRET_FILE_PART_PREFIX}${STAMP}`), "x");
     fs.writeFileSync(path.join(home, ".kube", `config${SECRET_FILE_PART_PREFIX}feedbeef`), "x");
     run(home, secretFilesCleanupExec([".kube/config"], STAMP));
     expect(filesUnder(home)).toEqual([`.kube/config${SECRET_FILE_PART_PREFIX}feedbeef`]);
   });
 
-  it("removes a file an earlier delivery wrote only while it holds Mend's bytes, never through a symlink", () => {
+  it("removes a file an earlier delivery wrote only while it holds Mend's bytes, never through a symlink", async () => {
     const home = tempDir("mend-secret-home-");
     const worktree = tempDir("mend-secret-worktree-");
-    write(home, [utf8(".aws/credentials", "old"), utf8(".npmrc", "old"), utf8(".bashrc", "mine")]);
+    await write(home, [
+      utf8(".aws/credentials", "old"),
+      utf8(".npmrc", "old"),
+      utf8(".bashrc", "mine"),
+    ]);
     // The person's dotfiles since replaced .bashrc: no longer Mend's bytes.
     fs.writeFileSync(path.join(home, ".bashrc"), "export PS1=x\n");
     fs.writeFileSync(path.join(worktree, "keep.txt"), "repo file\n");
@@ -517,7 +602,7 @@ describe("writing secret files into a workspace home", () => {
 });
 
 describe("a secret file is never captured", () => {
-  it("refuses every path the harness home relocation moves onto the captured root, and every harvested one", () => {
+  it("refuses every path the harness home relocation moves onto the captured root, and every harvested one", async () => {
     for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
       for (const entry of [...shape.homeDirs, ...shape.paths]) {
         expect(validateSecretFilePath(entry), `${harness}: ${entry}`).not.toBeNull();
@@ -548,7 +633,7 @@ describe("a secret file is never captured", () => {
    * file, a link named like a transcript at it, a directory on the way to the state replaced by a
    * link at the home, and a transcripts directory replaced by a link at a secret file's directory.
    */
-  const relocatedHome = () => {
+  const relocatedHome = async () => {
     const scratch = tempDir("mend-secret-capture-");
     const home = path.join(scratch, "home");
     const harnessHome = path.join(scratch, "harness-home");
@@ -570,7 +655,7 @@ describe("a secret file is never captured", () => {
       fs.symlinkSync(path.join(harnessHome, dir), path.join(home, dir));
     }
     fs.writeFileSync(path.join(home, ".claude.json"), "{}\n");
-    const outcomes = write(home, [
+    const outcomes = await write(home, [
       utf8(".aws/credentials", "[default]\naws_secret_access_key = SECRET\n"),
       utf8(".kube/config", "apiVersion: v1\n"),
       utf8("sessions/00000000-0000-0000-0000-000000000001.jsonl", "SECRET too\n"),
@@ -597,7 +682,7 @@ describe("a secret file is never captured", () => {
   };
 
   it("appears in neither the executor's capture listing nor the co-located harvest, whatever links an agent left", async () => {
-    const { scratch, home, harnessHome, worktree } = relocatedHome();
+    const { scratch, home, harnessHome, worktree } = await relocatedHome();
 
     // The workspace class sealantd ships (sealant-capture `roots.rs`): the worktree under `tree/`
     // and the harness root under `harness/`, links as links. Nothing else of the executor's disk
@@ -686,8 +771,8 @@ describe("a secret file is never captured", () => {
     }
   });
 
-  it("the transcript read takes the relocation's link and no other", () => {
-    const { home, harnessHome } = relocatedHome();
+  it("the transcript read takes the relocation's link and no other", async () => {
+    const { home, harnessHome } = await relocatedHome();
     const read = (file: string) =>
       spawnSync("sh", ["-c", readHarnessFileScript(harnessHome), "mend-read", file], {
         env: { ...process.env, HOME: home },

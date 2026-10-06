@@ -23,6 +23,8 @@ import { gzipSync } from "node:zlib";
 
 import { Schema } from "effect";
 
+import { SCRIPT_PICKUP_FUNCTION, SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
+
 /** `value` as one single-quoted `sh` word, whatever it holds. */
 export const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
 
@@ -156,6 +158,45 @@ export const writeFilesExecs = (
   flush();
   return execs;
 };
+
+/**
+ * The pickup writer (`pickup-tickets.ts`): the same writes as `WRITE_PROGRAM` for files whose
+ * bytes must never ride argv, because the platform keeps every exec's argv for good. Arguments: a
+ * single-use ticket, then the absolute paths. It redeems the ticket once over the session channel
+ * and writes each path's bytes as `put` does; any path the answer lacks, or any refusal, fails
+ * the exec with a reason that names paths only, never a byte of a file.
+ */
+const WRITE_PICKUP_PROGRAM =
+  SCRIPT_TRANSPORT_PRELUDE +
+  SCRIPT_PICKUP_FUNCTION +
+  [
+    'const path=require("path"),crypto=require("crypto");',
+    "const [ticket,...paths]=process.argv.slice(1);",
+    'const fail=(why)=>{process.stderr.write("mend-write: "+why+"\\n");process.exit(3);};',
+    "const put=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true});",
+    'fs.chmodSync(d,0o755);const t=path.join(d,".mend-part-"+crypto.randomBytes(8).toString("hex"));',
+    'fs.writeFileSync(t,b,{flag:"wx",mode:0o600});fs.chmodSync(t,0o644);fs.renameSync(t,p);};',
+    "redeemPickup(ticket,(reason,files)=>{if(reason!==null)return fail(reason);",
+    'const missing=paths.filter((p)=>!files.has(p));if(missing.length>0)return fail("not in the pickup: "+missing.join(", "));',
+    'for(const p of paths){try{put(p,files.get(p));}catch(e){return fail("not written: "+p+" ("+(e&&e.code?e.code:"error")+")");}}});',
+  ].join("");
+
+/**
+ * The one exec that writes `paths` into a workspace with bytes it redeems through `ticket` over
+ * the session channel (`pickup-tickets.ts`): only the ticket and the paths ride argv, whatever the
+ * files hold or weigh. Exits non-zero, naming paths only, when any file is not written.
+ */
+export const writeFilesPickupExec = (
+  paths: ReadonlyArray<string>,
+  ticket: string,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `exec node -e ${shellQuote(WRITE_PICKUP_PROGRAM)} -- "$@"`,
+  "mend-write",
+  ticket,
+  ...paths,
+];
 
 /**
  * Writes each (path under `$HOME`, base64) pair only when nothing is at that path yet — no file,

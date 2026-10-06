@@ -126,6 +126,22 @@ export interface SessionSocketApi {
    * and the only thing (review 2026-09-28 (4) #10).
    */
   readonly captureAs?: ((launchId: string) => SessionCaptureApi) | undefined;
+  /**
+   * Redeem a pickup ticket (`pickup-tickets.ts`): the secret an exec in this session's workspace
+   * was handed a ticket for, instead of the secret itself in its argv. Over the Unix socket, whose
+   * mount names the session and no launch. Answers the files, or fails with why not; the ticket is
+   * spent either way.
+   */
+  readonly pickup?: ((ticket: string) => Effect.Effect<PickupAnswer, Error>) | undefined;
+  /** The same, for the launch the network channel's token names: what an executor is served. */
+  readonly pickupAs?:
+    | ((launchId: string) => (ticket: string) => Effect.Effect<PickupAnswer, Error>)
+    | undefined;
+}
+
+/** What a redeemed pickup answers: each file's path and its bytes in base64. */
+export interface PickupAnswer {
+  readonly files: ReadonlyArray<{ readonly path: string; readonly base64: string }>;
 }
 
 export class SessionSocketHost extends Context.Service<

@@ -56,3 +56,38 @@ const transportDownMessage = () =>
     ? "mend.sock is not answering — is the Mend server up?"
     : "the Mend session endpoint (" + transport.url.host + ") is not answering — is the Mend server up?";
 `;
+
+/**
+ * `redeemPickup(ticket, done)`, after the prelude: one POST of the ticket to `/pickup` over the
+ * channel (`pickup-tickets.ts`), and `done(null, files)` with a Map from each path to its bytes,
+ * or `done(reason)` saying why there are none. The reason never quotes the answer's body beyond
+ * the server's own message, so no byte of a file reaches stdout or stderr from here.
+ */
+export const SCRIPT_PICKUP_FUNCTION = `const redeemPickup = (ticket, done) => {
+  let settled = false;
+  const finish = (reason, files) => { if (settled) return; settled = true; done(reason, files); };
+  const options = transportOptions("POST", "/pickup", { "content-type": "application/json" });
+  if (options === null) return finish("the pickup could not run: " + transportUnavailable());
+  const request = transportClient().request(options, (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.on("error", () => finish("the pickup's answer was cut off"));
+    response.on("end", () => {
+      let answer = null;
+      try { answer = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
+      if (response.statusCode !== 200 || answer === null || !Array.isArray(answer.files)) {
+        const why = answer !== null && typeof answer.message === "string" ? answer.message : "HTTP " + response.statusCode;
+        return finish("the pickup was refused: " + why);
+      }
+      const files = new Map();
+      for (const file of answer.files) {
+        if (file && typeof file.path === "string" && typeof file.base64 === "string") files.set(file.path, Buffer.from(file.base64, "base64"));
+      }
+      finish(null, files);
+    });
+  });
+  request.setTimeout(20000, () => request.destroy(new Error("timeout")));
+  request.on("error", () => finish("the pickup could not reach Mend: " + transportDownMessage()));
+  request.end(JSON.stringify({ ticket }));
+};
+`;

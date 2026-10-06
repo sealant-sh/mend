@@ -244,6 +244,7 @@ import {
   PLAN_WAITING_PREFIX,
   type SessionCaptureApi,
 } from "./capture-channel.ts";
+import { workspaceRemoteUrl } from "./capture-remotes.ts";
 import {
   CaptureDrainPolicy,
   CaptureRuntime,
@@ -350,6 +351,14 @@ import {
   preparePiProfileExec,
 } from "./pi-profile.ts";
 import {
+  makePickupTickets,
+  pickupAnswerOf,
+  pickupChannelMatch,
+  type PickupBinding,
+  type PickupChannel,
+  type PickupFile,
+} from "./pickup-tickets.ts";
+import {
   ProtocolHost,
   type ProtocolHostHooks,
   type ProtocolHostNotLiveError,
@@ -374,7 +383,7 @@ import {
   planSecretFiles,
   secretFilesCleanupExec,
   secretFilesDeliveredExec,
-  secretFilesExecs,
+  secretFilesPickupExec,
   secretFilesRecordExec,
   secretFilesRemoveExec,
   secretFilesSetAsideExec,
@@ -421,6 +430,7 @@ import {
   WorkspaceFileError,
   writeAbsentHomeFilesExecs,
   writeFilesExecs,
+  writeFilesPickupExec,
 } from "./workspace-files.ts";
 import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
 import {
@@ -1992,6 +2002,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // (cross-repo decision 5, review 2026-09-28 (4) #10).
         ...(api.capture === undefined ? {} : { capture: api.capture }),
         ...(api.captureAs === undefined ? {} : { captureAs: api.captureAs }),
+        // Pickups pass through too: a ticket names its session, person and launch already.
+        ...(api.pickup === undefined ? {} : { pickup: api.pickup }),
+        ...(api.pickupAs === undefined ? {} : { pickupAs: api.pickupAs }),
       });
       const conversations = yield* AgentConversationRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
@@ -5942,6 +5955,75 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const secretFiles = yield* SecretFilesRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
+
+      // ── Pickups: secrets reach a workspace over the channel, never through argv ──────────
+      // The platform keeps every exec's argv in plaintext for good (review of mend#552/#553,
+      // P1-1), so an exec that writes a secret carries a single-use ticket instead and redeems it
+      // over the session channel (`pickup-tickets.ts`). Held in memory, by this process, which
+      // also serves the channel of every session it launches.
+      const pickups = makePickupTickets();
+
+      /**
+       * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
+       * the launch of the executor in `workspace` when Mend knows it. One in-process read of the
+       * executor's launch; nothing reaches the platform.
+       */
+      const mintPickup = Effect.fn("SessionEngine.mintPickup")(function* (
+        purpose: PickupBinding["purpose"],
+        session: Session,
+        personId: string,
+        workspace: Workspace,
+        files: ReadonlyArray<PickupFile>,
+      ) {
+        const launchId = yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id));
+        return pickups.mint(
+          { purpose, sessionId: session.id, worktreeId: session.worktreeId, personId, launchId },
+          files,
+        );
+      });
+
+      /**
+       * Redeem a ticket presented through `channel`. The ticket is spent whatever this answers. A
+       * channel naming the ticket's launch is the executor it was minted for; one naming another
+       * launch is not. Otherwise (the Unix socket names no launch) the channel's session must be
+       * the ticket's, or another session of the same worktree and the same owner: the socket a
+       * workspace mounts is the session's that made it.
+       */
+      const redeemPickup = (channel: PickupChannel, ticket: string) =>
+        Effect.gen(function* () {
+          const entry = pickups.take(ticket);
+          if (entry === null) {
+            return yield* Effect.fail(new Error("this pickup ticket is spent, expired or unknown"));
+          }
+          const match = pickupChannelMatch(entry.binding, channel);
+          if (match === "no") {
+            return yield* Effect.fail(new Error("this pickup ticket is another executor's"));
+          }
+          if (match === "ask" && channel.sessionId !== entry.binding.sessionId) {
+            const other = yield* sessions
+              .byId(SessionId.make(channel.sessionId))
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+            if (
+              other === null ||
+              other.worktreeId !== entry.binding.worktreeId ||
+              other.ownerUserId !== entry.binding.personId
+            ) {
+              return yield* Effect.fail(new Error("this pickup ticket is another session's"));
+            }
+          }
+          yield* Effect.logInfo("session engine: pickup redeemed").pipe(
+            Effect.annotateLogs({
+              sessionId: entry.binding.sessionId,
+              purpose: entry.binding.purpose,
+              files: entry.files.length,
+            }),
+          );
+          return pickupAnswerOf(entry.files);
+        }).pipe(
+          Effect.mapError((error) =>
+            error instanceof Error ? error : new Error("the pickup could not be answered"),
+          ),
+        );
 
       // ── A session and its run never disagree ─────────────────────────────────
       // `session_runs` is Mend's index over the records a session ran as: one open run per
@@ -10172,14 +10254,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
           );
         }
-        if (plan === null) return;
-        yield* writeWorkspaceFiles(
+        if (plan === null || session.ownerUserId === null) return;
+        // The profile can hold the person's keys (`mcp.json`'s headers, env and client secrets;
+        // settings and extensions may too), so none of it rides argv, which the platform keeps:
+        // one exec carries a pickup ticket and the paths and redeems the bytes over the channel.
+        const files = piProfileFilesToWrite(plan, vacated).map((file) => ({
+          path: path.posix.join(home, file.path),
+          bytes: file.bytes,
+        }));
+        if (files.length === 0) return;
+        const ticket = yield* mintPickup(
+          "pi-profile",
+          session,
+          session.ownerUserId,
           workspace,
-          piProfileFilesToWrite(plan, vacated).map((file) => ({
-            path: path.posix.join(home, file.path),
-            bytes: file.bytes,
-          })),
-        ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
+          files,
+        );
+        const written = yield* sealant
+          .exec(
+            workspace,
+            writeFilesPickupExec(
+              files.map((file) => file.path),
+              ticket,
+            ),
+          )
+          .pipe(
+            Effect.ensuring(Effect.sync(() => pickups.discard(ticket))),
+            Effect.mapError((error) => piProfileNotDelivered(error.message)),
+          );
+        if (written.exitCode !== 0) {
+          return yield* piProfileNotDelivered(`exit ${written.exitCode}: ${written.stderr.trim()}`);
+        }
       });
 
       /**
@@ -10599,9 +10704,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // One delivery's own staging names, and its staging files gone whatever ends it early.
         const stamp = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
         const paths = plan.files.map((file) => file.path);
-        yield* Effect.gen(function* () {
-          for (const argv of secretFilesExecs(plan.files, stamp)) {
-            const result = yield* sealant.exec(workspace, argv);
+        // One exec for every file, carrying a pickup ticket and the paths, never a byte: the
+        // platform keeps every exec's argv for good. The exec redeems the ticket over the session
+        // channel; the ticket dies with the exec, redeemed or not.
+        if (paths.length > 0) {
+          const ticket = yield* mintPickup(
+            "secret-files",
+            session,
+            session.ownerUserId,
+            workspace,
+            plan.files,
+          );
+          yield* Effect.gen(function* () {
+            const result = yield* sealant.exec(
+              workspace,
+              secretFilesPickupExec(paths, stamp, ticket),
+            );
             outcomes.push(...parseSecretFileOutcomes(result.stdout));
             if (result.exitCode !== 0) {
               return yield* new WorkspaceFileError({
@@ -10609,14 +10727,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
               });
             }
-          }
-        }).pipe(
-          Effect.onExit((exit) =>
-            Exit.isSuccess(exit) || paths.length === 0
-              ? Effect.void
-              : sealant.exec(workspace, secretFilesCleanupExec(paths, stamp)).pipe(Effect.ignore),
-          ),
-        );
+          }).pipe(
+            Effect.ensuring(Effect.sync(() => pickups.discard(ticket))),
+            Effect.onExit((exit) =>
+              Exit.isSuccess(exit)
+                ? Effect.void
+                : sealant.exec(workspace, secretFilesCleanupExec(paths, stamp)).pipe(Effect.ignore),
+            ),
+          );
+        }
         // A file delivered before and no longer kept goes, when it still holds the bytes Mend
         // wrote; one still kept but refused this time stays recorded, so a later delivery can
         // still remove it, and so does one whose removal was refused.
@@ -11352,13 +11471,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             repository: name,
             project: target.name,
             worktree: worktree.name,
-            origin: target.originUrl,
+            origin: workspaceRemoteUrl(target.originUrl),
           }),
         );
         // In the engine's lifetime, as the owner: the channel answers within its timeout, the
-        // clone takes what it takes, and the row says where it stands.
+        // clone takes what it takes, and the row says where it stands. A password in an adopted
+        // `https://user:token@host/…` origin never enters the workspace, nor the clone's argv,
+        // which the platform keeps: the clone asks without it, as the workspace's remotes do.
         yield* detach(
-          bringRepositoryIn(session, workspace, row, target.originUrl).pipe(
+          bringRepositoryIn(session, workspace, row, workspaceRemoteUrl(target.originUrl)).pipe(
             asSealantUser(session.ownerUserId),
           ),
         );
@@ -14797,6 +14918,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const socketApiFor = (sessionId: SessionId): SessionSocketApi =>
         ownedSocketApi(sessionId, {
+          pickup: (ticket) => redeemPickup({ sessionId, launchId: null }, ticket),
+          pickupAs: (launchId) => (ticket) => redeemPickup({ sessionId, launchId }, ticket),
           ...(capture === null
             ? {}
             : {

@@ -1,6 +1,7 @@
 import { validateSecretFilePath, validateSecretFilePathSyntax } from "@mend/domain/workbench";
 
-import { WORKSPACE_EXEC_ARG_CHARS } from "./workspace-files.ts";
+import { SCRIPT_PICKUP_FUNCTION, SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
+import { shellQuote } from "./workspace-files.ts";
 
 /**
  * A person's secret files (docs/adr/0010-secret-files.md, secret-file.ts in @mend/domain),
@@ -9,16 +10,18 @@ import { WORKSPACE_EXEC_ARG_CHARS } from "./workspace-files.ts";
  * `/workspace/repo`, the harness home `/workspace/harness-home`, and the home directories the
  * relocation moves onto it were refused when the file was saved.
  *
- * The SDK's `exec` takes argv only (`workspace-files.ts`), so the bytes ride argv as base64 and
- * are decoded inside. Unlike `writeFilesExecs`, paths here are HOME-relative, the files land 0600
+ * The SDK's `exec` takes argv only, and the platform keeps every exec's argv in plaintext for good,
+ * so the bytes never ride it: the delivery's one exec carries a single-use pickup ticket and the
+ * paths, and redeems the ticket over the session channel for the bytes (`pickup-tickets.ts`;
+ * review of mend#552/#553, P1-1). Unlike `writeFilesExecs`, paths here are HOME-relative, the files land 0600
  * in directories made 0700, and every write first proves the path is still a plain path in the
  * home: no symlink at any component, the directory's physical path equal to its literal one, the
  * home itself outside `/workspace`. A dotfiles tree that linked `~/.aws` into the worktree would
  * otherwise turn a secret file into a captured one. Each file is staged beside its target as
- * `<target>.mend-secret-part-<stamp>`, the stamp one delivery's own, and renamed into place, so a
- * reader never sees half a file and two deliveries into one home never share a staging file. The
- * proof is repeated before every chunk and the rename (Astra review, 2026-10-03: a planted staging
- * file under a symlinked directory took later chunks).
+ * `<target>.mend-secret-part-<stamp>`, the stamp one delivery's own, created exclusively and
+ * renamed into place, so a reader never sees half a file and two deliveries into one home never
+ * share a staging file. The proof is repeated after the pickup and before the rename (Astra
+ * review, 2026-10-03: a planted staging file under a symlinked directory took later bytes).
  *
  * What a delivery wrote is recorded at `~/.mend/secret-files`, sealed with the machine key and
  * bound to the workspace, each file with the digest of its bytes (`SecretFilesRecord`), so the
@@ -80,52 +83,75 @@ const TARGET_FUNCTION =
 /** The staging path for `$T` under this delivery's stamp, in `P`. */
 const partOf = (stamp: string) => `P="$T${SECRET_FILE_PART_PREFIX}${stampOf(stamp)}"; `;
 
-/**
- * Decode `$2` (base64) into a fresh staging file `P`, 0600; on failure, remove it and say so.
- * Whatever sits at the staging path first goes: `rm -f` removes a link, never what it points at.
- */
-const START_PART =
-  'rm -f "$P"; printf \'%s\' "$2" | (umask 077; base64 -d > "$P") || ' +
-  `{ rm -f "$P"; printf 'refused\\t%s\\tcould not write\\n' "$1"; false; }`;
-
-/** Rename the staging file `P` into place as `$T`, 0600, or remove it and say so. */
+/** Rename the staging file `P` into place as `$p`'s target `$T`, 0600, or remove it and say so. */
 const FINISH_PART =
-  `{ chmod 600 "$P" && mv -f "$P" "$T" && printf 'written\\t%s\\n' "$1"; } || ` +
-  `{ rm -f "$P"; printf 'refused\\t%s\\tcould not write\\n' "$1"; }`;
-
-/** Small files, as (path, base64) pairs: each one checked, staged and renamed into place. */
-const smallFilesScript = (stamp: string) =>
-  TARGET_FUNCTION +
-  `while [ "$#" -gt 1 ]; do if secret_target "$1"; then ${partOf(stamp)}${START_PART} && ${FINISH_PART}; fi; ` +
-  "shift 2; done; exit 0";
-
-/** `$1` the HOME-relative path, `$2` a base64 chunk: the first chunk starts the staging file. */
-const firstChunkScript = (stamp: string) =>
-  TARGET_FUNCTION + `if secret_target "$1"; then ${partOf(stamp)}${START_PART}; fi; exit 0`;
+  `{ chmod 600 "$P" && mv -f "$P" "$T" && printf 'written\\t%s\\n' "$p"; } || ` +
+  `{ rm -f "$P"; printf 'refused\\t%s\\tcould not write\\n' "$p"; }`;
 
 /**
- * The next chunk: the path proved again, quietly (the first chunk said why when it refused), and
- * appended only to this delivery's own staging file, a regular file (a refused first chunk made
- * none, and `>>` must not make one). Nothing is removed through a path that failed the proof: the
- * literal path may now lead into the worktree.
+ * The pickup (`pickup-tickets.ts`), in node, inside the delivery's own exec: redeem the ticket
+ * once over the session channel and write each file's bytes into its staging file
+ * `<home>/<path><suffix>`, created here exclusively, 0600, never through a link, in a directory
+ * whose physical path is still its literal one. Arguments: the ticket, the physical home, the
+ * staging suffix, then the paths the shell proved. Prints only `refused\t<path>\t<reason>` lines,
+ * never a byte of a file, never the ticket, never the channel's answer; a file it wrote is left
+ * for the shell to prove again and rename. Exits 0 whenever it answered for every path.
  */
-const nextChunkScript = (stamp: string) =>
-  TARGET_FUNCTION +
-  `secret_target "$1" >/dev/null || exit 0; ` +
-  `${partOf(stamp)}[ -f "$P" ] && [ ! -L "$P" ] || exit 0; ` +
-  `printf '%s' "$2" | base64 -d >> "$P" || { rm -f "$P"; printf 'refused\\t%s\\tcould not write\\n' "$1"; }; exit 0`;
+const PICKUP_PROGRAM =
+  SCRIPT_TRANSPORT_PRELUDE +
+  SCRIPT_PICKUP_FUNCTION +
+  `const path = require("node:path");
+const [ticket, home, suffix, ...paths] = process.argv.slice(1);
+const say = (p, reason) => process.stdout.write("refused\\t" + p + "\\t" + reason + "\\n");
+const refuseAll = (reason) => { for (const p of paths) say(p, reason); };
+const stagingOf = (p) => home + "/" + p + suffix;
+const put = (p, bytes) => {
+  const staging = stagingOf(p);
+  const dir = path.dirname(staging);
+  let real;
+  try { real = fs.realpathSync(dir); } catch { return say(p, "could not enter its directory"); }
+  if (real !== dir) return say(p, "its directory is really " + real);
+  let fd;
+  try {
+    const c = fs.constants;
+    fd = fs.openSync(staging, c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+    let at = 0;
+    while (at < bytes.length) at += fs.writeSync(fd, bytes, at, bytes.length - at);
+  } catch {
+    if (fd !== undefined) { try { fs.unlinkSync(staging); } catch {} }
+    return say(p, "could not write");
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+};
+redeemPickup(ticket, (reason, files) => {
+  if (reason !== null) return refuseAll(reason);
+  for (const p of paths) {
+    const bytes = files.get(p);
+    if (bytes === undefined) say(p, "not in the pickup");
+    else put(p, bytes);
+  }
+});
+`;
 
 /**
- * The last step of a chunked file: the path proved once more, then the rename. A refusal here is
- * said, as the first chunk's was; the engine folds one file's repeated refusal into one.
+ * The delivery: `$1` the ticket, then the HOME-relative paths. Each path is proved and its
+ * directory made (`secret_target`), whatever sits at its staging path removed, and only the paths
+ * that passed go on, in `$@`. Then the pickup writes their staging files, and each is proved once
+ * more and renamed into place. A pickup that could not run at all (no node, killed) leaves no
+ * staging file behind and refuses every path.
  */
-const finishScript = (stamp: string) =>
+const pickupScript = (stamp: string) =>
   TARGET_FUNCTION +
-  `secret_target "$1" || exit 0; ` +
-  `${partOf(stamp)}[ -f "$P" ] && [ ! -L "$P" ] || exit 0; ${FINISH_PART}; exit 0`;
-
-const toBase64 = (bytes: Uint8Array): string =>
-  Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+  't=$1; shift; for p; do shift; if secret_target "$p"; then ' +
+  `${partOf(stamp)}rm -f "$P"; set -- "$@" "$p"; fi; done; ` +
+  '[ "$#" -gt 0 ] || exit 0; ' +
+  `node -e ${shellQuote(PICKUP_PROGRAM)} -- "$t" "$H" ${shellQuote(SECRET_FILE_PART_PREFIX + stampOf(stamp))} "$@"; rc=$?; ` +
+  'if [ "$rc" -ne 0 ]; then for p; do if secret_path "$p" >/dev/null; then ' +
+  `${partOf(stamp)}[ -L "$P" ] || rm -f "$P"; fi; ` +
+  `printf 'refused\\t%s\\tthe pickup did not run (exit %s)\\n' "$p" "$rc"; done; exit 0; fi; ` +
+  'for p; do secret_target "$p" >/dev/null || continue; ' +
+  `${partOf(stamp)}[ -f "$P" ] && [ ! -L "$P" ] || continue; ${FINISH_PART}; done; exit 0`;
 
 /**
  * The files worth writing out of what the store holds: a path that no longer validates (a rule
@@ -148,43 +174,23 @@ export const planSecretFiles = (
 };
 
 /**
- * The execs that write `files` under the workspace user's home, in order, under one delivery's
- * `stamp`. Each argv stays under `WORKSPACE_EXEC_ARG_CHARS` of base64 plus the paths. Read each
- * exec's stdout with `parseSecretFileOutcomes`; an exec never exits non-zero over one file's
- * refusal.
+ * The one exec that writes `paths` under the workspace user's home, under one delivery's `stamp`,
+ * carrying `ticket` and the paths and nothing else: the bytes come over the session channel when
+ * the exec redeems the ticket (`pickup-tickets.ts`), never through argv, which the platform keeps.
+ * Read its stdout with `parseSecretFileOutcomes`; it never exits non-zero over one file's refusal.
  */
-export const secretFilesExecs = (
-  files: ReadonlyArray<SecretFileToWrite>,
+export const secretFilesPickupExec = (
+  paths: ReadonlyArray<string>,
   stamp: string,
-): ReadonlyArray<ReadonlyArray<string>> => {
-  const execs: Array<ReadonlyArray<string>> = [];
-  let batch: Array<string> = [];
-  let batchChars = 0;
-  const flush = () => {
-    if (batch.length === 0) return;
-    execs.push(["sh", "-c", smallFilesScript(stamp), "mend-secret-files", ...batch]);
-    batch = [];
-    batchChars = 0;
-  };
-  for (const file of files) {
-    const encoded = toBase64(file.bytes);
-    if (encoded.length <= WORKSPACE_EXEC_ARG_CHARS) {
-      if (batchChars + encoded.length > WORKSPACE_EXEC_ARG_CHARS) flush();
-      batch.push(file.path, encoded);
-      batchChars += encoded.length + file.path.length;
-      continue;
-    }
-    flush();
-    for (let offset = 0; offset < encoded.length; offset += WORKSPACE_EXEC_ARG_CHARS) {
-      const chunk = encoded.slice(offset, offset + WORKSPACE_EXEC_ARG_CHARS);
-      const script = offset === 0 ? firstChunkScript(stamp) : nextChunkScript(stamp);
-      execs.push(["sh", "-c", script, "mend-secret-files", file.path, chunk]);
-    }
-    execs.push(["sh", "-c", finishScript(stamp), "mend-secret-files", file.path, ""]);
-  }
-  flush();
-  return execs;
-};
+  ticket: string,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  pickupScript(stamp),
+  "mend-secret-files",
+  ticket,
+  ...paths,
+];
 
 /**
  * The exec that removes this delivery's staging files for `paths`, after an exec failed or the
