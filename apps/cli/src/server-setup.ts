@@ -54,6 +54,7 @@ import {
   withServerStore,
   ServerStoreError,
   type ServerFiles,
+  type ServerBackup,
   type ServerStore,
   type ServerStoreResult,
   type ServerGeneration,
@@ -1936,11 +1937,30 @@ const startInstallation = async (
   runtime.writeLine(reachableLine(installation.config));
 };
 
+/** How many completed upgrade backups an upgrade keeps, its own included, unless told otherwise. */
+const DEFAULT_KEEP_BACKUPS = 2;
+
 const parseUpgradeOptions = (
   args: ReadonlyArray<string>,
-): SetupOptions & { readonly fromPreview: boolean } => {
+): SetupOptions & { readonly fromPreview: boolean; readonly keepBackups: number } => {
   const fromPreview = args.includes("--from-preview");
-  const rest = args.filter((arg) => arg !== "--from-preview");
+  const rest: Array<string> = [];
+  let keepBackups = DEFAULT_KEEP_BACKUPS;
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (flag === undefined || flag === "--from-preview") continue;
+    if (flag === "--keep-backups") {
+      const value = args[index + 1];
+      if (value === undefined || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)))
+        throw setupError(
+          "--keep-backups takes a whole number: how many upgrade backups to keep, 0 for all.",
+        );
+      keepBackups = Number(value);
+      index += 1;
+      continue;
+    }
+    rest.push(flag);
+  }
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     if (flag === "--offline") continue;
@@ -1953,7 +1973,59 @@ const parseUpgradeOptions = (
     throw setupError(
       "Upgrade requires --version TARGET. Use --version latest only to request the latest release explicitly.",
     );
-  return { ...options, fromPreview };
+  return { ...options, fromPreview, keepBackups };
+};
+
+/** Bytes as people read them, in binary units. */
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
+};
+
+/**
+ * After a healthy upgrade: record it, then keep the newest `keep` completed backups (0 keeps all).
+ * The upgrade already succeeded, so a pruning failure is reported and never fails the command.
+ */
+const pruneUpgradeBackups = (
+  runtime: ServerSetupRuntime,
+  store: ServerStore,
+  backup: ServerBackup,
+  keep: number,
+): void => {
+  const marked = backup.markCompleted();
+  if (marked._tag === "error") {
+    runtime.writeLine(
+      `Could not record the upgrade as completed in ${backup.directory}/recovery.json; no backups were removed. ${marked.error.message}`,
+    );
+    return;
+  }
+  if (keep === 0) {
+    runtime.writeLine("Upgrade backups · all kept (--keep-backups 0)");
+    return;
+  }
+  const pruned = store.pruneBackups(keep, backup);
+  if (pruned._tag === "error") {
+    runtime.writeLine(`Upgrade backups · not pruned: ${pruned.error.message}`);
+    return;
+  }
+  const { removed, kept, held } = pruned.value;
+  for (const entry of removed)
+    runtime.writeLine(`Removed upgrade backup ${entry.directory} · ${formatBytes(entry.bytes)}`);
+  const freed = removed.reduce((total, entry) => total + entry.bytes, 0);
+  runtime.writeLine(
+    `Upgrade backups · removed ${removed.length}${removed.length > 0 ? ` · ${formatBytes(freed)} freed` : ""} · kept ${kept.length} (--keep-backups ${keep})`,
+  );
+  for (const entry of held)
+    runtime.writeLine(
+      `Kept upgrade backup ${entry.directory} · ${entry.reason === "pending" ? "pending: its upgrade never recorded a healthy target" : "unfinished: no complete database dump"}`,
+    );
 };
 
 /**
@@ -2295,6 +2367,7 @@ const upgradeServer = async (
     );
   }
   runtime.writeLine(`Upgraded to ${version}. Retained database backup: ${backup.directory}`);
+  pruneUpgradeBackups(runtime, store, backup, options.keepBackups);
 };
 
 /**

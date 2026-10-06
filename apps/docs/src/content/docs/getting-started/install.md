@@ -164,6 +164,20 @@ is no automatic database restore or downgrade. Back up Docker volumes and privat
 the SQL dump is not a backup of repositories, session captures (the `mend-garage` volume), or SSH
 identity.
 
+Each backup is a full dump under `~/.config/mend/backups/upgrade-UUID/` and can run to gigabytes.
+After the new version answers health, the upgrade keeps the newest two completed backups, its own
+included, removes older completed ones, and prints each removal with the space it freed:
+
+```text
+Removed upgrade backup /home/me/.config/mend/backups/upgrade-3f2c… · 2.4 GiB
+Upgrade backups · removed 1 · 2.4 GiB freed · kept 2 (--keep-backups 2)
+```
+
+Choose the count with `--keep-backups N`; `--keep-backups 0` keeps every backup. A failed upgrade
+removes nothing. A backup whose upgrade never recorded a healthy target, or whose dump is
+incomplete, is always kept and listed; remove it yourself once its recovery no longer needs it.
+Directories Mend did not write are left alone.
+
 The [self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) covers
 offline assets, port selection, ownership conflicts, locks, and upgrade recovery. The retired host
 installer is not an automatic migration path into this volume-backed deployment.

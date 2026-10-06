@@ -346,3 +346,165 @@ describe("setup across processes", () => {
     expect(activeDirectory(root)).toBe(generation);
   });
 });
+
+const unwrap = <T>(result: { _tag: "ok"; value: T } | { _tag: "error"; error: Error }): T => {
+  if (result._tag === "error") throw result.error;
+  return result.value;
+};
+/** One upgrade's backup as the upgrade leaves it: a dump, then completed only when told. */
+const backupIn = async (
+  store: ServerStore,
+  outcome: "completed" | "pending" | "unfinished" = "completed",
+) => {
+  // createdAt has millisecond precision; keep successive backups apart.
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const generation = unwrap(store.commit(files));
+  const backup = unwrap(store.createBackup(generation, generation));
+  fs.writeFileSync(backup.partialFile, `dump of ${path.basename(backup.directory)}\n`);
+  if (outcome === "unfinished") return backup;
+  unwrap(backup.complete());
+  if (outcome === "completed") unwrap(backup.markCompleted());
+  return backup;
+};
+const recovery = (directory: string): Record<string, unknown> =>
+  JSON.parse(fs.readFileSync(path.join(directory, "recovery.json"), "utf8"));
+const names = (root: string): ReadonlyArray<string> =>
+  fs.readdirSync(path.join(root, "backups")).toSorted();
+
+const size = (directory: string) =>
+  fs.statSync(path.join(directory, "database.sql")).size +
+  fs.statSync(path.join(directory, "recovery.json")).size;
+
+describe("upgrade backup pruning", () => {
+  it("keeps the newest N completed backups, the current one among them, and reports the bytes", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const oldest = await backupIn(store);
+      const older = await backupIn(store);
+      const newer = await backupIn(store);
+      const current = await backupIn(store);
+      expect(recovery(current.directory)).toMatchObject({ state: "completed" });
+      const pruned = unwrap(store.pruneBackups(2, current));
+      expect(pruned.kept.map((entry) => entry.directory)).toEqual([
+        current.directory,
+        newer.directory,
+      ]);
+      expect(pruned.removed.map((entry) => entry.directory).toSorted()).toEqual(
+        [oldest.directory, older.directory].toSorted(),
+      );
+      expect(pruned.removed.every((entry) => entry.bytes > 0)).toBe(true);
+      expect(pruned.kept[0]?.bytes).toBe(size(current.directory));
+      expect(pruned.held).toEqual([]);
+      expect(fs.existsSync(oldest.directory)).toBe(false);
+      expect(fs.existsSync(older.directory)).toBe(false);
+      // A second prune finds nothing more to remove.
+      expect(unwrap(store.pruneBackups(2, current)).removed).toEqual([]);
+    });
+    expect(result._tag).toBe("ok");
+    expect(names(root)).toHaveLength(2);
+  });
+
+  it("never removes the current backup, even when every other one is newer", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const current = await backupIn(store);
+      await backupIn(store);
+      await backupIn(store);
+      const pruned = unwrap(store.pruneBackups(1, current));
+      expect(pruned.kept.map((entry) => entry.directory)).toEqual([current.directory]);
+      expect(pruned.removed).toHaveLength(2);
+      expect(fs.existsSync(path.join(current.directory, "database.sql"))).toBe(true);
+    });
+    expect(result._tag).toBe("ok");
+    expect(names(root)).toHaveLength(1);
+  });
+
+  it("removes nothing while the current backup is not recorded as completed", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      await backupIn(store);
+      await backupIn(store);
+      const current = await backupIn(store, "pending");
+      expect(recovery(current.directory)).toMatchObject({ state: "pending" });
+      expect(store.pruneBackups(1, current)).toMatchObject({ _tag: "error" });
+      expect(store.pruneBackups(0, current)).toMatchObject({ _tag: "error" });
+    });
+    expect(result._tag).toBe("ok");
+    expect(names(root)).toHaveLength(3);
+  });
+
+  it("keeps a backup whose recovery is pending or unfinished, however old", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const unfinished = await backupIn(store, "unfinished");
+      const pending = await backupIn(store, "pending");
+      const dumpless = await backupIn(store);
+      fs.unlinkSync(path.join(dumpless.directory, "database.sql"));
+      await backupIn(store);
+      const current = await backupIn(store);
+      const pruned = unwrap(store.pruneBackups(1, current));
+      expect(pruned.held.toSorted((a, b) => a.directory.localeCompare(b.directory))).toEqual(
+        [
+          { directory: unfinished.directory, reason: "unfinished" },
+          { directory: pending.directory, reason: "pending" },
+          { directory: dumpless.directory, reason: "unfinished" },
+        ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
+      );
+      expect(pruned.removed).toHaveLength(1);
+      expect(fs.existsSync(path.join(unfinished.directory, "database.sql.partial"))).toBe(true);
+      expect(fs.existsSync(path.join(pending.directory, "database.sql"))).toBe(true);
+      expect(fs.existsSync(path.join(dumpless.directory, "recovery.json"))).toBe(true);
+    });
+    expect(result._tag).toBe("ok");
+  });
+
+  it("ignores foreign entries and links, and treats a record from before the state field as completed", async () => {
+    const root = temporary();
+    const outside = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const backups = path.join(root, "backups");
+      const legacy = await backupIn(store);
+      // The record releases before this one wrote: no state, no createdAt.
+      const { state: _state, createdAt: _createdAt, ...old } = recovery(legacy.directory);
+      fs.writeFileSync(path.join(legacy.directory, "recovery.json"), JSON.stringify(old));
+      // A completed backup outside backups/, reached through an upgrade-UUID link.
+      const target = path.join(outside, "upgrade-00000000-0000-4000-8000-000000000001");
+      fs.mkdirSync(target);
+      fs.writeFileSync(path.join(target, "database.sql"), "outside dump\n");
+      fs.writeFileSync(
+        path.join(target, "recovery.json"),
+        JSON.stringify({ previousGeneration: "a", targetGeneration: "b", state: "completed" }),
+      );
+      fs.symlinkSync(target, path.join(backups, "upgrade-00000000-0000-4000-8000-000000000002"));
+      const extra = await backupIn(store);
+      fs.writeFileSync(path.join(extra.directory, "notes.txt"), "mine\n");
+      const linkedDump = await backupIn(store);
+      fs.unlinkSync(path.join(linkedDump.directory, "database.sql"));
+      fs.symlinkSync(
+        path.join(target, "database.sql"),
+        path.join(linkedDump.directory, "database.sql"),
+      );
+      const noRecord = path.join(backups, "upgrade-00000000-0000-4000-8000-000000000003");
+      fs.mkdirSync(noRecord);
+      fs.writeFileSync(path.join(noRecord, "database.sql"), "dump\n");
+      const badRecord = path.join(backups, "upgrade-00000000-0000-4000-8000-000000000004");
+      fs.mkdirSync(badRecord);
+      fs.writeFileSync(path.join(badRecord, "database.sql"), "dump\n");
+      fs.writeFileSync(path.join(badRecord, "recovery.json"), "not json");
+      fs.mkdirSync(path.join(backups, "upgrade-not-a-uuid"));
+      fs.mkdirSync(path.join(backups, "manual-copy"));
+      fs.writeFileSync(path.join(backups, "upgrade-00000000-0000-4000-8000-000000000005"), "file");
+      const current = await backupIn(store);
+      const pruned = unwrap(store.pruneBackups(1, current));
+      expect(pruned.removed.map((entry) => entry.directory)).toEqual([legacy.directory]);
+      expect(pruned.held).toEqual([]);
+      expect(fs.existsSync(path.join(target, "database.sql"))).toBe(true);
+      expect(fs.existsSync(path.join(extra.directory, "database.sql"))).toBe(true);
+      expect(fs.lstatSync(path.join(linkedDump.directory, "database.sql")).isSymbolicLink()).toBe(
+        true,
+      );
+    });
+    expect(result._tag).toBe("ok");
+    expect(names(root)).toHaveLength(9);
+  });
+});

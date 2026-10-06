@@ -20,7 +20,7 @@ mend/
       postgres-init.sh
   backups/
     upgrade-UUID/
-      recovery.json               # exact previous and target generation paths, recovery policy
+      recovery.json               # previous and target generation paths, policy, state (pending/completed)
       database.sql.partial        # incomplete dump, never used for recovery
       database.sql                # only published after successful pg_dumpall and fsync
 ```
@@ -220,6 +220,12 @@ Upgrade proceeds under the installation lock:
    in the presence of unrelated writes. PostgreSQL stays running for the dump.
 4. Activate the target only after the backup completes. This is the write-ahead migration boundary.
    Start it with `--pull never --no-build`, bounded Compose wait, and exact-version health.
+5. After exact-version health, replace `recovery.json` (write and rename) with
+   `"state": "completed"`; it said `"pending"` until then. Then keep the newest `--keep-backups`
+   completed backups (default 2, this one included; 0 skips pruning) and unlink the older ones file
+   by file, never recursively. Pending, partial or dumpless backups, links, and anything that is not
+   an `upgrade-UUID` directory holding exactly `recovery.json` and `database.sql` stay. A pruning
+   failure is printed; the upgrade has already succeeded.
 
 If assets, images, generation preparation, or recovery-directory creation fail, the old pin and app
 are untouched. If stop, backup, or activation fails or times out before target startup, reselect the

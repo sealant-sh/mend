@@ -661,6 +661,119 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     expect(f.active()).toBe(target);
   });
 
+  describe("upgrade backups", () => {
+    const versions = ["0.24.0", "0.25.0", "0.26.0", "0.27.0"] as const;
+    const withVersions = async () => {
+      const f = await fixture();
+      f.update({
+        images: Object.fromEntries(["0.23.0", ...versions].map((version) => [version, version])),
+      });
+      expect(await f.setup()).toEqual({ _tag: "ok" });
+      const backups = () => fs.readdirSync(path.join(f.configDir, "backups")).toSorted();
+      const upgradeKeeping = (version: string, keep: string) =>
+        serverCommand(
+          [
+            "upgrade",
+            "--version",
+            version,
+            "--keep-backups",
+            keep,
+            "--assets-dir",
+            f.assets,
+            "--offline",
+          ],
+          f.runtime,
+        );
+      return { ...f, backups, upgradeKeeping };
+    };
+
+    it("a healthy upgrade keeps the newest two by default and says what it removed", async () => {
+      const f = await withVersions();
+      for (const version of versions.slice(0, 2))
+        expect(await f.upgrade(version)).toEqual({ _tag: "ok" });
+      expect(f.backups()).toHaveLength(2);
+      expect(f.lines).toContain("Upgrade backups · removed 0 · kept 2 (--keep-backups 2)");
+      const before = new Set(f.backups());
+      expect(await f.upgrade(versions[2])).toEqual({ _tag: "ok" });
+      const after = f.backups();
+      expect(after).toHaveLength(2);
+      const current = after.find((name) => !before.has(name));
+      if (current === undefined) throw new Error("No backup for the last upgrade");
+      const recovery = JSON.parse(
+        fs.readFileSync(path.join(f.configDir, "backups", current, "recovery.json"), "utf8"),
+      );
+      expect(recovery).toMatchObject({ state: "completed", targetGeneration: f.active() });
+      expect(f.lines.filter((line) => line.startsWith("Removed upgrade backup "))).toHaveLength(1);
+      expect(f.lines.at(-1)).toMatch(
+        /^Upgrade backups · removed 1 · [\d.]+ (B|KiB) freed · kept 2 \(--keep-backups 2\)$/,
+      );
+    });
+
+    it("--keep-backups 0 keeps every backup and --keep-backups 1 keeps only this upgrade's", async () => {
+      const f = await withVersions();
+      for (const version of versions.slice(0, 3))
+        expect(await f.upgradeKeeping(version, "0")).toEqual({ _tag: "ok" });
+      expect(f.backups()).toHaveLength(3);
+      expect(f.lines).toContain("Upgrade backups · all kept (--keep-backups 0)");
+      expect(f.lines.some((line) => line.startsWith("Removed upgrade backup "))).toBe(false);
+      expect(await f.upgradeKeeping(versions[3], "1")).toEqual({ _tag: "ok" });
+      expect(f.backups()).toHaveLength(1);
+      expect(f.lines.filter((line) => line.startsWith("Removed upgrade backup "))).toHaveLength(3);
+    });
+
+    it.each(["-1", "two", "1.5"])(
+      "refuses --keep-backups %s before touching anything",
+      async (keep) => {
+        const f = await withVersions();
+        const count = f.calls().length;
+        expect(await f.upgradeKeeping(versions[0], keep)).toMatchObject({
+          _tag: "error",
+          message: expect.stringContaining("--keep-backups takes a whole number"),
+        });
+        expect(
+          f
+            .calls()
+            .slice(count)
+            .every(
+              (call) => call.args[2] === "volume" && ["ls", "inspect"].includes(call.args[3] ?? ""),
+            ),
+        ).toBe(true);
+        expect(fs.existsSync(path.join(f.configDir, "backups"))).toBe(false);
+      },
+    );
+
+    it.each(["backup", "target-start"])(
+      "prunes nothing when the upgrade fails at %s, and keeps that backup on the next healthy one",
+      async (failure) => {
+        const f = await withVersions();
+        for (const version of versions.slice(0, 2))
+          expect(await f.upgradeKeeping(version, "0")).toEqual({ _tag: "ok" });
+        const healthy = f.backups();
+        f.update({ fail: failure });
+        expect((await f.upgradeKeeping(versions[2], "1"))._tag).toBe("error");
+        const failed = f.backups().filter((name) => !healthy.includes(name));
+        expect(failed).toHaveLength(1);
+        expect(f.backups()).toHaveLength(3);
+        expect(f.lines.some((line) => line.startsWith("Removed upgrade backup "))).toBe(false);
+        f.update({ fail: "" });
+        // After a failed target start the target pin stays; start it, then upgrade past it.
+        if (failure === "target-start")
+          expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+        expect(await f.upgradeKeeping(versions[3], "1")).toEqual({ _tag: "ok" });
+        // The healthy ones went; the failed upgrade's record says pending or unfinished, and stays.
+        expect(f.backups()).toHaveLength(2);
+        expect(f.backups()).toContain(failed[0]);
+        expect(f.lines).toContain(
+          `Kept upgrade backup ${path.join(f.configDir, "backups", failed[0] ?? "")} · ${
+            failure === "backup"
+              ? "unfinished: no complete database dump"
+              : "pending: its upgrade never recorded a healthy target"
+          }`,
+        );
+      },
+    );
+  });
+
   it("an upgrade from a generation without Garage claims mend-garage under the unchanged identity and lays the bucket out", async () => {
     const f = await fixture();
     const composeWithGarage = fs.readFileSync(path.join(f.assets, "compose.v2.yaml"), "utf8");

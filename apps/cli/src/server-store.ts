@@ -43,6 +43,32 @@ export interface ServerBackup {
   readonly directory: string;
   readonly partialFile: string;
   complete(): ServerStoreResult<void>;
+  /**
+   * Record in recovery.json that the target started and answered health at its exact version. Until
+   * then the record says `pending`: a recovery may still need this backup, and pruning keeps it.
+   */
+  markCompleted(): ServerStoreResult<void>;
+}
+
+/** One upgrade backup directory as pruning read it. Foreign entries never appear here. */
+export interface BackupEntry {
+  readonly directory: string;
+  /** Bytes in database.sql and recovery.json; directories and links are never followed. */
+  readonly bytes: number;
+}
+
+/** A backup pruning kept because a recovery may still need it, and why. */
+export interface HeldBackup {
+  readonly directory: string;
+  /** `pending`: the upgrade never recorded a healthy target. `unfinished`: no complete dump. */
+  readonly reason: "pending" | "unfinished";
+}
+
+/** The outcome of one prune: what went, what stayed by count, what stayed for recovery. */
+export interface BackupPrune {
+  readonly removed: ReadonlyArray<BackupEntry>;
+  readonly kept: ReadonlyArray<BackupEntry>;
+  readonly held: ReadonlyArray<HeldBackup>;
 }
 
 /** Valid only inside withServerStore. All lifecycle commands must use the same lock. */
@@ -55,11 +81,17 @@ export interface ServerStore {
   prepare(files: ServerFiles): ServerStoreResult<ServerGeneration>;
   /** Select a retained generation from this store without rewriting it. */
   activate(generation: ServerGeneration): ServerStoreResult<void>;
-  /** Retain old/target references before interrupting the app. Never removes a backup. */
+  /** Retain old/target references before interrupting the app. Never removes a backup; pruneBackups does, after a healthy upgrade. */
   createBackup(
     previous: ServerGeneration,
     target: ServerGeneration,
   ): ServerStoreResult<ServerBackup>;
+  /**
+   * Keep the newest `keep` completed upgrade backups, `current` among them, and remove the older
+   * completed ones. Never removes `current`, a pending or unfinished backup, or anything that is not
+   * an `upgrade-UUID` directory holding exactly recovery.json and database.sql. `keep` is at least 1.
+   */
+  pruneBackups(keep: number, current: ServerBackup): ServerStoreResult<BackupPrune>;
 }
 
 interface StorePaths {
@@ -366,6 +398,111 @@ const commitGeneration = (paths: StorePaths, files: ServerFiles): ServerGenerati
   return generation;
 };
 
+const renderRecovery = (record: Readonly<Record<string, string>>): string =>
+  `${JSON.stringify(record, null, 2)}\n`;
+
+const BACKUP_NAME = /^upgrade-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const BACKUP_FILES = ["database.sql", "recovery.json"] as const;
+
+type ReadBackup =
+  | { readonly kind: "foreign" }
+  | { readonly kind: "held"; readonly reason: HeldBackup["reason"] }
+  | { readonly kind: "completed"; readonly createdAt: number; readonly bytes: number };
+
+const lstatOptional = (file: string): fs.Stats | null => {
+  try {
+    return fs.lstatSync(file);
+  } catch (cause) {
+    if (hasCode(cause, "ENOENT")) return null;
+    throw cause;
+  }
+};
+
+/**
+ * Read one entry of backups/ without following a link. Anything Mend did not write is foreign and
+ * left alone; a partial or missing dump is unfinished; a record that does not say `completed` is
+ * pending. A record from before the state field counts as completed once its dump is whole: those
+ * releases deleted nothing either, so they wrote no state to read.
+ */
+const readBackup = (directory: string): ReadBackup => {
+  const stat = lstatOptional(directory);
+  if (stat === null || !stat.isDirectory() || !BACKUP_NAME.test(path.basename(directory)))
+    return { kind: "foreign" };
+  const recovery = lstatOptional(path.join(directory, "recovery.json"));
+  if (recovery === null || !recovery.isFile()) return { kind: "foreign" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(directory, "recovery.json"), "utf8"));
+  } catch {
+    return { kind: "foreign" };
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("previousGeneration" in parsed) ||
+    !("targetGeneration" in parsed) ||
+    typeof parsed.previousGeneration !== "string" ||
+    typeof parsed.targetGeneration !== "string"
+  )
+    return { kind: "foreign" };
+  const entries = fs.readdirSync(directory);
+  if (entries.includes("database.sql.partial")) return { kind: "held", reason: "unfinished" };
+  if (entries.some((name) => !BACKUP_FILES.some((expected) => expected === name)))
+    return { kind: "foreign" };
+  const dump = lstatOptional(path.join(directory, "database.sql"));
+  if (dump === null || !dump.isFile() || dump.size === 0)
+    return dump === null || dump.isFile()
+      ? { kind: "held", reason: "unfinished" }
+      : { kind: "foreign" };
+  const state = "state" in parsed ? parsed.state : undefined;
+  if (state !== undefined && state !== "completed") return { kind: "held", reason: "pending" };
+  const stamped =
+    "createdAt" in parsed && typeof parsed.createdAt === "string"
+      ? Date.parse(parsed.createdAt)
+      : Number.NaN;
+  return {
+    kind: "completed",
+    createdAt: Number.isFinite(stamped) ? stamped : recovery.mtimeMs,
+    bytes: dump.size + recovery.size,
+  };
+};
+
+const pruneBackups = (configDir: string, keep: number, current: ServerBackup): BackupPrune => {
+  if (!Number.isSafeInteger(keep) || keep < 1)
+    throw new ServerStoreError("Pruning keeps at least one upgrade backup.");
+  const backups = path.join(configDir, "backups");
+  if (path.dirname(current.directory) !== backups)
+    throw new ServerStoreError("The current upgrade backup is outside this installation.");
+  const currentRead = readBackup(current.directory);
+  if (currentRead.kind !== "completed")
+    throw new ServerStoreError("The current upgrade backup is not completed; nothing was pruned.");
+  const completed: Array<BackupEntry & { readonly createdAt: number }> = [];
+  const held: Array<HeldBackup> = [];
+  for (const name of fs.readdirSync(backups).toSorted()) {
+    const directory = path.join(backups, name);
+    if (directory === current.directory) continue;
+    const read = readBackup(directory);
+    if (read.kind === "held") held.push({ directory, reason: read.reason });
+    if (read.kind === "completed")
+      completed.push({ directory, bytes: read.bytes, createdAt: read.createdAt });
+  }
+  completed.sort((a, b) => b.createdAt - a.createdAt);
+  const kept: Array<BackupEntry> = [
+    { directory: current.directory, bytes: currentRead.bytes },
+    ...completed.slice(0, keep - 1).map(({ directory, bytes }) => ({ directory, bytes })),
+  ];
+  const removed: Array<BackupEntry> = [];
+  for (const { directory, bytes } of completed.slice(keep - 1)) {
+    // The dump first: it is the space. A crash after it leaves a record without a dump, which
+    // reads as unfinished and stays; nothing is ever removed recursively.
+    for (const file of BACKUP_FILES) fs.unlinkSync(path.join(directory, file));
+    fs.rmdirSync(directory);
+    removed.push({ directory, bytes });
+  }
+  if (removed.length > 0) syncDirectory(backups);
+  return { removed, kept, held };
+};
+
 const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
   const paths: StorePaths = {
     configDir,
@@ -391,20 +528,16 @@ const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
         fs.chmodSync(backups, 0o700);
         const directory = path.join(backups, `upgrade-${randomUUID()}`);
         fs.mkdirSync(directory, { mode: 0o700 });
-        writeDurable(
-          path.join(directory, "recovery.json"),
-          `${JSON.stringify(
-            {
-              previousGeneration: previous.directory,
-              targetGeneration: target.directory,
-              database: "database.sql",
-              policy:
-                "If target is active, migrations may have begun. Never downgrade or restore automatically.",
-            },
-            null,
-            2,
-          )}\n`,
-        );
+        const record = {
+          previousGeneration: previous.directory,
+          targetGeneration: target.directory,
+          database: "database.sql",
+          createdAt: new Date().toISOString(),
+          policy:
+            "If target is active, migrations may have begun. Never downgrade or restore automatically.",
+        };
+        const recoveryFile = path.join(directory, "recovery.json");
+        writeDurable(recoveryFile, renderRecovery({ ...record, state: "pending" }));
         syncDirectory(directory);
         syncDirectory(backups);
         syncDirectory(configDir);
@@ -426,8 +559,17 @@ const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
               fs.renameSync(partialFile, path.join(directory, "database.sql"));
               syncDirectory(directory);
             }),
+          markCompleted: () =>
+            whileOwned(() => {
+              // Replace, never edit in place: a crash leaves the pending record or the completed one.
+              const temporary = path.join(directory, `.recovery-${randomUUID()}`);
+              writeDurable(temporary, renderRecovery({ ...record, state: "completed" }));
+              fs.renameSync(temporary, recoveryFile);
+              syncDirectory(directory);
+            }),
         };
       }),
+    pruneBackups: (keep, current) => whileOwned(() => pruneBackups(configDir, keep, current)),
   };
 };
 

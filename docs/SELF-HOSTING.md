@@ -327,6 +327,14 @@ and requires the exact target version in health. Once target startup has been at
 retains the target pin, old generation, and completed backup. Mend never automatically downgrades
 the application or restores a database that may have migrated.
 
+Each `recovery.json` says `"state": "pending"` until the target answers health at its exact version,
+then `"completed"`. Only then does the upgrade prune: it keeps the newest two completed backups, its
+own included, removes the older completed ones and prints each with the space it freed.
+`--keep-backups N` changes the count; `--keep-backups 0` keeps all. A failed upgrade removes
+nothing. A pending backup, one with `database.sql.partial` or without `database.sql`, a link, and
+any directory that is not `upgrade-UUID` holding exactly `recovery.json` and `database.sql` are
+never removed. A record written before the state field counts as completed once its dump is whole.
+
 After such a failure:
 
 ```sh
