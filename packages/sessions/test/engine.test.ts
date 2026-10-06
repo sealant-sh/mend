@@ -8974,7 +8974,7 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
-  it("clones an origin adopted with a token in it without the token: never in the clone's argv nor its log line (review of mend#555, P2-2)", async () => {
+  it("clones an origin adopted with a token in it without the token: never in the clone's argv, its log line, nor what `mend repo projects` prints (review of mend#555, P2-2, N-1)", async () => {
     const created: Array<CreateOptions> = [];
     const execCalls: ReadonlyArray<string>[] = [];
     const logs: Array<string> = [];
@@ -8998,6 +8998,11 @@ describe("SessionEngine capture mode", () => {
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
+          // What `mend repo projects` prints inside the workspace names the origin without it.
+          const addable = yield* engine.addableProjects(session.id);
+          expect(addable.map((candidate) => candidate.originUrl)).toEqual([
+            "https://github.com/acme/core.git",
+          ]);
           yield* engine.addRepository(session.id, { project: "core", name: null, worktree: null });
           yield* until(
             () => execCalls.some((argv) => argv.join("\n").includes("git clone --quiet")),

@@ -11,20 +11,28 @@ exec arguments. Sealant Core stores those arguments in plaintext and never delet
   ends, with a ten-minute backstop. The same exec redeems it over the session channel and writes the
   bytes straight into place. Secret files and the pi profile's `mcp.json` are written 0600, and
   never through a link.
-- **Fewer execs.** Each delivery takes one exec, or fewer than before: a skills library that took a
-  hundred execs takes one. Inside that exec there is one round trip from the workspace to Mend.
+- **Fewer execs.** Each delivery is a single exec, where a large file or a skills library used to
+  take several (a skills library took a hundred). Inside that exec there is one round trip from the
+  workspace to Mend.
 - **Node.** Secret files now need `node` on the image's `PATH`. Without it the session line says so.
 
-Adding a repository to a session no longer puts a credential from an adopted HTTPS origin into the
-clone's arguments or the log. That covers `https://user:token@host/…` and a token held as the user
-name, such as `https://ghp_…@github.com/…`. The clone asks without it, as the workspace's remotes
-already do. A private repository that only cloned because its origin held a token now fails to clone
-in a session. Switch its origin to SSH (`git@github.com:owner/repo.git`), which goes through Mend's
-git transport.
+A credential in an adopted HTTPS origin no longer reaches a workspace. That covers
+`https://user:token@host/…` and a token held as the user name, such as `https://ghp_…@github.com/…`.
+It applies everywhere Mend hands the origin to a workspace:
+
+- the workspace's own `origin` remote, which before kept a user name and dropped only a password;
+- the clone `mend repo add` makes, and its log line;
+- what `mend repo projects` lists.
+
+An SSH user name such as `git@` is kept. A private repository that only cloned or fetched because
+its origin held a token will now fail to clone or fetch from inside a session. Switch its origin to
+SSH (`git@github.com:owner/repo.git`), which goes through Mend's git transport.
 
 **Rotate exposed credentials.** What was sent before this release is still in Core's database until
 Core purges it (see PLATFORM-FEEDBACK.md). Treat these as exposed and rotate them:
 
 - every credential kept as a secret file;
 - every key in a pi profile's `mcp.json`;
+- any secret written into agent memory (memory imported from people's machines often holds
+  hostnames, account IDs and tokens);
 - every token embedded in an adopted origin that was added to a session with `mend repo add`.

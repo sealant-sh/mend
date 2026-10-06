@@ -306,6 +306,7 @@ const main = async () => {
           const projects = await request("GET", "/repositories/projects");
           if (projects.length === 0) console.log("no other project of the store can be added here");
           for (const p of projects) {
+            // The server strips any credential from the origin before it answers (workspaceRemoteUrl).
             console.log(p.name.padEnd(24) + "  " + p.defaultBranch.padEnd(16) + "  " + (p.originUrl ?? "no origin"));
           }
           return;

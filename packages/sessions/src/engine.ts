@@ -5987,15 +5987,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * Redeem a ticket presented through `channel` (`pickupChannelMatch`, `pickupSiblingMatch`).
-       * The ticket is spent whatever this answers. A refusal is logged as a possible theft: which
-       * channel presented which session's ticket, never the ticket.
+       * The ticket is spent whatever this answers. A ticket presented a second time, or through a
+       * channel it does not belong to, is logged as a possible theft: which channel presented which
+       * session's ticket, never the ticket. One Mend does not hold (discarded when its exec ended,
+       * past the backstop, from before a restart) is logged plainly: usually an exec that ran late.
        */
       const redeemPickup = (channel: PickupChannel, ticket: string) =>
         Effect.gen(function* () {
           const taken = pickups.take(ticket);
           const refuse = (binding: PickupBinding | null, reason: string) =>
-            Effect.logWarning(
-              "session engine: pickup refused · a ticket presented where it does not belong may have been taken",
+            (binding === null
+              ? Effect.logInfo(
+                  "session engine: pickup refused · the ticket is not one Mend holds now (discarded, expired or from before a restart)",
+                )
+              : Effect.logWarning(
+                  "session engine: pickup refused · a ticket presented where it does not belong may have been taken",
+                )
             ).pipe(
               Effect.annotateLogs({
                 reason,
@@ -11328,7 +11335,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               id: candidate.id,
               name: candidate.name,
               defaultBranch: candidate.defaultBranch,
-              originUrl: candidate.originUrl,
+              // What `mend repo projects` prints inside the workspace: no credential of an adopted
+              // origin (review of mend#555, N-1).
+              originUrl:
+                candidate.originUrl === null ? null : workspaceRemoteUrl(candidate.originUrl),
             }),
           );
       });
