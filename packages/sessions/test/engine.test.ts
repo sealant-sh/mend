@@ -2985,17 +2985,21 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
 
 /**
  * The in-memory layouts repo, recording every launch and worktree layout it is asked for, and
- * every "is anything recorded" query (`anyRecorded`) in `queries`.
+ * every "is anything recorded" query (`anyRecorded`) in `queries`. `afterRequest` runs once the
+ * operator's layout request is written, before the write returns.
  */
 const countingLaunchLayoutReads = (
   reads: Array<string>,
   state?: HarnessLayoutsMemoryState,
   queries: Array<string> = [],
+  afterRequest: Effect.Effect<void> = Effect.void,
 ): Layer.Layer<HarnessLayoutsRepo> =>
   Layer.effect(
     HarnessLayoutsRepo,
     Effect.map(HarnessLayoutsRepo, (inner) => ({
       ...inner,
+      requestLayout: (worktreeId: WorktreeId, layout: HarnessLayout) =>
+        inner.requestLayout(worktreeId, layout).pipe(Effect.andThen(afterRequest)),
       anyRecorded: () =>
         Effect.sync(() => queries.push("anyRecorded")).pipe(Effect.andThen(inner.anyRecorded())),
       launchLayout: (launchId: string) =>
@@ -3141,6 +3145,8 @@ const withEngine = <A, E>(
       readonly launchLayoutReads?: Array<string>;
       /** Every `anyRecorded` query the engine made, in order. */
       readonly anyRecordedQueries?: Array<string>;
+      /** Runs once an operator's layout request is written, before the write returns. */
+      readonly afterRequest?: Effect.Effect<void>;
     };
     /** Every session row read by id (`SessionsRepo.byId`), in order. */
     readonly sessionReads?: Array<string>;
@@ -3286,12 +3292,14 @@ const withEngine = <A, E>(
     Layer.provide(
       Layer.mergeAll(
         options.harnessLayout?.launchLayoutReads === undefined &&
-          options.harnessLayout?.anyRecordedQueries === undefined
+          options.harnessLayout?.anyRecordedQueries === undefined &&
+          options.harnessLayout?.afterRequest === undefined
           ? harnessLayoutsRepoMemory(options.harnessLayout?.state)
           : countingLaunchLayoutReads(
               options.harnessLayout?.launchLayoutReads ?? [],
               options.harnessLayout?.state,
               options.harnessLayout?.anyRecordedQueries,
+              options.harnessLayout?.afterRequest,
             ),
         options.harnessLayout?.platform ?? PersonLayoutPlatformLive,
         Layer.succeed(HarnessLayoutConfig, { flag: options.harnessLayout?.flag ?? "shared" }),
@@ -23924,6 +23932,67 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ]);
     expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false, missing: ["no setfacl"] });
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
+  });
+
+  it("with the flag off, a start interrupted once its operator's person request is written still makes the worktree's next launch person", async () => {
+    // The client of the start went away (an HTTP fiber is interrupted on disconnect) after the
+    // request was written and before the start went on: the next start joining the worktree by
+    // name must see the request, not run as before (review of mend#559, P2-1).
+    const state = makeHarnessLayoutsMemoryState();
+    const opened: Array<PersonSessionOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const start = {
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "op",
+            ownerUserId: "user-fixture",
+            base: null,
+          } as const;
+          const interrupted = yield* engine
+            .provision({ ...start, harnessLayout: "person" })
+            .pipe(Effect.forkChild);
+          yield* eventually("the operator's request written", Duration.seconds(5), () =>
+            [...state.worktrees.values()].some((worktree) => worktree.requested === "person"),
+          );
+          yield* Fiber.interrupt(interrupted);
+          const joined = yield* engine.provision(start);
+          yield* engine.launch(joined.id, ["claude"]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: {
+          flag: "shared",
+          state,
+          platform: personPlatform([], { person: true }),
+          afterRequest: Effect.never,
+        },
+      },
+    );
+    expect(
+      [...state.launches.values()].map((launch) => `${launch.layout}/${launch.source}`),
+    ).toEqual(["person/operator"]);
+    expect(opened.some((options) => options.user?.name === linuxLoginNameOf("user-fixture"))).toBe(
+      true,
+    );
   });
 
   it("takes the operator's harnessLayout for a worktree it makes, and refuses another on a person worktree", async () => {

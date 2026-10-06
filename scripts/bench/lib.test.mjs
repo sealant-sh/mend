@@ -584,11 +584,26 @@ test("a harness's usage limit is read from its own words, its spaces drawn or no
     "Usage limit reached · limit resets 6pm",
   );
   assert.equal(
-    usageLimitOf("Error: rate limit exceeded, retry in 30s"),
-    "rate limit exceeded, retry in 30s",
+    usageLimitOf("5-hour limit reached ∙ resets 3am"),
+    "5-hour limit reached ∙ resets 3am",
   );
   // A TUI that moves the cursor for its spaces leaves the words run together.
   assert.equal(usageLimitOf("You'vehityourweeklylimit·resets6pm"), "You'vehityourweeklylimit");
+  // A request-rate 429 the harness retries by itself is not one: the agent is still in its turn.
+  assert.equal(
+    usageLimitOf(
+      "stream error: Rate limit reached for gpt-5 in organization org-x on tokens per min (TPM): Limit 30000, Used 29000. Please try again in 2.1s.; retrying 1/5 in 2.1s…",
+    ),
+    null,
+  );
+  assert.equal(usageLimitOf("Rate limit exceeded. Retrying..."), null);
+  assert.equal(usageLimitOf("Usage limit reached · retrying in 30s"), null);
+  // Nor is ordinary text that names a limit.
+  assert.equal(
+    usageLimitOf("● The rate limit exceeded the quota, so the job was throttled."),
+    null,
+  );
+  assert.equal(usageLimitOf("This module enforces a session limit of 5 per user."), null);
   // The prompt, an answer and a warning short of the limit are not one.
   assert.equal(usageLimitOf("❯ What is 2 + 3? Reply with only the number.\n● 5"), null);
   assert.equal(usageLimitOf("You've used 90% of your weekly limit · resets 6pm"), null);
@@ -678,5 +693,38 @@ test("a merge keeps every image built during either run", () => {
   assert.deepEqual(
     merged.imageBuilds.map((entry) => entry.image),
     ["sha256:a", "sha256:b"],
+  );
+});
+
+test("a merge keeps the point each record sampled its executor sizes at", () => {
+  const memory = (value) => ({
+    "executor.claude.memory_bytes": { unit: "bytes", budget: "resource", samples: tenOf(value) },
+    "executor.codex.memory_bytes": { unit: "bytes", budget: "resource", samples: tenOf(value) },
+  });
+  // An older record (sized after the answer) with a newer run of claude (sized at first output).
+  const older = record(memory(1_100_000_000));
+  const newer = {
+    ...record({
+      "executor.claude.memory_bytes": {
+        unit: "bytes",
+        budget: "resource",
+        samples: tenOf(760_000_000),
+      },
+    }),
+    options: { only: ["new"], harnesses: ["claude"] },
+    method: { executorResources: RESOURCES_AT_FIRST_OUTPUT },
+  };
+  const merged = mergeResults(older, newer);
+  assert.equal(merged.measures["executor.claude.memory_bytes"].sampledAt, "at first output");
+  assert.equal(merged.measures["executor.codex.memory_bytes"].sampledAt, "after the answer");
+  // Against the older record, claude's is not comparable and codex's is.
+  const compared = compareResults(older, merged);
+  assert.deepEqual(
+    compared.incomparable.map((entry) => entry.measure),
+    ["executor.claude.memory_bytes"],
+  );
+  assert.deepEqual(
+    [...new Set(compared.rows.map((row) => row.measure))],
+    ["executor.codex.memory_bytes"],
   );
 });

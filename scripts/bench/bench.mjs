@@ -22,9 +22,12 @@
 //   build: its numbers go under `new.<harness>.image_built.*` (or `resume.image_built.*`),
 //   unbudgeted, with a note. Every image made during the run is listed in `imageBuilds`. Needs the
 //   host.
-// - A harness that says its account hit a usage limit ("You've hit your weekly limit", "Usage
-//   limit reached") will not answer: the wait ends there, the run gets a note, and `first_turn` is
-//   recorded as not run with that reason, which `compare` prints in place of MISSING.
+// - A harness that says its account hit a usage limit until it resets ("You've hit your weekly
+//   limit", "Usage limit reached", "5-hour limit reached") will not answer: the wait ends there, the
+//   run gets a note, and `first_turn` is recorded as not run with that reason, which `compare`
+//   prints in place of MISSING. A rate limit the harness retries by itself is not one.
+// - The answer is watched for from the first output on, while the executor is sized beside it.
+// - A merge stamps each executor size with the point its own record sampled it at (`sampledAt`).
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -71,7 +74,10 @@ what runs
   --typing-runs <n>           keystrokes timed (default: 30)
   --api-runs <n>              reads of the session list and a session view (default: 20)
   --secret-file               put an st-bench secret file in place to time its delivery (removed after)
-  --flag <text>               the harness layout under test (default: read from the server's env)
+  --flag <text>               the harness layout under test (default: read from the server's env).
+                              Run against MEND_MODE=all: with MEND_MODE=api beside MEND_MODE=worker,
+                              the worker's engine sees an operator's harnessLayout request made
+                              through the api only after the worker restarts
 
 output and comparison
   --out <path>                where the record goes (default: /tmp/st-bench-<id>.json)
@@ -86,8 +92,9 @@ what the record keeps apart
   image builds                a launch whose workspace image was built during it (Docker's Created, read
                               on the host) goes under new.<harness>.image_built.*, unbudgeted; every
                               image built during the run is listed in imageBuilds
-  usage limits                a harness that says its account hit a usage limit is not waited on:
-                              first_turn is not run, with its words as the reason`;
+  usage limits                a harness that says its account hit a usage limit until it resets is not
+                              waited on: first_turn is not run, with its words as the reason. A rate
+                              limit the harness retries by itself is waited out like any other delay`;
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const log = (text) => process.stderr.write(`[${new Date().toISOString().slice(11, 19)}] ${text}\n`);

@@ -400,6 +400,10 @@ const newSession = async (ctx, harness, run) => {
   const { ms: launchMs } = await ctx.api.call("POST", `/sessions/${session.id}/launch`, { prompt });
   const { detail, agent } = await waitForAgent(ctx, session.id, startedAt);
   const outputAt = local(ctx, agent.firstOutputAt);
+  // The answer is watched for from here, while the executor is sized beside it: the sampling
+  // never delays when the answer is seen.
+  const answering = waitForAnswer(ctx, agent.id, answer);
+  answering.catch(() => {});
   // Never after the answer wait: its length depends on the answer, and a missing one moved the
   // sample 3 minutes on, into the capture's staging (0.36.0-next.628, Claude at its weekly limit).
   const container = ctx.host === null ? null : await executorOf(ctx.host, session.id);
@@ -418,7 +422,7 @@ const newSession = async (ctx, harness, run) => {
     );
   }
   ctx.log(`${harness} #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
-  const answered = await waitForAnswer(ctx, agent.id, answer);
+  const answered = await answering;
   if (answered.at !== null) {
     ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms", budget);
     ctx.rec.sample(`${prefix}.output_to_answer`, answered.at - outputAt, "ms");

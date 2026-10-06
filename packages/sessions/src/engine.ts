@@ -7451,8 +7451,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // worktree") or create it — git worktree, row, ordinal-0 checkpoint.
         const worktree = yield* ensureWorktreeIn(project, input, input.ownerUserId);
         if (requested !== undefined && joined === null) {
-          yield* harnessLayouts.requestLayout(worktree.id, requested);
+          // Noted before the write: a start interrupted once the write commits (its client gone)
+          // must not leave the worktree requested in the store and unseen here until a restart.
+          // Noted for a write that then fails only turns the store reads back on.
           layoutSteps.noteRecorded();
+          yield* harnessLayouts.requestLayout(worktree.id, requested);
         }
         return yield* provisionInWorktree(project, worktree, input);
       });

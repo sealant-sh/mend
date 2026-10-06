@@ -109,10 +109,13 @@ and two engines over one database would disagree about it:
   worktree and its launches as `shared`: the workspace token would get git and the helper there, and
   joiners would run as root on the owner's login. The engine does not ask again later: with the flag
   off and nothing recorded, a layout is recorded only through that engine's own write path (an
-  operator's `harnessLayout` on a start that makes a worktree), which updates the flag in memory, so
-  a single engine does no periodic query. A second engine would not see the record until it
-  restarts. Under ownership, the engine that records a layout should notify the others (Postgres
-  `LISTEN`/`NOTIFY` fits), or the flag goes.
+  operator's `harnessLayout` on a start that makes a worktree), which updates the flag in memory
+  before it writes, so a single engine does no periodic query. Any second engine over the same
+  database sees such a record only after it restarts. That includes a split deployment today:
+  `MEND_MODE=api` and `MEND_MODE=worker` each build an engine, so the worker's (Slack starts and
+  follow-ups) does not see an operator's request made through the api process until the worker
+  restarts. Every shipped deployment runs `MEND_MODE=all`. Under ownership, the engine that records
+  a layout should notify the others (Postgres `LISTEN`/`NOTIFY` fits), or the flag goes.
 - **The layout cache** (`layoutByLaunch`), **who is made in each executor** (`madeIn`, `lastIn`),
   **pickup tickets** and **cached identity answers**. Each answers only for launches this engine
   made, so under ownership (A2) they stay valid. Without ownership, a pickup minted by one pod and
