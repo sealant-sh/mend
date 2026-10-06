@@ -5998,9 +5998,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         {
           readonly channel: string;
           readonly answer: ReturnType<typeof pickupAnswerOf>;
+          /** `performance.now()`: a monotonic clock, so no clock step stretches the window. */
           readonly expiresAt: number;
         }
       >();
+      /**
+       * An identity answer still being made, by the ticket's hash: a retry from the same channel
+       * that arrives meanwhile (its first request timed out) waits for it and gets it, never a
+       * refusal (review 5 of mend#553, P3-1).
+       */
+      const identityInFlight = new Map<
+        string,
+        {
+          readonly channel: string;
+          readonly done: Deferred.Deferred<ReturnType<typeof pickupAnswerOf>, Error>;
+        }
+      >();
+      /** A ticket whose exec has ended: forgotten, and so is any identity it answered. */
+      const discardPickup = (ticket: string) => {
+        pickups.discard(ticket);
+        identityAnswers.delete(ticketKeyOf(ticket));
+      };
 
       /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
@@ -6092,7 +6110,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * session's ticket, never the ticket. One Mend does not hold (discarded when its exec ended,
        * past the backstop, from before a restart) is logged plainly: usually an exec that ran late.
        */
-      const redeemPickup = (channel: PickupChannel, ticket: string) =>
+      const redeemPickup = (
+        channel: PickupChannel,
+        ticket: string,
+      ): Effect.Effect<ReturnType<typeof pickupAnswerOf>, Error> =>
         Effect.gen(function* () {
           const taken = pickups.take(ticket);
           const refuse = (binding: PickupBinding | null, reason: string) =>
@@ -6123,12 +6144,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* refuse(null, "this pickup ticket is spent, expired or unknown");
           }
           if (taken.kind === "spent") {
+            const key = ticketKeyOf(ticket);
+            // The same channel asking again while its first answer is still being made: it waits
+            // for that answer. If that one failed, the ticket went back, and this takes it.
+            const making = identityInFlight.get(key);
+            if (making !== undefined && making.channel === channelKeyOf(channel)) {
+              yield* Effect.logInfo(
+                "session engine: pickup asked again while its answer is made · a retry",
+              ).pipe(
+                Effect.annotateLogs({
+                  sessionId: taken.binding.sessionId,
+                  purpose: taken.binding.purpose,
+                }),
+              );
+              return yield* Deferred.await(making.done).pipe(
+                Effect.catch(() => redeemPickup(channel, ticket)),
+              );
+            }
             // The same channel asking again for an identity it was answered moments ago: its
             // answer was lost on the way. The same answer, so no second token.
-            const answered = identityAnswers.get(ticketKeyOf(ticket));
+            const answered = identityAnswers.get(key);
             if (
               answered !== undefined &&
-              answered.expiresAt > Date.now() &&
+              answered.expiresAt > performance.now() &&
               answered.channel === channelKeyOf(channel)
             ) {
               yield* Effect.logInfo("session engine: pickup answered again · a retry").pipe(
@@ -6155,38 +6193,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* refuse(entry.binding, "this pickup ticket is another session's");
             }
           }
-          const files =
-            entry.binding.purpose === "session-token"
-              ? yield* identityFilesAt(entry.binding, entry.files).pipe(
-                  // The store failed mid-answer (a typed failure, or a dropped connection's
-                  // defect): the ticket goes back, so the exec's retry redeems it rather than
-                  // reading as a theft.
-                  Effect.catchCause((cause) =>
-                    Effect.sync(() => pickups.restore(ticket, entry)).pipe(
-                      Effect.andThen(
-                        Effect.fail(
-                          new Error(
-                            `Mend could not make this identity now: ${
-                              Cause.pretty(cause).split("\n")[0] ?? "the store failed"
-                            }`,
-                          ),
-                        ),
+          if (entry.binding.purpose === "session-token") {
+            const key = ticketKeyOf(ticket);
+            const done = yield* Deferred.make<ReturnType<typeof pickupAnswerOf>, Error>();
+            identityInFlight.set(key, { channel: channelKeyOf(channel), done });
+            const made = yield* identityFilesAt(entry.binding, entry.files).pipe(
+              // The store failed mid-answer (a typed failure, or a dropped connection's
+              // defect): the ticket goes back, so the exec's retry redeems it rather than
+              // reading as a theft.
+              Effect.catchCause((cause) =>
+                Effect.sync(() => pickups.restore(ticket, entry)).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new Error(
+                        `Mend could not make this identity now: ${
+                          Cause.pretty(cause).split("\n")[0] ?? "the store failed"
+                        }`,
                       ),
                     ),
                   ),
-                )
-              : entry.files;
-          if (entry.binding.purpose === "session-token") {
-            const now = Date.now();
-            for (const [key, answered] of identityAnswers) {
-              if (answered.expiresAt <= now) identityAnswers.delete(key);
+                ),
+              ),
+              Effect.result,
+            );
+            if (Result.isFailure(made)) {
+              yield* Deferred.fail(done, made.failure);
+              identityInFlight.delete(key);
+              return yield* Effect.fail(made.failure);
             }
-            identityAnswers.set(ticketKeyOf(ticket), {
+            const answer = pickupAnswerOf(made.success);
+            const kept = {
               channel: channelKeyOf(channel),
-              answer: pickupAnswerOf(files),
-              expiresAt: now + IDENTITY_ANSWER_MS,
-            });
+              answer,
+              expiresAt: performance.now() + IDENTITY_ANSWER_MS,
+            };
+            identityAnswers.set(key, kept);
+            // Swept on its own: nothing keeps the token's bytes past the window.
+            setTimeout(() => {
+              if (identityAnswers.get(key) === kept) identityAnswers.delete(key);
+            }, IDENTITY_ANSWER_MS).unref();
+            yield* Deferred.succeed(done, answer);
+            identityInFlight.delete(key);
+            yield* Effect.logInfo("session engine: pickup redeemed").pipe(
+              Effect.annotateLogs({
+                sessionId: entry.binding.sessionId,
+                purpose: entry.binding.purpose,
+                files: made.success.length,
+              }),
+            );
+            return answer;
           }
+          const files = entry.files;
           yield* Effect.logInfo("session engine: pickup redeemed").pipe(
             Effect.annotateLogs({
               sessionId: entry.binding.sessionId,
@@ -6394,7 +6451,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fork: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
         anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),
-        discardTicket: (ticket) => pickups.discard(ticket),
+        discardTicket: (ticket) => discardPickup(ticket),
       });
       // Service lifecycle calls are rare and may span platform I/O. One engine-local permit keeps
       // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
@@ -9202,7 +9259,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // The exec that carried the identity tickets has ended: none is redeemable after it.
             Effect.ensuring(
               Effect.sync(() => {
-                for (const ticket of identityTickets?.values() ?? []) pickups.discard(ticket);
+                for (const ticket of identityTickets?.values() ?? []) discardPickup(ticket);
               }),
             ),
             Effect.tap((result) =>
@@ -16777,6 +16834,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       if (capture !== null) {
         yield* Effect.forkIn(
           captureReaper().pipe(
+            // Each tick, while nothing is recorded with the flag off, the store is asked again.
+            Effect.andThen(layoutSteps.refreshRecorded()),
             Effect.catchDefect((defect) =>
               Effect.logWarning("session engine: capture reaper died").pipe(
                 Effect.annotateLogs({ defect: String(defect) }),

@@ -24263,6 +24263,8 @@ interface IdentityPickups {
   readonly again: Map<string, ReadonlyArray<{ readonly path: string; readonly base64: string }>>;
   /** Redemptions node tried once more after a passing failure, by name. */
   readonly retried: Array<string>;
+  /** Each person's ticket, as the exec carried it. */
+  readonly tickets: Map<string, string>;
 }
 
 /**
@@ -24279,6 +24281,8 @@ const identityExec =
     readonly presentAs?: (name: string) => string | null;
     /** Present every ticket a second time after its answer, as a retry whose answer was lost. */
     readonly twice?: boolean;
+    /** Present every ticket a second time while its first answer is still being made. */
+    readonly overlap?: boolean;
   }) =>
   (argv: ReadonlyArray<string>) => {
     const script = argv[2] ?? "";
@@ -24305,6 +24309,24 @@ const identityExec =
           continue;
         }
         const pickup = grant.api.pickup;
+        options.pickups.tickets.set(person.name, person.ticket);
+        if (options.overlap === true) {
+          // A first request that timed out, and its retry, 10 ms later, while the first is made.
+          const [first, second] = yield* Effect.all(
+            [
+              pickup(person.ticket).pipe(Effect.result),
+              Effect.sleep("10 millis").pipe(Effect.andThen(pickup(person.ticket)), Effect.result),
+            ],
+            { concurrency: 2 },
+          );
+          if (first._tag === "Success")
+            options.pickups.written.set(person.home, first.success.files);
+          else options.pickups.refused.set(person.name, first.failure.message);
+          if (second._tag === "Success")
+            options.pickups.again.set(person.home, second.success.files);
+          else options.pickups.refused.set(`${person.name} again`, second.failure.message);
+          continue;
+        }
         let answer = yield* pickup(person.ticket).pipe(Effect.result);
         // As node does: a passing failure is tried once more, a refused ticket is not.
         if (answer._tag === "Failure" && !answer.failure.message.startsWith("this pickup ticket")) {
@@ -24370,6 +24392,8 @@ const livePersonJoin = async <A>(options: {
   readonly mariaKnown?: boolean;
   /** Present every identity ticket a second time, through the same channel. */
   readonly presentTwice?: boolean;
+  /** Present every identity ticket again while its first answer is still being made. */
+  readonly presentOverlapping?: boolean;
   readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
   readonly inspect: (
     engine: SessionEngine["Service"],
@@ -24386,6 +24410,7 @@ const livePersonJoin = async <A>(options: {
     refused: new Map(),
     again: new Map(),
     retried: [],
+    tickets: new Map(),
   };
   const state = makeHarnessLayoutsMemoryState();
   if (options.mariaKnown === true) {
@@ -24480,6 +24505,7 @@ const livePersonJoin = async <A>(options: {
                 launchId: launchIdOf,
                 ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
                 ...(options.presentTwice === true ? { twice: true } : {}),
+                ...(options.presentOverlapping === true ? { overlap: true } : {}),
               }),
             }
           : {},
@@ -24623,6 +24649,56 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           expect(join.tokenEvents.filter((event) => event.startsWith("issuePerson:"))).toHaveLength(
             2,
           );
+        }),
+    });
+  });
+
+  it("lets a retry that arrives while the first answer is made wait for it: one token, no refusal", async () => {
+    // The author's read takes 100 ms for Maria: her first request is still being answered when
+    // its retry arrives.
+    const slow = Layer.succeed(UserGitAuthorRepo, {
+      resolve: (userId) =>
+        Effect.sleep(userId === MARIA ? "100 millis" : "0 millis").pipe(
+          Effect.as(
+            new ResolvedGitAuthor({
+              name: `Account ${userId}`,
+              email: `${userId}@accounts.example`,
+              source: "account",
+            }),
+          ),
+        ),
+      set: () => Effect.void,
+      clear: () => Effect.void,
+    });
+    await livePersonJoin({
+      flag: "person",
+      gitAuthorLayer: slow,
+      presentOverlapping: true,
+      inspect: (_engine, join) =>
+        Effect.sync(() => {
+          expect(join.pickups.refused.size).toBe(0);
+          expect(decoded(join.pickups.again.get(`/home/${JOINER}`))).toEqual(
+            decoded(join.pickups.written.get(`/home/${JOINER}`)),
+          );
+          expect(
+            join.tokenEvents.filter((event) =>
+              event.startsWith(`issuePerson:${join.launchId}:${MARIA}:`),
+            ),
+          ).toHaveLength(1);
+        }),
+    });
+  });
+
+  it("forgets an identity answer once its exec has ended: the ticket answers no one after", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          const ticket = join.pickups.tickets.get(JOINER) ?? "";
+          const grant = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+          if (!grant.ok || grant.api.pickup === undefined) throw new Error("no pickup");
+          const late = yield* grant.api.pickup(ticket).pipe(Effect.result);
+          expect(late._tag).toBe("Failure");
         }),
     });
   });

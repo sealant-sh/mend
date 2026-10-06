@@ -171,6 +171,21 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
     });
   });
 
+  it("with the flag off, sees on the reaper tick a layout another engine recorded", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps, reads } = yield* stepsWith("shared", state);
+        const before = yield* steps.mayRunPerson(WorktreeId.make("wt-1"));
+        // Another engine over the same store makes the worktree person.
+        state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        yield* steps.refreshRecorded();
+        return { before, after: yield* steps.mayRunPerson(WorktreeId.make("wt-1")), reads };
+      }),
+    );
+    expect(result).toEqual({ before: false, after: true, reads: ["worktree:wt-1"] });
+  });
+
   it("with the flag off, a person worktree recorded before a restart is still read, and still person", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {

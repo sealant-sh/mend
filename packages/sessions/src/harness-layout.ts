@@ -630,9 +630,10 @@ export const identityPickupScript = (
 
 /**
  * What runs as the person to include Mend's author file at the top of their git config
- * (`identityPickupScript`), once: `git config --add` on an empty or missing file, else a prepended
+ * (`identityPickupScript`), once: `git config --add` on a missing file, else a prepended
  * `[include]` under git's own lock (`config.lock`, created exclusively and renamed over the file,
- * re-read under the lock), so a concurrent git writer and a concurrent pickup exclude each other.
+ * re-read under the lock), so a concurrent git writer and a concurrent pickup exclude each other;
+ * a lock untouched for 30 s was left by a writer that died, and is removed.
  * A leading BOM is dropped (git reads one only at byte 0). The file's mode, group write included,
  * is kept. A file git cannot parse is left alone and reported. When the include cannot be added,
  * the author is set in the file directly, only the keys it does not set, and that is reported too.
@@ -660,11 +661,10 @@ if (known.status === 0 && known.stdout.split("\n").includes(include)) process.ex
 if (known.status !== 0 && known.status !== 1) {
   fail(2, "git cannot read " + file + " (" + lastWords(known) + "), so nothing was added to it");
 }
-let text = "";
-try { text = fs.readFileSync(file, "utf8"); } catch (error) {
+// No file yet: git makes it. One that exists, even empty or only a BOM, takes the locked prepend,
+// which drops the BOM (git --add would keep it, after its own new lines).
+try { fs.readFileSync(file); } catch (error) {
   if (error.code !== "ENOENT") direct(error.code + " reading " + file + ": " + error.message);
-}
-if (withoutBom(text).trim() === "") {
   const added = git(["--add", "include.path", include]);
   if (added.status !== 0) direct("the include could not be added: " + lastWords(added));
   process.exit(0);
@@ -672,13 +672,21 @@ if (withoutBom(text).trim() === "") {
 let real;
 try { real = fs.realpathSync(file); } catch (error) { direct(error.code + " finding " + file + ": " + error.message); }
 const lock = real + ".lock";
+// A lock nobody has touched for 30 s was left by a writer that died: it goes, and so does the wait.
+const stale = () => {
+  try {
+    const held = fs.lstatSync(lock);
+    if (Date.now() - held.mtimeMs > 30000) { fs.unlinkSync(lock); return true; }
+  } catch {}
+  return false;
+};
 let fd = null;
 for (let i = 0; i < 40 && fd === null; i++) {
   try {
     fd = fs.openSync(lock, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
   } catch (error) {
     if (error.code !== "EEXIST") direct(error.code + " taking git's lock " + lock + ": " + error.message);
-    sleep(50);
+    if (!stale()) sleep(50);
   }
 }
 if (fd === null) direct("git's lock " + lock + " stayed held");

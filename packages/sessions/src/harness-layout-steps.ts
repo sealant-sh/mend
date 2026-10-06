@@ -145,6 +145,13 @@ export interface HarnessLayoutSteps {
    * from now on the steps read the store again.
    */
   readonly noteRecorded: () => void;
+  /**
+   * While nothing is recorded and the flag is off, ask the store again (one `EXISTS` query): the
+   * engine's reaper tick runs it, so a record another engine made is seen within a tick rather
+   * than never (review 5 of mend#553, P3-4). Mend runs one engine; this narrows the gap if two
+   * ever share a database (deploy/aws/issues-for-real-ha.md). Never fails.
+   */
+  readonly refreshRecorded: () => Effect.Effect<void>;
   /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
   readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
@@ -637,6 +644,15 @@ export const makeHarnessLayoutSteps = (deps: {
     noteRecorded: () => {
       layoutsRecorded = true;
     },
+    refreshRecorded: () =>
+      nothingRecorded()
+        ? repo.anyRecorded().pipe(
+            Effect.map((found) => {
+              if (found) layoutsRecorded = true;
+            }),
+            Effect.catchCause(() => Effect.void),
+          )
+        : Effect.void,
     standbyMayServe,
     prepareTickets,
     prepareScript: layoutPrepareScript,

@@ -98,6 +98,24 @@ heartbeats run in every pod. The reaper and the pool claims are compare-and-swap
 double run looks harmless. The observer has not been checked. The cheap fix is a Postgres advisory
 lock so one pod runs each loop.
 
+### A6. Per-person layout state (ADR 0016)
+
+Behind `MEND_HARNESS_LAYOUT`, the engine keeps state about per-person executors in process memory,
+and two engines over one database would disagree about it:
+
+- **The "nothing recorded" flag.** At startup the engine asks once whether any launch or worktree
+  has a layout recorded. With the flag off and none, it answers `shared` for every launch with no
+  store read. An engine started before another one records the first person launch would treat that
+  worktree and its launches as `shared`: the workspace token would get git and the helper there, and
+  joiners would run as root on the owner's login. Today it re-asks on every capture reaper tick (10
+  s) while the answer is still "none", which narrows that gap to one tick. It does not close it.
+  Under ownership, the engine that records a layout should notify the others, or the flag goes.
+- **The layout cache** (`layoutByLaunch`), **who is made in each executor** (`madeIn`, `lastIn`),
+  **pickup tickets** and **cached identity answers**. Each answers only for launches this engine
+  made, so under ownership (A2) they stay valid. Without ownership, a pickup minted by one pod and
+  redeemed through another is refused, and a launch's layout read by a pod that never decided it
+  costs one store read.
+
 ### What does not change
 
 - Per-pod maps such as checkpoint semaphores and bridge contexts stay valid under ownership, because
@@ -116,7 +134,8 @@ notice nothing.
 ### Order
 
 A1 first. It is small and removes the 409 on its own, which lets two Mend pods coexist for shell
-sessions. A2 and A3 together, since they are one feature. Then A4. A5 last.
+sessions. A2 and A3 together, since they are one feature. Then A4. A5 last. A6 before any per-person
+executor runs with more than one Mend pod.
 
 ## B. Sealant Core API in-process state
 

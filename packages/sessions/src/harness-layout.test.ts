@@ -843,6 +843,39 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(asThePerson(home, "user.name")).toBe(AUTHOR.name);
   });
 
+  it("drops the BOM from a config that holds nothing else, too", async () => {
+    for (const only of ["\uFEFF", "\uFEFF\n"]) {
+      const { home, script } = homeOf(null);
+      expect(sh(script).status).toBe(0);
+      const config = path.join(home, ".config/git/config");
+      fs.writeFileSync(config, only);
+      const opened = await channel();
+      const run = await pickUp(opened, home);
+      expect(run.status).toBe(0);
+      expect(run.stderr).toBe("");
+      expect(fs.readFileSync(config, "utf8").includes("\uFEFF")).toBe(false);
+      expect(asThePerson(home, "user.name")).toBe(AUTHOR.name);
+    }
+  });
+
+  it("removes a config.lock a dead writer left 30 s ago, without waiting on it", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const config = path.join(home, ".config/git/config");
+    fs.writeFileSync(config, "[pull]\n\trebase = true\n");
+    fs.writeFileSync(`${config}.lock`, "");
+    const minuteAgo = new Date(Date.now() - 60_000);
+    fs.utimesSync(`${config}.lock`, minuteAgo, minuteAgo);
+    const opened = await channel();
+    const started = performance.now();
+    const run = await pickUp(opened, home);
+    expect(performance.now() - started).toBeLessThan(1_500);
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe("");
+    expect(gitGet(config, "include.path")).toBe(path.join(home, ".mend/git-author"));
+    expect(fs.existsSync(`${config}.lock`)).toBe(false);
+  });
+
   it("waits for git's own lock on their config, and adds the include once it is free", async () => {
     const { home, script } = homeOf(null);
     expect(sh(script).status).toBe(0);
