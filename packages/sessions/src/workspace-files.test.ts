@@ -4,14 +4,21 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import {
+  runExec,
+  secretForms,
+  startPickupChannel,
+  type PickupChannel,
+} from "../test/pickup-channel.ts";
 import {
   parseHomeFileOutcomes,
   WORKSPACE_EXEC_ARG_CHARS,
   WORKSPACE_EXEC_BATCH_CHARS,
   writeAbsentHomeFilesExecs,
   writeFilesExecs,
+  writeFilesPickupExec,
 } from "./workspace-files.ts";
 
 /** Run the execs with a real `sh`, the way a workspace would, and fail on the first nonzero exit. */
@@ -172,6 +179,86 @@ const runIn = (home: string, execs: ReadonlyArray<ReadonlyArray<string>>) =>
     expect(result.status).toBe(0);
     return parseHomeFileOutcomes(result.stdout);
   });
+
+describe("writeFilesPickupExec", () => {
+  let channel: PickupChannel;
+  beforeAll(async () => {
+    channel = await startPickupChannel();
+  });
+  afterAll(() => channel.close());
+
+  it("writes every file from one exec and one pickup, and no byte of any rides the argv", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
+    const mcp = path.join(root, ".pi/agent/mend/profile/root/mcp.json");
+    const settings = path.join(root, ".pi/agent/mend/profile/root/settings.json");
+    const files = [
+      {
+        path: mcp,
+        bytes: new TextEncoder().encode(
+          '{"servers":{"x":{"headers":{"Authorization":"Bearer sk-live-0123456789abcdef"}}}}',
+        ),
+      },
+      { path: settings, bytes: randomOf(300 * 1024) },
+    ];
+    const ticket = channel.mint(files);
+    const argv = writeFilesPickupExec(
+      files.map((file) => ({ path: file.path, secret: file.path === mcp })),
+      ticket,
+    );
+    const joined = argv.join("\u0000");
+    for (const file of files) {
+      for (const form of secretForms(file.bytes)) expect(joined).not.toContain(form);
+    }
+    const before = channel.redemptions();
+    const result = await runExec(argv, channel.env);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(channel.redemptions() - before).toBe(1);
+    expect(fs.readFileSync(mcp)).toEqual(Buffer.from(files[0]?.bytes ?? []));
+    expect(fs.readFileSync(settings)).toEqual(Buffer.from(files[1]?.bytes ?? []));
+    expect(fs.readdirSync(path.dirname(mcp)).toSorted()).toEqual(["mcp.json", "settings.json"]);
+    // The file with someone's keys is theirs alone; the rest stay readable.
+    expect((fs.statSync(mcp).mode & 0o777).toString(8)).toBe("600");
+    expect((fs.statSync(settings).mode & 0o777).toString(8)).toBe("644");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("writes a secret file into no directory reached through a link, and leaves nothing behind", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-elsewhere-"));
+    fs.mkdirSync(path.join(root, "profile"));
+    fs.symlinkSync(elsewhere, path.join(root, "profile", "root"));
+    const target = path.join(root, "profile", "root", "mcp.json");
+    const ticket = channel.mint([
+      { path: target, bytes: new TextEncoder().encode("sk-live-secret-1") },
+    ]);
+    const result = await runExec(
+      writeFilesPickupExec([{ path: target, secret: true }], ticket),
+      channel.env,
+    );
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain(`not written: ${target} (its directory is really`);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(elsewhere, { recursive: true, force: true });
+  });
+
+  it("fails, naming the reason and no byte, when the ticket is spent", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
+    const target = path.join(root, "mcp.json");
+    const ticket = channel.mint([
+      { path: target, bytes: new TextEncoder().encode("token-abcdefgh") },
+    ]);
+    channel.tickets.discard(ticket);
+    const result = await runExec(writeFilesPickupExec([{ path: target }], ticket), channel.env);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toBe(
+      "mend-write: the pickup was refused: this pickup ticket is spent, expired or unknown\n",
+    );
+    expect(fs.existsSync(target)).toBe(false);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
 
 describe("writeAbsentHomeFilesExecs", () => {
   it("writes each absent file under $HOME, directories included, and reports it", () => {

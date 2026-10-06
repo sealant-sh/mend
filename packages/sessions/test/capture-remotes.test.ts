@@ -7,20 +7,50 @@ import { CaptureRemotes, CaptureRemotesLive, workspaceRemoteUrl } from "../src/c
 import { projectFor, projectsFor } from "./capture-world.ts";
 
 describe("workspaceRemoteUrl", () => {
-  it("keeps a URL that holds no password exactly as adopted", () => {
+  it("keeps a URL that holds no credential exactly as adopted", () => {
     for (const url of [
       "git@github.com:acme/api.git",
       "ssh://git@host.example:2222/srv/git/api.git",
+      "git+ssh://git@host.example/srv/git/api.git",
       "https://github.com/acme/api.git",
-      "https://deploy@host.example/acme/api.git",
+      "http://host.example:8080/acme/api.git",
+      "file:///srv/git/api.git",
+      "/srv/git/api.git",
     ]) {
       expect(workspaceRemoteUrl(url)).toBe(url);
     }
   });
 
-  it("drops a password, so no credential enters a workspace, and still names the repository", () => {
-    expect(workspaceRemoteUrl("https://deploy:s3cret@host.example/acme/api.git")).toBe(
-      "https://deploy@host.example/acme/api.git",
+  it("drops every form of credential an HTTP(S) user part can hold, and still names the repository", () => {
+    const cases: ReadonlyArray<readonly [string, string]> = [
+      ["https://deploy:s3cret@host.example/acme/api.git", "https://host.example/acme/api.git"],
+      // A token held as the user name alone.
+      [
+        "https://ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/o/r.git",
+        "https://github.com/o/r.git",
+      ],
+      ["https://x-access-token:ghs_abc@github.com/o/r.git", "https://github.com/o/r.git"],
+      ["https://oauth2:glpat-xyz@gitlab.com/o/r.git", "https://gitlab.com/o/r.git"],
+      ["https://deploy@host.example/acme/api.git", "https://host.example/acme/api.git"],
+      ["https://:token-only@host.example/acme/api.git", "https://host.example/acme/api.git"],
+      // Percent-encoded, with a port and a query.
+      [
+        "https://us%40er:p%3Ass@host.example:8443/acme/api.git?x=1",
+        "https://host.example:8443/acme/api.git?x=1",
+      ],
+      ["http://user:pass@host.example/acme/api.git", "http://host.example/acme/api.git"],
+    ];
+    for (const [adopted, kept] of cases) {
+      expect(workspaceRemoteUrl(adopted), adopted).toBe(kept);
+    }
+  });
+
+  it("keeps an SSH user name, the login the host is reached as, and drops only a password", () => {
+    expect(workspaceRemoteUrl("ssh://git:s3cret@host.example/srv/git/api.git")).toBe(
+      "ssh://git@host.example/srv/git/api.git",
+    );
+    expect(workspaceRemoteUrl("git+ssh://deploy:s3cret@host.example/api.git")).toBe(
+      "git+ssh://deploy@host.example/api.git",
     );
   });
 });

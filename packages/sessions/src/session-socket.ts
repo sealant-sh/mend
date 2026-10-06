@@ -15,6 +15,7 @@ import {
   type GitTransportPlan,
   type GitTransportRequest,
 } from "./git-transport.ts";
+import type { PickupGrant } from "./pickup-tickets.ts";
 import { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
 import {
   handleGitConnect,
@@ -126,6 +127,27 @@ export interface SessionSocketApi {
    * and the only thing (review 2026-09-28 (4) #10).
    */
   readonly captureAs?: ((launchId: string) => SessionCaptureApi) | undefined;
+  /**
+   * Redeem a pickup ticket (`pickup-tickets.ts`): the secret an exec in this session's workspace
+   * was handed a ticket for, instead of the secret itself in its argv. Over the Unix socket, whose
+   * mount names the session and no launch. Answers the files, or fails with why not; the ticket is
+   * spent either way.
+   */
+  readonly pickup?: ((ticket: string) => Effect.Effect<PickupAnswer, Error>) | undefined;
+  /**
+   * The same, for what the network channel's token names: its launch, and its person when it is a
+   * per-person token (docs/adr/0016). What an executor is served. A grant that limits a token's
+   * routes (a person executor's own token reaches only its capture routes) keeps this one: the
+   * ticket carries its own binding, and a person's token redeems only that person's tickets.
+   */
+  readonly pickupAs?:
+    | ((grant: PickupGrant) => (ticket: string) => Effect.Effect<PickupAnswer, Error>)
+    | undefined;
+}
+
+/** What a redeemed pickup answers: each file's path and its bytes in base64. */
+export interface PickupAnswer {
+  readonly files: ReadonlyArray<{ readonly path: string; readonly base64: string }>;
 }
 
 export class SessionSocketHost extends Context.Service<
@@ -284,6 +306,7 @@ const main = async () => {
           const projects = await request("GET", "/repositories/projects");
           if (projects.length === 0) console.log("no other project of the store can be added here");
           for (const p of projects) {
+            // The server strips any credential from the origin before it answers (workspaceRemoteUrl).
             console.log(p.name.padEnd(24) + "  " + p.defaultBranch.padEnd(16) + "  " + (p.originUrl ?? "no origin"));
           }
           return;

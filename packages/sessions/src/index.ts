@@ -16,6 +16,7 @@ export * from "./git-transport.ts";
 export * from "./workspace-git-hooks.ts";
 export * from "./harness-state.ts";
 export * from "./pasted-images.ts";
+export * from "./pickup-tickets.ts";
 export * from "./secret-files.ts";
 export * from "./service-host.ts";
 export * from "./recipes.ts";

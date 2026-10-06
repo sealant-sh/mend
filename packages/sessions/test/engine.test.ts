@@ -254,6 +254,7 @@ import {
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
 import { writeOpencodeDatabase } from "./opencode-db.ts";
+import { secretForms } from "./pickup-channel.ts";
 
 /** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
 const readEverything: object = { unreadable: 0, carried: 0 };
@@ -773,6 +774,28 @@ const sealantLaunchLayer = (
             };
           });
         }
+        // The workspace file writer (`writeFilesPickupExec`): the executor redeems its ticket over
+        // the channel its env names, as a real one does, and what it got is kept for the test.
+        if (isPickupExec(argv) && argv[3] === "mend-write") {
+          const channel = created.at(-1)?.env?.["MEND_SESSION_ID"];
+          return redeemPickupExec(
+            argv,
+            channel === undefined ? null : SessionId.make(channel),
+          ).pipe(
+            Effect.map((answer) => {
+              pickedUpWrites.set(argv, answer.files);
+              return { exitCode: 0, stdout: "", stderr: "", run: fakeExecRun };
+            }),
+            Effect.catch((error) =>
+              Effect.succeed({
+                exitCode: 3,
+                stdout: "",
+                stderr: `mend-write: ${error.message}\n`,
+                run: fakeExecRun,
+              }),
+            ),
+          );
+        }
         if (execCalls !== undefined) {
           return Effect.succeed({ exitCode: 0, stdout: "", stderr: "", run: fakeExecRun });
         }
@@ -931,6 +954,45 @@ const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
     }),
   stop: () => Effect.void,
 });
+
+/** What each pickup write exec redeemed, by the argv the platform was handed. */
+const pickedUpWrites = new WeakMap<
+  ReadonlyArray<string>,
+  ReadonlyArray<{ readonly path: string; readonly base64: string }>
+>();
+
+/** What the pickup writer does with what it redeemed: each file 0644, its directory 0755. */
+const writePickedUp = (
+  files: ReadonlyArray<{ readonly path: string; readonly base64: string }>,
+  mapPath: (at: string) => string,
+) => {
+  for (const file of files) {
+    const target = mapPath(file.path);
+    fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o755 });
+    fs.writeFileSync(target, Buffer.from(file.base64, "base64"), { mode: 0o644 });
+  }
+};
+
+/** Whether an exec is one that redeems a pickup ticket (`pickup-tickets.ts`), its ticket at `argv[4]`. */
+const isPickupExec = (argv: ReadonlyArray<string>): boolean =>
+  argv[0] === "sh" && (argv[2] ?? "").includes('"/pickup"');
+
+/**
+ * Redeem a pickup exec's ticket as the workspace would: over the channel of the session whose
+ * socket (or token) the workspace holds, for `launchId` when the network channel names one.
+ */
+const redeemPickupExec = (
+  argv: ReadonlyArray<string>,
+  channelSession: SessionId | null,
+  launchId: string | null = null,
+  accountId: string | null = null,
+) => {
+  const api = channelSession === null ? undefined : servedSocketApis.get(channelSession);
+  const redeem = launchId === null ? api?.pickup : api?.pickupAs?.({ launchId, accountId });
+  return redeem === undefined
+    ? Effect.die(new Error("no pickup on this channel"))
+    : redeem(argv[4] ?? "");
+};
 
 /** No machine key and no transport log in these worlds. */
 // Dotfiles resolve per owner; the engine fixtures run without any configured, so launches
@@ -7144,6 +7206,11 @@ const writtenFiles = (execCalls: ReadonlyArray<ReadonlyArray<string>>): Map<stri
   const staged = new Map<string, string>();
   for (const argv of execCalls) {
     if (argv[3] !== "mend-write") continue;
+    const picked = pickedUpWrites.get(argv);
+    if (picked !== undefined) {
+      for (const file of picked) files.set(file.path, Buffer.from(file.base64, "base64"));
+      continue;
+    }
     const ops = argv.slice(4);
     let index = 0;
     const list = () => {
@@ -8916,6 +8983,55 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
+  it("clones an origin adopted with a token in it without the token: never in the clone's argv, its log line, nor what `mend repo projects` prints (review of mend#555, P2-2, N-1)", async () => {
+    const created: Array<CreateOptions> = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const logs: Array<string> = [];
+    const token = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const sibling = yield* setupSibling(tmp, world, "core", project.originUrl ?? "");
+          world.projects.set(
+            sibling.id,
+            new Project({ ...sibling, originUrl: `https://${token}@github.com/acme/core.git` }),
+          );
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "fix-login",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          // What `mend repo projects` prints inside the workspace names the origin without it.
+          const addable = yield* engine.addableProjects(session.id);
+          expect(addable.map((candidate) => candidate.originUrl)).toEqual([
+            "https://github.com/acme/core.git",
+          ]);
+          yield* engine.addRepository(session.id, { project: "core", name: null, worktree: null });
+          yield* until(
+            () => execCalls.some((argv) => argv.join("\n").includes("git clone --quiet")),
+            "the clone in the workspace",
+          );
+          const clone = execCalls.find((argv) => argv.join("\n").includes("git clone")) ?? [];
+          expect(clone.join("\n")).toContain(
+            "git clone --quiet --no-checkout -- 'https://github.com/acme/core.git'",
+          );
+          expect(execCalls.map((argv) => argv.join("\n")).join("\n")).not.toContain(token);
+          expect(logs.join("\n")).not.toContain(token);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        logs,
+        sealantLayer: lifecycleLayer(created, { execCalls }),
+      },
+    );
+  });
+
   it("refuses to add a private project to a session whose worktree others can open, and lists it only where nobody else can (ADR 0011, decision 14)", async () => {
     await withEngine((world, tmp) =>
       Effect.gen(function* () {
@@ -9827,7 +9943,8 @@ describe("SessionEngine capture mode", () => {
       const created: Array<CreateOptions> = [];
       const memory = makeMemoryCaptureStore();
       // Each person's `.aws/credentials`, told apart by its bytes; the stub cipher seals as
-      // `sealed:<base64>`, so a write exec carries the base64 in its argv.
+      // `sealed:<base64>`. The write exec carries a pickup ticket, never the bytes: which person's
+      // file reached the home is what its redemption answered.
       const contents: Record<string, string> = {
         "user-fixture": "[default]\naws_access_key_id = AKIAHOLDER\n",
         "user-maria": "[default]\naws_access_key_id = AKIAJOINER\n",
@@ -9836,6 +9953,8 @@ describe("SessionEngine capture mode", () => {
         Buffer.from(contents[userId] ?? "", "utf8").toString("base64");
       const writes: Array<"holder" | "joiner"> = [];
       const recordWrites: Array<string> = [];
+      // The executor's channel is its maker's, the holder's: every pickup in it is redeemed there.
+      let holder: SessionId | null = null;
       const fileOf = (userId: string) =>
         new SecretFile({
           id: SecretFileId.make(`secret-${userId}`),
@@ -9859,6 +9978,7 @@ describe("SessionEngine capture mode", () => {
               ownerUserId: "user-fixture",
               base: null,
             });
+            holder = first.id;
             yield* engine.launch(first.id, ["codex"]);
             // The holder's own launch writes the holder's file into the holder's home.
             expect(writes).toEqual(["holder"]);
@@ -9935,10 +10055,22 @@ describe("SessionEngine capture mode", () => {
                   recordWrites.push(argv.join(" "));
                   return { exitCode: 0, stdout: "", stderr: "" };
                 }
+                return undefined;
+              },
+              execEffect: (argv) => {
+                if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
                 const joined = argv.join(" ");
-                if (joined.includes(base64Of("user-fixture"))) writes.push("holder");
-                if (joined.includes(base64Of("user-maria"))) writes.push("joiner");
-                return { exitCode: 0, stdout: "written\t.aws/credentials\n", stderr: "" };
+                expect(joined).not.toContain(base64Of("user-fixture"));
+                expect(joined).not.toContain(base64Of("user-maria"));
+                return redeemPickupExec(argv, holder).pipe(
+                  Effect.map((answer) => {
+                    const sent = answer.files[0]?.base64;
+                    if (sent === base64Of("user-fixture")) writes.push("holder");
+                    if (sent === base64Of("user-maria")) writes.push("joiner");
+                    return { exitCode: 0, stdout: "written\t.aws/credentials\n", stderr: "" };
+                  }),
+                  Effect.orDie,
+                );
               },
             },
           ),
@@ -21576,11 +21708,30 @@ it("AUDIT R18 cold resume preserves a saved skill's metadata", { timeout: 60_000
                   before = facts();
                 }
               }),
+            // The skill files: redeemed over the session's channel and written as the pickup
+            // writer writes them, into this executor's home.
+            execEffect: (argv) => {
+              if (argv[3] !== "mend-write" || !isPickupExec(argv)) return undefined;
+              ran.push("mend-write");
+              const channel = created.at(-1)?.env?.["MEND_SESSION_ID"];
+              return redeemPickupExec(
+                argv,
+                channel === undefined ? null : SessionId.make(channel),
+              ).pipe(
+                Effect.map((answer) => {
+                  writePickedUp(answer.files, (at) =>
+                    at.replaceAll("/workspace/harness-home", executorHome),
+                  );
+                  return { exitCode: 0, stdout: "", stderr: "" };
+                }),
+                Effect.orDie,
+              );
+            },
             exec: (argv) => {
               const op = argv[3] ?? "";
               const manifestRead =
                 argv[0] === "cat" && (argv[1] ?? "").includes(".mend-managed-skills");
-              if (op !== "mend-skills" && op !== "mend-write" && !manifestRead) return undefined;
+              if (op !== "mend-skills" && !manifestRead) return undefined;
               ran.push(manifestRead ? "cat" : op);
               const mapped = argv.map((arg) =>
                 arg.replaceAll("/workspace/harness-home", executorHome),
@@ -23468,5 +23619,507 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(outcome._tag).toBe("SessionTurnRefusedError");
     expect(authors).toEqual(["user-fixture"]);
     expect(submitted).toEqual(["mine"]);
+  });
+});
+
+describe("no secret rides an exec's arguments (review of mend#552/#553, P1-1)", () => {
+  // Core keeps every exec's argv, in plaintext, for good. A person's secret files and their pi
+  // profile (its `mcp.json` holds their MCP servers' keys) reach the executor through a pickup
+  // ticket redeemed over the session channel; only the ticket and the paths ride the argv.
+  it("a pi launch delivers the owner's secret files and pi profile, and no byte of either reaches the platform's argv", async () => {
+    const created: Array<CreateOptions> = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const tokenEvents: Array<string> = [];
+    const secrets: Record<string, string> = {
+      ".aws/credentials":
+        "[default]\naws_access_key_id = AKIAEXAMPLE0SECRET01\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n",
+      ".npmrc": "//registry.npmjs.org/:_authToken=npm_0123456789abcdefghijklmnopqrstuvwxyz\n",
+    };
+    const mcp = JSON.stringify({
+      mcpServers: {
+        linear: { headers: { Authorization: "Bearer lin_api_0123456789abcdefSECRET" } },
+      },
+    });
+    const profileFiles = [
+      { path: "root/mcp.json", encoding: "utf8", contents: mcp },
+      {
+        path: "extensions/git-info/index.ts",
+        encoding: "utf8",
+        contents: "export default () => {};\n",
+      },
+    ] as const;
+    const known = [...Object.values(secrets), mcp].map((text) => new TextEncoder().encode(text));
+    // What each redemption answered, by purpose of the exec that carried it.
+    const picked = new Map<
+      string,
+      ReadonlyArray<{ readonly path: string; readonly base64: string }>
+    >();
+    let sessionId: SessionId | null = null;
+    const launchOf = () => {
+      const issued = tokenEvents.findLast((event) => event.startsWith("issue:"));
+      return issued === undefined ? null : issued.slice("issue:".length);
+    };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "pi",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          sessionId = session.id;
+          yield* engine.launch(session.id, ["pi"]);
+
+          // Both deliveries happened, each in one exec, and each redeemed exactly what it carries.
+          const secretExecs = execCalls.filter(
+            (argv) => argv[3] === "mend-secret-files" && isPickupExec(argv),
+          );
+          const profileExecs = execCalls.filter(
+            (argv) => argv[3] === "mend-write" && isPickupExec(argv),
+          );
+          expect(secretExecs).toHaveLength(1);
+          expect(profileExecs).toHaveLength(1);
+          expect(
+            (picked.get("mend-secret-files") ?? []).map((file) => [
+              file.path,
+              Buffer.from(file.base64, "base64").toString("utf8"),
+            ]),
+          ).toEqual(Object.entries(secrets));
+          const profile = new Map(
+            (picked.get("mend-write") ?? []).map((file) => [
+              file.path,
+              Buffer.from(file.base64, "base64").toString("utf8"),
+            ]),
+          );
+          expect(profile.get("/workspace/harness-home/.pi/agent/mend/profile/root/mcp.json")).toBe(
+            mcp,
+          );
+
+          // Not one form of a secret anywhere the platform keeps: no exec argv, no agent argv,
+          // no create request.
+          const everything = [
+            ...execCalls.map((argv) => argv.join("\u0000")),
+            ...spawned.map((argv) => argv.join("\u0000")),
+            ...created.map((options) => JSON.stringify(options)),
+          ].join("\n");
+          for (const bytes of known) {
+            for (const form of secretForms(bytes)) expect(everything).not.toContain(form);
+          }
+          // The tickets that did ride the argv are spent: none redeems again.
+          for (const argv of [...secretExecs, ...profileExecs]) {
+            const again = yield* redeemPickupExec(argv, session.id, launchOf()).pipe(Effect.flip);
+            expect(again.message).toBe(
+              "this pickup ticket was already redeemed, perhaps through another channel",
+            );
+          }
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        tokenEvents,
+        sealantLayer: lifecycleLayer(created, {
+          spawned,
+          execCalls,
+          captureOps: {
+            execEffect: (argv) => {
+              if (!isPickupExec(argv)) return undefined;
+              const purpose = argv[3] ?? "";
+              const launch = launchOf();
+              // Another executor's launch is refused, and spends nothing it can use: the
+              // ticket is taken by the first presentation, so only the right channel asks.
+              return redeemPickupExec(argv, sessionId, launch).pipe(
+                Effect.map((answer) => {
+                  picked.set(purpose, answer.files);
+                  return {
+                    exitCode: 0,
+                    stdout:
+                      purpose === "mend-secret-files"
+                        ? answer.files.map((file) => `written\t${file.path}\n`).join("")
+                        : "",
+                    stderr: "",
+                  };
+                }),
+                Effect.orDie,
+              );
+            },
+          },
+        }),
+        secretFilesLayer: secretFilesLayerOf(() =>
+          Effect.succeed(
+            Object.entries(secrets).map(([at, text]) => ({
+              path: at,
+              sealedContents: `sealed:${Buffer.from(text, "utf8").toString("base64")}`,
+            })),
+          ),
+        ),
+        piProfilesLayer: piProfilesLayerOf(() =>
+          Effect.succeed({
+            profile: new PiProfile({
+              fileCount: profileFiles.length,
+              bytes: profileFiles.reduce((sum, file) => sum + file.contents.length, 0),
+              extensions: ["git-info"],
+              packages: [],
+              digest: piProfileDigest(profileFiles),
+              revision: 1,
+              updatedAt: new Date(0),
+            }),
+            files: profileFiles,
+          }),
+        ),
+      },
+    );
+  });
+
+  it("a ticket redeemed through another executor's launch answers nothing, and is spent", async () => {
+    const created: Array<CreateOptions> = [];
+    const tokenEvents: Array<string> = [];
+    const answers: Array<string> = [];
+    const logs: Array<string> = [];
+    let sessionId: SessionId | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          sessionId = session.id;
+          yield* engine.launch(session.id, ["codex"]);
+          expect(answers).toEqual([
+            "refused: this pickup ticket is another executor's",
+            "refused: this pickup ticket was already redeemed, perhaps through another channel",
+          ]);
+          // Both refusals read as a possible theft, and neither names the ticket.
+          expect(
+            logs.filter((line) => line.startsWith("session engine: pickup refused")),
+          ).toHaveLength(2);
+          // The refusal is logged by path, and no byte of the file is in any line.
+          expect(logs).toContain("session engine: secret file · not written");
+          expect(logs.join("\n")).not.toContain("npm_secret_value_01");
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        tokenEvents,
+        logs,
+        sealantLayer: lifecycleLayer(created, {
+          execCalls: [],
+          captureOps: {
+            execEffect: (argv) => {
+              if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
+              const issued = tokenEvents.findLast((event) => event.startsWith("issue:"));
+              const launch = issued === undefined ? null : issued.slice("issue:".length);
+              expect(launch).not.toBeNull();
+              const attempt = (as: string | null) =>
+                redeemPickupExec(argv, sessionId, as).pipe(
+                  Effect.match({
+                    onFailure: (error) => answers.push(`refused: ${error.message}`),
+                    onSuccess: () => answers.push("answered"),
+                  }),
+                );
+              return attempt("launch-of-another-executor").pipe(
+                Effect.andThen(attempt(launch)),
+                Effect.as({
+                  exitCode: 0,
+                  stdout:
+                    "refused\t.npmrc\tthe pickup was refused: this pickup ticket is spent, expired or unknown\n",
+                  stderr: "",
+                }),
+              );
+            },
+          },
+        }),
+        secretFilesLayer: secretFilesLayerOf(() =>
+          Effect.succeed([
+            {
+              path: ".npmrc",
+              sealedContents: `sealed:${Buffer.from("//r/:_authToken=npm_secret_value_01", "utf8").toString("base64")}`,
+            },
+          ]),
+        ),
+      },
+    );
+  });
+});
+
+describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
+  const npmrc = "//registry.npmjs.org/:_authToken=npm_redeem_rules_0123456789";
+  const sealedNpmrc = () =>
+    secretFilesLayerOf(() =>
+      Effect.succeed([
+        {
+          path: ".npmrc",
+          sealedContents: `sealed:${Buffer.from(npmrc, "utf8").toString("base64")}`,
+        },
+      ]),
+    );
+
+  it("a same-owner sibling's socket redeems; another owner's socket in the same worktree does not, on a retained run", async () => {
+    const created: Array<CreateOptions> = [];
+    const answers: Array<string> = [];
+    // Through which session's socket the next delivery's ticket is presented.
+    let via: SessionId | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const first = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          via = first.id;
+          yield* engine.launch(first.id, ["codex"]);
+          yield* engine.openShell(first.id);
+          // The holder's own delivery, through its own socket.
+          expect(answers).toEqual(["answered"]);
+
+          // A second session of the same owner joins the executor: its delivery, through the
+          // socket the workspace mounts (the first session's), is answered.
+          const sibling = yield* engine.provisionSessionIn(first.worktreeId, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          const converse = (sessionId: SessionId, owner: string) =>
+            engine.launchProtocol(sessionId, { mode: "protocol", permissionMode: "bypass" }, owner);
+          yield* converse(sibling.id, "user-fixture");
+          expect(world.sessions.get(sibling.id)?.sealantWorkspaceId).toBe("workspace-1");
+          expect(answers).toEqual(["answered", "answered"]);
+
+          // Maria's session in the same worktree: no delivery of hers there (another person's
+          // home), but her socket is served. A retained run of the sibling presents its ticket
+          // through her socket: refused, and spent.
+          const maria = yield* engine.provisionSessionIn(first.worktreeId, {
+            harness: "codex",
+            label: null,
+            ownerUserId: "user-maria",
+          });
+          yield* converse(maria.id, "user-maria");
+          expect(answers).toHaveLength(2);
+          via = maria.id;
+          yield* engine.stop(sibling.id);
+          yield* converse(sibling.id, "user-fixture");
+          expect(created).toHaveLength(1);
+          expect(answers).toEqual([
+            "answered",
+            "answered",
+            "refused: this pickup ticket is another session's",
+          ]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: lifecycleLayer(created, {
+          execCalls: [],
+          captureOps: {
+            execEffect: (argv) => {
+              if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
+              return redeemPickupExec(argv, via).pipe(
+                Effect.match({
+                  onFailure: (error) => {
+                    answers.push(`refused: ${error.message}`);
+                    return {
+                      exitCode: 0,
+                      stdout: `refused\t.npmrc\t${error.message}\n`,
+                      stderr: "",
+                    };
+                  },
+                  onSuccess: (answer) => {
+                    expect(Buffer.from(answer.files[0]?.base64 ?? "", "base64").toString()).toBe(
+                      npmrc,
+                    );
+                    answers.push("answered");
+                    return { exitCode: 0, stdout: "written\t.npmrc\n", stderr: "" };
+                  },
+                }),
+              );
+            },
+          },
+        }),
+        secretFilesLayer: sealedNpmrc(),
+        protocolHostLayer: recordingProtocolHostLayer([], []),
+      },
+    );
+  });
+
+  it("a launch that claimed a standby redeems through the standby's launch, and through no other", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const answers: Array<string> = [];
+    let executor: SessionId | null = null;
+    const replan = (workspace: Workspace) =>
+      Effect.gen(function* () {
+        if (executor === null) throw new Error("no executor to replan");
+        const api = servedSocketApis.get(executor)?.capture;
+        if (api === undefined) throw new Error("the executor serves no capture api");
+        const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+          Effect.mapError(
+            (error) =>
+              new SealantPlatformError({
+                code: "replan_refused",
+                status: error.status,
+                message: `${error.reason}: ${error.message}`,
+                cause: error,
+              }),
+          ),
+        );
+        void workspace;
+        return {
+          worktreeId: plan.worktree_id,
+          epoch: plan.epoch,
+          ...(plan.head === null
+            ? {}
+            : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+          filesWritten: 0,
+          bytesWritten: 0,
+          filesSkipped: 0,
+          bytesSkipped: 0,
+          removed: 0,
+          unchanged: true,
+        } satisfies WorkspaceCaptureReplanned;
+      });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          executor = session.id;
+          yield* engine.launch(session.id, ["codex"]);
+          expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
+          expect(answers).toEqual([
+            "refused: this pickup ticket is another executor's",
+            "refused: this pickup ticket was already redeemed, perhaps through another channel",
+          ]);
+        }),
+      {
+        captured: memory,
+        hotWorkspacesLayer: pool.layer,
+        secretFilesLayer: sealedNpmrc(),
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            replan,
+            execEffect: (argv) => {
+              if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
+              const attempt = (launch: string) =>
+                redeemPickupExec(argv, executor, launch).pipe(
+                  Effect.match({
+                    onFailure: (error) => void answers.push(`refused: ${error.message}`),
+                    onSuccess: () => void answers.push("answered"),
+                  }),
+                );
+              // The cold launch key the session would have had, then the standby's own: the
+              // first presentation spends the ticket, so this proves the binding refuses a
+              // launch that is not the standby's.
+              return attempt("not-the-standby-launch").pipe(
+                Effect.andThen(attempt(`standby:${executor ?? ""}`)),
+                Effect.as({ exitCode: 0, stdout: "refused\t.npmrc\tspent\n", stderr: "" }),
+              );
+            },
+          },
+        }),
+      },
+    );
+  });
+
+  it("the standby's own launch is the one a claimed launch's ticket is bound to", async () => {
+    const created: Array<CreateOptions> = [];
+    const pool = memoryHotPool();
+    const answers: Array<string> = [];
+    let executor: SessionId | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          executor = session.id;
+          yield* engine.launch(session.id, ["codex"]);
+          expect(answers).toEqual(["answered"]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        hotWorkspacesLayer: pool.layer,
+        secretFilesLayer: sealedNpmrc(),
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            replan: (workspace) =>
+              Effect.gen(function* () {
+                void workspace;
+                const api = servedSocketApis.get(executor ?? SessionId.make(""))?.capture;
+                if (api === undefined) throw new Error("the executor serves no capture api");
+                const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(Effect.orDie);
+                return {
+                  worktreeId: plan.worktree_id,
+                  epoch: plan.epoch,
+                  ...(plan.head === null
+                    ? {}
+                    : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+                  filesWritten: 0,
+                  bytesWritten: 0,
+                  filesSkipped: 0,
+                  bytesSkipped: 0,
+                  removed: 0,
+                  unchanged: true,
+                } satisfies WorkspaceCaptureReplanned;
+              }),
+            execEffect: (argv) => {
+              if (argv[3] !== "mend-secret-files" || !isPickupExec(argv)) return undefined;
+              return redeemPickupExec(argv, executor, `standby:${executor ?? ""}`).pipe(
+                Effect.match({
+                  onFailure: (error) => {
+                    answers.push(`refused: ${error.message}`);
+                    return {
+                      exitCode: 0,
+                      stdout: `refused\t.npmrc\t${error.message}\n`,
+                      stderr: "",
+                    };
+                  },
+                  onSuccess: () => {
+                    answers.push("answered");
+                    return { exitCode: 0, stdout: "written\t.npmrc\n", stderr: "" };
+                  },
+                }),
+              );
+            },
+          },
+        }),
+      },
+    );
   });
 });

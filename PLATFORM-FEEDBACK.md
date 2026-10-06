@@ -7,6 +7,44 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-06 · 0.38.1 · Exec arguments are stored forever and in plaintext: unrecorded stdin, redaction, retention and a purge
+
+- **Needed:** a way to hand a secret to one exec without the platform storing it. Mend writes a
+  person's secret files (ADR 0010: `~/.aws/credentials`, kubeconfigs, `.npmrc` tokens) and their pi
+  profile (`mcp.json` holds MCP keys) into the executor's home. Per-person session tokens (ADR 0016,
+  mend#553) need the same.
+- **Today:** `workspace.exec(argv, { cwd })` takes argv only: no `stdin`, `env` or `secretEnv`
+  (`packages/sdk/src/types.ts`), and the worker hardcodes `stdin: false`. sealantd publishes
+  `ProcessStarted { executable, args, cwd }` unredacted. Its redactor (`secretEnv` values and
+  prefixes such as `gho_`) runs on stdout, stderr and PTY input only. Core stores the args three
+  ways: verbatim in `telemetry_events.payload`, again in `telemetry_timeline.ref_json`, and as plain
+  text in `telemetry_timeline.summary` (`exec <executable> <args…>`). It serves them back through
+  `run.record.stream()` and the timeline API. The pg-boss job row holds the `commands` for 1 h, or 7
+  days if the job dead-letters. Nothing sweeps `telemetry_*` or `runs`; rows go only when their user
+  is deleted. Until mend#555 Mend sent the secret files and the pi profile as base64 argv, so every
+  delivery since ADR 0010 shipped is stored in Core, readable by anyone with database or backup
+  access, the operator included.
+- **What Mend does now:** a single-use, 30-second pickup ticket in argv. The exec redeems it over
+  the session channel and writes the bytes straight to the 0600 file (ADR 0010 decision 5, amended
+  2026-10-06). No extra exec, and nothing needed from Core.
+- **Suggested, Core:**
+  - **Exec stdin that is never recorded,** or a per-exec `secretEnv` whose values are never
+    recorded, seed the redactor, and are redacted in `ProcessStarted.args` too.
+  - **Redaction of `ProcessStarted.args`** in sealantd and in Core's normalizer, with the same
+    redactor as stdout: `secretEnv` values plus known token prefixes.
+  - **Retention for `telemetry_events`, `telemetry_timeline` and finished job rows,** with a
+    documented window and an endpoint to delete a run's record.
+  - **A one-off purge of what is already stored:** the `processStarted` rows, the timeline
+    `ref_json` and `summary` entries, and the job rows whose args carry:
+    - Mend's secret-file script (`mend-secret-files` with `.mend-secret-part-` in the script);
+    - its workspace file writer in argv (`mend-write` with `w`/`s`/`a` operations, gzip+base64), the
+      pi profile (`.pi/agent/mend/profile`, whose `mcp.json` holds MCP keys) and agent memory among
+      them;
+    - the `mend repo add` clone of an origin adopted with a credential
+      (`git clone --quiet --no-checkout -- 'https://<user or token>@…'`).
+
+    Name it in the 0.36 notes.
+
 ## 2026-10-06 · 0.38.1 · A Linux user per person in one workspace, and a login for each home
 
 - **Needed:** docs/adr/0016-per-person-harness-homes.md. In capture mode several people work in one

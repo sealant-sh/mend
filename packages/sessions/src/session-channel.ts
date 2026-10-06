@@ -145,6 +145,18 @@ export const handleSessionRequest = async (
       const body = await readBody(request, MAX_CAPTURE_BODY_BYTES);
       return await dispatchCaptureRoute(api.capture, url.pathname, body, respond);
     }
+    // A pickup (`pickup-tickets.ts`): the secret an exec holds a ticket for, never its argv's.
+    // The ticket is never logged, and neither is what it answers.
+    if (route === "POST /pickup") {
+      if (api.pickup === undefined) return respond(404, { message: "no pickups on this channel" });
+      const body = asRecord(await readBody(request));
+      const ticket = typeof body["ticket"] === "string" ? body["ticket"] : "";
+      if (ticket === "") return respond(400, { message: "ticket is required" });
+      const answer = await Effect.runPromise(Effect.result(api.pickup(ticket)));
+      return answer._tag === "Success"
+        ? respond(200, answer.success)
+        : respond(403, { message: answer.failure.message });
+    }
     if (route === "GET /recipes") return respond(200, await Effect.runPromise(api.recipes()));
     if (route === "GET /services") return respond(200, await Effect.runPromise(api.listServices()));
     if (route === "POST /services/recipe") {
@@ -444,7 +456,11 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
       // which answers whichever launch the row names now (or the session id before a create
       // answers). A session served without launch-bound routes serves no capture routes here.
       const capture = api.captureAs?.(scope.launchId);
-      return { ok: true, api: { ...api, capture } };
+      // Pickups likewise: a ticket redeemed here answers only for the launch the token names, and,
+      // for a person's token, only for that person (`pickupChannelMatch`). The launch's own token
+      // names nobody.
+      const pickup = api.pickupAs?.({ launchId: scope.launchId, accountId: null });
+      return { ok: true, api: { ...api, capture, pickup } };
     };
 
     const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {

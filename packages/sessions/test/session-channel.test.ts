@@ -321,6 +321,61 @@ describe("SessionChannelNetworkHost", () => {
     );
   });
 
+  it("serves a pickup only for the launch the token names, never the socket's unbound one", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const asked: Array<string> = [];
+          yield* sockets.start(SESSION, {
+            ...api([]),
+            pickup: () =>
+              Effect.sync(() => void asked.push("socket")).pipe(Effect.as({ files: [] })),
+            pickupAs: (grant) => (ticket) =>
+              Effect.sync(
+                () => void asked.push(`${grant.launchId}:${grant.accountId ?? "nobody"}:${ticket}`),
+              ).pipe(
+                Effect.flatMap(() =>
+                  ticket === "good"
+                    ? Effect.succeed({ files: [{ path: ".npmrc", base64: "c2VjcmV0" }] })
+                    : Effect.fail(new Error("this pickup ticket is spent, expired or unknown")),
+                ),
+              ),
+          });
+          const token = yield* tokens.issue(SESSION, "launch-7");
+          const auth = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
+          const good = yield* Effect.promise(() =>
+            call(address, "POST", "/pickup", auth, { ticket: "good" }),
+          );
+          expect(good).toEqual({
+            status: 200,
+            json: { files: [{ path: ".npmrc", base64: "c2VjcmV0" }] },
+          });
+          const spent = yield* Effect.promise(() =>
+            call(address, "POST", "/pickup", auth, { ticket: "spent" }),
+          );
+          expect(spent).toEqual({
+            status: 403,
+            json: { message: "this pickup ticket is spent, expired or unknown" },
+          });
+          const unauthenticated = yield* Effect.promise(() =>
+            call(address, "POST", "/pickup", {}, { ticket: "good" }),
+          );
+          expect(unauthenticated.status).toBe(401);
+          // The launch's own token names its launch and nobody: the engine's binding does the rest.
+          expect(asked).toEqual(["launch-7:nobody:good", "launch-7:nobody:spent"]);
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
   // e2e8 F8: a statement timeout in the token lookup was an unhandled rejection, and Node ended
   // the Mend process with every session on it.
   it("answers 503 when the token lookup fails, and goes on serving", async () => {
