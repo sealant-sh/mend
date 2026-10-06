@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -363,9 +364,10 @@ const backupIn = (
   outcome: "completed" | "pending" | "unfinished" = "completed",
   generations?: { readonly previous: ServerGeneration; readonly target: ServerGeneration },
 ) => {
+  // By default each backup gets generations no other one shares, so nothing chains by accident.
   const generation = generations ?? {
-    previous: unwrap(store.commit(files)),
-    target: unwrap(store.commit(files)),
+    previous: unwrap(store.prepare({ ...files, config: `previous ${randomUUID()}\n` })),
+    target: unwrap(store.prepare({ ...files, config: `target ${randomUUID()}\n` })),
   };
   const backup = unwrap(store.createBackup(generation.previous, generation.target));
   fs.writeFileSync(
@@ -398,6 +400,27 @@ const generationsIn = (store: ServerStore, count: number): ReadonlyArray<ServerG
   Array.from({ length: count }, (_, index) =>
     unwrap(store.prepare({ ...files, config: `config ${index}\n` })),
   );
+/** A generation pinning `version`, as server.json states it. */
+const pinning = (store: ServerStore, version: string): ServerGeneration =>
+  unwrap(store.prepare({ ...files, config: JSON.stringify({ serverVersion: version }) }));
+/** Generations pinning each version in turn, by index. */
+const pinningEach = (
+  store: ServerStore,
+  versions: ReadonlyArray<string>,
+): ((index: number) => ServerGeneration) => {
+  const generations = versions.map((version) => pinning(store, version));
+  return (index) => {
+    const generation = generations[index];
+    if (generation === undefined) throw new Error(`No generation ${index}`);
+    return generation;
+  };
+};
+/** Replace a backup's dump with `content`. */
+const writeDump = (backup: { readonly directory: string }, content: string): void =>
+  fs.writeFileSync(path.join(backup.directory, "database.sql"), content);
+/** Plain numeric order; the CLI passes its own upgrade order. */
+const byVersion = (a: string, b: string): number =>
+  a.localeCompare(b, undefined, { numeric: true });
 
 describe("upgrade backup pruning", () => {
   it("keeps the newest N completed backups, the current one among them, and reports the bytes", async () => {
@@ -408,7 +431,7 @@ describe("upgrade backup pruning", () => {
       const newer = backupIn(store);
       const current = backupIn(store);
       expect(recovery(current.directory)).toMatchObject({ state: "completed", sequence: 4 });
-      const pruned = unwrap(store.pruneBackups(2, current));
+      const pruned = unwrap(store.pruneBackups(2, current, byVersion));
       expect(pruned.kept.map((entry) => entry.directory)).toEqual([
         current.directory,
         newer.directory,
@@ -421,7 +444,7 @@ describe("upgrade backup pruning", () => {
       expect(fs.existsSync(oldest.directory)).toBe(false);
       expect(fs.existsSync(older.directory)).toBe(false);
       // A second prune finds nothing more to remove.
-      expect(unwrap(store.pruneBackups(2, current)).removed).toEqual([]);
+      expect(unwrap(store.pruneBackups(2, current, byVersion)).removed).toEqual([]);
     });
     expect(result._tag).toBe("ok");
     expect(names(root)).toHaveLength(2);
@@ -440,7 +463,7 @@ describe("upgrade backup pruning", () => {
       fs.utimesSync(file, new Date("2099-01-01"), new Date("2099-01-01"));
       const previous = backupIn(store);
       const current = backupIn(store);
-      const pruned = unwrap(store.pruneBackups(2, current));
+      const pruned = unwrap(store.pruneBackups(2, current, byVersion));
       expect(pruned.kept.map((entry) => entry.directory)).toEqual([
         current.directory,
         previous.directory,
@@ -469,7 +492,7 @@ describe("upgrade backup pruning", () => {
       makeLegacy(third.directory, new Date("2026-10-03T00:00:01Z"));
       const current = backupIn(store, "completed", { previous: g3, target: g4 });
       expect(recovery(current.directory)).toMatchObject({ sequence: 1 });
-      const pruned = unwrap(store.pruneBackups(2, current));
+      const pruned = unwrap(store.pruneBackups(2, current, byVersion));
       expect(pruned.kept.map((entry) => entry.directory)).toEqual([
         current.directory,
         third.directory,
@@ -480,13 +503,127 @@ describe("upgrade backup pruning", () => {
     expect(result._tag).toBe("ok");
   });
 
+  it("orders records from before 0.36 by their target's version across a setup rerun", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const g = pinningEach(store, ["0.30.0", "0.31.0", "0.32.0", "0.32.0", "0.33.0", "0.36.0"]);
+      const a = backupIn(store, "completed", { previous: g(0), target: g(1) });
+      const b = backupIn(store, "completed", { previous: g(1), target: g(2) });
+      // A setup rerun moved g2 to g3 without a backup; the chain breaks there.
+      const c = backupIn(store, "completed", { previous: g(3), target: g(4) });
+      makeLegacy(a.directory, new Date("2026-10-03T00:00:02Z"));
+      makeLegacy(b.directory, new Date("2026-10-03T00:00:03Z"));
+      makeLegacy(c.directory, new Date("2026-10-03T00:00:01Z"));
+      const current = backupIn(store, "completed", { previous: g(4), target: g(5) });
+      const pruned = unwrap(store.pruneBackups(2, current, byVersion));
+      expect(pruned.kept.map((entry) => entry.directory)).toEqual([current.directory, c.directory]);
+      expect(directories(pruned.removed)).toEqual(directories([a, b]));
+    });
+    expect(result._tag).toBe("ok");
+  });
+
+  it("holds a record without an outcome that an older CLI wrote after a 0.36 one", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const g = pinningEach(store, ["0.35.0", "0.36.0", "0.36.1", "0.36.2", "0.36.2", "0.36.3"]);
+      const sequenced = backupIn(store, "completed", { previous: g(0), target: g(1) });
+      // An older CLI upgraded from that target, then another across a setup rerun to a later version.
+      const chained = backupIn(store, "completed", { previous: g(1), target: g(2) });
+      makeLegacy(chained.directory);
+      const later = backupIn(store, "completed", { previous: g(2), target: g(3) });
+      makeLegacy(later.directory, new Date("2020-01-01"));
+      const current = backupIn(store, "completed", { previous: g(4), target: g(5) });
+      const pruned = unwrap(store.pruneBackups(1, current, byVersion));
+      expect(pruned.held.toSorted((x, y) => x.directory.localeCompare(y.directory))).toEqual(
+        [
+          { directory: chained.directory, reason: "no-outcome" },
+          { directory: later.directory, reason: "no-outcome" },
+        ].toSorted((x, y) => x.directory.localeCompare(y.directory)),
+      );
+      expect(pruned.removed.map((entry) => entry.directory)).toEqual([sequenced.directory]);
+    });
+    expect(result._tag).toBe("ok");
+  });
+
+  it("holds a record with a state but no valid sequence", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const corrupt = backupIn(store);
+      const file = path.join(corrupt.directory, "recovery.json");
+      fs.writeFileSync(file, JSON.stringify({ ...recovery(corrupt.directory), sequence: "1" }));
+      const stateless = backupIn(store);
+      const { sequence: _sequence, ...rest } = recovery(stateless.directory);
+      fs.writeFileSync(path.join(stateless.directory, "recovery.json"), JSON.stringify(rest));
+      const current = backupIn(store);
+      const pruned = unwrap(store.pruneBackups(1, current, byVersion));
+      expect(pruned.held.map((entry) => [entry.reason, entry.detail])).toEqual([
+        ["unreadable", "recovery.json has a state without a valid sequence"],
+        ["unreadable", "recovery.json has a state without a valid sequence"],
+      ]);
+      expect(pruned.removed).toEqual([]);
+    });
+    expect(result._tag).toBe("ok");
+  });
+
+  it("finds pg_dumpall's trailer only at the start of a line at the end of the dump", async () => {
+    const root = temporary();
+    const result = await withServerStore(root, async (store) => {
+      const midLine = backupIn(store);
+      writeDump(
+        midLine,
+        `COPY x FROM stdin;\nrow -- PostgreSQL database cluster dump complete\n--\n`,
+      );
+      const notLast = backupIn(store);
+      writeDump(notLast, `-- dump\n${TRAILER}CREATE TABLE after_the_trailer ();\n`);
+      const crlf = backupIn(store);
+      writeDump(
+        crlf,
+        "-- dump\r\n--\r\n-- PostgreSQL database cluster dump complete\r\n--\r\n\r\n",
+      );
+      const blankLines = backupIn(store);
+      writeDump(blankLines, `-- dump\n${TRAILER}\n\n`);
+      const current = backupIn(store);
+      const pruned = unwrap(store.pruneBackups(1, current, byVersion));
+      expect(directories(pruned.held)).toEqual(directories([midLine, notLast]));
+      expect(directories(pruned.removed)).toEqual(directories([crlf, blankLines]));
+    });
+    expect(result._tag).toBe("ok");
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "an unreadable backup never refuses an upgrade, and the prune lists it",
+    async () => {
+      const root = temporary();
+      const result = await withServerStore(root, async (store) => {
+        const locked = backupIn(store);
+        fs.chmodSync(locked.directory, 0o000);
+        try {
+          const current = backupIn(store);
+          expect(recovery(current.directory)).toMatchObject({ sequence: 1 });
+          const pruned = unwrap(store.pruneBackups(1, current, byVersion));
+          expect(pruned.held).toMatchObject([
+            {
+              directory: locked.directory,
+              reason: "unreadable",
+              detail: expect.stringContaining("EACCES"),
+            },
+          ]);
+          expect(pruned.removed).toEqual([]);
+        } finally {
+          fs.chmodSync(locked.directory, 0o700);
+        }
+      });
+      expect(result._tag).toBe("ok");
+    },
+  );
+
   it("never removes the current backup, even when every other one is newer", async () => {
     const root = temporary();
     const result = await withServerStore(root, async (store) => {
       const current = backupIn(store);
       backupIn(store);
       backupIn(store);
-      const pruned = unwrap(store.pruneBackups(1, current));
+      const pruned = unwrap(store.pruneBackups(1, current, byVersion));
       expect(pruned.kept.map((entry) => entry.directory)).toEqual([current.directory]);
       expect(pruned.removed).toHaveLength(2);
       expect(fs.existsSync(path.join(current.directory, "database.sql"))).toBe(true);
@@ -502,8 +639,8 @@ describe("upgrade backup pruning", () => {
       backupIn(store);
       const current = backupIn(store, "pending");
       expect(recovery(current.directory)).toMatchObject({ state: "pending" });
-      expect(store.pruneBackups(1, current)).toMatchObject({ _tag: "error" });
-      expect(store.pruneBackups(0, current)).toMatchObject({ _tag: "error" });
+      expect(store.pruneBackups(1, current, byVersion)).toMatchObject({ _tag: "error" });
+      expect(store.pruneBackups(0, current, byVersion)).toMatchObject({ _tag: "error" });
     });
     expect(result._tag).toBe("ok");
     expect(names(root)).toHaveLength(3);
@@ -530,7 +667,7 @@ describe("upgrade backup pruning", () => {
       makeLegacy(legacyDumpless.directory);
       backupIn(store);
       const current = backupIn(store);
-      const pruned = unwrap(store.pruneBackups(1, current));
+      const pruned = unwrap(store.pruneBackups(1, current, byVersion));
       const reasons = Object.fromEntries(
         pruned.held.map((entry) => [entry.directory, entry.reason]),
       );
@@ -563,7 +700,7 @@ describe("upgrade backup pruning", () => {
       fs.mkdirSync(foreign);
       fs.writeFileSync(path.join(foreign, "notes.txt"), "mine\n");
       const current = backupIn(store);
-      const pruned = unwrap(store.pruneBackups(5, current));
+      const pruned = unwrap(store.pruneBackups(5, current, byVersion));
       expect(directories(pruned.removed)).toEqual(
         [`${renamed.directory}.removing`, dumpless.directory, empty].toSorted(),
       );
@@ -583,11 +720,11 @@ describe("upgrade backup pruning", () => {
         const removable = backupIn(store);
         const current = backupIn(store);
         fs.chmodSync(stuck.directory, 0o500);
-        const pruned = unwrap(store.pruneBackups(1, current));
+        const pruned = unwrap(store.pruneBackups(1, current, byVersion));
         fs.chmodSync(`${stuck.directory}.removing`, 0o700);
         expect(pruned.removed.map((entry) => entry.directory)).toEqual([removable.directory]);
         expect(pruned.failed.map((entry) => entry.directory)).toEqual([stuck.directory]);
-        const retried = unwrap(store.pruneBackups(1, current));
+        const retried = unwrap(store.pruneBackups(1, current, byVersion));
         expect(retried.removed).toMatchObject([
           { directory: `${stuck.directory}.removing`, interrupted: true },
         ]);
@@ -606,7 +743,7 @@ describe("upgrade backup pruning", () => {
       fs.linkSync(path.join(linked.directory, "database.sql"), path.join(outside, "snapshot.sql"));
       const record = fs.statSync(path.join(linked.directory, "recovery.json")).size;
       const current = backupIn(store);
-      const pruned = unwrap(store.pruneBackups(1, current));
+      const pruned = unwrap(store.pruneBackups(1, current, byVersion));
       expect(pruned.removed).toMatchObject([{ directory: linked.directory, bytes: record }]);
       expect(fs.readFileSync(path.join(outside, "snapshot.sql"), "utf8")).toContain(TRAILER);
     });
@@ -648,7 +785,7 @@ describe("upgrade backup pruning", () => {
       fs.mkdirSync(path.join(backups, "manual-copy"));
       fs.writeFileSync(path.join(backups, "upgrade-00000000-0000-4000-8000-000000000005"), "file");
       const current = backupIn(store);
-      const pruned = unwrap(store.pruneBackups(1, current));
+      const pruned = unwrap(store.pruneBackups(1, current, byVersion));
       expect(pruned.removed).toMatchObject([{ directory: legacy.directory, legacy: true }]);
       expect(pruned.held).toEqual([]);
       expect(fs.existsSync(path.join(target, "database.sql"))).toBe(true);
@@ -657,7 +794,7 @@ describe("upgrade backup pruning", () => {
         true,
       );
     });
-    expect(result._tag).toBe("ok");
+    if (result._tag === "error") throw result.error;
     expect(names(root)).toHaveLength(9);
   });
 });

@@ -338,11 +338,17 @@ does not end with pg_dumpall's `dump complete` trailer, a link, and any director
 rename to `upgrade-UUID.removing` and then unlinks, so one a crash cut short is finished next time.
 
 Records written by releases before 0.36 carry no state and no sequence. The first upgrade on 0.36 or
-later treats each one whose dump is whole as completed, orders them by the generation chain (an
-upgrade from the generation another one targeted came after it) and below every sequenced record,
-and keeps only the newest N. That includes the backup of an old upgrade that failed after its target
-started, which looks the same on disk as one that succeeded. Copy any you want to keep out of
-`backups/` before upgrading. Their removals end in `· from before 0.36, no recorded outcome`.
+later treats each one whose dump is whole as completed and keeps only the newest N. They order below
+every sequenced record, then by the version their target generation pins, then by the generation
+chain (an upgrade from the generation another one targeted came after it), and only then by clock.
+That includes the backup of an old upgrade that failed after its target started, which looks the
+same on disk as one that succeeded. Copy any you want to keep out of `backups/` before upgrading.
+Their removals end in `· from before 0.36, no recorded outcome`.
+
+A record without an outcome that an older CLI wrote after a 0.36 one (it chains from a sequenced
+record's target, or pins a later version than one) is kept and listed as `no recorded outcome`. So
+is a record with a state but no valid sequence, and any `upgrade-UUID` entry this process cannot
+read, listed as `unreadable`; neither ever refuses an upgrade.
 
 After such a failure:
 

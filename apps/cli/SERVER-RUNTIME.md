@@ -229,8 +229,12 @@ Upgrade proceeds under the installation lock:
    crash cut short and is finished. Pending backups, partial or dumpless ones, dumps without
    pg_dumpall's `dump complete` trailer, links, and anything that is not an `upgrade-UUID` directory
    holding exactly `recovery.json` and `database.sql` stay. Records from before 0.36 (no state, no
-   sequence) count as completed when their dump is whole, order by the generation chain below every
-   sequenced record, and are marked as such when removed. A pruning failure is printed with what was
+   sequence) count as completed when their dump is whole and order below every sequenced record, by
+   their target generation's `serverVersion`, then the generation chain, then the clock; they are
+   marked as such when removed. One an older CLI wrote after a sequenced record (chained from its
+   target, or pinning a later version) is held as `no recorded outcome`. A record with a state but
+   no valid sequence, and an entry that cannot be read, are held as `unreadable`; the sequence scan
+   skips the latter, so it never refuses an upgrade. A pruning failure is printed with what was
    removed; the upgrade has already succeeded.
 
 If assets, images, generation preparation, or recovery-directory creation fail, the old pin and app

@@ -716,8 +716,12 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       expect(f.backups()).toHaveLength(3);
       expect(f.lines).toContain("Upgrade backups · all kept (--keep-backups 0)");
       expect(f.lines.some((line) => line.startsWith("Removed upgrade backup "))).toBe(false);
-      // One of them as a release before 0.36 wrote it: no outcome recorded, and the output says so.
-      const legacy = path.join(f.configDir, "backups", f.backups()[0] ?? "", "recovery.json");
+      // The first as a release before 0.36 wrote it: no outcome recorded, and the output says so.
+      const legacy =
+        f
+          .backups()
+          .map((name) => path.join(f.configDir, "backups", name, "recovery.json"))
+          .find((file) => JSON.parse(fs.readFileSync(file, "utf8")).sequence === 1) ?? "";
       const {
         state: _state,
         sequence: _sequence,

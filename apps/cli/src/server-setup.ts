@@ -54,6 +54,7 @@ import {
   withServerStore,
   ServerStoreError,
   type ServerFiles,
+  type HeldBackup,
   type ServerBackup,
   type ServerStore,
   type ServerStoreResult,
@@ -1989,6 +1990,20 @@ const formatBytes = (bytes: number): string => {
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`;
 };
 
+/** Why a backup stayed, in the words the operator reads. */
+const heldReason = (entry: HeldBackup): string => {
+  switch (entry.reason) {
+    case "pending":
+      return "pending: its upgrade never recorded a healthy target";
+    case "unfinished":
+      return "unfinished: no complete database dump";
+    case "no-outcome":
+      return "no recorded outcome: written after a 0.36 backup by a CLI that records none";
+    case "unreadable":
+      return `unreadable: ${entry.detail ?? "not read"}`;
+  }
+};
+
 /**
  * After a healthy upgrade: record it, then keep the newest `keep` completed backups (0 keeps all).
  * The upgrade already succeeded, so a pruning failure is reported and never fails the command.
@@ -2010,12 +2025,12 @@ const pruneUpgradeBackups = (
     runtime.writeLine("Upgrade backups · all kept (--keep-backups 0)");
     return;
   }
-  const pruned = store.pruneBackups(keep, backup);
+  const pruned = store.pruneBackups(keep, backup, upgradeOrder);
   if (pruned._tag === "error") {
     runtime.writeLine(`Upgrade backups · not pruned: ${pruned.error.message}`);
     return;
   }
-  const { removed, kept, held, failed } = pruned.value;
+  const { removed, kept, held, failed, unsynced } = pruned.value;
   for (const entry of removed)
     runtime.writeLine(
       `Removed upgrade backup ${entry.directory} · ${formatBytes(entry.bytes)}${
@@ -2032,10 +2047,10 @@ const pruneUpgradeBackups = (
   );
   for (const entry of failed)
     runtime.writeLine(`Could not remove upgrade backup ${entry.directory}: ${entry.message}`);
+  if (unsynced !== undefined)
+    runtime.writeLine(`Upgrade backups · removals made but not fsynced: ${unsynced}`);
   for (const entry of held)
-    runtime.writeLine(
-      `Kept upgrade backup ${entry.directory} · ${entry.reason === "pending" ? "pending: its upgrade never recorded a healthy target" : "unfinished: no complete database dump"}`,
-    );
+    runtime.writeLine(`Kept upgrade backup ${entry.directory} · ${heldReason(entry)}`);
 };
 
 /**
@@ -2051,6 +2066,13 @@ export const isPreviewToNext = (from: string, to: string): boolean => {
   const preview = LEGACY_PREVIEW.exec(from);
   const next = NEXT_BUILD.exec(to);
   return preview !== null && next !== null && preview[1] === next[1];
+};
+
+/** The order upgrades move in: by version, except that X.Y.Z-preview.K comes before X.Y.Z-next.N. */
+const upgradeOrder = (a: string, b: string): number => {
+  if (isPreviewToNext(a, b)) return -1;
+  if (isPreviewToNext(b, a)) return 1;
+  return compareServerVersions(a, b);
 };
 
 /**

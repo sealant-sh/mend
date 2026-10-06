@@ -60,7 +60,7 @@ export interface BackupEntry {
   readonly bytes: number;
   /**
    * Written before recovery.json recorded an outcome (releases before 0.36): counted as completed
-   * because its dump is whole, ordered by the generation chain.
+   * because its dump is whole, ordered by its target's version, then the generation chain.
    */
   readonly legacy: boolean;
   /**
@@ -73,8 +73,15 @@ export interface BackupEntry {
 /** A backup pruning kept because a recovery may still need it, and why. */
 export interface HeldBackup {
   readonly directory: string;
-  /** `pending`: the upgrade never recorded a healthy target. `unfinished`: no complete dump. */
-  readonly reason: "pending" | "unfinished";
+  /**
+   * `pending`: the upgrade never recorded a healthy target. `unfinished`: no complete dump.
+   * `no-outcome`: no state, but written after a 0.36 backup (by an older CLI), so not from before
+   * outcomes were recorded. `unreadable`: this process could not read it, or its record has a state
+   * without a valid sequence.
+   */
+  readonly reason: "pending" | "unfinished" | "no-outcome" | "unreadable";
+  /** For `unreadable`: what could not be read. */
+  readonly detail?: string;
 }
 
 /** A removal that failed partway; what was already removed is still reported. */
@@ -89,7 +96,12 @@ export interface BackupPrune {
   readonly kept: ReadonlyArray<BackupEntry>;
   readonly held: ReadonlyArray<HeldBackup>;
   readonly failed: ReadonlyArray<FailedRemoval>;
+  /** Set when the removals happened but fsyncing backups/ afterwards failed. */
+  readonly unsynced?: string;
 }
+
+/** Orders two server versions the way upgrades move: negative when `a` came first. */
+export type CompareServerVersions = (a: string, b: string) => number;
 
 /** Valid only inside withServerStore. All lifecycle commands must use the same lock. */
 export interface ServerStore {
@@ -110,8 +122,13 @@ export interface ServerStore {
    * Keep the newest `keep` completed upgrade backups, `current` among them, and remove the older
    * completed ones. Never removes `current`, a pending or unfinished backup, or anything that is not
    * an `upgrade-UUID` directory holding exactly recovery.json and database.sql. `keep` is at least 1.
+   * `compareVersions` orders records from before 0.36 by the version their target generation pins.
    */
-  pruneBackups(keep: number, current: ServerBackup): ServerStoreResult<BackupPrune>;
+  pruneBackups(
+    keep: number,
+    current: ServerBackup,
+    compareVersions: CompareServerVersions,
+  ): ServerStoreResult<BackupPrune>;
 }
 
 interface StorePaths {
@@ -428,16 +445,19 @@ const REMOVING_NAME =
 /** markCompleted's temporary record; one left behind means the rename never happened. */
 const RECOVERY_TEMPORARY =
   /^\.recovery-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** pg_dumpall's last comment. A dump that does not end with it was cut short. */
-const DUMP_TRAILER = "-- PostgreSQL database cluster dump complete";
 
 interface RecoveryRecord {
+  /** Generation directory names (`gen-UUID`), so a copied installation still chains. */
   readonly previousGeneration: string;
   readonly targetGeneration: string;
   /** Absent in records from before 0.36. */
   readonly state: unknown;
   /** Mend's own order: one more than the highest when written. Absent before 0.36. */
   readonly sequence: number | undefined;
+  /** Whether the record has either field: every release that writes one writes both. */
+  readonly recordsOutcome: boolean;
+  /** The serverVersion the target generation pins, when its server.json reads. */
+  readonly targetVersion: string | undefined;
   /** createdAt, else the record's mtime: a tie-break only, since clocks move and copies reset. */
   readonly clock: number;
 }
@@ -447,6 +467,7 @@ type ReadBackup =
   | {
       readonly kind: "held";
       readonly reason: HeldBackup["reason"];
+      readonly detail?: string;
       readonly record?: RecoveryRecord;
     }
   | { readonly kind: "interrupted"; readonly bytes: number }
@@ -469,7 +490,29 @@ const lstatOptional = (file: string): fs.Stats | null => {
 /** Bytes unlinking this file frees: none while another hard link holds it. */
 const freedBy = (stat: fs.Stats): number => (stat.nlink === 1 ? stat.size : 0);
 
-const readRecord = (file: string, stat: fs.Stats): RecoveryRecord | null => {
+const GENERATION_NAME = /^gen-[0-9a-f-]{36}$/;
+const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/** The serverVersion a generation of this installation pins, read by its name under generations/. */
+const generationVersion = (configDir: string, generation: string): string | undefined => {
+  if (!GENERATION_NAME.test(generation)) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(
+      fs.readFileSync(path.join(configDir, "generations", generation, "server.json"), "utf8"),
+    );
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      "serverVersion" in parsed &&
+      typeof parsed.serverVersion === "string" &&
+      VERSION.test(parsed.serverVersion)
+      ? parsed.serverVersion
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const readRecord = (configDir: string, file: string, stat: fs.Stats): RecoveryRecord | null => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -496,14 +539,20 @@ const readRecord = (file: string, stat: fs.Stats): RecoveryRecord | null => {
     "createdAt" in parsed && typeof parsed.createdAt === "string"
       ? Date.parse(parsed.createdAt)
       : Number.NaN;
+  const targetGeneration = path.basename(parsed.targetGeneration);
   return {
-    previousGeneration: parsed.previousGeneration,
-    targetGeneration: parsed.targetGeneration,
+    previousGeneration: path.basename(parsed.previousGeneration),
+    targetGeneration,
     state: "state" in parsed ? parsed.state : undefined,
     sequence,
+    recordsOutcome: "state" in parsed || "sequence" in parsed,
+    targetVersion: generationVersion(configDir, targetGeneration),
     clock: Number.isFinite(stamped) ? stamped : stat.mtimeMs,
   };
 };
+
+/** pg_dumpall's last comment, at the start of a line, then its closing `--` and blank lines. */
+const DUMP_TRAILER = /-- PostgreSQL database cluster dump complete\r?\n(?:--\r?\n)?\s*$/;
 
 /** Whether a dump ends with pg_dumpall's trailer: read its last bytes, never the whole file. */
 const dumpIsWhole = (file: string, size: number): boolean => {
@@ -516,17 +565,22 @@ const dumpIsWhole = (file: string, size: number): boolean => {
   } finally {
     fs.closeSync(fd);
   }
-  return buffer.toString("utf8").includes(DUMP_TRAILER);
+  const tail = buffer.toString("utf8");
+  const match = DUMP_TRAILER.exec(tail);
+  if (match === null) return false;
+  // The line must start there: after a newline, or at the very start of a file this short.
+  return match.index === 0 ? length === size : tail[match.index - 1] === "\n";
 };
 
 /**
  * Read one entry of backups/ without following a link. Anything Mend did not write is foreign and
  * left alone. A partial dump, a missing one, or one without pg_dumpall's trailer is unfinished. A
- * record that says anything but `completed` is pending. A completed record without its dump, or an
- * empty directory, is a removal a crash cut short. A record from before 0.36 has no state at all:
- * it counts as completed once its dump is whole, since those releases recorded no outcome to read.
+ * record that says anything but `completed` is pending, and one with a state but no valid sequence
+ * is unreadable. A completed record without its dump, or an empty directory, is a removal a crash
+ * cut short. A record from before 0.36 has neither field: it counts as completed once its dump is
+ * whole, since those releases recorded no outcome to read.
  */
-const readBackup = (directory: string): ReadBackup => {
+const readBackup = (configDir: string, directory: string): ReadBackup => {
   const stat = lstatOptional(directory);
   if (stat === null || !stat.isDirectory()) return { kind: "foreign" };
   if (REMOVING_NAME.test(path.basename(directory))) return readRemoving(directory);
@@ -536,7 +590,7 @@ const readBackup = (directory: string): ReadBackup => {
   const recoveryFile = path.join(directory, "recovery.json");
   const recovery = lstatOptional(recoveryFile);
   if (recovery === null || !recovery.isFile()) return { kind: "foreign" };
-  const record = readRecord(recoveryFile, recovery);
+  const record = readRecord(configDir, recoveryFile, recovery);
   if (record === null) return { kind: "foreign" };
   if (entries.includes("database.sql.partial"))
     return { kind: "held", reason: "unfinished", record };
@@ -547,6 +601,12 @@ const readBackup = (directory: string): ReadBackup => {
     )
   )
     return { kind: "foreign" };
+  if (record.recordsOutcome && (record.sequence === undefined || record.state === undefined))
+    return {
+      kind: "held",
+      reason: "unreadable",
+      detail: "recovery.json has a state without a valid sequence",
+    };
   // A leftover temporary means markCompleted never renamed: the record still says pending.
   const dump = lstatOptional(path.join(directory, "database.sql"));
   if (dump !== null && !dump.isFile()) return { kind: "foreign" };
@@ -556,13 +616,13 @@ const readBackup = (directory: string): ReadBackup => {
       : { kind: "held", reason: "unfinished", record };
   if (!dumpIsWhole(path.join(directory, "database.sql"), dump.size))
     return { kind: "held", reason: "unfinished", record };
-  if (record.state !== undefined && record.state !== "completed")
+  if (record.recordsOutcome && record.state !== "completed")
     return { kind: "held", reason: "pending", record };
   return {
     kind: "completed",
     record,
     bytes: freedBy(dump) + freedBy(recovery),
-    legacy: record.state === undefined,
+    legacy: !record.recordsOutcome,
   };
 };
 
@@ -587,38 +647,56 @@ const readRemoving = (directory: string): ReadBackup => {
   return { kind: "interrupted", bytes };
 };
 
-/** One more than the highest sequence any record in backups/ carries; 1 for the first. */
-const nextSequence = (backups: string): number => {
+/**
+ * One more than the highest sequence any record in backups/ carries; 1 for the first. An entry this
+ * process cannot read never refuses an upgrade: it is skipped, and a repeated number only ties.
+ */
+const nextSequence = (configDir: string, backups: string): number => {
   let highest = 0;
   for (const name of fs.readdirSync(backups)) {
     if (!BACKUP_NAME.test(name)) continue;
-    const directory = path.join(backups, name);
-    const stat = lstatOptional(directory);
-    if (stat === null || !stat.isDirectory()) continue;
-    const file = path.join(directory, "recovery.json");
-    const recovery = lstatOptional(file);
-    if (recovery === null || !recovery.isFile()) continue;
-    highest = Math.max(highest, readRecord(file, recovery)?.sequence ?? 0);
+    try {
+      const directory = path.join(backups, name);
+      const stat = lstatOptional(directory);
+      if (stat === null || !stat.isDirectory()) continue;
+      const file = path.join(directory, "recovery.json");
+      const recovery = lstatOptional(file);
+      if (recovery === null || !recovery.isFile()) continue;
+      highest = Math.max(highest, readRecord(configDir, file, recovery)?.sequence ?? 0);
+    } catch {
+      continue;
+    }
   }
   return highest + 1;
 };
 
+/** Upgrade order between two versions, or 0 when it cannot say. */
+const versionOrder = (
+  compareVersions: CompareServerVersions,
+  a: string | undefined,
+  b: string | undefined,
+): number => {
+  if (a === undefined || b === undefined) return 0;
+  try {
+    return compareVersions(a, b);
+  } catch {
+    return 0;
+  }
+};
+
 /**
- * Newest first, by what Mend wrote rather than by clocks: every sequenced record is newer than
- * every record from before 0.36, sequences order among themselves, and older records order by the
- * generation chain (an upgrade from the generation another one targeted came after it). The clock
- * only breaks ties.
+ * How many earlier records chain into each one: an upgrade from the generation another targeted
+ * came after it. A setup rerun between upgrades breaks the chain; versions order across that gap.
  */
-const newestFirst = (
+const chainDepths = (
   records: ReadonlyArray<RecoveryRecord>,
-): ((a: RecoveryRecord, b: RecoveryRecord) => number) => {
-  const unsequenced = records.filter((record) => record.sequence === undefined);
+): ((record: RecoveryRecord) => number) => {
   const depths = new Map<RecoveryRecord, number>();
   const depth = (record: RecoveryRecord, visiting: ReadonlySet<RecoveryRecord>): number => {
     const known = depths.get(record);
     if (known !== undefined) return known;
     const next = new Set(visiting).add(record);
-    const before = unsequenced.filter(
+    const before = records.filter(
       (other) =>
         !next.has(other) &&
         other.targetGeneration === record.previousGeneration &&
@@ -628,17 +706,68 @@ const newestFirst = (
     depths.set(record, value);
     return value;
   };
+  return (record) => depth(record, new Set());
+};
+
+/**
+ * Newest first, by what Mend wrote rather than by clocks: every sequenced record is newer than
+ * every record from before 0.36, and sequences order among themselves. Older records order by the
+ * version their target pins (versions only move forward), then by the generation chain. The clock
+ * only breaks ties.
+ */
+const newestFirst = (
+  records: ReadonlyArray<RecoveryRecord>,
+  compareVersions: CompareServerVersions,
+): ((a: RecoveryRecord, b: RecoveryRecord) => number) => {
+  const depth = chainDepths(records.filter((record) => record.sequence === undefined));
   return (a, b) => {
     if (a.sequence !== undefined || b.sequence !== undefined) {
       if (a.sequence === undefined) return 1;
       if (b.sequence === undefined) return -1;
       if (a.sequence !== b.sequence) return b.sequence - a.sequence;
     } else {
-      const order = depth(b, new Set()) - depth(a, new Set());
-      if (order !== 0) return order;
+      const byVersion = versionOrder(compareVersions, b.targetVersion, a.targetVersion);
+      if (byVersion !== 0) return byVersion;
+      const byChain = depth(b) - depth(a);
+      if (byChain !== 0) return byChain;
     }
     return b.clock - a.clock;
   };
+};
+
+/**
+ * Whether a record without an outcome was written after an earlier 0.36 backup, by an older CLI:
+ * its generations chain from a sequenced record's target, or its target pins a later version than
+ * some sequenced record's other than the current upgrade's (versions only move forward). Clocks
+ * are no evidence here: a copy resets every mtime.
+ */
+const writtenAfterOutcomes = (
+  record: RecoveryRecord,
+  records: ReadonlyArray<RecoveryRecord>,
+  current: RecoveryRecord,
+  compareVersions: CompareServerVersions,
+): boolean => {
+  const sequenced = records.filter((other) => other.sequence !== undefined);
+  const unsequenced = records.filter((other) => other.sequence === undefined);
+  const seen = new Set<RecoveryRecord>();
+  const chainsFromSequenced = (candidate: RecoveryRecord): boolean => {
+    if (seen.has(candidate)) return false;
+    seen.add(candidate);
+    if (sequenced.some((other) => other.targetGeneration === candidate.previousGeneration))
+      return true;
+    return unsequenced.some(
+      (other) =>
+        other.targetGeneration === candidate.previousGeneration && chainsFromSequenced(other),
+    );
+  };
+  return (
+    chainsFromSequenced(record) ||
+    sequenced.some(
+      (other) =>
+        other !== current &&
+        versionOrder(compareVersions, record.targetVersion, other.targetVersion) > 0,
+    )
+  );
 };
 
 /**
@@ -670,30 +799,45 @@ const entryOf = ({ directory, bytes, legacy }: BackupEntry): BackupEntry => ({
   interrupted: false,
 });
 
-const pruneBackups = (configDir: string, keep: number, current: ServerBackup): BackupPrune => {
+const failureOf = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : "unknown filesystem error";
+
+const pruneBackups = (
+  configDir: string,
+  keep: number,
+  current: ServerBackup,
+  compareVersions: CompareServerVersions,
+): BackupPrune => {
   if (!Number.isSafeInteger(keep) || keep < 1)
     throw new ServerStoreError("Pruning keeps at least one upgrade backup.");
   const backups = path.join(configDir, "backups");
   if (path.dirname(current.directory) !== backups)
     throw new ServerStoreError("The current upgrade backup is outside this installation.");
-  const currentRead = readBackup(current.directory);
-  if (currentRead.kind !== "completed")
+  const currentRead = readBackup(configDir, current.directory);
+  if (currentRead.kind !== "completed" || currentRead.record.sequence === undefined)
     throw new ServerStoreError("The current upgrade backup is not completed; nothing was pruned.");
   const completed: Array<BackupEntry & { readonly record: RecoveryRecord }> = [];
   const interrupted: Array<BackupEntry> = [];
   const held: Array<HeldBackup> = [];
-  const records: Array<RecoveryRecord> = [];
+  const records: Array<RecoveryRecord> = [currentRead.record];
   for (const name of fs.readdirSync(backups).toSorted()) {
     const directory = path.join(backups, name);
     if (directory === current.directory) continue;
     let read: ReadBackup;
     try {
-      read = readBackup(directory);
-    } catch {
-      continue; // An entry this process cannot read is not one it may remove.
+      read = readBackup(configDir, directory);
+    } catch (cause) {
+      // Never removed, and said: an entry this process cannot read is not one it may remove.
+      if (BACKUP_NAME.test(name) || REMOVING_NAME.test(name))
+        held.push({ directory, reason: "unreadable", detail: failureOf(cause) });
+      continue;
     }
     if (read.kind === "held") {
-      held.push({ directory, reason: read.reason });
+      held.push({
+        directory,
+        reason: read.reason,
+        ...(read.detail === undefined ? {} : { detail: read.detail }),
+      });
       if (read.record !== undefined) records.push(read.record);
     }
     if (read.kind === "interrupted")
@@ -709,36 +853,41 @@ const pruneBackups = (configDir: string, keep: number, current: ServerBackup): B
       records.push(read.record);
     }
   }
-  const compare = newestFirst(records);
-  completed.sort((a, b) => compare(a.record, b.record));
+  // A record without an outcome that came after a 0.36 one is an older CLI's: no outcome, held.
+  const candidates = completed.filter((entry) => {
+    if (
+      !entry.legacy ||
+      !writtenAfterOutcomes(entry.record, records, currentRead.record, compareVersions)
+    )
+      return true;
+    held.push({ directory: entry.directory, reason: "no-outcome" });
+    return false;
+  });
+  const compare = newestFirst(records, compareVersions);
+  candidates.sort((a, b) => compare(a.record, b.record));
   const kept: Array<BackupEntry> = [
     { directory: current.directory, bytes: currentRead.bytes, legacy: false, interrupted: false },
-    ...completed.slice(0, keep - 1).map(entryOf),
+    ...candidates.slice(0, keep - 1).map(entryOf),
   ];
   const removed: Array<BackupEntry> = [];
   const failed: Array<FailedRemoval> = [];
-  for (const candidate of [...interrupted, ...completed.slice(keep - 1).map(entryOf)]) {
+  for (const candidate of [...interrupted, ...candidates.slice(keep - 1).map(entryOf)]) {
     try {
       removeBackup(candidate.directory);
       removed.push(candidate);
     } catch (cause) {
-      failed.push({
-        directory: candidate.directory,
-        message: cause instanceof Error ? cause.message : "unknown filesystem error",
-      });
+      failed.push({ directory: candidate.directory, message: failureOf(cause) });
     }
   }
+  let unsynced: string | undefined;
   if (removed.length > 0 || failed.length > 0) {
     try {
       syncDirectory(backups);
     } catch (cause) {
-      failed.push({
-        directory: backups,
-        message: `removals not fsynced: ${cause instanceof Error ? cause.message : "unknown filesystem error"}`,
-      });
+      unsynced = failureOf(cause);
     }
   }
-  return { removed, kept, held, failed };
+  return { removed, kept, held, failed, ...(unsynced === undefined ? {} : { unsynced }) };
 };
 
 const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
@@ -764,7 +913,7 @@ const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
         const backups = path.join(configDir, "backups");
         fs.mkdirSync(backups, { recursive: true, mode: 0o700 });
         fs.chmodSync(backups, 0o700);
-        const sequence = nextSequence(backups);
+        const sequence = nextSequence(configDir, backups);
         const directory = path.join(backups, `upgrade-${randomUUID()}`);
         fs.mkdirSync(directory, { mode: 0o700 });
         const record = {
@@ -809,7 +958,8 @@ const createStore = (configDir: string, lock: OwnedLock): ServerStore => {
             }),
         };
       }),
-    pruneBackups: (keep, current) => whileOwned(() => pruneBackups(configDir, keep, current)),
+    pruneBackups: (keep, current, compareVersions) =>
+      whileOwned(() => pruneBackups(configDir, keep, current, compareVersions)),
   };
 };
 
