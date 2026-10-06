@@ -50,7 +50,8 @@ anyone else's agent or the executor itself while someone else still works there.
 
 A Stop wins over a replacement or relaunch that is saving the executor from the moment it is asked,
 even while the platform is slow to close the agent: nothing starts on a new machine after it. A
-refused Stop leaves that replacement or relaunch as it was. Its warning names the process, survives
-a Mend restart, and clears once that process is observed ended. One failed Stop does not interrupt
-the other sessions being stopped, and counts and audit entries report only sessions whose processes
-ended.
+refused Stop leaves a replacement or relaunch that is still saving as it was; if it finishes
+meanwhile and ends the agent, the Stop counts as done and nothing starts after it. Its warning names
+the process, survives a Mend restart, and clears once that process is observed ended. One failed
+Stop does not interrupt the other sessions being stopped, and counts and audit entries report only
+sessions whose processes ended.

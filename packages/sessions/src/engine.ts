@@ -1135,15 +1135,31 @@ const accessStopReason = (
 };
 
 /**
- * What the session line says for one process the platform would not close, named by its label,
- * so the words are that process's own: after a restart they mark exactly it as refused, never a
- * healthy sibling of its kind (review 4 of mend#558, P3-1).
+ * The mark that keys a refusal's words to one process, by id: a rename does not strand them, and
+ * after a restart they mark exactly that process as refused, never a healthy sibling or a later
+ * process that took its label (reviews 4 and 5 of mend#558).
  */
-const notStoppedWords = (process: Pick<SessionProcess, "kind" | "label">) => {
+const refusalMark = (processId: string) => `(${processId.slice(0, 8)}) could not be stopped`;
+
+/** What the session line says for one process the platform would not close. */
+const notStoppedWords = (process: Pick<SessionProcess, "id" | "kind" | "label">) => {
   const kind =
     process.kind === "shell" ? "shell" : process.kind === "service" ? "Service" : "agent";
   const named = process.label === null ? kind : `${kind} "${process.label}"`;
-  return `the ${named} could not be stopped · the platform did not close it · stop again`;
+  return `the ${named} ${refusalMark(process.id)} · the platform did not close it · stop again`;
+};
+
+/** The words a refusal of `processId` left on `summary`, whatever the label was then; null if none. */
+const refusalWordsIn = (summary: string | null, processId: string): string | null => {
+  if (summary === null) return null;
+  const at = summary.indexOf(refusalMark(processId));
+  if (at < 0) return null;
+  const tail = " · stop again";
+  const end = summary.indexOf(tail, at);
+  if (end < 0) return null;
+  const before = summary.lastIndexOf(" · the ", at);
+  const start = before < 0 ? 0 : before + 3;
+  return summary.slice(start, end + tail.length);
 };
 
 /** A PTY close that failed is tried again twice, a little later each time. */
@@ -5881,7 +5897,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Sessions the owner stopped while this process replaced their executor: none relaunches. */
       const stoppedDuringReplacement = new Set<SessionId>();
       /** Stops asked and not yet answered: a planned relaunch picked up meanwhile launches nothing. */
-      const stopsUnderWay = new Set<SessionId>();
+      const stopsUnderWay = new Map<SessionId, number>();
+      const stopUnderWay = (sessionId: SessionId) => (stopsUnderWay.get(sessionId) ?? 0) > 0;
       /** Sessions whose planned relaunch a launch in this process is carrying out. */
       const relaunching = new Set<SessionId>();
 
@@ -6067,7 +6084,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // launch here is carrying it out.
           const finishRelaunch = Effect.gen(function* () {
             const stored = yield* sessions.relaunchOf(session.id);
-            if (stored === null || relaunching.has(session.id) || stopsUnderWay.has(session.id)) {
+            if (stored === null || relaunching.has(session.id) || stopUnderWay(session.id)) {
               return;
             }
             const plan = readRelaunchPlan(stored);
@@ -8405,8 +8422,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           for (const process of yield* processes.listLiveForWorkspace(session.sealantWorkspaceId)) {
             // Refused, as this process knows or as the session line still says after a restart.
             const refused =
-              closeFailed.has(process.id) ||
-              (session.summary ?? "").includes(notStoppedWords(process));
+              closeFailed.has(process.id) || refusalWordsIn(session.summary, process.id) !== null;
             if (
               process.sessionId === sessionId &&
               AGENT_PROCESS_KINDS.has(process.kind) &&
@@ -12396,7 +12412,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // The owner stopped the session while its old executor saved: nothing relaunches.
             if (
               capture !== null &&
-              (stopsUnderWay.has(sessionId) || (yield* sessions.relaunchOf(sessionId)) === null)
+              (stopUnderWay(sessionId) || (yield* sessions.relaunchOf(sessionId)) === null)
             ) {
               return yield* new SealantPlatformError({
                 code: "relaunch_cancelled",
@@ -14636,7 +14652,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return restore(stopUnguarded(sessionId, summary, inFlight)).pipe(
               Effect.ensuring(
                 Effect.sync(() => {
-                  stopsUnderWay.delete(sessionId);
+                  // Once per Stop: another Stop of the session still under way keeps the guard.
+                  const left = (stopsUnderWay.get(sessionId) ?? 1) - 1;
+                  if (left <= 0) stopsUnderWay.delete(sessionId);
+                  else stopsUnderWay.set(sessionId, left);
                   if (inFlight.tail) return;
                   set.delete(inFlight.done);
                   if (set.size === 0) stopTailsDone.delete(sessionId);
@@ -14660,7 +14679,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const guardedReplacement =
           replacing.has(sessionId) && !stoppedDuringReplacement.has(sessionId);
         if (guardedReplacement) stoppedDuringReplacement.add(sessionId);
-        stopsUnderWay.add(sessionId);
+        stopsUnderWay.set(sessionId, (stopsUnderWay.get(sessionId) ?? 0) + 1);
         // A launch still waiting for the worktree's previous executor launches nothing now.
         if (waitingLaunches.has(sessionId)) stoppedWhileWaiting.add(sessionId);
         // One further along stands down before its agent starts, or is stopped again as it ends.
@@ -14727,6 +14746,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
           if (recorded) ended.push(agent);
         }
+        // A refused close whose process ended meanwhile anyway (a replacement's terminate reaped
+        // it) is not a refusal: its words come off, and this stop goes on as one that ended it
+        // (review 5 of mend#558, P3-1).
+        const stillRefused: Array<SessionProcess> = [];
+        for (const agent of notEnded) {
+          const row = yield* processes.byId(agent.id);
+          if (row === null || row.exitedAt !== null) yield* stoppedAfterAll(agent);
+          else stillRefused.push(agent);
+        }
+        notEnded.splice(0, notEnded.length, ...stillRefused);
         if (notEnded.length > 0 && ended.length === 0) {
           // A close that failed is not "no agent to close" (review 2 of mend#558, P1): the agent
           // still runs, so its shells stay, its run stays open, nothing settles, and no tail runs
@@ -14735,8 +14764,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Only an intent this stop began: a relaunch's or a replacement's drain stays theirs,
           // and so do their guards.
           if (beganDrain) yield* endDrain(sessionId);
-          if (guardedReplacement) stoppedDuringReplacement.delete(sessionId);
-          stopsUnderWay.delete(sessionId);
+          // Its guards go only if no other Stop of the session is still under way; the count
+          // itself is released once, as this stop ends (`stop`).
+          if (guardedReplacement && (stopsUnderWay.get(sessionId) ?? 0) <= 1) {
+            stoppedDuringReplacement.delete(sessionId);
+          }
           return;
         }
         // A successful Stop supersedes pending launches. A refused close leaves their durable
@@ -14747,12 +14779,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
           // A replacement or relaunch this stop beat saved and ended its executor while the close
           // was under way: its drain is over and launches nothing, so no drain end settles the
-          // session. This stop does, once nothing of it is live.
-          if (session.captureDrain !== null && session.captureDrain !== "stop") {
+          // session. This stop does, once nothing of it is live and the executor's end is
+          // observed (review 5 of mend#558, P3-2). An end not observed yet is left to the
+          // reaper's observed-end path, as before.
+          if (
+            session.captureDrain !== null &&
+            session.captureDrain !== "stop" &&
+            session.sealantWorkspaceId !== null
+          ) {
             const now = yield* sessions.byId(sessionId);
             if (
               now.captureDrain === null &&
-              foldSessionLiveness(yield* processes.listForSession(sessionId)) === "settled"
+              foldSessionLiveness(yield* processes.listForSession(sessionId)) === "settled" &&
+              (yield* workspaceState(session.sealantWorkspaceId)) === "dead"
             ) {
               yield* settleSession(sessionId, "stopped", summary);
             }
@@ -15378,7 +15417,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /** Processes whose close the platform refused, still recorded live (`notStopped`). */
-      const closeFailed = new Set<SessionProcessId>();
+      const closeFailed = new Map<SessionProcessId, string>();
 
       /**
        * Close a process PTY; the daemon reaps its foreground process group. True once it is closed,
@@ -15442,12 +15481,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * here, no settle-path cleanup records it ended either (`stopWorkspaceQuietly`).
        */
       const notStopped = Effect.fn("SessionEngine.notStopped")(function* (process: SessionProcess) {
-        closeFailed.add(process.id);
+        const words = closeFailed.get(process.id) ?? notStoppedWords(process);
+        closeFailed.set(process.id, words);
         const session = yield* sessions
           .byId(process.sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
         if (session === null) return;
-        const words = notStoppedWords(process);
         if ((session.summary ?? "").includes(words)) return;
         yield* sessions.setSummary(
           process.sessionId,
@@ -15468,8 +15507,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .byId(process.sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
         const summary = session?.summary ?? null;
-        const words = notStoppedWords(process);
-        if (summary === null || !summary.includes(words)) return;
+        // The words as the refusal wrote them, found by the process's id: a rename since changes
+        // nothing.
+        const words = refusalWordsIn(summary, process.id);
+        if (summary === null || words === null) return;
         const rest =
           summary === words ? "" : summary.replace(` · ${words}`, "").replace(`${words} · `, "");
         yield* sessions.setSummary(process.sessionId, rest === "" ? null : rest);
@@ -17009,8 +17050,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const session = yield* sessions
             .byId(process.sessionId)
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if ((session?.summary ?? "").includes(notStoppedWords(process))) {
-            closeFailed.add(process.id);
+          const words = refusalWordsIn(session?.summary ?? null, process.id);
+          if (words !== null) {
+            closeFailed.set(process.id, words);
           }
         }
         // A run left open under a session that settled is settled with the session's words

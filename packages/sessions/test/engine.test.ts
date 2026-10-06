@@ -14302,6 +14302,8 @@ describe("SessionEngine dotfiles gate", () => {
 const slowCloses = (
   inner: Layer.Layer<SealantClient>,
   held: () => Promise<void>,
+  /** Once released, the close is refused the way a platform that does not answer refuses it. */
+  refused: () => boolean = () => false,
 ): Layer.Layer<SealantClient> =>
   Layer.effect(
     SealantClient,
@@ -14316,6 +14318,14 @@ const slowCloses = (
                 ...pty,
                 close: async () => {
                   await held();
+                  if (refused()) {
+                    throw new SealantPlatformError({
+                      code: "control_plane_unavailable",
+                      status: 503,
+                      message: "the control plane did not answer",
+                      cause: null,
+                    });
+                  }
                   await pty.close();
                 },
               }),
@@ -15447,6 +15457,94 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         created: 1,
         status: "stopped",
         relaunch: false,
+      });
+    },
+  );
+
+  it(
+    "a refused Stop whose agent the finishing replacement ended anyway is a stop: nothing stranded, nothing relaunched (review 5 of mend#558)",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let saveNow = false;
+      const close = Promise.withResolvers<void>();
+      const closeHeld = close.promise;
+      const releaseClose = close.resolve;
+      let state: Record<string, unknown> = {};
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "replacement",
+              "the replacement's drain",
+            );
+            // The owner presses Stop; the platform takes its time closing the agent.
+            const stopping = yield* Effect.forkChild(engine.stop(session.id));
+            yield* Effect.sleep(Duration.millis(200));
+            // Meanwhile the replacement saves and ends the executor, and looks to relaunch.
+            saveNow = true;
+            yield* until(() => events.includes("workspace-1"), "the terminate");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the replacement's drain end",
+            );
+            // The lease goes once the end is observed; the replacement then looks to relaunch.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.seconds(3));
+            const createdWhileClosing = created.length;
+            releaseClose();
+            yield* Fiber.join(stopping);
+            yield* Effect.sleep(Duration.seconds(1));
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(300));
+            state = {
+              createdWhileClosing,
+              created: created.length,
+              status: world.sessions.get(session.id)?.status,
+              relaunch: world.relaunches.has(session.id),
+              summary: world.sessions.get(session.id)?.summary ?? "",
+            };
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            executorMaxSeconds: 1000,
+            drainEstimateSeconds: 600,
+            deadlineMarginSeconds: 400,
+            terminationWait: Duration.seconds(5),
+          },
+          sealantLayer: slowCloses(
+            lifecycleLayer(created, {
+              events,
+              captureOps: {
+                flushed: events,
+                flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+              },
+            }),
+            () => closeHeld,
+            () => true,
+          ),
+        },
+      );
+      expect(state).toEqual({
+        createdWhileClosing: 1,
+        created: 1,
+        status: "stopped",
+        relaunch: false,
+        // No "stop again" for an agent that has already ended, and nothing "starting".
+        summary: expect.not.stringMatching(/could not be stopped|starting/),
       });
     },
   );
@@ -25547,9 +25645,9 @@ const holderAgentLive = (world: World, holder: SessionId) =>
       process.sessionId === holder && process.kind === "agent-pty" && process.exitedAt === null,
   );
 
-/** The words a refused close of `shell` puts on its session's line. */
+/** The mark a refused close of `shell` puts on its session's line, keyed by its id. */
 const wordsOf = (shell: SessionProcess | undefined) =>
-  `the shell "${shell?.label ?? ""}" could not be stopped`;
+  `(${(shell?.id ?? "").slice(0, 8)}) could not be stopped`;
 
 /** A platform call's outcome in one word: `answered`, or its failure's code. */
 const tell = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
@@ -25869,7 +25967,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
       holderAgentLive: true,
       stopped: [],
       summary: expect.stringContaining(
-        'the agent "claude" could not be stopped · the platform did not close it · stop again',
+        "could not be stopped · the platform did not close it · stop again",
       ),
       closedAfter: true,
       summaryAfter: expect.not.stringContaining("could not be stopped"),
@@ -26080,6 +26178,98 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     },
     30_000,
   );
+
+  it("a refused Stop whose agent a finished relaunch drain ended anyway is a stop: nothing stranded, nothing relaunched (review 5 of mend#558)", async () => {
+    // What the relaunch's drain does while the platform refuses the Stop's close: it saves and
+    // ends the agent and its drain is over.
+    let duringClose: (() => void) | null = null;
+    let refusing = false;
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          const session = world.sessions.get(join.joined);
+          if (session === undefined) throw new Error("missing joined session");
+          const agent = joinedAgentOf(world, join.joined);
+          world.sessions.set(
+            session.id,
+            new Session({
+              ...session,
+              captureDrain: "relaunch",
+              captureDrainRequestedAt: now(),
+              captureDrainProgressAt: now(),
+            }),
+          );
+          world.relaunches.set(session.id, "claude");
+          refusing = true;
+          duringClose = () => {
+            duringClose = null;
+            const row = [...world.processes.values()].find(
+              (p) => p.sealantSessionId === agent.ptyId,
+            );
+            if (row !== undefined) {
+              world.processes.set(
+                row.id,
+                new SessionProcess({ ...row, exitedAt: now(), status: "stopped" }),
+              );
+            }
+            const current = world.sessions.get(session.id);
+            if (current !== undefined) {
+              world.sessions.set(session.id, new Session({ ...current, captureDrain: null }));
+            }
+          };
+          yield* engine.stop(session.id);
+          yield* Effect.sleep(SETTLE_WAIT);
+          state = {
+            summary: world.sessions.get(session.id)?.summary ?? "",
+            relaunch: world.relaunches.has(session.id),
+            holderAgentLive: holderAgentLive(world, join.holder),
+          };
+        }),
+      {
+        // Refused on every try; the first try is when the relaunch finishes.
+        closeFails: () => {
+          if (duringClose === null) return refusing;
+          duringClose();
+          return true;
+        },
+      },
+    );
+    expect(state).toEqual({
+      summary: expect.not.stringContaining("could not be stopped"),
+      // The stop superseded the plan: nothing launches after it.
+      relaunch: false,
+      holderAgentLive: true,
+    });
+  }, 30_000);
+
+  it("a renamed shell's refusal words still come off once it is stopped (review 5 of mend#558)", async () => {
+    let refusing = false;
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          const shell = yield* engine.openShell(join.joined);
+          refusing = true;
+          yield* engine.stopShell(shell.id);
+          const refused = world.sessions.get(join.joined)?.summary ?? "";
+          yield* engine.renameShell(shell.id, "renamed");
+          refusing = false;
+          yield* engine.stopShell(shell.id);
+          state = {
+            refused: refused.includes("could not be stopped"),
+            after: world.sessions.get(join.joined)?.summary ?? "",
+            ended: world.processes.get(shell.id)?.exitedAt !== null,
+          };
+        }),
+      { closeFails: () => refusing },
+    );
+    expect(state).toEqual({
+      refused: true,
+      after: expect.not.stringContaining("could not be stopped"),
+      ended: true,
+    });
+  }, 30_000);
 
   it("reconciliation stops a removed creator's own session with a direct reason and records both people", async () => {
     await joinByAnotherPerson((engine, world, join) =>
