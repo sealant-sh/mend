@@ -20,7 +20,7 @@ mend/
       postgres-init.sh
   backups/
     upgrade-UUID/
-      recovery.json               # exact previous and target generation paths, recovery policy
+      recovery.json               # previous and target generation paths, policy, state (pending/completed)
       database.sql.partial        # incomplete dump, never used for recovery
       database.sql                # only published after successful pg_dumpall and fsync
 ```
@@ -220,6 +220,22 @@ Upgrade proceeds under the installation lock:
    in the presence of unrelated writes. PostgreSQL stays running for the dump.
 4. Activate the target only after the backup completes. This is the write-ahead migration boundary.
    Start it with `--pull never --no-build`, bounded Compose wait, and exact-version health.
+5. After exact-version health, replace `recovery.json` (write and rename) with
+   `"state": "completed"`; it said `"pending"` until then, and carries a `sequence` (one more than
+   the highest under the lock). Then keep the newest `--keep-backups` completed backups by sequence
+   (default 2, this one included; 0 skips pruning). Each older one is renamed to
+   `upgrade-UUID.removing`, then its files and the empty directory are unlinked, never recursively;
+   a `.removing` directory, an empty one, or a completed record without its dump is a removal a
+   crash cut short and is finished. Pending backups, partial or dumpless ones, dumps without
+   pg_dumpall's `dump complete` trailer, links, and anything that is not an `upgrade-UUID` directory
+   holding exactly `recovery.json` and `database.sql` stay. Records from before 0.36 (no state, no
+   sequence) count as completed when their dump is whole and order below every sequenced record, by
+   their target generation's `serverVersion`, then the generation chain, then the clock; they are
+   marked as such when removed. One an older CLI wrote after a sequenced record (chained from its
+   target, or pinning a later version) is held as `no recorded outcome`. A record with a state but
+   no valid sequence, and an entry that cannot be read, are held as `unreadable`; the sequence scan
+   skips the latter, so it never refuses an upgrade. A pruning failure is printed with what was
+   removed; the upgrade has already succeeded.
 
 If assets, images, generation preparation, or recovery-directory creation fail, the old pin and app
 are untouched. If stop, backup, or activation fails or times out before target startup, reselect the

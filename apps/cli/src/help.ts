@@ -1216,12 +1216,16 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "server upgrade",
     section: "this machine",
     summary: "upgrade to an explicit version with a database backup",
-    synopsis: ["--version <target|latest> [--assets-dir <dir>] [--offline] [--from-preview]"],
+    synopsis: [
+      "--version <target|latest> [--assets-dir <dir>] [--offline] [--from-preview] [--keep-backups <n>]",
+    ],
     description: [
       "Preflights release assets and the canonical image's version label before interrupting Mend. Downgrades are refused. latest is resolved only when explicitly requested; a same-version request does nothing.",
       "The installed configuration stays: the bind, the origin, the ports, the edge host and the declared exposure and tenancy are carried into the new generation, which renders the same overlays beside the new compose.yaml. An upgrade never drops the edge or the posture; mend server setup is where they change.",
       "Stops app writers, starts official Postgres if needed, and streams pg_dumpall into a private database backup before selecting and starting the target. Connections are interrupted. Workspace containers and data are retained, but active work can lose connectivity and need reconnection. Stop any external database writers before upgrading.",
       "Preflight or backup failure retains the old pin and attempts to recover the old app if it was running. Once target startup may have begun, Mend never automatically downgrades or restores the database. The target pin, old generation and backup remain. Inspect logs, fix the target, then use mend server start. Recovery records are under the installation's backups/upgrade-UUID directory.",
+      "After the target answers health, its recovery record is marked completed and older completed backups are removed, keeping the newest two (this one included) in the order Mend wrote them; each removal is printed with the space it freed. A failed upgrade removes nothing. A backup this release recorded as pending, or whose dump is incomplete, is always kept. Each dump holds the whole database, so it can run to gigabytes.",
+      'Backups written by releases before 0.36 carry no outcome: the first upgrade on 0.36 or later treats each one whose dump is whole as completed and keeps only the newest N, so copy any you want to keep out of backups/ first. Their removals are marked "from before 0.36, no recorded outcome".',
     ],
     options: [
       {
@@ -1239,6 +1243,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         flag: "--from-preview",
         text: "once, from a preview numbered X.Y.Z-preview.K to a next build X.Y.Z-next.N; refused unless the target carries every migration the server applied",
+      },
+      {
+        flag: "--keep-backups <n>",
+        text: "completed upgrade backups to keep after a healthy upgrade, this one included; 0 keeps all. Default: 2",
       },
     ],
     examples: [

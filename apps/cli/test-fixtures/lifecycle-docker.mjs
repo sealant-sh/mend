@@ -225,7 +225,7 @@ else if (command[0] === "down") {
 } else if (command[0] === "exec") {
   if (state.appRunning || !state.postgresRunning || !command.includes("pg_dumpall")) fail();
   out(
-    "-- PostgreSQL database cluster dump\nCREATE DATABASE mend;\nCREATE DATABASE sealant_control_plane;",
+    "-- PostgreSQL database cluster dump\nCREATE DATABASE mend;\nCREATE DATABASE sealant_control_plane;\n--\n-- PostgreSQL database cluster dump complete\n--\n",
   );
   if (state.fail === "backup-stall") {
     const child = spawn(
