@@ -141,6 +141,11 @@ export const PullRequestWorkspacesLive: Layer.Layer<
       use: (workspace: PullRequestWorkspace) => Effect.Effect<A, E>,
     ): Effect.Effect<A, E | PullRequestStepError> =>
       Effect.gen(function* () {
+        // The change owner's own client, deliberately not the server's `SealantClient`, which asks
+        // about a workspace as its creator (`WorkspaceCaller`, mend#558). Through that, `gh` would
+        // run in another person's executor on their GITHUB_TOKEN and open the pull request as
+        // them. A workspace the owner cannot see here is not theirs: the landing then asks in a
+        // short-lived workspace of their own, on their own GitHub.
         const client = yield* clients
           .forUser(target.ownerUserId)
           .pipe(Effect.mapError(platformFailure("the owner's platform account")));

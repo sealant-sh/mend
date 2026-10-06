@@ -112,7 +112,10 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
         }),
         Layer.mock(SessionEngine, {
           launchUnderWay: () => false,
-          stop: (sessionId) => note(`engine.stop:${sessionId}`),
+          windDownPerson: (userId) =>
+            note(`engine.windDownPerson:${userId}`).pipe(
+              Effect.as({ stopped: 1, retired: [], remaining: 0 }),
+            ),
           reconcileHotSessions: (projectId) =>
             note(`engine.reconcileHotSessions:${projectId}`).pipe(
               Effect.andThen(Deferred.succeed(woundDown, undefined)),
@@ -155,7 +158,7 @@ describe("member removal (docs/adr/0003)", () => {
       "audit.record:slack.link_removed:carol",
       "userEvents.changed:carol:access",
       "connections.closeForUser:carol",
-      "engine.stop:session-carol",
+      "engine.windDownPerson:carol",
       `engine.reconcileHotSessions:${PROJECT}`,
     ]);
   });

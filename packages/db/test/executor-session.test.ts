@@ -125,6 +125,37 @@ describe.skipIf(!reachable)("who created a workspace (0114), in Postgres", () =>
     expect(result).toEqual({ creator: HOLDER, owner: "alice", unknown: null });
   });
 
+  it("reads who created it and both people's roles in its project's organization in one query", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sessions = yield* SessionsRepo;
+        yield* sql`
+          INSERT INTO organization_members (organization_id, user_id, role)
+          VALUES ((SELECT id FROM organizations LIMIT 1), 'alice', 'member')
+          ON CONFLICT DO NOTHING`;
+        const before = yield* sessions.executorAccessOf(WORKSPACE, "maria");
+        yield* sql`
+          INSERT INTO organization_members (organization_id, user_id, role)
+          VALUES ((SELECT id FROM organizations LIMIT 1), 'maria', 'member')`;
+        const after = yield* sessions.executorAccessOf(WORKSPACE, "maria");
+        const unknown = yield* sessions.executorAccessOf(
+          SealantWorkspaceId.make("ws-unknown"),
+          "maria",
+        );
+        return { before, after, unknown };
+      }),
+    );
+    expect(result.before).toMatchObject({
+      creatorUserId: "alice",
+      project: { createdByUserId: null },
+      creatorRole: "member",
+      askerRole: null,
+    });
+    expect(result.after?.askerRole).toBe("member");
+    expect(result.unknown).toBeNull();
+  });
+
   it("finds it through the partial index on the workspace", async () => {
     const indexes = await run(
       Effect.gen(function* () {

@@ -13,6 +13,8 @@ import {
 import {
   type CaptureDrainReason,
   captureAnswerReplaces,
+  OrganizationRole,
+  type ProjectTenancy,
   type CapturePosition,
   type EffortLevel,
   Session,
@@ -575,6 +577,16 @@ export class SessionsRepo extends Context.Service<
      * workspace runs as (`@mend/sessions` `WorkspaceCaller`).
      */
     readonly executorSessionOf: (workspaceId: SealantWorkspaceId) => Effect.Effect<Session | null>;
+    /**
+     * In one read: who created the executor in `workspaceId` (as `executorSessionOf`), the facts
+     * of its project that decide who may see it, and the creator's and `askerUserId`'s roles in
+     * that project's organization (null: not a member of it). What `WorkspaceCaller` decides
+     * whether to lend the creator's platform identity from. Null when no row names a creator.
+     */
+    readonly executorAccessOf: (
+      workspaceId: SealantWorkspaceId,
+      askerUserId: string,
+    ) => Effect.Effect<ExecutorAccess | null>;
     /** Removal asked while the workspace was up; the sweep removes the row once it has gone. */
     readonly requestRemoval: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Sessions whose removal waits on their workspace. */
@@ -611,6 +623,21 @@ const overdueColumns = (observation: CaptureObservation) =>
           captureOverdueRunningMs: observation.overdue.runningMs,
           captureOverdueBoundMs: observation.overdue.boundMs,
         };
+
+/** Who created an executor and who may work in it (`SessionsRepo.executorAccessOf`). */
+export interface ExecutorAccess {
+  readonly creatorUserId: string;
+  readonly project: ProjectTenancy;
+  readonly creatorRole: OrganizationRole | null;
+  readonly askerRole: OrganizationRole | null;
+}
+
+const decodeRole = Schema.decodeUnknownSync(Schema.NullOr(OrganizationRole));
+
+/** A person's role in the joined project's organization, as a subquery; null: not a member. */
+const roleIn = (userId: unknown) =>
+  sql<string | null>`(SELECT m.role FROM organization_members m
+    WHERE m.user_id = ${userId} AND m.organization_id = ${projects.organizationId})`;
 
 const toSession = (row: typeof agentSessions.$inferSelect): Session =>
   new Session({
@@ -1943,6 +1970,43 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row === undefined ? null : toSession(row);
       });
 
+      const executorAccessOf = Effect.fn("SessionsRepo.executorAccessOf")(function* (
+        workspaceId: SealantWorkspaceId,
+        askerUserId: string,
+      ) {
+        const [row] = yield* db
+          .select({
+            creatorUserId: agentSessions.ownerUserId,
+            organizationId: projects.organizationId,
+            visibility: projects.visibility,
+            createdByUserId: projects.createdByUserId,
+            creatorRole: roleIn(agentSessions.ownerUserId),
+            askerRole: roleIn(askerUserId),
+          })
+          .from(agentSessions)
+          .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+          .where(
+            and(
+              eq(agentSessions.sealantWorkspaceId, workspaceId),
+              isNotNull(agentSessions.executorLaunchId),
+            ),
+          )
+          .orderBy(sql`${agentSessions.executorStartedAt} DESC NULLS LAST`)
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined || row.creatorUserId === null) return null;
+        return {
+          creatorUserId: row.creatorUserId,
+          project: {
+            organizationId: row.organizationId,
+            visibility: row.visibility,
+            createdByUserId: row.createdByUserId,
+          },
+          creatorRole: decodeRole(row.creatorRole),
+          askerRole: decodeRole(row.askerRole),
+        } satisfies ExecutorAccess;
+      });
+
       const requestRemoval = Effect.fn("SessionsRepo.requestRemoval")(function* (
         id: SessionId,
         at: Date,
@@ -2037,6 +2101,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         executorResourceOf,
         executorLaunchOf,
         executorSessionOf,
+        executorAccessOf,
         recordExecutorCreate,
         clearExecutorCreate,
         executorCreateOf,

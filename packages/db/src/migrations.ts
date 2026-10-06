@@ -3130,7 +3130,10 @@ const personIdentityMigration = Effect.gen(function* () {
  * session whose row names it under a launch of its own (0083). A call about a workspace runs as
  * that session's owner, whoever asks (alpha 2026-10-06, 9e486cfc: a second person's join looked
  * the holder's workspace up as themselves, and Core answered 404). Partial: joined rows name the
- * workspace with no launch and are never the answer.
+ * workspace with no launch and are never the answer. One assumption: 0083 backfilled
+ * `executor_launch_id = id` on every row that named a workspace, joined ones included, so for an
+ * executor older than 0083 (2026-09-28) a joiner's row could answer too. No such executor is still
+ * running; executors live hours, not weeks.
  */
 const executorWorkspaceIndexMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

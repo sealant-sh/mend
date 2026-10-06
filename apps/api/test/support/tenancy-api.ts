@@ -322,9 +322,10 @@ export const createTenancyApi = async (
         WorkspaceCaller,
         "workspaceCaller",
         {
-          aboutWorkspace: () => (self) => self,
-          aboutRun: () => (self) => self,
-          aboutRunStream: () => (self) => self,
+          observe: () => (self) => self,
+          act: () => (self) => self,
+          observeRun: () => (self) => self,
+          observeRunStream: () => (self) => self,
         },
         calls,
       ),

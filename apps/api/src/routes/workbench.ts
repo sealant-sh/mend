@@ -2734,7 +2734,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // Read as the session's owner, and the PTY's output as its workspace's creator: a joined
         // session's processes run in another person's executor (`WorkspaceCaller`).
         const page = yield* sealant.sessionOutput(row.sealantSessionId, { from, limit }).pipe(
-          workspaces.aboutWorkspace(row.sealantWorkspaceId),
+          workspaces.observe(row.sealantWorkspaceId),
           asSealantUser(session.ownerUserId),
           Effect.mapError((error) => new StoreFailure({ message: error.message })),
         );

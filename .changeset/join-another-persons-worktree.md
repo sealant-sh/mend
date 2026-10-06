@@ -6,17 +6,35 @@ A second person can now join a live session's worktree. On a server with more th
 join used to wait about 30 minutes on a session line that read "the previous session in this
 worktree is not answering", then failed with "worktree leased". Mend asked Sealant about the first
 person's workspace as the second person, and Sealant only answers the person who created a
-workspace. Now every request about a workspace is made as the person who created it, for anyone who
-may work there: they have a session in that worktree, are still a member of the organization, and
-can see the project. A joiner's terminal, shells, Services, added repositories, checkpoints and
-process logs reach the shared workspace too. A person who lost access is still refused. Starting a
-workspace and using inference still run on your own account, and a harness run through Sealant is
-only ever started by the workspace's creator. If the platform answers that it cannot find a running
-session's workspace, the session line now says that instead of "not answering", and the log records
-Sealant's answer.
+workspace. Now Mend asks about a workspace as the person who created it:
 
-Known limit: with the per-person layout off (the default), every process in a workspace runs on the
-logins of the person who started the workspace. A joiner's agent therefore runs on that person's
-Claude or Codex login, and a conversation records its turns as billed to them. The per-person layout
-(`MEND_HARNESS_LAYOUT=person`, ADR 0016) is what will run each person's processes on their own
-logins.
+- Looking a workspace up, reading its records, saving it and ending its processes always work this
+  way, whoever asks. So a check whether an executor still runs never mistakes "you may not see it"
+  for "it is gone".
+- Running anything in it (a terminal, a shell, a Service, a command, a repository clone) works this
+  way only while both people are still members who can see the project. Otherwise Mend refuses it
+  and says why.
+- Starting a workspace and using inference still run on your own account. A harness run through
+  Sealant is only started by the workspace's creator.
+
+Removing a member now ends every agent, shell and Service of theirs, including in executors other
+people started. Any executor they started is retired: the sessions of others working in it are
+stopped with words telling them to start again in a workspace of their own, and it saves through the
+normal Stop. If the platform does not close a process, Mend keeps it recorded as running, tries
+again, and the session line says "could not be stopped · stop again". If the platform answers that
+it cannot find a running session's workspace, the waiting line now says so instead of "not
+answering", and the log records Sealant's answer.
+
+Known limit: until per-person harness homes are on (`MEND_HARNESS_LAYOUT=person`, ADR 0016; off by
+default), every process in an executor runs as root in the home of the person who started it. A
+person who joins someone else's executor therefore:
+
+- runs their agent on that person's Claude or Codex login, and a conversation records its turns as
+  billed to them;
+- gets root shells and Services in that person's home, which can read their Claude and Codex
+  credential files and the executor's `GITHUB_TOKEN` and `GH_TOKEN`;
+- signs `git push` and `git fetch` from the workspace as that person: their Mend key, or their
+  machine in bridge mode. The push is recorded on their session. A repository the joiner adds is
+  cloned the same way.
+
+Landing a change is not affected. See Known issues in the docs.

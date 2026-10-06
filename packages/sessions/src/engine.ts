@@ -1085,6 +1085,17 @@ type WorkspaceLookup =
  */
 const ENDED_DRAIN_STATES: ReadonlySet<string> = new Set(["stopped", "saved", "gone", "discarded"]);
 
+/** How many passes a removed person's wind-down makes over what is still live, and the pause. */
+const WIND_DOWN_ROUNDS = 3;
+const WIND_DOWN_RETRY = Duration.seconds(5);
+
+/** The line of a session stopped because the person whose executor it ran in lost access. */
+export const EXECUTOR_RETIRED =
+  "stopped · the person who started this workspace no longer has access to this project, so it was saved and retired · start again to continue in a workspace of your own";
+
+/** A PTY close that failed is tried again twice, a little later each time. */
+const PTY_CLOSE_RETRY = Schedule.exponential("250 millis").pipe(Schedule.both(Schedule.recurs(2)));
+
 const workspaceIsLive = (status: string) =>
   status === "queued" || status === "running" || status === "ready";
 
@@ -1885,6 +1896,19 @@ export class SessionEngine extends Context.Service<
     readonly removeWhenStopped: (
       sessionId: SessionId,
     ) => Effect.Effect<"removed" | "pending", SessionNotFoundError>;
+    /**
+     * Everything a person who lost access left running, ended (mend#558 review, P1-1 and P1-2):
+     * their agents, shells and Services in every executor, joined ones included, and every
+     * executor they created retired through the normal Stop and capture path, the sessions of
+     * others working in it stopped first with words telling them to start their own. A process
+     * the platform would not close stays recorded live and is tried again; `remaining` counts
+     * what was still live after the last try.
+     */
+    readonly windDownPerson: (userId: string) => Effect.Effect<{
+      readonly stopped: number;
+      readonly retired: ReadonlyArray<SealantWorkspaceId>;
+      readonly remaining: number;
+    }>;
     /**
      * Capture mode: what still holds the worktree's durable identity (`CaptureHold`). A removal
      * that deletes rows goes only when this is empty — once every drain saved and every executor
@@ -5061,6 +5085,93 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * stops it; a running drain yields; the workspace is terminated and the lease released
        * once that is observed. What the executor had not shipped is gone.
        */
+      /**
+       * One session's every live process ended, as its owner (the platform calls that end things
+       * run as each workspace's creator, whoever that is): Services, then shells, then the agent,
+       * with `summary` on the line. What the platform would not close stays live (`notStopped`).
+       */
+      const endEverythingOf = (sessionId: SessionId, summary: string | null) =>
+        owned(sessionId)(
+          Effect.gen(function* () {
+            yield* stopServices(sessionId).pipe(Effect.ignore);
+            for (const shell of yield* processes.listForSession(sessionId)) {
+              if (shell.kind === "shell" && isLiveProcess(shell)) {
+                yield* stopShell(shell.id).pipe(Effect.ignore);
+              }
+            }
+            yield* stop(sessionId, summary).pipe(Effect.ignore);
+          }),
+        );
+
+      const windDownPerson = Effect.fn("SessionEngine.windDownPerson")(function* (userId: string) {
+        const stopped = new Set<SessionId>();
+        const retired = new Set<SealantWorkspaceId>();
+        let remaining = 0;
+        for (let round = 0; round < WIND_DOWN_ROUNDS; round += 1) {
+          if (round > 0) yield* Effect.sleep(WIND_DOWN_RETRY);
+          const live = yield* processes.listLive();
+          const owners = new Map<SessionId, string | null>();
+          const ownerOf = (sessionId: SessionId) =>
+            Effect.gen(function* () {
+              if (!owners.has(sessionId)) {
+                const row = yield* sessions
+                  .byId(sessionId)
+                  .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+                owners.set(sessionId, row?.ownerUserId ?? null);
+              }
+              return owners.get(sessionId) ?? null;
+            });
+          // Executors the person created that still run: retired, whoever works in them.
+          const theirs = new Set<SealantWorkspaceId>();
+          for (const workspaceId of new Set(live.map((process) => process.sealantWorkspaceId))) {
+            const creator = yield* sessions.executorSessionOf(workspaceId);
+            if (creator?.ownerUserId === userId) theirs.add(workspaceId);
+          }
+          const own = new Set<SessionId>();
+          const others = new Set<SessionId>();
+          for (const process of live) {
+            if ((yield* ownerOf(process.sessionId)) === userId) own.add(process.sessionId);
+            else if (theirs.has(process.sealantWorkspaceId)) others.add(process.sessionId);
+          }
+          if (round === 0) {
+            // Unsettled sessions with nothing live yet (a launch under way) stop too.
+            for (const session of yield* sessions.listUnsettledForOwner(userId)) {
+              own.add(session.id);
+            }
+          }
+          remaining = own.size + others.size;
+          if (remaining === 0) break;
+          // Others first, so the person's own stop finds the executor free and drains it.
+          for (const sessionId of others) {
+            yield* endEverythingOf(sessionId, EXECUTOR_RETIRED);
+            stopped.add(sessionId);
+          }
+          for (const workspaceId of theirs) retired.add(workspaceId);
+          for (const sessionId of own) {
+            yield* endEverythingOf(sessionId, null);
+            stopped.add(sessionId);
+          }
+          remaining = 0;
+          for (const process of yield* processes.listLive()) {
+            const owner = yield* ownerOf(process.sessionId);
+            if (owner === userId || theirs.has(process.sealantWorkspaceId)) remaining += 1;
+          }
+          if (remaining === 0) break;
+          yield* Effect.logWarning(
+            "session engine: a removed person's processes are still running · trying again",
+          ).pipe(Effect.annotateLogs({ userId, remaining, round }));
+        }
+        yield* Effect.logInfo("session engine: a person's work wound down").pipe(
+          Effect.annotateLogs({
+            userId,
+            stopped: stopped.size,
+            retired: [...retired].join(", "),
+            remaining,
+          }),
+        );
+        return { stopped: stopped.size, retired: [...retired], remaining };
+      });
+
       const discardUnsavedAndStop = Effect.fn("SessionEngine.discardUnsavedAndStop")(function* (
         sessionId: SessionId,
         discardedBy?: string | null,
@@ -14360,8 +14471,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* protocolHost.detach(agent.id);
             yield* conversations.cancelOpenForProcess(agent.id);
           }
-          if (agent.sealantSessionId !== null) {
-            yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId);
+          if (
+            agent.sealantSessionId !== null &&
+            !(yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId))
+          ) {
+            yield* notStopped(agent);
+            continue;
           }
           const recorded = yield* endAgentProcess(agent, {
             how: "stopped",
@@ -14381,8 +14496,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Services stay either way — declared infrastructure with its own verb.
           const liveShells = rows.filter((row) => row.kind === "shell" && isLiveProcess(row));
           for (const shell of liveShells) {
-            if (shell.sealantSessionId !== null) {
-              yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId);
+            if (
+              shell.sealantSessionId !== null &&
+              !(yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId))
+            ) {
+              yield* notStopped(shell);
+              continue;
             }
             yield* processes.markExited(shell.id, "stopped", null);
           }
@@ -14573,8 +14692,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* protocolHost.detach(agent.id);
             yield* conversations.cancelOpenForProcess(agent.id);
           }
-          if (agent.sealantSessionId !== null) {
-            yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId);
+          if (
+            agent.sealantSessionId !== null &&
+            !(yield* closeProcessPty(agent.sealantWorkspaceId, agent.sealantSessionId))
+          ) {
+            yield* notStopped(agent);
+            continue;
           }
           const recorded = yield* endAgentProcess(agent, {
             how: "stopped",
@@ -14755,7 +14878,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (shell.sealantSessionId === null) {
           return yield* new ShellProcessNotFoundError({ processId });
         }
-        yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId);
+        if (!(yield* closeProcessPty(shell.sealantWorkspaceId, shell.sealantSessionId))) {
+          yield* notStopped(shell);
+          return shell;
+        }
         yield* processes.markExited(processId, "stopped", null);
         yield* reconcileSession(shell.sessionId, { sweep: true }).pipe(
           Effect.catchTag("SessionNotFoundError", () => Effect.void),
@@ -14977,15 +15103,56 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      /** Close a process PTY; the daemon reaps its foreground process group. */
-      const closeProcessPty = (workspaceId: SealantWorkspaceId, ptyId: string) =>
+      /**
+       * Close a process PTY; the daemon reaps its foreground process group. True once it is closed,
+       * or the platform says it (or its workspace) is gone. The lookup and the close run as the
+       * workspace's creator whoever asks (`WorkspaceCaller.observe`), so a person who lost access
+       * still has their processes ended. A close that keeps failing is tried again, then answers
+       * false and is logged: the caller never records such a process as stopped (mend#558 review,
+       * P1-1), and the next stop tries again.
+       */
+      const closeProcessPty = (
+        workspaceId: SealantWorkspaceId,
+        ptyId: string,
+      ): Effect.Effect<boolean> =>
         sealant.getWorkspace(workspaceId).pipe(
           Effect.flatMap((workspace) => sealant.getSession(workspace, ptyId)),
           Effect.flatMap((pty) =>
-            Effect.tryPromise({ try: () => pty.close(), catch: () => new Error("close failed") }),
+            Effect.tryPromise({
+              try: () => pty.close(),
+              catch: (cause) =>
+                new SealantPlatformError({
+                  code: "pty_close_failed",
+                  status: workspaceMissing(cause) ? 404 : null,
+                  message: cause instanceof Error ? cause.message : String(cause),
+                  cause,
+                }),
+            }),
           ),
-          Effect.ignore,
+          Effect.as(true),
+          Effect.catchIf(workspaceMissing, () => Effect.succeed(true)),
+          Effect.retry(PTY_CLOSE_RETRY),
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: a process could not be stopped").pipe(
+              Effect.annotateLogs({ workspaceId, ptyId, code: error.code, message: error.message }),
+              Effect.as(false),
+            ),
+          ),
         );
+
+      /** A process a stop could not end stays live, and the session line says so. */
+      const notStopped = Effect.fn("SessionEngine.notStopped")(function* (process: SessionProcess) {
+        const session = yield* sessions
+          .byId(process.sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null) return;
+        const words = `${process.kind === "shell" ? "a shell" : process.kind === "service" ? "a Service" : "the agent"} could not be stopped · the platform did not close it · stop again`;
+        if ((session.summary ?? "").includes(words)) return;
+        yield* sessions.setSummary(
+          process.sessionId,
+          session.summary === null ? words : `${session.summary} · ${words}`,
+        );
+      });
 
       /**
        * A supervised Service is ready when its port answers — poll the
@@ -15238,7 +15405,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // lookup therefore leaves nothing for boot recovery or the one-live-attempt index.
         const workspace = yield* sealant.getWorkspace(previous.sealantWorkspaceId);
         if (previous.exitedAt === null && previous.sealantSessionId !== null) {
-          yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId);
+          if (!(yield* closeProcessPty(previous.sealantWorkspaceId, previous.sealantSessionId))) {
+            yield* notStopped(previous);
+            return yield* new SealantPlatformError({
+              code: "pty_close_failed",
+              status: null,
+              message: "the Service's running attempt could not be stopped · nothing restarted",
+              cause: null,
+            });
+          }
           yield* processes.markExited(previous.id, "stopped", null);
         }
         const attemptOrdinal =
@@ -15665,8 +15840,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* processes.byId(service.currentAttemptId);
         if (attempt !== null && attempt.exitedAt === null) {
-          if (attempt.sealantSessionId !== null) {
-            yield* closeProcessPty(attempt.sealantWorkspaceId, attempt.sealantSessionId);
+          if (
+            attempt.sealantSessionId !== null &&
+            !(yield* closeProcessPty(attempt.sealantWorkspaceId, attempt.sealantSessionId))
+          ) {
+            // Still running: recorded live, its pointers kept, so a stop again reaches it.
+            yield* notStopped(attempt);
+            return yield* readServiceView(service.id);
           }
           yield* processes.markExited(attempt.id, "stopped", null);
         }
@@ -17051,6 +17231,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         refreshCaptureStatus,
         readCaptures: (sessionId) => owned(sessionId)(readCaptures(sessionId)),
         removeWhenStopped: (sessionId) => owned(sessionId)(removeWhenStopped(sessionId)),
+        windDownPerson,
         captureHolds,
         transcript,
       };
