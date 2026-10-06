@@ -89,6 +89,22 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
     );
   });
 
+  // Runs first: nothing recorded yet. What startup reads once to know it may read no more.
+  it("says no layout is recorded on a fresh store, and an operator's request counts", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* HarnessLayoutsRepo;
+        const fresh = yield* repo.anyRecorded();
+        yield* repo.requestLayout(worktree, "shared");
+        const requested = yield* repo.anyRecorded();
+        yield* sql`UPDATE worktrees SET harness_layout_requested = NULL WHERE id = ${worktree}`;
+        return { fresh, requested, cleared: yield* repo.anyRecorded() };
+      }),
+    );
+    expect(result).toEqual({ fresh: false, requested: true, cleared: false });
+  });
+
   it("gives each account one stable identity, uids from 40001, even when they ask at once", async () => {
     await run(
       Effect.gen(function* () {
@@ -214,5 +230,10 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
         expect(yield* repo.capabilityOf("img", "microvm")).toBeNull();
       }),
     );
+  });
+
+  // Runs last: the person launches above are recorded.
+  it("says a layout is recorded once a person launch is", async () => {
+    expect(await run(Effect.flatMap(HarnessLayoutsRepo, (repo) => repo.anyRecorded()))).toBe(true);
   });
 });

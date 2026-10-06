@@ -2942,7 +2942,7 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
     })),
   ).pipe(Layer.provide(SessionChannelTokensRepoMemory));
 
-/** The in-memory layouts repo, recording every launch layout it is asked for. */
+/** The in-memory layouts repo, recording every launch and worktree layout it is asked for. */
 const countingLaunchLayoutReads = (
   reads: Array<string>,
   state?: HarnessLayoutsMemoryState,
@@ -2953,6 +2953,10 @@ const countingLaunchLayoutReads = (
       ...inner,
       launchLayout: (launchId: string) =>
         Effect.sync(() => reads.push(launchId)).pipe(Effect.andThen(inner.launchLayout(launchId))),
+      worktreeLayout: (worktreeId: WorktreeId) =>
+        Effect.sync(() => reads.push(`worktree:${worktreeId}`)).pipe(
+          Effect.andThen(inner.worktreeLayout(worktreeId)),
+        ),
     })),
   ).pipe(Layer.provide(harnessLayoutsRepoMemory(state)));
 
@@ -23272,6 +23276,16 @@ const coldJoinResume = async (options: {
   return result;
 };
 
+/**
+ * A person worktree that existed before this Mend started: the startup query sees a layout
+ * recorded, as it would in the database (a test seeds the worktree under test only once it is
+ * made, after the engine is up).
+ */
+const recordedBeforeStart = (state: HarnessLayoutsMemoryState): HarnessLayoutsMemoryState => {
+  state.worktrees.set("wt-person-before-start", { layout: "person", requested: null });
+  return state;
+};
+
 describe("per-person harness homes (docs/adr/0016)", () => {
   // Today's counts (main at 4ccbaa2cd, measured with this same scenario): what the flag off must
   // keep, and what a person launch may not exceed (Performance, CI guards).
@@ -23383,7 +23397,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   });
 
   it("has no way back: a person worktree launches person with the flag off", async () => {
-    const state = makeHarnessLayoutsMemoryState();
+    const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
     const run = await coldJoinResume({
       flag: "shared",
       joiner: "user-fixture",
@@ -23464,7 +23478,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   };
 
   it("refuses a person worktree before create when its image is known not to run it", async () => {
-    const state = makeHarnessLayoutsMemoryState();
+    const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
     state.capabilities.set(IMAGE, {
       imageKey: "digest:sha256:img",
       runtime: "docker",
@@ -23488,7 +23502,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   });
 
   it("refuses at prepare a person worktree whose image turns out not to run it: nothing starts", async () => {
-    const state = makeHarnessLayoutsMemoryState();
+    const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
     const run = await launchPersonOnce({
       flag: "shared",
       state,
@@ -24245,6 +24259,10 @@ const identityArgsOf = (
 interface IdentityPickups {
   readonly written: Map<string, ReadonlyArray<{ readonly path: string; readonly base64: string }>>;
   readonly refused: Map<string, string>;
+  /** What a second presentation of the same ticket, through the same channel, answered. */
+  readonly again: Map<string, ReadonlyArray<{ readonly path: string; readonly base64: string }>>;
+  /** Redemptions node tried once more after a passing failure, by name. */
+  readonly retried: Array<string>;
 }
 
 /**
@@ -24259,6 +24277,8 @@ const identityExec =
     readonly holder: () => SessionId | null;
     readonly launchId: () => string;
     readonly presentAs?: (name: string) => string | null;
+    /** Present every ticket a second time after its answer, as a retry whose answer was lost. */
+    readonly twice?: boolean;
   }) =>
   (argv: ReadonlyArray<string>) => {
     const script = argv[2] ?? "";
@@ -24284,12 +24304,24 @@ const identityExec =
           options.pickups.refused.set(person.name, "no pickup on this channel");
           continue;
         }
-        const answer = yield* grant.api.pickup(person.ticket).pipe(Effect.result);
+        const pickup = grant.api.pickup;
+        let answer = yield* pickup(person.ticket).pipe(Effect.result);
+        // As node does: a passing failure is tried once more, a refused ticket is not.
+        if (answer._tag === "Failure" && !answer.failure.message.startsWith("this pickup ticket")) {
+          options.pickups.retried.push(person.name);
+          answer = yield* pickup(person.ticket).pipe(Effect.result);
+        }
         if (answer._tag === "Failure") {
           failed = true;
           options.pickups.refused.set(person.name, answer.failure.message);
         } else {
           options.pickups.written.set(person.home, answer.success.files);
+          if (options.twice === true) {
+            const again = yield* pickup(person.ticket).pipe(Effect.result);
+            if (again._tag === "Success")
+              options.pickups.again.set(person.home, again.success.files);
+            else options.pickups.refused.set(`${person.name} again`, again.failure.message);
+          }
         }
       }
       return {
@@ -24336,6 +24368,9 @@ const livePersonJoin = async <A>(options: {
   readonly presentAs?: (name: string) => string | null;
   /** Maria has an identity already (from another worktree), so prepare names her too. */
   readonly mariaKnown?: boolean;
+  /** Present every identity ticket a second time, through the same channel. */
+  readonly presentTwice?: boolean;
+  readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
   readonly inspect: (
     engine: SessionEngine["Service"],
     join: LiveJoin,
@@ -24346,7 +24381,12 @@ const livePersonJoin = async <A>(options: {
   const opened: Array<SessionOptions & ProcessUserOption> = [];
   const tokenEvents: Array<string> = [];
   const person = options.flag === "person";
-  const pickups: IdentityPickups = { written: new Map(), refused: new Map() };
+  const pickups: IdentityPickups = {
+    written: new Map(),
+    refused: new Map(),
+    again: new Map(),
+    retried: [],
+  };
   const state = makeHarnessLayoutsMemoryState();
   if (options.mariaKnown === true) {
     state.identities.set(
@@ -24418,6 +24458,7 @@ const livePersonJoin = async <A>(options: {
       ...(options.landings === undefined
         ? {}
         : { gitHooksLayer: recordingLandings(options.landings) }),
+      ...(options.gitAuthorLayer === undefined ? {} : { gitAuthorLayer: options.gitAuthorLayer }),
       sealantLayer: sealantLaunchLayer(
         created,
         undefined,
@@ -24438,6 +24479,7 @@ const livePersonJoin = async <A>(options: {
                 holder: holderOf,
                 launchId: launchIdOf,
                 ...(options.presentAs === undefined ? {} : { presentAs: options.presentAs }),
+                ...(options.presentTwice === true ? { twice: true } : {}),
               }),
             }
           : {},
@@ -24562,6 +24604,65 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           const issued = join.tokenEvents.filter((event) => event.startsWith("issuePerson:"));
           expect(issued.filter((event) => event.includes(`:${MARIA}:`))).toHaveLength(1);
           expect(issued).toHaveLength(2);
+        }),
+    });
+  });
+
+  it("answers a lost identity again to the same channel: the same token, never a second, no theft", async () => {
+    await livePersonJoin({
+      flag: "person",
+      presentTwice: true,
+      inspect: (_engine, join) =>
+        Effect.sync(() => {
+          for (const home of [`/home/${LAUNCHER}`, `/home/${JOINER}`]) {
+            expect(decoded(join.pickups.again.get(home))).toEqual(
+              decoded(join.pickups.written.get(home)),
+            );
+          }
+          expect(join.pickups.refused.size).toBe(0);
+          expect(join.tokenEvents.filter((event) => event.startsWith("issuePerson:"))).toHaveLength(
+            2,
+          );
+        }),
+    });
+  });
+
+  it("puts an identity ticket back when the store fails mid-answer, so the retry redeems it", async () => {
+    // The author's read fails once for Maria, as a dropped database connection would.
+    let failures = 0;
+    const flaky = Layer.succeed(UserGitAuthorRepo, {
+      resolve: (userId) =>
+        userId === MARIA && failures++ === 0
+          ? Effect.die(new Error("Connection terminated unexpectedly"))
+          : Effect.succeed(
+              new ResolvedGitAuthor({
+                name: `Account ${userId}`,
+                email: `${userId}@accounts.example`,
+                source: "account",
+              }),
+            ),
+      set: () => Effect.void,
+      clear: () => Effect.void,
+    });
+    await livePersonJoin({
+      flag: "person",
+      gitAuthorLayer: flaky,
+      inspect: (_engine, join) =>
+        Effect.sync(() => {
+          expect(join.pickups.retried).toEqual([JOINER]);
+          expect(join.pickups.refused.size).toBe(0);
+          expect(join.joinFailure).toBeNull();
+          // One token for her: none was minted by the attempt that failed.
+          expect(
+            join.tokenEvents.filter((event) =>
+              event.startsWith(`issuePerson:${join.launchId}:${MARIA}:`),
+            ),
+          ).toHaveLength(1);
+          expect(
+            decoded(join.pickups.written.get(`/home/${JOINER}`)).get(
+              `/home/${JOINER}/.mend/session-token`,
+            ),
+          ).toBeDefined();
         }),
     });
   });
@@ -24709,7 +24810,7 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
-  it("with the flag off, a push or fetch never reads its launch's layout from the store", async () => {
+  it("with the flag off, a launch, a join and every push or fetch read no layout from the store", async () => {
     const reads: Array<string> = [];
     await livePersonJoin({
       flag: "shared",
@@ -24722,7 +24823,8 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             if (!grant.ok) throw new Error(grant.message);
             yield* grant.api.gitTransport(push(join.origin)).pipe(Effect.exit);
           }
-          // Five git ops, and no read: the layout was known when the launch was decided.
+          // Five git ops, and no read; nor did the launch, the join or any process start read
+          // one: nothing was recorded when Mend started, and the flag is off.
           expect(reads.length - before).toBe(0);
           expect(reads).toEqual([]);
         }),

@@ -823,6 +823,108 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(gitGet(config, "include.path")).toBe(path.join(home, ".mend/git-author"));
   });
 
+  it("drops a leading BOM rather than move it mid-file, and keeps group write", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const config = path.join(home, ".config/git/config");
+    fs.writeFileSync(config, "\uFEFF[user]\n\temail = theirs@x.example\n");
+    fs.chmodSync(config, 0o664);
+    expect(asThePerson(home, "user.email")).toBe("theirs@x.example");
+    const opened = await channel();
+    const run = await pickUp(opened, home);
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe("");
+    const text = fs.readFileSync(config, "utf8");
+    expect(text.includes("\uFEFF")).toBe(false);
+    expect(text.startsWith("[include]\n")).toBe(true);
+    expect(fs.statSync(config).mode & 0o777).toBe(0o664);
+    // Every git command for them still works; theirs wins, Mend fills the rest.
+    expect(asThePerson(home, "user.email")).toBe("theirs@x.example");
+    expect(asThePerson(home, "user.name")).toBe(AUTHOR.name);
+  });
+
+  it("waits for git's own lock on their config, and adds the include once it is free", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const config = path.join(home, ".config/git/config");
+    fs.writeFileSync(config, "[pull]\n\trebase = true\n");
+    // Their `git config --global` is mid-write: it holds config.lock.
+    fs.writeFileSync(`${config}.lock`, "");
+    const opened = await channel();
+    const released = new Promise<void>((resolve) =>
+      setTimeout(() => {
+        fs.rmSync(`${config}.lock`);
+        resolve();
+      }, 400),
+    );
+    const run = await pickUp(opened, home);
+    await released;
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe("");
+    expect(gitGet(config, "include.path")).toBe(path.join(home, ".mend/git-author"));
+    expect(gitGet(config, "pull.rebase")).toBe("true");
+    expect(fs.existsSync(`${config}.lock`)).toBe(false);
+  });
+
+  it("leaves a config git cannot parse alone, says so, and never stacks includes in it", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const config = path.join(home, ".config/git/config");
+    const broken = "[user\n\tname = half a section\n";
+    fs.writeFileSync(config, broken);
+    const opened = await channel();
+    for (let i = 0; i < 3; i++) {
+      const run = await pickUp(opened, home);
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain("git cannot read");
+      expect(run.stderr).not.toContain("Node.js");
+    }
+    expect(fs.readFileSync(config, "utf8")).toBe(broken);
+  });
+
+  it("says what failed when the include cannot be written, never just Node's version", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const dir = path.join(home, ".config/git");
+    fs.writeFileSync(path.join(dir, "config"), "[pull]\n\trebase = true\n");
+    // A directory they cannot write: an image left it root's.
+    fs.chmodSync(dir, 0o555);
+    try {
+      const opened = await channel();
+      const run = await pickUp(opened, home);
+      expect(run.status).toBe(0);
+      expect(run.stderr).toContain("git author was not included in their git config: EACCES");
+      expect(run.stderr).not.toContain("Node.js");
+      expect(fs.readFileSync(path.join(home, ".mend/session-token"), "utf8")).toBe(TOKEN);
+    } finally {
+      fs.chmodSync(dir, 0o755);
+    }
+  });
+
+  it("lets a person's concurrent first processes all write their identity", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    fs.writeFileSync(path.join(home, ".config/git/config"), "[pull]\n\trebase = true\n");
+    const opened = await channel();
+    const runs = await Promise.all([
+      pickUp(opened, home),
+      pickUp(opened, home),
+      pickUp(opened, home),
+    ]);
+    for (const run of runs) {
+      expect(run.status).toBe(0);
+      expect(run.stderr).toBe("");
+    }
+    expect(fs.readFileSync(path.join(home, ".mend/session-token"), "utf8")).toBe(TOKEN);
+    expect(gitGet(path.join(home, ".config/git/config"), "include.path")).toBe(
+      path.join(home, ".mend/git-author"),
+    );
+    expect(fs.readdirSync(path.join(home, ".mend")).toSorted()).toEqual([
+      "git-author",
+      "session-token",
+    ]);
+  });
+
   it("includes Mend's author through a ~/.config/git their dotfiles linked, and never fails the person over it", async () => {
     const { dir, home, script } = homeOf(null);
     // Their install.sh linked ~/.config/git into their checkout before prepare made the rest.

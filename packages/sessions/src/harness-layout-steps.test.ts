@@ -62,13 +62,20 @@ const stepsWith = (flag: "person" | "shared", state: HarnessLayoutsMemoryState) 
   Effect.gen(function* () {
     const repo = yield* HarnessLayoutsRepo;
     const reads: Array<string> = [];
+    // As the engine does at startup: one query.
+    const anyRecorded = yield* repo.anyRecorded();
     const steps = makeHarnessLayoutSteps({
       flag,
       repo: {
         ...repo,
         launchLayout: (launchId) =>
           Effect.sync(() => reads.push(launchId)).pipe(Effect.andThen(repo.launchLayout(launchId))),
+        worktreeLayout: (worktreeId) =>
+          Effect.sync(() => reads.push(`worktree:${worktreeId}`)).pipe(
+            Effect.andThen(repo.worktreeLayout(worktreeId)),
+          ),
       },
+      anyRecorded,
       platform: yield* PersonLayoutPlatform,
       organizations: yield* OrganizationsRepo,
       sealant: { exec: () => Effect.die("not in test") },
@@ -134,6 +141,46 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
       settled: "person",
       afterConfirm: "person",
     });
+  });
+
+  it("with the flag off and nothing recorded, reads nothing, before and after a restart", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const before = yield* stepsWith("shared", state);
+        yield* before.steps.decide(decideInput("launch-live"));
+        yield* before.steps.mayRunPerson(WorktreeId.make("wt-1"));
+        yield* before.steps.standbyMayServe(WorktreeId.make("wt-1"));
+        // Mend restarts: a new process, its cache empty, the launch still live.
+        const after = yield* stepsWith("shared", state);
+        const layouts = [
+          yield* after.steps.layoutOfLaunch("launch-live"),
+          yield* after.steps.layoutOfLaunch("launch-from-before"),
+        ];
+        const runsPerson = yield* after.steps.mayRunPerson(WorktreeId.make("wt-1"));
+        const standby = yield* after.steps.standbyMayServe(WorktreeId.make("wt-1"));
+        yield* after.steps.decide(decideInput("launch-next"));
+        return { layouts, runsPerson, standby, reads: [...before.reads, ...after.reads] };
+      }),
+    );
+    expect(result).toEqual({
+      layouts: ["shared", "shared"],
+      runsPerson: false,
+      standby: true,
+      reads: [],
+    });
+  });
+
+  it("with the flag off, a person worktree recorded before a restart is still read, and still person", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        const { steps, reads } = yield* stepsWith("shared", state);
+        return { runsPerson: yield* steps.mayRunPerson(WorktreeId.make("wt-1")), reads };
+      }),
+    );
+    expect(result).toEqual({ runsPerson: true, reads: ["worktree:wt-1"] });
   });
 
   it("with the flag off, the layout is known at decide: the channel never reads it from the store", async () => {

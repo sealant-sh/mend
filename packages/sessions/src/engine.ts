@@ -1957,6 +1957,12 @@ const markAnswered = (fence: { answered: boolean }) =>
 /** A log about evidence: its failure is its own, never the evidence's. */
 const evidenceLog = (log: Effect.Effect<void>) => log.pipe(Effect.catchCause(() => Effect.void));
 
+/** How long an identity pickup's answer is kept for its own channel's retry (review 4 of mend#553). */
+const IDENTITY_ANSWER_MS = 60_000;
+const ticketKeyOf = (ticket: string) => createHash("sha256").update(ticket).digest("hex");
+const channelKeyOf = (channel: PickupChannel) =>
+  `${channel.sessionId}\u0000${channel.launchId ?? ""}\u0000${channel.accountId ?? ""}`;
+
 export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineRequirements> =
   Layer.effect(
     SessionEngine,
@@ -5982,6 +5988,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // over the session channel (`pickup-tickets.ts`). Held in memory, by this process, which
       // also serves the channel of every session it launches.
       const pickups = makePickupTickets();
+      /**
+       * What each identity ticket answered (docs/adr/0016, decision 4), by the ticket's hash, for
+       * a minute: a retry from the same channel whose first answer was lost gets the same answer
+       * again, never a second token and never a theft warning (review 4 of mend#553, P3-1).
+       */
+      const identityAnswers = new Map<
+        string,
+        {
+          readonly channel: string;
+          readonly answer: ReturnType<typeof pickupAnswerOf>;
+          readonly expiresAt: number;
+        }
+      >();
 
       /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
@@ -6048,13 +6067,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (tokenFile === undefined || configFile === undefined) {
           return yield* Effect.fail(new Error("this identity ticket names no files"));
         }
-        const [token, author] = yield* Effect.all(
-          [
-            channelTokens.issuePerson(binding.launchId, binding.personId),
-            gitAuthors.resolve(binding.personId),
-          ],
-          { concurrency: "unbounded" },
-        );
+        // The author first: the token is minted last, so nothing after it can fail and leave a
+        // token nobody received.
+        const author = yield* gitAuthors.resolve(binding.personId);
+        const token = yield* channelTokens.issuePerson(binding.launchId, binding.personId);
         return [
           { path: tokenFile.path, bytes: new TextEncoder().encode(token) },
           // Always written: a person who cleared their author gets an empty file, not a stale one.
@@ -6107,6 +6123,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* refuse(null, "this pickup ticket is spent, expired or unknown");
           }
           if (taken.kind === "spent") {
+            // The same channel asking again for an identity it was answered moments ago: its
+            // answer was lost on the way. The same answer, so no second token.
+            const answered = identityAnswers.get(ticketKeyOf(ticket));
+            if (
+              answered !== undefined &&
+              answered.expiresAt > Date.now() &&
+              answered.channel === channelKeyOf(channel)
+            ) {
+              yield* Effect.logInfo("session engine: pickup answered again · a retry").pipe(
+                Effect.annotateLogs({
+                  sessionId: taken.binding.sessionId,
+                  purpose: taken.binding.purpose,
+                }),
+              );
+              return answered.answer;
+            }
             return yield* refuse(
               taken.binding,
               "this pickup ticket was already redeemed, perhaps through another channel",
@@ -6125,8 +6157,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const files =
             entry.binding.purpose === "session-token"
-              ? yield* identityFilesAt(entry.binding, entry.files)
+              ? yield* identityFilesAt(entry.binding, entry.files).pipe(
+                  // The store failed mid-answer (a typed failure, or a dropped connection's
+                  // defect): the ticket goes back, so the exec's retry redeems it rather than
+                  // reading as a theft.
+                  Effect.catchCause((cause) =>
+                    Effect.sync(() => pickups.restore(ticket, entry)).pipe(
+                      Effect.andThen(
+                        Effect.fail(
+                          new Error(
+                            `Mend could not make this identity now: ${
+                              Cause.pretty(cause).split("\n")[0] ?? "the store failed"
+                            }`,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                )
               : entry.files;
+          if (entry.binding.purpose === "session-token") {
+            const now = Date.now();
+            for (const [key, answered] of identityAnswers) {
+              if (answered.expiresAt <= now) identityAnswers.delete(key);
+            }
+            identityAnswers.set(ticketKeyOf(ticket), {
+              channel: channelKeyOf(channel),
+              answer: pickupAnswerOf(files),
+              expiresAt: now + IDENTITY_ANSWER_MS,
+            });
+          }
           yield* Effect.logInfo("session engine: pickup redeemed").pipe(
             Effect.annotateLogs({
               sessionId: entry.binding.sessionId,
@@ -6332,6 +6392,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
         fork: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
+        anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),
         discardTicket: (ticket) => pickups.discard(ticket),
       });
@@ -6937,6 +6998,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const worktree = yield* ensureWorktreeIn(project, input, input.ownerUserId);
         if (requested !== undefined && joined === null) {
           yield* harnessLayouts.requestLayout(worktree.id, requested);
+          layoutSteps.noteRecorded();
         }
         return yield* provisionInWorktree(project, worktree, input);
       });

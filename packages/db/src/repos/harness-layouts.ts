@@ -157,6 +157,12 @@ export class HarnessLayoutsRepo extends Context.Service<
     /** A shared launch's prepare ran: nothing to correct, the decision stands. */
     readonly confirm: (launchId: string) => Effect.Effect<void>;
     readonly launchLayout: (launchId: string) => Effect.Effect<ExecutorLayoutRecord | null>;
+    /**
+     * Whether any launch or worktree has a layout recorded at all: a person launch, a person
+     * worktree, or an operator's `harnessLayout`. Read once at startup: with the flag off and
+     * nothing recorded, every launch is `shared` and nothing here is read again (docs/adr/0016).
+     */
+    readonly anyRecorded: () => Effect.Effect<boolean>;
     readonly capabilityOf: (
       imageKey: string,
       runtime: string,
@@ -340,6 +346,15 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         );
       });
 
+      const anyRecorded = Effect.fn("HarnessLayoutsRepo.anyRecorded")(function* () {
+        const rows = yield* sql<{ readonly recorded: boolean }>`
+          SELECT EXISTS (SELECT 1 FROM executor_layouts WHERE layout = 'person')
+              OR EXISTS (SELECT 1 FROM worktrees
+                         WHERE harness_layout IS NOT NULL OR harness_layout_requested IS NOT NULL)
+              AS recorded`.pipe(Effect.orDie);
+        return rows[0]?.recorded === true;
+      });
+
       return {
         ensureIdentity,
         identitiesOf,
@@ -350,6 +365,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         recordFallback,
         confirm,
         launchLayout,
+        anyRecorded,
         capabilityOf,
         recordCapability,
       };
@@ -451,6 +467,14 @@ export const harnessLayoutsRepoMemory = (
         }
       }),
     launchLayout: (launchId) => Effect.sync(() => state.launches.get(launchId) ?? null),
+    anyRecorded: () =>
+      Effect.sync(
+        () =>
+          [...state.launches.values()].some((launch) => launch.layout === "person") ||
+          [...state.worktrees.values()].some(
+            (worktree) => worktree.layout !== null || worktree.requested !== null,
+          ),
+      ),
     capabilityOf: (imageKey, runtime) =>
       Effect.sync(() => state.capabilities.get(`${imageKey}\u0000${runtime}`) ?? null),
     recordCapability: (record) =>

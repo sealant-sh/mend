@@ -628,6 +628,81 @@ export const identityPickupScript = (
   return `node -e ${shellQuote(IDENTITY_PROGRAM)} -- ${args.map(shellQuote).join(" ")}`;
 };
 
+/**
+ * What runs as the person to include Mend's author file at the top of their git config
+ * (`identityPickupScript`), once: `git config --add` on an empty or missing file, else a prepended
+ * `[include]` under git's own lock (`config.lock`, created exclusively and renamed over the file,
+ * re-read under the lock), so a concurrent git writer and a concurrent pickup exclude each other.
+ * A leading BOM is dropped (git reads one only at byte 0). The file's mode, group write included,
+ * is kept. A file git cannot parse is left alone and reported. When the include cannot be added,
+ * the author is set in the file directly, only the keys it does not set, and that is reported too.
+ * Exits 0 when the include is there; else says what failed, on one line.
+ */
+const INCLUDE_SOURCE = String.raw`const fs = require("node:fs"), cp = require("node:child_process");
+const [file, include] = process.argv.slice(1);
+const fail = (code, why) => { process.stderr.write(why.replace(/\s+/g, " ").trim() + "\n"); process.exit(code); };
+const git = (args) => cp.spawnSync("git", ["config", "--file", file, ...args], { encoding: "utf8" });
+const lastWords = (run) => ((run.stderr || "").trim().split("\n").filter(Boolean).pop() || (run.error ? run.error.message : "git config failed"));
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const direct = (why) => {
+  for (const key of ["user.name", "user.email"]) {
+    const ours = cp.spawnSync("git", ["config", "--file", include, "--get", key], { encoding: "utf8" });
+    if (ours.status !== 0) continue;
+    if (git(["--get", key]).status === 0) continue;
+    const set = git([key, ours.stdout.replace(/\n$/, "")]);
+    if (set.status !== 0) fail(3, why + "; nor could the author be set in it directly: " + lastWords(set));
+  }
+  fail(3, why + "; the author was set in it directly instead, where it set none");
+};
+const withoutBom = (text) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text);
+const known = git(["--get-all", "include.path"]);
+if (known.status === 0 && known.stdout.split("\n").includes(include)) process.exit(0);
+if (known.status !== 0 && known.status !== 1) {
+  fail(2, "git cannot read " + file + " (" + lastWords(known) + "), so nothing was added to it");
+}
+let text = "";
+try { text = fs.readFileSync(file, "utf8"); } catch (error) {
+  if (error.code !== "ENOENT") direct(error.code + " reading " + file + ": " + error.message);
+}
+if (withoutBom(text).trim() === "") {
+  const added = git(["--add", "include.path", include]);
+  if (added.status !== 0) direct("the include could not be added: " + lastWords(added));
+  process.exit(0);
+}
+let real;
+try { real = fs.realpathSync(file); } catch (error) { direct(error.code + " finding " + file + ": " + error.message); }
+const lock = real + ".lock";
+let fd = null;
+for (let i = 0; i < 40 && fd === null; i++) {
+  try {
+    fd = fs.openSync(lock, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+  } catch (error) {
+    if (error.code !== "EEXIST") direct(error.code + " taking git's lock " + lock + ": " + error.message);
+    sleep(50);
+  }
+}
+if (fd === null) direct("git's lock " + lock + " stayed held");
+try {
+  const current = withoutBom(fs.readFileSync(real, "utf8"));
+  const already = current.split(/\r?\n/).some((line) => /^\s*path\s*=\s*/.test(line) && line.replace(/^\s*path\s*=\s*/, "").trim() === include);
+  if (already) {
+    fs.closeSync(fd);
+    fs.unlinkSync(lock);
+    process.exit(0);
+  }
+  const mode = fs.statSync(real).mode & 0o7777;
+  fs.writeSync(fd, "[include]\n\tpath = " + include + "\n" + current);
+  fs.fchmodSync(fd, mode);
+  fs.closeSync(fd);
+  fd = null;
+  fs.renameSync(lock, real);
+} catch (error) {
+  try { if (fd !== null) fs.closeSync(fd); } catch {}
+  try { fs.unlinkSync(lock); } catch {}
+  direct((error.code || "error") + " writing " + real + ": " + error.message);
+}
+`;
+
 const IDENTITY_PROGRAM = [
   SCRIPT_TRANSPORT_PRELUDE,
   SCRIPT_PICKUP_FUNCTION,
@@ -649,31 +724,16 @@ const write = (person, files, file) => {
   if (bytes === undefined) return null;
   const dir = file.slice(0, file.lastIndexOf("/"));
   const name = file.slice(file.lastIndexOf("/") + 1);
-  const why = pinnedPut(dir, name, ".mend-identity-part", bytes);
+  // A staging name of this exec's own: two first processes of one person never share one.
+  const staging = ".mend-identity-part-" + process.pid + "-" + require("node:crypto").randomBytes(4).toString("hex");
+  const why = pinnedPut(dir, name, staging, bytes);
   if (why !== null) return file + ": " + why;
   if (root) { try { fs.lchownSync(file, person.uid, ${MEND_GROUP.gid}); } catch { return file + ": could not give it to its person"; } }
   return null;
 };
 // Mend's author file, rewritten at every pickup, then included at the top of their git config,
 // once, as the person, through a link their dotfiles made. Never fatal: said on stderr.
-const INCLUDE_PROGRAM = [
-  'const fs = require("node:fs"), path = require("node:path"), cp = require("node:child_process");',
-  "const [file, include] = process.argv.slice(1);",
-  'const git = (args) => cp.spawnSync("git", ["config", "--file", file, ...args], { encoding: "utf8" });',
-  'const known = git(["--get-all", "include.path"]);',
-  'if (known.status === 0 && known.stdout.split("\\\\n").includes(include)) process.exit(0);',
-  'let text = ""; try { text = fs.readFileSync(file, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }',
-  'if (text.trim() === "") {',
-  '  const added = git(["--add", "include.path", include]);',
-  '  if (added.status !== 0) { process.stderr.write(added.stderr || "git config failed\\\\n"); process.exit(1); }',
-  "  process.exit(0);",
-  "}",
-  // At the very top, so everything of theirs comes after it and wins.
-  'const real = fs.realpathSync(file); const part = path.join(path.dirname(real), ".mend-include-" + process.pid);',
-  'const mode = fs.statSync(real).mode & 0o7777;',
-  'fs.writeFileSync(part, "[include]\\\\n\\tpath = " + include + "\\\\n" + text, { flag: "wx", mode });',
-  "fs.renameSync(part, real);",
-].join("\\n");
+const INCLUDE_PROGRAM = ${JSON.stringify(INCLUDE_SOURCE)};
 const includeAuthor = (person) => {
   const file = person.home + "/${GIT_CONFIG_IN_HOME}";
   const include = person.home + "/${GIT_AUTHOR_IN_HOME}";
@@ -684,7 +744,7 @@ const includeAuthor = (person) => {
     ...(root ? { uid: person.uid, gid: ${MEND_GROUP.gid} } : {}),
   });
   if (run.error !== undefined || run.status !== 0) {
-    const why = ((run.stderr || "").trim().split("\\n").pop() || String(run.error || "it failed"));
+    const why = (run.stderr || "").trim() || String(run.error || "it failed");
     process.stderr.write("mend: " + person.name + "'s git author was not included in their git config: " + why + "\\n");
   }
 };

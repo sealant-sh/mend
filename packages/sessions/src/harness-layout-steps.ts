@@ -140,6 +140,11 @@ export interface HarnessLayoutSteps {
    * already person. One row read; with neither, a process start asks nothing else here.
    */
   readonly mayRunPerson: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
+  /**
+   * A worktree's layout was just recorded outside these steps (the operator's `harnessLayout`):
+   * from now on the steps read the store again.
+   */
+  readonly noteRecorded: () => void;
   /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
   readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
@@ -270,6 +275,12 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly discardTicket: (ticket: string) => void;
   /** Starts work that nothing waits on (the worktree repair). */
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>;
+  /**
+   * Whether any launch or worktree had a layout recorded when this process started
+   * (`HarnessLayoutsRepo.anyRecorded`, one query). With the flag off and none, every layout
+   * question answers `shared` with no store read, until something is recorded.
+   */
+  readonly anyRecorded: boolean;
 }): HarnessLayoutSteps => {
   const { flag, repo, platform, sealant } = deps;
   const layoutByLaunch = bounded<string, HarnessLayout>();
@@ -277,6 +288,9 @@ export const makeHarnessLayoutSteps = (deps: {
   const madeIn = bounded<string, Set<string>>();
   /** Whose process started last in an executor's worktree, per workspace. */
   const lastIn = bounded<string, string>();
+  /** Some launch or worktree has a layout recorded (at startup, or since). */
+  let layoutsRecorded = deps.anyRecorded;
+  const nothingRecorded = () => flag === "shared" && !layoutsRecorded;
 
   const prepareTickets: HarnessLayoutSteps["prepareTickets"] = Effect.fn(
     "HarnessLayoutSteps.prepareTickets",
@@ -336,6 +350,11 @@ export const makeHarnessLayoutSteps = (deps: {
 
   const decide: HarnessLayoutSteps["decide"] = Effect.fn("HarnessLayoutSteps.decide")(
     function* (input) {
+      // The flag off and nothing ever recorded: shared, as before, with no read at all.
+      if (nothingRecorded()) {
+        layoutByLaunch.set(input.launchId, "shared");
+        return SHARED_AS_BEFORE;
+      }
       const worktree = yield* repo.worktreeLayout(input.worktreeId);
       // Nothing asks for person: as before, nothing read, nothing recorded.
       if (worktree.layout === null && worktree.requested === null && flag === "shared") {
@@ -386,6 +405,7 @@ export const makeHarnessLayoutSteps = (deps: {
         imageKey,
         confirmed: false,
       });
+      layoutsRecorded = true;
       layoutByLaunch.set(input.launchId, "person");
       return {
         layout: "person",
@@ -403,6 +423,7 @@ export const makeHarnessLayoutSteps = (deps: {
     "HarnessLayoutSteps.mayRunPerson",
   )(function* (worktreeId) {
     if (flag === "person") return true;
+    if (nothingRecorded()) return false;
     return (yield* repo.worktreeLayout(worktreeId)).layout === "person";
   });
 
@@ -410,6 +431,7 @@ export const makeHarnessLayoutSteps = (deps: {
     "HarnessLayoutSteps.standbyMayServe",
   )(function* (worktreeId) {
     if (flag === "person") return false;
+    if (nothingRecorded()) return true;
     const worktree = yield* repo.worktreeLayout(worktreeId);
     return worktree.layout === null && worktree.requested !== "person";
   });
@@ -516,6 +538,7 @@ export const makeHarnessLayoutSteps = (deps: {
     if (launchId === null) return "shared";
     const known = layoutByLaunch.get(launchId);
     if (known !== undefined) return known;
+    if (nothingRecorded()) return "shared";
     const record = yield* repo.launchLayout(launchId);
     // A person record is person, confirmed or still in prepare (decide wrote it before create;
     // a fallback rewrites it as shared): the window between decide and prepare's confirm is
@@ -523,6 +546,10 @@ export const makeHarnessLayoutSteps = (deps: {
     // Anything else, a launch from before this release included, ran as root.
     const layout: HarnessLayout =
       record !== null && record.layout === "person" ? "person" : "shared";
+    // Compare-and-set: what settle wrote while the read was in flight (a fallback's shared, a
+    // confirm's person) is newer than the record read, and stays (review 4 of mend#553, P3-5).
+    const meanwhile = layoutByLaunch.get(launchId);
+    if (meanwhile !== undefined) return meanwhile;
     layoutByLaunch.set(launchId, layout);
     return layout;
   });
@@ -607,6 +634,9 @@ export const makeHarnessLayoutSteps = (deps: {
     flag,
     decide,
     mayRunPerson,
+    noteRecorded: () => {
+      layoutsRecorded = true;
+    },
     standbyMayServe,
     prepareTickets,
     prepareScript: layoutPrepareScript,

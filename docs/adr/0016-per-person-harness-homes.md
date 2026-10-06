@@ -220,8 +220,10 @@ refuses it (decision 14).
   pickup ticket per person, purpose `session-token`, bound to that person, the session and the
   launch. Inside the same exec, node redeems it over the session channel, writes the token through a
   pinned directory and gives it to the person, and sets the person's git author as them (below). A
-  redemption that fails for a passing reason is tried once more; a person who still cannot be given
-  their identity refuses the launch with words to try again, never to change the image. The token is
+  redemption that fails for a passing reason is tried once more: a ticket whose answer failed goes
+  back, redeemable again, and a retry from the same channel whose answer was lost gets that same
+  answer, never a second token and never a theft warning. A person who still cannot be given their
+  identity refuses the launch with words to try again, never to change the image. The token is
   minted when the ticket is redeemed, so a person prepare does not make gets none, and a ticket left
   unredeemed dies with its exec. A person's token redeems only that person's tickets.
 - **What the server accepts.** A person's token, only with a session id that is live in that
@@ -232,6 +234,9 @@ refuses it (decision 14).
   sealantd's capture channel and the launch's pickups only, and the server refuses it on
   `/git/transport` and on every helper route. A capture-mode executor has no token-less
   `/run/mend/mend.sock`.
+- **Flag off, nothing read.** Mend reads once at startup whether any launch or worktree has a layout
+  recorded. With the flag off and none, every launch is `shared` and no layout is read from the
+  store, by any launch, join, process start or channel request, until one is recorded.
 - **No shared login in a person's environment.** Until Core stops putting the launcher's
   `GITHUB_TOKEN`, `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` into the container (Deliveries 7–8),
   every process Mend starts as a person has them set empty.
@@ -251,10 +256,13 @@ refuses it (decision 14).
   goes into Mend's own file, `~/.mend/git-author` (a `[user]` section, empty when they have none),
   rewritten at every identity pickup, so a changed setting applies at the next one. Their
   `~/.config/git/config` includes it at its very top, added once, as the person, through a link
-  their dotfiles made: every `user.*` they set themselves (their dotfiles, `git config --global`)
-  comes after it and wins, nothing else in the file changes, and a failure there never fails the
-  launch. Git finds the file through `$XDG_CONFIG_HOME` or `$HOME` (a tool that moves them commits
-  with no author); the person's `~/.gitconfig` wins over it, as global config wins today.
+  their dotfiles made, under git's own `config.lock`: every `user.*` they set themselves (their
+  dotfiles, `git config --global`) comes after it and wins, nothing else in the file changes (a
+  leading BOM, which git reads only at byte 0, is dropped; the mode is kept), a file git cannot
+  parse is left alone and reported, and a failure never fails the launch. When the include cannot be
+  added, the author is set in the file directly where it sets none, and that is reported. Git finds
+  the file through `$XDG_CONFIG_HOME` or `$HOME` (a tool that moves them commits with no author);
+  the person's `~/.gitconfig` wins over it, as global config wins today.
 - **SSH, `scp`, `sftp`, `ssh-keygen`, GnuPG and the JVM** read the passwd home, which is the
   person's. No wrapper.
 
