@@ -4,7 +4,13 @@ import {
   SessionControlView,
   SessionNotSteerable,
 } from "@mend/api-contracts";
-import { AgentConversationRepo, ServicesRepo, SessionProcessesRepo } from "@mend/db";
+import {
+  AgentConversationRepo,
+  OrganizationsRepo,
+  ProjectsRepo,
+  ServicesRepo,
+  SessionProcessesRepo,
+} from "@mend/db";
 import {
   type AgentRequestId,
   type AgentTurnId,
@@ -96,6 +102,11 @@ export class SessionSteering extends Context.Service<
       session: Session,
       userId: string,
     ) => Effect.Effect<Session, SteeringError>;
+    /** Owners who remain members may watch their terminal after project visibility changes. */
+    readonly authorizeTerminal: (
+      session: Session,
+      userId: string,
+    ) => Effect.Effect<Session, SteeringError>;
     readonly session: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
     /**
      * The owner's own acts, closed to others even while control is shared: deleting the session,
@@ -138,7 +149,12 @@ export class SessionSteering extends Context.Service<
 export const SessionSteeringLive: Layer.Layer<
   SessionSteering,
   never,
-  AgentConversationRepo | ProjectAccess | ServicesRepo | SessionProcessesRepo
+  | AgentConversationRepo
+  | OrganizationsRepo
+  | ProjectsRepo
+  | ProjectAccess
+  | ServicesRepo
+  | SessionProcessesRepo
 > = Layer.effect(
   SessionSteering,
   Effect.gen(function* () {
@@ -146,6 +162,8 @@ export const SessionSteeringLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const services = yield* ServicesRepo;
     const access = yield* ProjectAccess;
+    const organizations = yield* OrganizationsRepo;
+    const projects = yield* ProjectsRepo;
 
     const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
       session: Session,
@@ -155,6 +173,22 @@ export const SessionSteeringLive: Layer.Layer<
         .projectAs(userId, session.projectId)
         .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
       if (!canSteerSession(session, userId)) return yield* refuse(session);
+      return session;
+    });
+
+    const authorizeTerminal = Effect.fn("SessionSteering.authorizeTerminal")(function* (
+      session: Session,
+      userId: string,
+    ) {
+      if (session.ownerUserId !== userId) return yield* authorizeUser(session, userId);
+      const project = yield* projects
+        .byId(session.projectId)
+        .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
+      const membership = yield* organizations.membershipOf(userId);
+      if (membership?.organization.id !== project.organizationId) {
+        return yield* new NotFound({ id: session.id });
+      }
+      // Watching does not lend input. The terminal route separately checks WorkspaceCaller.mayAct.
       return session;
     });
 
@@ -216,6 +250,16 @@ export const SessionSteeringLive: Layer.Layer<
       return { request: row, session: yield* through(id, row.sessionId) };
     });
 
-    return { authorizeUser, session, owned, stop, process, service, turn, agentRequest };
+    return {
+      authorizeUser,
+      authorizeTerminal,
+      session,
+      owned,
+      stop,
+      process,
+      service,
+      turn,
+      agentRequest,
+    };
   }),
 );

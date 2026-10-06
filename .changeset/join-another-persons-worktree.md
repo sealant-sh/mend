@@ -12,8 +12,8 @@ workspace. Now Mend asks about a workspace as the person who created it:
   way, whoever asks. So a check whether an executor still runs never mistakes "you may not see it"
   for "it is gone".
 - Running anything in it (a terminal, a shell, a Service, a command, a repository clone) works this
-  way only while both people are still members who can see the project. Otherwise Mend refuses it
-  and says why.
+  way for a joiner while they can see the project and both people remain organization members.
+  Otherwise Mend refuses it and says why.
 - Starting a workspace and using inference still run on your own account. A harness run through
   Sealant is only started by the workspace's creator.
 
@@ -39,8 +39,16 @@ person who joins someone else's executor therefore:
 
 Landing a change is not affected. See Known issues in the docs.
 
-Mend also checks access again at startup and every minute. Processes of anyone who can no longer
-work in a project, removed or kept out of a project that went private, are ended, and so are the
-executors their creators can no longer use. Typing into an existing terminal and restoring a running
-agent after a restart are refused for them too. A Stop of one person's session in a shared executor
-no longer ends anyone else's agent or the executor itself while someone else still works there.
+Mend also checks access again at startup and every minute. A removed member's sessions are stopped,
+and so is a session in someone else's workspace whose owner can no longer see the project. Each
+one's line says why, and the organization's audit log records it. A session in your own workspace
+keeps running when a project becomes private, as the setting says. Typing into an existing terminal
+and restoring a running agent after a restart follow the same rules. A member who lost project
+visibility can still watch their own terminal until it stops, but cannot type in it. A Stop of one
+person's session in a shared executor no longer ends anyone else's agent or the executor itself
+while someone else still works there.
+
+A refused Stop preserves any replacement or relaunch already saving the executor. Its warning
+survives a Mend restart and clears once the process is observed ended. One failed Stop does not
+interrupt the other sessions being stopped, and counts and audit entries report only sessions whose
+processes ended.

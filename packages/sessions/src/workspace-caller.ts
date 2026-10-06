@@ -24,12 +24,14 @@ import * as Context from "effect/Context";
  *   liveness, removal and project-removal checks see what the creator sees (mend#558 review,
  *   P1-1, P2).
  * - **Acting in a workspace is lent only while both people may work there:** exec, a new PTY or
- *   pipe, a forward, a bind, a replan, a TTL renewal, a git read. The asker and the creator must
- *   each still be a member of the project's organization who can see the project
- *   (`canSeeProject`), read in one query (`SessionsRepo.executorAccessOf`). Otherwise the act is
- *   refused here (403), never handed to Core as the asker: a handle the creator fetched would run
- *   it anyway. A creator who lost access lends nothing: their executor is retired by the member
- *   removal (`SessionEngine.windDownPerson`), and joiners start their own.
+ *   pipe, a forward, a bind, a replan, a TTL renewal, a git read. The asker must still be a member
+ *   of the project's organization who can see the project (`canSeeProject`), and the creator must
+ *   still be a member of it, both read in one query (`SessionsRepo.executorAccessOf`). Otherwise
+ *   the act is refused here (403), never handed to Core as the asker: a handle the creator
+ *   fetched would run it anyway. A creator who is no longer a member lends nothing: their
+ *   executor is retired (`SessionEngine.windDownPerson`, `reconcileAccess`), and joiners start
+ *   their own. A creator who is still a member keeps their executor whatever they can see: a
+ *   project going private leaves their own sessions running, as the setting says.
  * - **A call that spends a person's own credentials stays with that person**, the principal in
  *   context: a create (the launcher's logins go into the workspace), inference, create keys. A
  *   harness run through the platform spends the logins its workspace was created with, so only
@@ -117,8 +119,8 @@ export const mayWorkIn = (role: OrganizationRole | null, userId: string, project
 
 /**
  * Why an act in another person's executor is not lent, in the words the session line and the
- * refusal carry; null when it is. The one test of standing: the routes, the engine's restore of a
- * running agent and its access reconciliation all ask it.
+ * refusal carry; null when it is. Existing sessions in their own executor have a separate
+ * lifetime rule: a visibility change does not end them.
  */
 export const actRefusal = (access: ExecutorAccess, asker: string): SealantPlatformError | null => {
   if (!mayWorkIn(access.askerRole, asker, access.project)) {
@@ -130,12 +132,14 @@ export const actRefusal = (access: ExecutorAccess, asker: string): SealantPlatfo
       cause: null,
     });
   }
-  if (!mayWorkIn(access.creatorRole, access.creatorUserId, access.project)) {
+  // A creator who is still a member lends their executor whatever they can see: their own
+  // sessions keep running in it when the project goes private (review 3 of mend#558, P1).
+  if (access.creatorRole === null) {
     return new SealantPlatformError({
       code: "creator_no_access",
       status: 403,
       message:
-        "the person who started this workspace no longer has access to this project, so nothing new runs in it · start a session of your own in this worktree",
+        "the person who started this workspace is no longer a member of this organization, so nothing new runs in it · start a session of your own in this worktree",
       cause: null,
     });
   }

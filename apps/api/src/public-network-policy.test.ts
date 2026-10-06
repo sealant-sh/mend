@@ -11,6 +11,7 @@ import { Auth, createAuthHandler } from "@mend/auth";
 import {
   AgentConversationRepo,
   OrganizationsRepo,
+  ProjectsRepo,
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
@@ -145,6 +146,8 @@ const startServer = async () => {
     Layer.provide(Layer.mock(UpgradeTicketsRepo, {})),
     Layer.provide(Layer.mock(OrganizationsRepo, {})),
     Layer.provide(SessionSteeringLive),
+    Layer.provide(Layer.mock(OrganizationsRepo, {})),
+    Layer.provide(Layer.mock(ProjectsRepo, {})),
     Layer.provide(Layer.mock(ProjectAccess, {})),
   );
   const server = createServer();

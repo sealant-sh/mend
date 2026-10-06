@@ -175,6 +175,7 @@ export const createTenancyApi = async (
      * still recorded; a method left out still fails as unimplemented.
      */
     readonly implement?: {
+      readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
       readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
       readonly landing?: Layer.PartialEffectful<Landing["Service"]>;
@@ -329,6 +330,7 @@ export const createTenancyApi = async (
           act: () => (self) => self,
           observeRun: () => (self) => self,
           observeRunStream: () => (self) => self,
+          ...options.implement?.workspaceCaller,
         },
         calls,
       ),

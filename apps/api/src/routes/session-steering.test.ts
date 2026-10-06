@@ -1,8 +1,11 @@
+import { SealantPlatformError } from "@mend/sealant";
+import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import {
   ids,
+  CAROL_SESSION_IN_SHARED_A,
   NULL_OWNER_SESSION,
   PROTOCOL_PROCESS,
   UDP_SERVICE,
@@ -107,6 +110,39 @@ describe("raw steering routes", () => {
       });
     },
   );
+
+  it("an owner who lost project visibility can still reach their terminal read-only", async () => {
+    const watching = await createTenancyApi(
+      {},
+      {
+        implement: {
+          workspaceCaller: {
+            mayAct: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "no_standing",
+                  status: 403,
+                  message: "project is private",
+                  cause: null,
+                }),
+              ),
+          },
+        },
+      },
+    );
+    try {
+      watching.world.setVisibility("shared-a", "private");
+      await watching.rawRequest("carol", `/api/tty?session=${CAROL_SESSION_IN_SHARED_A}`);
+      expect(watching.world.calls).toContain("workspaceCaller.mayAct");
+      expect(watching.world.calls).toContain("sealant.getWorkspace");
+      watching.world.calls.length = 0;
+      const other = await watching.rawRequest("carol", `/api/tty?session=${sharedA.session}`);
+      expect(other.status).toBe(404);
+      expect(watching.world.calls).toEqual([]);
+    } finally {
+      await watching.dispose();
+    }
+  });
 
   it("the owner of a visible session gets past authorization to the platform", async () => {
     await api.rawRequest("bob", `/api/tty?session=${sharedB.session}`);

@@ -87,6 +87,10 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       const words = text(event.data["words"]);
       return `discarded unsaved captures and stopped session ${event.subjectId}${words === null ? "" : ` · ${words}`}`;
     }
+    case "session.stopped_no_access": {
+      const words = text(event.data["words"]);
+      return `had session ${event.subjectId} stopped by Mend${words === null ? "" : ` · ${words}`}`;
+    }
     case "member.password_reset_issued":
       return `issued a password reset link for ${subject}`;
     case "organization.created":

@@ -101,6 +101,7 @@ const joinedRun = new SessionRun({
 const world = (
   options: {
     readonly visibility?: "shared" | "private";
+    readonly projectCreator?: string;
     /** The holder's executor is a standby nobody has claimed yet: no creator on record. */
     readonly unclaimed?: { claimed: boolean };
   } = {},
@@ -143,7 +144,7 @@ const world = (
                 project: {
                   organizationId: OrganizationId.make("org-test"),
                   visibility: options.visibility ?? "shared",
-                  createdByUserId: "alice",
+                  createdByUserId: options.projectCreator ?? "alice",
                 },
                 creatorRole: roleOf("alice"),
                 askerRole: roleOf(asker),
@@ -208,6 +209,19 @@ describe("WorkspaceCaller: whose platform identity a call about a workspace runs
     );
     expect(codeOf(acted)).toBe("creator_no_access");
     expect(asked).toEqual(["stopWorkspace alice"]);
+  });
+
+  it("keeps lending to a project's creator when the executor creator loses sight of the project", async () => {
+    const { asked, runAs } = world({ visibility: "private", projectCreator: "bob" });
+    const result = await runAs(
+      "bob",
+      Effect.gen(function* () {
+        const client = yield* SealantClient;
+        return yield* client.exec(workspace, ["true"]);
+      }),
+    );
+    expect(result._tag).toBe("Success");
+    expect(asked).toEqual(["exec alice"]);
   });
 
   it("refuses an act in a private project for a member who cannot see it", async () => {

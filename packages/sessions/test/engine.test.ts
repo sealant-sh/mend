@@ -42,6 +42,8 @@ import {
   SessionsRepo,
   SettingsRepo,
   AgentMemoryRepo,
+  AuditEventsRepo,
+  type NewAuditEvent,
   PiProfilesRepo,
   SecretFilesRepo,
   SkillsRepo,
@@ -171,7 +173,8 @@ import {
   planBlockedWords,
   planWaitingWords,
   CaptureUploadPolicyDefault,
-  ACCESS_LOST,
+  STOPPED_LOST_SIGHT,
+  STOPPED_NOT_MEMBER,
   DotfilesCloner,
   EXECUTOR_RETIRED,
   makeDotfilesClonerLayer,
@@ -1314,6 +1317,8 @@ interface World {
   readonly worktrees: Map<string, Worktree>;
   /** Members of the fixture organization (`org-test`), by account. */
   readonly members: Map<string, "owner" | "member">;
+  /** What Mend recorded in the organization's audit log, in order. */
+  readonly audit: Array<NewAuditEvent>;
   /** Recent owners beyond the world's own sessions, as `recentOwnersForProject` adds them. */
   recentOwners: ReadonlyArray<string>;
   /** A planned relaunch's harness, by session (`planRelaunch`): bookkeeping off the row. */
@@ -1395,6 +1400,7 @@ const makeWorld = (): World => ({
   checkpointConflicts: { count: 0 },
   worktrees: new Map(),
   // Maria joins other people's executors in many worlds: a member, as only a member can be.
+  audit: [],
   members: new Map([
     ["user-fixture", "member"],
     ["user-maria", "member"],
@@ -1824,6 +1830,12 @@ const sourcePolicyLayer = Layer.succeed(
     resolve: async () => ["140.82.112.3"],
   }),
 );
+
+/** The organization's audit log, kept in the world. */
+const auditLayer = (world: World) =>
+  Layer.mock(AuditEventsRepo, {
+    record: (event) => Effect.sync(() => void world.audit.push(event)),
+  });
 
 /** One organization, `org-test`, whose members the world names. */
 const organizationsLayer = (world: World) =>
@@ -3218,6 +3230,7 @@ const withEngine = <A, E>(
         projectLinksEmptyLayer,
         SessionRepositoriesRepoMemory,
         organizationsLayer(world),
+        auditLayer(world),
         sourcePolicyLayer,
         foldersEmptyLayer,
         projectRecipesEmptyLayer,
@@ -6940,6 +6953,7 @@ describe("SessionEngine", () => {
           projectLinksEmptyLayer,
           SessionRepositoriesRepoMemory,
           organizationsLayer(world),
+          auditLayer(world),
           sourcePolicyLayer,
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
@@ -25112,6 +25126,8 @@ const workspacesPerOwner = (
     readonly closed?: Set<string>;
     /** While true, closing a PTY fails the way a platform that does not answer does. */
     readonly closeFails?: () => boolean;
+    /** A defective lookup in one concurrent Stop must not interrupt the others. */
+    readonly getSessionDefect?: (ptyId: string) => boolean;
   } = {},
 ): Layer.Layer<SealantClient> =>
   Layer.effect(
@@ -25233,7 +25249,10 @@ const workspacesPerOwner = (
           ),
         getSession: (workspace, sessionId) =>
           guarded("getSession", ofWorkspace(workspace.id), () =>
-            client.getSession(workspace, sessionId).pipe(
+            (ptys.getSessionDefect?.(sessionId) === true
+              ? Effect.die("injected process lookup defect")
+              : client.getSession(workspace, sessionId)
+            ).pipe(
               Effect.map(
                 (pty): InteractiveSession => ({
                   ...pty,
@@ -25322,7 +25341,10 @@ const joinByAnotherPerson = async (
     world: World,
     join: JoinByAnother,
   ) => Effect.Effect<void, unknown, SessionEngine | Store | WorktreesRepo | Scope.Scope>,
-  options: { readonly closeFails?: () => boolean } = {},
+  options: {
+    readonly closeFails?: () => boolean;
+    readonly getSessionDefect?: (ptyId: string) => boolean;
+  } = {},
 ) => {
   const closed = new Set<string>();
   const stopped: Array<string> = [];
@@ -25397,7 +25419,7 @@ const joinByAnotherPerson = async (
         ),
         seen,
         calls,
-        { closed, ...(options.closeFails === undefined ? {} : { closeFails: options.closeFails }) },
+        { closed, ...options },
       ),
     },
   );
@@ -25805,17 +25827,264 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
           stopped: [...join.stopped],
           // Nothing left to do on the next tick.
           again: yield* engine.reconcileAccess(),
+          audit: world.audit.map((event) => ({
+            action: event.action,
+            actorUserId: event.actorUserId,
+            subjectType: event.subjectType,
+            reason: event.data?.["reason"],
+            words: event.data?.["words"],
+          })),
         };
       }),
     );
     expect(state).toEqual({
-      done: { stopped: 1, retired: [] },
+      done: { stopped: 1, refused: 0, retired: [] },
       joinerClosed: true,
-      joinerSummary: ACCESS_LOST,
+      joinerSummary: STOPPED_LOST_SIGHT,
       holderAgentLive: true,
       stopped: [],
-      again: { stopped: 0, retired: [] },
+      again: { stopped: 0, refused: 0, retired: [] },
+      // On the organization's record, as Mend's, with the reason the session line gives.
+      audit: [
+        {
+          action: "session.stopped_no_access",
+          actorUserId: MARIA,
+          subjectType: "session",
+          reason: "no_standing",
+          words: STOPPED_LOST_SIGHT,
+        },
+      ],
     });
+  }, 30_000);
+
+  it("a project going private stops nobody's own session: the executor's creator and the project's creator keep running, and so does flipping it back", async () => {
+    let state: Record<string, unknown> = {};
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        const agent = joinedAgentOf(world, join.joined);
+        // Maria created the project; the executor is user-fixture's, who cannot see it once private.
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "private", createdByUserId: MARIA }),
+        );
+        const whenPrivate = yield* engine.reconcileAccess();
+        yield* Effect.sleep(SETTLE_WAIT);
+        const live = () => ({
+          holderAgentLive: holderAgentLive(world, join.holder),
+          joinerAgentLive:
+            [...world.processes.values()].find((p) => p.sealantSessionId === agent.ptyId)
+              ?.exitedAt === null,
+        });
+        const afterPrivate = live();
+        world.projects.set(
+          join.project.id,
+          new Project({ ...join.project, visibility: "shared", createdByUserId: MARIA }),
+        );
+        const whenShared = yield* engine.reconcileAccess();
+        state = {
+          whenPrivate,
+          afterPrivate,
+          whenShared,
+          afterShared: live(),
+          stopped: [...join.stopped],
+          audit: world.audit.length,
+          holderSummary: world.sessions.get(join.holder)?.summary ?? null,
+        };
+      }),
+    );
+    expect(state).toEqual({
+      whenPrivate: { stopped: 0, refused: 0, retired: [] },
+      afterPrivate: { holderAgentLive: true, joinerAgentLive: true },
+      whenShared: { stopped: 0, refused: 0, retired: [] },
+      afterShared: { holderAgentLive: true, joinerAgentLive: true },
+      stopped: [],
+      audit: 0,
+      holderSummary: expect.not.stringContaining("stopped"),
+    });
+  }, 30_000);
+
+  it("a refused access stop reports zero ended and writes no stopped audit event", async () => {
+    let refusing = false;
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          world.members.delete(MARIA);
+          refusing = true;
+          for (let round = 0; round < 2; round += 1) {
+            expect(yield* engine.reconcileAccess()).toEqual({
+              stopped: 0,
+              refused: 1,
+              retired: [],
+            });
+            expect(world.audit).toEqual([]);
+            expect(world.sessions.get(join.joined)?.summary).toContain("could not be stopped");
+            expect(holderAgentLive(world, join.holder)).toBe(true);
+          }
+          refusing = false;
+          expect(yield* engine.reconcileAccess()).toEqual({ stopped: 1, refused: 0, retired: [] });
+          expect(world.sessions.get(join.joined)?.summary).toBe(STOPPED_NOT_MEMBER);
+          expect(world.audit).toMatchObject([
+            {
+              subjectId: join.joined,
+              actorUserId: MARIA,
+              data: { reason: "not_member" },
+            },
+          ]);
+        }),
+      { closeFails: () => refusing },
+    );
+  }, 30_000);
+
+  it.each(["replacement", "relaunch"] as const)(
+    "a refused Stop preserves an existing %s drain",
+    async (reason) => {
+      let refusing = false;
+      await joinByAnotherPerson(
+        (engine, world, join) =>
+          Effect.gen(function* () {
+            const session = world.sessions.get(join.joined);
+            if (session === undefined) throw new Error("missing joined session");
+            world.sessions.set(
+              session.id,
+              new Session({
+                ...session,
+                captureDrain: reason,
+                captureDrainRequestedAt: now(),
+                captureDrainProgressAt: now(),
+              }),
+            );
+            if (reason === "relaunch") world.relaunches.set(session.id, "claude");
+            refusing = true;
+            yield* engine.stop(session.id);
+            expect(world.sessions.get(session.id)?.captureDrain).toBe(reason);
+            expect(world.relaunches.has(session.id)).toBe(reason === "relaunch");
+            expect(holderAgentLive(world, join.holder)).toBe(true);
+          }),
+        { closeFails: () => refusing },
+      );
+    },
+    30_000,
+  );
+
+  it("reconciliation stops a removed creator's own session with a direct reason and records both people", async () => {
+    await joinByAnotherPerson((engine, world, join) =>
+      Effect.gen(function* () {
+        world.members.delete("user-fixture");
+        expect(yield* engine.reconcileAccess()).toEqual({
+          stopped: 2,
+          refused: 0,
+          retired: ["workspace-1"],
+        });
+        expect(world.sessions.get(join.holder)?.summary).toBe(STOPPED_NOT_MEMBER);
+        expect(world.sessions.get(join.joined)?.summary).toBe(EXECUTOR_RETIRED);
+        expect(world.audit.map((event) => event.data?.["reason"]).toSorted()).toEqual([
+          "creator_not_member",
+          "not_member",
+        ]);
+        yield* until(() => join.stopped.length === 1, "the saved executor ends");
+      }),
+    );
+  }, 30_000);
+
+  it("one defective Stop leaves sibling Stops running", async () => {
+    let defectivePty: string | null = null;
+    await joinByAnotherPerson(
+      (engine, world, join) =>
+        Effect.gen(function* () {
+          const session = world.sessions.get(join.joined);
+          if (session === undefined) throw new Error("missing joined session");
+          const sibling = yield* engine.provisionSessionIn(session.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(sibling.id, ["claude"]);
+          const siblingPty = joinedAgentOf(world, sibling.id);
+          defectivePty = joinedAgentOf(world, join.joined).ptyId;
+          world.members.delete(MARIA);
+          expect(yield* engine.reconcileAccess()).toEqual({ stopped: 1, refused: 1, retired: [] });
+          expect(join.closed.has(siblingPty.ptyId)).toBe(true);
+          expect(join.closed.has(defectivePty)).toBe(false);
+          expect(holderAgentLive(world, join.holder)).toBe(true);
+          expect(world.audit.map((event) => event.subjectId)).toEqual([sibling.id]);
+        }),
+      { getSessionDefect: (ptyId) => ptyId === defectivePty },
+    );
+  }, 30_000);
+
+  it("failed shell Stops survive restart until each shell is observed ended", async () => {
+    const fixture = {
+      world: makeWorld(),
+      tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-stop-restart-")),
+    };
+    const memory = makeMemoryCaptureStore();
+    const states = new Map<string, InteractiveSessionStatus>();
+    const shells: Array<SessionProcess> = [];
+    let refusing = false;
+    const platform = workspacesPerOwner(
+      sealantLaunchLayer([], undefined, [], undefined, undefined, undefined, states),
+      [],
+      [],
+      { closeFails: () => refusing },
+    );
+    try {
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["claude"]);
+            shells.push(yield* engine.openShell(session.id), yield* engine.openShell(session.id));
+            refusing = true;
+            for (const shell of shells) yield* engine.stopShell(shell.id);
+            expect(world.sessions.get(session.id)?.summary).toContain(
+              "a shell could not be stopped",
+            );
+          }),
+        { fixture, captured: memory, sealantLayer: platform },
+      );
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            yield* SessionEngine;
+            const first = shells[0];
+            const second = shells[1];
+            if (first?.sealantSessionId == null || second?.sealantSessionId == null)
+              throw new Error("missing shells");
+            expect(world.sessions.get(first.sessionId)?.summary).toContain(
+              "a shell could not be stopped",
+            );
+            states.set(first.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.processes.get(first.id)?.exitedAt != null,
+              "first shell observed ended",
+            );
+            expect(world.sessions.get(first.sessionId)?.summary).toContain(
+              "a shell could not be stopped",
+            );
+            states.set(second.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.processes.get(second.id)?.exitedAt != null,
+              "second shell observed ended",
+            );
+            yield* until(
+              () => !(world.sessions.get(first.sessionId)?.summary ?? "").includes("stop again"),
+              "refusal cleared",
+            );
+            expect(holderAgentLive(world, first.sessionId)).toBe(true);
+          }),
+        { fixture, captured: memory, sealantLayer: platform },
+      );
+    } finally {
+      fs.rmSync(fixture.tmp, { recursive: true, force: true });
+    }
   }, 30_000);
 
   it("removing the person who started the executor retires it: the joiner is stopped and told, and it saves and ends", async () => {
@@ -25845,7 +26114,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     );
     expect(state).toEqual({
       refused:
-        "the person who started this workspace no longer has access to this project, so nothing new runs in it · start a session of your own in this worktree",
+        "the person who started this workspace is no longer a member of this organization, so nothing new runs in it · start a session of your own in this worktree",
       retired: ["workspace-1"],
       joinerClosed: true,
       joinerStatus: "stopped",

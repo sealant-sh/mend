@@ -224,7 +224,9 @@ worktree where another person's session is running joins their executor, so:
 Landing a change is not affected: Mend asks GitHub as the change's owner, never through someone
 else's executor. If the person who started the executor is removed from the organization, Mend stops
 the sessions working in it, saves it and retires it; start again to continue in an executor of your
-own. Start your session in a worktree of your own to run on your own logins.
+own. If a project becomes private and you can no longer see it, a session of yours running in
+someone else's executor stops; sessions in your own executors keep running until they end. Start
+your session in a worktree of your own to run on your own logins.
 
 ## A worktree someone else used before you
 

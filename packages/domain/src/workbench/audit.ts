@@ -24,6 +24,9 @@ export const AuditAction = Schema.Literals([
   "session.shared_control_off",
   // The owner ended a session's workspace with captures still pending: work was discarded.
   "session.unsaved_discarded",
+  // Mend stopped a session whose owner no longer has access to where it ran (mend#558): a removed
+  // member, or a joiner who can no longer see the project. The session's owner is the actor.
+  "session.stopped_no_access",
   "member.password_reset_issued",
   "organization.created",
   "organization.renamed",
