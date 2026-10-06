@@ -254,18 +254,30 @@ workspaces.create({ …, credentialsHome })
 
 - **New in Core:** `credentialsHome` on create (no login in the environment); `DELETE`; `GET`;
   credential sync-back reads each record's home.
+- **Who owns what Core writes before the user exists.** The launcher's logins are written at create,
+  before prepare's first exec makes their user, so the create names the owner by number:
+  `credentialsHome: { path, uid, gid }`. Core makes a missing home owned by `uid:gid`, 0700, seeded
+  from `/etc/skel`, and writes every file (0600) and every directory it makes as `uid:gid`; a
+  numeric owner needs no passwd entry. Every later write (a POST, a refresh push) takes the owner of
+  the home directory as it stands, which is the user's from then on. Mend's side holds without that:
+  when prepare or a person's first process makes a user whose home already exists, `useradd` keeps
+  the directory, copies nothing from `/etc/skel` and changes no owner, so Mend copies the skeleton
+  in without replacing anything and gives the user everything in the home (`chown -hR`) before any
+  process runs as them. A POST into a home that does not exist yet is refused (`home-unusable`), so
+  a joiner's POST runs beside their `useradd` only once POST takes the same `{ uid, gid }` and makes
+  a missing home as create does; until then Mend makes the joiner's user first and posts after it.
 - **Authorisation.** A service key acting for the workspace's owner may write any `onBehalfOf`
   person's login. Mend enforces that a login goes only into that person's home, or into a
   conversation home while that person's process is about to run there (decision 6).
-- **How Mend uses it:** `credentialsHome = /home/<launcher>` at create when the launch is `person`,
-  `$HOME` when it is `shared` (decision 1 decides which before create); one POST before a person's
-  first process in an executor, in parallel with their user, dotfiles and deliveries; a refusal
-  before anything is written when the needed provider is not connected or `invalid` ("Connect Claude
-  to start a session here"); DELETE when a person's last process ends, retried, except the
-  launcher's create-time home, which stays while the executor lives (their Remote-SSH session uses
-  it with no Mend process); reconciliation against `GET` at startup; one re-POST after an
-  authentication failure. Mend's ChatGPT-login program writes pi's and opencode's copies in place,
-  as the user, never by a rename through a link into `P`.
+- **How Mend uses it:** `credentialsHome = { path: /home/<launcher>, uid, gid: 40000 }` at create
+  when the launch is `person`, `$HOME` when it is `shared` (decision 1 decides which before create);
+  one POST before a person's first process in an executor, in parallel with their user, dotfiles and
+  deliveries; a refusal before anything is written when the needed provider is not connected or
+  `invalid` ("Connect Claude to start a session here"); DELETE when a person's last process ends,
+  retried, except the launcher's create-time home, which stays while the executor lives (their
+  Remote-SSH session uses it with no Mend process); reconciliation against `GET` at startup; one
+  re-POST after an authentication failure. Mend's ChatGPT-login program writes pi's and opencode's
+  copies in place, as the user, never by a rename through a link into `P`.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 
@@ -902,8 +914,13 @@ launches.
 10. **Core and sealantd · release chain.** `next` prereleases, Core's pin of sealantd, image builds,
     Mend's pin. S. Perf: the benchmark's `shared` launches at the new pin match the baseline within
     budget.
-11. **Mend · mend#526 merged as it is.** Its pi refusal stays until 21, for `shared` executors. S,
-    open. Perf: none expected; its pi launch scenario run.
+11. **Mend · mend#526, merged without its pi refusal.** The owner rejects any rule that stops two
+    people working in one worktree, so `PI_PROFILE_IN_USE` was taken out before it merged
+    (2026-10-06). In a `shared` executor a pi that joins a live pi, anyone's, runs on the profile
+    already there, as before #526, and Known issues says so; with no pi live, the launch clears the
+    harness home and delivers its owner's profile, or refuses with `PI_PROFILE_NOT_DELIVERED`. In a
+    `person` executor each pi runs on its own person's profile (15). S, merged. Perf: none; its pi
+    launch scenario run.
 12. **Mend · users and layout behind the flag.** Linux identity per account (migration: name, uid in
     40000–49999); `useradd` at prepare, serialised, for the launcher and every restored current
     member, at first process for joiners, after a passwd and group collision check; the layout
@@ -1023,8 +1040,9 @@ a fresh worktree, on the scratch instance, then on the box once the conditions a
 worktrees at the commit to be flipped, after a week of use with the box's flag on; the flag is not
 flipped to take the `shared` record. Both records are checked in.
 
-21. **Mend · the flip.** `person` becomes the default; #526's pi refusal and the `/root` relocation
-    kept only for `shared` executors. S, ~150. Perf: none beyond P2.
+21. **Mend · the flip.** `person` becomes the default; the `/root` relocation kept only for `shared`
+    executors, where a joining pi still runs on the live pi's profile (11). S, ~150. Perf: none
+    beyond P2.
 22. **Mend · removing what is dead.** The hand-over at launch, withholding, the owner record,
     `agent_memory_homes` writes (reads stay for 19 until 0.37), joiner memory flags; ADR 0010's join
     rule; stale Known issues. The credential tables stay. L, ~−1,500 / +200. Perf: fewer execs on
@@ -1097,4 +1115,10 @@ benchmark once more, before 0.36 is tagged.
   gates pick the layout per launch on fresh worktrees; Claude's switches go in a `--settings` file;
   the worktree repair goes by ctime with a marker per repair; a hand-over makes two Core calls;
   Codex's `*-shm` files are machine state. The design is final.
+- 2026-10-06 (owner): no refusal of two people in one worktree. mend#526 merged without its pi
+  refusal; a pi joining a live pi in a `shared` executor runs on the profile there (Delivery 11).
+- 2026-10-06, after mend#551's review: a member made in another worktree but with nothing saved in
+  this one is made at their first process here; the create names the launcher's home owner by
+  number, and a home that exists before its user becomes the user's with the skeleton copied in
+  (decision 5).
 - Open: gate B's history record.

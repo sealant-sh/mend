@@ -572,10 +572,19 @@ export interface WorkspaceCreateLaunch {
   readonly launchId?: string;
   /**
    * `credentialsHome` (docs/adr/0016, decision 5; Core Delivery 8): the launcher's logins written
-   * into their own home rather than `$HOME`, for a person-layout launch. Today's SDK cannot send
-   * it, so a create that names one is refused before it is asked.
+   * into their own home rather than `$HOME`, for a person-layout launch. The create runs before
+   * the launcher's user exists, so it names the owner by number: Core makes a missing home for
+   * `uid:gid` (0700, from `/etc/skel`) and writes every file and directory as them. Today's SDK
+   * cannot send it, so a create that names one is refused before it is asked.
    */
-  readonly credentialsHome?: string;
+  readonly credentialsHome?: CredentialsHome;
+}
+
+/** A home and the numeric owner Core writes it as (docs/adr/0016, decision 5). */
+export interface CredentialsHome {
+  readonly path: string;
+  readonly uid: number;
+  readonly gid: number;
 }
 
 export interface SealantClientShape {

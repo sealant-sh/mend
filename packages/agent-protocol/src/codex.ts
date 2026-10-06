@@ -68,6 +68,22 @@ const protocolError = (operation: string, message: string, cause: unknown): Agen
 export const CODEX_THREAD_NOT_FOUND =
   "Codex could not find this conversation's thread. Nothing was sent.";
 
+/**
+ * Codex's own words for a thread it cannot find, and nothing else, so an unrelated failure
+ * (an unknown model or config field, an "unknown error") keeps Codex's message. Taken from
+ * codex-rs (refs clone 59f18e8, 2026-10-01): `thread/resume` by id answers
+ * `no rollout found for thread id <id>` when the rollout is gone (the local thread store's
+ * `read_thread`, and `thread_store_resume_read_error` in `app-server`'s thread processor), and
+ * the app-server's other thread routes answer `thread not found: <id>`.
+ */
+const CODEX_THREAD_NOT_FOUND_ERRORS = [
+  /^no rollout found for thread id \S+$/,
+  /^thread not found: \S+$/,
+];
+
+const isCodexThreadNotFound = (message: string): boolean =>
+  CODEX_THREAD_NOT_FOUND_ERRORS.some((pattern) => pattern.test(message.trim()));
+
 const encodeLine = (value: unknown): Uint8Array =>
   new TextEncoder().encode(`${JSON.stringify(value)}\n`);
 
@@ -555,7 +571,7 @@ export const CodexAdapter: AgentAdapter = {
                 threadId: options.providerSessionId,
               }).pipe(
                 Effect.mapError((error) =>
-                  /unknown|not found|no such|does not exist/i.test(error.message)
+                  isCodexThreadNotFound(error.message)
                     ? protocolError("thread/resume", CODEX_THREAD_NOT_FOUND, error)
                     : error,
                 ),

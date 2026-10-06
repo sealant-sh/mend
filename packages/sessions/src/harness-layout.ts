@@ -342,10 +342,17 @@ export interface LayoutReport {
   readonly missing: ReadonlyArray<string>;
   /** The person layout was made (`mend-layout ready`). */
   readonly ready: boolean;
+  /**
+   * The login names whose user and home this prepare made (`mend-layout made <name>`), and no
+   * one else: a member with an identity but no saved directory in this head is not among them,
+   * so their first process makes them.
+   */
+  readonly made: ReadonlyArray<string>;
 }
 
 export const parseLayoutReport = (stdout: string): LayoutReport => {
   const missing: Array<string> = [];
+  const made: Array<string> = [];
   let probed = false;
   let ready = false;
   for (const line of stdout.split("\n")) {
@@ -353,14 +360,15 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
     const rest = line.slice(LAYOUT_LINE.length + 1).trim();
     if (rest === "probed") probed = true;
     else if (rest === "ready") ready = true;
-    else if (rest.startsWith("missing ")) {
+    else if (rest.startsWith("made ")) {
+      const name = rest.slice("made ".length).trim();
+      if (name !== "" && !made.includes(name)) made.push(name);
+    } else if (rest.startsWith("missing ")) {
       const words = rest.slice("missing ".length).trim();
-      // A user already made by an earlier prepare of the same person is no collision; the
-      // prepare checks its uid itself.
       if (words !== "" && !missing.includes(words)) missing.push(words);
     }
   }
-  return { probed, missing, ready };
+  return { probed, missing, ready, made };
 };
 
 /** Every parent directory of these relative paths, shallowest first, once each. */
@@ -381,6 +389,13 @@ const parentsOf = (paths: ReadonlyArray<string>): ReadonlyArray<string> => [
  * a user that exists with the same uid is kept, and a link already there is left. A user of that
  * name with another uid fails the script. As a non-root caller (the tests) it makes the same
  * directories and links and skips what only root does.
+ *
+ * A home that exists before its user does is the launcher's: Core writes their logins into
+ * `credentialsHome` at create, before prepare's first exec, as root, because the user it would
+ * write them as does not exist yet. `useradd -m` then keeps the directory, copies nothing from
+ * `/etc/skel` and changes no owner, so the script copies the skeleton in itself, never over a
+ * file already there, and gives the user everything in the home. From then on the home belongs
+ * to the user, and Core writes every later login there as the home's owner.
  */
 export const personHomeScript = (
   person: LinuxIdentity,
@@ -390,10 +405,13 @@ export const personHomeScript = (
     readonly home?: string;
     readonly tmpRoot?: string;
     readonly runRoot?: string;
+    /** The skeleton a new home is made from; `/etc/skel` unless a test names another. */
+    readonly skel?: string;
   },
 ): string => {
   assertScriptSafe(person);
   const home = options.home ?? linuxHomeOf(person);
+  const skel = options.skel ?? "/etc/skel";
   const saved = savedDirOf(options.harnessHome, person.accountId);
   const tmp = `${options.tmpRoot ?? "/tmp"}/u-${person.uid}`;
   const run = `${options.runRoot ?? "/run/user"}/${person.uid}`;
@@ -413,7 +431,13 @@ export const personHomeScript = (
       `grep -q '^${MEND_GROUP.name}:' /etc/group || groupadd -g ${MEND_GROUP.gid} ${MEND_GROUP.name}; ` +
       `sh_=$(awk -F: '$1=="root" { print $7 }' /etc/passwd); [ -n "$sh_" ] || sh_=/bin/sh; ` +
       `extra=; grep -q '^docker:' /etc/group && extra="-G docker"; ` +
-      `useradd -u ${person.uid} -g ${MEND_GROUP.name} $extra -m -k /etc/skel -d ${q(home)} -s "$sh_" ${person.name}; ` +
+      `pre=0; [ -d ${q(home)} ] && pre=1; ` +
+      `useradd -u ${person.uid} -g ${MEND_GROUP.name} $extra -m -k ${q(skel)} -d ${q(home)} -s "$sh_" ${person.name}; ` +
+      // What Core wrote before the user existed is root's, and useradd copied no skeleton into
+      // a home that was already there: both become the user's, nothing already there replaced.
+      `if [ "$pre" = 1 ]; then ` +
+      `[ -d ${q(skel)} ] && cp -an ${q(`${skel}/.`)} ${q(home)}/; ` +
+      `chown -hR ${owner} ${q(home)}; fi; ` +
       `fi; fi`,
     `mkdir -p ${q(home)}`,
     `[ "$root" = 1 ] && chown ${owner} ${q(home)} || true`,
@@ -461,8 +485,10 @@ export const personHomeScript = (
  * same exec (decision 1): the probe, then, only when nothing is missing, every person's user and
  * home (`personHomeScript`), `/root` made traversable (0755: a custom image's toolchains under
  * `/root` still run for everyone), `core.sharedRepository=group` in the worktree's git config, and
- * the repair marker. Prints `mend-layout ready` when all of that was made. People are made one at
- * a time.
+ * the repair marker. Prints `mend-layout made <name>` for each person it made, and
+ * `mend-layout ready` when all of that was made. People are made one at a time; a person who
+ * cannot be made prints `mend-layout failed <name>`, and nobody after them is made. The script
+ * never exits itself, so the helper install's status it rides with is still the exec's.
  */
 export const personPrepareScript = (
   people: ReadonlyArray<{
@@ -470,27 +496,63 @@ export const personPrepareScript = (
     /** Made only when their saved directory came back with the restored head (members). */
     readonly ifSaved: boolean;
   }>,
-  options: { readonly harnessHome: string; readonly repo: string },
+  options: {
+    readonly harnessHome: string;
+    readonly repo: string;
+    /** Where the tests put what the executor keeps at fixed paths; the executor's own when absent. */
+    readonly places?: {
+      readonly homesRoot?: string;
+      readonly tmpRoot?: string;
+      readonly runRoot?: string;
+      readonly skel?: string;
+      readonly marker?: string;
+      readonly passwd?: string;
+      readonly group?: string;
+      readonly aclDir?: string;
+    };
+  },
 ): string => {
   const q = shellQuote;
-  const markerDir = REPAIR_MARKER.slice(0, REPAIR_MARKER.lastIndexOf("/"));
+  const places = options.places ?? {};
+  const marker = places.marker ?? REPAIR_MARKER;
+  const markerDir = marker.slice(0, marker.lastIndexOf("/"));
   const identities = people.map((entry) => entry.person);
+  const homeOptions = {
+    harnessHome: options.harnessHome,
+    ...(places.tmpRoot === undefined ? {} : { tmpRoot: places.tmpRoot }),
+    ...(places.runRoot === undefined ? {} : { runRoot: places.runRoot }),
+    ...(places.skel === undefined ? {} : { skel: places.skel }),
+  };
   return [
-    layoutProbeScript(identities),
-    `if [ "$layout_missing" = 0 ]; then`,
-    // One person at a time, each in a subshell of its own: a failure names its person.
-    ...people.map(({ person, ifSaved }) => {
-      const make =
-        `( ${personHomeScript(person, { harnessHome: options.harnessHome }).replaceAll("\n", "\n  ")}\n) || ` +
-        `{ printf '%s failed %s\\n' ${LAYOUT_LINE} ${person.name}; exit 0; }`;
-      return ifSaved
-        ? `if [ -d ${q(savedDirOf(options.harnessHome, person.accountId))} ]; then\n${make}\nfi`
-        : make;
+    layoutProbeScript(identities, {
+      ...(places.passwd === undefined ? {} : { passwd: places.passwd }),
+      ...(places.group === undefined ? {} : { group: places.group }),
+      ...(places.aclDir === undefined ? {} : { aclDir: places.aclDir }),
     }),
+    `layout_failed=0`,
+    `if [ "$layout_missing" = 0 ]; then`,
+    // One person at a time, each in a subshell of its own: a failure names its person, and only
+    // a person this prepare made is reported made. The subshell is a statement of its own, never
+    // the left side of `&&` or `||`, where the shell would ignore its `set -e` and a failed
+    // `useradd` would pass for made.
+    ...people.map(({ person, ifSaved }) => {
+      const saved = q(savedDirOf(options.harnessHome, person.accountId));
+      return (
+        `if [ "$layout_failed" = 0 ]${ifSaved ? ` && [ -d ${saved} ]` : ""}; then\n` +
+        `( ${personHomeScript(person, {
+          ...homeOptions,
+          ...(places.homesRoot === undefined ? {} : { home: `${places.homesRoot}/${person.name}` }),
+        }).replaceAll("\n", "\n  ")}\n)\n` +
+        `if [ "$?" = 0 ]; then printf '%s made %s\\n' ${LAYOUT_LINE} ${person.name}; ` +
+        `else printf '%s failed %s\\n' ${LAYOUT_LINE} ${person.name}; layout_failed=1; fi\nfi`
+      );
+    }),
+    `if [ "$layout_failed" = 0 ]; then`,
     `chmod 0755 /root 2>/dev/null || true`,
     `git -C ${q(options.repo)} config core.sharedRepository group 2>/dev/null || true`,
-    `mkdir -p ${q(markerDir)} && touch ${q(REPAIR_MARKER)}`,
+    `mkdir -p ${q(markerDir)} && touch ${q(marker)}`,
     `printf '%s ready\\n' ${LAYOUT_LINE}`,
+    `fi`,
     `fi`,
   ].join("\n");
 };

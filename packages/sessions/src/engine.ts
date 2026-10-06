@@ -155,6 +155,7 @@ import {
   agentMemoryMaxFileBytes,
   type HarnessLayout,
   linuxHomeOf,
+  MEND_GROUP,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -9375,7 +9376,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       idempotencyKey: input.createKey.key,
                       launchId: input.launchId,
                       ...(launchLayout.layout === "person"
-                        ? { credentialsHome: linuxHomeOf(launchLayout.launcher) }
+                        ? {
+                            credentialsHome: {
+                              path: linuxHomeOf(launchLayout.launcher),
+                              uid: launchLayout.launcher.uid,
+                              gid: MEND_GROUP.gid,
+                            },
+                          }
                         : {}),
                     },
                 input.watchCreate,

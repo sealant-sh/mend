@@ -372,9 +372,17 @@ export const makeHarnessLayoutSteps = (deps: {
         missing: [],
       });
       yield* repo.confirmPerson(input.launchId, input.worktreeId);
+      // Only the people this prepare says it made: a member with an identity (made in some other
+      // worktree) whose saved directory did not come back with this head was skipped, and is
+      // made at their first process here.
+      const made = new Set(report.made);
       madeIn.set(
         input.workspace.id,
-        new Set([layout.launcher.accountId, ...layout.members.map((member) => member.accountId)]),
+        new Set(
+          [layout.launcher, ...layout.members]
+            .filter((person) => made.has(person.name))
+            .map((person) => person.accountId),
+        ),
       );
       lastIn.set(input.workspace.id, layout.launcher.accountId);
       return { layout: "person" };

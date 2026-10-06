@@ -38,6 +38,68 @@ afterEach(() => {
 const sh = (script: string, cwd?: string) =>
   spawnSync("sh", ["-c", script], { encoding: "utf8", ...(cwd === undefined ? {} : { cwd }) });
 
+/**
+ * A root an executor's prepare sees, without being root: `id -u` says 0, and `useradd`,
+ * `groupadd`, `chown`, `chgrp`, `sudo`, `setfacl` and `sealantd` are stand-ins on `PATH`.
+ * `useradd` does what shadow-utils does with `-m -k <skel>`: it makes the home from the skeleton
+ * when the home does not exist, and when it does, warns, copies nothing and changes no owner.
+ * `chown` and `chgrp` change nothing and log their arguments. A `useradd-fails` file makes
+ * `useradd` fail.
+ */
+const fakeRoot = () => {
+  const dir = tempDir("mend-fake-root-");
+  const bin = path.join(dir, "bin");
+  const users = path.join(dir, "users");
+  const log = path.join(dir, "log");
+  fs.mkdirSync(bin);
+  fs.mkdirSync(users);
+  const stub = (name: string, body: string) =>
+    fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+  stub(
+    "id",
+    `if [ "$1" = -u ] && [ -z "$2" ]; then echo 0; exit 0; fi\n` +
+      `[ -f "${users}/$2" ] && cat "${users}/$2" || exit 1`,
+  );
+  stub(
+    "useradd",
+    `[ -e "${dir}/useradd-fails" ] && exit 9\n` +
+      `while [ $# -gt 1 ]; do case "$1" in -u) uid=$2; shift 2 ;; -k) skel=$2; shift 2 ;; ` +
+      `-d) home=$2; shift 2 ;; -g|-G|-s) shift 2 ;; *) shift ;; esac; done\n` +
+      `echo "$uid" > "${users}/$1"\n` +
+      `if [ -d "$home" ]; then echo "useradd: warning: the home directory $home already exists." >&2; ` +
+      `echo "useradd: Not copying any file from skel directory into it." >&2; ` +
+      `else mkdir -p "$home" && cp -a "$skel/." "$home/"; fi`,
+  );
+  stub("groupadd", "exit 0");
+  stub("chown", `echo "chown $*" >> "${log}"`);
+  stub("chgrp", `echo "chgrp $*" >> "${log}"`);
+  stub("sudo", "exit 0");
+  stub("setfacl", "exit 0");
+  stub("sealantd", `echo '{"exec.user":true,"dotfiles.user":true,"restore.owner_map":true}'`);
+  // The image's skeleton: a dotfile and the link to a shared cache decision 3 depends on.
+  const skel = path.join(dir, "skel");
+  fs.mkdirSync(path.join(skel, ".cargo"), { recursive: true });
+  fs.writeFileSync(path.join(skel, ".bashrc"), "# skel\n");
+  fs.symlinkSync("/var/cache/cargo/registry", path.join(skel, ".cargo/registry"));
+  const passwd = path.join(dir, "passwd");
+  const group = path.join(dir, "group");
+  fs.writeFileSync(passwd, "root:x:0:0:root:/root:/bin/sh\n");
+  fs.writeFileSync(group, "root:x:0:\n");
+  return {
+    dir,
+    skel,
+    passwd,
+    group,
+    failUseradd: () => fs.writeFileSync(path.join(dir, "useradd-fails"), ""),
+    log: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : ""),
+    run: (script: string) =>
+      spawnSync("sh", ["-c", script], {
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+      }),
+  };
+};
+
 const fresh: LayoutDecisionInput = {
   flag: "shared",
   worktree: { layout: null, requested: null },
@@ -238,6 +300,15 @@ describe("the image probe (decision 1)", () => {
     expect(report.ready).toBe(false);
   });
 
+  it("reads which people a prepare made", () => {
+    expect(
+      parseLayoutReport(
+        "mend-layout probed\nmend-layout made m3kq7xj2a\nmend-layout made mf9t2bw4c\nmend-layout ready\n",
+      ),
+    ).toEqual({ probed: true, missing: [], ready: true, made: ["m3kq7xj2a", "mf9t2bw4c"] });
+    expect(parseLayoutReport("mend-layout probed\nmend-layout ready\n").made).toEqual([]);
+  });
+
   it("does not make anyone when anything is missing", () => {
     const report = parseLayoutReport(
       sh(
@@ -251,6 +322,123 @@ describe("the image probe (decision 1)", () => {
     expect(report.probed).toBe(true);
     expect(report.missing.length).toBeGreaterThan(0);
     expect(report.ready).toBe(false);
+  });
+});
+
+/** Prepare for `people` under a fake root, everything it touches inside the root. */
+const prepare = (
+  root: ReturnType<typeof fakeRoot>,
+  people: Parameters<typeof personPrepareScript>[0],
+) => {
+  const harnessHome = path.join(root.dir, "harness-home");
+  fs.mkdirSync(harnessHome, { recursive: true });
+  const homesRoot = path.join(root.dir, "home");
+  const script = personPrepareScript(people, {
+    harnessHome,
+    repo: path.join(root.dir, "repo"),
+    places: {
+      homesRoot,
+      tmpRoot: path.join(root.dir, "tmp"),
+      runRoot: path.join(root.dir, "run"),
+      skel: root.skel,
+      marker: path.join(root.dir, "run-mend", "repair"),
+      passwd: root.passwd,
+      group: root.group,
+      aclDir: root.dir,
+    },
+  });
+  return { harnessHome, homesRoot, script };
+};
+
+describe("what prepare makes (decision 1)", () => {
+  const maria = new LinuxIdentity({ accountId: "maria-1", name: "mfqt2bw4c", uid: 40_031 });
+  const bob = new LinuxIdentity({ accountId: "bob-1", name: "mb6r4kq2d", uid: 40_044 });
+
+  it("reports made only the people it made: a member with no saved directory here is not", () => {
+    const root = fakeRoot();
+    const { harnessHome, homesRoot, script } = prepare(root, [
+      { person: alice, ifSaved: false },
+      { person: maria, ifSaved: true },
+      { person: bob, ifSaved: true },
+    ]);
+    // Maria's saved directory came back with the head; Bob has an identity (from another
+    // worktree) and nothing saved in this one.
+    fs.mkdirSync(path.join(harnessHome, "people", maria.accountId), { recursive: true });
+    const run = root.run(script);
+    const report = parseLayoutReport(run.stdout);
+    expect(report.missing).toEqual([]);
+    expect(report.made).toEqual([alice.name, maria.name]);
+    expect(report.ready).toBe(true);
+    expect(fs.existsSync(path.join(homesRoot, bob.name))).toBe(false);
+  });
+
+  it("a person who cannot be made fails the layout, makes nobody after them, and keeps the helper's status", () => {
+    const root = fakeRoot();
+    root.failUseradd();
+    const { script } = prepare(root, [
+      { person: alice, ifSaved: false },
+      { person: maria, ifSaved: false },
+    ]);
+    // As the engine runs it: beside the helper install, whose status the exec reports.
+    const run = root.run(`( exit 3 ); h=$?\n${script}\nexit $h`);
+    const report = parseLayoutReport(run.stdout);
+    expect(run.stdout).toContain(`mend-layout failed ${alice.name}`);
+    expect(report.made).toEqual([]);
+    expect(report.ready).toBe(false);
+    expect(run.stdout).not.toContain(maria.name);
+    expect(run.status).toBe(3);
+  });
+});
+
+describe("a home Core wrote into before its user existed (decision 5)", () => {
+  it("becomes the user's, logins included, with the skeleton copied in and nothing replaced", () => {
+    const root = fakeRoot();
+    const harnessHome = path.join(root.dir, "harness-home");
+    const home = path.join(root.dir, "home", alice.name);
+    fs.mkdirSync(harnessHome, { recursive: true });
+    // What Core writes at create into `credentialsHome`, before prepare: root's files, 0600.
+    fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".claude/.credentials.json"), "alice's login", {
+      mode: 0o600,
+    });
+    fs.writeFileSync(path.join(home, ".bashrc"), "# alice's own\n");
+    const run = root.run(
+      personHomeScript(alice, {
+        harnessHome,
+        home,
+        tmpRoot: path.join(root.dir, "tmp"),
+        runRoot: path.join(root.dir, "run"),
+        skel: root.skel,
+      }),
+    );
+    expect(run.status).toBe(0);
+    // useradd copied nothing into a home already there; the script did, over nothing.
+    expect(fs.readlinkSync(path.join(home, ".cargo/registry"))).toBe("/var/cache/cargo/registry");
+    expect(fs.readFileSync(path.join(home, ".bashrc"), "utf8")).toBe("# alice's own\n");
+    expect(fs.readFileSync(path.join(home, ".claude/.credentials.json"), "utf8")).toBe(
+      "alice's login",
+    );
+    // Everything in the home is the user's, links as links.
+    expect(root.log()).toContain(`chown -hR ${alice.uid}:40000 ${home}\n`);
+  });
+
+  it("a home useradd made itself is not walked again", () => {
+    const root = fakeRoot();
+    const harnessHome = path.join(root.dir, "harness-home");
+    const home = path.join(root.dir, "home", alice.name);
+    fs.mkdirSync(harnessHome, { recursive: true });
+    const run = root.run(
+      personHomeScript(alice, {
+        harnessHome,
+        home,
+        tmpRoot: path.join(root.dir, "tmp"),
+        runRoot: path.join(root.dir, "run"),
+        skel: root.skel,
+      }),
+    );
+    expect(run.status).toBe(0);
+    expect(fs.readlinkSync(path.join(home, ".cargo/registry"))).toBe("/var/cache/cargo/registry");
+    expect(root.log()).not.toContain("chown -hR");
   });
 });
 
