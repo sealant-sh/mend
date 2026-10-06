@@ -298,3 +298,12 @@ export const executorResources = async (host, container) => {
     sidecarMemory: byName[`${container}-docker`],
   };
 };
+
+/** The image an executor runs, and when Docker says it was made (`Created`, the host's clock). */
+export const imageOfExecutor = async (host, container) => {
+  const out = await host.shell(
+    `docker image inspect "$(docker inspect ${container} --format '{{.Image}}')" --format '{{.Id}} {{.Created}}' 2>/dev/null; true`,
+  );
+  const [id, created] = out.trim().split(/\s+/);
+  return id === undefined || id === "" ? null : { id, created: created ?? null };
+};

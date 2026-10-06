@@ -255,6 +255,63 @@ export const harnessVersionOf = (screen) => {
   return null;
 };
 
+/**
+ * A harness's own words that its account refused the turn for a usage limit until it resets
+ * ("You've hit your weekly limit · resets 6pm (UTC)", "Usage limit reached", "5-hour limit reached
+ * ∙ resets 3am"): the line, or null. A request-rate 429 the harness retries on its own ("Rate limit
+ * reached … Please try again in 2.1s.; retrying 1/5") is not one, nor is a line that says it is
+ * retrying: the agent is still in its turn. A TUI may draw its spaces as cursor moves, so each line
+ * is also read with its whitespace gone.
+ */
+const USAGE_LIMITS = [
+  /you(?:'|’)ve hit your [\w-]+(?: [\w-]+)? limit[^\r\n]*/i,
+  /usage limit (?:reached|exceeded)[^\r\n]*/i,
+  /\b(?:\d+-hour|weekly|daily|session) limit reached[^\r\n]*/i,
+];
+const USAGE_LIMITS_COMPACT = [
+  /you(?:'|’)vehityour[\w-]{0,24}limit/i,
+  /usagelimit(?:reached|exceeded)/i,
+  /(?:\d+-hour|weekly|daily|session)limitreached/i,
+];
+/** A line about a retry the harness makes by itself, spaced or not. */
+const RETRYING =
+  /retrying|retry ?in\b|try ?again ?in ?\d+(?:\.\d+)? ?(?:ms|s|sec|secs|seconds?)\b/i;
+export const usageLimitOf = (text) => {
+  for (const line of text.split(/\r?\n|\r/)) {
+    if (RETRYING.test(line)) continue;
+    for (const pattern of USAGE_LIMITS) {
+      const match = pattern.exec(line);
+      if (match !== null) return match[0].replace(/\s+/g, " ").trim().slice(0, 160);
+    }
+    const compact = line.replace(/\s+/g, "");
+    for (const pattern of USAGE_LIMITS_COMPACT) {
+      const match = pattern.exec(compact);
+      if (match !== null) return match[0];
+    }
+  }
+  return null;
+};
+
+/**
+ * Docker's `Created` ("2026-10-06T18:03:20.123456789Z") in epoch ms; null when it is not a time
+ * or is the zero time a reproducible build stamps.
+ */
+export const parseDockerTime = (text) => {
+  const match = /^\s*(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)\s*$/.exec(
+    text ?? "",
+  );
+  if (match === null) return null;
+  const ms = Date.parse(`${match[1]}.${(match[2] ?? "0").padEnd(3, "0").slice(0, 3)}${match[3]}`);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+};
+
+/**
+ * Whether an image was made inside a launch's window (its request to its first output, local
+ * time): that launch waited for a workspace image build, and its start numbers are kept apart.
+ */
+export const builtWithin = (createdMs, fromMs, toMs) =>
+  createdMs !== null && createdMs >= fromMs && createdMs <= toMs;
+
 /** The Sealant worker's line for a Stop's drain: what the executor uploaded and registered. */
 export const parseDrainLine = (message) => {
   const match =
@@ -371,6 +428,9 @@ export const allowance = (budgetKey, before, stat) => {
  */
 export const compareResults = (before, after, { stats = ["median", "p90"] } = {}) => {
   const rows = [];
+  const incomparable = [];
+  const sampledBefore = resourcesSampledAt(before);
+  const sampledAfter = resourcesSampledAt(after);
   for (const [name, measure] of Object.entries(before.measures ?? {})) {
     if (
       measure.budget === undefined ||
@@ -382,7 +442,16 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
     const baseline = summarize(measure.samples ?? []);
     if (baseline.n === 0) continue;
     const other = after.measures?.[name];
+    // An executor's size taken at another point of its launch is another number.
+    if (EXECUTOR_RESOURCE.test(name)) {
+      const at = [measure.sampledAt ?? sampledBefore, other?.sampledAt ?? sampledAfter];
+      if (at[0] !== at[1]) {
+        incomparable.push({ measure: name, reason: `sampled ${at[0]} before and ${at[1]} after` });
+        continue;
+      }
+    }
     const current = summarize(other?.samples ?? []);
+    const notRun = current.n === 0 ? notRunReasonOf(after, name) : null;
     for (const stat of stats) {
       const allowed = allowance(measure.budget, baseline, stat);
       const limit = baseline[stat] + allowed;
@@ -397,16 +466,57 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
         limit,
         ok: value !== null && value <= limit,
         missing: value === null,
+        ...(notRun === null ? {} : { notRun }),
       });
     }
   }
   for (const [name, companion] of Object.entries(before.companions ?? {})) {
     const theirs = after.companions?.[name] ?? { measures: {} };
-    for (const row of compareResults(companion, theirs, { stats }).rows) {
+    const compared = compareResults(companion, theirs, { stats });
+    for (const row of compared.rows) {
       rows.push({ ...row, measure: `${name}: ${row.measure}` });
     }
+    for (const entry of compared.incomparable) {
+      incomparable.push({ ...entry, measure: `${name}: ${entry.measure}` });
+    }
   }
-  return { rows, misses: rows.filter((row) => !row.ok) };
+  return { rows, misses: rows.filter((row) => !row.ok), incomparable };
+};
+
+/**
+ * A launch harness's executor size: sampled at one point of its launch, the record's
+ * (`resourcesSampledAt`) unless a merge stamped the measure with its own (`sampledAt`).
+ */
+const EXECUTOR_RESOURCE =
+  /^executor\.(?:claude|codex|pi|opencode)\.(?:disk|memory|sidecar_memory)_bytes$/;
+
+/**
+ * Where a record took each launch harness's executor size. Records before this field took it after
+ * the answer wait, which a missing answer stretched to 3 minutes (capture staging included).
+ */
+export const RESOURCES_AT_FIRST_OUTPUT = "at first output";
+export const resourcesSampledAt = (result) =>
+  result.method?.executorResources ?? "after the answer";
+
+/** A record's executor sizes, each stamped with the point it was sampled at (merges keep it). */
+const stampSampling = (result, measures) =>
+  Object.fromEntries(
+    Object.entries(measures).map(([name, measure]) => [
+      name,
+      EXECUTOR_RESOURCE.test(name) && measure.sampledAt === undefined
+        ? { ...measure, sampledAt: resourcesSampledAt(result) }
+        : measure,
+    ]),
+  );
+
+/** Why a record did not take a measure, from its `notRun` entries; null when it does not say. */
+export const notRunReasonOf = (result, name) => {
+  const entry = (result.notRun ?? []).find((skipped) =>
+    skipped.measure.endsWith(".*")
+      ? name.startsWith(skipped.measure.slice(0, -1))
+      : skipped.measure === name,
+  );
+  return entry === undefined ? null : entry.reason;
 };
 
 // ─── tables ─────────────────────────────────────────────────────────────────
@@ -465,10 +575,19 @@ export const formatComparison = (comparison) => {
   ];
   const ordered = [...comparison.misses, ...comparison.rows.filter((row) => row.ok)];
   for (const row of ordered) {
-    const verdict = row.missing ? "MISSING" : row.ok ? "within" : "OVER";
+    const verdict = row.missing
+      ? row.notRun === undefined
+        ? "MISSING"
+        : `NOT RUN: ${row.notRun}`
+      : row.ok
+        ? "within"
+        : "OVER";
     lines.push(
       `| ${row.measure} | ${row.stat} | ${formatValue(row.before, row.unit)} | ${formatValue(row.after, row.unit)} | ${formatValue(row.limit, row.unit)} | ${verdict} |`,
     );
+  }
+  for (const entry of comparison.incomparable ?? []) {
+    lines.push(`| ${entry.measure} | | | | | not comparable: ${entry.reason} |`);
   }
   return lines.join("\n");
 };
@@ -567,7 +686,8 @@ export const mergeResults = (base, extra, takes = null) => {
               ...base.target.harnessVersions,
             },
           },
-    measures: { ...kept, ...taken },
+    // Each executor size keeps the point its own record sampled it at.
+    measures: { ...stampSampling(base, kept), ...stampSampling(extra, taken) },
     notRun: [
       ...(base.notRun ?? []).filter(
         (entry) => !extraNotRun.some((other) => other.measure === entry.measure),
@@ -575,6 +695,7 @@ export const mergeResults = (base, extra, takes = null) => {
       ...extraNotRun,
     ],
     notes: [...(base.notes ?? []), ...(extra.notes ?? [])],
+    imageBuilds: [...(base.imageBuilds ?? []), ...(extra.imageBuilds ?? [])],
     errors: [...(base.errors ?? []), ...(extra.errors ?? [])],
     merged: [
       ...(base.merged ?? []),

@@ -10,15 +10,18 @@ import {
   attachTerminal,
   executorOf,
   executorResources,
+  imageOfExecutor,
   mendLogBetween,
 } from "./host.mjs";
 import {
+  builtWithin,
   deliveryWindow,
   execCount,
   harnessVersionOf,
   firstExecAt,
   milestonesOf,
   parseContainerDisk,
+  parseDockerTime,
   parseDrainLine,
   parseImageLine,
   parseMemUsage,
@@ -29,6 +32,7 @@ import {
   stagedBytesOf,
   stepsOf,
   stripAnsi,
+  usageLimitOf,
 } from "./lib.mjs";
 
 export const HARNESSES = ["claude", "codex", "pi", "opencode"];
@@ -106,7 +110,11 @@ const waitForAgent = async (ctx, sessionId, sinceMs, timeoutMs = 600_000, api = 
   }
 };
 
-/** Reads the agent's recorded output until `answer` shows; the local time it was seen, or null. */
+/**
+ * Reads the agent's recorded output until `answer` shows: the local time it was seen (`at`), or
+ * null. A harness that says its account hit a usage or rate limit will not answer: the wait ends
+ * there, with its words in `limit`.
+ */
 const waitForAnswer = async (ctx, processId, answer, timeoutMs = 180_000) => {
   const deadline = Date.now() + timeoutMs;
   let from = "0";
@@ -120,11 +128,42 @@ const waitForAnswer = async (ctx, processId, answer, timeoutMs = 180_000) => {
     const plain = stripAnsi(text);
     const version = harnessVersionOf(plain);
     if (version !== null) ctx.result.target.harnessVersions[version.harness] = version.version;
-    if (plain.includes(answer) || plain.replace(/\s+/g, "").includes(answer)) return Date.now();
-    if (page.status === "exited") return null;
+    if (plain.includes(answer) || plain.replace(/\s+/g, "").includes(answer)) {
+      return { at: Date.now(), limit: null };
+    }
+    const limit = usageLimitOf(plain);
+    if (limit !== null) return { at: null, limit };
+    if (page.status === "exited") return { at: null, limit: null };
     await sleep(250);
   }
-  return null;
+  return { at: null, limit: null };
+};
+
+/**
+ * The workspace image a launch's executor runs, when Docker on the host says it was made during
+ * the launch (its request to its first output): that launch waited for the build, and its start
+ * numbers are not a launch's. Every image made since the run started goes in the record's
+ * `imageBuilds`, whichever launch saw it first. Null without the host, or when it was made before.
+ */
+const imageBuiltDuring = async (ctx, container, label, fromMs, toMs) => {
+  if (ctx.host === null || container === null) return null;
+  const image = await imageOfExecutor(ctx.host, container).catch(() => null);
+  if (image === null) return null;
+  const createdMs = parseDockerTime(image.created);
+  const createdAt = createdMs === null ? null : createdMs - ctx.clockOffsetMs;
+  const during = builtWithin(createdAt, fromMs, toMs);
+  const builds = (ctx.result.imageBuilds ??= []);
+  if (
+    createdAt !== null &&
+    createdAt >= Date.parse(ctx.result.startedAt) &&
+    !builds.some((build) => build.image === image.id)
+  ) {
+    builds.push({ image: image.id, createdAt: image.created, seenBy: label, duringLaunch: during });
+    ctx.rec.note(
+      `the workspace image ${image.id.slice(0, 19)} was built during the run (created ${image.created}, first run by ${label})`,
+    );
+  }
+  return during ? image : null;
 };
 
 const stopAndSettle = async (ctx, sessionId, timeoutMs = 1_200_000, api = ctx.api) => {
@@ -202,8 +241,10 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   }
   const delivery = deliveryWindow(milestones);
   if (delivery !== null) {
-    // A join that launched cold is kept apart, unbudgeted, like its first output.
-    rec.sample(`${prefix}.delivery`, delivery, "ms", prefix.endsWith(".cold") ? null : "delivery");
+    // A join that launched cold, or a launch that waited for an image build, is kept apart,
+    // unbudgeted, like its first output.
+    const apart = prefix.endsWith(".cold") || prefix.endsWith(".image_built");
+    rec.sample(`${prefix}.delivery`, delivery, "ms", apart ? null : "delivery");
   } else {
     rec.notRun(`${prefix}.delivery`, "the delivery milestones were not in the log");
   }
@@ -344,7 +385,10 @@ const openShell = async (ctx, sessionId) => {
 
 // ─── the scenarios ──────────────────────────────────────────────────────────
 
-/** A new session to its first output and its first answer, then its executor's size. */
+/**
+ * A new session to its first output and its first answer. Its executor's size is taken at its first
+ * output, a fixed point of every launch; what it holds once the answer is in is kept beside it.
+ */
 const newSession = async (ctx, harness, run) => {
   const a = 2000 + 37 * run + HARNESSES.indexOf(harness);
   const b = 3000 + 11 * run;
@@ -355,33 +399,57 @@ const newSession = async (ctx, harness, run) => {
   ctx.log(`${harness} #${run} · created ${session.id.slice(0, 8)} · worktree ${name}`);
   const { ms: launchMs } = await ctx.api.call("POST", `/sessions/${session.id}/launch`, { prompt });
   const { detail, agent } = await waitForAgent(ctx, session.id, startedAt);
-  const prefix = `new.${harness}`;
-  const firstOutput = local(ctx, agent.firstOutputAt) - startedAt;
-  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", "start");
-  ctx.rec.sample(`${prefix}.create_call`, createMs, "ms");
-  ctx.rec.sample(`${prefix}.launch_call`, launchMs, "ms");
-  ctx.log(`${harness} #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
-  const answeredAt = await waitForAnswer(ctx, agent.id, answer);
-  if (answeredAt !== null) {
-    ctx.rec.sample(`${prefix}.first_turn`, answeredAt - startedAt, "ms", "start");
-    ctx.rec.sample(
-      `${prefix}.output_to_answer`,
-      answeredAt - local(ctx, agent.firstOutputAt),
-      "ms",
+  const outputAt = local(ctx, agent.firstOutputAt);
+  // The answer is watched for from here, while the executor is sized beside it: the sampling
+  // never delays when the answer is seen.
+  const answering = waitForAnswer(ctx, agent.id, answer);
+  answering.catch(() => {});
+  // Never after the answer wait: its length depends on the answer, and a missing one moved the
+  // sample 3 minutes on, into the capture's staging (0.36.0-next.628, Claude at its weekly limit).
+  const container = ctx.host === null ? null : await executorOf(ctx.host, session.id);
+  await recordResources(ctx, `executor.${harness}`, container, "resource");
+  const built = await imageBuiltDuring(ctx, container, `${harness} #${run}`, startedAt, outputAt);
+  // A launch that waited for its workspace image to be built is kept apart, unbudgeted.
+  const prefix = built === null ? `new.${harness}` : `new.${harness}.image_built`;
+  const budget = built === null ? "start" : null;
+  const firstOutput = outputAt - startedAt;
+  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", budget);
+  ctx.rec.sample(`new.${harness}.create_call`, createMs, "ms");
+  ctx.rec.sample(`new.${harness}.launch_call`, launchMs, "ms");
+  if (built !== null) {
+    ctx.rec.note(
+      `${harness} #${run} waited for its workspace image to be built (${built.id.slice(0, 19)}, created ${built.created}): ${(firstOutput / 1000).toFixed(1)} s, kept apart under ${prefix}`,
     );
+  }
+  ctx.log(`${harness} #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
+  const answered = await answering;
+  if (answered.at !== null) {
+    ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms", budget);
+    ctx.rec.sample(`${prefix}.output_to_answer`, answered.at - outputAt, "ms");
+    if (ctx.host !== null && container !== null) {
+      const after = await executorResources(ctx.host, container);
+      ctx.rec.sample(
+        `executor.${harness}.memory_after_answer_bytes`,
+        parseMemUsage(after.mainMemory),
+        "bytes",
+      );
+    }
+  } else if (answered.limit !== null) {
+    const reason = `the harness's account hit its usage limit ("${answered.limit}")`;
+    ctx.rec.note(`${harness} #${run}: no answer, ${reason}`);
+    ctx.rec.notRun(`${prefix}.first_turn`, reason);
+    ctx.rec.notRun(`${prefix}.output_to_answer`, reason);
   } else {
     ctx.rec.note(
       `${harness} #${run}: the answer (${answer}) was not seen in the agent's output within 3 min`,
     );
   }
   await recordLaunch(ctx, prefix, { startedAt, sessionId: session.id, detail, agent });
-  const container = ctx.host === null ? null : await executorOf(ctx.host, session.id);
-  await recordResources(ctx, `executor.${harness}`, container, "resource");
   if (container !== null && ctx.host !== null) {
     const boot = restoreOf(
       sealantdEvents(ctx, await ctx.host.shell(`docker logs -t ${container} 2>&1`)),
     );
-    if (boot !== null) ctx.rec.sample(`${prefix}.restore_ms`, boot.ms, "ms");
+    if (boot !== null) ctx.rec.sample(`new.${harness}.restore_ms`, boot.ms, "ms");
   }
   const follower = ctx.host === null || container === null ? null : ctx.host.follow(container);
   return { session, agent, container, follower, name };
@@ -600,12 +668,20 @@ const resume = async (ctx, primary, run) => {
   const startedAt = Date.now();
   const { ms } = await ctx.api.call("POST", `/sessions/${sessionId}/resume`, { harness: null });
   const { detail, agent } = await waitForAgent(ctx, sessionId, startedAt);
-  const firstOutput = local(ctx, agent.firstOutputAt) - startedAt;
-  ctx.rec.sample("resume.first_output", firstOutput, "ms", "start");
-  ctx.rec.sample("resume.call", ms, "ms");
-  ctx.log(`resume #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
-  await recordLaunch(ctx, "resume", { startedAt, sessionId, detail, agent });
+  const outputAt = local(ctx, agent.firstOutputAt);
+  const firstOutput = outputAt - startedAt;
   const container = ctx.host === null ? null : await executorOf(ctx.host, sessionId);
+  const built = await imageBuiltDuring(ctx, container, `resume #${run}`, startedAt, outputAt);
+  const prefix = built === null ? "resume" : "resume.image_built";
+  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", built === null ? "start" : null);
+  ctx.rec.sample("resume.call", ms, "ms");
+  if (built !== null) {
+    ctx.rec.note(
+      `resume #${run} waited for its workspace image to be built (${built.id.slice(0, 19)}): kept apart under ${prefix}`,
+    );
+  }
+  ctx.log(`resume #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
+  await recordLaunch(ctx, prefix, { startedAt, sessionId, detail, agent });
   if (container !== null) {
     const boot = restoreOf(
       sealantdEvents(ctx, await ctx.host.shell(`docker logs -t ${container} 2>&1`)),

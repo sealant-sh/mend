@@ -141,17 +141,20 @@ export interface HarnessLayoutSteps {
    */
   readonly mayRunPerson: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
-   * A worktree's layout was just recorded outside these steps (the operator's `harnessLayout`):
-   * from now on the steps read the store again.
+   * Whether any worktree may run the person layout at all: the flag on, or a layout recorded (at
+   * startup, or since). Answered from memory. False means `mayRunPerson` answers false for every
+   * worktree without a read, so a caller may skip the reads it would make to ask it.
+   */
+  readonly personPossible: () => boolean;
+  /**
+   * A worktree's layout is being recorded outside these steps (the operator's `harnessLayout`,
+   * noted before its write): from now on the steps read the store again. With the flag off and
+   * nothing recorded, it is the only way a layout gets recorded (`decide` records nothing then),
+   * so nothing polls the store for one (docs/adr/0016). Another engine over the same database (a
+   * second Mend, or `MEND_MODE=api` beside `MEND_MODE=worker`) sees such a record only after it
+   * restarts (deploy/aws/issues-for-real-ha.md, A6).
    */
   readonly noteRecorded: () => void;
-  /**
-   * While nothing is recorded and the flag is off, ask the store again (one `EXISTS` query): the
-   * engine's reaper tick runs it, so a record another engine made is seen within a tick rather
-   * than never (review 5 of mend#553, P3-4). Mend runs one engine; this narrows the gap if two
-   * ever share a database (deploy/aws/issues-for-real-ha.md). Never fails.
-   */
-  readonly refreshRecorded: () => Effect.Effect<void>;
   /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
   readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
@@ -641,18 +644,10 @@ export const makeHarnessLayoutSteps = (deps: {
     flag,
     decide,
     mayRunPerson,
+    personPossible: () => !nothingRecorded(),
     noteRecorded: () => {
       layoutsRecorded = true;
     },
-    refreshRecorded: () =>
-      nothingRecorded()
-        ? repo.anyRecorded().pipe(
-            Effect.map((found) => {
-              if (found) layoutsRecorded = true;
-            }),
-            Effect.catchCause(() => Effect.void),
-          )
-        : Effect.void,
     standbyMayServe,
     prepareTickets,
     prepareScript: layoutPrepareScript,

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   allowance,
+  builtWithin,
   deliveryWindow,
   harnessVersionOf,
   compareResults,
@@ -17,6 +18,7 @@ import {
   milestonesOf,
   parseContainerDisk,
   parseDockerSize,
+  parseDockerTime,
   parseDrainLine,
   parseFields,
   parseImageLine,
@@ -25,6 +27,7 @@ import {
   parseOptions,
   parseSealantdLog,
   quantile,
+  RESOURCES_AT_FIRST_OUTPUT,
   restoreOf,
   scenarioOf,
   settleNotRun,
@@ -34,6 +37,7 @@ import {
   stepsOf,
   stripAnsi,
   summarize,
+  usageLimitOf,
 } from "./lib.mjs";
 
 // ─── statistics ─────────────────────────────────────────────────────────────
@@ -559,4 +563,168 @@ test("a re-run for some harnesses replaces only theirs", () => {
     "stop.codex.save",
   ]);
   assert.deepEqual(merged.measures["stop.claude.save"].samples, [9]);
+});
+
+// ─── what the record keeps apart ────────────────────────────────────────────
+
+test("a harness's usage limit is read from its own words, its spaces drawn or not", () => {
+  // Claude Code v2.1.291 at the owner's weekly limit (0.36.0-next.628), ANSI stripped.
+  const claude = [
+    "❯ What is 2 + 3? Reply with only the number. Do not use any tools.",
+    "  ⎿  You've hit your weekly limit · resets 6pm (UTC)",
+    "● Usage limit reached · continuing automatically at 6pm · esc to cancel",
+  ].join("\n");
+  assert.equal(usageLimitOf(claude), "You've hit your weekly limit · resets 6pm (UTC)");
+  assert.equal(
+    usageLimitOf("■ You’ve hit your usage limit. Upgrade to Pro or try again later."),
+    "You’ve hit your usage limit. Upgrade to Pro or try again later.",
+  );
+  assert.equal(
+    usageLimitOf("⚠ Usage limit reached · limit resets 6pm"),
+    "Usage limit reached · limit resets 6pm",
+  );
+  assert.equal(
+    usageLimitOf("5-hour limit reached ∙ resets 3am"),
+    "5-hour limit reached ∙ resets 3am",
+  );
+  // A TUI that moves the cursor for its spaces leaves the words run together.
+  assert.equal(usageLimitOf("You'vehityourweeklylimit·resets6pm"), "You'vehityourweeklylimit");
+  // A request-rate 429 the harness retries by itself is not one: the agent is still in its turn.
+  assert.equal(
+    usageLimitOf(
+      "stream error: Rate limit reached for gpt-5 in organization org-x on tokens per min (TPM): Limit 30000, Used 29000. Please try again in 2.1s.; retrying 1/5 in 2.1s…",
+    ),
+    null,
+  );
+  assert.equal(usageLimitOf("Rate limit exceeded. Retrying..."), null);
+  assert.equal(usageLimitOf("Usage limit reached · retrying in 30s"), null);
+  // Nor is ordinary text that names a limit.
+  assert.equal(
+    usageLimitOf("● The rate limit exceeded the quota, so the job was throttled."),
+    null,
+  );
+  assert.equal(usageLimitOf("This module enforces a session limit of 5 per user."), null);
+  // The prompt, an answer and a warning short of the limit are not one.
+  assert.equal(usageLimitOf("❯ What is 2 + 3? Reply with only the number.\n● 5"), null);
+  assert.equal(usageLimitOf("You've used 90% of your weekly limit · resets 6pm"), null);
+});
+
+test("an image made inside a launch's window is a build that launch waited for", () => {
+  const created = parseDockerTime("2026-10-06T18:03:20.123456789Z");
+  assert.equal(created, Date.parse("2026-10-06T18:03:20.123Z"));
+  assert.equal(parseDockerTime("2026-10-06T18:03:20Z"), Date.parse("2026-10-06T18:03:20Z"));
+  assert.equal(
+    parseDockerTime("2026-10-06T20:03:20.5+02:00"),
+    Date.parse("2026-10-06T18:03:20.5Z"),
+  );
+  // A reproducible build's zero time, or nothing at all, is no time.
+  assert.equal(parseDockerTime("0001-01-01T00:00:00Z"), null);
+  assert.equal(parseDockerTime(""), null);
+  const launch = Date.parse("2026-10-06T18:02:38Z");
+  const output = Date.parse("2026-10-06T18:04:05Z");
+  assert.equal(builtWithin(created, launch, output), true);
+  assert.equal(builtWithin(Date.parse("2026-10-05T17:12:00Z"), launch, output), false);
+  assert.equal(builtWithin(null, launch, output), false);
+});
+
+test("a measure not run says why in the comparison, in place of MISSING", () => {
+  const before = record({
+    "new.claude.first_turn": { unit: "ms", budget: "start", samples: tenOf(30_000) },
+    "new.codex.first_turn": { unit: "ms", budget: "start", samples: tenOf(20_000) },
+  });
+  const after = {
+    ...record({}),
+    notRun: [
+      {
+        measure: "new.claude.first_turn",
+        reason: 'the harness\'s account hit its usage limit ("Usage limit reached")',
+      },
+    ],
+  };
+  const comparison = compareResults(before, after);
+  // Still a miss: a number not taken is not inside its limit.
+  assert.equal(comparison.misses.length, 4);
+  const table = formatComparison(comparison);
+  assert.match(table, /new\.claude\.first_turn \| median .*NOT RUN: the harness's account hit/);
+  assert.match(table, /new\.codex\.first_turn \| median .*MISSING/);
+});
+
+test("executor sizes taken at another point of the launch are not compared", () => {
+  const sizes = (memory) =>
+    record({
+      "executor.claude.memory_bytes": { unit: "bytes", budget: "resource", samples: tenOf(memory) },
+      "executor.resumed.memory_bytes": {
+        unit: "bytes",
+        budget: "resource",
+        samples: tenOf(memory),
+      },
+    });
+  const older = sizes(1_100_000_000);
+  const newer = { ...sizes(760_000_000), method: { executorResources: RESOURCES_AT_FIRST_OUTPUT } };
+  const across = compareResults(older, newer);
+  assert.deepEqual(across.incomparable, [
+    {
+      measure: "executor.claude.memory_bytes",
+      reason: "sampled after the answer before and at first output after",
+    },
+  ]);
+  // The resumed executor was always sized at its first output: still compared.
+  assert.deepEqual(
+    across.rows.map((row) => row.measure),
+    ["executor.resumed.memory_bytes", "executor.resumed.memory_bytes"],
+  );
+  assert.match(
+    formatComparison(across),
+    /executor\.claude\.memory_bytes \| \| \| \| \| not comparable/,
+  );
+  // Two records that took it at the same point compare as before.
+  const same = compareResults(newer, { ...newer, measures: sizes(800_000_000).measures });
+  assert.equal(same.incomparable.length, 0);
+  assert.equal(same.misses.length, 4);
+});
+
+const imageBuild = (image) => ({ image, createdAt: "2026-10-06T18:03:20Z", seenBy: "claude #1" });
+
+test("a merge keeps every image built during either run", () => {
+  const merged = mergeResults(
+    { measures: {}, imageBuilds: [imageBuild("sha256:a")] },
+    { options: { only: ["new"] }, measures: {}, imageBuilds: [imageBuild("sha256:b")] },
+  );
+  assert.deepEqual(
+    merged.imageBuilds.map((entry) => entry.image),
+    ["sha256:a", "sha256:b"],
+  );
+});
+
+test("a merge keeps the point each record sampled its executor sizes at", () => {
+  const memory = (value) => ({
+    "executor.claude.memory_bytes": { unit: "bytes", budget: "resource", samples: tenOf(value) },
+    "executor.codex.memory_bytes": { unit: "bytes", budget: "resource", samples: tenOf(value) },
+  });
+  // An older record (sized after the answer) with a newer run of claude (sized at first output).
+  const older = record(memory(1_100_000_000));
+  const newer = {
+    ...record({
+      "executor.claude.memory_bytes": {
+        unit: "bytes",
+        budget: "resource",
+        samples: tenOf(760_000_000),
+      },
+    }),
+    options: { only: ["new"], harnesses: ["claude"] },
+    method: { executorResources: RESOURCES_AT_FIRST_OUTPUT },
+  };
+  const merged = mergeResults(older, newer);
+  assert.equal(merged.measures["executor.claude.memory_bytes"].sampledAt, "at first output");
+  assert.equal(merged.measures["executor.codex.memory_bytes"].sampledAt, "after the answer");
+  // Against the older record, claude's is not comparable and codex's is.
+  const compared = compareResults(older, merged);
+  assert.deepEqual(
+    compared.incomparable.map((entry) => entry.measure),
+    ["executor.claude.memory_bytes"],
+  );
+  assert.deepEqual(
+    [...new Set(compared.rows.map((row) => row.measure))],
+    ["executor.codex.memory_bytes"],
+  );
 });
