@@ -128,7 +128,12 @@ import {
   executorEndOf,
   withoutAgentStarting,
 } from "@mend/domain/workbench";
-import { LAUNCH_BOOTING, LAUNCH_PREPARING, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
+import {
+  LAUNCH_BOOTING,
+  LAUNCH_PREPARING,
+  LAUNCH_WAITING_SAVING,
+  LinuxIdentity,
+} from "@mend/domain/workbench";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
@@ -583,7 +588,11 @@ const sealantLaunchLayer = (
         created.push(options);
         captureOps?.createKeys?.push(launch?.idempotencyKey);
         captureOps?.createLaunches?.push(launch?.launchId);
-        captureOps?.createHomes?.push(launch?.credentialsHome);
+        captureOps?.createHomes?.push(
+          launch?.credentialsHome === undefined
+            ? undefined
+            : `${launch.credentialsHome.path} ${launch.credentialsHome.uid}:${launch.credentialsHome.gid}`,
+        );
         terminated = false;
         const beforeCreate = captureOps?.beforeCreate?.(options) ?? Effect.void;
         if (captureOps?.loseCreateAnswer?.() === true) {
@@ -22888,7 +22897,8 @@ describe("SessionEngine startup never waits on an executor (2026-10-03)", () => 
 // ─── per-person harness homes (docs/adr/0016) ─────────────────────────────
 
 const MARIA = "user-maria";
-const LAYOUT_READY = "mend-layout probed\nmend-layout ready\n";
+/** A prepare that made the launcher (`user-fixture`) and nobody else, as a fresh head does. */
+const LAYOUT_READY = `mend-layout probed\nmend-layout made ${linuxLoginNameOf("user-fixture")}\nmend-layout ready\n`;
 const isRepair = (argv: ReadonlyArray<string>) => (argv[2] ?? "").includes("mend-repair");
 const isPersonHome = (argv: ReadonlyArray<string>) =>
   (argv[2] ?? "").includes("useradd") && !(argv[2] ?? "").includes("mend-layout");
@@ -23098,7 +23108,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(run.join).toBeLessThanOrEqual(BUDGET.sameJoin);
     expect(run.resume).toBeLessThanOrEqual(BUDGET.resume);
     // The create commits to the layout: the launcher's logins into their own home.
-    expect(run.homes[0]).toBe(`/home/${LAUNCHER}`);
+    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
     // Users and homes are made in the executor's first exec, beside the helper install.
     const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
     expect(first?.[2]).toContain(`useradd -u 40001 -g mend`);
@@ -23139,6 +23149,32 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(home?.[2]).toContain(JOINER);
   });
 
+  it("a member with an identity from another worktree and nothing saved here is made at their join", async () => {
+    // Maria ran a person launch elsewhere on this instance: identities are instance-wide. This
+    // worktree's head holds no people/<maria>, so prepare skips her and says it made only the
+    // launcher; her first process here makes her before it starts as her.
+    const state = makeHarnessLayoutsMemoryState();
+    state.identities.set(MARIA, new LinuxIdentity({ accountId: MARIA, name: JOINER, uid: 40_001 }));
+    const run = await coldJoinResume({
+      flag: "person",
+      joiner: MARIA,
+      state,
+      platform: personPlatform([], { person: true }),
+      exec: answerLayout(LAYOUT_READY),
+    });
+    const prepare = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+    // Prepare names her, made only if her saved directory came back.
+    expect(prepare?.[2]).toContain(`/workspace/harness-home/people/${MARIA}`);
+    expect(run.joinPersonHomes).toBe(1);
+    const home = run.execs.find(isPersonHome);
+    expect(home?.[2]).toContain(`useradd -u 40001 -g mend`);
+    expect(home?.[2]).toContain(JOINER);
+    // Her agent starts only after that exec: no process is opened as a user nobody made.
+    const homeAt = run.execs.indexOf(home ?? []);
+    expect(homeAt).toBeGreaterThan(run.cold - 1);
+    expect(run.opened.map((options) => options.user?.name)).toContain(JOINER);
+  });
+
   it("has no way back: a person worktree launches person with the flag off", async () => {
     const state = makeHarnessLayoutsMemoryState();
     const run = await coldJoinResume({
@@ -23150,7 +23186,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       before: (worktreeId) =>
         state.worktrees.set(worktreeId, { layout: "person", requested: null }),
     });
-    expect(run.homes[0]).toBe(`/home/${LAUNCHER}`);
+    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
     expect(run.opened.every((options) => options.user?.name === LAUNCHER)).toBe(true);
     expect([...state.launches.values()].map((launch) => launch.source)).toContain("worktree");
   });
@@ -23264,6 +23300,37 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(state.capabilities.get(IMAGE)?.person).toBe(false);
     // The worktree stays person: nothing changed but the refusal.
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout).toBe("person");
+  });
+
+  it("refuses a person launch whose restore did not apply the owner map, fresh worktree or not: nothing starts", async () => {
+    for (const fresh of [true, false]) {
+      const state = makeHarnessLayoutsMemoryState();
+      const calls: Array<string> = [];
+      const run = await launchPersonOnce({
+        flag: "person",
+        state,
+        platform: personPlatform(calls, { person: true }),
+        exec: answerLayout(
+          "mend-layout probed\nmend-layout unowned the restored worktree's group is 0, not mend (40000)\n",
+        ),
+        ...(fresh
+          ? {}
+          : {
+              before: (worktreeId: string) =>
+                state.worktrees.set(worktreeId, { layout: "person", requested: null }),
+            }),
+      });
+      expect(run.failure).toContain("did not give its files to the people working in it");
+      expect(run.failure).toContain("the restored worktree's group is 0, not mend (40000)");
+      expect(run.opened).toHaveLength(0);
+      expect(run.order).toEqual([]);
+      // Never a fallback to shared, and nothing recorded against the image.
+      expect(calls).toEqual([]);
+      expect(state.capabilities.get(IMAGE)).toBeUndefined();
+      expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBe(
+        fresh ? null : "person",
+      );
+    }
   });
 
   it("with the flag on and the image unknown, launches shared, probes, and records what it found", async () => {

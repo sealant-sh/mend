@@ -130,8 +130,8 @@ starts. A person's live process, Services included, keeps their user's logins he
   every capture. It holds everything of a harness's home that is conversation state, as today's
   relocated home saves it, each reached from `R` through a link (sealantd stores a link as a link):
   - Claude: `projects/` (transcripts, tool results, sub-agents, auto memory), `plans/`, `todos/`,
-    `tasks/` (the agent's task list), `file-history/` (`/rewind`), the `agents/`, `commands/` and
-    `skills/` the agent writes (Mend's delivered skills are delivered again), `history.jsonl`;
+    `tasks/` (the agent's task list), the `agents/`, `commands/` and `skills/` the agent writes
+    (Mend's delivered skills are delivered again), `history.jsonl`;
   - Codex: `sessions/`, `archived_sessions/`, `memories/`, `session_index.jsonl`, `history.jsonl`,
     `rules/` (approvals), and its thread index and memory database (`P/codex-db`, named by
     `CODEX_SQLITE_HOME`; see Performance);
@@ -139,8 +139,11 @@ starts. A person's live process, Services included, keeps their user's logins he
   - opencode: its data directory and `.local/state/opencode`.
 
   Logins stay out: they are files in `R`, not under these links, and sealantd's tables are the
-  backstop. Mend's per-person saved records are `P/.mend-saved/`, addressed by their absolute path,
-  never through `~/.mend`.
+  backstop. So does Claude's file history (`file-history/`, what `/rewind` restores): it holds a
+  copy of every file Claude edits, secret files included, so it is never saved, here or anywhere
+  else, `people/*/` included (`HARNESS_CREDENTIALS`, sealantd#136 and #144). It stays in `R` and
+  ends with the executor. Mend's per-person saved records are `P/.mend-saved/`, addressed by their
+  absolute path, never through `~/.mend`.
 
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,
@@ -254,18 +257,30 @@ workspaces.create({ …, credentialsHome })
 
 - **New in Core:** `credentialsHome` on create (no login in the environment); `DELETE`; `GET`;
   credential sync-back reads each record's home.
+- **Who owns what Core writes before the user exists.** The launcher's logins are written at create,
+  before prepare's first exec makes their user, so the create names the owner by number:
+  `credentialsHome: { path, uid, gid }`. Core makes a missing home owned by `uid:gid`, 0700, seeded
+  from `/etc/skel`, and writes every file (0600) and every directory it makes as `uid:gid`; a
+  numeric owner needs no passwd entry. Every later write (a POST, a refresh push) takes the owner of
+  the home directory as it stands, which is the user's from then on. Mend's side holds without that:
+  when prepare or a person's first process makes a user whose home already exists, `useradd` keeps
+  the directory, copies nothing from `/etc/skel` and changes no owner, so Mend copies the skeleton
+  in without replacing anything and gives the user everything in the home (`chown -hR`) before any
+  process runs as them. A POST into a home that does not exist yet is refused (`home-unusable`), so
+  a joiner's POST runs beside their `useradd` only once POST takes the same `{ uid, gid }` and makes
+  a missing home as create does; until then Mend makes the joiner's user first and posts after it.
 - **Authorisation.** A service key acting for the workspace's owner may write any `onBehalfOf`
   person's login. Mend enforces that a login goes only into that person's home, or into a
   conversation home while that person's process is about to run there (decision 6).
-- **How Mend uses it:** `credentialsHome = /home/<launcher>` at create when the launch is `person`,
-  `$HOME` when it is `shared` (decision 1 decides which before create); one POST before a person's
-  first process in an executor, in parallel with their user, dotfiles and deliveries; a refusal
-  before anything is written when the needed provider is not connected or `invalid` ("Connect Claude
-  to start a session here"); DELETE when a person's last process ends, retried, except the
-  launcher's create-time home, which stays while the executor lives (their Remote-SSH session uses
-  it with no Mend process); reconciliation against `GET` at startup; one re-POST after an
-  authentication failure. Mend's ChatGPT-login program writes pi's and opencode's copies in place,
-  as the user, never by a rename through a link into `P`.
+- **How Mend uses it:** `credentialsHome = { path: /home/<launcher>, uid, gid: 40000 }` at create
+  when the launch is `person`, `$HOME` when it is `shared` (decision 1 decides which before create);
+  one POST before a person's first process in an executor, in parallel with their user, dotfiles and
+  deliveries; a refusal before anything is written when the needed provider is not connected or
+  `invalid` ("Connect Claude to start a session here"); DELETE when a person's last process ends,
+  retried, except the launcher's create-time home, which stays while the executor lives (their
+  Remote-SSH session uses it with no Mend process); reconciliation against `GET` at startup; one
+  re-POST after an authentication failure. Mend's ChatGPT-login program writes pi's and opencode's
+  copies in place, as the user, never by a rename through a link into `P`.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 
@@ -276,25 +291,26 @@ the new sender's user, on their login.
 - **The conversation moves into `C` when shared control is turned on.** At the conversation's next
   quiescent point (below), Mend moves its files from Alice's saved directory into
   `C = P_alice/conversations/<session id>/`, never overwriting: Claude's transcript, its `<id>/`
-  directory, its task list and file history; Codex's rollout and its sub-agents' rollouts. From then
-  on every process of the session reaches it there. The files belong to the session. Nothing is
-  deleted when a steer ends. A session that has been under shared control ("once shared": from the
-  move into `C` on) keeps its conversation in `C` and its agent in the neutral context until the
-  session ends (it is archived or deleted; a Stop does not end it), also once control is turned off,
-  so its files never split between `C` and a personal directory (Known limits). Everything below
-  that says "a shared session" means a once-shared protocol session.
+  directory and its task list; Codex's rollout and its sub-agents' rollouts. From then on every
+  process of the session reaches it there. The files belong to the session. Nothing is deleted when
+  a steer ends. A session that has been under shared control ("once shared": from the move into `C`
+  on) keeps its conversation in `C` and its agent in the neutral context until the session ends (it
+  is archived or deleted; a Stop does not end it), also once control is turned off, so its files
+  never split between `C` and a personal directory (Known limits). Everything below that says "a
+  shared session" means a once-shared protocol session.
 - **The conversation home.** Every agent process of a once-shared session runs with its harness
   directory at one fixed path, `/run/mend/conv/<session id>` (`H`), outside every capture root:
   `CLAUDE_CONFIG_DIR=H/.claude`, or `CODEX_HOME=H/.codex` and `CODEX_SQLITE_HOME=H/.codex`, never
   the sender's saved Codex index (so the owner's thread never enters the steerer's saved index or
   memory). `H` holds:
   - links that place the conversation in `C`: Claude `projects/`, `plans/`, `todos/`, `tasks/`,
-    `file-history/`, `jobs/` and `teams/`; Codex `sessions/`, `archived_sessions/` and
-    `session_index.jsonl`. Each is one link at the top; everything below is a real directory in `C`,
-    which Claude requires for tool results and where Codex writes sub-agent rollouts. The task list
-    survives a change of sender. Codex's `history.jsonl` (the TUI's prompt history, which Codex
-    re-`chmod`s to 0600 on every append) is not linked: it stays in `H` and ends at the next change
-    of sender;
+    `jobs/` and `teams/`; Codex `sessions/`, `archived_sessions/` and `session_index.jsonl`. Each is
+    one link at the top; everything below is a real directory in `C`, which Claude requires for tool
+    results and where Codex writes sub-agent rollouts. The task list survives a change of sender.
+    Codex's `history.jsonl` (the TUI's prompt history, which Codex re-`chmod`s to 0600 on every
+    append) is not linked: it stays in `H` and ends at the next change of sender. Neither is
+    Claude's `file-history/`, which is never saved (decision 2): it stays in `H` and ends at the
+    next change of sender too;
   - the sender's login, written by Core (POST with `home: H`, `onBehalfOf: sender`), owned by the
     sender;
   - Mend's seeded settings for the neutral context below.
@@ -464,6 +480,14 @@ agent writes goes to the executor's owner" no longer hold.
   path and the map, so a uid can change without touching a capture. A removed member's directory
   gets no entry in the map: it stays in the captures, owned by root, and no user is made for it.
 
+- **Prepare checks that the restore applied the map.** In a `person` executor, before anyone is
+  made, prepare reads the restored worktree's group (sealantd gives `/workspace/repo` to the
+  change's owner and group `mend`, and reports the restore, sealantd#145). A worktree that is not
+  `mend`'s came back root's, 0644: nobody could edit a restored file and the worktree repair never
+  reaches it. The launch is refused with what was found, whatever the worktree, and nothing runs:
+  "This workspace's restore did not give its files to the people working in it (the restored
+  worktree's group is 0, not mend (40000)), so nobody could edit them. Nothing was started; the next
+  launch tries again." Nothing is recorded against the image, and there is no fallback to `shared`.
 - **sealantd reports what it can do** (`exec.user`, `dotfiles.user`, `restore.owner_map`), and Mend
   records the `person` layout only when it does (decision 1).
 - **Logins are never saved.** The homes, conversation homes and `/run` are outside every capture
@@ -783,6 +807,8 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
 - **Pre-release executors** keep the shared home until replaced; pre-release opencode conversations
   are not resumable in the person layout.
 - **opencode is one person's:** shared control is refused for opencode sessions.
+- **Claude's `/rewind` file history is never saved:** it ends with the executor, and in a shared
+  session at the next change of sender.
 - **A login made inside opencode** (`opencode console login`, the integration routes) is saved in
   the captures taken while that opencode process ran, in that person's own directory; Mend deletes
   it when opencode exits (decision 8a).
@@ -902,8 +928,13 @@ launches.
 10. **Core and sealantd · release chain.** `next` prereleases, Core's pin of sealantd, image builds,
     Mend's pin. S. Perf: the benchmark's `shared` launches at the new pin match the baseline within
     budget.
-11. **Mend · mend#526 merged as it is.** Its pi refusal stays until 21, for `shared` executors. S,
-    open. Perf: none expected; its pi launch scenario run.
+11. **Mend · mend#526, merged without its pi refusal.** The owner rejects any rule that stops two
+    people working in one worktree, so `PI_PROFILE_IN_USE` was taken out before it merged
+    (2026-10-06). In a `shared` executor a pi that joins a live pi, anyone's, runs on the profile
+    already there, as before #526, and Known issues says so; with no pi live, the launch clears the
+    harness home and delivers its owner's profile, or refuses with `PI_PROFILE_NOT_DELIVERED`. In a
+    `person` executor each pi runs on its own person's profile (15). S, merged. Perf: none; its pi
+    launch scenario run.
 12. **Mend · users and layout behind the flag.** Linux identity per account (migration: name, uid in
     40000–49999); `useradd` at prepare, serialised, for the launcher and every restored current
     member, at first process for joiners, after a passwd and group collision check; the layout
@@ -964,9 +995,9 @@ launches.
     by the last `shared` executor after an earlier capture is the one copied. M, ~600. Perf: Stop
     and resume scenarios.
 17. **Mend · the conversation home and the restart path.** `C` and the move into it (sub-agent
-    rollouts, task list and file history included) when shared control turns on, kept for the rest
-    of the session; `H` with its links (Claude `projects/`, `plans/`, `todos/`, `tasks/`,
-    `file-history/`, `jobs/`, `teams/`; Codex `sessions/`, `archived_sessions/`,
+    rollouts and the task list included; never file history, which is not saved) when shared control
+    turns on, kept for the rest of the session; `H` with its links (Claude `projects/`, `plans/`,
+    `todos/`, `tasks/`, `jobs/`, `teams/`; Codex `sessions/`, `archived_sessions/`,
     `session_index.jsonl`), `CODEX_SQLITE_HOME=H/.codex`, the neutral seed and the Claude settings
     files passed with `--settings` (`neutral.json`: `autoMemoryEnabled: false` and `env` with
     `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, `CLAUDE_CODE_DISABLE_ORG_MEMORY`, `CLAUDE_CODE_DISABLE_CRON`
@@ -1023,8 +1054,9 @@ a fresh worktree, on the scratch instance, then on the box once the conditions a
 worktrees at the commit to be flipped, after a week of use with the box's flag on; the flag is not
 flipped to take the `shared` record. Both records are checked in.
 
-21. **Mend · the flip.** `person` becomes the default; #526's pi refusal and the `/root` relocation
-    kept only for `shared` executors. S, ~150. Perf: none beyond P2.
+21. **Mend · the flip.** `person` becomes the default; the `/root` relocation kept only for `shared`
+    executors, where a joining pi still runs on the live pi's profile (11). S, ~150. Perf: none
+    beyond P2.
 22. **Mend · removing what is dead.** The hand-over at launch, withholding, the owner record,
     `agent_memory_homes` writes (reads stay for 19 until 0.37), joiner memory flags; ADR 0010's join
     rule; stale Known issues. The credential tables stay. L, ~−1,500 / +200. Perf: fewer execs on
@@ -1097,4 +1129,13 @@ benchmark once more, before 0.36 is tagged.
   gates pick the layout per launch on fresh worktrees; Claude's switches go in a `--settings` file;
   the worktree repair goes by ctime with a marker per repair; a hand-over makes two Core calls;
   Codex's `*-shm` files are machine state. The design is final.
+- 2026-10-06 (owner): no refusal of two people in one worktree. mend#526 merged without its pi
+  refusal; a pi joining a live pi in a `shared` executor runs on the profile there (Delivery 11).
+- 2026-10-06, after mend#551's review: a member made in another worktree but with nothing saved in
+  this one is made at their first process here; the create names the launcher's home owner by
+  number, and a home that exists before its user becomes the user's with the skeleton copied in
+  (decision 5).
+- 2026-10-06 (owner): Claude's file history is never saved anywhere, `people/*/` included, since it
+  holds copies of edited secret files; it is not part of `P`, `C` or `H`'s links. A `person` launch
+  whose restore did not apply the owner map is refused at prepare (decision 8).
 - Open: gate B's history record.

@@ -439,31 +439,40 @@ describe("rehydrate (restart policy v2)", () => {
     ),
   );
 
+  /** A Codex whose `thread/resume` answers `error`, and whose `thread/start` would succeed. */
+  const resumeFailingWith = (resumeError: { readonly code: number; readonly message: string }) =>
+    Effect.gen(function* () {
+      const fake = yield* makeTransport((message, push) => {
+        const id = message["id"];
+        const method = message["method"];
+        if (typeof id !== "number") return;
+        if (method === "initialize") push({ id, result: {} });
+        if (method === "thread/resume") push({ id, error: resumeError });
+        if (method === "thread/start") push({ id, result: { thread: { id: "thread-new" } } });
+      });
+      const error = yield* CodexAdapter.start(fake.transport, {
+        cwd: "/workspace/repo",
+        permissionMode: "bypass",
+        providerSessionId: GONE_THREAD,
+      }).pipe(Effect.flip);
+      return { error, methods: fake.sent.map((message) => message["method"]) };
+    });
+  const GONE_THREAD = "0199b3c4-5d6e-7f80-9a1b-2c3d4e5f6a7b";
+
   it.effect("a resume whose thread Codex cannot find fails, and never starts a new thread", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const fake = yield* makeTransport((message, push) => {
-          const id = message["id"];
-          const method = message["method"];
-          if (typeof id !== "number") return;
-          if (method === "initialize") push({ id, result: {} });
-          if (method === "thread/resume") {
-            push({ id, error: { code: -32600, message: "thread not found: thread-gone" } });
-          }
-          if (method === "thread/start") push({ id, result: { thread: { id: "thread-new" } } });
-        });
-        const error = yield* CodexAdapter.start(fake.transport, {
-          cwd: "/workspace/repo",
-          permissionMode: "bypass",
-          providerSessionId: "thread-gone",
-        }).pipe(Effect.flip);
-        expect(error).toBeInstanceOf(AgentProtocolError);
-        expect(error.message).toBe(CODEX_THREAD_NOT_FOUND);
-        expect(fake.sent.map((message) => message["method"])).toEqual([
-          "initialize",
-          "initialized",
-          "thread/resume",
-        ]);
+        // Codex's own words (codex-rs 59f18e8): `thread/resume` by id when the rollout is gone
+        // (`thread_store_resume_read_error`, -32600 invalid request), and its other thread routes.
+        for (const message of [
+          `no rollout found for thread id ${GONE_THREAD}`,
+          `thread not found: ${GONE_THREAD}`,
+        ]) {
+          const { error, methods } = yield* resumeFailingWith({ code: -32600, message });
+          expect(error).toBeInstanceOf(AgentProtocolError);
+          expect(error.message).toBe(CODEX_THREAD_NOT_FOUND);
+          expect(methods).toEqual(["initialize", "initialized", "thread/resume"]);
+        }
       }),
     ),
   );
@@ -471,22 +480,18 @@ describe("rehydrate (restart policy v2)", () => {
   it.effect("a resume that fails for another reason fails with Codex's own words", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const fake = yield* makeTransport((message, push) => {
-          const id = message["id"];
-          const method = message["method"];
-          if (typeof id !== "number") return;
-          if (method === "initialize") push({ id, result: {} });
-          if (method === "thread/resume") {
-            push({ id, error: { code: -32603, message: "rollout is corrupt" } });
-          }
-        });
-        const error = yield* CodexAdapter.start(fake.transport, {
-          cwd: "/workspace/repo",
-          permissionMode: "bypass",
-          providerSessionId: "thread-1",
-        }).pipe(Effect.flip);
-        expect(error.message).toBe("rollout is corrupt");
-        expect(fake.sent.map((message) => message["method"])).not.toContain("thread/start");
+        // None of these is a missing thread, whatever words they share with one.
+        for (const message of [
+          "rollout is corrupt",
+          "unknown model: gpt-9",
+          "unknown error",
+          "failed to read thread: no such file or directory (os error 2)",
+          `session ${GONE_THREAD} is archived. Run \`codex unarchive ${GONE_THREAD}\` to unarchive it first.`,
+        ]) {
+          const { error, methods } = yield* resumeFailingWith({ code: -32603, message });
+          expect(error.message).toBe(message);
+          expect(methods).not.toContain("thread/start");
+        }
       }),
     ),
   );
