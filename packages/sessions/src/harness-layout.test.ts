@@ -18,7 +18,7 @@ import {
   parseLayoutReport,
   personHomeScript,
   personLayoutRefusal,
-  gitAuthorPickupBytes,
+  gitAuthorConfigText,
   identityFilesOf,
   identityPickupScript,
   personPrepareScript,
@@ -656,6 +656,14 @@ describe("the worktree repair (decision 2)", () => {
   });
 });
 
+/** What git answers for `key` as the person whose home is `home`, system config aside. */
+const asThePerson = (home: string, key: string) =>
+  spawnSync("git", ["config", "--get", key], {
+    cwd: home,
+    encoding: "utf8",
+    env: { PATH: process.env["PATH"] ?? "", HOME: home, GIT_CONFIG_NOSYSTEM: "1" },
+  }).stdout.replace(/\n$/, "");
+
 /** A key of a git config file, every value of it, as git reads it. */
 const gitGet = (file: string, key: string) =>
   spawnSync("git", ["config", "--file", file, "--get-all", key], {
@@ -696,9 +704,24 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     const files = identityFilesOf(home);
     return opened.mint([
       { path: files.token, bytes: new TextEncoder().encode(TOKEN) },
-      ...(author === null ? [] : [{ path: files.gitConfig, bytes: gitAuthorPickupBytes(author) }]),
+      { path: files.gitAuthor, bytes: new TextEncoder().encode(gitAuthorConfigText(author)) },
     ]);
   };
+  const pickUp = (
+    opened: Awaited<ReturnType<typeof startPickupChannel>>,
+    home: string,
+    author: { readonly name: string; readonly email: string } | null = AUTHOR,
+  ) =>
+    runExec(
+      [
+        "sh",
+        "-c",
+        identityPickupScript([
+          { person: alice, ticket: identityTicket(opened, home, author), home },
+        ]),
+      ],
+      opened.env,
+    );
 
   it("makes a real ~/.mend (0700) and ~/.config/git for them, with nothing in either yet", () => {
     const { home, script } = homeOf(null);
@@ -726,14 +749,13 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     const token = path.join(home, ".mend/session-token");
     expect(fs.readFileSync(token, "utf8")).toBe(TOKEN);
     expect(fs.statSync(token).mode & 0o777).toBe(0o600);
-    expect(fs.readdirSync(path.join(home, ".mend"))).toEqual(["session-token"]);
-    // Git reads the author back exactly, quotes and backslash included.
-    const config = (key: string) =>
-      spawnSync("git", ["config", "--file", path.join(home, ".config/git/config"), key], {
-        encoding: "utf8",
-      }).stdout.replace(/\n$/, "");
-    expect(config("user.name")).toBe(AUTHOR.name);
-    expect(config("user.email")).toBe(AUTHOR.email);
+    expect(fs.readdirSync(path.join(home, ".mend")).toSorted()).toEqual([
+      "git-author",
+      "session-token",
+    ]);
+    // Git reads the author back exactly, as the person, quotes and backslash included.
+    expect(asThePerson(home, "user.name")).toBe(AUTHOR.name);
+    expect(asThePerson(home, "user.email")).toBe(AUTHOR.email);
     // The ticket is spent: presented again, it is refused, and nothing is written.
     const again = await runExec(argv, opened.env);
     expect(again.status).toBe(1);
@@ -743,43 +765,65 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(opened.redemptions()).toBe(2);
   });
 
-  it("sets only the author keys their git config lacks: their dotfiles' config and author stay", async () => {
+  it("applies a changed Mend author at the next pickup, and includes Mend's file once", async () => {
+    const { home, script } = homeOf(null);
+    expect(sh(script).status).toBe(0);
+    const opened = await channel();
+    expect((await pickUp(opened, home)).status).toBe(0);
+    expect(asThePerson(home, "user.name")).toBe(AUTHOR.name);
+    // They change their git author in Mend's settings; the next pickup (a new executor, or a
+    // restart's re-make) applies it.
+    const renamed = { name: "Alice Smith", email: "alice@smith.example" };
+    expect((await pickUp(opened, home, renamed)).status).toBe(0);
+    expect(asThePerson(home, "user.name")).toBe(renamed.name);
+    expect(asThePerson(home, "user.email")).toBe(renamed.email);
+    const config = path.join(home, ".config/git/config");
+    expect(gitGet(config, "include.path")).toBe(path.join(home, ".mend/git-author"));
+    // Cleared in Mend: no stale author left behind.
+    expect((await pickUp(opened, home, null)).status).toBe(0);
+    expect(asThePerson(home, "user.name")).toBe("");
+    expect(gitGet(config, "include.path")).toBe(path.join(home, ".mend/git-author"));
+  });
+
+  it("puts Mend's author under theirs: their dotfiles' author and config stay and win", async () => {
     const { home, script } = homeOf(null);
     expect(sh(script).status).toBe(0);
     // What their dotfiles (or their own `git config --global`) put in the XDG file.
     const config = path.join(home, ".config/git/config");
-    fs.writeFileSync(
-      config,
-      [
-        '[url "git@github.com:"]',
-        "\tinsteadOf = https://github.com/",
-        "[commit]",
-        "\tgpgsign = true",
-        "[user]",
-        "\tsigningkey = ~/.ssh/id_ed25519.pub",
-        "\temail = alice@work.example",
-        "[gpg]",
-        "\tformat = ssh",
-        "",
-      ].join("\n"),
-    );
+    const theirs = [
+      '[url "git@github.com:"]',
+      "\tinsteadOf = https://github.com/",
+      "[commit]",
+      "\tgpgsign = true",
+      "[user]",
+      "\tsigningkey = ~/.ssh/id_ed25519.pub",
+      "\temail = alice@work.example",
+      "[gpg]",
+      "\tformat = ssh",
+      "",
+    ].join("\n");
+    fs.writeFileSync(config, theirs, { mode: 0o640 });
     const opened = await channel();
-    const ticket = identityTicket(opened, home);
-    const run = await runExec(
-      ["sh", "-c", identityPickupScript([{ person: alice, ticket, home }])],
-      opened.env,
-    );
-    expect(run.status).toBe(0);
-    expect(gitGet(config, "url.git@github.com:.insteadof")).toBe("https://github.com/");
-    expect(gitGet(config, "commit.gpgsign")).toBe("true");
-    expect(gitGet(config, "user.signingkey")).toBe("~/.ssh/id_ed25519.pub");
-    expect(gitGet(config, "gpg.format")).toBe("ssh");
-    // Their own email stays; the name they did not set is Mend's.
-    expect(gitGet(config, "user.email")).toBe("alice@work.example");
-    expect(gitGet(config, "user.name")).toBe(AUTHOR.name);
+    expect((await pickUp(opened, home)).status).toBe(0);
+    // Mend's include at the very top; their file, byte for byte, after it.
+    const text = fs.readFileSync(config, "utf8");
+    expect(text).toBe(`[include]\n\tpath = ${path.join(home, ".mend/git-author")}\n${theirs}`);
+    expect(fs.statSync(config).mode & 0o777).toBe(0o640);
+    expect(asThePerson(home, "user.email")).toBe("alice@work.example");
+    expect(asThePerson(home, "user.name")).toBe(AUTHOR.name);
+    expect(asThePerson(home, "url.git@github.com:.insteadof")).toBe("https://github.com/");
+    expect(asThePerson(home, "commit.gpgsign")).toBe("true");
+    // What they set later with `git config --global` lands after the include, and wins, a
+    // re-make's pickup included; the include is never added twice.
+    spawnSync("git", ["config", "--global", "user.name", "Al"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: home },
+    });
+    expect((await pickUp(opened, home)).status).toBe(0);
+    expect(asThePerson(home, "user.name")).toBe("Al");
+    expect(gitGet(config, "include.path")).toBe(path.join(home, ".mend/git-author"));
   });
 
-  it("writes the author through a ~/.config/git their dotfiles linked, and never fails the person over it", async () => {
+  it("includes Mend's author through a ~/.config/git their dotfiles linked, and never fails the person over it", async () => {
     const { dir, home, script } = homeOf(null);
     // Their install.sh linked ~/.config/git into their checkout before prepare made the rest.
     const checkout = path.join(dir, "dotfiles", "git");
@@ -790,36 +834,22 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(sh(script).status).toBe(0);
     expect(fs.lstatSync(path.join(home, ".config/git")).isSymbolicLink()).toBe(true);
     const opened = await channel();
-    const run = await runExec(
-      [
-        "sh",
-        "-c",
-        identityPickupScript([{ person: alice, ticket: identityTicket(opened, home), home }]),
-      ],
-      opened.env,
-    );
+    const run = await pickUp(opened, home);
     expect(run.status).toBe(0);
     expect(run.stdout).toBe(`mend-layout identity ${alice.name}\n`);
+    expect(fs.lstatSync(path.join(home, ".config/git")).isSymbolicLink()).toBe(true);
     expect(gitGet(path.join(checkout, "config"), "pull.rebase")).toBe("true");
-    expect(gitGet(path.join(checkout, "config"), "user.email")).toBe(AUTHOR.email);
-    // A link that leads nowhere: the author is not set, said on stderr, and the person is fine.
+    expect(asThePerson(home, "user.email")).toBe(AUTHOR.email);
+    // A link that leads nowhere: the author is not included, said on stderr, and the person is
+    // fine, their token written.
     const broken = homeOf(null);
     fs.mkdirSync(path.join(broken.home, ".config"), { recursive: true });
     fs.symlinkSync(path.join(broken.dir, "nowhere"), path.join(broken.home, ".config/git"));
     expect(sh(broken.script).status).toBe(0);
-    const again = await runExec(
-      [
-        "sh",
-        "-c",
-        identityPickupScript([
-          { person: alice, ticket: identityTicket(opened, broken.home), home: broken.home },
-        ]),
-      ],
-      opened.env,
-    );
+    const again = await pickUp(opened, broken.home);
     expect(again.status).toBe(0);
     expect(again.stdout).toBe(`mend-layout identity ${alice.name}\n`);
-    expect(again.stderr).toContain("git author was not set");
+    expect(again.stderr).toContain("git author was not included");
     expect(fs.readFileSync(path.join(broken.home, ".mend/session-token"), "utf8")).toBe(TOKEN);
   });
 

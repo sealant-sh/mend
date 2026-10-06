@@ -313,35 +313,48 @@ export const personProcessEnv = (
   CLAUDE_CODE_OAUTH_TOKEN: "",
 });
 
-/** Where a person's git author goes in their home (decision 4). */
+/** The person's own git config, which includes Mend's author file (decision 4). */
 export const GIT_CONFIG_IN_HOME = ".config/git/config";
 
+/** Mend's own file for the person's git author: Mend rewrites it at every identity pickup. */
+export const GIT_AUTHOR_IN_HOME = ".mend/git-author";
+
 /**
- * What a person's identity pickup answers, by path in `home`: their token, written to that file;
- * and their git author, set key by key in that git config file (`gitAuthorPickupBytes`), never
- * written over it.
+ * What a person's identity pickup writes into `home`: their token, and Mend's author file, which
+ * `~/.config/git/config` includes at its top (`identityPickupScript`).
  */
 export const identityFilesOf = (
   home: string,
-): { readonly token: string; readonly gitConfig: string } => ({
+): { readonly token: string; readonly gitAuthor: string } => ({
   token: `${home}/${SESSION_TOKEN_IN_HOME}`,
-  gitConfig: `${home}/${GIT_CONFIG_IN_HOME}`,
+  gitAuthor: `${home}/${GIT_AUTHOR_IN_HOME}`,
 });
 
+/** A git config value, quoted: backslash and double quote escaped, control characters dropped. */
+const gitConfigValue = (value: string): string =>
+  `"${[...value]
+    .filter((char) => {
+      const code = char.codePointAt(0) ?? 0;
+      return code >= 0x20 && code !== 0x7f;
+    })
+    .join("")
+    .replaceAll("\\", "\\\\")
+    .replaceAll('"', '\\"')}"`;
+
 /**
- * A person's git author as their identity pickup carries it: JSON, which node sets with
- * `git config --file ~/.config/git/config` as the person, `user.name` and `user.email` only, and
- * only where that file does not set them already (decision 4). Everything else in the file
- * (their dotfiles' `insteadOf`, signing, includes, what they ran `git config --global` for) stays,
- * and so does an author their dotfiles chose. Git reads the file for the user through
- * `$XDG_CONFIG_HOME` or `$HOME`, so a tool that moves either reads no author; their `~/.gitconfig`
- * wins over it, as global config won over system config before.
+ * Mend's author file for a person (decision 4): a `[user]` section and nothing else, empty when
+ * they have no author. Mend owns it and rewrites it at every identity pickup, so a changed
+ * setting applies at the next one. Their `~/.config/git/config` includes it at its very top, so
+ * any `user.*` they set themselves (their dotfiles, `git config --global`) comes later and wins,
+ * and so does their `~/.gitconfig`. Git reads it through `$XDG_CONFIG_HOME` or `$HOME`, so a tool
+ * that moves either reads no author.
  */
-export const gitAuthorPickupBytes = (author: {
-  readonly name: string;
-  readonly email: string;
-}): Uint8Array =>
-  new TextEncoder().encode(JSON.stringify({ name: author.name, email: author.email }));
+export const gitAuthorConfigText = (
+  author: { readonly name: string; readonly email: string } | null,
+): string =>
+  author === null
+    ? ""
+    : `[user]\n\tname = ${gitConfigValue(author.name)}\n\temail = ${gitConfigValue(author.email)}\n`;
 
 // ─── the scripts ─────────────────────────────────────────────────────────────
 
@@ -588,9 +601,10 @@ export const personHomeScript = (
  * P1-1). The exec carries one pickup ticket per person (`pickup-tickets.ts`, purpose
  * `session-token`), and node, inside the same exec, redeems each over the session channel and
  * writes the token through a pinned directory (`pinnedPut`) to `~/.mend/session-token`, 0600, then
- * gives it to the person. Their git author is set as the person (`gitAuthorPickupBytes`): only the
- * keys their `~/.config/git/config` does not set, through a link if their dotfiles made one, and a
- * failure there is said and fails nothing. A redemption that fails for a passing reason (Mend not
+ * gives it to the person. Their git author goes into Mend's own file, `~/.mend/git-author`,
+ * rewritten every time (`gitAuthorConfigText`), which their `~/.config/git/config` includes at its
+ * top, added once and as the person, through a link if their dotfiles made one; a failure there
+ * is said and fails nothing. A redemption that fails for a passing reason (Mend not
  * answering, the channel busy) is tried once more. A person whose `~/.mend` is not there (prepare
  * did not make them) is skipped and their ticket left unredeemed, so no token is minted for them.
  * Prints `mend-layout identity <name>` for each person written, and
@@ -640,30 +654,44 @@ const write = (person, files, file) => {
   if (root) { try { fs.lchownSync(file, person.uid, ${MEND_GROUP.gid}); } catch { return file + ": could not give it to its person"; } }
   return null;
 };
-// The author, as the person, key by key: what their file already sets stays. Never fatal.
-const setAuthor = (person, files) => {
-  const bytes = files.get(person.home + "/${GIT_CONFIG_IN_HOME}");
-  if (bytes === undefined) return;
-  let author;
-  try { author = JSON.parse(bytes.toString("utf8")); } catch { return; }
+// Mend's author file, rewritten at every pickup, then included at the top of their git config,
+// once, as the person, through a link their dotfiles made. Never fatal: said on stderr.
+const INCLUDE_PROGRAM = [
+  'const fs = require("node:fs"), path = require("node:path"), cp = require("node:child_process");',
+  "const [file, include] = process.argv.slice(1);",
+  'const git = (args) => cp.spawnSync("git", ["config", "--file", file, ...args], { encoding: "utf8" });',
+  'const known = git(["--get-all", "include.path"]);',
+  'if (known.status === 0 && known.stdout.split("\\\\n").includes(include)) process.exit(0);',
+  'let text = ""; try { text = fs.readFileSync(file, "utf8"); } catch (error) { if (error.code !== "ENOENT") throw error; }',
+  'if (text.trim() === "") {',
+  '  const added = git(["--add", "include.path", include]);',
+  '  if (added.status !== 0) { process.stderr.write(added.stderr || "git config failed\\\\n"); process.exit(1); }',
+  "  process.exit(0);",
+  "}",
+  // At the very top, so everything of theirs comes after it and wins.
+  'const real = fs.realpathSync(file); const part = path.join(path.dirname(real), ".mend-include-" + process.pid);',
+  'const mode = fs.statSync(real).mode & 0o7777;',
+  'fs.writeFileSync(part, "[include]\\\\n\\tpath = " + include + "\\\\n" + text, { flag: "wx", mode });',
+  "fs.renameSync(part, real);",
+].join("\\n");
+const includeAuthor = (person) => {
   const file = person.home + "/${GIT_CONFIG_IN_HOME}";
-  const options = {
+  const include = person.home + "/${GIT_AUTHOR_IN_HOME}";
+  const run = require("node:child_process").spawnSync(process.execPath, ["-e", INCLUDE_PROGRAM, file, include], {
     cwd: person.home,
     encoding: "utf8",
     env: { PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin", HOME: person.home },
     ...(root ? { uid: person.uid, gid: ${MEND_GROUP.gid} } : {}),
-  };
-  const git = (args) => require("node:child_process").spawnSync("git", ["config", "--file", file, ...args], options);
-  for (const [key, value] of [["user.name", author.name], ["user.email", author.email]]) {
-    if (typeof value !== "string" || value === "") continue;
-    const known = git(["--get", key]);
-    if (known.error === undefined && known.status === 0) continue;
-    const set = git([key, value]);
-    if (set.error !== undefined || set.status !== 0) {
-      process.stderr.write("mend: " + person.name + "'s git author was not set: " + ((set.stderr || "").trim() || String(set.error || "git config failed")) + "\\n");
-      return;
-    }
+  });
+  if (run.error !== undefined || run.status !== 0) {
+    const why = ((run.stderr || "").trim().split("\\n").pop() || String(run.error || "it failed"));
+    process.stderr.write("mend: " + person.name + "'s git author was not included in their git config: " + why + "\\n");
   }
+};
+const setAuthor = (person, files) => {
+  const why = write(person, files, person.home + "/${GIT_AUTHOR_IN_HOME}");
+  if (why !== null) { process.stderr.write("mend: " + person.name + "'s git author was not written: " + why + "\\n"); return; }
+  includeAuthor(person);
 };
 // Passing reasons are tried once more; a ticket refused as spent or as someone else's is not.
 const passing = (reason) => !reason.startsWith("the pickup was refused: this pickup ticket");

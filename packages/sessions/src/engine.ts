@@ -291,7 +291,7 @@ import {
   SHARED_AS_BEFORE,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
-import { gitAuthorPickupBytes, identityFilesOf, processUserOf } from "./harness-layout.ts";
+import { gitAuthorConfigText, identityFilesOf, processUserOf } from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
   CODEX_SHELL_SNAPSHOT_OFF,
@@ -6028,7 +6028,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             },
             [
               { path: files.token, bytes: new Uint8Array() },
-              { path: files.gitConfig, bytes: new Uint8Array() },
+              { path: files.gitAuthor, bytes: new Uint8Array() },
             ],
           );
         });
@@ -6057,9 +6057,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         return [
           { path: tokenFile.path, bytes: new TextEncoder().encode(token) },
-          ...(author === null
-            ? []
-            : [{ path: configFile.path, bytes: gitAuthorPickupBytes(author) }]),
+          // Always written: a person who cleared their author gets an empty file, not a stale one.
+          {
+            path: configFile.path,
+            bytes: new TextEncoder().encode(
+              gitAuthorConfigText(
+                author === null ? null : { name: author.name, email: author.email },
+              ),
+            ),
+          },
         ];
       });
 

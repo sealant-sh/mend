@@ -247,11 +247,12 @@ refuses it (decision 14).
   passwd home, the file Core writes. No `gh` needed in the image. `mend-git-credential token` is for
   a command that needs the token (`GH_TOKEN=$(mend-git-credential token) gh …`), so it never reaches
   a terminal.
-- **Git author and config.** `git config --system user.*` is no longer written. Mend sets the
-  person's `user.name` and `user.email` in `~/.config/git/config`, as the person and key by key,
-  only where that file does not set them already: what their dotfiles or their own
-  `git config --global` put there (an author, `insteadOf`, signing, includes) stays, a
-  `~/.config/git` their dotfiles linked is written through, and a failure there never fails the
+- **Git author and config.** `git config --system user.*` is no longer written. The person's author
+  goes into Mend's own file, `~/.mend/git-author` (a `[user]` section, empty when they have none),
+  rewritten at every identity pickup, so a changed setting applies at the next one. Their
+  `~/.config/git/config` includes it at its very top, added once, as the person, through a link
+  their dotfiles made: every `user.*` they set themselves (their dotfiles, `git config --global`)
+  comes after it and wins, nothing else in the file changes, and a failure there never fails the
   launch. Git finds the file through `$XDG_CONFIG_HOME` or `$HOME` (a tool that moves them commits
   with no author); the person's `~/.gitconfig` wins over it, as global config wins today.
 - **SSH, `scp`, `sftp`, `ssh-keygen`, GnuPG and the JVM** read the passwd home, which is the

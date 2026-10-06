@@ -24508,18 +24508,13 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
           const joinerFiles = decoded(join.pickups.written.get(`/home/${JOINER}`));
           expect(launcherFiles.get(`/home/${LAUNCHER}/.mend/session-token`)).toBe(launcherToken);
           expect(joinerFiles.get(`/home/${JOINER}/.mend/session-token`)).toBe(joinerToken);
-          // The author, which node sets key by key in their git config as them.
-          expect(
-            JSON.parse(launcherFiles.get(`/home/${LAUNCHER}/.config/git/config`) ?? ""),
-          ).toEqual({
-            name: "Account user-fixture",
-            email: "user-fixture@accounts.example",
-          });
-          expect(
-            JSON.parse(joinerFiles.get(`/home/${JOINER}/.config/git/config`) ?? ""),
-          ).toMatchObject({
-            email: `${MARIA}@accounts.example`,
-          });
+          // The author, in Mend's own file, which their git config includes at its top.
+          expect(launcherFiles.get(`/home/${LAUNCHER}/.mend/git-author`)).toBe(
+            '[user]\n\tname = "Account user-fixture"\n\temail = "user-fixture@accounts.example"\n',
+          );
+          expect(joinerFiles.get(`/home/${JOINER}/.mend/git-author`)).toContain(
+            `email = "${MARIA}@accounts.example"`,
+          );
           // Neither token nor author ever rides an exec's arguments; only tickets do.
           for (const argv of join.execs) {
             for (const arg of argv) {
