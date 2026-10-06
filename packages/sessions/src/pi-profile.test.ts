@@ -15,7 +15,6 @@ import {
   PI_PROFILE_PROGRAM,
   PI_PROFILE_SECRET_FILE,
   materializePiProfile,
-  piProfileInSharedWorkspace,
   preparePiProfileExec,
   planPiProfile,
 } from "./pi-profile.ts";
@@ -520,16 +519,5 @@ describe("setting up a delivered pi profile before pi starts", () => {
       defaultProvider: "openai-codex",
       theme: "github-dark-default",
     });
-  });
-});
-
-describe("a pi launch into a workspace other processes hold", () => {
-  it("sets the profile up when no pi runs there, leaves the owner's own, and refuses beside another person's", () => {
-    expect(piProfileInSharedWorkspace("a", [])).toBe("prepare");
-    expect(piProfileInSharedWorkspace(null, [])).toBe("prepare");
-    expect(piProfileInSharedWorkspace("a", ["a", "a"])).toBe("running");
-    expect(piProfileInSharedWorkspace("a", ["a", "b"])).toBe("refuse");
-    expect(piProfileInSharedWorkspace("a", [null])).toBe("refuse");
-    expect(piProfileInSharedWorkspace(null, [null])).toBe("refuse");
   });
 });

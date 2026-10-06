@@ -160,14 +160,22 @@ A session that is already running keeps the profile it started with.
 ## A pi started outside a pi session can run the last pi session's profile
 
 In a remote workspace a worktree's agent state is shared by its sessions. Every pi session Mend
-starts, fresh or in a workspace that is already running, is set up to run on its owner's pi profile
-or on none, and does not start when that cannot be done. One beside another person's running pi does
-not start either.
+starts, fresh or in a workspace where no pi is running, is set up to run on its owner's pi profile
+or on none, and does not start when that cannot be done.
 
 `pi` typed in the terminal of a session that is not a pi session (a shell, Claude Code, Codex) is
 not set up: it loads whatever profile the last pi session in the worktree left, that person's
 extensions, settings and packages included. Start pi as a pi session (`mend pi`) to run it on your
 own profile.
+
+## A pi that joins another person's running pi runs on their profile
+
+pi reads one profile per harness home, and in a remote workspace a worktree's harness home is shared
+by its sessions. Until per-person harness homes (ADR 0016) are on, a pi session that joins a
+workspace where another person's pi is running runs on that person's profile: their extensions,
+settings, packages and MCP servers, with any header or token their `mcp.json` holds. Mend starts it
+anyway and changes nothing there, so the other person's pi keeps running as it was. A pi session
+that starts once no pi is running there gets its own profile.
 
 ## Agent memory is saved when the agent ends
 

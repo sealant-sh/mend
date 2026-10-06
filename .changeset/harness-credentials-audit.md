@@ -19,9 +19,8 @@ Codex's machine state is never saved either, listed apart since none of it is a 
 Codex sessions Mend starts run with its shell snapshot off (`-c features.shell_snapshot=false`), so
 the snapshot is never written. A pi session Mend starts runs on its owner's freshly delivered pi
 profile, on none, or does not start, whether it launches fresh or joins, resumes or follows up in a
-workspace that is already running: Mend moves aside the profile and settings an earlier session
-delivered into the worktree, never deleting them, then delivers the owner's. Beside another person's
-running pi, a pi session does not start; beside the same person's, it runs on the profile already
-there. A pi typed by hand in a session that is not a pi session is not set up (known issues). A pi
-profile restored without its `mcp.json` is no longer delivered again and reinstalled at every
-resume.
+workspace where no pi is running: Mend moves aside the profile and settings an earlier session
+delivered into the worktree, never deleting them, then delivers the owner's. Beside a running pi,
+anyone's, a pi session runs on the profile already there (known issues). A pi typed by hand in a
+session that is not a pi session is not set up (known issues). A pi profile restored without its
+`mcp.json` is no longer delivered again and reinstalled at every resume.

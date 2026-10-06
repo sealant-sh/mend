@@ -3333,7 +3333,7 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("a pi follow-up in a retained workspace runs on its owner's profile, and refuses beside another person's pi", async () => {
+  it("a pi follow-up in a retained workspace runs on its owner's profile, and on the one there beside a live pi", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
       (world, tmp) =>
@@ -3380,18 +3380,14 @@ describe("SessionEngine", () => {
             0,
           );
 
-          // Another person's pi runs in the workspace: refused, and nothing there is touched.
+          // Another person's pi runs in the workspace: the launch runs on the profile already
+          // there, which is left as it is.
           yield* stopAgent;
           plantForeignPiProfile(home);
           const other = yield* provision("owner-b");
           const theirs = liveProcessRow("pi-b", other.id, workspaceId, "agent-pty", "pi");
           world.processes.set(theirs.id, theirs);
-          const failure = yield* engine
-            .launchFollowUp(session.id, "Carry on.", "follow-up:pi-2", "owner-a")
-            .pipe(Effect.flip);
-          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
-          expect(platformFailure?.code).toBe("PI_PROFILE_IN_USE");
-          expect(platformFailure?.message).toContain("another person's pi is running");
+          yield* engine.launchFollowUp(session.id, "Carry on.", "follow-up:pi-2", "owner-a");
           expect(fs.existsSync(profile)).toBe(true);
         }),
       { sealantLayer: sealantLaunchLayer(created) },

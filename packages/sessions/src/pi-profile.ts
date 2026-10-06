@@ -344,23 +344,3 @@ export const PI_PROFILE_PROGRAM = [
   `else{say(f+" was changed in this session, so the profile did not replace it");if(lastFiles[f])nextFiles[f]=lastFiles[f]}}`,
   `put(F,nextFiles)}catch(e){process.stderr.write("mend: the pi profile was not set up: "+(e&&e.message)+"\\n")}`,
 ].join("");
-
-/**
- * What a pi launch into a workspace that already runs other processes (a join, a resume or a
- * follow-up in a retained workspace) does about the profile there, from the owners of the pi
- * agents live in it:
- *
- * - `prepare`: no pi runs there; set the harness home up for this owner as a fresh launch does.
- * - `running`: only this owner's pi runs there, on the profile delivered for them; leave it.
- * - `refuse`: another person's pi runs there, on their profile; pi cannot run on two profiles in
- *   one harness home, so this launch does not start.
- */
-export const piProfileInSharedWorkspace = (
-  ownerUserId: string | null,
-  livePiOwners: ReadonlyArray<string | null>,
-): "prepare" | "running" | "refuse" => {
-  if (livePiOwners.length === 0) return "prepare";
-  return ownerUserId !== null && livePiOwners.every((owner) => owner === ownerUserId)
-    ? "running"
-    : "refuse";
-};

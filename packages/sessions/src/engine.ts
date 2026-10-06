@@ -333,7 +333,6 @@ import {
 import {
   materializePiProfile,
   piProfileFilesToWrite,
-  piProfileInSharedWorkspace,
   piProfileKeptDir,
   planPiProfile,
   preparePiProfileExec,
@@ -12852,34 +12851,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           const interactiveShell = argv[0] === "bash";
-          // A pi launch here runs on its owner's freshly delivered profile, on none, or not at
-          // all, as a fresh launch does (`deliverPiProfile`); the harness home may hold whoever's
-          // pi ran here last, or run another person's pi now.
+          // With no pi live here, a pi launch runs on its owner's freshly delivered profile, on
+          // none, or not at all, as a fresh launch does (`deliverPiProfile`): the harness home may
+          // hold whoever's pi ran here last. With a pi live here, whoever's it is, the launch runs
+          // on the profile already there; pi reads one profile per harness home, and per-person
+          // homes (docs/adr/0016) are what give each person their own.
           if (session.harness === "pi" && !interactiveShell) {
-            const livePi = (yield* processes.listLiveForWorkspace(
+            const piLive = (yield* processes.listLiveForWorkspace(
               SealantWorkspaceId.make(workspace.id),
-            )).filter(
-              (process) => process.harness === "pi" && AGENT_PROCESS_KINDS.has(process.kind),
-            );
-            const owners = yield* Effect.forEach(livePi, (process) =>
-              sessions.byId(process.sessionId).pipe(
-                Effect.map((row) => row.ownerUserId),
-                Effect.catch(() => Effect.succeed(null)),
-              ),
-            );
-            const verdict = piProfileInSharedWorkspace(session.ownerUserId, owners);
-            if (verdict === "refuse") {
-              const refusal = new SealantPlatformError({
-                code: "PI_PROFILE_IN_USE",
-                status: null,
-                message:
-                  "another person's pi is running in this workspace, on their pi profile; pi runs on one person's profile at a time, so this pi session starts once theirs ends",
-                cause: null,
-              });
-              yield* settleSession(sessionId, "failed", refusal.message).pipe(Effect.ignore);
-              return yield* refusal;
-            }
-            if (verdict === "prepare") {
+            )).some((process) => process.harness === "pi" && AGENT_PROCESS_KINDS.has(process.kind));
+            if (!piLive) {
               yield* deliverPiProfile(session, project, workspace).pipe(
                 Effect.tapError((error) =>
                   settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
