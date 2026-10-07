@@ -80,6 +80,12 @@ export class SessionChannelTokensRepo extends Context.Service<
     readonly revoke: (sessionId: string) => Effect.Effect<void>;
     /** Revoke the tokens of one launch — its executor's end was observed. Idempotent. */
     readonly revokeLaunch: (launchId: string) => Effect.Effect<void>;
+    /**
+     * Revoke one person's tokens in one launch (docs/adr/0016, decision 4): their logins there
+     * were released, with their last process. Their next process in that executor is given a new
+     * one. The launch's own token and everyone else's stay. Idempotent.
+     */
+    readonly revokePerson: (launchId: string, accountId: string) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionChannelTokensRepo") {}
 
@@ -186,7 +192,25 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      return { issue, issuePerson, verify, resolve, revoke, revokeLaunch };
+      const revokePerson = Effect.fn("SessionChannelTokensRepo.revokePerson")(function* (
+        launchId: string,
+        accountId: string,
+      ) {
+        yield* db
+          .update(sessionChannelTokens)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(sessionChannelTokens.launchId, launchId),
+              eq(sessionChannelTokens.sessionId, personTokenSession(accountId)),
+              eq(sessionChannelTokens.accountId, accountId),
+              isNull(sessionChannelTokens.revokedAt),
+            ),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      return { issue, issuePerson, verify, resolve, revoke, revokeLaunch, revokePerson };
     }),
   );
 
@@ -211,7 +235,11 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
       return row === undefined || row.revoked ? null : row;
     };
     const revokeWhere = (
-      matches: (row: { readonly sessionId: string; readonly launchId: string }) => boolean,
+      matches: (row: {
+        readonly sessionId: string;
+        readonly launchId: string;
+        readonly accountId: string | null;
+      }) => boolean,
     ) =>
       Effect.sync(() => {
         for (const row of rows.values()) if (matches(row)) row.revoked = true;
@@ -255,6 +283,13 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
         }),
       revoke: (sessionId) => revokeWhere((row) => row.sessionId === sessionId),
       revokeLaunch: (launchId) => revokeWhere((row) => row.launchId === launchId),
+      revokePerson: (launchId, accountId) =>
+        revokeWhere(
+          (row) =>
+            row.launchId === launchId &&
+            row.accountId === accountId &&
+            row.sessionId === personTokenSession(accountId),
+        ),
     };
   },
 );

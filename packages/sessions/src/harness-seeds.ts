@@ -112,7 +112,10 @@ export const COPY_REFRESH_TOKEN = "sealant-copy-cannot-refresh";
  * (verified 2026-10-01: pi `auth check` reads it `ready`, opencode lists it as OpenAI oauth).
  *
  * The entry is written only when it is absent or is an earlier copy (its refresh token is the
- * placeholder), so a login the user made inside the session is never replaced. The expiry is the
+ * placeholder), so a login the user made inside the session is never replaced. It is written in
+ * place, as the process's user, through whatever link holds the file (docs/adr/0016, decision 5):
+ * a rename would replace a link with a regular file, and put the login into saved state where the
+ * link led out of it (opencode's `auth.json` in a person's saved data directory). The expiry is the
  * access token's own; a session that outlives it gets the platform's newer copy at its next launch
  * or resume. pi's default provider becomes `openai-codex` only when the user has chosen none.
  *
@@ -125,7 +128,7 @@ const CHATGPT_LOGIN_PROGRAM = [
   `let exp;try{exp=JSON.parse(Buffer.from(t.access_token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"),"base64").toString()).exp}catch{}`,
   `if(typeof exp!=="number")process.exit(0);`,
   `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
-  `function put(p,v){fs.mkdirSync(path.dirname(p),{recursive:true,mode:0o700});const tmp=p+".mend-seed-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(v,null,2),{mode:0o600});fs.renameSync(tmp,p)}`,
+  `function put(p,v){fs.mkdirSync(path.dirname(p),{recursive:true,mode:0o700});fs.writeFileSync(p,JSON.stringify(v,null,2),{mode:0o600})}`,
   `const auth=read(file);if(auth===null)process.exit(0);`,
   `const prior=auth[key];if(prior&&typeof prior==="object"&&prior.refresh!==${JSON.stringify(COPY_REFRESH_TOKEN)})process.exit(0);`,
   `auth[key]={type:"oauth",access:t.access_token,refresh:${JSON.stringify(COPY_REFRESH_TOKEN)},expires:exp*1000,accountId:t.account_id};put(file,auth);`,

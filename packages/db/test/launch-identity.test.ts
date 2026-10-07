@@ -192,4 +192,30 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
     });
     expect(result.after).toBeNull();
   });
+  it("a person's tokens in one launch end when their logins there are released, and nobody else's do (docs/adr/0016, Delivery 14)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const tokens = yield* SessionChannelTokensRepo;
+        const own = yield* tokens.issue("s-release", "launch:s-release:1:a");
+        const maria = yield* tokens.issuePerson("launch:s-release:1:a", "user-maria");
+        const alice = yield* tokens.issuePerson("launch:s-release:1:a", "user-alice");
+        const elsewhere = yield* tokens.issuePerson("launch:s-other:1:a", "user-maria");
+        yield* tokens.revokePerson("launch:s-release:1:a", "user-maria");
+        // Idempotent.
+        yield* tokens.revokePerson("launch:s-release:1:a", "user-maria");
+        return {
+          maria: yield* tokens.resolve(maria),
+          alice: (yield* tokens.resolve(alice))?.accountId ?? null,
+          own: (yield* tokens.resolve(own))?.sessionId ?? null,
+          elsewhere: (yield* tokens.resolve(elsewhere))?.launchId ?? null,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      maria: null,
+      alice: "user-alice",
+      own: "s-release",
+      elsewhere: "launch:s-other:1:a",
+    });
+  });
 });

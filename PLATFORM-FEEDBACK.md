@@ -7,6 +7,31 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-07 · 0.39.0-next.695 · Per-person homes: what Mend's logins per person (ADR 0016 Delivery 14) still lacks
+
+- **Shipped and used:** `user` on sessions and exec, `credentialsHome` on create,
+  `workspace.credentials.put/release/list` (one person per home, `uid`/`gid` on a put so it can run
+  beside the `useradd` that makes the home), and `workspaces.imageKey`/`inspectImage`. Mend passes
+  each through `PersonLayoutPlatformLive` (`packages/sealant/src/person-layout-live.ts`).
+- **Missing, blocking real per-person executors:** an owner-map option on `workspaces.create`. Core
+  never sets `SEALANT_CAPTURE_OWNER_MAP` for sealantd, so no executor restores `people/<id>/` by
+  owner or gives the worktree to group `mend`, and prepare refuses every `person` launch with the
+  owner-map line (ADR 0016 decision 8). Mend builds the map only once the platform can take it
+  (`PersonLayoutPlatform.withOwnerMap`, null today): `people/<account id>` → uid for every person
+  prepare may make, the change owner's uid for the worktree, gid 40000. A Core PR for the option is
+  in progress.
+- **Missing:** the dotfiles verb (apply a person's dotfiles as their user into their home, after
+  create). Without it decision 1's fallback (a wrong `person` prediction on a fresh worktree) fails
+  the launch when the launcher has dotfiles, and Delivery 15 cannot give a joiner theirs.
+- **Missing:** a way to tell which provider a refused `put` named other than its message. Mend reads
+  `No <provider> connected account matches …` and `Connected <provider> account … is invalid` to say
+  "Connect Claude to start a session here" and to leave an optional provider out. A stable code with
+  the provider (`connected-account-missing` / `connected-account-invalid` and `provider: "claude"`)
+  would remove that coupling.
+- **Missing:** a put that leaves out a provider the person has not connected, rather than failing
+  whole. A joiner with no GitHub login costs Mend a second `put` (`github: null`); one call with
+  "write what is connected, say what is not" would keep every join at exactly one Core call.
+
 ## 2026-10-06 · 0.38.1 · Exec arguments are stored forever and in plaintext: unrecorded stdin, redaction, retention and a purge
 
 - **Needed:** a way to hand a secret to one exec without the platform storing it. Mend writes a

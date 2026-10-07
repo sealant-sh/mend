@@ -1,8 +1,9 @@
 import type { WorkspaceImage } from "@mend/domain";
 import type {
+  CreateOptions,
+  Harness,
   SessionOptions,
   Workspace,
-  WorkspaceCredentialsOptions,
   WorkspaceExecOptions,
 } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
@@ -11,10 +12,11 @@ import * as Context from "effect/Context";
 import { SealantPlatformError } from "./errors.ts";
 
 /**
- * The user a process starts as (docs/adr/0016, decision 1): the SDK's `user` option on sessions
- * and exec, which Core (Delivery 8) and sealantd (Delivery 5) have not built yet. sealantd sets
+ * The user a process starts as (docs/adr/0016, decision 1): what Mend allocated for a person. The
+ * SDK's `user` option on sessions and exec (Core 0.39) takes the passwd name; sealantd then sets
  * uid, gid and supplementary groups, `HOME`, `USER`, `LOGNAME` and `SHELL` from the passwd entry,
- * umask `0002`, and the private `TMPDIR=/tmp/u-<uid>` and `XDG_RUNTIME_DIR=/run/user/<uid>`.
+ * and umask `0002`. Mend adds the private `TMPDIR=/tmp/u-<uid>` and
+ * `XDG_RUNTIME_DIR=/run/user/<uid>` in the process's environment.
  */
 export interface ProcessUser {
   readonly name: string;
@@ -33,8 +35,7 @@ export interface ProcessUserOption {
 
 /**
  * A session's options: the SDK's, with Mend's `ProcessUser` in place of the SDK's `user` (a passwd
- * name or uid, Core 0.39.0-next.694). Mend sends the SDK no `user` until the person layout's
- * platform layer passes it through.
+ * name or uid), which the client passes through as the name (`withProcessUser`).
  */
 export type PersonSessionOptions = Omit<SessionOptions, "user"> & ProcessUserOption;
 
@@ -63,31 +64,88 @@ export const UNKNOWN_IMAGE_REPORT: ImageLayoutReport = {
   missing: [],
 };
 
+/** A provider whose login Core writes into a home (decision 5). */
+export type LoginProvider = "claude" | "codex" | "github";
+
+export const LOGIN_PROVIDERS: ReadonlyArray<LoginProvider> = ["claude", "codex", "github"];
+
 /**
- * The platform surface the person layout needs beyond today's SDK (docs/adr/0016, decisions 1,
- * 5 and 11), behind one contract so the engine is written against the ADR's stated interface.
- * Its live layer says, truthfully, that this platform has none of it: `processUser` false, so
- * no launch is ever decided `person`, and every call fails with the Delivery that adds it. When
- * Core's SDK gains a piece, the live layer passes it through here and nowhere else changes.
+ * What a POST puts into a home, per provider: `true` for the person's account named `default`, a
+ * name for another of theirs, `null` to remove that provider's login from the home (they have not
+ * connected it), absent to leave it as it is.
+ */
+export type HomeLogins = Partial<Record<LoginProvider, true | string | null>>;
+
+/** One home of a running executor and the providers whose logins Core keeps there (`GET`). */
+export interface HeldHome {
+  readonly home: string;
+  /** The Sealant user whose logins the home holds. */
+  readonly onBehalfOf: string;
+  readonly providers: ReadonlyArray<LoginProvider>;
+}
+
+/**
+ * sealantd's capture owner map (docs/adr/0016, decision 8; `SEALANT_CAPTURE_OWNER_MAP`): who each
+ * restored `people/<account id>` belongs to, and whose the worktree and its git directory are.
+ * Without it sealantd restores everything as root, gives nobody sudo and restores no owners, so
+ * prepare refuses the launch (`ownerMapRefusal`).
+ */
+export interface CaptureOwnerMap {
+  /** Each person prepare may make: their saved directory is theirs. */
+  readonly people: ReadonlyArray<{ readonly accountId: string; readonly uid: number }>;
+  /** The change's owner (the owner of the worktree's first session): the worktree is theirs. */
+  readonly worktreeUid: number;
+  /** The shared group, `mend`. */
+  readonly gid: number;
+}
+
+/**
+ * The platform surface the person layout needs (docs/adr/0016, decisions 1, 5 and 11), behind one
+ * contract so the engine is written against the ADR's stated interface. The live layer
+ * (`PersonLayoutPlatformLive`, `person-layout-live.ts`) passes each piece through to Core's SDK
+ * (0.39): processes as a user, the image's per-person capability before create, and the
+ * credentials API (one person per home). Dotfiles as a person through a control verb have no SDK
+ * surface yet (PLATFORM-FEEDBACK.md), so that piece still fails.
  */
 export class PersonLayoutPlatform extends Context.Service<
   PersonLayoutPlatform,
   {
     /** Sessions and exec can start a process as a given user (`ProcessUserOption`). */
     readonly processUser: boolean;
-    /** Core's report on the image a create would ask for, read before the create. */
-    readonly imageReport: (image: WorkspaceImage) => Effect.Effect<ImageLayoutReport>;
     /**
-     * `POST /v1/workspaces/:id/credentials { onBehalfOf, home, claude?, codex?, github? }`
-     * (decision 5): the person's logins written into `home`, owned by that home's user, and kept
-     * refreshed. Core refuses another person for a held home (409 `home-held`).
+     * Hands a person launch's capture owner map to the create (`CaptureOwnerMap`), or null while
+     * the SDK has no option for it: Core does not pass `SEALANT_CAPTURE_OWNER_MAP` to sealantd
+     * yet, so no real executor restores per person until a Core release adds the option to
+     * `workspaces.create` (PLATFORM-FEEDBACK.md, 2026-10-07). Null costs nothing: Mend builds no
+     * map and reads nothing for one.
+     */
+    readonly withOwnerMap: ((options: CreateOptions, map: CaptureOwnerMap) => CreateOptions) | null;
+    /**
+     * Core's report on the image a create would ask for, read before the create: as `ownerUserId`
+     * (the launcher, whose built images Core answers from), for the image-shaping part of the
+     * create (`image` and `harness`). Unknown when Core says nothing or cannot be asked.
+     */
+    readonly imageReport: (input: {
+      readonly ownerUserId: string;
+      readonly image: WorkspaceImage;
+      readonly harness: Harness;
+    }) => Effect.Effect<ImageLayoutReport>;
+    /**
+     * `POST /v1/workspaces/:id/credentials { onBehalfOf, home, uid?, gid?, claude?, codex?,
+     * github? }` (decision 5): the Mend account `onBehalfOf`'s logins written into `home`, owned
+     * by that home's user, and kept refreshed. With `owner`, a home that does not exist yet is made
+     * for them (so the POST runs beside the `useradd` that makes the user). Core refuses another
+     * person for a held home (409 `home-held`), an account the person cannot name (404, "No claude
+     * connected account matches …") and an account that needs reconnecting (409
+     * `connected-account-invalid`); nothing is written then.
      */
     readonly postCredentials: (
       workspace: Workspace,
       input: {
         readonly onBehalfOf: string;
         readonly home: string;
-        readonly credentials: WorkspaceCredentialsOptions;
+        readonly owner?: { readonly uid: number; readonly gid: number };
+        readonly logins: HomeLogins;
       },
     ) => Effect.Effect<void, SealantPlatformError>;
     /** `DELETE /v1/workspaces/:id/credentials { home }`: the files and the record removed. */
@@ -95,6 +153,10 @@ export class PersonLayoutPlatform extends Context.Service<
       workspace: Workspace,
       input: { readonly home: string },
     ) => Effect.Effect<void, SealantPlatformError>;
+    /** `GET /v1/workspaces/:id/credentials`: the homes of the running executor. */
+    readonly listCredentials: (
+      workspace: Workspace,
+    ) => Effect.Effect<ReadonlyArray<HeldHome>, SealantPlatformError>;
     /**
      * sealantd's dotfiles applier through the control verb (decision 11; sealantd Delivery 5,
      * Core Delivery 8): a person's dotfiles applied as `user` into `home`, or as root into `home`
@@ -115,7 +177,8 @@ export class PersonLayoutPlatform extends Context.Service<
   }
 >()("@mend/sealant/PersonLayoutPlatform") {}
 
-const unsupported = (what: string, delivery: string) =>
+/** A piece of the person layout this platform cannot do. */
+export const personLayoutUnsupported = (what: string, delivery: string) =>
   new SealantPlatformError({
     code: "person_layout_unsupported",
     status: null,
@@ -123,56 +186,44 @@ const unsupported = (what: string, delivery: string) =>
     cause: null,
   });
 
-/** Today's platform: none of it. No launch is decided `person` on it (`processUser` false). */
-export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform> = Layer.succeed(
+/**
+ * A platform with none of the person layout: `processUser` false, so no launch is ever decided
+ * `person`, and every call fails. For compositions and tests that never run the person layout.
+ */
+export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer.succeed(
   PersonLayoutPlatform,
   {
     processUser: false,
+    withOwnerMap: null,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),
     postCredentials: () =>
-      Effect.fail(unsupported("write a person's logins into a home", "Core Deliveries 7 and 8")),
+      Effect.fail(
+        personLayoutUnsupported("write a person's logins into a home", "Core Delivery 7"),
+      ),
     deleteCredentials: () =>
-      Effect.fail(unsupported("release a home's logins", "Core Deliveries 7 and 8")),
+      Effect.fail(personLayoutUnsupported("release a home's logins", "Core Delivery 7")),
+    listCredentials: () =>
+      Effect.fail(personLayoutUnsupported("list a workspace's homes", "Core Delivery 7")),
     applyDotfiles: () =>
       Effect.fail(
-        unsupported("apply dotfiles as a person", "sealantd Delivery 5, Core Delivery 8"),
+        personLayoutUnsupported(
+          "apply dotfiles as a person",
+          "sealantd Delivery 5, Core Delivery 8",
+        ),
       ),
   },
 );
 
 /**
- * A request for a user the SDK cannot start: refused rather than run as root, which in a
- * person-layout executor would be nobody's process with everybody's files.
+ * Runs `run` with the options as the SDK takes them: Mend's `ProcessUser` passed as its passwd
+ * name, which the SDK sends only to a control plane that reports the feature and otherwise refuses
+ * (`user-unsupported`) before anything starts, never running the process as root instead.
  */
-export const processUserUnsupported = (argv: ReadonlyArray<string>) =>
-  new SealantPlatformError({
-    code: "process_user_unsupported",
-    status: null,
-    message: `this platform cannot start a process as a user yet (docs/adr/0016, Core Delivery 8): ${argv[0] ?? ""}`,
-    cause: null,
-  });
-
-/** A create naming a home for the launcher's logins, which the SDK cannot send yet. */
-export const credentialsHomeUnsupported = () =>
-  new SealantPlatformError({
-    code: "credentials_home_unsupported",
-    status: null,
-    message:
-      "this platform cannot write the launcher's logins into their own home yet (docs/adr/0016, Core Delivery 8)",
-    cause: null,
-  });
-
-/**
- * Runs `run` only when no user is asked for, with the options minus `user`: Mend starts every
- * process as root until the person layout's platform layer passes a user through, so a process
- * asked for as a person is refused before anything reaches the platform.
- */
-export const withoutProcessUser = <O extends ProcessUserOption, A, E>(
-  argv: ReadonlyArray<string>,
+export const withProcessUser = <O extends ProcessUserOption, A, E>(
   options: O | undefined,
-  run: (options: Omit<O, "user"> | undefined) => Effect.Effect<A, E>,
-): Effect.Effect<A, E | SealantPlatformError> => {
+  run: (options: (Omit<O, "user"> & { readonly user?: string }) | undefined) => Effect.Effect<A, E>,
+): Effect.Effect<A, E> => {
   if (options === undefined) return run(undefined);
   const { user, ...rest } = options;
-  return user === undefined ? run(rest) : Effect.fail(processUserUnsupported(argv));
+  return run(user === undefined ? rest : { ...rest, user: user.name });
 };

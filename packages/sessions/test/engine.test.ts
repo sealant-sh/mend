@@ -143,7 +143,7 @@ import {
   asSealantUser,
   type CaptureFlushKind,
   PersonLayoutPlatform,
-  PersonLayoutPlatformLive,
+  PersonLayoutPlatformNone,
   type PersonSessionOptions,
   SealantClient,
   type SealantClientShape,
@@ -2980,6 +2980,10 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
         Effect.sync(() => events.push(`revokeLaunch:${launchId}`)).pipe(
           Effect.andThen(inner.revokeLaunch(launchId)),
         ),
+      revokePerson: (launchId: string, accountId: string) =>
+        Effect.sync(() => events.push(`revokePerson:${launchId}:${accountId}`)).pipe(
+          Effect.andThen(inner.revokePerson(launchId, accountId)),
+        ),
     })),
   ).pipe(Layer.provide(SessionChannelTokensRepoMemory));
 
@@ -3301,8 +3305,11 @@ const withEngine = <A, E>(
               options.harnessLayout?.anyRecordedQueries,
               options.harnessLayout?.afterRequest,
             ),
-        options.harnessLayout?.platform ?? PersonLayoutPlatformLive,
-        Layer.succeed(HarnessLayoutConfig, { flag: options.harnessLayout?.flag ?? "shared" }),
+        options.harnessLayout?.platform ?? PersonLayoutPlatformNone,
+        Layer.succeed(HarnessLayoutConfig, {
+          flag: options.harnessLayout?.flag ?? "shared",
+          loginReleaseGrace: Duration.zero,
+        }),
       ),
     ),
   );
@@ -7019,7 +7026,7 @@ describe("SessionEngine", () => {
       Layer.provide(
         Layer.mergeAll(
           harnessLayoutsRepoMemory(),
-          PersonLayoutPlatformLive,
+          PersonLayoutPlatformNone,
           HarnessLayoutConfigShared,
         ),
       ),
@@ -23464,6 +23471,7 @@ const personPlatform = (
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
+    withOwnerMap: null,
     imageReport: () =>
       Effect.succeed({
         digest: "sha256:img",
@@ -23478,6 +23486,11 @@ const personPlatform = (
     deleteCredentials: (_workspace, input) =>
       Effect.sync(() => {
         calls.push(`delete:${input.home}`);
+      }),
+    listCredentials: () =>
+      Effect.sync(() => {
+        calls.push("list");
+        return [];
       }),
     applyDotfiles: (_workspace, input) =>
       Effect.sync(() => {
@@ -23512,6 +23525,8 @@ const coldJoinResume = async (options: {
     argv: ReadonlyArray<string>,
   ) => { exitCode: number; stdout: string; stderr: string } | undefined;
   readonly before?: (worktreeId: string) => void;
+  /** Called as the scenario passes each point: after the cold launch, the join, the joiner's stop. */
+  readonly onStage?: (stage: "cold" | "joined" | "joinerStopped") => void;
 }): Promise<Scenario> => {
   const created: Array<CreateOptions> = [];
   const execCalls: Array<ReadonlyArray<string>> = [];
@@ -23536,6 +23551,7 @@ const coldJoinResume = async (options: {
         options.before?.(holder.worktreeId);
         yield* engine.launch(holder.id, ["claude"]);
         const cold = execCalls.length;
+        options.onStage?.("cold");
         const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
           harness: "claude",
           label: null,
@@ -23544,6 +23560,7 @@ const coldJoinResume = async (options: {
         yield* engine.launch(joined.id, ["claude"]);
         // The repair runs beside the join, never awaited by it.
         yield* Effect.sleep("50 millis");
+        options.onStage?.("joined");
         const joinExecs = execCalls.slice(cold);
         const joinRepairs = joinExecs.filter(isRepair).length;
         const joinPersonHomes = joinExecs.filter(isPersonHome).length;
@@ -23553,6 +23570,9 @@ const coldJoinResume = async (options: {
           (process) => process.sessionId === holder.id && process.kind === "agent-pty",
         );
         yield* engine.stop(joined.id);
+        // The joiner's logins are released beside the stop, never awaited by it.
+        yield* Effect.sleep("50 millis");
+        options.onStage?.("joinerStopped");
         yield* engine.stop(holder.id);
         if (agent !== undefined) {
           const stateDir = processStatePathOf(project.storePath, holder.id, agent.id);
@@ -23706,6 +23726,139 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     const home = other.execs.find(isPersonHome);
     expect(home?.[2]).toContain(`useradd -u 40002 -g mend`);
     expect(home?.[2]).toContain(JOINER);
+  });
+
+  it("Maria's join into Alice's executor runs on Maria's logins alone: one Core call, never Alice's home, released when she stops", async () => {
+    const calls: Array<string> = [];
+    const marks: Record<string, number> = {};
+    const run = await coldJoinResume({
+      flag: "person",
+      joiner: MARIA,
+      platform: personPlatform(calls, { person: true }),
+      exec: answerLayout(LAYOUT_READY),
+      onStage: (stage) => {
+        marks[stage] = calls.length;
+      },
+    });
+    const aliceHome = `/home/${LAUNCHER}`;
+    const mariaHome = `/home/${JOINER}`;
+    // The cold launch wrote Alice's logins at create (`credentialsHome`): no Core call of its own.
+    expect(calls.slice(0, marks["cold"])).toEqual([]);
+    expect(run.homes[0]).toBe(`${aliceHome} 40001:40000`);
+    // The join adds exactly one Core call: Maria's own logins, into Maria's own home.
+    expect(calls.slice(marks["cold"], marks["joined"])).toEqual([`post:${MARIA}:${mariaHome}`]);
+    // Maria's agent runs as Maria, and nothing it is given names Alice's home or her login.
+    const marias = run.opened.filter((options) => options.user?.name === JOINER);
+    expect(marias.length).toBeGreaterThan(0);
+    for (const options of marias) {
+      expect(options.user?.home).toBe(mariaHome);
+      expect(JSON.stringify(options)).not.toContain(aliceHome);
+      expect(options.env?.["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("");
+      expect(options.env?.["GH_TOKEN"]).toBe("");
+      expect(options.env?.["GITHUB_TOKEN"]).toBe("");
+    }
+    // Nothing run for the join, as anyone, reads Alice's home: her logins are never read on
+    // Maria's behalf. Alice's home is hers alone, 0700, made before her first process.
+    const joinExecs = run.execs.slice(run.cold, run.cold + run.join + run.joinRepairs);
+    expect(joinExecs.length).toBeGreaterThan(0);
+    for (const argv of joinExecs) expect(argv.join(" ")).not.toContain(aliceHome);
+    const prepare = run.execs.find(isPrepare)?.[2] ?? "";
+    expect(prepare).toContain(`chmod 0700 '${aliceHome}'`);
+    expect(prepare).toContain(`chown -hR 40001:40000 '${aliceHome}'`);
+    // Maria's stop releases her logins; Alice's create-time home stays while her executor lives.
+    expect(calls.slice(marks["joined"], marks["joinerStopped"])).toEqual([`delete:${mariaHome}`]);
+    expect(calls.some((call) => call === `delete:${aliceHome}`)).toBe(false);
+    expect(calls.some((call) => call.startsWith(`post:user-fixture`))).toBe(false);
+  });
+
+  it("refuses Maria's join before her agent starts when she has not connected Claude, and never lends Alice's", async () => {
+    const calls: Array<string> = [];
+    const opened: Array<PersonSessionOptions> = [];
+    const base = personPlatform(calls, { person: true });
+    const platform = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({
+        ...inner,
+        postCredentials: (
+          workspace: Workspace,
+          input: Parameters<typeof inner.postCredentials>[1],
+        ) =>
+          input.onBehalfOf === MARIA
+            ? inner.postCredentials(workspace, input).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new SealantPlatformError({
+                      code: "WorkspaceNotFoundError",
+                      status: 404,
+                      message: 'No claude connected account matches "default".',
+                      cause: null,
+                    }),
+                  ),
+                ),
+              )
+            : inner.postCredentials(workspace, input),
+      })),
+    ).pipe(Layer.provide(base));
+    const failure = await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(holder.id, ["claude"]);
+          const before = opened.length;
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          const refused = yield* engine.launch(joined.id, ["claude"]).pipe(Effect.flip);
+          return { message: refused.message, openedForJoin: opened.length - before };
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", platform },
+      },
+    );
+    expect(failure.message).toContain("Connect Claude to start a session here.");
+    expect(failure.openedForJoin).toBe(0);
+    expect(calls).toEqual([`post:${MARIA}:/home/${JOINER}`]);
+  });
+
+  it("with the flag off, the platform's credentials API is never called", async () => {
+    const calls: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    for (const joiner of ["user-fixture", MARIA]) {
+      await coldJoinResume({
+        flag: "shared",
+        joiner,
+        state,
+        platform: personPlatform(calls, { person: true }),
+      });
+    }
+    expect(calls).toEqual([]);
   });
 
   it("a member with an identity from another worktree and nothing saved here is made at their join", async () => {

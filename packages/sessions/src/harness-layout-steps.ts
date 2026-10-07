@@ -1,9 +1,9 @@
 /**
  * The session engine's per-person steps (docs/adr/0016-per-person-harness-homes.md), behind
  * `MEND_HARNESS_LAYOUT`: the layout decided before create, what prepare runs and what it found,
- * the people an executor holds, and the user each of their processes starts as. With the flag off
- * and no worktree recorded `person`, a launch reads one row (the worktree's layout) and nothing
- * else here runs: no exec, no write.
+ * the people an executor holds, the user each of their processes starts as, and the logins in
+ * each person's home (decision 5). With the flag off and nothing recorded, nothing here reads the
+ * store, execs or calls Core.
  */
 import { HarnessLayoutsRepo, type OrganizationsRepo } from "@mend/db";
 import type { OrganizationId, WorkspaceImage, WorktreeId } from "@mend/domain";
@@ -12,17 +12,21 @@ import {
   HarnessLayout as HarnessLayoutSchema,
   type HarnessLayoutSource,
   type LinuxIdentity,
+  MEND_GROUP,
   linuxHomeOf,
 } from "@mend/domain/workbench";
 import {
+  type HomeLogins,
+  type LoginProvider,
   PersonLayoutPlatform,
   type ProcessUser,
   SealantPlatformError,
   type SealantClientShape,
 } from "@mend/sealant";
-import type { Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
-import { Config, Effect, Layer } from "effect";
+import type { Harness, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
+import { Clock, Config, Deferred, Duration, Effect, Layer, Schedule } from "effect";
 import * as Context from "effect/Context";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   type LayoutCapability,
@@ -48,8 +52,19 @@ import {
 /** `MEND_HARNESS_LAYOUT`: the layout of worktrees with none yet. `shared` until Delivery 21. */
 export class HarnessLayoutConfig extends Context.Service<
   HarnessLayoutConfig,
-  { readonly flag: HarnessLayout }
+  {
+    readonly flag: HarnessLayout;
+    /**
+     * How long after a person's last process start their logins are kept although Mend sees no
+     * live process of theirs (`LOGIN_RELEASE_GRACE` unless a test says): the start's process row
+     * is written once the platform has opened it.
+     */
+    readonly loginReleaseGrace?: Duration.Duration;
+  }
 >()("@mend/sessions/HarnessLayoutConfig") {}
+
+/** A person's logins outlive a start by this much before an idle check may release them. */
+export const LOGIN_RELEASE_GRACE: Duration.Duration = Duration.minutes(1);
 
 export const HarnessLayoutConfigLive: Layer.Layer<HarnessLayoutConfig, Config.ConfigError> =
   Layer.effect(
@@ -121,6 +136,92 @@ export type PrepareOutcome =
 export const PERSON_STEER_REFUSAL =
   "This session's workspace runs each person as their own user, and turns from anyone but its owner arrive with per-person steering. Until then only the owner sends turns here.";
 
+// ─── logins per person (decision 5) ──────────────────────────────────────────
+
+/**
+ * The logins a process needs in its person's home: the harness's own provider, without which it
+ * is refused before anything is written, and the rest, written when connected and left out when
+ * not. A shell, a Service, pi and opencode are open workbenches (the create's own ladder for them
+ * names every provider), so nothing is required of them.
+ */
+export interface LoginNeed {
+  readonly required: ReadonlyArray<LoginProvider>;
+  readonly optional: ReadonlyArray<LoginProvider>;
+}
+
+export const loginNeedOf = (harness: string): LoginNeed => {
+  switch (harness) {
+    case "claude":
+      return { required: ["claude"], optional: ["github"] };
+    case "codex":
+      return { required: ["codex"], optional: ["github"] };
+    default:
+      return { required: [], optional: ["claude", "codex", "github"] };
+  }
+};
+
+const PROVIDER_NAMES: Readonly<Record<LoginProvider, string>> = {
+  claude: "Claude",
+  codex: "Codex",
+  github: "GitHub",
+};
+
+/**
+ * The refusal before start (decision 5): the needed provider is not connected, or its login needs
+ * reconnecting. Nothing is written into the person's home, and nobody else's login is used.
+ */
+export const loginRefusal = (provider: LoginProvider, invalid: boolean): string =>
+  invalid
+    ? `Your ${PROVIDER_NAMES[provider]} login needs reconnecting. Reconnect ${PROVIDER_NAMES[provider]} to start a session here.`
+    : `Connect ${PROVIDER_NAMES[provider]} to start a session here.`;
+
+/** A process refused because its person's needed login is missing (`loginRefusal`). */
+export const loginRefused = (message: string) =>
+  new SealantPlatformError({ code: "person_login_refused", status: 409, message, cause: null });
+
+const ACCOUNT_REFUSAL =
+  /\b(?:No (claude|codex|github) connected account matches|Connected (claude|codex|github) account\b)/i;
+
+const loginProviderOf = (word: string | undefined): LoginProvider | null => {
+  const lower = word?.toLowerCase();
+  return lower === "claude" || lower === "codex" || lower === "github" ? lower : null;
+};
+
+/**
+ * The provider a refused POST named, as Core words it: "No claude connected account matches
+ * \"default\"" (404) or "Connected codex account \"default\" is invalid — reconnect it" (409
+ * `connected-account-invalid`). Null for any other failure. Nothing was written either way: Core
+ * resolves every account before it writes any.
+ */
+export const refusedLoginOf = (
+  error: SealantPlatformError,
+): { readonly provider: LoginProvider; readonly invalid: boolean } | null => {
+  const match = ACCOUNT_REFUSAL.exec(error.message);
+  if (match === null) return null;
+  const provider = loginProviderOf(match[1] ?? match[2]);
+  if (provider === null) return null;
+  return { provider, invalid: match[1] === undefined };
+};
+
+/**
+ * Whether a failed turn's words say its harness was refused for its login (a 401, an expired or
+ * revoked OAuth token, Claude's "Please run /login"): what makes Mend write the person's login
+ * into their home once more (decision 5, "one re-POST after an authentication failure").
+ */
+export const isAuthenticationFailure = (error: string | null): boolean =>
+  error !== null &&
+  /\b401\b|unauthori[sz]ed|authentication[_ ]error|failed to authenticate|invalid (?:api key|x-api-key|bearer)|oauth token|please run \/login|not logged in|token (?:has )?(?:expired|been revoked)/i.test(
+    error,
+  );
+
+/** The providers a launch's create wrote into the launcher's home (`credentialsHome`). */
+export const loginsOfCreate = (
+  credentials: WorkspaceCredentialsOptions | undefined,
+): ReadonlyArray<LoginProvider> =>
+  (["claude", "codex", "github"] as const).filter(
+    (provider) => credentials?.[provider] !== undefined && credentials[provider] !== false,
+  );
+
 export interface HarnessLayoutSteps {
   readonly flag: HarnessLayout;
   /** The layout of a capture-mode launch, before its create; a refusal fails with its line. */
@@ -132,6 +233,8 @@ export interface HarnessLayoutSteps {
     readonly organizationId: OrganizationId;
     /** The image the create will ask for (read only when the flag or the worktree asks). */
     readonly image: Effect.Effect<WorkspaceImage>;
+    /** The harness the create will ask for: part of the image Core reports on. */
+    readonly harness: Harness;
     /** Whether the worktree's head capture holds `harness/people/` (read only when needed). */
     readonly headHasPeople: Effect.Effect<boolean>;
   }) => Effect.Effect<LaunchLayout, SealantPlatformError>;
@@ -188,6 +291,7 @@ export interface HarnessLayoutSteps {
     readonly workspace: Workspace;
     readonly stdout: string;
     readonly fallback: {
+      /** The launcher's create-time logins: what their home holds once the layout is person. */
       readonly credentials: WorkspaceCredentialsOptions | undefined;
       readonly dotfiles: ReadonlyArray<{
         readonly data: string;
@@ -200,9 +304,11 @@ export interface HarnessLayoutSteps {
   readonly layoutOfLaunch: (launchId: string | null) => Effect.Effect<HarnessLayout>;
   /**
    * The user a person's process starts as in a person-layout executor, made there first when it
-   * is their first process (one exec), and the worktree repair started when the person differs
-   * from the last one whose process started there (one exec, never awaited). Null in a shared
-   * executor: the process runs as root, as before.
+   * is their first process (one exec), with their own logins written into their home before it
+   * starts (one Core call, beside that exec), and the worktree repair started when the person
+   * differs from the last one whose process started there (one exec, never awaited). Refused,
+   * with nothing written, when the harness's provider is not connected or needs reconnecting.
+   * Null in a shared executor: the process runs as root, as before.
    */
   readonly processAs: (input: {
     readonly workspace: Workspace;
@@ -212,10 +318,53 @@ export interface HarnessLayoutSteps {
     readonly sessionId: string;
     /** That session's worktree, which a person's identity ticket names. */
     readonly worktreeId: string;
+    /** What the process runs, which decides the logins it needs (`loginNeedOf`). */
+    readonly harness: string;
   }) => Effect.Effect<
     { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
     SealantPlatformError
   >;
+  /**
+   * Whether Mend holds a home in this executor that an idle check could release: answered from
+   * memory, so an exit in a shared executor, or one with only its launcher, reads nothing more.
+   */
+  readonly holdsReleasable: (workspaceId: string) => boolean;
+  /**
+   * Releases the logins of every person who holds a home in the executor and has no live process
+   * there (`live`, read only when there is a home to release), except the launcher's create-time
+   * home, which stays while the executor lives: DELETE, retried, then their Mend token of the
+   * launch revoked. A person whose process started within the grace is checked again once it has
+   * passed. Never fails: what could not be released stays held until the executor ends.
+   */
+  readonly releaseIdle: (input: {
+    readonly workspaceId: string;
+    readonly workspace: Effect.Effect<Workspace, SealantPlatformError>;
+    readonly live: Effect.Effect<ReadonlySet<string>>;
+  }) => Effect.Effect<void>;
+  /**
+   * Writes a person's logins into their home once more after their harness was refused for its
+   * login (decision 5): one Core call, at most once a minute per person and executor. Never
+   * fails.
+   */
+  readonly relogin: (input: {
+    readonly workspace: Workspace;
+    readonly launchId: string | null;
+    readonly accountId: string;
+    readonly harness: string;
+  }) => Effect.Effect<void>;
+  /**
+   * At startup (decision 5, reconciliation against `GET`): what Core keeps in a live person
+   * executor's homes becomes what Mend knows it holds, and a home whose person has no live process
+   * there is released, the launcher's create-time home excepted. Never fails.
+   */
+  readonly reconcileLogins: (input: {
+    readonly workspace: Workspace;
+    readonly launchId: string;
+    readonly launcher: string;
+    readonly live: ReadonlySet<string>;
+  }) => Effect.Effect<void>;
+  /** An executor ended: what Mend kept about its people goes with it. */
+  readonly forgetExecutor: (workspaceId: string) => void;
   /** The refusal of a turn whose author is not the process's person, in a person executor. */
   readonly turnRefusal: (input: {
     readonly launchId: string | null;
@@ -252,6 +401,7 @@ const bounded = <K, V>() => {
   const map = new Map<K, V>();
   return {
     get: (key: K) => map.get(key),
+    delete: (key: K) => map.delete(key),
     set: (key: K, value: V) => {
       // The oldest goes, one at a time: live launches are never flushed together.
       map.delete(key);
@@ -263,6 +413,41 @@ const bounded = <K, V>() => {
     },
   };
 };
+
+/** What a POST names for the launcher's create-time logins, put elsewhere (decision 1's fallback). */
+const homeLoginsOf = (credentials: WorkspaceCredentialsOptions | undefined): HomeLogins => {
+  const logins: HomeLogins = {};
+  for (const provider of ["claude", "codex", "github"] as const) {
+    const choice = credentials?.[provider];
+    if (choice === true || typeof choice === "string") logins[provider] = choice;
+  }
+  return logins;
+};
+
+/** A person's home in an executor, and what Core keeps there for them (decision 5). */
+interface HeldLogins {
+  readonly home: string;
+  /** The launcher's create-time home: kept while the executor lives. */
+  readonly pinned: boolean;
+  /** Providers whose login Core writes there. */
+  readonly held: ReadonlySet<LoginProvider>;
+  /** Optional providers the person had not connected when Mend last asked. */
+  readonly absent: ReadonlySet<LoginProvider>;
+}
+
+/** Whether what a home holds covers what a process needs: no POST then. */
+const covers = (holding: HeldLogins | undefined, need: LoginNeed): boolean =>
+  holding !== undefined &&
+  need.required.every((provider) => holding.held.has(provider)) &&
+  need.optional.every((provider) => holding.held.has(provider) || holding.absent.has(provider));
+
+/** The key of one person in one executor. */
+const personKey = (workspaceId: string, accountId: string) => `${workspaceId}\u0000${accountId}`;
+
+/** DELETE is retried: a release that fails leaves a login where nobody runs any more. */
+const RELEASE_RETRY = Schedule.exponential("200 millis").pipe(Schedule.both(Schedule.recurs(4)));
+/** A re-POST after an authentication failure, at most this often per person and executor. */
+const RELOGIN_SPACING_MS = 60_000;
 
 export const makeHarnessLayoutSteps = (deps: {
   readonly flag: HarnessLayout;
@@ -283,6 +468,10 @@ export const makeHarnessLayoutSteps = (deps: {
   }) => Effect.Effect<string>;
   /** Forget a ticket the exec that carried it no longer needs (`PickupTickets.discard`). */
   readonly discardTicket: (ticket: string) => void;
+  /** Revoke a person's Mend tokens of a launch: their logins there were released. */
+  readonly revokePersonToken: (launchId: string, accountId: string) => Effect.Effect<void>;
+  /** `HarnessLayoutConfig.loginReleaseGrace`; `LOGIN_RELEASE_GRACE` when absent. */
+  readonly loginReleaseGrace?: Duration.Duration;
   /** Starts work that nothing waits on (the worktree repair). */
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>;
   /**
@@ -298,6 +487,31 @@ export const makeHarnessLayoutSteps = (deps: {
   const madeIn = bounded<string, Set<string>>();
   /** Whose process started last in an executor's worktree, per workspace. */
   const lastIn = bounded<string, string>();
+  /** Who holds a home in each executor, by workspace, with the launch that made it. */
+  const loginsIn = bounded<
+    string,
+    { readonly launchId: string | null; readonly people: Map<string, HeldLogins> }
+  >();
+  /** When each person's last process start was asked for, by workspace and person. */
+  const startedAt = bounded<string, number>();
+  const reloggedAt = bounded<string, number>();
+  /** One login write or release at a time per person and executor. */
+  const loginLocks = bounded<string, Semaphore.Semaphore>();
+  const lockOf = (key: string) => {
+    const known = loginLocks.get(key);
+    if (known !== undefined) return known;
+    const made = Semaphore.makeUnsafe(1);
+    loginLocks.set(key, made);
+    return made;
+  };
+  const peopleIn = (workspaceId: string, launchId: string | null) => {
+    const known = loginsIn.get(workspaceId);
+    if (known !== undefined) return known.people;
+    const people = new Map<string, HeldLogins>();
+    loginsIn.set(workspaceId, { launchId, people });
+    return people;
+  };
+  const releaseGraceMs = Duration.toMillis(deps.loginReleaseGrace ?? LOGIN_RELEASE_GRACE);
   /** Some launch or worktree has a layout recorded (at startup, or since). */
   let layoutsRecorded = deps.anyRecorded;
   const nothingRecorded = () => flag === "shared" && !layoutsRecorded;
@@ -325,6 +539,8 @@ export const makeHarnessLayoutSteps = (deps: {
 
   const capabilityFor = Effect.fn("HarnessLayoutSteps.capabilityFor")(function* (
     image: WorkspaceImage,
+    ownerUserId: string,
+    harness: Harness,
   ) {
     const obstacle = staticLayoutObstacle(image, { processUser: platform.processUser });
     if (obstacle !== null) {
@@ -334,7 +550,7 @@ export const makeHarnessLayoutSteps = (deps: {
         runtime: "unknown",
       };
     }
-    const report = yield* platform.imageReport(image);
+    const report = yield* platform.imageReport({ ownerUserId, image, harness });
     const imageKey = imageLayoutKeyOf(image, report.digest);
     const runtime = report.runtime ?? "unknown";
     // Mend's record of what a prepare found wins over Core's report for the same image.
@@ -376,7 +592,11 @@ export const makeHarnessLayoutSteps = (deps: {
       // where the flag is on and the worktree has no record.
       const headHasPeople =
         worktree.layout === null && flag === "person" ? yield* input.headHasPeople : false;
-      const { capability, imageKey, runtime } = yield* capabilityFor(yield* input.image);
+      const { capability, imageKey, runtime } = yield* capabilityFor(
+        yield* input.image,
+        input.ownerUserId,
+        input.harness,
+      );
       const decision = decideHarnessLayout({ flag, worktree, headHasPeople, capability });
       if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
       if (decision.layout === "shared") {
@@ -496,6 +716,14 @@ export const makeHarnessLayoutSteps = (deps: {
         ),
       );
       lastIn.set(input.workspace.id, layout.launcher.accountId);
+      // The create wrote the launcher's logins into their home (`credentialsHome`): Core holds it
+      // for them while the executor lives, so it is never released (decision 5).
+      peopleIn(input.workspace.id, input.launchId).set(layout.launcher.accountId, {
+        home: linuxHomeOf(layout.launcher),
+        pinned: true,
+        held: new Set(loginsOfCreate(input.fallback.credentials)),
+        absent: new Set(),
+      });
       return { layout: "person" };
     }
     const missing =
@@ -524,11 +752,14 @@ export const makeHarnessLayoutSteps = (deps: {
     // anything starts. Any of it failing fails the launch.
     const home = linuxHomeOf(layout.launcher);
     yield* platform.deleteCredentials(input.workspace, { home });
-    yield* platform.postCredentials(input.workspace, {
-      onBehalfOf: layout.launcher.accountId,
-      home: "/root",
-      credentials: input.fallback.credentials ?? {},
-    });
+    const rootLogins = homeLoginsOf(input.fallback.credentials);
+    if (Object.keys(rootLogins).length > 0) {
+      yield* platform.postCredentials(input.workspace, {
+        onBehalfOf: layout.launcher.accountId,
+        home: "/root",
+        logins: rootLogins,
+      });
+    }
     if (input.fallback.dotfiles.length > 0) {
       yield* platform.applyDotfiles(input.workspace, {
         user: null,
@@ -564,42 +795,165 @@ export const makeHarnessLayoutSteps = (deps: {
     return layout;
   });
 
+  /**
+   * A person's logins written into their home in this executor (decision 5): one POST naming the
+   * providers the process needs that the home does not hold yet. A required provider the person
+   * has not connected, or whose login needs reconnecting, refuses the process with nothing
+   * written; an optional one is left out (`null`) and asked again. A POST that raced the `useradd`
+   * making the home (`home-unusable`) is asked again once the home is made; one Core answered
+   * `home-busy` is asked again shortly.
+   */
+  const writeLogins = Effect.fn("HarnessLayoutSteps.writeLogins")(function* (input: {
+    readonly workspace: Workspace;
+    readonly launchId: string | null;
+    readonly identity: LinuxIdentity;
+    readonly need: LoginNeed;
+    readonly homeMade: Deferred.Deferred<void> | null;
+  }) {
+    const { identity, need } = input;
+    const people = peopleIn(input.workspace.id, input.launchId);
+    const holding = people.get(identity.accountId);
+    if (covers(holding, need)) return;
+    const required = new Set(need.required);
+    const choices = new Map<LoginProvider, true | null>();
+    for (const provider of [...need.required, ...need.optional]) {
+      if (holding?.held.has(provider) === true || choices.has(provider)) continue;
+      choices.set(
+        provider,
+        holding?.absent.has(provider) === true && !required.has(provider) ? null : true,
+      );
+    }
+    const home = linuxHomeOf(identity);
+    let busy = 0;
+    let waitedForHome = false;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const logins: HomeLogins = {};
+      for (const [provider, choice] of choices) logins[provider] = choice;
+      const written = yield* platform
+        .postCredentials(input.workspace, {
+          onBehalfOf: identity.accountId,
+          home,
+          owner: { uid: identity.uid, gid: MEND_GROUP.gid },
+          logins,
+        })
+        .pipe(Effect.result);
+      if (written._tag === "Success") {
+        const held = new Set(holding?.held ?? []);
+        const absent = new Set(holding?.absent ?? []);
+        for (const [provider, choice] of choices) {
+          if (choice === true) {
+            held.add(provider);
+            absent.delete(provider);
+          } else {
+            held.delete(provider);
+            absent.add(provider);
+          }
+        }
+        people.set(identity.accountId, { home, pinned: holding?.pinned ?? false, held, absent });
+        return;
+      }
+      const error = written.failure;
+      const refused = refusedLoginOf(error);
+      if (refused !== null && choices.get(refused.provider) === true) {
+        if (required.has(refused.provider)) {
+          return yield* loginRefused(loginRefusal(refused.provider, refused.invalid));
+        }
+        choices.set(refused.provider, null);
+        continue;
+      }
+      if (error.code === "home-busy" && busy < 3) {
+        busy++;
+        yield* Effect.sleep(Duration.millis(200 * busy));
+        continue;
+      }
+      if (error.code === "home-unusable" && input.homeMade !== null && !waitedForHome) {
+        waitedForHome = true;
+        yield* Deferred.await(input.homeMade);
+        continue;
+      }
+      return yield* new SealantPlatformError({
+        code: "person_login_not_written",
+        status: error.status,
+        message: `${identity.name}'s logins could not be written into this workspace: ${error.message}`,
+        cause: error,
+      });
+    }
+    return yield* new SealantPlatformError({
+      code: "person_login_not_written",
+      status: null,
+      message: `${identity.name}'s logins could not be written into this workspace: Core kept refusing`,
+      cause: null,
+    });
+  });
+
   const processAs: HarnessLayoutSteps["processAs"] = Effect.fn("HarnessLayoutSteps.processAs")(
     function* (input) {
       if ((yield* layoutOfLaunch(input.launchId)) !== "person") return null;
       const identity = yield* repo
         .ensureIdentity(input.accountId)
         .pipe(Effect.mapError((error) => layoutRefused(error.message)));
+      const key = personKey(input.workspace.id, identity.accountId);
+      startedAt.set(key, yield* Clock.currentTimeMillis);
       const made = madeIn.get(input.workspace.id) ?? new Set<string>();
-      if (!made.has(identity.accountId)) {
+      const need = loginNeedOf(input.harness);
+      const needsHome = !made.has(identity.accountId);
+      const needsLogins = !covers(
+        loginsIn.get(input.workspace.id)?.people.get(identity.accountId),
+        need,
+      );
+      if (needsHome || needsLogins) {
+        const homeMade = yield* Deferred.make<void>();
         // Their first process in this executor: their user, home and saved directory (one exec,
         // idempotent, so a server restart that forgot costs one more and changes nothing).
         // Their Mend token and git author ride the same exec through a pickup (decision 4): no
         // exec of their own, and neither in its arguments.
-        const ticket = yield* deps.identityTicket({
-          sessionId: input.sessionId,
-          worktreeId: input.worktreeId,
-          launchId: input.launchId ?? "",
-          person: identity,
-        });
-        const result = yield* sealant
-          .exec(input.workspace, [
-            "sh",
-            "-c",
-            `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
-              identityPickupScript([{ person: identity, ticket }]),
-          ])
-          .pipe(Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))));
-        if (result.exitCode !== 0) {
-          return yield* new SealantPlatformError({
-            code: "person_user_not_made",
-            status: null,
-            message: `${identity.name} could not be made in this workspace: ${result.stderr.trim()}`,
-            cause: null,
+        const makeHome = Effect.gen(function* () {
+          if (!needsHome) return;
+          const ticket = yield* deps.identityTicket({
+            sessionId: input.sessionId,
+            worktreeId: input.worktreeId,
+            launchId: input.launchId ?? "",
+            person: identity,
           });
-        }
-        made.add(identity.accountId);
-        madeIn.set(input.workspace.id, made);
+          const result = yield* sealant
+            .exec(input.workspace, [
+              "sh",
+              "-c",
+              `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
+                identityPickupScript([{ person: identity, ticket }]),
+            ])
+            .pipe(Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))));
+          if (result.exitCode !== 0) {
+            return yield* new SealantPlatformError({
+              code: "person_user_not_made",
+              status: null,
+              message: `${identity.name} could not be made in this workspace: ${result.stderr.trim()}`,
+              cause: null,
+            });
+          }
+          made.add(identity.accountId);
+          madeIn.set(input.workspace.id, made);
+        }).pipe(Effect.ensuring(Deferred.succeed(homeMade, undefined)));
+        // Their own logins, beside it (decision 5): one Core call, which makes the home for them
+        // when it gets there first. Nobody else's login is ever read or written for them.
+        const writeThem = needsLogins
+          ? lockOf(key).withPermit(
+              writeLogins({
+                workspace: input.workspace,
+                launchId: input.launchId,
+                identity,
+                need,
+                homeMade: needsHome ? homeMade : null,
+              }),
+            )
+          : Effect.void;
+        const [home, logins] = yield* Effect.all(
+          [makeHome.pipe(Effect.result), writeThem.pipe(Effect.result)],
+          { concurrency: 2 },
+        );
+        // A refused login says what to connect; it wins over anything the home exec said.
+        if (logins._tag === "Failure") return yield* logins.failure;
+        if (home._tag === "Failure") return yield* home.failure;
       }
       const last = lastIn.get(input.workspace.id);
       if (last !== undefined && last !== identity.accountId) {
@@ -633,6 +987,173 @@ export const makeHarnessLayoutSteps = (deps: {
     },
   );
 
+  const holdsReleasable: HarnessLayoutSteps["holdsReleasable"] = (workspaceId) => {
+    const entry = loginsIn.get(workspaceId);
+    if (entry === undefined) return false;
+    for (const holding of entry.people.values()) if (!holding.pinned) return true;
+    return false;
+  };
+
+  const releaseIdle: HarnessLayoutSteps["releaseIdle"] = (input) =>
+    Effect.gen(function* () {
+      const entry = loginsIn.get(input.workspaceId);
+      if (entry === undefined) return;
+      const candidates = [...entry.people]
+        .filter(([, holding]) => !holding.pinned)
+        .map(([accountId]) => accountId);
+      if (candidates.length === 0) return;
+      const live = yield* input.live;
+      const idle = candidates.filter((accountId) => !live.has(accountId));
+      if (idle.length === 0) return;
+      const workspace = yield* Effect.cached(input.workspace);
+      let recheck = false;
+      for (const accountId of idle) {
+        const key = personKey(input.workspaceId, accountId);
+        yield* lockOf(key).withPermit(
+          Effect.gen(function* () {
+            const holding = entry.people.get(accountId);
+            if (holding === undefined || holding.pinned) return;
+            // A start the live rows may not show yet: its process row is written once the
+            // platform has opened it. Checked again once the grace has passed.
+            const since = (yield* Clock.currentTimeMillis) - (startedAt.get(key) ?? 0);
+            if (since < releaseGraceMs) {
+              recheck = true;
+              return;
+            }
+            const handle = yield* workspace;
+            entry.people.delete(accountId);
+            // Their next process here makes them again: a new Mend token (theirs is revoked
+            // below), and their logins written once more.
+            madeIn.get(input.workspaceId)?.delete(accountId);
+            yield* platform.deleteCredentials(handle, { home: holding.home }).pipe(
+              Effect.retry(RELEASE_RETRY),
+              Effect.andThen(
+                Effect.logInfo("session engine: a person's logins released · observed").pipe(
+                  Effect.annotateLogs({ workspaceId: input.workspaceId, home: holding.home }),
+                ),
+              ),
+              Effect.catch((error) =>
+                Effect.logWarning(
+                  "session engine: a person's logins were not released; they go with the executor",
+                ).pipe(
+                  Effect.annotateLogs({
+                    workspaceId: input.workspaceId,
+                    home: holding.home,
+                    message: error.message,
+                  }),
+                ),
+              ),
+            );
+            if (entry.launchId !== null) yield* deps.revokePersonToken(entry.launchId, accountId);
+          }),
+        );
+      }
+      if (recheck) {
+        yield* deps.fork(
+          Effect.sleep(Duration.millis(releaseGraceMs)).pipe(Effect.andThen(releaseIdle(input))),
+        );
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("session engine: the idle-login check did not finish").pipe(
+          Effect.annotateLogs({ workspaceId: input.workspaceId, cause: String(cause) }),
+        ),
+      ),
+      Effect.withSpan("HarnessLayoutSteps.releaseIdle"),
+    );
+
+  const relogin: HarnessLayoutSteps["relogin"] = (input) =>
+    Effect.gen(function* () {
+      if ((yield* layoutOfLaunch(input.launchId)) !== "person") return;
+      const key = personKey(input.workspace.id, input.accountId);
+      const now = yield* Clock.currentTimeMillis;
+      const last = reloggedAt.get(key);
+      if (last !== undefined && now - last < RELOGIN_SPACING_MS) return;
+      reloggedAt.set(key, now);
+      const identity = yield* repo.ensureIdentity(input.accountId);
+      const holding = loginsIn.get(input.workspace.id)?.people.get(input.accountId);
+      const providers = new Set([...(holding?.held ?? []), ...loginNeedOf(input.harness).required]);
+      if (providers.size === 0) return;
+      const logins: HomeLogins = {};
+      for (const provider of providers) logins[provider] = true;
+      yield* lockOf(key).withPermit(
+        platform.postCredentials(input.workspace, {
+          onBehalfOf: identity.accountId,
+          home: linuxHomeOf(identity),
+          owner: { uid: identity.uid, gid: MEND_GROUP.gid },
+          logins,
+        }),
+      );
+      yield* Effect.logInfo(
+        "session engine: a person's logins written again after an authentication failure · observed",
+      ).pipe(Effect.annotateLogs({ workspaceId: input.workspace.id, home: linuxHomeOf(identity) }));
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("session engine: a person's logins were not written again").pipe(
+          Effect.annotateLogs({ workspaceId: input.workspace.id, cause: String(cause) }),
+        ),
+      ),
+      Effect.withSpan("HarnessLayoutSteps.relogin"),
+    );
+
+  const reconcileLogins: HarnessLayoutSteps["reconcileLogins"] = (input) =>
+    Effect.gen(function* () {
+      if ((yield* layoutOfLaunch(input.launchId)) !== "person") return;
+      const homes = yield* platform.listCredentials(input.workspace);
+      if (homes.length === 0) return;
+      const identities = yield* repo.identitiesOf([...new Set([input.launcher, ...input.live])]);
+      const byHome = new Map(identities.map((identity) => [linuxHomeOf(identity), identity]));
+      const people = peopleIn(input.workspace.id, input.launchId);
+      for (const held of homes) {
+        const identity = byHome.get(held.home);
+        if (identity !== undefined) {
+          people.set(identity.accountId, {
+            home: held.home,
+            pinned: identity.accountId === input.launcher,
+            held: new Set(held.providers),
+            absent: new Set(),
+          });
+          continue;
+        }
+        // Only a person's home under /home: `/root` is no person's in this layout, and Core
+        // keeps the launch's own.
+        if (!held.home.startsWith("/home/")) continue;
+        // A person whose last process ended while this Mend was down: their logins go.
+        yield* platform.deleteCredentials(input.workspace, { home: held.home }).pipe(
+          Effect.retry(RELEASE_RETRY),
+          Effect.andThen(
+            Effect.logInfo("session engine: a person's logins released at startup · observed").pipe(
+              Effect.annotateLogs({ workspaceId: input.workspace.id, home: held.home }),
+            ),
+          ),
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "session engine: a person's logins were not released at startup",
+            ).pipe(
+              Effect.annotateLogs({
+                workspaceId: input.workspace.id,
+                home: held.home,
+                message: error.message,
+              }),
+            ),
+          ),
+        );
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("session engine: the logins of a live executor were not reconciled").pipe(
+          Effect.annotateLogs({ workspaceId: input.workspace.id, cause: String(cause) }),
+        ),
+      ),
+      Effect.withSpan("HarnessLayoutSteps.reconcileLogins"),
+    );
+
+  const forgetExecutor: HarnessLayoutSteps["forgetExecutor"] = (workspaceId) => {
+    loginsIn.delete(workspaceId);
+    madeIn.delete(workspaceId);
+    lastIn.delete(workspaceId);
+  };
+
   const turnRefusal: HarnessLayoutSteps["turnRefusal"] = Effect.fn(
     "HarnessLayoutSteps.turnRefusal",
   )(function* (input) {
@@ -654,6 +1175,11 @@ export const makeHarnessLayoutSteps = (deps: {
     settlePrepare,
     layoutOfLaunch,
     processAs,
+    holdsReleasable,
+    releaseIdle,
+    relogin,
+    reconcileLogins,
+    forgetExecutor,
     turnRefusal,
   };
 };

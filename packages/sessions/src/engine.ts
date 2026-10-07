@@ -166,6 +166,7 @@ import {
   asSealantUser,
   captureDrainOf,
   type CaptureFlushKind,
+  type CaptureOwnerMap,
   PersonLayoutPlatform,
   type ProcessUser,
   SealantClient,
@@ -200,6 +201,7 @@ import {
   SourcePolicy,
 } from "@mend/store";
 import type {
+  CreateOptions,
   Harness,
   Run as SdkRun,
   Workspace,
@@ -291,6 +293,7 @@ import {
   HarnessLayoutConfig,
   type LaunchLayout,
   SHARED_AS_BEFORE,
+  isAuthenticationFailure,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
 import { gitAuthorConfigText, identityFilesOf, processUserOf } from "./harness-layout.ts";
@@ -6838,10 +6841,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // Per-person harness homes (docs/adr/0016), behind `MEND_HARNESS_LAYOUT`: with the flag off
       // and no worktree recorded `person`, a launch reads one row here and runs as before.
       const harnessLayouts = yield* HarnessLayoutsRepo;
+      const harnessLayoutConfig = yield* HarnessLayoutConfig;
+      const personPlatform = yield* PersonLayoutPlatform;
       const layoutSteps = makeHarnessLayoutSteps({
-        flag: (yield* HarnessLayoutConfig).flag,
+        flag: harnessLayoutConfig.flag,
+        ...(harnessLayoutConfig.loginReleaseGrace === undefined
+          ? {}
+          : { loginReleaseGrace: harnessLayoutConfig.loginReleaseGrace }),
         repo: harnessLayouts,
-        platform: yield* PersonLayoutPlatform,
+        platform: personPlatform,
         organizations,
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
@@ -6849,6 +6857,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),
         discardTicket: (ticket) => discardPickup(ticket),
+        revokePersonToken: (launchId, accountId) => channelTokens.revokePerson(launchId, accountId),
       });
       // Service lifecycle calls are rare and may span platform I/O. One engine-local permit keeps
       // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
@@ -10062,6 +10071,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           clusterBindingNames,
           clusterServiceAccount: clusterBindings.serviceAccount,
         };
+        // The capture owner map of a person launch (docs/adr/0016, decision 8), handed to the
+        // create where the platform can take it: none can yet (`withOwnerMap` null), and then
+        // nothing is built or read for it.
+        const withOwnerMap = personPlatform.withOwnerMap;
+        const ownerMap =
+          launchLayout.layout === "person" && withOwnerMap !== null && input.layout !== undefined
+            ? yield* captureOwnerMapOf(launchLayout, input.layout.worktreeId)
+            : null;
+        const withLayoutOptions = (options: CreateOptions): CreateOptions =>
+          ownerMap === null || withOwnerMap === null ? options : withOwnerMap(options, ownerMap);
         let createAsked = false;
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           Effect.suspend(() => {
@@ -10071,7 +10090,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }).pipe(
             Effect.andThen(
               sealant.createWorkspace(
-                {
+                withLayoutOptions({
                   // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
                   // does not exist until the launch binds it to one worktree. Neither Docker nor
                   // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
@@ -10126,7 +10145,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
                   // mount create that carried credentials at the worker's blueprint parse.
                   ...(credentials === undefined ? {} : { credentials }),
-                },
+                }),
                 input.createKey === undefined
                   ? undefined
                   : {
@@ -11629,6 +11648,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         workspace: Workspace,
         person: Effect.Effect<string | null>,
+        /** What the process runs: the session's harness for its agent, `shell` for anything else. */
+        harness: string,
       ): Effect.Effect<
         { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
         SealantPlatformError
@@ -11643,11 +11664,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             accountId,
             sessionId: session.id,
             worktreeId: session.worktreeId,
+            harness,
           });
         });
       /** An agent of the session: its owner's (steering, Delivery 18, picks the sender). */
-      const startAsOwner = (session: Session, workspace: Workspace) =>
-        startAsPerson(session, workspace, Effect.succeed(session.ownerUserId));
+      const startAsOwner = (session: Session, workspace: Workspace, harness: string) =>
+        startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), harness);
 
       /** The memory in a session's head capture, and what was delivered there; null without one. */
       const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
@@ -12577,6 +12599,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       : coldLaunchKey,
                   ownerUserId,
                   organizationId: project.organizationId,
+                  harness: platformShape(session.harness).harness,
                   image: Effect.suspend(() =>
                     project.workspaceImage === null
                       ? settingsRepo
@@ -13221,6 +13244,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   accountId: ownerUserId,
                   sessionId,
                   worktreeId: session.worktreeId,
+                  harness: interactiveShell ? "shell" : session.harness,
                 })
                 .pipe(
                   Effect.tapError((error) => abandonExecutor(workspace, error.message)),
@@ -13476,6 +13500,61 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
+      /** Every live person executor's homes against Core's `GET`, once, at startup. */
+      const reconcileLoginsAtStartup = (): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const workspaceIds = new Set(
+            (yield* processes.listLive()).map((process) => process.sealantWorkspaceId),
+          );
+          for (const workspaceId of workspaceIds) {
+            const creator = yield* sessions.executorSessionOf(workspaceId);
+            if (creator === null || creator.ownerUserId === null) continue;
+            const launch = yield* sessions.executorLaunchOf(creator.id);
+            if (launch === null || launch.workspaceId !== workspaceId) continue;
+            if ((yield* layoutSteps.layoutOfLaunch(launch.launchId)) !== "person") continue;
+            const workspace = yield* owned(creator.id)(sealant.getWorkspace(workspaceId)).pipe(
+              Effect.option,
+            );
+            if (Option.isNone(workspace)) continue;
+            yield* layoutSteps.reconcileLogins({
+              workspace: workspace.value,
+              launchId: launch.launchId,
+              launcher: creator.ownerUserId,
+              live: yield* peopleLiveIn(workspaceId),
+            });
+          }
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: logins were not reconciled at startup").pipe(
+              Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+            ),
+          ),
+        );
+
+      /** One re-POST of the logins of the person an agent process runs as (`relogin`). */
+      const reloginAfterFailure = (agentProcess: SessionProcess): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(agentProcess.sessionId);
+          if (session.ownerUserId === null) return;
+          const launchId = yield* executorLaunchIdOf(session, agentProcess.sealantWorkspaceId);
+          if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return;
+          const workspace = yield* owned(agentProcess.sessionId)(
+            sealant.getWorkspace(agentProcess.sealantWorkspaceId),
+          );
+          yield* layoutSteps.relogin({
+            workspace,
+            launchId,
+            accountId: session.ownerUserId,
+            harness: agentProcess.harness ?? session.harness,
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: a person's logins were not written again").pipe(
+              Effect.annotateLogs({ processId: agentProcess.id, cause: Cause.pretty(cause) }),
+            ),
+          ),
+        );
+
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
       const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => ({
         onRequestChanged: (changedSessionId) =>
@@ -13485,6 +13564,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         onTurnCompleted: (turn) =>
           Effect.gen(function* () {
+            // A turn refused for its login, in a person executor: its person's logins are
+            // written into their home once more (docs/adr/0016, decision 5), off the turn's path.
+            if (
+              turn.status === "failed" &&
+              isAuthenticationFailure(turn.error) &&
+              layoutSteps.personPossible()
+            ) {
+              yield* reloginAfterFailure(agentProcess).pipe(Effect.forkIn(scope));
+            }
             const currentSession = yield* sessions.byId(turn.sessionId);
             const run =
               agentProcess.sealantRunId === null
@@ -14096,7 +14184,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Per-person harness homes (docs/adr/0016): in a person-layout executor the session's
           // owner runs as their own user, made there at their first process (a join's one more
           // exec, and the worktree repair beside it, never awaited).
-          const startAs = yield* startAsOwner(session, workspace).pipe(
+          const startAs = yield* startAsOwner(
+            session,
+            workspace,
+            interactiveShell ? "shell" : session.harness,
+          ).pipe(
             Effect.tapError((error) =>
               settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
                 Effect.ignore,
@@ -15163,6 +15255,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           session,
           workspace,
           Effect.succeed(openedBy ?? session.ownerUserId),
+          "shell",
         );
         const pty = yield* sealant.openSession(
           workspace,
@@ -15521,6 +15614,87 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* sessions.setSummary(process.sessionId, rest === "" ? null : rest);
       });
 
+      /**
+       * A person launch's capture owner map (docs/adr/0016, decision 8): every person prepare may
+       * make, and the change's owner (the owner of the worktree's first session) for the
+       * worktree. Built only where the platform can hand it over.
+       */
+      const captureOwnerMapOf = Effect.fn("SessionEngine.captureOwnerMapOf")(function* (
+        layout: Extract<LaunchLayout, { readonly layout: "person" }>,
+        worktreeId: WorktreeId,
+      ) {
+        const people = [layout.launcher, ...layout.members];
+        const first = (yield* sessions.listForWorktree(worktreeId))
+          .filter((member) => member.ownerUserId !== null)
+          .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+        const owner =
+          first?.ownerUserId === undefined || first.ownerUserId === null
+            ? layout.launcher
+            : (people.find((person) => person.accountId === first.ownerUserId) ??
+              (yield* harnessLayouts
+                .ensureIdentity(first.ownerUserId)
+                .pipe(Effect.orElseSucceed(() => layout.launcher))));
+        return {
+          people: people.map((person) => ({ accountId: person.accountId, uid: person.uid })),
+          worktreeUid: owner.uid,
+          gid: MEND_GROUP.gid,
+        } satisfies CaptureOwnerMap;
+      });
+
+      /**
+       * The people with a live process in an executor (docs/adr/0016, decision 5): a Service's
+       * whoever started it, anything else its session's owner (a shell runs as its owner; a
+       * steerer's turn runs as them until Delivery 18). Read only where Mend holds a home that an
+       * idle person's could be.
+       */
+      const peopleLiveIn = (workspaceId: SealantWorkspaceId): Effect.Effect<ReadonlySet<string>> =>
+        Effect.gen(function* () {
+          const live = yield* processes.listLiveForWorkspace(workspaceId);
+          const owners = new Map<string, string | null>();
+          const people = new Set<string>();
+          for (const process of live) {
+            if (process.kind === "service" && process.serviceId !== null) {
+              const startedBy = yield* services.startedByOf(process.serviceId);
+              if (startedBy !== null) {
+                people.add(startedBy);
+                continue;
+              }
+            }
+            if (!owners.has(process.sessionId)) {
+              const owner = yield* sessions.byId(process.sessionId).pipe(
+                Effect.map((session) => session.ownerUserId),
+                Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)),
+              );
+              owners.set(process.sessionId, owner);
+            }
+            const owner = owners.get(process.sessionId) ?? null;
+            if (owner !== null) people.add(owner);
+          }
+          return people;
+        });
+
+      /**
+       * A process ended: a person who holds a home in its executor and has nothing live there any
+       * more has their logins released (docs/adr/0016, decision 5). Off the caller's path, and
+       * with the flag off and nothing recorded, not even a read.
+       */
+      const releaseLoginsAfterExit = (processId: SessionProcessId): Effect.Effect<void> =>
+        layoutSteps.personPossible()
+          ? Effect.gen(function* () {
+              const process = yield* processes.byId(processId);
+              if (process === null || !layoutSteps.holdsReleasable(process.sealantWorkspaceId)) {
+                return;
+              }
+              yield* layoutSteps.releaseIdle({
+                workspaceId: process.sealantWorkspaceId,
+                workspace: owned(process.sessionId)(
+                  sealant.getWorkspace(process.sealantWorkspaceId),
+                ),
+                live: peopleLiveIn(process.sealantWorkspaceId),
+              });
+            }).pipe(Effect.forkIn(scope), Effect.asVoid)
+          : Effect.void;
+
       /** Record an observed end and clear any earlier refusal, including after a restart. */
       const markProcessExited = Effect.fn("SessionEngine.markProcessExited")(function* (
         processId: SessionProcessId,
@@ -15528,6 +15702,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         exitCode: number | null,
       ) {
         yield* processes.markExited(processId, how, exitCode);
+        yield* releaseLoginsAfterExit(processId);
         if (!closeFailed.has(processId)) return;
         const process = yield* processes.byId(processId);
         if (process !== null) yield* stoppedAfterAll(process);
@@ -15537,6 +15712,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const reapWorkspaceProcesses = Effect.fn("SessionEngine.reapWorkspaceProcesses")(function* (
         workspaceId: SealantWorkspaceId,
       ) {
+        // Its homes went with it: nothing of its people is kept (docs/adr/0016).
+        layoutSteps.forgetExecutor(workspaceId);
         if (closeFailed.size === 0) return yield* processes.reapLiveForWorkspace(workspaceId);
         const live = yield* processes.listLiveForWorkspace(workspaceId);
         yield* processes.reapLiveForWorkspace(workspaceId);
@@ -15635,7 +15812,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           status: "starting",
         });
         yield* services.setCurrentAttempt(service.id, attempt.id);
-        const pty = yield* startAsPerson(session, workspace, Effect.succeed(runsAs)).pipe(
+        const pty = yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell").pipe(
           // Remembered only where it decides anything: a person executor's restart runs as them.
           Effect.tap((startAs) =>
             startAs === null || runsAs === null
@@ -15827,7 +16004,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
           // As the person who started it (docs/adr/0016), read only in a person executor.
           Effect.flatMap((owner) =>
-            startAsPerson(owner, workspace, services.startedByOf(service.id)),
+            startAsPerson(owner, workspace, services.startedByOf(service.id), "shell"),
           ),
           Effect.flatMap((startAs) =>
             sealant.openSession(
@@ -17493,6 +17670,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ),
         scope,
       );
+      // Per-person harness homes (docs/adr/0016, decision 5): at startup, what Core keeps in the
+      // homes of each live person executor is what Mend knows it holds, and a home whose person
+      // has nothing live there is released. With the flag off and nothing recorded, nothing runs.
+      if (capture !== null && layoutSteps.personPossible()) {
+        yield* Effect.forkIn(reconcileLoginsAtStartup(), scope);
+      }
       let lastAccessReconcile = Number.NEGATIVE_INFINITY;
       // Capture mode: the lease reaper (expiry → confirmed platform termination → the session
       // settles honestly; the next resume is a pickup) and replacement before the 8 h cap.
