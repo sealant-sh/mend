@@ -15,3 +15,5 @@ export * from "./review-question.ts";
 export * from "./run.ts";
 export * from "./settings.ts";
 export * from "./timestamp.ts";
+
+export * from "./desktop.ts";

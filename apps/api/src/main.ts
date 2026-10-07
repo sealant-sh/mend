@@ -220,6 +220,7 @@ import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
+import { DesktopRoutes } from "./routes/desktop.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
@@ -416,6 +417,7 @@ const ServerLive = Layer.unwrap(
         MendApiLive,
         AuthRoutes,
         EventsRoutes,
+        DesktopRoutes,
         WebSocketRoutes,
         // Headers, origin policy, the error boundary and the budgets, in the order they promise
         // (http-middleware.ts; MEND-05, MEND-11).
@@ -770,7 +772,10 @@ const MainLive = Layer.unwrap(
           : Layer.merge(ServerLive, WorkerLive);
     // The network session channel is a sibling service: it serves workspaces, nothing depends
     // on it, so it must be launched explicitly rather than provided.
-    return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
+    return Layer.merge(
+      captured ? parts.pipe(Layer.provide(captureStore)) : parts,
+      SessionChannelNetworkLayer,
+    ).pipe(
       // Session steering, and landing (docs/adr/0007-landing.md) for the landing routes.
       Layer.provide(Layer.merge(SessionSteeringLive, landing)),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.

@@ -109,23 +109,21 @@ export function WorkspaceEnvironmentEditor({
 
   return (
     <>
-      {import.meta.env.DEV ? (
-        <div className="mt-5 rounded-2xl bg-card p-4 shadow-sm">
-          <p className="text-sm font-medium">Desktop experiment · x86</p>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Xfce, Chromium, computer-use tools and recording. Build mend-desktop:local on the
-            executor host, apply this preset, then save. New workspaces use it.
-          </p>
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => dispatch({ type: "image-applied", image: desktopWorkspaceImage })}
-            className="mt-3 rounded-xl border border-border px-3 py-2 text-xs shadow-xs hover:bg-secondary"
-          >
-            Use desktop image
-          </button>
-        </div>
-      ) : null}
+      <div className="mt-5 rounded-2xl bg-card p-4 shadow-sm">
+        <p className="text-sm font-medium">Desktop experiment · x86</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Xfce, Chromium, computer-use tools and recording. Build mend-desktop:pilot-v2 on the
+          executor host, apply this preset, then save. New workspaces use it.
+        </p>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={() => dispatch({ type: "image-applied", image: desktopWorkspaceImage })}
+          className="mt-3 rounded-xl border border-border px-3 py-2 text-xs shadow-xs hover:bg-secondary"
+        >
+          Use desktop image
+        </button>
+      </div>
       <div className="mt-5 border-t border-[var(--sw-faint-rule)] pt-5">
         <div className="flex items-start justify-between gap-4">
           <p className="font-sans text-sm font-medium text-foreground">Base</p>

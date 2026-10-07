@@ -1,13 +1,10 @@
-import { isLoopbackHostname, serviceReach } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 
 import { DesktopWorkbench } from "#/components/desktop-workbench";
 import { runService } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
-
-const noSubscription = () => () => {};
 
 /** Start the image's desktop as an ordinary recorded Service through the existing API. */
 export function SessionDesktop({
@@ -21,25 +18,33 @@ export function SessionDesktop({
   readonly canRun: boolean;
   readonly live: boolean;
 }) {
+  if (!enabled) return null;
+  return <LiveSessionDesktop sessionId={sessionId} canRun={canRun} live={live} />;
+}
+
+function LiveSessionDesktop({
+  sessionId,
+  canRun,
+  live,
+}: {
+  readonly sessionId: string;
+  readonly canRun: boolean;
+  readonly live: boolean;
+}) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const services = useQuery(trpc.services.list.queryOptions({ all: true }));
-  const local = useSyncExternalStore(
-    noSubscription,
-    () => isLoopbackHostname(window.location.hostname),
-    () => false,
-  );
+  const services = useQuery({
+    ...trpc.services.list.queryOptions({ all: true }),
+    refetchInterval: 2000,
+  });
   const desktop = services.data?.find(
-    (service) =>
-      service.service.sessionId === sessionId &&
-      service.service.name === "desktop" &&
-      service.currentForward?.state === "bound",
+    (entry) => entry.service.sessionId === sessionId && entry.service.name === "desktop",
   );
-  const reach = desktop ? serviceReach(desktop.endpoints, local) : null;
-  const url = reach?.kind === "direct" ? reach.browserUrl : null;
+  const url = `/api/sessions/${encodeURIComponent(sessionId)}/desktop`;
+  const attempt = desktop?.attempts.find((entry) => entry.id === desktop.service.currentAttemptId);
+  const stopped = !!desktop && (!attempt || attempt.exitedAt !== null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  if (!import.meta.env.DEV || (!enabled && !desktop)) return null;
   const start = async () => {
     setPending(true);
     setError(null);
@@ -47,7 +52,9 @@ export function SessionDesktop({
       await runService(sessionId, {
         argv: [
           "env",
-          `MEND_DESKTOP_APP_ORIGIN=${window.location.origin}`,
+          `MEND_DESKTOP_SESSION_ID=${sessionId}`,
+          `CODEX_HOME=/home/mend-desktop-${sessionId}/.codex`,
+          `CLAUDE_CONFIG_DIR=/home/mend-desktop-${sessionId}/.claude`,
           "/opt/mend-desktop/start",
         ],
         port: 6090,
@@ -55,6 +62,7 @@ export function SessionDesktop({
         browserScheme: "http",
       });
       await queryClient.invalidateQueries(trpc.services.pathFilter());
+      await queryClient.invalidateQueries({ queryKey: ["desktop", url] });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Desktop could not start.");
     } finally {
@@ -62,18 +70,18 @@ export function SessionDesktop({
     }
   };
   return (
-    <section className="mt-6 space-y-4">
+    <section id="desktop" className="mt-6 scroll-mt-6 space-y-4">
       <div className="flex items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-medium">Desktop experiment</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            The Service's network boundary protects this prototype; its forwarded port has no Mend
-            sign-in.
+            A desktop in this session's workspace, using your connected agent. Recordings stay
+            beside its observations.
           </p>
         </div>
-        {!desktop && canRun && live ? (
+        {(!desktop || stopped) && canRun && live ? (
           <Button disabled={pending} onClick={() => void start()}>
-            {pending ? "Starting desktop…" : "Start desktop"}
+            {pending ? "Starting desktop…" : desktop ? "Restart desktop" : "Start desktop"}
           </Button>
         ) : null}
       </div>
@@ -82,19 +90,10 @@ export function SessionDesktop({
           {error}
         </p>
       ) : null}
-      {url && canRun ? (
-        <>
-          <a href={url + "/viewer"} target="_blank" rel="noreferrer" className="text-sm text-info">
-            Open desktop viewer
-          </a>
-          <DesktopWorkbench baseUrl={url.replace(/\/$/, "")} />
-        </>
+      {desktop && canRun ? (
+        <DesktopWorkbench baseUrl={url} />
       ) : desktop ? (
-        <p className="text-sm text-muted-foreground">
-          {canRun
-            ? "Tunnel the desktop Service to this machine with mend service connect desktop."
-            : "The session owner controls this desktop."}
-        </p>
+        <p className="text-sm text-muted-foreground">The session owner controls this desktop.</p>
       ) : (
         <p className="text-sm text-muted-foreground">
           Start the desktop in a live workspace built from the experimental image.

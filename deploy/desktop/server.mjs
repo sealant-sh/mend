@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { parseAction, performAction } from "./control.mjs";
+import { preparePilotHome } from "./pilot-home.mjs";
 
 const exec = promisify(execFile);
 const assetRoot = dirname(fileURLToPath(import.meta.url));
@@ -111,6 +112,7 @@ async function finish(run, status, result) {
     /* Retain the recording and transcript if the display has gone. */
   }
   await stopRecorder(run.recorder);
+  await run.nativeHome.close();
   run.state.status = status;
   run.state.finishedAt = new Date().toISOString();
   run.state.result = result;
@@ -141,11 +143,13 @@ async function launchPilot(input) {
   if (active !== null) throw new Error("A pilot is already running");
   const id = randomUUID();
   const dir = join(runsRoot, id);
+  const nativeHome = await preparePilotHome(input.harness);
   await mkdir(dir);
   humanControl = false;
   const state = {
     id,
     ...input,
+    sessionId: process.env.MEND_DESKTOP_SESSION_ID ?? null,
     status: "running",
     startedAt: new Date().toISOString(),
     finishedAt: null,
@@ -190,6 +194,7 @@ async function launchPilot(input) {
     timer: null,
     finishing: false,
     forcedStatus: null,
+    nativeHome,
   };
   active = run;
   recorder.on("error", (error) => {
@@ -203,6 +208,7 @@ async function launchPilot(input) {
   await persist(run);
   const env = {
     ...process.env,
+    ...nativeHome.env,
     DISPLAY: ":1",
     MEND_DESKTOP_MODE: input.mode,
     MEND_DESKTOP_PILOT_TOKEN: pilotToken,
@@ -384,6 +390,7 @@ const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
     if (request.method === "GET" && url.pathname === "/state")
       return json(response, 200, {
+        sessionId: process.env.MEND_DESKTOP_SESSION_ID ?? null,
         active: active?.state ?? null,
         humanControl,
         runs: await history(),

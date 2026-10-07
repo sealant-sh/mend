@@ -7,6 +7,25 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-07 · 0.39.0-next.696 · Custom desktop image build diagnostics and daemon socket paths
+
+- **Observed:** the desktop image supplied `/bin/sh`, Node and npm, but left `USER node` active.
+  Core's harness installation failed with npm `EACCES`. Returning the build user to root fixed it.
+  The next build lacked curl: the pi install failed with `curl: not found`, while the workspace
+  reported `custom-base-missing-shell` and claimed the image had no `/bin/sh`.
+- **Needed:** a documented custom image contract covering the build user and commands used to
+  install every harness, and an error identifying the failing build step without treating any
+  `/bin/sh -c` failure as a missing shell. Mend supplies root and curl in its experimental image; it
+  does not change Core's builder.
+- **Observed:** a control directory under Mend's application data made the generated
+  `sealant-<uuid>/control.sock` path exceed Linux's Unix socket path limit. Flush returned
+  `connect EINVAL`. The local executor now uses a short control directory.
+- **Observed:** rebuilding the mutable custom-base tag did not update an already compiled workspace
+  image. Mend uses a new tagged desktop revision and checks its pilot home module before launch.
+  Document the build cache contract and when an updated tag is resolved.
+- **Suggested:** validate the complete generated socket path before creating the workspace and
+  report the maximum supported control-directory length.
+
 ## 2026-10-07 · 0.39.0-next.695 · Per-person homes: what Mend's logins per person (ADR 0016 Delivery 14) still lacks
 
 - **Shipped and used:** `user` on sessions and exec, `credentialsHome` on create,

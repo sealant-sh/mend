@@ -35,32 +35,69 @@ application with a counter and greeting. Arbitrary HTTP(S) sites can also be ope
 
 Stop only this fixture with `node scripts/desktop-preview.mjs stop`.
 
-## Session integration scaffold
+## Real Mend sessions
 
-The development environment editor offers the `mend-desktop:local` custom-image preset. Build that
-amd64 image on the Sealant executor before selecting it. A live session using it offers **Start
-desktop**, which calls Mend's existing recorded Service API for `/opt/mend-desktop/start` on
-port 6090. Its workspace must have the chosen harness credentials. This path has not yet been
-exercised against a live Sealant executor.
+Build the amd64 image on the Sealant Docker executor:
+
+```sh
+docker build --platform linux/amd64 -f deploy/desktop/Dockerfile -t mend-desktop:pilot-v2 .
+```
+
+In a project's **Setup → Environment**, choose **Use desktop image** and save. Start a normal Claude
+or Codex session using your connected account. In its session page, **Start desktop** runs
+`/opt/mend-desktop/start` through Mend's existing recorded Service API. Both the coding agent and
+the pilot work in that session's container. The goal can point at a development server the coding
+agent started, a local file in its worktree, or an external website.
+
+The embedded noVNC code is bundled with Mend. Its WebSocket carries VNC bytes through the public
+SDK's workspace forward; the HTTP bridge admits only controller operations and the four artifact
+files. Both require Mend sign-in and the session owner. The existing origin policy, socket
+revocation, frame limits and connection budgets apply. No workspace HTML or JavaScript is served on
+Mend's origin. The normal raw Service listener is still separate and reports its own access.
+
+Recordings and observations live under the session's captured harness home:
+
+- Shared layout: `/workspace/harness-home/.mend/desktop/<session>/runs/`.
+- Person layout: `/workspace/harness-home/people/<owner>/desktop/<session>/runs/`.
+
+After the desktop or workspace stops, the same links stream files from the capture store, including
+HTTP byte ranges for video seeking. The panel names the capture it read. A running pilot in an older
+capture is reported as interrupted. **Restart desktop** restores live control in a live workspace.
+
+Mend puts the chosen owner's connected login into a separate credentials home in the live executor
+through Core's public SDK; the coding agent's login home is unchanged. Each pilot uses another
+private temporary native agent home, copying only that chosen login. This keeps its native
+conversation out of the parent session's transcript harvest. That home is removed when the pilot
+finishes; the controller's transcript and observations remain captured.
 
 ## Limits before a release
 
-The pilot is a separate CLI conversation; its tool calls and recordings are not yet linked to a Mend
-session's durable record or capture store. The controller port has no Mend sign-in: use only
-loopback or a private forwarded Service. Human view-only mode is a viewer convention, not a
-server-side input authorization boundary. Code mode is not a JavaScript security sandbox; Codex's
-tool restriction is a prompt instruction. The disposable container is the boundary. Chromium runs
-without its own sandbox inside that container.
+The pilot is a separate CLI conversation. Its service launch is in Mend's record and its artifacts
+are in the session's capture, but the parent coding agent does not automatically call or receive its
+computer-use tools. The pilot's temporary copy of its login is not written back into Core. Automatic
+desktop start and parent/pilot handoff remain follow-up work. Only the owner can view or steer the
+desktop; shared control does not grant arbitrary command or terminal access.
 
-Authenticated same-origin HTTP/WebSocket forwarding is needed before production session embeds (the
-production CSP intentionally blocks separate-port embeds). The session panel and image preset are
-therefore development-only. Credential refresh, desktop process lifecycle across workspace restarts,
-durable artifacts, shared-control authorization and parent/pilot handoff remain follow-up work.
+Human view-only mode is a viewer convention. The authorized owner can send VNC input directly. Code
+mode is not a JavaScript security sandbox; Codex's tool restriction is a prompt instruction. The
+disposable container is the boundary. Chromium runs without its own sandbox inside it. The
+standalone fixture's controller has no Mend sign-in and should stay on loopback.
+
+When updating a mutable local image that Core has already compiled, use a new image tag so the
+workspace build uses the new revision. Setup commands run after provisioning and do not invalidate a
+compiled custom base. The preset verifies the pilot home module before launch.
 
 ## Checks
 
+Local acceptance used the built web app and a real captured session. The coding agent created a
+counter page in its worktree. Codex code mode reached Count: 5 / Hello, Mend! in four calls; Claude
+action mode reached Count: 3 / Hello, Claude! in eight calls. Manual takeover cancelled a running
+pilot and accepted VNC input while the parent coding agent stayed alive. A separate stopped session
+replayed its saved MP4 with byte-range seeking from the capture store.
+
 ```sh
-node --test deploy/desktop/control.test.mjs
+node --test deploy/desktop/control.test.mjs deploy/desktop/pilot-home.test.mjs
+pnpm --filter @mend/api-server test src/routes/desktop-http.test.ts src/routes/desktop-capture.test.ts
 pnpm --filter @mend/web test src/lib/workspace-environment.test.ts
 pnpm exec turbo typecheck --force
 pnpm exec turbo lint --force

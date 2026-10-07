@@ -1,3 +1,4 @@
+import { desktopWorkspaceImage } from "@mend/domain";
 import {
   agentStartingFacts,
   canRelaunchSession,
@@ -545,7 +546,9 @@ function SessionPage() {
         sessionId={sessionId}
         enabled={
           session.workspaceImage?.mode === "custom" &&
-          session.workspaceImage.baseImage === "mend-desktop:local"
+          desktopWorkspaceImage.mode === "custom" &&
+          (session.workspaceImage.baseImage === desktopWorkspaceImage.baseImage ||
+            session.workspaceImage.baseImage === "mend-desktop:local")
         }
         canRun={control.terminalInput}
         live={ACTIVE.has(session.status)}

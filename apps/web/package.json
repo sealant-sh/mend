@@ -27,6 +27,7 @@
     "@mend/network": "workspace:*",
     "@mend/sealant": "workspace:*",
     "@mend/ui": "workspace:*",
+    "@novnc/novnc": "catalog:",
     "@pierre/diffs": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",
@@ -53,6 +54,7 @@
   "devDependencies": {
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
+    "@types/novnc__novnc": "catalog:",
     "@types/qrcode": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",

@@ -101,9 +101,9 @@ export const defaultWorkspaceImage: WorkspaceImage = {
 /** Experimental amd64 desktop base, built with deploy/desktop/Dockerfile on the executor host. */
 export const desktopWorkspaceImage: WorkspaceImage = {
   mode: "custom",
-  baseImage: "mend-desktop:local",
+  baseImage: "mend-desktop:pilot-v2",
   packages: [],
-  setupCommands: [],
+  setupCommands: ["node --check /opt/mend-desktop/pilot-home.mjs"],
   services: { docker: false },
 };
 

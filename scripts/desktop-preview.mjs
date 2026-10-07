@@ -26,7 +26,7 @@ if (process.argv.includes("--build"))
     "-f",
     "deploy/desktop/Dockerfile",
     "-t",
-    "mend-desktop:local",
+    "mend-desktop:pilot-v2",
     ".",
   ]);
 const existing = spawnSync("docker", ["inspect", "-f", "{{.State.Running}}", name], {
@@ -51,6 +51,10 @@ if (existing.status === 0) {
     name,
     "--label",
     "dev.sealant.mend.fixture=desktop-pilot",
+    "--user",
+    "1000:1000",
+    "-e",
+    "HOME=/home/node",
     "--cap-drop=ALL",
     "--security-opt=no-new-privileges",
     "--shm-size=512m",
@@ -67,7 +71,7 @@ if (existing.status === 0) {
     "--mount",
     `type=bind,src=${join(root, "deploy/desktop")},dst=/opt/mend-desktop,readonly`,
     ...credentials,
-    "mend-desktop:local",
+    "mend-desktop:pilot-v2",
   ]);
 }
 console.log("Desktop fixture: http://127.0.0.1:6090/state");

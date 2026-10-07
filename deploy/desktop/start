@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 export DISPLAY=:1
+if [ -n "${MEND_DESKTOP_SESSION_ID:-}" ] && [ -z "${MEND_DESKTOP_HOME:-}" ]; then
+  case "${CODEX_SQLITE_HOME:-}" in
+    /workspace/harness-home/people/*/codex-db) export MEND_DESKTOP_HOME="$(dirname "$CODEX_SQLITE_HOME")/desktop/$MEND_DESKTOP_SESSION_ID" ;;
+    *) export MEND_DESKTOP_HOME="/workspace/harness-home/.mend/desktop/$MEND_DESKTOP_SESSION_ID" ;;
+  esac
+fi
 export MEND_DESKTOP_HOME="${MEND_DESKTOP_HOME:-$HOME/.mend/desktop}"
 mkdir -p "$MEND_DESKTOP_HOME"
 children=()

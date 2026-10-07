@@ -2,6 +2,7 @@ import { Button } from "@mend/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { DesktopViewer } from "#/components/desktop-viewer";
 import { desktopCommand, readDesktopState } from "#/lib/desktop";
 
 /** Live pixels, a dedicated pilot, and its observed artifacts in one viewport. */
@@ -9,7 +10,7 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
   const state = useQuery({
     queryKey: ["desktop", baseUrl],
     queryFn: () => readDesktopState(baseUrl),
-    refetchInterval: 1000,
+    refetchInterval: (query) => (query.state.data?.live === false ? 10000 : 1000),
     retry: false,
   });
   const [harness, setHarness] = useState<"claude" | "codex">("codex");
@@ -53,12 +54,14 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
                 ? `${active.harness} · ${active.mode} · ${active.actions} calls`
                 : observed?.humanControl
                   ? "You control input"
-                  : "Watching"}
+                  : observed?.live === false
+                    ? "Recorded"
+                    : "Watching"}
             </span>
             <Button
               variant="outline"
               size="sm"
-              disabled={pending || !observed}
+              disabled={pending || !observed || !observed.live}
               onClick={() => void act(observed?.humanControl ? "release" : "takeover")}
             >
               {observed?.humanControl
@@ -69,11 +72,22 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
             </Button>
           </div>
         </div>
-        <iframe
-          title="Agent desktop"
-          src={`${baseUrl}/viewer`}
-          className="aspect-[1440/900] w-full border-0"
-        />
+        {observed?.live === false ? (
+          <div className="space-y-3 p-5">
+            {observed.runs[0] ? (
+              <img
+                src={`${baseUrl}/runs/${observed.runs[0].id}/final.png`}
+                alt="Last captured desktop"
+                className="aspect-[1440/900] w-full rounded-xl bg-secondary"
+              />
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              The desktop is stopped. These recordings show its captured observations.
+            </p>
+          </div>
+        ) : (
+          <DesktopViewer baseUrl={baseUrl} humanControl={observed?.humanControl ?? false} />
+        )}
       </div>
       <div className="contents">
         <form
@@ -91,7 +105,7 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
                 aria-label="Pilot agent"
                 className={field}
                 value={harness}
-                disabled={pending || active !== null}
+                disabled={pending || active !== null || observed?.live === false}
                 onChange={(event) => {
                   if (event.target.value === "claude" || event.target.value === "codex") {
                     setHarness(event.target.value);
@@ -109,7 +123,7 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
                 aria-label="Execution style"
                 className={field}
                 value={mode}
-                disabled={pending || active !== null}
+                disabled={pending || active !== null || observed?.live === false}
                 onChange={(event) => {
                   if (event.target.value === "actions" || event.target.value === "code")
                     setMode(event.target.value);
@@ -125,7 +139,7 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
             <input
               className={field}
               value={model}
-              disabled={pending || active !== null}
+              disabled={pending || active !== null || observed?.live === false}
               placeholder="Agent's default"
               onChange={(event) => setModel(event.target.value)}
               maxLength={100}
@@ -139,7 +153,7 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
               onChange={(event) => setGoal(event.target.value)}
               maxLength={8000}
               required
-              disabled={pending || active !== null}
+              disabled={pending || active !== null || observed?.live === false}
             />
           </label>
           <p className="text-xs leading-relaxed text-muted-foreground">
@@ -149,7 +163,10 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
             Recording starts with the pilot. Each run has a five-minute limit.
           </p>
           <div className="flex gap-2">
-            <Button type="submit" disabled={pending || active !== null || !observed}>
+            <Button
+              type="submit"
+              disabled={pending || active !== null || !observed || !observed.live}
+            >
               Start pilot
             </Button>
             {active ? (
