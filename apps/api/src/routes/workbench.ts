@@ -2384,9 +2384,22 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("submitTurn", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
-        const engine = yield* SessionEngine;
+        const session = yield* steering.session(params.id);
         const caller = yield* CurrentUser;
+        // opencode is one person's harness (docs/adr/0016, decision 6), whatever the layout: an
+        // opencode session whose shared control was on before this release takes its owner's
+        // turns only. A field compare on the session already read (review of mend#572, P3-4).
+        if (
+          session.harness === "opencode" &&
+          session.ownerUserId !== null &&
+          caller.user.id !== session.ownerUserId
+        ) {
+          return yield* new SessionNotSteerable({
+            sessionId: session.id,
+            message: OPENCODE_NOT_STEERABLE,
+          });
+        }
+        const engine = yield* SessionEngine;
         return yield* engine.submitTurn(params.id, payload.input, caller.user.id).pipe(
           Effect.catchTag("ProtocolHostNotLiveError", (error) =>
             Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),

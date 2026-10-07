@@ -22,14 +22,16 @@ export const ConversationWaitWork = Schema.Struct({
     "wakeup",
     "monitor",
     "cron",
+    "unknown",
   ]),
   /** The harness's own id: what ending it names. */
   id: Schema.String,
   description: Schema.NullOr(Schema.String),
   /**
    * The person the process runs as, or the session's owner, can end it from the waiting line
-   * (Claude's task stop, Codex's terminal terminate and goal clear). A wakeup or a monitor ends on
-   * its own (at most an hour, at most 30 minutes).
+   * (Claude's task stop, a monitor's included, Codex's terminal terminate and goal clear). A
+   * wakeup ends on its own within an hour; a scheduled prompt and what the harness would not say
+   * are waited for at most `CONVERSATION_WAIT_BOUNDS_MS`.
    */
   endable: Schema.Boolean,
 });
@@ -61,7 +63,25 @@ const NOUNS: Readonly<Record<ConversationWaitWork["kind"], readonly [string, str
   wakeup: ["wakeup", "wakeups"],
   monitor: ["monitor", "monitors"],
   cron: ["scheduled prompt", "scheduled prompts"],
+  unknown: ["unreported work", "unreported work"],
 };
+
+/**
+ * How long a waiting turn waits for work nothing in the waiting line can end (review of mend#572,
+ * P3-2 and P3-3): a session's scheduled prompt (it lives up to seven days), and work the harness
+ * would not say anything about. After this the hand-over goes on, and the waiting line says so.
+ */
+export const CONVERSATION_WAIT_BOUNDS_MS: Readonly<
+  Partial<Record<ConversationWaitWork["kind"], number>>
+> = {
+  cron: 10 * 60_000,
+  unknown: 60_000,
+};
+
+const boundWords = (ms: number): string =>
+  ms % 60_000 === 0
+    ? `${ms / 60_000} minute${ms === 60_000 ? "" : "s"}`
+    : `${Math.round(ms / 1000)} seconds`;
 
 const ORDER: ReadonlyArray<ConversationWaitWork["kind"]> = [
   "task",
@@ -72,6 +92,7 @@ const ORDER: ReadonlyArray<ConversationWaitWork["kind"]> = [
   "monitor",
   "wakeup",
   "cron",
+  "unknown",
 ];
 
 /** "a, b and c". */
@@ -99,10 +120,23 @@ export const conversationWaitLine = (input: {
     const count = input.work.filter((work) => work.kind === kind).length;
     if (count === 0) continue;
     const [one, many] = NOUNS[kind];
-    parts.push(kind === "goal" && count === 1 ? "a goal" : `${count} ${count === 1 ? one : many}`);
+    parts.push(
+      kind === "goal" && count === 1
+        ? "a goal"
+        : kind === "unknown"
+          ? one
+          : `${count} ${count === 1 ? one : many}`,
+    );
   }
   const waited = parts.length === 0 ? "agent" : listed(parts);
-  return `Waits for ${input.runsAs}'s ${waited} to finish before ${input.sender}'s turn starts.`;
+  const bounded = ORDER.flatMap((kind) => {
+    const bound = CONVERSATION_WAIT_BOUNDS_MS[kind];
+    return bound !== undefined && input.work.some((work) => work.kind === kind)
+      ? [`at most ${boundWords(bound)} for ${NOUNS[kind][1]}`]
+      : [];
+  });
+  const line = `Waits for ${input.runsAs}'s ${waited} to finish before ${input.sender}'s turn starts.`;
+  return bounded.length === 0 ? line : `${line} It waits ${listed(bounded)}.`;
 };
 
 /** Why another person's turn is not sent to an opencode session (decision 6). */

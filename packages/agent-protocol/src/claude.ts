@@ -771,7 +771,9 @@ export const ClaudeAdapter: AgentAdapter = {
             work.push({ kind: "paused-task", id, description, endable: true });
           }
           for (const [id, monitor] of monitors) {
-            work.push({ kind: "monitor", id, description: monitor.description, endable: false });
+            // A monitor is a task: `stop_task` ends it, a persistent one included (review of
+            // mend#572, P3-2).
+            work.push({ kind: "monitor", id, description: monitor.description, endable: true });
           }
           for (const id of wakeups.keys()) {
             work.push({ kind: "wakeup", id, description: null, endable: false });
@@ -802,7 +804,12 @@ export const ClaudeAdapter: AgentAdapter = {
       const endWork = Effect.fn("ClaudeAdapter.endWork")(function* (
         work: Pick<AgentBackgroundWork, "kind" | "id">,
       ) {
-        if (work.kind !== "task" && work.kind !== "paused-task" && work.kind !== "sub-agent") {
+        if (
+          work.kind !== "task" &&
+          work.kind !== "paused-task" &&
+          work.kind !== "sub-agent" &&
+          work.kind !== "monitor"
+        ) {
           return yield* protocolError(
             "endWork",
             `Claude ends a ${work.kind} on its own; Mend cannot stop it.`,

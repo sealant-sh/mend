@@ -29,6 +29,19 @@ describe("the waiting line (docs/adr/0016, decision 6)", () => {
     );
   });
 
+  it("says how long it waits for what nothing can end (review of mend#572, P3-2 and P3-3)", () => {
+    expect(
+      conversationWaitLine({
+        runsAs: "Alice",
+        sender: "Bob",
+        openTurn: false,
+        work: [{ kind: "cron" }, { kind: "unknown" }, { kind: "unknown" }],
+      }),
+    ).toBe(
+      "Waits for Alice's 1 scheduled prompt and unreported work to finish before Bob's turn starts. It waits at most 10 minutes for scheduled prompts and at most 1 minute for unreported work.",
+    );
+  });
+
   it("with only the settle left, waits for the agent", () => {
     expect(
       conversationWaitLine({ runsAs: "Alice", sender: "Bob", openTurn: false, work: [] }),

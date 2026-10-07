@@ -35,6 +35,9 @@ interface PendingServerRequest {
   readonly kind: "approval" | "input";
 }
 
+/** An app-server method this Codex does not offer: what it would have said is not known. */
+const REFUSED = Symbol("refused");
+
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -719,14 +722,15 @@ export const CodexAdapter: AgentAdapter = {
 
       /**
        * An app-server request that an older Codex may not offer (the experimental API): what it
-       * answers, or nothing when it refuses the method.
+       * answers, or `refused` when it refuses the method. A refusal is "cannot tell", never "no
+       * work" (review of mend#572, P3-3).
        */
       const optional = (method: string, params: JsonObject) =>
         request(method, params).pipe(
           Effect.map((result): unknown => result),
           Effect.catch((error) =>
             /method not found|unknown (?:variant|method)|experimental/i.test(error.message)
-              ? Effect.succeed(null)
+              ? Effect.succeed(REFUSED)
               : Effect.fail(error),
           ),
         );
@@ -743,6 +747,14 @@ export const CodexAdapter: AgentAdapter = {
         }
         if (threadId !== null) {
           const terminals = yield* optional("thread/backgroundTerminals/list", { threadId });
+          if (terminals === REFUSED) {
+            work.push({
+              kind: "unknown",
+              id: "thread/backgroundTerminals/list",
+              description: "Codex did not say whether background terminals run",
+              endable: false,
+            });
+          }
           const listed = isObject(terminals) ? terminals["data"] : null;
           if (Array.isArray(listed)) {
             for (const terminal of listed) {
@@ -756,7 +768,16 @@ export const CodexAdapter: AgentAdapter = {
               });
             }
           }
-          const goal = objectField(yield* optional("thread/goal/get", { threadId }), "goal");
+          const goalAnswer = yield* optional("thread/goal/get", { threadId });
+          if (goalAnswer === REFUSED) {
+            work.push({
+              kind: "unknown",
+              id: "thread/goal/get",
+              description: "Codex did not say whether a goal is active",
+              endable: false,
+            });
+          }
+          const goal = objectField(goalAnswer, "goal");
           if (goal !== null && stringField(goal, "status") === "active") {
             work.push({
               kind: "goal",

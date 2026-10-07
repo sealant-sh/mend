@@ -18,6 +18,7 @@ import {
   ProtocolHostLive,
   type ProtocolHostHooks,
   type SteeringDecision,
+  waitedOut,
 } from "../src/protocol-host.ts";
 
 /**
@@ -205,7 +206,7 @@ const conversationWorld = () => {
       }),
     resolveProviderRequest: () => Effect.void,
   });
-  return { turns, layer, ordered };
+  return { turns, layer, ordered, update };
 };
 
 /** A Claude or Codex on the far side of a pipe: says what the test pushes, records what Mend sends. */
@@ -350,6 +351,8 @@ const steeredWorld = (harness: "claude" | "codex") => {
   const handOvers: Array<{ readonly sender: string; readonly at: number }> = [];
   const pipes: Record<string, Harnessed> = {};
   const live = new Set<string>([processA.id]);
+  /** What the engine would decide instead, once something changed (control off, say). */
+  const decision: { override: ((turn: AgentTurn) => SteeringDecision) | null } = { override: null };
   const processes = Layer.mock(SessionProcessesRepo, {
     listForSession: () =>
       Effect.sync(() => [processA, processB].filter((process) => live.has(process.id))),
@@ -367,9 +370,11 @@ const steeredWorld = (harness: "claude" | "codex") => {
     steering: {
       decide: (turn) =>
         Effect.succeed<SteeringDecision>(
-          (turn.author ?? ALICE) === runsAs
-            ? { kind: "send" }
-            : { kind: "hand-over", sender: turn.author ?? ALICE },
+          decision.override !== null
+            ? decision.override(turn)
+            : (turn.author ?? ALICE) === runsAs
+              ? { kind: "send" }
+              : { kind: "hand-over", sender: turn.author ?? ALICE },
         ),
       waiting: (wait) => Effect.sync(() => void waits.push(wait)),
       handOver: (sender) =>
@@ -383,7 +388,7 @@ const steeredWorld = (harness: "claude" | "codex") => {
         }).pipe(Effect.provide(host)),
     },
   });
-  return { world, processA, processB, waits, handOvers, pipes, live, host, hooksFor };
+  return { world, processA, processB, waits, handOvers, pipes, live, host, hooksFor, decision };
 };
 
 const attachAs = (process: SessionProcess, pipe: InteractiveSession, hooks: ProtocolHostHooks) =>
@@ -696,6 +701,117 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
       yield* Fiber.join(takeover);
       yield* host.detach(steered.processA.id);
     }).pipe(Effect.scoped, Effect.provide(steered.host));
+  });
+
+  /**
+   * Bob's turn waits for Alice's background task; then it stops waiting for Bob (withdrawn, or
+   * cancelled by turning shared control off or removing him, which the engine does by cancelling
+   * his queued turns; or decided otherwise since). The queue is freed: no hand-over, nothing
+   * written or started for Bob, and Alice's own next turn is sent to her process (review of
+   * mend#572, P2-1).
+   */
+  const abandoned = (
+    change: (steered: ReturnType<typeof steeredWorld>, bobs: AgentTurn) => void,
+    bobsAfter: Partial<AgentTurn>,
+  ) => {
+    const steered = steeredWorld("claude");
+    const alice = claudePipe("pipe-a");
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachAs(steered.processA, alice.pipe, steered.hooksFor(ALICE, Effect.void));
+      alice.push({
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "bash-1", task_type: "local_bash", description: "npm test" }],
+      });
+      alice.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+      yield* pause(30);
+      const bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+      yield* waitUntil(() => steered.waits.some((wait) => wait !== null), "the waiting line");
+      change(steered, bobs);
+      yield* waitUntil(() => steered.waits.at(-1) === null, "the waiting line cleared");
+      // Alice's work ends afterwards: still nothing is handed over.
+      alice.push({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+      yield* pause(400);
+      expect(steered.handOvers).toEqual([]);
+      expect(steered.world.turns.get(bobs.id)).toMatchObject(bobsAfter);
+      // Alice's own turn goes to her process; the queue is not held behind Bob's.
+      const own = yield* host.submitTurn(sessionId, "Alice's next", ALICE);
+      yield* waitUntil(
+        () => JSON.stringify(alice.sent).includes("Alice's next"),
+        "Alice's turn sent",
+      );
+      expect(steered.world.turns.get(own.id)).toMatchObject({
+        processId: steered.processA.id,
+        billedUserId: ALICE,
+      });
+      expect(JSON.stringify(alice.sent)).not.toContain("Bob's request");
+      expect(steered.handOvers).toEqual([]);
+      yield* host.detach(steered.processA.id);
+    }).pipe(Effect.scoped, Effect.provide(steered.host));
+  };
+
+  it.live("a withdrawn waiting turn frees the queue and cancels the hand-over", () =>
+    abandoned(
+      (steered, bobs) => {
+        steered.world.update(bobs.id, { status: "cancelled", endedAt: now() });
+      },
+      { status: "cancelled" },
+    ),
+  );
+
+  it.live(
+    "shared control turned off, or the sender removed, cancels the hand-over: nothing starts for them",
+    () =>
+      abandoned(
+        (steered) => {
+          // The engine's decision once control is off or Bob is gone: his turn is refused.
+          steered.decision.override = (turn) =>
+            (turn.author ?? ALICE) === ALICE
+              ? { kind: "send" }
+              : { kind: "refuse", words: "Shared control was turned off." };
+        },
+        { status: "failed", error: "Shared control was turned off." },
+      ),
+  );
+
+  it("a session cron and what the harness would not say are waited for, bounded", () => {
+    const firstSeen = new Map<string, number>();
+    const looked = {
+      quiescent: false,
+      openTurn: false,
+      settleMs: 0,
+      work: [
+        { kind: "cron" as const, id: "cron-1", description: null, endable: false },
+        { kind: "unknown" as const, id: "thread/goal/get", description: null, endable: false },
+      ],
+    };
+    const bounds = { cron: 600_000, unknown: 60_000 };
+    expect(waitedOut(looked, firstSeen, 1_000, bounds).quiescent).toBe(false);
+    // A minute on: what the harness would not say is no longer waited for; the cron still is.
+    const later = waitedOut(looked, firstSeen, 61_000, bounds);
+    expect(later.quiescent).toBe(false);
+    expect(later.work.map((work) => work.kind)).toEqual(["cron"]);
+    // Ten minutes on: nothing holds the hand-over.
+    expect(waitedOut(looked, firstSeen, 601_000, bounds)).toMatchObject({
+      quiescent: true,
+      work: [],
+    });
+    // A task is never bounded; an open turn still holds it.
+    expect(
+      waitedOut(
+        {
+          ...looked,
+          work: [{ kind: "task", id: "bash-1", description: null, endable: true }],
+        },
+        firstSeen,
+        10_000_000,
+        bounds,
+      ).quiescent,
+    ).toBe(false);
+    expect(waitedOut({ ...looked, openTurn: true }, firstSeen, 10_000_000, bounds).quiescent).toBe(
+      false,
+    );
   });
 
   it.live("same-person turns pay nothing: no hand-over, no wait", () => {

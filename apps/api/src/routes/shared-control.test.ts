@@ -258,6 +258,43 @@ describe("shared control", () => {
     }
   });
 
+  it("an opencode session whose shared control was on before this release takes its owner's turns only, with the flag off (review of mend#572, P3-4)", async () => {
+    const opencode = SessionId.make("session-shared-a-opencode");
+    const world = await createTenancyApi(
+      {},
+      {
+        sessions: [
+          new Session({
+            ...makeSession(opencode, sharedA.project, sharedA.worktree, "alice"),
+            harness: "opencode",
+            sharedControlEnabledAt: new Date(),
+            sharedControlEverAt: new Date(),
+          }),
+        ],
+      },
+    );
+    try {
+      const refused = await world.request("carol", "POST", `/api/sessions/${opencode}/turns`, {
+        input: "Continue",
+      });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({
+        message:
+          "opencode sessions are one person's. Shared control is not available for them; start your own session in this worktree.",
+      });
+      expect(world.world.calls.filter((call) => call.startsWith("engine."))).toEqual([]);
+      // The owner's own turn is sent as ever.
+      world.world.calls.splice(0, world.world.calls.length);
+      const owners = await world.request("alice", "POST", `/api/sessions/${opencode}/turns`, {
+        input: "Continue",
+      });
+      expect(owners.status).not.toBe(403);
+      expect(world.world.calls).toContain("engine.submitTurn");
+    } finally {
+      await world.dispose();
+    }
+  });
+
   it("turning it off cancels the turns other people queued (docs/adr/0016, decision 6)", async () => {
     const world = await createTenancyApi();
     try {

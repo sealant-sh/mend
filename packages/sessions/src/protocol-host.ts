@@ -24,6 +24,7 @@ import type {
   SessionProcess,
   TurnPayer,
 } from "@mend/domain/workbench";
+import { CONVERSATION_WAIT_BOUNDS_MS } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Deferred, Effect, Layer, Schema, Scope, Stream } from "effect";
@@ -81,7 +82,11 @@ export interface ProtocolSteering {
    * The conversation's process is quiescent: stop it and start the next one as `sender`, in the
    * same workspace. The new process attaches here and takes the conversation's queued turns.
    */
-  readonly handOver: (sender: string) => Effect.Effect<void, SealantPlatformError>;
+  readonly handOver: (
+    sender: string,
+    /** The turn that waits: failed with the words when the hand-over cannot finish. */
+    turnId: AgentTurnId,
+  ) => Effect.Effect<void, SealantPlatformError>;
 }
 
 /** What a turn Codex started on its own after its process was told to stop is recorded as. */
@@ -89,6 +94,36 @@ export const INTERRUPTED_BY_HAND_OVER = "interrupted by the hand-over";
 
 /** How often a waiting turn looks at the process it waits for. */
 const WAIT_POLL = "250 millis";
+
+/**
+ * The quiescence a waiting turn acts on: a session cron, or work the harness would not say anything
+ * about, is waited for at most its bound from when this wait first saw it (review of mend#572, P3-2
+ * and P3-3); the waiting line says the bound. `firstSeen` is the wait's own.
+ */
+export const waitedOut = (
+  quiescence: AgentQuiescence,
+  firstSeen: Map<string, number>,
+  now: number,
+  bounds: Readonly<
+    Partial<Record<AgentBackgroundWork["kind"], number>>
+  > = CONVERSATION_WAIT_BOUNDS_MS,
+): AgentQuiescence => {
+  if (quiescence.quiescent) return quiescence;
+  const work = quiescence.work.filter((item) => {
+    const bound = bounds[item.kind];
+    if (bound === undefined) return true;
+    const key = `${item.kind}:${item.id}`;
+    const seen = firstSeen.get(key) ?? now;
+    firstSeen.set(key, seen);
+    return now - seen < bound;
+  });
+  if (work.length === quiescence.work.length) return quiescence;
+  return {
+    ...quiescence,
+    work,
+    quiescent: !quiescence.openTurn && work.length === 0 && quiescence.settleMs === 0,
+  };
+};
 
 /** Options needed to initialize a protocol adapter after the pipe process starts. */
 export interface AttachProtocolProcessInput {
@@ -341,11 +376,16 @@ export const ProtocolHostLive: Layer.Layer<
     const waitQuiescent = (
       entry: HostedProcess,
       waiting: (quiescence: AgentQuiescence) => Effect.Effect<void>,
-    ): Effect.Effect<void> =>
+      /** Asked on every look: false stops the wait (the waiting turn is gone). */
+      stillWanted: Effect.Effect<boolean> = Effect.succeed(true),
+    ): Effect.Effect<"quiescent" | "abandoned"> =>
       Effect.gen(function* () {
         let decided = false;
+        /** When this wait first saw each bounded piece of work (`CONVERSATION_WAIT_BOUNDS_MS`). */
+        const firstSeen = new Map<string, number>();
         for (;;) {
-          if (hosted.get(entry.process.id) !== entry) return;
+          if (hosted.get(entry.process.id) !== entry) return "quiescent" as const;
+          if (!(yield* stillWanted)) return "abandoned" as const;
           const looked = yield* entry.adapter.quiescence().pipe(Effect.result);
           // A process that went away has nothing left to wait for (it leaves the host); one that
           // could not answer this time is asked again: nothing is stopped on a guess.
@@ -354,9 +394,9 @@ export const ProtocolHostLive: Layer.Layer<
             yield* Effect.sleep(WAIT_POLL);
             continue;
           }
-          const quiescence = looked.success;
+          const quiescence = waitedOut(looked.success, firstSeen, Date.now());
           if (quiescence.quiescent) {
-            if (decided) return;
+            if (decided) return "quiescent" as const;
             decided = true;
             yield* Effect.sleep("50 millis");
             continue;
@@ -387,21 +427,46 @@ export const ProtocolHostLive: Layer.Layer<
         if (entry.handingOverTo !== null) return;
         entry.handingOverTo = sender;
         handingOver.set(entry.process.sessionId, entry.process.id);
+        /**
+         * The waiting turn still waits for this sender: queued, and its decision still a hand-over
+         * to them. Withdrawn, cancelled (control turned off, the sender removed), or decided
+         * otherwise since, it is not: the queue is freed and nothing is written or started for
+         * them (review of mend#572, P2-1).
+         */
+        const stillWanted = Effect.gen(function* () {
+          const now = yield* conversations.byTurnId(turn.id);
+          if (now === null || now.status !== "queued") return false;
+          const decision = yield* steering.decide(now);
+          return decision.kind === "hand-over" && decision.sender === sender;
+        });
+        const abandon = Effect.gen(function* () {
+          entry.handingOverTo = null;
+          if (handingOver.get(entry.process.sessionId) === entry.process.id) {
+            handingOver.delete(entry.process.sessionId);
+          }
+          yield* steering.waiting(null);
+          if (hosted.get(entry.process.id) === entry) yield* dispatchNext(entry);
+        });
         yield* Effect.forkIn(
           Effect.gen(function* () {
-            yield* waitQuiescent(entry, (quiescence) =>
-              steering.waiting({
-                sessionId: entry.process.sessionId,
-                processId: entry.process.id,
-                turnId: turn.id,
-                runsAs: entry.runsAs,
-                sender,
-                openTurn: quiescence.openTurn,
-                work: quiescence.work,
-              }),
+            const waited = yield* waitQuiescent(
+              entry,
+              (quiescence) =>
+                steering.waiting({
+                  sessionId: entry.process.sessionId,
+                  processId: entry.process.id,
+                  turnId: turn.id,
+                  runsAs: entry.runsAs,
+                  sender,
+                  openTurn: quiescence.openTurn,
+                  work: quiescence.work,
+                }),
+              stillWanted,
             );
+            // Once more right before anything is stopped.
+            if (waited === "abandoned" || !(yield* stillWanted)) return yield* abandon;
             yield* steering.waiting(null);
-            const handed = yield* steering.handOver(sender).pipe(Effect.result);
+            const handed = yield* steering.handOver(sender, turn.id).pipe(Effect.result);
             if (handingOver.get(entry.process.sessionId) === entry.process.id) {
               handingOver.delete(entry.process.sessionId);
             }
@@ -563,6 +628,17 @@ export const ProtocolHostLive: Layer.Layer<
       }
     });
 
+    /** Every turn queued for the session on another process moves onto `to`. */
+    const takeQueuedTurns = (sessionId: SessionId, to: SessionProcessId) =>
+      Effect.gen(function* () {
+        const queuedOn = new Set(
+          (yield* conversations.openTurns(sessionId))
+            .filter((turn) => turn.status === "queued" && turn.processId !== to)
+            .map((turn) => turn.processId),
+        );
+        for (const from of queuedOn) yield* conversations.requeueQueuedTurns(from, to);
+      });
+
     const attachInternal = Effect.fn("ProtocolHost.attachInternal")(function* (
       input: AttachProtocolProcessInput,
       rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
@@ -668,21 +744,16 @@ export const ProtocolHostLive: Layer.Layer<
         handingOverTo: null,
         stopping: false,
       };
-      // The queue is the conversation's (decision 6): a person's process takes the turns queued
-      // for the session on the process it replaces, or while none ran.
-      if (entry.runsAs !== null && rehydrateInput === null) {
-        const queuedOn = new Set(
-          (yield* conversations.openTurns(input.process.sessionId))
-            .filter((turn) => turn.status === "queued" && turn.processId !== input.process.id)
-            .map((turn) => turn.processId),
-        );
-        for (const from of queuedOn) {
-          yield* conversations.requeueQueuedTurns(from, input.process.id);
-        }
-        if (handingOver.has(input.process.sessionId)) handingOver.delete(input.process.sessionId);
-      }
       activeEntry = entry;
       hosted.set(input.process.id, entry);
+      // The queue is the conversation's (decision 6): a person's process takes the turns queued
+      // for the session on the process it replaces, or while none ran. Hosted first, so a turn
+      // submitted from here on queues on it; one that read the old process just before queues
+      // there and is moved by its own submit (review of mend#572, P3-1).
+      if (entry.runsAs !== null && rehydrateInput === null) {
+        if (handingOver.has(input.process.sessionId)) handingOver.delete(input.process.sessionId);
+        yield* takeQueuedTurns(input.process.sessionId, input.process.id);
+      }
       while (pendingEvents.length > 0) {
         const buffered = pendingEvents.splice(0);
         yield* Effect.forEach(
@@ -781,13 +852,24 @@ export const ProtocolHostLive: Layer.Layer<
         // and the next process takes it (decision 6).
         const between = handingOver.get(sessionId);
         if (between !== undefined) {
-          return yield* conversations
+          const queued = yield* conversations
             .submitTurn(sessionId, between, input, author, launchCorrelationId)
             .pipe(
               Effect.catchTag("SessionStoppingError", () =>
                 Effect.fail(new ProtocolHostNotLiveError({ processId: between })),
               ),
             );
+          // The next process may have attached meanwhile: the turn moves onto it, never left on
+          // the stopped one.
+          const next = [...hosted.values()].find(
+            (candidate) =>
+              candidate.process.sessionId === sessionId && candidate.process.id !== between,
+          );
+          if (next !== undefined) {
+            yield* takeQueuedTurns(sessionId, next.process.id);
+            yield* dispatchNext(next);
+          }
+          return queued;
         }
         return yield* new ProtocolHostNotLiveError({ processId: sessionId });
       }
@@ -892,7 +974,7 @@ export const ProtocolHostLive: Layer.Layer<
       waiting: (quiescence: AgentQuiescence) => Effect.Effect<void> = () => Effect.void,
     ): Effect.Effect<void> => {
       const entry = hosted.get(processId);
-      return entry === undefined ? Effect.void : waitQuiescent(entry, waiting);
+      return entry === undefined ? Effect.void : Effect.asVoid(waitQuiescent(entry, waiting));
     };
 
     const endWork = Effect.fn("ProtocolHost.endWork")(function* (

@@ -90,14 +90,17 @@ export interface AgentBackgroundWork {
     | "goal"
     | "wakeup"
     | "monitor"
-    | "cron";
+    | "cron"
+    /** The harness would not say (an older Codex refusing a method): waited for, bounded. */
+    | "unknown";
   /** The harness's own id: a task id, a thread id, a terminal's process id, a tool use id. */
   readonly id: string;
   readonly description: string | null;
   /**
    * The person the process runs as, or the session's owner, can end it from the waiting line:
-   * Claude's task stop, Codex's `thread/backgroundTerminals/terminate` and `thread/goal/clear`. A
-   * wakeup or a monitor ends on its own.
+   * Claude's task stop (a monitor's too), Codex's `thread/backgroundTerminals/terminate` and
+   * `thread/goal/clear`. A wakeup ends on its own; a session cron and what the harness would not
+   * say are waited for, bounded (`CONVERSATION_WAIT_BOUNDS_MS`).
    */
   readonly endable: boolean;
 }

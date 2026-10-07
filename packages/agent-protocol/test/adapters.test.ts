@@ -887,13 +887,23 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
               .filter((entry) => entry.endable)
               .map((entry) => entry.id)
               .toSorted(),
-          ).toEqual(["agent-1", "bash-1", "bash-2"]);
+          ).toEqual(["agent-1", "bash-1", "bash-2", "monitor-1"]);
           // A task stopped from the waiting line: Claude's stop_task.
           yield* session.endWork({ kind: "task", id: "bash-1" });
           expect(fake.sent.at(-1)).toMatchObject({
             type: "control_request",
             request: { subtype: "stop_task", task_id: "bash-1" },
           });
+          // A monitor is a task: stop_task ends it, a persistent one included (review of
+          // mend#572, P3-2).
+          yield* session.endWork({ kind: "monitor", id: "monitor-1" });
+          expect(fake.sent.at(-1)).toMatchObject({
+            type: "control_request",
+            request: { subtype: "stop_task", task_id: "monitor-1" },
+          });
+          // What ends on its own, or is waited for with a bound, is not Mend's to stop.
+          const refused = yield* session.endWork({ kind: "cron", id: "cron-1" }).pipe(Effect.flip);
+          expect(refused.message).toContain("Claude ends a cron on its own");
           // A task first reported outside any turn sits on the last turn the conversation ran.
           const reported = yield* firstEvent(session.events, "item.updated").pipe(Effect.forkChild);
           fake.push({
@@ -1035,6 +1045,38 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
           expect((yield* session.quiescence()).quiescent).toBe(true);
         }),
       ),
+  );
+
+  it.live('Codex: a method it refuses is "cannot tell", never "no work"', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport((message, push) => {
+          const id = message["id"];
+          const method = message["method"];
+          if (typeof id !== "number") return;
+          if (method === "initialize") push({ id, result: {} });
+          if (method === "thread/start") push({ id, result: { thread: { id: "thread-1" } } });
+          if (method === "thread/backgroundTerminals/list" || method === "thread/goal/get") {
+            push({ id, error: { code: -32601, message: `Method not found: ${method}` } });
+          }
+        });
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          steering: true,
+        });
+        yield* drained;
+        // An older Codex that refuses both: running terminals would read as none, and the
+        // staging would kill them after 10 s (review of mend#572, P3-3). It is waited for.
+        const looked = yield* session.quiescence();
+        expect(looked.quiescent).toBe(false);
+        expect(kinds(looked.work)).toEqual([
+          "unknown:thread/backgroundTerminals/list",
+          "unknown:thread/goal/get",
+        ]);
+        expect(looked.work.every((work) => !work.endable)).toBe(true);
+      }),
+    ),
   );
 
   it.live("Codex: a turn it starts on its own is the harness's, never a turn Mend sent", () =>
