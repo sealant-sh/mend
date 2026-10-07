@@ -193,12 +193,13 @@ starts. A person's live process, Services included, keeps their user's logins he
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,
   under `P/conversations/` (2710). Claude creates its transcript 0600, which masks the ACL, so Mend
-  restores group access before each process of the session starts (a root `chmod -R g+rwX C` in the
-  step that stages its harness directory, decision 6), and sealantd restores `C` group-readable and
-  -writable whatever the recorded modes. `C`'s default ACL does not survive a restore: sealantd sets
-  default ACLs only on the worktree root, `/opt` and `/var/cache` (decision 8). That is harmless:
-  people's umask `0002` makes new entries group-writable, the setgid bit gives them the group, and
-  Mend's per-process `chmod` repairs a file a harness made 0600.
+  restores group access before each process of the session starts (a `chmod -R g+rwX C`, as the
+  owner with only `CAP_FOWNER`, in the step that stages its harness directory, decision 6), and
+  sealantd restores `C` group-readable and -writable whatever the recorded modes. `C`'s default ACL
+  does not survive a restore: sealantd sets default ACLs only on the worktree root, `/opt` and
+  `/var/cache` (decision 8). That is harmless: people's umask `0002` makes new entries
+  group-writable, the setgid bit gives them the group, and Mend's per-process `chmod` repairs a file
+  a harness made 0600.
 - **The worktree is shared.** `/workspace/repo` and its git directory are owned by the change's
   owner and group `mend`, group-writable, setgid on directories, with a default ACL for the group;
   every restored entry inside them is root's, in group `mend`, with the owner's bits copied to the
@@ -424,9 +425,10 @@ the new sender's user, on their login.
   cgroup are empty: Codex's plugin and git children can outlive the app-server. Then two Core calls
   and one start: DELETE releases `H`'s login (Core refuses a POST for another person on a held
   home), `H` and `H.next` are exchanged in one `renameat2(RENAME_EXCHANGE)` and the old directory is
-  removed in the background, Core writes the sender's login (POST), a root `chmod -R g+rwX C`
-  restores group access, and the agent starts. The agent's environment is built the same way as for
-  any process of that person (`PATH`, shims, toolchain variables), shared or not.
+  removed in the background, Core writes the sender's login (POST), a `chmod -R g+rwX C` as the
+  owner with only `CAP_FOWNER` restores group access, and the agent starts. The agent's environment
+  is built the same way as for any process of that person (`PATH`, shims, toolchain variables),
+  shared or not.
 
   Absolute paths a harness records in the conversation (Claude's `persistedOutputPath`, sub-agent
   transcripts) point under `H`, the same path for every person, and resolve to `C` whenever a
@@ -1146,21 +1148,21 @@ launches.
     environment, no external-include approval; Codex `HOME=H` with `shell_environment_policy` and
     `features.plugins=false`; `H.next` made as the sender, 0700, exchanged with `H` by
     `renameat2(RENAME_EXCHANGE)` once the old process group and cgroup are empty, the old directory
-    removed in the background; the root `chmod -R g+rwX C`; one live process per conversation with
-    fencing; the stop protocol; no-fork resume; a rejection of foreign reasoning failing the turn
-    with its line; Shared control on a terminal session changing nothing; the hand-over budget test
-    (two Core calls, DELETE then POST, one stop, one start). Tests with fake harnesses: Alice's
-    transcript created 0600, Bob's resume works, then Alice's (five turns, two uids); a steered
-    Claude turn's large tool output and a steered Codex sub-agent's rollout land in `C` and stay;
-    the task list survives a change of sender; after a steered Codex turn, `P_bob/codex-db/state_5`
-    has no row for Alice's thread; every personal canary (the sender's home, the worktree's local
-    settings, a repository `@~/` import) stays out of the request; an `env` canary
-    (`CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0"` and `CLAUDE_CODE_DISABLE_CRON: ""` in the repository's
-    settings and in `settings.local.json`) leaves no memory section, no memory directory in `C` and
-    no cron tools; no Codex `git` child outlives a hand-over and the exchange never fails on a busy
-    directory; the owner's transcript has no path under the steerer's home; a missing rollout fails
-    the turn. M, ~1,000. Perf: hand-over under 5 s, Codex's one-conversation re-index and both Core
-    calls included.
+    removed in the background; the `chmod -R g+rwX C` as the owner with only `CAP_FOWNER`; one live
+    process per conversation with fencing; the stop protocol; no-fork resume; a rejection of foreign
+    reasoning failing the turn with its line; Shared control on a terminal session changing nothing;
+    the hand-over budget test (two Core calls, DELETE then POST, one stop, one start). Tests with
+    fake harnesses: Alice's transcript created 0600, Bob's resume works, then Alice's (five turns,
+    two uids); a steered Claude turn's large tool output and a steered Codex sub-agent's rollout
+    land in `C` and stay; the task list survives a change of sender; after a steered Codex turn,
+    `P_bob/codex-db/state_5` has no row for Alice's thread; every personal canary (the sender's
+    home, the worktree's local settings, a repository `@~/` import) stays out of the request; an
+    `env` canary (`CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0"` and `CLAUDE_CODE_DISABLE_CRON: ""` in the
+    repository's settings and in `settings.local.json`) leaves no memory section, no memory
+    directory in `C` and no cron tools; no Codex `git` child outlives a hand-over and the exchange
+    never fails on a busy directory; the owner's transcript has no path under the steerer's home; a
+    missing rollout fails the turn. M, ~1,000. Perf: hand-over under 5 s, Codex's one-conversation
+    re-index and both Core calls included.
 18. **Mend · steering dispatch.** Quiescence for Claude (session state, background-task set, paused
     tasks, wakeups, monitors, session crons) and Codex (child threads, background terminals, goals,
     1 s settle); the Claude adapter handling the events it drops today; a Codex turn aborted by the

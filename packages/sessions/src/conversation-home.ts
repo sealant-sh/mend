@@ -477,7 +477,8 @@ export const stageConversationHomeScript = (input: {
  * --exchange`, util-linux `exch`, or Python's `ctypes`), else two renames, which is the same
  * thing while nothing runs in either directory (the old process group is empty, and the new
  * process starts after this). The first home of a session is a plain rename. The old directory is
- * renamed out of the way and removed in the background; then a root `chmod -R g+rwX` from inside
+ * renamed out of the way and removed in the background; then a `chmod -R g+rwX`, as the owner with
+ * only `CAP_FOWNER`, from inside
  * `C`, reached with every link resolved and checked, restores the group access a harness's 0600
  * files masked (Claude creates its transcript 0600). Prints
  * `mend-conv exchanged renameat2|renames|first`.
@@ -524,10 +525,15 @@ export const exchangeConversationHomeScript = (input: {
     // root never takes their word for where they lead: from inside `C`, reached with every link
     // resolved, its physical path must be the one expected, and the walk starts at `.`, so a link
     // put in `C`'s place, or anywhere above it, reaches nothing (review of mend#572, P2-A).
-    // `chmod -R` follows no link it meets inside. Every person's primary group is `mend`, so new
-    // entries take the group without setgid.
+    // The walk runs as the owner with only `CAP_FOWNER`, never as root: any person here may swap
+    // an entry of `C` for a link while it runs, and an older `chmod -R` (coreutils 9.1) can then
+    // follow it; as the owner, a link into another person's 0700 home reaches nothing (review 2 of
+    // mend#572, P3-A). Every person's primary group is `mend`, so new entries take the group
+    // without setgid.
+    `root=0; [ "$(id -u)" = 0 ] && root=1`,
     `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] && ` +
-      `chmod -R g+rwX . ) || fail "the conversation's directory is not where it should be: $C"`,
+      `if [ "$root" = 1 ]; then setpriv --reuid=${input.owner.uid} --regid=${MEND_GROUP.gid} --clear-groups --inh-caps=+fowner --ambient-caps=+fowner -- chmod -R g+rwX .; ` +
+      `else chmod -R g+rwX .; fi ) || fail "the conversation's directory is not where it should be: $C"`,
     `printf '%s exchanged %s\\n' ${CONVERSATION_LINE} "$how"`,
   ].join("\n");
 };

@@ -38,7 +38,7 @@ const harness = (
           calls.push(`post:${input.onBehalfOf}:${input.home}`);
           posts.push({ home: input.home, logins: input.logins, uid: input.owner?.uid });
           const failure = options.post?.(input.logins) ?? null;
-          return failure === null ? Effect.void : Effect.fail(failure);
+          return failure === null ? Effect.succeed({ skipped: [] }) : Effect.fail(failure);
         }),
       deleteCredentials: (_workspace, input) =>
         Effect.sync(() => {
@@ -154,9 +154,10 @@ describe("the hand-over (docs/adr/0016, decision 6)", () => {
     const world = harness({
       post: () =>
         new SealantPlatformError({
-          code: "WorkspaceNotFoundError",
+          code: "connected-account-missing",
           status: 404,
           message: 'No claude connected account matches "default"',
+          provider: "claude",
           cause: null,
         }),
     });

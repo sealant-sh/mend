@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { LinuxIdentity } from "@mend/domain/workbench";
+import { LinuxIdentity, MEND_GROUP } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -371,7 +371,8 @@ describe("one shared Claude conversation, each turn on its sender's user (Delive
       .split("\n")
       .map((line) => JSON.parse(line));
     expect(lines.map((line) => line.uid)).toEqual(["40001", "40002", "40001", "40002", "40001"]);
-    // Each person's staging and seed ran as them, the move as the owner.
+    // Each person's staging and seed ran as them, the move and every exchange's walk of C as the
+    // owner (review 2 of mend#572, P3-A).
     const asWhom = w
       .log()
       .split("\n")
@@ -379,9 +380,14 @@ describe("one shared Claude conversation, each turn on its sender's user (Delive
     expect(asWhom).toEqual([
       "setpriv 40001", // move, as Alice (the owner)
       "setpriv 40001", // Alice's seed
+      "setpriv 40001", // the walk of C, as Alice
       "setpriv 40002",
       "setpriv 40001",
+      "setpriv 40001",
+      "setpriv 40001",
       "setpriv 40002",
+      "setpriv 40001",
+      "setpriv 40001",
       "setpriv 40001",
     ]);
     expect(w.log()).toContain(`chown 40002:40000 ${stagedHomeOf(SESSION, w.homesRoot)}`);
@@ -591,6 +597,22 @@ describe("one shared Claude conversation, each turn on its sender's user (Delive
     );
     expect(above.status).not.toBe(0);
     expect(above.stderr).toContain("is not where it should be");
+  });
+
+  it("walks C as its owner with only CAP_FOWNER, never as root (review 2 of mend#572, P3-A)", () => {
+    // Root's `chmod -R` on coreutils 9.1 follows an entry swapped for a link mid-walk; as the
+    // owner, a link into another person's 0700 home reaches nothing. Verified in ubuntu:24.04 and
+    // debian:bookworm-slim: the walk reaches another person's 0700 directories inside `C`, and a
+    // link to Bob's login is refused.
+    const script = exchangeConversationHomeScript({
+      sessionId: SESSION,
+      owner: alice,
+      places: { harnessHome: "/var/lib/mend/harness-home" },
+    });
+    expect(script).toContain(
+      `setpriv --reuid=${alice.uid} --regid=${MEND_GROUP.gid} --clear-groups --inh-caps=+fowner --ambient-caps=+fowner -- chmod -R g+rwX .`,
+    );
+    expect(script).not.toMatch(/then chmod -R/);
   });
 
   it("restores the group's access a harness's 0600 files masked, before each process", () => {

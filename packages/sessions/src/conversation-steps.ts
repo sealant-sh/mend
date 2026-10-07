@@ -28,7 +28,7 @@ import {
   parseConversationReport,
   stageConversationHomeScript,
 } from "./conversation-home.ts";
-import { loginRefusal, loginRefused, refusedLoginOf } from "./harness-layout-steps.ts";
+import { loginRefusal, loginRefused, refusedAccountOf } from "./harness-layout-steps.ts";
 
 /** The provider whose login a conversation home holds: the harness's own, and nothing else. */
 export const conversationProviderOf = (harness: ConversationHarness): LoginProvider =>
@@ -279,9 +279,9 @@ export const makeConversationSteps = (deps: {
             }),
           ),
           Effect.catch((error) => {
-            const refused = refusedLoginOf(error);
+            const refused = refusedAccountOf(error);
             return refused !== null && refused.provider === provider
-              ? Effect.fail(loginRefused(loginRefusal(provider, refused.invalid)))
+              ? Effect.fail(loginRefused(loginRefusal(provider, refused.reason)))
               : Effect.fail(error);
           }),
         );
