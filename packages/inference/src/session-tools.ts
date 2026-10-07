@@ -65,7 +65,7 @@ const ChangeReadResult = Schema.Struct({
 export interface SessionChangePass {
   readonly readChangeTool: InferenceTool;
   readonly readRecordingTool: InferenceTool;
-  /** The harness process's actual output + reconstructed commands. */
+  /** The harness process's actual output + the programs it ran (arguments are not recorded). */
   readonly readTerminalTool: InferenceTool;
   /** Sequences the model actually read in this pass — the noise filter's memory. */
   readonly seenSequences: ReadonlySet<string>;
@@ -142,7 +142,7 @@ export const makeSessionChangePass = (deps: {
     const readRecordingTool = makeTool({
       name: "read_recording",
       description:
-        "The session's durable record, oldest first. Returns at most 500 events; page with fromSequence, narrow with toSequence/kinds. processStarted/processExited carry commands and exit codes.",
+        "The session's durable record, oldest first. Returns at most 500 events; page with fromSequence, narrow with toSequence/kinds. processStarted carries the program and its working directory, not its arguments (they are no longer recorded); processExited carries the exit code.",
       inputSchema: {
         type: "object",
         properties: {
@@ -195,7 +195,7 @@ export const makeSessionChangePass = (deps: {
     const readTerminalTool = makeTool({
       name: "read_terminal",
       description:
-        "The harness process's ACTUAL terminal output (ANSI-stripped) plus the reconstructed command list. The timeline stores PTY payloads content-addressed — this is where the session's visible work lives. tailChars controls how much of the end you get (default 30000).",
+        "The harness process's ACTUAL terminal output (ANSI-stripped) plus the programs the session ran, with exit codes: each reads like `sh (2 arguments not recorded)`, since arguments are no longer recorded (older records read in full). The timeline stores PTY payloads content-addressed — this is where the session's visible work lives. tailChars controls how much of the end you get (default 30000).",
       inputSchema: {
         type: "object",
         properties: {

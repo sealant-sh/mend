@@ -46,8 +46,8 @@ The register — terse, enforced at the tool boundary:
 
 Method — budget your rounds; reads first, then write, then stop:
 1. read_change — the diff and per-file counts for this session's worktree against its base.
-2. read_terminal — the harness process's ACTUAL output and reconstructed commands. For a TUI session this is where the work is visible; the timeline's PTY payloads are content-addressed hashes, not readable text.
-3. read_recording — the structured timeline for sequence anchors (processStarted/processExited carry commands and exit codes). The prompt tells you the record's extent — never probe beyond it. Two or three selective calls suffice; do not page exhaustively.
+2. read_terminal — the harness process's ACTUAL output and the programs it ran, with exit codes (arguments are not recorded, so the output is where a command line shows). For a TUI session this is where the work is visible; the timeline's PTY payloads are content-addressed hashes, not readable text.
+3. read_recording — the structured timeline for sequence anchors (processStarted carries the program and its working directory, not its arguments, which are no longer recorded; processExited carries the exit code). The prompt tells you the record's extent — never probe beyond it. Two or three selective calls suffice; do not page exhaustively.
 4. draft_finding — one call per finding, anchored to a file (and line range when the diff pinpoints one) or change-level when it spans files. Ground claims in what read_terminal showed; cite the nearest timeline sequences you read as the evidence anchors. Typically 0-5 findings.
 5. Finish with one short sentence: how many findings and the single most important one, or why there are none.
 
