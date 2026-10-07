@@ -112,7 +112,10 @@ export const COPY_REFRESH_TOKEN = "sealant-copy-cannot-refresh";
  * (verified 2026-10-01: pi `auth check` reads it `ready`, opencode lists it as OpenAI oauth).
  *
  * The entry is written only when it is absent or is an earlier copy (its refresh token is the
- * placeholder), so a login the user made inside the session is never replaced. The expiry is the
+ * placeholder), so a login the user made inside the session is never replaced. It is written in
+ * place, as the process's user, through whatever link holds the file (docs/adr/0016, decision 5):
+ * a rename would replace a link with a regular file, and put the login into saved state where the
+ * link led out of it (opencode's `auth.json` in a person's saved data directory). The expiry is the
  * access token's own; a session that outlives it gets the platform's newer copy at its next launch
  * or resume. pi's default provider becomes `openai-codex` only when the user has chosen none.
  *
@@ -125,12 +128,43 @@ const CHATGPT_LOGIN_PROGRAM = [
   `let exp;try{exp=JSON.parse(Buffer.from(t.access_token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"),"base64").toString()).exp}catch{}`,
   `if(typeof exp!=="number")process.exit(0);`,
   `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
-  `function put(p,v){fs.mkdirSync(path.dirname(p),{recursive:true,mode:0o700});const tmp=p+".mend-seed-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(v,null,2),{mode:0o600});fs.renameSync(tmp,p)}`,
+  `function put(p,v){fs.mkdirSync(path.dirname(p),{recursive:true,mode:0o700});fs.writeFileSync(p,JSON.stringify(v,null,2),{mode:0o600})}`,
   `const auth=read(file);if(auth===null)process.exit(0);`,
   `const prior=auth[key];if(prior&&typeof prior==="object"&&prior.refresh!==${JSON.stringify(COPY_REFRESH_TOKEN)})process.exit(0);`,
   `auth[key]={type:"oauth",access:t.access_token,refresh:${JSON.stringify(COPY_REFRESH_TOKEN)},expires:exp*1000,accountId:t.account_id};put(file,auth);`,
   `if(settings){const s=read(settings);if(s!==null&&!s.defaultProvider){s.defaultProvider=key;put(settings,s)}}`,
 ].join("");
+
+/**
+ * What a release of a person's logins removes beside Core's own files (docs/adr/0016, decision 5):
+ * the ChatGPT copies `CHATGPT_LOGIN_PROGRAM` wrote into pi's and opencode's `auth.json`, which Core
+ * does not know of. Only an entry whose refresh token is the copy placeholder goes, so a login the
+ * person made inside pi or opencode stays (decision 8a). Written in place, never through a rename;
+ * a file that is not a JSON object, or a link, is left as it is. Run as the person.
+ *
+ * `argv` pairs: the auth file, the entry's key.
+ */
+const CHATGPT_COPIES_SCRUB_PROGRAM = [
+  `const fs=require("fs"),a=process.argv.slice(1);`,
+  `for(let i=0;i+1<a.length;i+=2){const file=a[i],key=a[i+1];`,
+  `let fd;try{fd=fs.openSync(file,fs.constants.O_RDWR|fs.constants.O_NOFOLLOW)}catch{continue}`,
+  `try{let v;try{v=JSON.parse(fs.readFileSync(fd,"utf8"))}catch{continue}`,
+  `if(v===null||typeof v!=="object"||Array.isArray(v))continue;`,
+  `const e=v[key];if(!e||typeof e!=="object"||e.refresh!==${JSON.stringify(COPY_REFRESH_TOKEN)})continue;`,
+  `delete v[key];const out=Buffer.from(JSON.stringify(v,null,2));fs.ftruncateSync(fd,0);fs.writeSync(fd,out,0,out.length,0)`,
+  `}finally{fs.closeSync(fd)}}`,
+].join("");
+
+/** The argv that removes Mend's ChatGPT copies from a person's home (`CHATGPT_COPIES_SCRUB_PROGRAM`). */
+export const chatgptCopiesScrubArgv = (home: string): ReadonlyArray<string> => [
+  "node",
+  "-e",
+  CHATGPT_COPIES_SCRUB_PROGRAM,
+  `${home}/.pi/agent/auth.json`,
+  "openai-codex",
+  `${home}/.mend/opencode/auth.json`,
+  "openai",
+];
 
 /**
  * The model opencode opens on when nothing chose one (`OPENCODE_DEFAULT_MODEL`), written as its

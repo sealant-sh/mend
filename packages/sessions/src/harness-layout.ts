@@ -245,6 +245,11 @@ export const PERSON_SAVED_STATE: ReadonlyArray<{
   { path: ".local/state/opencode", kind: "directory" },
 ];
 
+/** Where opencode's logins live in a person's home (`personHomeScript`), never in `P`. */
+export const OPENCODE_LOGIN_DIR = ".mend/opencode";
+/** opencode's login file, under its saved data directory. */
+export const OPENCODE_AUTH_IN_DATA = ".local/share/opencode/auth.json";
+
 /** A process's private temporary and runtime directories (decision 1), both 0700. */
 export const privateTmpOf = (uid: number): string => `/tmp/u-${uid}`;
 export const privateRuntimeOf = (uid: number): string => `/run/user/${uid}`;
@@ -536,15 +541,21 @@ export const personHomeScript = (
       `grep -q '^${MEND_GROUP.name}:' /etc/group || groupadd -g ${MEND_GROUP.gid} ${MEND_GROUP.name}; ` +
       `sh_=$(awk -F: '$1=="root" { print $7 }' /etc/passwd); [ -n "$sh_" ] || sh_=/bin/sh; ` +
       `extra=; grep -q '^docker:' /etc/group && extra="-G docker"; ` +
-      `pre=0; [ -d ${q(home)} ] && pre=1; ` +
+      // The home is made before the user, already theirs by number, so Core's POST of their
+      // logins (decision 5), which may run beside this script and make the home itself when it
+      // gets there first, always finds a home owned by them, and useradd never races it to the
+      // mkdir.
+      `mkdir -p ${q(home.slice(0, home.lastIndexOf("/")) || "/")}; ` +
+      `if [ ! -d ${q(home)} ]; then mkdir -m 0700 ${q(home)} 2>/dev/null || [ -d ${q(home)} ] || fail "the home of ${person.name} could not be made"; ` +
+      `chown ${owner} ${q(home)}; fi; ` +
       `useradd -u ${person.uid} -g ${MEND_GROUP.name} $extra -m -k ${q(skel)} -d ${q(home)} -s "$sh_" ${person.name}; ` +
-      // What Core wrote before the user existed is root's, and useradd copied no skeleton into
-      // a home that was already there: both become the user's, nothing already there replaced.
-      `if [ "$pre" = 1 ]; then ` +
+      // useradd copied no skeleton into a home that was already there, and what Core wrote
+      // before the user existed may be root's: both become the user's, nothing already there
+      // replaced. The home is new, so the walk is short.
       // `|| true`: a coreutils whose `-n` exits 1 when it skips (upstream 9.2) must not fail the
       // person.
       `if [ -d ${q(skel)} ]; then cp -an ${q(`${skel}/.`)} ${q(home)}/ || true; fi; ` +
-      `chown -hR ${owner} ${q(home)}; fi; ` +
+      `chown -hR ${owner} ${q(home)}; ` +
       `fi; fi`,
     `mkdir -p ${q(home)}`,
     `[ "$root" = 1 ] && chown ${owner} ${q(home)} || true`,
@@ -592,6 +603,22 @@ export const personHomeScript = (
     `[ -e ${q(`${home}/.config/git`)} ] || [ -L ${q(`${home}/.config/git`)} ] || mkdir -p ${q(`${home}/.config/git`)}`,
     `chmod 0700 ${q(`${home}/.mend`)}`,
     `[ "$root" = 1 ] && chown -h ${owner} ${q(`${home}/.mend`)} ${q(`${home}/.config`)} ${q(`${home}/.config/git`)} || true`,
+    // opencode keeps its logins (`auth.json`) in its data directory, which is saved (`P`): there
+    // it is a link to `~/.mend/opencode/auth.json` in the home, so a login written there in place
+    // (opencode's own, and Mend's ChatGPT copy) never lands in saved state (decision 5). A
+    // regular file found there (from before this layout) moves into the home, never over one.
+    // Root follows no link the person could have planted on the way (review of mend#564, P3-7).
+    `[ -L ${q(`${home}/${OPENCODE_LOGIN_DIR}`)} ] && fail "unexpected link: ${home}/${OPENCODE_LOGIN_DIR}"`,
+    ...[".local", ".local/share", ".local/share/opencode"].map(
+      (dir) => `[ -L ${q(`${saved}/${dir}`)} ] && fail "unexpected link: ${saved}/${dir}"`,
+    ),
+    `mkdir -p ${q(`${home}/${OPENCODE_LOGIN_DIR}`)}`,
+    `chmod 0700 ${q(`${home}/${OPENCODE_LOGIN_DIR}`)}`,
+    `oc=${q(`${saved}/${OPENCODE_AUTH_IN_DATA}`)}; ock=${q(`${home}/${OPENCODE_LOGIN_DIR}/auth.json`)}`,
+    `if [ -L "$oc" ]; then [ "$(readlink "$oc")" = "$ock" ] || fail "unexpected link: $oc"; ` +
+      `else if [ -e "$oc" ]; then if [ ! -e "$ock" ]; then mv "$oc" "$ock"; else rm -f "$oc"; fi; fi; ` +
+      `ln -s "$ock" "$oc"; fi`,
+    `[ "$root" = 1 ] && chown -h ${owner} ${q(`${home}/.mend/opencode`)} "$oc" || true`,
   ].join("\n");
 };
 

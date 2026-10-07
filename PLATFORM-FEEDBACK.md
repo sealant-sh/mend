@@ -7,6 +7,37 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-07 · 0.39.0-next.695 · Per-person homes: what Mend's logins per person (ADR 0016 Delivery 14) still lacks
+
+- **Shipped and used:** `user` on sessions and exec, `credentialsHome` on create,
+  `workspace.credentials.put/release/list` (one person per home, `uid`/`gid` on a put so it can run
+  beside the `useradd` that makes the home), and `workspaces.imageKey`/`inspectImage`. Mend passes
+  each through `PersonLayoutPlatformLive` (`packages/sealant/src/person-layout-live.ts`).
+- **Missing, blocking real per-person executors:** an owner-map option on `workspaces.create`. Core
+  never sets `SEALANT_CAPTURE_OWNER_MAP` for sealantd, so no executor restores `people/<id>/` by
+  owner or gives the worktree to group `mend`, and prepare refuses every `person` launch with the
+  owner-map line (ADR 0016 decision 8). **In review as sealant#333:** `source.ownerMap` on a capture
+  source (`WorkspaceCaptureOwnerMap { gid, worktreeUid, people: [{ id, uid }] }`). Mend's
+  `CaptureOwnerMap` has that shape and `PersonLayoutPlatform.withOwnerMap` (null today) becomes a
+  one-line change once Mend pins the build. The map is read only at boot, so person launches never
+  claim a standby (one booted without the map); a standby booted with a map would need Core to take
+  the map at claim instead.
+- **Missing:** the dotfiles verb (apply a person's dotfiles as their user into their home, after
+  create). Without it decision 1's fallback (a wrong `person` prediction on a fresh worktree) fails
+  the launch when the launcher has dotfiles, and Delivery 15 cannot give a joiner theirs.
+- **Missing:** a way to tell which provider a refused `put` named other than its message. Mend reads
+  `No <provider> connected account matches …` and `Connected <provider> account … is invalid` to say
+  "Connect Claude to start a session here" and to leave an optional provider out. A stable code with
+  the provider (`connected-account-missing` / `connected-account-invalid` and `provider: "claude"`)
+  would remove that coupling.
+- **Missing:** pi's and opencode's ChatGPT logins as providers of the credentials API. Mend writes
+  copies of the Codex login into `~/.pi/agent/auth.json` and opencode's `auth.json` itself, so a
+  release has to remove them with an exec of its own; Core writing them per home would release them
+  with everything else.
+- **Missing:** a put that leaves out a provider the person has not connected, rather than failing
+  whole. A joiner with no GitHub login costs Mend a second `put` (`github: null`); one call with
+  "write what is connected, say what is not" would keep every join at exactly one Core call.
+
 ## 2026-10-06 · 0.38.1 · Exec arguments are stored forever and in plaintext: unrecorded stdin, redaction, retention and a purge
 
 - **Needed:** a way to hand a secret to one exec without the platform storing it. Mend writes a

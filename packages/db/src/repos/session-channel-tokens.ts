@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -80,6 +80,17 @@ export class SessionChannelTokensRepo extends Context.Service<
     readonly revoke: (sessionId: string) => Effect.Effect<void>;
     /** Revoke the tokens of one launch — its executor's end was observed. Idempotent. */
     readonly revokeLaunch: (launchId: string) => Effect.Effect<void>;
+    /**
+     * Revoke one person's tokens in one launch issued before `issuedBefore` (docs/adr/0016,
+     * decision 4): their logins there were released, with their last process, or their start was
+     * refused. A token minted for a start after that moment stays, and so do the launch's own
+     * token and everyone else's. Idempotent.
+     */
+    readonly revokePerson: (
+      launchId: string,
+      accountId: string,
+      issuedBefore: Date,
+    ) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionChannelTokensRepo") {}
 
@@ -186,7 +197,27 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      return { issue, issuePerson, verify, resolve, revoke, revokeLaunch };
+      const revokePerson = Effect.fn("SessionChannelTokensRepo.revokePerson")(function* (
+        launchId: string,
+        accountId: string,
+        issuedBefore: Date,
+      ) {
+        yield* db
+          .update(sessionChannelTokens)
+          .set({ revokedAt: new Date() })
+          .where(
+            and(
+              eq(sessionChannelTokens.launchId, launchId),
+              eq(sessionChannelTokens.sessionId, personTokenSession(accountId)),
+              eq(sessionChannelTokens.accountId, accountId),
+              lt(sessionChannelTokens.createdAt, issuedBefore),
+              isNull(sessionChannelTokens.revokedAt),
+            ),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      return { issue, issuePerson, verify, resolve, revoke, revokeLaunch, revokePerson };
     }),
   );
 
@@ -203,6 +234,7 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
         readonly sessionId: string;
         readonly launchId: string;
         readonly accountId: string | null;
+        readonly createdAt: number;
         revoked: boolean;
       }
     >();
@@ -211,7 +243,12 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
       return row === undefined || row.revoked ? null : row;
     };
     const revokeWhere = (
-      matches: (row: { readonly sessionId: string; readonly launchId: string }) => boolean,
+      matches: (row: {
+        readonly sessionId: string;
+        readonly launchId: string;
+        readonly accountId: string | null;
+        readonly createdAt: number;
+      }) => boolean,
     ) =>
       Effect.sync(() => {
         for (const row of rows.values()) if (matches(row)) row.revoked = true;
@@ -224,6 +261,7 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
             sessionId,
             launchId,
             accountId: null,
+            createdAt: Date.now(),
             revoked: false,
           });
           return token;
@@ -235,6 +273,7 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
             sessionId: personTokenSession(accountId),
             launchId,
             accountId,
+            createdAt: Date.now(),
             revoked: false,
           });
           return token;
@@ -255,6 +294,14 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
         }),
       revoke: (sessionId) => revokeWhere((row) => row.sessionId === sessionId),
       revokeLaunch: (launchId) => revokeWhere((row) => row.launchId === launchId),
+      revokePerson: (launchId, accountId, issuedBefore) =>
+        revokeWhere(
+          (row) =>
+            row.launchId === launchId &&
+            row.accountId === accountId &&
+            row.sessionId === personTokenSession(accountId) &&
+            row.createdAt < issuedBefore.getTime(),
+        ),
     };
   },
 );

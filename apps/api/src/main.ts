@@ -810,7 +810,8 @@ const MainLive = Layer.unwrap(
       // remotes Mend may reach, for the routes and the engine) and the dotfiles cloner (whose
       // git access a dotfiles clone uses, for the save probe and the launch) ride one.
       // Per-person harness homes (docs/adr/0016) ride it too: `MEND_HARNESS_LAYOUT` (shared unless
-      // set) and the platform's person-layout surface, which today's SDK does not have.
+      // set) and the platform's person-layout surface, passed through to Core's SDK (processes as
+      // a user, the image's capability before create, one person's logins per home).
       Layer.provide(
         Layer.mergeAll(
           DeploymentConfigLive,

@@ -18,6 +18,7 @@ import type {
   WorkspaceCaptureStatus,
   WorkspaceExecResult,
   WorkspaceForward,
+  WorkspaceImageInspection,
 } from "@sealant/sdk";
 import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
 import type { Harness, SealantConfig } from "@sealant/sdk";
@@ -47,10 +48,9 @@ import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
 import { SealantIdentityStore } from "./identity.ts";
 import {
-  credentialsHomeUnsupported,
   type PersonExecOptions,
   type PersonSessionOptions,
-  withoutProcessUser,
+  withProcessUser,
 } from "./person-layout.ts";
 import { SealantPrincipal } from "./principal.ts";
 
@@ -570,11 +570,11 @@ export interface WorkspaceCreateLaunch {
   readonly idempotencyKey: string;
   readonly launchId?: string;
   /**
-   * `credentialsHome` (docs/adr/0016, decision 5; Core Delivery 8): the launcher's logins written
-   * into their own home rather than `$HOME`, for a person-layout launch. The create runs before
-   * the launcher's user exists, so it names the owner by number: Core makes a missing home for
-   * `uid:gid` (0700, from `/etc/skel`) and writes every file and directory as them. Today's SDK
-   * cannot send it, so a create that names one is refused before it is asked.
+   * `credentialsHome` (docs/adr/0016, decision 5; Core 0.39): the launcher's logins written into
+   * their own home rather than `$HOME`, for a person-layout launch. The create runs before the
+   * launcher's user exists, so it names the owner by number: Core makes a missing home for
+   * `uid:gid` (0700, from `/etc/skel`) and writes every file and directory as them, and holds the
+   * home for the launcher while the executor lives.
    */
   readonly credentialsHome?: CredentialsHome;
 }
@@ -859,8 +859,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       launch?: WorkspaceCreateLaunch,
       watch?: (workspace: Workspace) => Effect.Effect<void>,
     ) => {
-      if (launch?.credentialsHome !== undefined) return Effect.fail(credentialsHomeUnsupported());
       // SDK 0.37.2 builds its request field by field and drops both; Core's next SDK sends them.
+      // `credentialsHome` (Core 0.39): the launcher's logins written into their own home, owned
+      // by the uid their user will have, instead of `$HOME` and the environment.
       const keyed: CreateOptions & {
         readonly idempotencyKey?: string;
         readonly launchId?: string;
@@ -871,6 +872,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
               ...options,
               idempotencyKey: launch.idempotencyKey,
               ...(launch.launchId === undefined ? {} : { launchId: launch.launchId }),
+              ...(launch.credentialsHome === undefined
+                ? {}
+                : { credentialsHome: launch.credentialsHome }),
             };
       if (watch === undefined) return wrap(() => sealant.workspaces.create(keyed));
       // The SDK's own `create` is exactly this: the create, then `ready()` on the handle it made
@@ -916,16 +920,14 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     const waitRun = Effect.fn("SealantClient.waitRun")((run: Run) => wrap(() => run.wait()));
 
-    // A process asked for as a user the SDK cannot start is refused, never run as root.
-    const openSession = Effect.fn("SealantClient.openSession")((
-      workspace: Workspace,
-      argv: ReadonlyArray<string>,
-      options?: PersonSessionOptions,
-    ) => {
-      return withoutProcessUser(argv, options, (sdkOptions) =>
-        wrap(() => workspace.sessions.open(argv, sdkOptions)),
-      );
-    });
+    // A process asked for as a user starts as that user (the SDK refuses where it cannot, before
+    // anything starts), never as root in its place.
+    const openSession = Effect.fn("SealantClient.openSession")(
+      (workspace: Workspace, argv: ReadonlyArray<string>, options?: PersonSessionOptions) =>
+        withProcessUser(options, (sdkOptions) =>
+          wrap(() => workspace.sessions.open(argv, sdkOptions)),
+        ),
+    );
 
     const forward = Effect.fn("SealantClient.forward")(
       (
@@ -1028,9 +1030,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       argv: readonly string[],
       options?: PersonExecOptions,
     ) => {
-      return withoutProcessUser(argv, options, (sdkOptions) =>
-        wrap(() => workspace.exec(argv, sdkOptions)),
-      );
+      return withProcessUser(options, (sdkOptions) => wrap(() => workspace.exec(argv, sdkOptions)));
     });
     const bindWorkspace = Effect.fn("SealantClient.bindWorkspace")(
       (workspace: Workspace, options: WorkspaceBindOptions) =>
@@ -1271,6 +1271,19 @@ export class SealantClients extends Context.Service<
     readonly workspaceSshInfo: () => Effect.Effect<WorkspaceSshInfo | null, SealantPlatformError>;
     /** The user's SSH public keys — what the workspace SSH gateway resolves a connection to. */
     readonly sshKeys: (userId: string) => SshKeysApi;
+    /**
+     * The key Core keeps an image's per-person capability under (`workspaces.imageKey`): computed
+     * from the create's image-shaping parts alone, with no call.
+     */
+    readonly imageKey: (options: CreateOptions) => Effect.Effect<string>;
+    /**
+     * What `create(options)` would build for the Mend user, read before the create
+     * (`workspaces.inspectImage`, docs/adr/0016 decision 1): one call, nothing created.
+     */
+    readonly inspectImage: (
+      userId: string,
+      options: CreateOptions,
+    ) => Effect.Effect<WorkspaceImageInspection, SealantPlatformError>;
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -1472,6 +1485,37 @@ export const SealantClientsLive: Layer.Layer<
       };
     };
 
+    // One facade per Sealant user for reads the Effect core does not carry (`inspectImage`),
+    // made on first use and kept for the process.
+    const facades = new Map<string, Sealant>();
+    const facadeFor = (sealantUserId: string) =>
+      Effect.suspend(() => {
+        const known = facades.get(sealantUserId);
+        if (known !== undefined) return Effect.succeed(known);
+        return Effect.acquireRelease(
+          Effect.sync(() => {
+            const made = new Sealant(publicConfigOf(env, sealantUserId));
+            facades.set(sealantUserId, made);
+            return made;
+          }),
+          (client) =>
+            Effect.promise(() => client.close()).pipe(
+              Effect.ensuring(Effect.sync(() => facades.delete(sealantUserId))),
+            ),
+        ).pipe(Effect.provideService(Scope.Scope, scope));
+      });
+
+    const imageKey = (options: CreateOptions) =>
+      Effect.sync(() => admin.workspaces.imageKey(options));
+
+    const inspectImage = Effect.fn("SealantClients.inspectImage")(function* (
+      userId: string,
+      options: CreateOptions,
+    ) {
+      const facade = yield* facadeFor(yield* sealantUserIdFor(userId));
+      return yield* wrap(() => facade.workspaces.inspectImage(options));
+    });
+
     return {
       forUser,
       forPrincipal,
@@ -1479,6 +1523,8 @@ export const SealantClientsLive: Layer.Layer<
       connectedAccounts,
       workspaceSshInfo,
       sshKeys,
+      imageKey,
+      inspectImage,
     };
   }),
 );
@@ -1615,7 +1661,7 @@ const stableCodeOf = (value: unknown): string | null => {
 export const platformErrorCode = (cause: unknown): string =>
   stableCodeOf(cause) ?? (cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"));
 
-const toPlatformError = (cause: unknown) =>
+export const toPlatformError = (cause: unknown) =>
   new SealantPlatformError({
     code: platformErrorCode(cause),
     status: cause instanceof SealantApiError ? (cause.status ?? null) : null,

@@ -456,7 +456,7 @@ describe("a home Core wrote into before its user existed (decision 5)", () => {
     expect(root.log()).toContain(`chown -hR ${alice.uid}:40000 ${home}\n`);
   });
 
-  it("a home useradd made itself is not walked again", () => {
+  it("a home made for a new user holds the skeleton and is theirs, before useradd and Core's POST race for it", () => {
     const root = fakeRoot();
     const harnessHome = path.join(root.dir, "harness-home");
     const home = path.join(root.dir, "home", alice.name);
@@ -472,7 +472,40 @@ describe("a home Core wrote into before its user existed (decision 5)", () => {
     );
     expect(run.status).toBe(0);
     expect(fs.readlinkSync(path.join(home, ".cargo/registry"))).toBe("/var/cache/cargo/registry");
-    expect(root.log()).not.toContain("chown -hR");
+    expect(fs.statSync(home).mode & 0o777).toBe(0o700);
+    // Made by the script, owned by the user by number, before useradd ran: useradd never makes
+    // it, so a POST that makes it first (decision 5) never fails useradd's mkdir.
+    const log = root.log();
+    expect(log.indexOf(`chown ${alice.uid}:40000 ${home}\n`)).toBeGreaterThanOrEqual(0);
+    expect(run.stderr).toContain("already exists");
+    // The skeleton copied in becomes theirs: one walk of a home that holds only it.
+    expect(log.split("\n").filter((line) => line.startsWith("chown -hR"))).toEqual([
+      `chown -hR ${alice.uid}:40000 ${home}`,
+    ]);
+  });
+
+  it("a home Core's POST made first, logins inside, is kept and becomes the user's", () => {
+    const root = fakeRoot();
+    const harnessHome = path.join(root.dir, "harness-home");
+    const home = path.join(root.dir, "home", alice.name);
+    fs.mkdirSync(harnessHome, { recursive: true });
+    // Core's POST with uid and gid made the home first (0700, the skeleton) and wrote the login.
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(home, ".codex/auth.json"), "alice's codex", { mode: 0o600 });
+    const run = root.run(
+      personHomeScript(alice, {
+        harnessHome,
+        home,
+        tmpRoot: path.join(root.dir, "tmp"),
+        runRoot: path.join(root.dir, "run"),
+        skel: root.skel,
+      }),
+    );
+    expect(run.status).toBe(0);
+    expect(fs.readFileSync(path.join(home, ".codex/auth.json"), "utf8")).toBe("alice's codex");
+    expect(fs.statSync(path.join(home, ".codex/auth.json")).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(home).mode & 0o777).toBe(0o700);
+    expect(root.log()).toContain(`chown -hR ${alice.uid}:40000 ${home}\n`);
   });
 });
 
@@ -521,6 +554,25 @@ describe("a person's home and saved directory (decision 2)", () => {
     expect(fs.existsSync(path.join(saved, ".codex/auth.json"))).toBe(false);
   });
 
+  it("follows no link planted on the way to opencode's logins: it fails instead", () => {
+    for (const plant of ["home", "saved"] as const) {
+      const { home, saved, script, root } = layout();
+      expect(sh(script).status).toBe(0);
+      const elsewhere = path.join(root, "elsewhere");
+      fs.mkdirSync(elsewhere, { recursive: true });
+      const at =
+        plant === "home"
+          ? path.join(home, ".mend/opencode")
+          : path.join(saved, ".local/share/opencode");
+      fs.rmSync(at, { recursive: true, force: true });
+      fs.symlinkSync(elsewhere, at);
+      const run = sh(script);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("unexpected link");
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+    }
+  });
+
   it("keeps Claude's file history in the home, never in P: it holds copies of edited secret files", () => {
     const { home, saved, script } = layout();
     expect(sh(script).status).toBe(0);
@@ -565,8 +617,12 @@ describe("a person's home and saved directory (decision 2)", () => {
       }
     };
     walk(saved);
-    // The layout itself writes no file into P: directories only.
-    expect(files).toBe(0);
+    // The layout itself writes no file into P: directories, and the one link that keeps
+    // opencode's logins in the home (decision 5).
+    expect(files).toBe(1);
+    expect(fs.lstatSync(path.join(saved, ".local/share/opencode/auth.json")).isSymbolicLink()).toBe(
+      true,
+    );
     expect(bytes).toBeLessThan(64 * 1024);
   });
 });
@@ -723,13 +779,15 @@ describe("a person's Mend identity in their home (decision 4)", () => {
       opened.env,
     );
 
-  it("makes a real ~/.mend (0700) and ~/.config/git for them, with nothing in either yet", () => {
+  it("makes a real ~/.mend (0700) and ~/.config/git for them, with no file in either yet", () => {
     const { home, script } = homeOf(null);
     expect(sh(script).status).toBe(0);
     expect(fs.lstatSync(path.join(home, ".mend")).isDirectory()).toBe(true);
     expect(fs.statSync(path.join(home, ".mend")).mode & 0o777).toBe(0o700);
     expect(fs.lstatSync(path.join(home, ".config/git")).isDirectory()).toBe(true);
-    expect(fs.readdirSync(path.join(home, ".mend"))).toEqual([]);
+    // Only where opencode's logins go (decision 5), empty.
+    expect(fs.readdirSync(path.join(home, ".mend"))).toEqual(["opencode"]);
+    expect(fs.readdirSync(path.join(home, ".mend/opencode"))).toEqual([]);
   });
 
   it("writes their token 0600 and their git author from a pickup, and neither rides the exec's arguments", async () => {
@@ -751,6 +809,7 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(fs.statSync(token).mode & 0o777).toBe(0o600);
     expect(fs.readdirSync(path.join(home, ".mend")).toSorted()).toEqual([
       "git-author",
+      "opencode",
       "session-token",
     ]);
     // Git reads the author back exactly, as the person, quotes and backslash included.
@@ -954,6 +1013,7 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     );
     expect(fs.readdirSync(path.join(home, ".mend")).toSorted()).toEqual([
       "git-author",
+      "opencode",
       "session-token",
     ]);
   });

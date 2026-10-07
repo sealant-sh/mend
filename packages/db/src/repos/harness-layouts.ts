@@ -138,6 +138,13 @@ export class HarnessLayoutsRepo extends Context.Service<
     readonly identitiesOf: (
       accountIds: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<LinuxIdentity>>;
+    /**
+     * The identities with these login names (a home is `/home/<name>`): whose a home Core lists
+     * is, when its person runs nothing Mend could name them by.
+     */
+    readonly identitiesNamed: (
+      names: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlyArray<LinuxIdentity>>;
     /** The worktree's layout record; both fields null for a worktree with none. */
     readonly worktreeLayout: (worktreeId: WorktreeId) => Effect.Effect<WorktreeLayoutRecord>;
     /** The operator's `harnessLayout`, on the start that made the worktree. */
@@ -232,6 +239,17 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         const rows = yield* sql`
           SELECT user_id AS "userId", name, uid FROM linux_identities
           WHERE user_id IN ${sql.in([...accountIds])}
+          ORDER BY uid`.pipe(Effect.orDie);
+        return rows.map(identityOf);
+      });
+
+      const identitiesNamed = Effect.fn("HarnessLayoutsRepo.identitiesNamed")(function* (
+        names: ReadonlyArray<string>,
+      ) {
+        if (names.length === 0) return [];
+        const rows = yield* sql`
+          SELECT user_id AS "userId", name, uid FROM linux_identities
+          WHERE name IN ${sql.in([...names])}
           ORDER BY uid`.pipe(Effect.orDie);
         return rows.map(identityOf);
       });
@@ -358,6 +376,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
       return {
         ensureIdentity,
         identitiesOf,
+        identitiesNamed,
         worktreeLayout,
         requestLayout,
         recordLaunch,
@@ -416,6 +435,12 @@ export const harnessLayoutsRepoMemory = (
             const identity = state.identities.get(id);
             return identity === undefined ? [] : [identity];
           })
+          .toSorted((a, b) => a.uid - b.uid),
+      ),
+    identitiesNamed: (names) =>
+      Effect.sync(() =>
+        [...state.identities.values()]
+          .filter((identity) => names.includes(identity.name))
           .toSorted((a, b) => a.uid - b.uid),
       ),
     worktreeLayout: (worktreeId) =>
