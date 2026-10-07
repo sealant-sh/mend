@@ -1103,11 +1103,13 @@ const dotfilesView = (userId: string) =>
     const userDotfiles = yield* UserDotfilesRepo;
     const store = yield* DotfilesStore;
     const repository = yield* userDotfiles.repository(userId);
+    const startAgentsAfterInstall = yield* userDotfiles.startAgentsAfterInstall(userId);
     const snapshot = yield* store
       .current(userId)
       .pipe(Effect.mapError((error) => new SettingsFailure({ message: error.message })));
     return new DotfilesView({
       repository,
+      startAgentsAfterInstall,
       snapshot:
         snapshot === null
           ? null
@@ -1128,6 +1130,17 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
         return yield* dotfilesView(caller.user.id).pipe(
           Effect.catchTag("SettingsFailure", (error) => Effect.die(error)),
         );
+      }),
+    )
+    .handle("startAfterInstall", ({ payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const userDotfiles = yield* UserDotfilesRepo;
+        yield* userDotfiles.setStartAgentsAfterInstall(
+          caller.user.id,
+          payload.startAgentsAfterInstall,
+        );
+        return yield* dotfilesView(caller.user.id);
       }),
     )
     .handle("repository", ({ payload }) =>

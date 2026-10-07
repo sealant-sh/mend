@@ -122,6 +122,13 @@ export const piProfileKeptDir = (now: Date = new Date()): string =>
  */
 const PI_PACKAGE_KEY_FUNCTION = String.raw`function pkgKey(e){const s=typeof e==="string"?e:e!==null&&typeof e==="object"&&typeof e.source==="string"?e.source:null;if(s===null)return "?"+JSON.stringify(e);const t=s.trim();if(t.startsWith("npm:")){const spec=t.slice(4).trim(),at=spec.lastIndexOf("@");return "npm:"+(at>0?spec.slice(0,at):spec)}const g=t.startsWith("git:");let u=g?t.slice(4).trim():t;if(!g&&!/^(https?|ssh|git):\/\//i.test(u))return "local:"+t;u=u.replace(/^[a-z][a-z0-9+.-]*:\/\//i,"").replace(/^[^@\/]*@/,"").replace(/#.*$/,"").replace(/^([^\/:]+):\d+\//,"$1/").replace(/^([^\/:]+):/,"$1/");const parts=u.split("/"),host=(parts.shift()||"").toLowerCase();return "git:"+host+"/"+parts.join("/").replace(/\/+$/,"").replace(/@[^\/@]*$/,"").replace(/\.git$/,"")}`;
 
+/**
+ * Where a file a link names really is, a dangling link's target included: Mend writes pi's
+ * settings beside that, then renames over it, so a link into a person's saved directory (docs/adr/
+ * 0016, decision 2) stays a link and the settings stay saved.
+ */
+const REAL_PATH_FUNCTION = String.raw`function real(p){try{return fs.realpathSync(p)}catch{try{return path.resolve(path.dirname(p),fs.readlinkSync(p))}catch{return p}}}`;
+
 /** A JSON object file: `{}` when absent, null when it does not parse; a leading BOM is pi's to skip, and ours. */
 const READ_JSON_FUNCTION = String.raw`function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8").replace(/^﻿/,""));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`;
 
@@ -138,7 +145,8 @@ const READ_JSON_FUNCTION = String.raw`function read(p){try{const v=JSON.parse(fs
  */
 export const PI_PROFILE_UNDO_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
-  `const [A,K,mode]=process.argv.slice(1),M=path.join(A,"mend"),D=path.join(M,"delivered-settings.json"),F=path.join(M,"delivered-files.json"),S=path.join(A,"settings.json");`,
+  REAL_PATH_FUNCTION,
+  `const [A,K,mode]=process.argv.slice(1),M=path.join(A,"mend"),D=path.join(M,"delivered-settings.json"),F=path.join(M,"delivered-files.json"),S=real(path.join(A,"settings.json"));`,
   READ_JSON_FUNCTION,
   PI_PACKAGE_KEY_FUNCTION,
   `const refuse=m=>{process.stderr.write("mend: "+m+"\\n");process.exit(2)};`,
@@ -296,7 +304,8 @@ export const PI_PROFILE_PROGRAM = [
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
   READ_JSON_FUNCTION,
   PI_PACKAGE_KEY_FUNCTION,
-  `function put(p,v,mode){fs.mkdirSync(path.dirname(p),{recursive:true});const t=p+".mend-seed-"+process.pid;`,
+  REAL_PATH_FUNCTION,
+  `function put(p,v,mode){p=real(p);fs.mkdirSync(path.dirname(p),{recursive:true});const t=p+".mend-seed-"+process.pid;`,
   `fs.writeFileSync(t,Buffer.isBuffer(v)?v:JSON.stringify(v,null,2),{mode:mode||0o644});fs.renameSync(t,p)}`,
   `function why(r){const l=String(r.stderr||r.error||"").split("\\n").map(x=>x.trim()).filter(x=>x&&!/_logs\\/|complete log|^npm (ERR!|error) *$/.test(x));`,
   `const telling=l.find(x=>/not found|cannot find|ERESOLVE|E404|ETARGET|ENOTFOUND|EACCES|code E/i.test(x));return telling||(l.length?l[l.length-1]:"exit "+r.status)}`,

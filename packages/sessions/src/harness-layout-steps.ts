@@ -16,6 +16,7 @@ import {
   linuxHomeOf,
 } from "@mend/domain/workbench";
 import {
+  type DotfilesBootstrap,
   type HomeLogins,
   type LoginProvider,
   PersonLayoutPlatform,
@@ -132,8 +133,23 @@ export const layoutRefused = (message: string) =>
 
 /** What prepare found, once the executor exists. */
 export type PrepareOutcome =
-  | { readonly layout: "person" }
-  | { readonly layout: "shared"; readonly fallback: string | null };
+  | {
+      readonly layout: "person";
+      /**
+       * The people prepare made whose restored saved directory holds an opencode database:
+       * scrubbed of in-app logins as each of them, off the launch path (decision 8a).
+       */
+      readonly opencode: ReadonlyArray<LinuxIdentity>;
+    }
+  | {
+      readonly layout: "shared";
+      readonly fallback: string | null;
+      /**
+       * Decision 1's fallback applied the launcher's dotfiles to `/root` through the verb: their
+       * `install.sh`, which the agent waits for, as it did when the script ran at boot.
+       */
+      readonly bootstrap?: DotfilesBootstrap | null;
+    };
 
 /** Until Delivery 18, a turn from anyone but the process's person is refused in a person executor. */
 export const PERSON_STEER_REFUSAL =
@@ -253,6 +269,11 @@ export interface HarnessLayoutSteps {
     readonly harness: Harness;
     /** Whether the worktree's head capture holds `harness/people/` (read only when needed). */
     readonly headHasPeople: Effect.Effect<boolean>;
+    /**
+     * Whether the launcher keeps dotfiles this project applies: read only when the flag would make
+     * a fresh worktree person and the platform cannot apply dotfiles as a person yet.
+     */
+    readonly launcherHasDotfiles?: Effect.Effect<boolean>;
   }) => Effect.Effect<LaunchLayout, SealantPlatformError>;
   /**
    * Whether any executor of the worktree can run the person layout: the flag on, or the worktree
@@ -351,6 +372,12 @@ export interface HarnessLayoutSteps {
     readonly harness: string;
     /** Who has a live process in the executor: read only when a start does not finish. */
     readonly live: Effect.Effect<ReadonlySet<string>>;
+    /**
+     * Told once the person's user and home exist in the executor, before their logins are
+     * written (decision 5): their deliveries run beside that write, and only the start waits for
+     * both (Performance). Never told in a shared executor; the caller completes it with null.
+     */
+    readonly homeReady?: Deferred.Deferred<PersonHome | null>;
   }) => Effect.Effect<
     { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
     SealantPlatformError
@@ -407,6 +434,14 @@ export interface HarnessLayoutSteps {
     readonly ownerUserId: string | null;
     readonly author: string | null;
   }) => Effect.Effect<string | null>;
+}
+
+/** A person's home in an executor, ready for their deliveries (`processAs`'s `homeReady`). */
+export interface PersonHome {
+  readonly identity: LinuxIdentity;
+  readonly user: ProcessUser;
+  /** This start made their user and home here: their first process in this executor. */
+  readonly made: boolean;
 }
 
 /** What prepare runs for a layout (`HarnessLayoutSteps.prepareScript`). */
@@ -673,7 +708,26 @@ export const makeHarnessLayoutSteps = (deps: {
         input.ownerUserId,
         input.harness,
       );
-      const decision = decideHarnessLayout({ flag, worktree, headHasPeople, capability });
+      // Decision 1's fallback for dotfiles: where the platform cannot apply a person's dotfiles
+      // as them yet, a fresh worktree whose launcher keeps some runs shared, as before, and their
+      // dotfiles apply at boot. A worktree already person stays person (decision 14) and starts
+      // without them, which the session says.
+      const dotfilesBlocked =
+        !platform.dotfilesUser &&
+        worktree.layout === null &&
+        worktree.requested === null &&
+        !headHasPeople &&
+        flag === "person" &&
+        capability.person === true &&
+        input.launcherHasDotfiles !== undefined &&
+        (yield* input.launcherHasDotfiles);
+      const decision = decideHarnessLayout({
+        flag,
+        worktree,
+        headHasPeople,
+        capability,
+        dotfilesBlocked,
+      });
       if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
       if (decision.layout === "shared") {
         yield* repo.recordLaunch({
@@ -805,7 +859,13 @@ export const makeHarnessLayoutSteps = (deps: {
         held: new Set(loginsOfCreate(input.fallback.credentials)),
         absent: new Set(),
       });
-      return { layout: "person" };
+      const opencode = new Set(report.opencode);
+      return {
+        layout: "person",
+        opencode: [layout.launcher, ...layout.members].filter(
+          (person) => made.has(person.name) && opencode.has(person.name),
+        ),
+      };
     }
     const missing =
       report.missing.length > 0
@@ -841,17 +901,18 @@ export const makeHarnessLayoutSteps = (deps: {
         logins: rootLogins,
       });
     }
-    if (input.fallback.dotfiles.length > 0) {
-      yield* platform.applyDotfiles(input.workspace, {
-        user: null,
-        home: "/root",
-        archives: input.fallback.dotfiles,
-      });
-    }
+    const applied =
+      input.fallback.dotfiles.length > 0
+        ? yield* platform.applyDotfiles(input.workspace, {
+            user: null,
+            home: "/root",
+            archives: input.fallback.dotfiles,
+          })
+        : null;
     const reason = `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
     yield* repo.recordFallback(input.launchId, reason);
     layoutByLaunch.set(input.launchId, "shared");
-    return { layout: "shared", fallback: reason };
+    return { layout: "shared", fallback: reason, bootstrap: applied?.bootstrap ?? null };
   });
 
   const refusedOwnerMap: HarnessLayoutSteps["refusedOwnerMap"] = Effect.fn(
@@ -1061,6 +1122,15 @@ export const makeHarnessLayoutSteps = (deps: {
             loginsIn.get(workspaceId)?.people.get(identity.accountId),
             need,
           );
+          const tellHomeReady = (madeNow: boolean) =>
+            input.homeReady === undefined
+              ? Effect.void
+              : Deferred.succeed(input.homeReady, {
+                  identity,
+                  user: processUserOf(identity),
+                  made: madeNow,
+                }).pipe(Effect.asVoid);
+          if (!needsHome) yield* tellHomeReady(false);
           if (!needsHome && !needsLogins) return;
           const homeMade = yield* Deferred.make<void>();
           let minted = false;
@@ -1095,6 +1165,7 @@ export const makeHarnessLayoutSteps = (deps: {
             }
             made.add(identity.accountId);
             madeIn.set(workspaceId, made);
+            yield* tellHomeReady(true);
           }).pipe(Effect.ensuring(Deferred.succeed(homeMade, undefined)));
           // Their own logins, beside it (decision 5): one Core call, which makes the home for them
           // when it gets there first. Nobody else's login is ever read or written for them.

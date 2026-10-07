@@ -158,6 +158,10 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
 
       return {
         processUser: true,
+        // Core's SDK does not carry sealantd's `dotfiles.apply` yet (PLATFORM-FEEDBACK.md,
+        // 2026-10-07). Once it does, this is `true` and `applyDotfiles` below passes through,
+        // e.g. `call(() => workspace.dotfiles.apply({ user: input.user?.name ?? "root", ... }))`.
+        dotfilesUser: false,
         // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, and Core passes
         // it to sealantd as `SEALANT_CAPTURE_OWNER_MAP` at boot.
         withOwnerMap: (options, map) =>

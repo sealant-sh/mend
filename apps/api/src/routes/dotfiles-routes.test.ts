@@ -146,6 +146,8 @@ const putRepository = async (
           saved.push(value);
           return value;
         }),
+      startAgentsAfterInstall: () => Effect.succeed(false),
+      setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
     }),
     Layer.mock(DotfilesStore, { current: () => Effect.succeed(null) }),
     // Every remote passes: what this route adds is the clone, not the address rules (tested in
@@ -276,5 +278,68 @@ describe("PUT /api/dotfiles/repository", () => {
       message: `the dotfiles repository signs with your connected signer: ${NO_SIGNER_MESSAGE}`,
     });
     expect(result.saved).toEqual([]);
+  });
+});
+
+describe("PUT /api/dotfiles/start-after-install (docs/adr/0016, decision 11)", () => {
+  it('turns "Start my agents after install.sh" on and off for the caller, and the view says so', async () => {
+    const cell = { on: false, setBy: [] as Array<string> };
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(Budgets, makeBudgets(DEFAULT_BUDGET_LIMITS)),
+      clonerLayer(HOST_OPERATOR),
+      Layer.succeed(UserDotfilesRepo, {
+        repository: () => Effect.succeed(null),
+        setRepository: (_userId, value) => Effect.succeed(value),
+        startAgentsAfterInstall: () => Effect.sync(() => cell.on),
+        setStartAgentsAfterInstall: (userId, value) =>
+          Effect.sync(() => {
+            cell.setBy.push(userId);
+            cell.on = value;
+            return value;
+          }),
+      }),
+      Layer.mock(DotfilesStore, { current: () => Effect.succeed(null) }),
+      Layer.mock(SourcePolicy, {
+        profile: "operator",
+        check: () => Effect.succeed({ scheme: "https", host: "local", port: null, addresses: [] }),
+        pinnedEnv: (_clearance, env) => ({ ...env }),
+      }),
+      Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(true) }),
+      Layer.mock(ProjectsRepo, { listAll: () => Effect.succeed([]) }),
+      Layer.mock(SessionEngine, { launchUnderWay: () => false }),
+    );
+    const apiLayer = HttpApiBuilder.layer(DotfilesApi).pipe(
+      Layer.provide(DotfilesGroupLive),
+      Layer.provide(AuthMiddlewareLive.pipe(Layer.provide(authLayer))),
+      Layer.provide(HttpServer.layerServices),
+    );
+    const runtime = ManagedRuntime.make(dependencies);
+    const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
+    try {
+      const context = await runtime.runPromise(Effect.context<DotfilesRouteServices>());
+      const ask = async (method: string, route: string, body?: unknown) => {
+        const response = await handler(
+          new Request(`http://api.internal/api/dotfiles${route}`, {
+            method,
+            headers: { authorization: AUTHORIZATION, "content-type": "application/json" },
+            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          }),
+          context,
+        );
+        return { status: response.status, body: await response.json() };
+      };
+      expect(await ask("GET", "")).toMatchObject({
+        status: 200,
+        body: { startAgentsAfterInstall: false },
+      });
+      expect(
+        await ask("PUT", "/start-after-install", { startAgentsAfterInstall: true }),
+      ).toMatchObject({ status: 200, body: { startAgentsAfterInstall: true } });
+      expect(await ask("GET", "")).toMatchObject({ body: { startAgentsAfterInstall: true } });
+      expect(cell.setBy).toEqual(["user-dotfiles"]);
+    } finally {
+      await dispose();
+      await runtime.dispose();
+    }
   });
 });

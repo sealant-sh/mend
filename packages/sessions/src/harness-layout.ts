@@ -18,6 +18,7 @@ import {
 } from "@mend/domain/workbench";
 
 import { GIT_CREDENTIAL_HELPER_PATH } from "./git-credential.ts";
+import { OPENCODE_DATABASE } from "./opencode-state.ts";
 import {
   SCRIPT_PICKUP_FUNCTION,
   SCRIPT_PINNED_PUT_FUNCTION,
@@ -52,6 +53,12 @@ export interface LayoutDecisionInput {
   /** The worktree's head capture holds `harness/people/`: person, record or not. */
   readonly headHasPeople: boolean;
   readonly capability: LayoutCapability;
+  /**
+   * The launcher has dotfiles and the platform cannot apply them as a person yet
+   * (`PersonLayoutPlatform.dotfilesUser`): a worktree with no layout yet runs `shared`, as decision
+   * 1 runs any launch the platform cannot carry per person, so their dotfiles still apply at boot.
+   */
+  readonly dotfilesBlocked?: boolean;
 }
 
 /**
@@ -138,6 +145,15 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
   if (input.flag === "shared") {
     return { kind: "launch", layout: "shared", source: "flag", reason: null, probe: false };
   }
+  if (capability.person === true && input.dotfilesBlocked === true) {
+    return {
+      kind: "launch",
+      layout: "shared",
+      source: "capability",
+      reason: DOTFILES_BLOCK_REASON,
+      probe: false,
+    };
+  }
   if (capability.person === true) {
     return { kind: "launch", layout: "person", source: "flag", onMissing: "fallback" };
   }
@@ -160,6 +176,10 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
     probe: true,
   };
 };
+
+/** Why a fresh worktree whose launcher has dotfiles runs shared until the verb ships. */
+export const DOTFILES_BLOCK_REASON =
+  "dotfiles cannot be applied as each person on this platform yet, so this workspace takes one person and applies them at boot";
 
 /**
  * What Mend knows without asking anyone: nix images keep their passwd in the read-only store
@@ -244,6 +264,12 @@ export const PERSON_SAVED_STATE: ReadonlyArray<{
   { path: ".local/share/opencode", kind: "directory" },
   { path: ".local/state/opencode", kind: "directory" },
 ];
+
+/**
+ * Mend's per-person saved records in `P` (decision 2), addressed by their absolute path, never
+ * through `~/.mend` (`person-deliveries.ts`, `PERSON_RECORDS_DIR`).
+ */
+export const PERSON_RECORDS_IN_SAVED = ".mend-saved";
 
 /** Where opencode's logins live in a person's home (`personHomeScript`), never in `P`. */
 export const OPENCODE_LOGIN_DIR = ".mend/opencode";
@@ -449,6 +475,11 @@ export interface LayoutReport {
   readonly unowned: string | null;
   /** Who could not be made, and why (`mend-layout failed <name> <words>`). */
   readonly failed: ReadonlyArray<string>;
+  /**
+   * The login names of the people made whose restored saved directory holds an opencode database
+   * (`mend-layout opencode <name>`): scrubbed of in-app logins off the launch path (decision 8a).
+   */
+  readonly opencode: ReadonlyArray<string>;
 }
 
 export const parseLayoutReport = (stdout: string): LayoutReport => {
@@ -458,6 +489,7 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
   let ready = false;
   let unowned: string | null = null;
   const failed: Array<string> = [];
+  const opencode: Array<string> = [];
   for (const line of stdout.split("\n")) {
     if (!line.startsWith(`${LAYOUT_LINE} `)) continue;
     const rest = line.slice(LAYOUT_LINE.length + 1).trim();
@@ -470,6 +502,9 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
       if (name !== "") failed.push(why === "" ? `${name} could not be made` : `${name}: ${why}`);
     } else if (rest.startsWith("unowned ")) {
       unowned = rest.slice("unowned ".length).trim() || "the worktree is not group mend's";
+    } else if (rest.startsWith("opencode ")) {
+      const name = rest.slice("opencode ".length).trim();
+      if (name !== "" && !opencode.includes(name)) opencode.push(name);
     } else if (rest.startsWith("made ")) {
       const name = rest.slice("made ".length).trim();
       if (name !== "" && !made.includes(name)) made.push(name);
@@ -478,7 +513,7 @@ export const parseLayoutReport = (stdout: string): LayoutReport => {
       if (words !== "" && !missing.includes(words)) missing.push(words);
     }
   }
-  return { probed, missing, ready, made, unowned, failed };
+  return { probed, missing, ready, made, unowned, failed, opencode };
 };
 
 /** Every parent directory of these relative paths, shallowest first, once each. */
@@ -569,9 +604,9 @@ export const personHomeScript = (
     // person's; one already theirs is not walked.
     `if [ "$root" = 1 ] && [ "$(stat -c %u ${q(saved)})" != ${person.uid} ]; then chown -R ${owner} ${q(saved)}; fi`,
     `chmod 0710 ${q(saved)}`,
-    `mkdir -p ${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)}`,
+    `mkdir -p ${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)} ${q(`${saved}/${PERSON_RECORDS_IN_SAVED}`)}`,
     `chmod 2710 ${q(`${saved}/conversations`)}`,
-    `chmod 0700 ${q(`${saved}/codex-db`)}`,
+    `chmod 0700 ${q(`${saved}/codex-db`)} ${q(`${saved}/${PERSON_RECORDS_IN_SAVED}`)}`,
     ...parentsOf(all).map((dir) => `mkdir -p ${q(`${saved}/${dir}`)} ${q(`${home}/${dir}`)}`),
     ...dirs.map((entry) => `mkdir -p ${q(`${saved}/${entry.path}`)}`),
     // A link per entry; a real directory or file the image or a tool left there first moves
@@ -592,7 +627,7 @@ export const personHomeScript = (
       `chown ${owner} ${parentsOf(all)
         .map((dir) => `${q(`${saved}/${dir}`)} ${q(`${home}/${dir}`)}`)
         .join(" ")} ${dirs.map((entry) => q(`${saved}/${entry.path}`)).join(" ")} ` +
-      `${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)}; ` +
+      `${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)} ${q(`${saved}/${PERSON_RECORDS_IN_SAVED}`)}; ` +
       `chgrp ${MEND_GROUP.gid} ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}; fi`,
     `chmod 0711 ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}`,
     // Where their Mend token and git author go (decision 4): real directories, theirs. What goes
@@ -903,6 +938,10 @@ export const personPrepareScript = (
           ...(places.homesRoot === undefined ? {} : { home: `${places.homesRoot}/${person.name}` }),
         }).replaceAll("\n", "\n  ")}\n) 2>&1 )\n` +
         `if [ "$?" = 0 ]; then printf '%s made %s\\n' ${LAYOUT_LINE} ${person.name}; ` +
+        // A restored opencode database: scrubbed of in-app logins off the launch path, as its
+        // person (decision 8a), once prepare says whose it is.
+        `if [ -f ${q(`${savedDirOf(options.harnessHome, person.accountId)}/${OPENCODE_DATABASE}`)} ]; then ` +
+        `printf '%s opencode %s\\n' ${LAYOUT_LINE} ${person.name}; fi; ` +
         // What went wrong, in the person's line (review of mend#552, P3-8): its last words.
         `else printf '%s failed %s %s\\n' ${LAYOUT_LINE} ${person.name} "$(printf '%s' "$person_out" | tail -n 3 | tr '\\n' ' ')"; ` +
         `layout_failed=1; fi\nfi`

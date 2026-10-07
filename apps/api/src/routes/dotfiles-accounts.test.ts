@@ -41,6 +41,7 @@ interface View {
     readonly source: string;
     readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: number }>;
   } | null;
+  readonly startAgentsAfterInstall: boolean;
 }
 
 const isView = (value: unknown): value is View =>
@@ -114,11 +115,18 @@ describe("dotfiles routes on a single-tenant instance", () => {
       files: [{ path: ".zshrc", bytes: 18 }],
     });
 
+    // Alice's agents wait for her install.sh where someone else started the workspace.
+    const waits = await viewOf(api, "alice", "PUT", "/dotfiles/start-after-install", {
+      startAgentsAfterInstall: true,
+    });
+    expect(waits.startAgentsAfterInstall).toBe(true);
+
     // A member of the same organization and the owner of another see nothing of alice's.
     for (const user of ["carol", "bob"] as const) {
       expect(await viewOf(api, user, "GET", "/dotfiles")).toEqual({
         repository: null,
         snapshot: null,
+        startAgentsAfterInstall: false,
       });
     }
 
@@ -205,7 +213,11 @@ describe("dotfiles routes on a single-tenant instance", () => {
     await viewOf(api, "carol", "POST", "/dotfiles/snapshot", sync([file(".zshrc", "x\n")]));
 
     const cleared = await viewOf(api, "carol", "DELETE", "/dotfiles/snapshot");
-    expect(cleared).toEqual({ repository: repositoryOf(url), snapshot: null });
+    expect(cleared).toEqual({
+      repository: repositoryOf(url),
+      snapshot: null,
+      startAgentsAfterInstall: false,
+    });
 
     await viewOf(api, "carol", "POST", "/dotfiles/snapshot", sync([file(".zshrc", "x\n")]));
     const unset = await viewOf(api, "carol", "PUT", "/dotfiles/repository", { repository: null });
@@ -248,11 +260,13 @@ describe("dotfiles routes on a multi-tenant instance", () => {
     expect(await viewOf(api, "carol", "DELETE", "/dotfiles/snapshot")).toEqual({
       repository: repositoryOf(url),
       snapshot: null,
+      startAgentsAfterInstall: false,
     });
     // Alice, carol's organization owner and the instance operator, sees none of it.
     expect(await viewOf(api, "alice", "GET", "/dotfiles")).toEqual({
       repository: null,
       snapshot: null,
+      startAgentsAfterInstall: false,
     });
   });
 

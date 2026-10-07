@@ -117,6 +117,7 @@ import {
   Session,
   SessionProcess,
   SessionRun,
+  type SessionDotfiles,
   PiProfile,
   SecretFile,
   Skill,
@@ -267,6 +268,7 @@ import {
   OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
 } from "../src/harness-seeds.ts";
+import { DOTFILES_NOT_PER_PERSON } from "../src/person-deliveries.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
 import { writeOpencodeDatabase } from "./opencode-db.ts";
@@ -1044,6 +1046,8 @@ const gitAuthorStubLayer = Layer.succeed(UserGitAuthorRepo, {
 const userDotfilesStubLayer = Layer.succeed(UserDotfilesRepo, {
   repository: () => Effect.succeed(null),
   setRepository: (_userId: string, value: DotfilesRepository | null) => Effect.succeed(value),
+  startAgentsAfterInstall: () => Effect.succeed(false),
+  setStartAgentsAfterInstall: (_userId: string, value: boolean) => Effect.succeed(value),
 });
 const dotfilesStoreStubLayer = Layer.succeed(DotfilesStore, {
   snapshot: () => Effect.die("not in test"),
@@ -10403,7 +10407,8 @@ describe("SessionEngine capture mode", () => {
             expect(created).toHaveLength(1);
             // Only the launch that made the executor delivers, and it records whose memory it is.
             const deliveries = execCalls.filter((argv) => argv[3] === "mend-agent-memory");
-            expect(deliveries.map((argv) => argv.at(-1))).toEqual(["user-fixture"]);
+            // argv: sh, -c, program, name, home, incoming, kept, list, owner, record.
+            expect(deliveries.map((argv) => argv[8])).toEqual(["user-fixture"]);
 
             // The worktree's one home as the executor saves it: what the agents there learned,
             // in the one memory directory they share.
@@ -11943,6 +11948,8 @@ describe("SessionEngine capture mode", () => {
         userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
           repository: () => Effect.succeed(repository),
           setRepository: (_userId, value) => Effect.succeed(value),
+          startAgentsAfterInstall: () => Effect.succeed(false),
+          setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
         }),
       },
     );
@@ -12081,6 +12088,8 @@ describe("SessionEngine capture mode", () => {
         userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
           repository: () => Effect.sync(() => state.repository),
           setRepository: (_userId, value) => Effect.succeed(value),
+          startAgentsAfterInstall: () => Effect.succeed(false),
+          setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
         }),
         dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
           snapshot: () => Effect.die("not in test"),
@@ -13152,6 +13161,8 @@ const userDotfilesLayer = (
         return cell.repository;
       }),
     setRepository: (_userId, value) => Effect.succeed(value),
+    startAgentsAfterInstall: () => Effect.succeed(false),
+    setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
   });
 
 const dotfilesStoreLayer = (
@@ -14146,6 +14157,8 @@ const ownedRepositoriesLayer = (
         return repositories.get(userId) ?? null;
       }),
     setRepository: (_userId, value) => Effect.succeed(value),
+    startAgentsAfterInstall: () => Effect.succeed(false),
+    setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
   });
 
 const NEWER_SNAPSHOT = { sha: "0dd50dd50dd50dd50dd50dd50dd50dd50dd50dd5", data: "bmV3ZXI=" };
@@ -23470,9 +23483,17 @@ const answerLayout =
 const personPlatform = (
   calls: Array<string>,
   report: { readonly person?: boolean | null; readonly missing?: ReadonlyArray<string> } = {},
+  /**
+   * The platform applies dotfiles as a person (`dotfiles.apply`, not in Core's SDK yet): each
+   * person's `install.sh` ends when their `bootstrapEnds` does; null runs none.
+   */
+  dotfiles?: {
+    readonly bootstrapEnds: (user: string | null) => Deferred.Deferred<number> | null;
+  },
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
+    dotfilesUser: dotfiles !== undefined,
     // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
       options.source?.kind === "capture"
@@ -23501,7 +23522,16 @@ const personPlatform = (
       }),
     applyDotfiles: (_workspace, input) =>
       Effect.sync(() => {
-        calls.push(`dotfiles:${input.home}`);
+        calls.push(`dotfiles:${input.user?.name ?? "root"}:${input.home}`);
+        const ends = dotfiles?.bootstrapEnds(input.user?.name ?? null) ?? null;
+        return {
+          bootstrap:
+            ends === null
+              ? null
+              : {
+                  ended: Deferred.await(ends).pipe(Effect.map((exitCode) => ({ exitCode }))),
+                },
+        };
       }),
   });
 
@@ -25724,6 +25754,39 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
     });
   });
 
+  it("before a joiner's process opens, their token redeems their own deliveries in that executor, and nothing else", async () => {
+    await livePersonJoin({
+      flag: "person",
+      inspect: (_engine, join) =>
+        Effect.gen(function* () {
+          // As the join's row reads before its process opens: no executor named yet.
+          join.world.sessions.set(
+            join.joined.id,
+            new Session({ ...join.joined, sealantWorkspaceId: null }),
+          );
+          const before = yield* grantOf(join.joined, { launchId: join.launchId, accountId: MARIA });
+          if (!before.ok) throw new Error(before.message);
+          expect(before.api.pickup).toBeDefined();
+          expect(before.api.capture).toBeUndefined();
+          const landed = yield* before.api.land().pipe(Effect.exit);
+          expect(Exit.isFailure(landed)).toBe(true);
+          const pushed = yield* before.api.gitTransport(push(join.origin)).pipe(Effect.exit);
+          expect(Exit.isFailure(pushed)).toBe(true);
+          // Another launch's token, or another person's, reaches nothing there.
+          const elsewhere = yield* grantOf(join.joined, {
+            launchId: "launch-elsewhere",
+            accountId: MARIA,
+          });
+          expect(elsewhere.ok).toBe(false);
+          const alice = yield* grantOf(join.joined, {
+            launchId: join.launchId,
+            accountId: "user-fixture",
+          });
+          expect(alice.ok).toBe(false);
+        }),
+    });
+  });
+
   it("a joiner's mend land asks as the joiner, and the workspace's land as before", async () => {
     const landings: Array<string> = [];
     await livePersonJoin({
@@ -26960,5 +27023,505 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
     // The executor itself holds the worktree, seen as its creator sees it, not only the lease.
     expect(holds.map((hold) => hold.kind)).toContain("executor");
     expect(run.seen).not.toContain(`${MARIA}:404`);
+  });
+});
+
+/** One person's own memory, as the store holds it (Delivery 15's tests). */
+const memoryOf = (userId: string) => {
+  const file = {
+    path: ".claude/projects/-workspace-repo/memory/MEMORY.md",
+    encoding: "utf8",
+    contents: `- what ${userId} learned\n`,
+  } as const;
+  return [{ ...file, digest: agentMemoryDigest(file), updatedBySession: null }];
+};
+
+const piFiles = (userId: string) =>
+  [
+    {
+      path: `extensions/${userId}/index.ts`,
+      encoding: "utf8",
+      contents: `export default () => "${userId}";\n`,
+    },
+  ] as const;
+
+interface DeliveryRun {
+  readonly execs: ReadonlyArray<ReadonlyArray<string>>;
+  readonly users: ReadonlyArray<string | null>;
+  readonly opened: ReadonlyArray<PersonSessionOptions>;
+  readonly created: ReadonlyArray<CreateOptions>;
+  readonly calls: ReadonlyArray<string>;
+  /** How many execs ran before the join started. */
+  readonly cold: number;
+}
+
+/** The command an exec runs, past the session id it names (`env MEND_SESSION_ID=… …`). */
+const commandOf = (argv: ReadonlyArray<string>) =>
+  argv[0] === "env" && (argv[1] ?? "").startsWith("MEND_SESSION_ID=") ? argv.slice(2) : argv;
+const named = (argv: ReadonlyArray<string>, name: string) => commandOf(argv)[3] === name;
+const asWho = (run: DeliveryRun, test: (argv: ReadonlyArray<string>) => boolean) =>
+  run.execs.flatMap((argv, index) => (test(argv) ? [run.users[index] ?? null] : []));
+const sessionNamed = (argv: ReadonlyArray<string>) =>
+  argv[0] === "env" ? (argv[1] ?? "").slice("MEND_SESSION_ID=".length) : null;
+/** Every opencode scrub a run made: as whom, and of which database. */
+const scrubsOf = (run: DeliveryRun) =>
+  run.execs.flatMap((argv, index) => {
+    const command = commandOf(argv);
+    return command[0] === "node" && (command[2] ?? "").includes("mend-scrub")
+      ? [{ user: run.users[index] ?? null, database: command[3] ?? "" }]
+      : [];
+  });
+
+describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
+  const LAUNCHER = linuxLoginNameOf("user-fixture");
+  const JOINER = linuxLoginNameOf(MARIA);
+  const P_LAUNCHER = "/workspace/harness-home/people/user-fixture";
+  const P_JOINER = `/workspace/harness-home/people/${MARIA}`;
+  const people = {
+    skillsLayer: skillsForLaunchLayer((ownerUserId) =>
+      Effect.succeed({
+        user: [
+          launchSkill(`own-${ownerUserId ?? "none"}`, `${ownerUserId}'s skill`, {
+            scope: "user",
+            userId: ownerUserId ?? "missing",
+          }),
+        ],
+        project: [],
+      }),
+    ),
+    secretFilesLayer: secretFilesLayerOf((userId) =>
+      Effect.succeed([
+        {
+          path: `.aws/${userId}`,
+          sealedContents: `sealed:${Buffer.from(`${userId}'s key`, "utf8").toString("base64")}`,
+        },
+      ]),
+    ),
+    agentMemoryLayer: agentMemoryLayerOf({
+      forLaunch: (userId) => Effect.succeed(memoryOf(userId)),
+    }),
+    piProfilesLayer: piProfilesLayerOf((userId) =>
+      Effect.succeed({
+        profile: new PiProfile({
+          fileCount: 1,
+          bytes: piFiles(userId)[0].contents.length,
+          extensions: [userId],
+          packages: [],
+          digest: piProfileDigest(piFiles(userId)),
+          revision: 1,
+          updatedAt: new Date(0),
+        }),
+        files: piFiles(userId),
+      }),
+    ),
+  };
+
+  /**
+   * Alice launches a session in a person executor and, unless `join` is null, Maria starts one in
+   * the same worktree: every exec with the user it ran as.
+   */
+  const launchAndJoin = async (options: {
+    readonly holderHarness?: string;
+    readonly join?: string | null;
+    readonly flag?: HarnessLayout;
+    readonly platform?: (calls: Array<string>) => Layer.Layer<PersonLayoutPlatform>;
+    readonly layers?: Partial<Parameters<typeof withEngine>[1]>;
+    readonly prepareStdout?: string;
+    readonly inspect?: (
+      engine: SessionEngine["Service"],
+      world: World,
+      ids: { readonly holder: SessionId; readonly joined: SessionId | null },
+      run: DeliveryRun,
+    ) => Effect.Effect<void, unknown>;
+    readonly before?: (worktreeId: string) => void;
+    readonly state?: HarnessLayoutsMemoryState;
+    /** The join itself, when the test drives it (a waited install.sh). */
+    readonly joinWith?: (
+      engine: SessionEngine["Service"],
+      world: World,
+      joined: SessionId,
+      run: DeliveryRun,
+    ) => Effect.Effect<void, unknown>;
+    readonly launchWith?: (
+      engine: SessionEngine["Service"],
+      world: World,
+      holder: SessionId,
+      run: DeliveryRun,
+    ) => Effect.Effect<void, unknown>;
+  }): Promise<DeliveryRun> => {
+    const execs: Array<ReadonlyArray<string>> = [];
+    const users: Array<string | null> = [];
+    const opened: Array<PersonSessionOptions> = [];
+    const created: Array<CreateOptions> = [];
+    const calls: Array<string> = [];
+    const run: { cold: number } = { cold: 0 };
+    const view = (): DeliveryRun => ({ execs, users, opened, created, calls, cold: run.cold });
+    const holderHarness = options.holderHarness ?? "claude";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: holderHarness,
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          options.before?.(holder.worktreeId);
+          if (options.launchWith === undefined) {
+            yield* engine.launch(holder.id, [holderHarness]);
+          } else {
+            yield* options.launchWith(engine, world, holder.id, view());
+          }
+          run.cold = execs.length;
+          let joined: SessionId | null = null;
+          if (options.join !== null) {
+            const joinHarness = options.join ?? "claude";
+            const session = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness: joinHarness,
+              label: null,
+              ownerUserId: MARIA,
+            });
+            joined = session.id;
+            if (options.joinWith === undefined) {
+              yield* engine.launch(session.id, [joinHarness]);
+            } else {
+              yield* options.joinWith(engine, world, session.id, view());
+            }
+            yield* Effect.sleep("50 millis");
+          }
+          yield* (
+            options.inspect?.(engine, world, { holder: holder.id, joined }, view()) ?? Effect.void
+          );
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          execs,
+          undefined,
+          {
+            execUsers: users,
+            exec: answerLayout(options.prepareStdout ?? LAYOUT_READY),
+          },
+        ),
+        harnessLayout: {
+          flag: options.flag ?? "person",
+          ...(options.state === undefined ? {} : { state: options.state }),
+          platform: (options.platform ?? ((log) => personPlatform(log, { person: true })))(calls),
+        },
+        ...options.layers,
+      },
+    );
+    return view();
+  };
+
+  it("the launcher's and a joiner's own skills, memory, secret files and shell profile, each as them into their own home", async () => {
+    let ids: { readonly holder: SessionId; readonly joined: SessionId | null } | null = null;
+    const run = await launchAndJoin({
+      layers: people,
+      inspect: (_engine, _world, seen) =>
+        Effect.sync(() => {
+          ids = seen;
+        }),
+    });
+    if (ids === null) throw new Error("no sessions");
+    const { holder, joined } = ids;
+    const cold = {
+      ...run,
+      execs: run.execs.slice(0, run.cold),
+      users: run.users.slice(0, run.cold),
+    };
+    const join = { ...run, execs: run.execs.slice(run.cold), users: run.users.slice(run.cold) };
+    // One read of what was delivered before, each as their person.
+    expect(asWho(cold, (argv) => (commandOf(argv)[2] ?? "").includes("mend-record"))).toEqual([
+      LAUNCHER,
+    ]);
+    expect(asWho(join, (argv) => (commandOf(argv)[2] ?? "").includes("mend-record"))).toEqual([
+      JOINER,
+    ]);
+    for (const [part, user, home, saved, session] of [
+      [cold, LAUNCHER, `/home/${LAUNCHER}`, P_LAUNCHER, holder],
+      [join, JOINER, `/home/${JOINER}`, P_JOINER, joined],
+    ] as const) {
+      // Skills into their own home, kept aside in their own saved directory.
+      const skills = part.execs.filter((argv) => named(argv, "mend-skills"));
+      expect(skills).toHaveLength(1);
+      expect(commandOf(skills[0] ?? [])[4]).toBe(home);
+      expect(commandOf(skills[0] ?? [])[5]).toMatch(
+        new RegExp(`^${saved}/\\.mend-saved/skills-kept/`),
+      );
+      expect(asWho(part, (argv) => named(argv, "mend-skills"))).toEqual([user]);
+      // Memory into their own saved directory, recorded there, never `.mend` in the shared home.
+      const memory = part.execs.filter((argv) => named(argv, "mend-agent-memory"));
+      expect(memory.map((argv) => commandOf(argv).slice(4, 6))).toEqual([
+        [saved, ".mend-saved/agent-memory-incoming"],
+      ]);
+      expect(commandOf(memory[0] ?? []).at(-1)).toBe(".mend-saved/agent-memory-delivered.json");
+      expect(asWho(part, (argv) => named(argv, "mend-agent-memory"))).toEqual([user]);
+      // Secret files as them, speaking for their own session.
+      const secrets = part.execs.filter((argv) => named(argv, "mend-secret-files"));
+      expect(secrets.length).toBeGreaterThan(0);
+      expect(
+        asWho(part, (argv) => named(argv, "mend-secret-files")).every((who) => who === user),
+      ).toBe(true);
+      expect(secrets.map(sessionNamed).every((id) => id === session)).toBe(true);
+      // Every file write of theirs lands under their own home or saved directory.
+      for (const argv of part.execs.filter((candidate) => named(candidate, "mend-write"))) {
+        for (const target of commandOf(argv).slice(5)) {
+          expect(
+            target.slice(1).startsWith(`${home}/`) || target.slice(1).startsWith(`${saved}/`),
+          ).toBe(true);
+        }
+      }
+      // Mend's default shell profile, as them, where nothing is.
+      expect(asWho(part, (argv) => named(argv, "mend-write-absent"))).toEqual([user]);
+    }
+    // Nothing run for Maria's join, as anyone, names Alice's home or saved directory.
+    for (const argv of join.execs) {
+      expect(argv.join(" ")).not.toContain(`/home/${LAUNCHER}`);
+      expect(argv.join(" ")).not.toContain(P_LAUNCHER);
+    }
+    // Nothing goes into `/root` or the shared harness home: no relocation, no hand-over.
+    expect(run.execs.some((argv) => (argv[2] ?? "").includes("memory moved"))).toBe(false);
+    expect(
+      run.execs.some(
+        (argv) => named(argv, "mend-skills") && commandOf(argv)[4] === "/workspace/harness-home",
+      ),
+    ).toBe(false);
+    // No delivery runs as root.
+    const deliveryNames = [
+      "mend-skills",
+      "mend-agent-memory",
+      "mend-secret-files",
+      "mend-pi-profile",
+      "mend-write",
+      "mend-write-absent",
+    ];
+    run.execs.forEach((argv, index) => {
+      const delivery =
+        deliveryNames.some((name) => named(argv, name)) ||
+        (commandOf(argv)[2] ?? "").includes("mend-record");
+      if (delivery) expect(run.users[index]).not.toBeNull();
+    });
+  });
+
+  it("two people's pi profiles live in one executor: Maria's own is delivered beside Alice's live pi", async () => {
+    const run = await launchAndJoin({ holderHarness: "pi", join: "pi", layers: people });
+    const pi = run.execs.flatMap((argv, index) =>
+      named(argv, "mend-pi-profile")
+        ? [{ home: commandOf(argv)[4], user: run.users[index] ?? null }]
+        : [],
+    );
+    expect(pi).toEqual([
+      { home: `/home/${LAUNCHER}`, user: LAUNCHER },
+      { home: `/home/${JOINER}`, user: JOINER },
+    ]);
+    // Each profile's files are written as its person, into their own home only.
+    const writes = run.execs.flatMap((argv, index) =>
+      named(argv, "mend-write") &&
+      commandOf(argv).some((part) => part.includes("/.pi/agent/mend/profile/"))
+        ? [{ user: run.users[index] ?? null, targets: commandOf(argv).slice(5) }]
+        : [],
+    );
+    expect(writes.map((write) => write.user)).toEqual([LAUNCHER, JOINER]);
+    expect(writes[0]?.targets.every((target) => target.includes(`/home/${LAUNCHER}/`))).toBe(true);
+    expect(writes[1]?.targets.every((target) => target.includes(`/home/${JOINER}/`))).toBe(true);
+    expect(writes[1]?.targets.some((target) => target.includes(`extensions/${MARIA}/`))).toBe(true);
+  });
+
+  it("an opencode's in-app logins are scrubbed as its person before it starts and after it ends", async () => {
+    const run = await launchAndJoin({
+      holderHarness: "opencode",
+      join: null,
+      // Her restored database is the one her opencode opens: scrubbed once, before it starts.
+      prepareStdout: `mend-layout probed\nmend-layout made ${LAUNCHER}\nmend-layout opencode ${LAUNCHER}\nmend-layout ready\n`,
+      inspect: (engine, _world, ids, seen) =>
+        Effect.gen(function* () {
+          expect(scrubsOf(seen)).toEqual([
+            { user: LAUNCHER, database: `/home/${LAUNCHER}/.local/share/opencode/opencode.db` },
+          ]);
+          yield* engine.stop(ids.holder);
+          yield* Effect.sleep("50 millis");
+        }),
+    });
+    // And once more after it ended, as her.
+    expect(scrubsOf(run)).toHaveLength(2);
+    expect(scrubsOf(run).every((scrub) => scrub.user === LAUNCHER)).toBe(true);
+  });
+
+  it("a restored opencode database is scrubbed as its person at prepare, off the launch path", async () => {
+    const run = await launchAndJoin({
+      join: null,
+      prepareStdout: `mend-layout probed\nmend-layout made ${LAUNCHER}\nmend-layout opencode ${LAUNCHER}\nmend-layout ready\n`,
+      inspect: () => Effect.sleep("50 millis"),
+    });
+    expect(scrubsOf(run)).toEqual([
+      { user: LAUNCHER, database: `/home/${LAUNCHER}/.local/share/opencode/opencode.db` },
+    ]);
+  });
+
+  it("with dotfiles as a person: none at boot, the launcher's agent after their install.sh, a joiner's beside theirs", async () => {
+    const launcherEnds = Effect.runSync(Deferred.make<number>());
+    const joinerEnds = Effect.runSync(Deferred.make<number>());
+    const snapshot = { sha: "5eed0f5eed0f5eed0f5eed0f5eed0f5eed0f5eed", data: "c25hcHNob3Q=" };
+    const run = await launchAndJoin({
+      platform: (calls) =>
+        personPlatform(
+          calls,
+          { person: true },
+          {
+            bootstrapEnds: (user) =>
+              user === LAUNCHER ? launcherEnds : user === JOINER ? joinerEnds : null,
+          },
+        ),
+      layers: {
+        dotfilesStoreLayer: dotfilesStoreLayer(() =>
+          Effect.succeed({ sha: snapshot.sha, data: snapshot.data }),
+        ),
+      },
+      launchWith: (engine, _world, holder, seen) =>
+        Effect.gen(function* () {
+          const launching = yield* Effect.forkChild(engine.launch(holder, ["claude"]));
+          yield* Effect.sleep("100 millis");
+          // Applied as Alice into her home; her agent waits for her install.sh.
+          expect(seen.calls).toContain(`dotfiles:${LAUNCHER}:/home/${LAUNCHER}`);
+          expect(seen.opened).toHaveLength(0);
+          yield* Deferred.succeed(launcherEnds, 0);
+          yield* Fiber.join(launching);
+          expect(seen.opened).toHaveLength(1);
+        }),
+      inspect: (_engine, world, ids, seen) =>
+        Effect.gen(function* () {
+          // Nothing at boot: the create carries no dotfiles.
+          expect(seen.created[0]?.dotfiles).toBeUndefined();
+          // Maria's agent started beside her install.sh, and the line says so.
+          expect(seen.calls).toContain(`dotfiles:${JOINER}:/home/${JOINER}`);
+          expect(seen.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(1);
+          const joined = ids.joined;
+          if (joined === null) throw new Error("no join");
+          expect(world.sessions.get(joined)?.summary).toContain("install.sh running");
+          yield* Deferred.succeed(joinerEnds, 0);
+          yield* Effect.sleep("50 millis");
+          const summary = world.sessions.get(joined)?.summary ?? "";
+          expect(summary).toContain("install.sh finished after the agent started");
+          expect(summary).not.toContain("install.sh running");
+          // Mend's links go back over what the dotfiles placed, as each of them.
+          expect(
+            asWho(seen, (argv) => (commandOf(argv)[2] ?? "").includes("mend-links displaced")),
+          ).toEqual([LAUNCHER, JOINER]);
+        }),
+    });
+    expect(run.opened).toHaveLength(2);
+  });
+
+  it('with "Start my agents after install.sh" on, a joiner\'s agent waits for it', async () => {
+    const joinerEnds = Effect.runSync(Deferred.make<number>());
+    const snapshot = { sha: "5eed0f5eed0f5eed0f5eed0f5eed0f5eed0f5eed", data: "c25hcHNob3Q=" };
+    await launchAndJoin({
+      platform: (calls) =>
+        personPlatform(
+          calls,
+          { person: true },
+          {
+            bootstrapEnds: (user) => (user === JOINER ? joinerEnds : null),
+          },
+        ),
+      layers: {
+        dotfilesStoreLayer: dotfilesStoreLayer(() =>
+          Effect.succeed({ sha: snapshot.sha, data: snapshot.data }),
+        ),
+        userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+          repository: () => Effect.succeed(null),
+          setRepository: (_userId, value) => Effect.succeed(value),
+          startAgentsAfterInstall: (userId) => Effect.succeed(userId === MARIA),
+          setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
+        }),
+      },
+      joinWith: (engine, world, joined, seen) =>
+        Effect.gen(function* () {
+          const joining = yield* Effect.forkChild(engine.launch(joined, ["claude"]));
+          yield* Effect.sleep("100 millis");
+          expect(seen.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(0);
+          yield* Deferred.succeed(joinerEnds, 0);
+          yield* Fiber.join(joining);
+          expect(seen.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(1);
+          expect(world.sessions.get(joined)?.summary ?? "").not.toContain("install.sh");
+        }),
+    });
+  });
+
+  it("while the platform cannot apply dotfiles as a person: a fresh worktree whose launcher keeps some runs shared, with them at boot", async () => {
+    const snapshot = { sha: "5eed0f5eed0f5eed0f5eed0f5eed0f5eed0f5eed", data: "c25hcHNob3Q=" };
+    const run = await launchAndJoin({
+      join: null,
+      layers: {
+        dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
+          snapshot: () => Effect.die("not in test"),
+          current: () =>
+            Effect.succeed({
+              sha: snapshot.sha,
+              source: "laptop",
+              committedAt: new Date(0),
+              files: [],
+            }),
+          archive: () => Effect.succeed({ sha: snapshot.sha, data: snapshot.data }),
+          clear: () => Effect.void,
+        }),
+      },
+    });
+    expect(run.created[0]?.dotfiles?.archives).toHaveLength(1);
+    expect(run.opened.every((options) => options.user === undefined)).toBe(true);
+    expect(run.calls.some((call) => call.startsWith("dotfiles:"))).toBe(false);
+  });
+
+  it("while the platform cannot apply dotfiles as a person: a worktree already person starts without them, and says why", async () => {
+    const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
+    const snapshot = { sha: "5eed0f5eed0f5eed0f5eed0f5eed0f5eed0f5eed", data: "c25hcHNob3Q=" };
+    let recorded: SessionDotfiles | null = null;
+    const run = await launchAndJoin({
+      join: null,
+      flag: "shared",
+      state,
+      before: (worktreeId) =>
+        state.worktrees.set(worktreeId, { layout: "person", requested: null }),
+      layers: {
+        dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
+          snapshot: () => Effect.die("not in test"),
+          current: () =>
+            Effect.succeed({
+              sha: snapshot.sha,
+              source: "laptop",
+              committedAt: new Date(0),
+              files: [],
+            }),
+          archive: () => Effect.die("never packed: nothing applies it"),
+          clear: () => Effect.void,
+        }),
+      },
+      inspect: (_engine, world, ids) =>
+        Effect.sync(() => {
+          recorded = world.sessions.get(ids.holder)?.dotfiles ?? null;
+        }),
+    });
+    expect(run.created[0]?.dotfiles).toBeUndefined();
+    expect(run.opened.every((options) => options.user?.name === LAUNCHER)).toBe(true);
+    expect(recorded).toEqual({
+      repository: null,
+      snapshotSha: null,
+      notApplied: [{ source: "snapshot", reason: DOTFILES_NOT_PER_PERSON }],
+    });
   });
 });

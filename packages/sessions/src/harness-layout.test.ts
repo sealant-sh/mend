@@ -13,6 +13,7 @@ import {
   PERSON_SAVED_STATE,
   UNKNOWN_CAPABILITY,
   decideHarnessLayout,
+  DOTFILES_BLOCK_REASON,
   imageLayoutKeyOf,
   layoutProbeScript,
   parseLayoutReport,
@@ -129,6 +130,28 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
       layout: "shared",
       probe: false,
     });
+  });
+
+  it("keeps a fresh worktree shared while the launcher's dotfiles cannot be applied as them", () => {
+    expect(
+      decideHarnessLayout({ ...fresh, flag: "person", capability: capable, dotfilesBlocked: true }),
+    ).toEqual({
+      kind: "launch",
+      layout: "shared",
+      source: "capability",
+      reason: DOTFILES_BLOCK_REASON,
+      probe: false,
+    });
+    // A worktree already person stays person: its launch starts without them instead.
+    expect(
+      decideHarnessLayout({
+        ...fresh,
+        flag: "person",
+        worktree: { layout: "person", requested: null },
+        capability: capable,
+        dotfilesBlocked: true,
+      }),
+    ).toMatchObject({ kind: "launch", layout: "person" });
   });
 
   it("has no way back: a person worktree launches person with the flag off", () => {
@@ -309,7 +332,7 @@ describe("the image probe (decision 1)", () => {
   it("reads which people a prepare made", () => {
     expect(
       parseLayoutReport(
-        "mend-layout probed\nmend-layout made m3kq7xj2a\nmend-layout made mf9t2bw4c\nmend-layout ready\n",
+        "mend-layout probed\nmend-layout made m3kq7xj2a\nmend-layout opencode m3kq7xj2a\nmend-layout made mf9t2bw4c\nmend-layout ready\n",
       ),
     ).toEqual({
       probed: true,
@@ -318,6 +341,7 @@ describe("the image probe (decision 1)", () => {
       made: ["m3kq7xj2a", "mf9t2bw4c"],
       unowned: null,
       failed: [],
+      opencode: ["m3kq7xj2a"],
     });
     expect(parseLayoutReport("mend-layout probed\nmend-layout ready\n").made).toEqual([]);
   });
@@ -388,6 +412,29 @@ describe("what prepare makes (decision 1)", () => {
     expect(report.made).toEqual([alice.name, maria.name]);
     expect(report.ready).toBe(true);
     expect(fs.existsSync(path.join(homesRoot, bob.name))).toBe(false);
+  });
+
+  it("names the people made whose restored saved directory holds an opencode database", () => {
+    const root = fakeRoot();
+    const { harnessHome, script } = prepare(root, [
+      { person: alice, ifSaved: false },
+      { person: maria, ifSaved: true },
+    ]);
+    const database = path.join(
+      harnessHome,
+      "people",
+      maria.accountId,
+      ".local/share/opencode/opencode.db",
+    );
+    fs.mkdirSync(path.dirname(database), { recursive: true });
+    fs.writeFileSync(database, "");
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.made).toEqual([alice.name, maria.name]);
+    expect(report.opencode).toEqual([maria.name]);
+    // Each saved directory has its records' place, theirs alone.
+    expect(
+      fs.statSync(path.join(harnessHome, "people", alice.accountId, ".mend-saved")).mode & 0o777,
+    ).toBe(0o700);
   });
 
   it("refuses a restore that did not apply the owner map: nobody is made, and it says what it found", () => {

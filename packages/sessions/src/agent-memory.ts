@@ -33,7 +33,7 @@ import { shellQuote } from "./workspace-files.ts";
 export const AGENT_MEMORY_DELIVERED = ".mend/agent-memory-delivered.json";
 
 /** Where the stored files wait for the program, relative to the harness home. */
-const AGENT_MEMORY_INCOMING = ".mend/agent-memory-incoming";
+export const AGENT_MEMORY_INCOMING = ".mend/agent-memory-incoming";
 
 /** Where a delivered file Mend no longer stores goes, relative to the harness home. */
 export const AGENT_MEMORY_KEPT_DIR = ".mend/agent-memory-kept";
@@ -125,16 +125,17 @@ type MemoryFile = {
 
 /**
  * Puts the staged memory in place (`node -e`, argv: home, the incoming directory and a fresh kept
- * directory relative to it, the stored files as `[{path, digest}]` JSON, and the account they are
- * for, written to `AGENT_MEMORY_OWNER` before any file moves; "" writes none). Prints one
+ * directory relative to it, the stored files as `[{path, digest}]` JSON, the account they are
+ * for, written to `AGENT_MEMORY_OWNER` before any file moves ("" writes none), and where the
+ * delivered record goes relative to the home (`AGENT_MEMORY_DELIVERED` when absent). Prints one
  * `memory <outcome> <path>` line per file: `written`, `unchanged` (already exactly the stored
  * file), `left` (the session changed it since the last delivery and Mend has not read it back),
  * `kept` (Mend no longer stores it; moved aside) or `error`. Exits 1 after any `error`.
  */
 export const AGENT_MEMORY_DELIVER_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
-  `const [home,incoming,kept,list,owner]=process.argv.slice(1),store=JSON.parse(list);`,
-  `const M=path.join(home,${JSON.stringify(AGENT_MEMORY_DELIVERED)});`,
+  `const [home,incoming,kept,list,owner,record]=process.argv.slice(1),store=JSON.parse(list);`,
+  `const M=path.join(home,record||${JSON.stringify(AGENT_MEMORY_DELIVERED)});`,
   `if(owner){const O=path.join(home,${JSON.stringify(AGENT_MEMORY_OWNER)});fs.mkdirSync(path.dirname(O),{recursive:true});fs.writeFileSync(O,owner)}`,
   `let before={};try{const v=JSON.parse(fs.readFileSync(M,"utf8"));if(v&&typeof v==="object")before=v}catch{}`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
@@ -214,17 +215,50 @@ export const deliverAgentMemoryExec = (
   home: string,
   plan: AgentMemoryPlan,
   owner: string,
+  places: { readonly incoming: string; readonly record: string } = {
+    incoming: AGENT_MEMORY_INCOMING,
+    record: AGENT_MEMORY_DELIVERED,
+  },
 ): ReadonlyArray<string> => [
   "sh",
   "-c",
-  `exec node -e ${shellQuote(AGENT_MEMORY_DELIVER_PROGRAM)} "$1" "$2" "$3" "$4" "$5"`,
+  `exec node -e ${shellQuote(AGENT_MEMORY_DELIVER_PROGRAM)} "$1" "$2" "$3" "$4" "$5" "$6"`,
   "mend-agent-memory",
   home,
-  AGENT_MEMORY_INCOMING,
+  places.incoming,
   plan.kept,
   plan.list,
   owner,
+  places.record,
 ];
+
+/**
+ * `plan`, with every path it names (the stored files, where they wait, the kept directory) moved
+ * by `map`: a person's delivery lays memory into their saved directory, where Codex's summary
+ * database and Mend's records have places of their own (docs/adr/0016, `personSavedPathOf`). The
+ * delivered record's keys are then the moved paths; a read-back moves them back.
+ */
+export const mapAgentMemoryPlan = (
+  plan: AgentMemoryPlan,
+  map: (homeRelative: string) => string,
+): AgentMemoryPlan & { readonly incoming: string } => {
+  const incoming = map(AGENT_MEMORY_INCOMING);
+  const listed = Schema.decodeUnknownSync(
+    Schema.Array(Schema.Struct({ path: Schema.String, digest: Schema.String })),
+  )(JSON.parse(plan.list));
+  const prefix = `${AGENT_MEMORY_INCOMING}/`;
+  return {
+    staged: plan.staged.map((file) => ({
+      path: file.path.startsWith(prefix)
+        ? path.posix.join(incoming, map(file.path.slice(prefix.length)))
+        : map(file.path),
+      bytes: file.bytes,
+    })),
+    list: JSON.stringify(listed.map((file) => ({ path: map(file.path), digest: file.digest }))),
+    kept: map(plan.kept),
+    incoming,
+  };
+};
 
 /** Deliver into a harness home on this machine: the co-located store's mounted home. */
 export const materializeAgentMemory = (

@@ -337,6 +337,14 @@ export class DotfilesSnapshotView extends Schema.Class<DotfilesSnapshotView>(
 export class DotfilesView extends Schema.Class<DotfilesView>("DotfilesView")({
   repository: Schema.NullOr(DotfilesRepository),
   snapshot: Schema.NullOr(DotfilesSnapshotView),
+  /**
+   * "Start my agents after install.sh" (docs/adr/0016, decision 11): where someone else launched
+   * the workspace, your agents wait for your dotfiles' `install.sh` instead of starting beside it.
+   * Absent from servers before it: off.
+   */
+  startAgentsAfterInstall: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+  ),
 }) {}
 
 /**
@@ -362,6 +370,13 @@ export class DotfilesRepositoryRequest extends Schema.Class<DotfilesRepositoryRe
   "DotfilesRepositoryRequest",
 )({
   repository: Schema.NullOr(DotfilesRepository),
+}) {}
+
+/** "Start my agents after install.sh", set for the current account (docs/adr/0016). */
+export class DotfilesStartAfterInstallRequest extends Schema.Class<DotfilesStartAfterInstallRequest>(
+  "DotfilesStartAfterInstallRequest",
+)({
+  startAgentsAfterInstall: Schema.Boolean,
 }) {}
 
 /**

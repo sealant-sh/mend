@@ -7,6 +7,26 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-07 · 0.39.0-next.696 · Per-person deliveries (ADR 0016 Delivery 15): the dotfiles verb, and an exec's environment
+
+- **Missing, now load-bearing:** sealantd's `dotfiles.apply` through Core's SDK. Mend's side is
+  built behind `PersonLayoutPlatform.applyDotfiles` (`packages/sealant/src/person-layout.ts`): a
+  person's archives applied as their user into their home, answering once every file is applied,
+  with `install.sh` (each tree whose `bootstrap` is on) as one managed process of that user whose
+  end Mend can wait on (`DotfilesApplied.bootstrap.ended`, sealantd's `DotfilesApplied.bootstrap` is
+  the `ExecAccepted` of that process). Suggested surface:
+  `workspace.dotfiles.apply({ user, archives }) → { bootstrap: { executionId, wait() } | null }`,
+  staging the archives as `SEALANT_DOTFILES_ARCHIVE_DIR` holds them, bounded by the caller. Until it
+  ships, `dotfilesUser` is false and Mend follows decision 1's fallback: a fresh worktree whose
+  launcher has dotfiles runs `shared` (their dotfiles apply at boot, as before), and a worktree
+  already `person` starts without them, recorded on the session as not applied with the reason.
+  Wiring it is the live layer's `applyDotfiles` and `dotfilesUser: true`.
+- **Missing:** an environment on `workspace.exec`. A person's delivery exec must name the session it
+  speaks for over the session channel (`MEND_SESSION_ID`), and the executor's own environment names
+  the launcher's session. Mend prefixes the argv with `env MEND_SESSION_ID=<id>` (not secret; the
+  person's token stays in their home). `exec(argv, { user, env })`, as `sessions.open` takes `env`,
+  would remove the wrapper.
+
 ## 2026-10-07 · 0.39.0-next.695 · Per-person homes: what Mend's logins per person (ADR 0016 Delivery 14) still lacks
 
 - **Shipped and used:** `user` on sessions and exec, `credentialsHome` on create,

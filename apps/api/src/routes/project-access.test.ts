@@ -111,6 +111,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "dotfiles.repository",
   "dotfiles.snapshot",
   "dotfiles.clearSnapshot",
+  "dotfiles.startAfterInstall",
   "skills.list",
   // The caller's own pi profile: no route names anyone else's (pi-profile.test.ts).
   "piProfile.get",

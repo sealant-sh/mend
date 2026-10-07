@@ -209,6 +209,8 @@ export const createTenancyApi = async (
   const deviceWrites: Array<string> = [];
   // Each account's saved dotfiles repository, when the world serves the dotfiles routes.
   const repositories = new Map<string, DotfilesRepository>();
+  // Who turned on "Start my agents after install.sh" (docs/adr/0016).
+  const startAfterInstall = new Set<string>();
   const userDotfiles: Layer.PartialEffectful<UserDotfilesRepo["Service"]> =
     options.dotfiles === undefined
       ? {}
@@ -219,6 +221,13 @@ export const createTenancyApi = async (
               if (repository === null) repositories.delete(userId);
               else repositories.set(userId, repository);
               return repository;
+            }),
+          startAgentsAfterInstall: (userId) => Effect.sync(() => startAfterInstall.has(userId)),
+          setStartAgentsAfterInstall: (userId, value) =>
+            Effect.sync(() => {
+              if (value) startAfterInstall.add(userId);
+              else startAfterInstall.delete(userId);
+              return value;
             }),
         };
   const effects = Layer.mergeAll(

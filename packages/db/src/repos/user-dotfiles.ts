@@ -20,6 +20,13 @@ export class UserDotfilesRepo extends Context.Service<
       userId: string,
       repository: DotfilesRepository | null,
     ) => Effect.Effect<DotfilesRepository | null>;
+    /**
+     * "Start my agents after install.sh" (docs/adr/0016, decision 11): whether the person's
+     * agents wait for their dotfiles' `install.sh` in an executor someone else launched. Off by
+     * default, and for anyone with no row.
+     */
+    readonly startAgentsAfterInstall: (userId: string) => Effect.Effect<boolean>;
+    readonly setStartAgentsAfterInstall: (userId: string, value: boolean) => Effect.Effect<boolean>;
   }
 >()("@mend/db/UserDotfilesRepo") {}
 
@@ -56,6 +63,37 @@ export const UserDotfilesRepoLive: Layer.Layer<UserDotfilesRepo, never, MendDB> 
       return value;
     });
 
-    return { repository, setRepository };
+    const startAgentsAfterInstall = Effect.fn("UserDotfilesRepo.startAgentsAfterInstall")(
+      function* (userId: string) {
+        const [row] = yield* db
+          .select({ value: userDotfiles.startAgentsAfterInstall })
+          .from(userDotfiles)
+          .where(eq(userDotfiles.userId, userId))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.value ?? false;
+      },
+    );
+
+    const setStartAgentsAfterInstall = Effect.fn("UserDotfilesRepo.setStartAgentsAfterInstall")(
+      function* (userId: string, value: boolean) {
+        yield* db
+          .insert(userDotfiles)
+          .values({
+            userId,
+            repository: null,
+            startAgentsAfterInstall: value,
+            updatedAt: new Date(),
+          })
+          .onConflictDoUpdate({
+            target: userDotfiles.userId,
+            set: { startAgentsAfterInstall: value, updatedAt: new Date() },
+          })
+          .pipe(Effect.orDie);
+        return value;
+      },
+    );
+
+    return { repository, setRepository, startAgentsAfterInstall, setStartAgentsAfterInstall };
   }),
 );
