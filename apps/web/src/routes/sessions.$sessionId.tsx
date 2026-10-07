@@ -225,6 +225,11 @@ function SessionPage() {
   const resumeHarnesses = RESUME_HARNESSES.filter((harness) =>
     canRelaunchSession(control, currentAgent?.kind ?? null, harness !== session.harness),
   );
+  const desktopEnabled =
+    session.workspaceImage?.mode === "custom" &&
+    desktopWorkspaceImage.mode === "custom" &&
+    (session.workspaceImage.baseImage === desktopWorkspaceImage.baseImage ||
+      session.workspaceImage.baseImage === "mend-desktop:local");
 
   return (
     <AppShell projectId={session.projectId}>
@@ -433,8 +438,10 @@ function SessionPage() {
           )}
         </div>
 
-        <div className="mt-9 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <section className="min-w-0">
+        <div
+          className={`mt-9 grid items-start gap-6 ${desktopEnabled ? "lg:grid-cols-2" : "lg:grid-cols-[minmax(0,1fr)_320px]"}`}
+        >
+          <section className={`min-w-0 ${desktopEnabled ? "lg:sticky lg:top-6" : ""}`}>
             {agentPty === null && agentLive ? (
               <>
                 <p className="text-xs font-medium text-label">Terminal</p>
@@ -507,7 +514,16 @@ function SessionPage() {
             )}
           </section>
 
-          <section>
+          {desktopEnabled ? (
+            <SessionDesktop
+              sessionId={sessionId}
+              enabled
+              canRun={control.terminalInput}
+              live={ACTIVE.has(session.status)}
+            />
+          ) : null}
+
+          <section className={desktopEnabled ? "col-span-full" : ""}>
             <p className="text-xs font-medium text-label">Checkpoints</p>
             <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
               {checkpoints.length === 0 ? (
@@ -542,17 +558,6 @@ function SessionPage() {
           </section>
         </div>
       </div>
-      <SessionDesktop
-        sessionId={sessionId}
-        enabled={
-          session.workspaceImage?.mode === "custom" &&
-          desktopWorkspaceImage.mode === "custom" &&
-          (session.workspaceImage.baseImage === desktopWorkspaceImage.baseImage ||
-            session.workspaceImage.baseImage === "mend-desktop:local")
-        }
-        canRun={control.terminalInput}
-        live={ACTIVE.has(session.status)}
-      />
     </AppShell>
   );
 }

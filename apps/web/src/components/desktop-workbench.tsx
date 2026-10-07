@@ -6,7 +6,13 @@ import { DesktopViewer } from "#/components/desktop-viewer";
 import { desktopCommand, readDesktopState } from "#/lib/desktop";
 
 /** Live pixels, a dedicated pilot, and its observed artifacts in one viewport. */
-export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
+export function DesktopWorkbench({
+  baseUrl,
+  layout = "wide",
+}: {
+  readonly baseUrl: string;
+  readonly layout?: "wide" | "stacked";
+}) {
   const state = useQuery({
     queryKey: ["desktop", baseUrl],
     queryFn: () => readDesktopState(baseUrl),
@@ -42,7 +48,9 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
   const field =
     "w-full rounded-xl border border-input bg-card px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring";
   return (
-    <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+    <div
+      className={`grid min-w-0 items-start gap-6 ${layout === "wide" ? "lg:grid-cols-[minmax(0,1fr)_360px]" : ""}`}
+    >
       <div className="overflow-hidden rounded-2xl bg-card shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
           <p className="font-mono text-xs text-muted-foreground">
@@ -186,7 +194,9 @@ export function DesktopWorkbench({ baseUrl }: { readonly baseUrl: string }) {
             </p>
           ) : null}
         </form>
-        <section className="col-span-full grid min-w-0 gap-4 lg:grid-cols-2">
+        <section
+          className={`col-span-full grid min-w-0 gap-4 ${layout === "wide" ? "lg:grid-cols-2" : ""}`}
+        >
           <h2 className="col-span-full text-base font-medium">Recorded observations</h2>
           {!observed?.runs.length ? (
             <p className="text-sm text-muted-foreground">

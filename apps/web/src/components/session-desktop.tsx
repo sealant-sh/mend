@@ -70,14 +70,10 @@ function LiveSessionDesktop({
     }
   };
   return (
-    <section id="desktop" className="mt-6 scroll-mt-6 space-y-4">
+    <section id="desktop" className="min-w-0 scroll-mt-6 space-y-3">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-medium">Desktop experiment</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            A desktop in this session's workspace, using your connected agent. Recordings stay
-            beside its observations.
-          </p>
+          <h2 className="text-xs font-medium text-label">Desktop</h2>
         </div>
         {(!desktop || stopped) && canRun && live ? (
           <Button disabled={pending} onClick={() => void start()}>
@@ -91,7 +87,7 @@ function LiveSessionDesktop({
         </p>
       ) : null}
       {desktop && canRun ? (
-        <DesktopWorkbench baseUrl={url} />
+        <DesktopWorkbench baseUrl={url} layout="stacked" />
       ) : desktop ? (
         <p className="text-sm text-muted-foreground">The session owner controls this desktop.</p>
       ) : (
