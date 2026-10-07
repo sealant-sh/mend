@@ -4,7 +4,11 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, BudgetExceeded } from "./common.ts";
-import { DotfilesRepositoryRequest, ObservationStamp } from "./workbench-views.ts";
+import {
+  DotfilesRepositoryRequest,
+  DotfilesStartAfterInstallRequest,
+  ObservationStamp,
+} from "./workbench-views.ts";
 import {
   DotfilesSnapshotRequest,
   DotfilesView,
@@ -63,6 +67,14 @@ export const dotfilesGroup = HttpApiGroup.make("dotfiles")
   )
   .add(
     HttpApiEndpoint.delete("clearSnapshot", "/dotfiles/snapshot", {
+      success: DotfilesView,
+      error: SettingsFailure,
+    }),
+  )
+  .add(
+    // Whether your agents wait for your `install.sh` where someone else launched the workspace.
+    HttpApiEndpoint.put("startAfterInstall", "/dotfiles/start-after-install", {
+      payload: DotfilesStartAfterInstallRequest,
       success: DotfilesView,
       error: SettingsFailure,
     }),

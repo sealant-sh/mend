@@ -95,19 +95,50 @@ export interface HeldHome {
  */
 export type CaptureOwnerMap = WorkspaceCaptureOwnerMap;
 
+/** One dotfiles tree, as the launch resolved it (a repository clone or the store's snapshot). */
+export interface DotfilesArchive {
+  readonly data: string;
+  readonly manager: string;
+  /** Run the tree's `./install.sh` once its files are applied. */
+  readonly bootstrap: boolean;
+}
+
+/**
+ * `./install.sh` of a person's dotfiles, started by sealantd as one managed process of that user
+ * once every file is applied (`dotfiles.apply`'s `bootstrap`, sealantd#147): the caller starts the
+ * person's agent beside it or after it (docs/adr/0016, decision 11).
+ */
+export interface DotfilesBootstrap {
+  /** Ends when the script does: its exit code, null when the platform could not say. */
+  readonly ended: Effect.Effect<{ readonly exitCode: number | null }, SealantPlatformError>;
+}
+
+/** What `applyDotfiles` answers once every file is applied, before any `install.sh` ends. */
+export interface DotfilesApplied {
+  /** Null when no tree had an `install.sh` to run (or its `bootstrap` setting is off). */
+  readonly bootstrap: DotfilesBootstrap | null;
+}
+
 /**
  * The platform surface the person layout needs (docs/adr/0016, decisions 1, 5 and 11), behind one
  * contract so the engine is written against the ADR's stated interface. The live layer
  * (`PersonLayoutPlatformLive`, `person-layout-live.ts`) passes each piece through to Core's SDK
  * (0.39): processes as a user, the image's per-person capability before create, and the
- * credentials API (one person per home). Dotfiles as a person through a control verb have no SDK
- * surface yet (PLATFORM-FEEDBACK.md), so that piece still fails.
+ * credentials API (one person per home). Dotfiles as a person through sealantd's
+ * `dotfiles.apply` have no SDK surface yet (PLATFORM-FEEDBACK.md), so `dotfilesUser` is false and
+ * that piece fails until Core ships it.
  */
 export class PersonLayoutPlatform extends Context.Service<
   PersonLayoutPlatform,
   {
     /** Sessions and exec can start a process as a given user (`ProcessUserOption`). */
     readonly processUser: boolean;
+    /**
+     * `applyDotfiles` works: a person's dotfiles can be applied as them into their home. False
+     * until Core's SDK carries sealantd's `dotfiles.apply`; a person launch then follows decision
+     * 1's fallback for dotfiles (`harness-layout-steps.ts`, `dotfilesBlocked`).
+     */
+    readonly dotfilesUser: boolean;
     /**
      * The create of a person launch with its capture owner map (`CaptureOwnerMap`) on its capture
      * source, so the executor's sealantd restores each person's files as theirs (decision 8). A
@@ -156,20 +187,19 @@ export class PersonLayoutPlatform extends Context.Service<
     /**
      * sealantd's dotfiles applier through the control verb (decision 11; sealantd Delivery 5,
      * Core Delivery 8): a person's dotfiles applied as `user` into `home`, or as root into `home`
-     * when `user` is null (decision 1's fallback to `/root`).
+     * when `user` is null (decision 1's fallback to `/root`). Answers once every file is applied;
+     * `install.sh` (each tree whose `bootstrap` is on) then runs as that user, beside the caller.
      */
     readonly applyDotfiles: (
       workspace: Workspace,
       input: {
+        /** The Mend account whose dotfiles these are. */
+        readonly onBehalfOf: string;
         readonly user: ProcessUser | null;
         readonly home: string;
-        readonly archives: ReadonlyArray<{
-          readonly data: string;
-          readonly manager: string;
-          readonly bootstrap: boolean;
-        }>;
+        readonly archives: ReadonlyArray<DotfilesArchive>;
       },
-    ) => Effect.Effect<void, SealantPlatformError>;
+    ) => Effect.Effect<DotfilesApplied, SealantPlatformError>;
   }
 >()("@mend/sealant/PersonLayoutPlatform") {}
 
@@ -190,6 +220,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
   PersonLayoutPlatform,
   {
     processUser: false,
+    dotfilesUser: false,
     withOwnerMap: (options) => options,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),
     postCredentials: () =>

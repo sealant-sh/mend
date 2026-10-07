@@ -244,7 +244,8 @@ export const planSkills = (
 
 /**
  * Clears the plan's directories under a harness home (`node -e`, argv: home, the kept directory
- * relative to it, the `vacate` list as JSON). Prints one `skill <outcome> <dir>[ <detail>]` line
+ * relative to it or absolute, the `vacate` list as JSON). A directory kept across filesystems (a
+ * person's home to their saved directory, docs/adr/0016) is copied whole, then removed. Prints one `skill <outcome> <dir>[ <detail>]` line
  * per directory: `absent`; `unchanged` (its files are exactly `delivering`, leaving out any
  * directory named in its `skip`; nothing was touched and nothing is written into it); `kept` (moved whole to the detail path; nothing is ever
  * deleted); `error` (the detail is the code). Exits 1 after any `error`,
@@ -263,7 +264,9 @@ export const SKILLS_VACATE_PROGRAM = [
   `try{st=fs.lstatSync(abs)}catch(e){if(e.code==="ENOENT"){say("absent",it.dir);continue}say("error",it.dir,e.code);failed=true;continue}`,
   `let digest=null;if(st.isDirectory()){try{digest=tree(abs,it.skip||[],it.skipFiles||[])}catch{digest=null}}`,
   `if(digest!==null&&it.delivering!==null&&digest===it.delivering){say("unchanged",it.dir);continue}`,
-  `try{const rel=path.join(kept,it.dir),to=path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});fs.renameSync(abs,to);say("kept",it.dir,rel)}`,
+  `try{const rel=path.join(kept,it.dir),to=path.isAbsolute(kept)?rel:path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});`,
+  `try{fs.renameSync(abs,to)}catch(e){if(e.code!=="EXDEV")throw e;fs.cpSync(abs,to,{recursive:true,verbatimSymlinks:true,errorOnExist:true,force:false});fs.rmSync(abs,{recursive:true,force:true})}`,
+  `say("kept",it.dir,rel)}`,
   `catch(e){say("error",it.dir,e.code||"error");failed=true}}`,
   `process.exit(failed?1:0)`,
 ].join("");

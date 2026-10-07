@@ -13,6 +13,7 @@ import {
   PERSON_SAVED_STATE,
   UNKNOWN_CAPABILITY,
   decideHarnessLayout,
+  DOTFILES_BLOCK_REASON,
   imageLayoutKeyOf,
   layoutProbeScript,
   parseLayoutReport,
@@ -81,6 +82,11 @@ const fakeRoot = () => {
   stub("chgrp", `echo "chgrp $*" >> "${log}"`);
   stub("sudo", "exit 0");
   stub("setfacl", "exit 0");
+  // As the person: the stand-in drops its options and runs the rest as the test's own user.
+  stub(
+    "setpriv",
+    'while [ "$#" -gt 0 ]; do case "$1" in --) shift; break ;; -*) shift ;; *) break ;; esac; done; exec "$@"',
+  );
   stub("sealantd", `echo '{"exec.user":true,"dotfiles.user":true,"restore.owner_map":true}'`);
   // The image's skeleton: a dotfile and the link to a shared cache decision 3 depends on.
   const skel = path.join(dir, "skel");
@@ -129,6 +135,28 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
       layout: "shared",
       probe: false,
     });
+  });
+
+  it("keeps a fresh worktree shared while the launcher's dotfiles cannot be applied as them", () => {
+    expect(
+      decideHarnessLayout({ ...fresh, flag: "person", capability: capable, dotfilesBlocked: true }),
+    ).toEqual({
+      kind: "launch",
+      layout: "shared",
+      source: "capability",
+      reason: DOTFILES_BLOCK_REASON,
+      probe: false,
+    });
+    // A worktree already person stays person: its launch starts without them instead.
+    expect(
+      decideHarnessLayout({
+        ...fresh,
+        flag: "person",
+        worktree: { layout: "person", requested: null },
+        capability: capable,
+        dotfilesBlocked: true,
+      }),
+    ).toMatchObject({ kind: "launch", layout: "person" });
   });
 
   it("has no way back: a person worktree launches person with the flag off", () => {
@@ -309,7 +337,7 @@ describe("the image probe (decision 1)", () => {
   it("reads which people a prepare made", () => {
     expect(
       parseLayoutReport(
-        "mend-layout probed\nmend-layout made m3kq7xj2a\nmend-layout made mf9t2bw4c\nmend-layout ready\n",
+        "mend-layout probed\nmend-layout made m3kq7xj2a\nmend-layout opencode m3kq7xj2a\nmend-layout made mf9t2bw4c\nmend-layout ready\n",
       ),
     ).toEqual({
       probed: true,
@@ -318,6 +346,7 @@ describe("the image probe (decision 1)", () => {
       made: ["m3kq7xj2a", "mf9t2bw4c"],
       unowned: null,
       failed: [],
+      opencode: ["m3kq7xj2a"],
     });
     expect(parseLayoutReport("mend-layout probed\nmend-layout ready\n").made).toEqual([]);
   });
@@ -390,6 +419,29 @@ describe("what prepare makes (decision 1)", () => {
     expect(fs.existsSync(path.join(homesRoot, bob.name))).toBe(false);
   });
 
+  it("names the people made whose restored saved directory holds an opencode database", () => {
+    const root = fakeRoot();
+    const { harnessHome, script } = prepare(root, [
+      { person: alice, ifSaved: false },
+      { person: maria, ifSaved: true },
+    ]);
+    const database = path.join(
+      harnessHome,
+      "people",
+      maria.accountId,
+      ".local/share/opencode/opencode.db",
+    );
+    fs.mkdirSync(path.dirname(database), { recursive: true });
+    fs.writeFileSync(database, "");
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.made).toEqual([alice.name, maria.name]);
+    expect(report.opencode).toEqual([maria.name]);
+    // Each saved directory has its records' place, theirs alone.
+    expect(
+      fs.statSync(path.join(harnessHome, "people", alice.accountId, ".mend-saved")).mode & 0o777,
+    ).toBe(0o700);
+  });
+
   it("refuses a restore that did not apply the owner map: nobody is made, and it says what it found", () => {
     const root = fakeRoot();
     // sealantd gave the worktree to another group (or to none): root's 0644 files, which nobody
@@ -421,6 +473,73 @@ describe("what prepare makes (decision 1)", () => {
     expect(report.ready).toBe(false);
     expect(run.stdout).not.toContain(maria.name);
     expect(run.status).toBe(3);
+  });
+});
+
+describe("a link a person left in their own saved directory (review of mend#566, P2-1)", () => {
+  const plant = (entry: string) => {
+    const root = fakeRoot();
+    const harnessHome = path.join(root.dir, "harness-home");
+    const saved = path.join(harnessHome, "people", alice.accountId);
+    fs.mkdirSync(saved, { recursive: true });
+    // Someone else's home, as it would sit beside theirs.
+    const target = path.join(root.dir, "maria-home");
+    fs.mkdirSync(target, { mode: 0o755 });
+    fs.chmodSync(target, 0o755);
+    fs.symlinkSync(target, path.join(saved, entry));
+    const run = root.run(
+      personHomeScript(alice, {
+        harnessHome,
+        home: path.join(root.dir, "home", alice.name),
+        tmpRoot: path.join(root.dir, "tmp"),
+        runRoot: path.join(root.dir, "run"),
+        skel: root.skel,
+      }),
+    );
+    return { root, run, target };
+  };
+
+  it.each([".mend-saved", "codex-db", "conversations", ".claude", ".local"])(
+    "at %s leads root nowhere: refused before anything is made, changed or given away through it",
+    (entry) => {
+      const { root, run, target } = plant(entry);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("unexpected link");
+      expect(fs.statSync(target).mode & 0o7777).toBe(0o755);
+      expect(fs.readdirSync(target)).toEqual([]);
+      for (const line of root.log().split("\n")) expect(line).not.toContain(target);
+    },
+  );
+});
+
+describe("a private TMPDIR someone else made first (review of mend#566, round 2 P3-2)", () => {
+  it("is moved out of the way, never adopted with what it holds, and theirs is made new", () => {
+    const root = fakeRoot();
+    const harnessHome = path.join(root.dir, "harness-home");
+    const tmpRoot = path.join(root.dir, "tmp");
+    const planted = path.join(tmpRoot, `u-${alice.uid}`);
+    fs.mkdirSync(path.join(planted, "shared"), { recursive: true, mode: 0o777 });
+    fs.symlinkSync(path.join(root.dir, "elsewhere"), path.join(planted, "cache"));
+    const run = root.run(
+      personHomeScript(alice, {
+        harnessHome,
+        home: path.join(root.dir, "home", alice.name),
+        tmpRoot,
+        runRoot: path.join(root.dir, "run"),
+        skel: root.skel,
+      }),
+    );
+    expect(run.status).toBe(0);
+    expect(fs.readdirSync(planted)).toEqual([]);
+    expect(fs.statSync(planted).mode & 0o777).toBe(0o700);
+    const asideName = fs
+      .readdirSync(tmpRoot)
+      .find((name) => name.startsWith(`u-${alice.uid}.mend-set-aside-`));
+    expect(asideName).toBeDefined();
+    expect(fs.readdirSync(path.join(tmpRoot, asideName ?? "")).toSorted()).toEqual([
+      "cache",
+      "shared",
+    ]);
   });
 });
 
@@ -479,9 +598,9 @@ describe("a home Core wrote into before its user existed (decision 5)", () => {
     expect(log.indexOf(`chown ${alice.uid}:40000 ${home}\n`)).toBeGreaterThanOrEqual(0);
     expect(run.stderr).toContain("already exists");
     // The skeleton copied in becomes theirs: one walk of a home that holds only it.
-    expect(log.split("\n").filter((line) => line.startsWith("chown -hR"))).toEqual([
-      `chown -hR ${alice.uid}:40000 ${home}`,
-    ]);
+    expect(
+      log.split("\n").filter((line) => line.startsWith("chown -hR") && line.endsWith(home)),
+    ).toEqual([`chown -hR ${alice.uid}:40000 ${home}`]);
   });
 
   it("a home Core's POST made first, logins inside, is kept and becomes the user's", () => {
@@ -1079,16 +1198,20 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(opened.tickets.size()).toBe(1);
   });
 
-  it("as root gives the files to their person", async () => {
-    // Under a fake root, `id -u` says 0; node's own uid decides the chown, so as a non-root test
-    // it only shows the files are written where a root run would give them away.
+  it("as root makes what is in the home as the person, never giving anything away through a link", async () => {
+    // Under a fake root, `id -u` says 0, and `setpriv` runs the rest as the test's own user.
     const root = fakeRoot();
     const { home, script } = homeOf(root);
     expect(root.run(script).status).toBe(0);
-    // `-h`: a link their dotfiles made is given away, never what it points at.
-    expect(root.log()).toContain(
-      `chown -h 40012:40000 ${home}/.mend ${home}/.config ${home}/.config/git`,
-    );
+    expect(script).toContain("setpriv --reuid=40012 --regid=40000 --clear-groups");
+    // Root gives away only the home itself: `.mend`, `.config` and the rest are the person's own.
+    for (const line of root
+      .log()
+      .split("\n")
+      .filter((entry) => entry.startsWith("chown"))) {
+      expect(line).not.toContain(`${home}/`);
+    }
+    expect(fs.statSync(path.join(home, ".mend")).isDirectory()).toBe(true);
   });
 
   it("refuses a ~/.mend that is a link, and a ticket that is not one", () => {

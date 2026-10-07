@@ -3142,6 +3142,19 @@ const executorWorkspaceIndexMigration = Effect.gen(function* () {
       WHERE executor_launch_id IS NOT NULL`;
 });
 
+/**
+ * 0115 (docs/adr/0016, decision 11): "Start my agents after install.sh", a per-person setting,
+ * off by default. A person's `install.sh` runs beside the agent of their first process in an
+ * executor someone else launched, so a join stays inside its budget; with this on, their agents
+ * wait for it.
+ */
+const startAgentsAfterInstallMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE user_dotfiles
+      ADD COLUMN start_agents_after_install boolean NOT NULL DEFAULT false`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3257,4 +3270,5 @@ export const migrations = {
   "0112_harness_layout": harnessLayoutMigration,
   "0113_person_identity": personIdentityMigration,
   "0114_executor_workspace_index": executorWorkspaceIndexMigration,
+  "0115_start_agents_after_install": startAgentsAfterInstallMigration,
 };

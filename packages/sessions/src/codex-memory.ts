@@ -558,16 +558,18 @@ export const prepareCarriedConversations = (
 export const CARRIED_INCOMING = ".mend/carried-incoming";
 
 /**
- * Lays carried conversations down in a workspace (`node -e`, argv: the harness home and the
- * `[{id, path, mtime}]` JSON; each `<incoming>/<id>.gz` waits staged). Nothing that was not carried
+ * Lays carried conversations down in a workspace (`node -e`, argv: the harness home, the
+ * `[{id, path, mtime}]` JSON, and optionally where the carried list and the staged files are
+ * relative to the home, `CARRIED_TRANSCRIPTS` and `CARRIED_INCOMING` otherwise; each
+ * `<incoming>/<id>.gz` waits staged). Nothing that was not carried
  * is ever touched or listed: a file already at the path that Mend did not carry is left, and stays
  * the session's own. One Mend carried is replaced only by a later revision. Each id is listed in
  * `CARRIED_TRANSCRIPTS` before its file appears. Prints `carried <outcome> <id>` per conversation.
  */
 export const CARRY_PROGRAM = [
   `const fs=require("fs"),path=require("path"),zlib=require("zlib");`,
-  `const [home,list]=process.argv.slice(1),items=JSON.parse(list);`,
-  `const L=path.join(home,${JSON.stringify(CARRIED_TRANSCRIPTS)}),I=path.join(home,${JSON.stringify(CARRIED_INCOMING)});`,
+  `const [home,list,listed_,incoming_]=process.argv.slice(1),items=JSON.parse(list);`,
+  `const L=path.join(home,listed_||${JSON.stringify(CARRIED_TRANSCRIPTS)}),I=path.join(home,incoming_||${JSON.stringify(CARRIED_INCOMING)});`,
   `fs.mkdirSync(path.dirname(L),{recursive:true});`,
   `const listed=new Set(fs.existsSync(L)?fs.readFileSync(L,"utf8").split("\\n").filter(Boolean):[]);`,
   `let failed=false;`,
@@ -589,12 +591,17 @@ export const CARRY_PROGRAM = [
 export const carryConversationsExec = (
   home: string,
   files: ReadonlyArray<CarriedFile>,
+  /** Where the carried list and the staged files go, relative to `home` (a person's `P`). */
+  places: { readonly listed: string; readonly incoming: string } = {
+    listed: CARRIED_TRANSCRIPTS,
+    incoming: CARRIED_INCOMING,
+  },
 ): {
   readonly staged: ReadonlyArray<{ readonly path: string; readonly bytes: Uint8Array }>;
   readonly argv: ReadonlyArray<string>;
 } => ({
   staged: files.map((file) => ({
-    path: path.posix.join(home, CARRIED_INCOMING, `${file.providerSessionId}.gz`),
+    path: path.posix.join(home, places.incoming, `${file.providerSessionId}.gz`),
     bytes: file.gzipped,
   })),
   argv: [
@@ -605,6 +612,9 @@ export const carryConversationsExec = (
     JSON.stringify(
       files.map((file) => ({ id: file.providerSessionId, path: file.path, mtime: file.mtime })),
     ),
+    ...(places.listed === CARRIED_TRANSCRIPTS && places.incoming === CARRIED_INCOMING
+      ? []
+      : [places.listed, places.incoming]),
   ],
 });
 

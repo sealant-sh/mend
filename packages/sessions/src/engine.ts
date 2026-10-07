@@ -71,6 +71,7 @@ import type {
   Service,
   ServiceRecipe,
   Session,
+  SessionDotfiles,
   SessionDotfilesNotApplied,
   SessionOrigin,
   SessionProcess,
@@ -167,6 +168,8 @@ import {
   captureDrainOf,
   type CaptureFlushKind,
   type CaptureOwnerMap,
+  type DotfilesArchive,
+  type DotfilesBootstrap,
   PersonLayoutPlatform,
   type ProcessUser,
   SealantClient,
@@ -207,6 +210,7 @@ import type {
   Workspace,
   WorkspaceCaptureSource,
   WorkspaceCredentialsOptions,
+  WorkspaceExecResult,
 } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import {
@@ -235,6 +239,7 @@ import {
   asMemoryFile,
   deliverAgentMemoryExec,
   handOverAgentMemoryExec,
+  mapAgentMemoryPlan,
   materializeAgentMemory,
   mergeTextUnion,
   parseAgentMemoryDelivered,
@@ -267,8 +272,10 @@ import {
   CHANNEL_OWNER_RUNS,
   CHANNEL_TOKEN_NOT_ACCEPTED,
   containerTokenRefused,
+  pickupOnly,
 } from "./channel-identity.ts";
 import {
+  CARRIED_INCOMING,
   carryConversationsExec,
   codexDatabaseHolds,
   codexMemoryMayStayOn,
@@ -292,6 +299,8 @@ import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HarnessLayoutConfig,
   type LaunchLayout,
+  type PersonHome,
+  type PrepareOutcome,
   SHARED_AS_BEFORE,
   isAuthenticationFailure,
   layoutRefused,
@@ -360,6 +369,29 @@ import {
   type PlacedPastedImage,
   storePastedImage as storePastedImageOnHost,
 } from "./pasted-images.ts";
+import {
+  BOOTSTRAP_RUNNING_WORDS,
+  BOOTSTRAP_STILL_RUNNING_WORDS,
+  bootstrapFinishedLateWords,
+  DOTFILES_APPLY_BOUND_MS,
+  BOOTSTRAP_WAIT_BOUND_MS,
+  DOTFILES_NOT_PER_PERSON,
+  FIRST_PROCESS_DONE,
+  opencodeDatabaseOf,
+  opencodeScrubArgv,
+  opencodeScrubFailedWords,
+  parseDisplacedLinks,
+  parseOpencodeScrub,
+  parsePersonRecords,
+  PERSON_SKILLS_DIGESTS,
+  PERSON_SKILLS_MANIFEST,
+  type PersonPlaces,
+  type PersonRecord,
+  personLinksScript,
+  personPlacesOf,
+  personRecordsExec,
+  personSavedPathOf,
+} from "./person-deliveries.ts";
 import {
   materializePiProfile,
   piProfileFilesToWrite,
@@ -1013,6 +1045,45 @@ const EXECUTOR_END_LOOKS = 6;
  * final flush admits nothing, so nothing on its disk moves in between.
  */
 const FINAL_ANSWER_REUSE_MS = 5_000;
+
+/**
+ * One person's exec in a person-layout executor (docs/adr/0016, Delivery 15): as their user, into
+ * their own home `R` and saved directory `P`, speaking for `sessionId` over the session channel
+ * with their own Mend token (`script-transport.ts` finds it in their passwd home).
+ */
+interface PersonExec {
+  readonly person: LinuxIdentity;
+  readonly user: ProcessUser;
+  readonly sessionId: SessionId;
+  readonly places: PersonPlaces;
+}
+
+/**
+ * What a person's exec runs ahead of its own argv (`execAsPerson`): umask 077, so what a delivery
+ * makes in their home and saved directory is theirs alone unless it says otherwise, and the
+ * session it speaks for over the session channel.
+ */
+export const personExecPrefix = (sessionId: string): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  'umask 077 && exec "$@"',
+  "mend-as-person",
+  "env",
+  `MEND_SESSION_ID=${sessionId}`,
+];
+
+/** A person's deliveries, with what Mend last delivered into their home (`personRecordsExec`). */
+interface PersonDelivery extends PersonExec {
+  readonly records: ReadonlyMap<PersonRecord, string | null>;
+}
+
+/** What a person's deliveries leave for the start that waits on them. */
+interface PersonDelivered {
+  /** The Codex conversations carried in (never this session's own). */
+  readonly carried: ReadonlyArray<string>;
+  /** Their dotfiles' `install.sh`, running beside whatever starts now; null: none. */
+  readonly bootstrap: DotfilesBootstrap | null;
+}
 
 /**
  * What a drain said of its executor, for the work a Stop put off until the drain's final flush
@@ -6422,6 +6493,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       };
 
       /**
+       * An exec as a person (`PersonExec`): their user, and the session it speaks for named in its
+       * environment, which an exec cannot otherwise set (the platform's exec takes argv only). The
+       * session id is no secret; the person's token stays in their home.
+       */
+      const execAsPerson = (
+        workspace: Workspace,
+        as: PersonExec,
+        argv: ReadonlyArray<string>,
+      ): Effect.Effect<WorkspaceExecResult, SealantPlatformError> =>
+        sealant.exec(workspace, [...personExecPrefix(as.sessionId), ...argv], { user: as.user });
+
+      /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
        * the launch of the executor in `workspace` when Mend knows it: one to three reads of the
        * store (the launch row, then the lease and its holder's launch). Nothing reaches the
@@ -9696,7 +9779,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // What prepare found about the layout, recorded; a refusal stops the executor here.
         const settleLayout = (stdout: string) =>
           input.layout === undefined
-            ? Effect.succeed({ layout: "shared" as const, fallback: null })
+            ? Effect.succeed<PrepareOutcome>({ layout: "shared", fallback: null })
             : layoutSteps
                 .settlePrepare({
                   layout: launchLayout,
@@ -9755,6 +9838,137 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           setupSkippedFrom,
           layout: outcome.layout,
           fallback: outcome.layout === "shared" ? outcome.fallback : null,
+          opencode: outcome.layout === "person" ? outcome.opencode : [],
+          bootstrap: outcome.layout === "shared" ? (outcome.bootstrap ?? null) : null,
+        };
+      });
+
+      /**
+       * A person's dotfiles for a launch (docs/guides/dotfiles): the repository cloned as them and
+       * the store's snapshot, both resolved server-side, so the workspace only ever sees file
+       * trees. Custom images skip dotfiles entirely: the platform rejects them there
+       * (POSIX-shell-only contract), and a project that brings its own base brings its own
+       * environment. A source that cannot be resolved never costs the launch: it is left out, the
+       * other source still applies, and what was left out is said.
+       */
+      const resolveDotfiles = Effect.fn("SessionEngine.resolveDotfiles")(function* (
+        sessionId: SessionId,
+        project: Project,
+        workspaceImage: WorkspaceImage,
+        ownerUserId: string | null,
+      ) {
+        // Dotfiles are the person's. Both sources resolve server-side — the repo clone at
+        // provision, the store snapshot as the exact commit the owner last synced — and the
+        // workspace only ever sees file trees, never a URL or credential. Custom images skip
+        // dotfiles entirely: the platform rejects them there (POSIX-shell-only contract), and a
+        // project that brings its own base brings its own environment.
+        const dotfilesEnabled =
+          project.applyDotfiles && workspaceImage.mode !== "custom" && ownerUserId !== null;
+        const dotfilesRepository =
+          dotfilesEnabled && ownerUserId !== null
+            ? yield* userDotfilesRepo.repository(ownerUserId)
+            : null;
+        // A dotfiles source that cannot be resolved never costs the launch (it costs every
+        // launch of every project otherwise): the workspace launches without that archive, the
+        // other source still applies, and the session records what was left out and why.
+        const leftOut = (
+          source: SessionDotfilesNotApplied["source"],
+          error: { readonly message: string },
+        ): Effect.Effect<SessionDotfilesNotApplied> =>
+          Effect.logWarning("session engine: dotfiles source not applied").pipe(
+            Effect.annotateLogs({ sessionId, source, reason: error.message }),
+            Effect.as({ source, reason: error.message }),
+          );
+        // The repository was checked when it was saved; checked again here, and the clone dials the
+        // address just checked, because a name can answer differently at every launch. The owner's
+        // actual role was applied at save; this recheck guards the tenant profile's networks.
+        // The pin composes over the clone's own defaults, so a pinned ssh keeps BatchMode.
+        // The clone runs as the owner, with their own git access (DotfilesCloner).
+        const repositoryOutcome =
+          dotfilesRepository === null || ownerUserId === null
+            ? null
+            : yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
+                Effect.mapError(
+                  (refused) =>
+                    new DotfilesResolveError({
+                      message: `dotfiles repository refused: ${refused.message}`,
+                    }),
+                ),
+                Effect.flatMap((clearance) =>
+                  dotfilesCloner.archive(ownerUserId, dotfilesRepository, {
+                    pinCloneEnv: (env) => sourcePolicy.pinnedEnv(clearance, env),
+                  }),
+                ),
+                Effect.map((archive) => ({ archive, notApplied: null })),
+                Effect.catchTag("DotfilesResolveError", (error) =>
+                  leftOut("repository", error).pipe(
+                    Effect.map((notApplied) => ({ archive: null, notApplied })),
+                  ),
+                ),
+              );
+        const snapshotOutcome =
+          dotfilesEnabled && ownerUserId !== null
+            ? yield* dotfilesStore.archive(ownerUserId).pipe(
+                Effect.map((snapshot) => ({ snapshot, notApplied: null })),
+                Effect.catchTag("DotfilesStoreError", (error) =>
+                  leftOut("snapshot", error).pipe(
+                    Effect.map((notApplied) => ({ snapshot: null, notApplied })),
+                  ),
+                ),
+              )
+            : null;
+        const dotfilesSnapshot = snapshotOutcome?.snapshot ?? null;
+        // Apply order: the repository first, the snapshot after (the synced selection wins).
+        const dotfilesArchives = [
+          repositoryOutcome?.archive ?? null,
+          dotfilesSnapshot === null ? null : snapshotArchive(dotfilesSnapshot),
+        ].filter((archive) => archive !== null);
+        const dotfilesNotApplied = [
+          repositoryOutcome?.notApplied ?? null,
+          snapshotOutcome?.notApplied ?? null,
+        ].filter((entry) => entry !== null);
+        return {
+          repository: dotfilesRepository,
+          snapshot: dotfilesSnapshot,
+          snapshotSha: dotfilesSnapshot?.sha ?? null,
+          archives: dotfilesArchives,
+          notApplied: dotfilesNotApplied,
+        };
+      });
+
+      /**
+       * A person's dotfiles where the platform cannot apply them as that person yet
+       * (`PersonLayoutPlatform.dotfilesUser`, docs/adr/0016): nothing is resolved or applied, and
+       * every source the person keeps is named as not applied, with the reason. Two reads, no
+       * clone.
+       */
+      const dotfilesNotPerPerson = Effect.fn("SessionEngine.dotfilesNotPerPerson")(function* (
+        project: Project,
+        workspaceImage: WorkspaceImage,
+        accountId: string | null,
+      ) {
+        const enabled =
+          project.applyDotfiles && workspaceImage.mode !== "custom" && accountId !== null;
+        const repository =
+          enabled && accountId !== null ? yield* userDotfilesRepo.repository(accountId) : null;
+        const snapshot =
+          enabled && accountId !== null
+            ? yield* dotfilesStore.current(accountId).pipe(Effect.orElseSucceed(() => null))
+            : null;
+        const notApplied: Array<SessionDotfilesNotApplied> = [
+          ...(repository === null
+            ? []
+            : [{ source: "repository" as const, reason: DOTFILES_NOT_PER_PERSON }]),
+          ...(snapshot === null
+            ? []
+            : [{ source: "snapshot" as const, reason: DOTFILES_NOT_PER_PERSON }]),
+        ];
+        return {
+          repository,
+          snapshot: null,
+          snapshotSha: null,
+          archives: [],
+          notApplied,
         };
       });
 
@@ -9916,76 +10130,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // it ACTUALLY provisioned with, so a later settings change never rewrites what a past
         // session ran on.
         const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
-        // Dotfiles are the OWNER's. Both sources resolve server-side — the repo clone at
-        // provision, the store snapshot as the exact commit the owner last synced — and the
-        // workspace only ever sees file trees, never a URL or credential. Custom images skip
-        // dotfiles entirely: the platform rejects them there (POSIX-shell-only contract), and a
-        // project that brings its own base brings its own environment.
-        const dotfilesEnabled =
-          project.applyDotfiles && workspaceImage.mode !== "custom" && ownerUserId !== null;
-        const dotfilesRepository =
-          dotfilesEnabled && ownerUserId !== null
-            ? yield* userDotfilesRepo.repository(ownerUserId)
-            : null;
-        // A dotfiles source that cannot be resolved never costs the launch (it costs every
-        // launch of every project otherwise): the workspace launches without that archive, the
-        // other source still applies, and the session records what was left out and why.
-        const leftOut = (
-          source: SessionDotfilesNotApplied["source"],
-          error: { readonly message: string },
-        ): Effect.Effect<SessionDotfilesNotApplied> =>
-          Effect.logWarning("session engine: dotfiles source not applied").pipe(
-            Effect.annotateLogs({ sessionId, source, reason: error.message }),
-            Effect.as({ source, reason: error.message }),
-          );
-        // The repository was checked when it was saved; checked again here, and the clone dials the
-        // address just checked, because a name can answer differently at every launch. The owner's
-        // actual role was applied at save; this recheck guards the tenant profile's networks.
-        // The pin composes over the clone's own defaults, so a pinned ssh keeps BatchMode.
-        // The clone runs as the owner, with their own git access (DotfilesCloner).
-        const repositoryOutcome =
-          dotfilesRepository === null || ownerUserId === null
-            ? null
-            : yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
-                Effect.mapError(
-                  (refused) =>
-                    new DotfilesResolveError({
-                      message: `dotfiles repository refused: ${refused.message}`,
-                    }),
-                ),
-                Effect.flatMap((clearance) =>
-                  dotfilesCloner.archive(ownerUserId, dotfilesRepository, {
-                    pinCloneEnv: (env) => sourcePolicy.pinnedEnv(clearance, env),
-                  }),
-                ),
-                Effect.map((archive) => ({ archive, notApplied: null })),
-                Effect.catchTag("DotfilesResolveError", (error) =>
-                  leftOut("repository", error).pipe(
-                    Effect.map((notApplied) => ({ archive: null, notApplied })),
-                  ),
-                ),
-              );
-        const snapshotOutcome =
-          dotfilesEnabled && ownerUserId !== null
-            ? yield* dotfilesStore.archive(ownerUserId).pipe(
-                Effect.map((snapshot) => ({ snapshot, notApplied: null })),
-                Effect.catchTag("DotfilesStoreError", (error) =>
-                  leftOut("snapshot", error).pipe(
-                    Effect.map((notApplied) => ({ snapshot: null, notApplied })),
-                  ),
-                ),
-              )
-            : null;
-        const dotfilesSnapshot = snapshotOutcome?.snapshot ?? null;
-        // Apply order: the repository first, the snapshot after (the synced selection wins).
-        const dotfilesArchives = [
-          repositoryOutcome?.archive ?? null,
-          dotfilesSnapshot === null ? null : snapshotArchive(dotfilesSnapshot),
-        ].filter((archive) => archive !== null);
-        const dotfilesNotApplied = [
-          repositoryOutcome?.notApplied ?? null,
-          snapshotOutcome?.notApplied ?? null,
-        ].filter((entry) => entry !== null);
+        // Dotfiles are the OWNER's (`resolveDotfiles`). Custom images skip dotfiles entirely. A
+        // person launch applies none at boot (docs/adr/0016, decision 11): the launcher's go
+        // through `dotfiles.apply` as them once prepare has made their user, or, where the
+        // platform cannot do that yet, are not applied and the session says so.
+        const personLaunch = launchLayout.layout === "person";
+        const {
+          repository: dotfilesRepository,
+          snapshotSha: dotfilesSnapshotSha,
+          archives: dotfilesArchives,
+          notApplied: dotfilesNotApplied,
+        } = personLaunch && !personPlatform.dotfilesUser
+          ? yield* dotfilesNotPerPerson(project, workspaceImage, ownerUserId)
+          : yield* resolveDotfiles(sessionId, project, workspaceImage, ownerUserId);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
         // Secrets are unsealed here — the only place Mend ever holds their plaintext — and ride
@@ -10126,7 +10283,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ...(workspaceImage.mode === "family" && workspaceImage.shell !== "bash"
                     ? { shell: workspaceImage.shell }
                     : {}),
-                  ...(dotfilesArchives.length === 0
+                  ...(dotfilesArchives.length === 0 || personLaunch
                     ? {}
                     : {
                         dotfiles: {
@@ -10279,15 +10436,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           executorLayout: prepared?.layout ?? ("shared" as const),
           /** Why a person prediction fell back to shared, for the session line. */
           layoutFallback: prepared?.fallback ?? null,
+          /** People whose restored opencode database prepare found (decision 8a). */
+          opencodeRestored: prepared?.opencode ?? [],
+          /** The launcher's `install.sh` from decision 1's fallback to `/root`, if any. */
+          fallbackBootstrap: prepared?.bootstrap ?? null,
           environmentManifest,
           dotfiles: {
             repository:
               dotfilesRepository === null
                 ? null
                 : { url: dotfilesRepository.url, ref: dotfilesRepository.ref },
-            snapshotSha: dotfilesSnapshot?.sha ?? null,
+            snapshotSha: dotfilesSnapshotSha,
             notApplied: dotfilesNotApplied,
           },
+          /**
+           * A person launch's dotfiles, applied as the launcher once prepare has made them
+           * (`deliverToPerson`), never at boot; empty where the platform cannot (docs/adr/0016).
+           */
+          personDotfiles: personLaunch ? dotfilesArchives : [],
           referenceMounts: selectedReferences.map(
             (reference) =>
               new SessionReferenceMount({
@@ -10633,6 +10799,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // A standby was created as one person, before any worktree (docs/adr/0016).
           executorLayout: "shared" as const,
           layoutFallback: null,
+          opencodeRestored: [],
+          personDotfiles: [],
+          fallbackBootstrap: null,
         };
       });
 
@@ -10845,26 +11014,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspace: Workspace,
         files: ReadonlyArray<WorkspaceFile & { readonly secret?: boolean }>,
         purpose: PickupBinding["purpose"] = "workspace-files",
+        /**
+         * A person's own delivery (docs/adr/0016, Delivery 15): written as their user, through a
+         * ticket bound to them, which only their own token redeems. Absent: as before, root and
+         * the session's owner.
+         */
+        as?: PersonExec,
       ) {
         const latest = new Map<string, WorkspaceFile & { readonly secret?: boolean }>();
         for (const file of files) latest.set(file.path, file);
         const unique = [...latest.values()];
         if (unique.length === 0) return;
-        const ticket = yield* mintPickup(purpose, session, session.ownerUserId, workspace, unique);
-        const result = yield* sealant
-          .exec(
-            workspace,
-            writeFilesPickupExec(
-              unique.map((file) => ({ path: file.path, secret: file.secret === true })),
-              ticket,
-            ),
-          )
-          .pipe(
-            Effect.ensuring(Effect.sync(() => pickups.discard(ticket))),
-            Effect.mapError(
-              (error) => new WorkspaceFileError({ path: "", message: error.message }),
-            ),
-          );
+        const ticket = yield* mintPickup(
+          purpose,
+          session,
+          as === undefined ? session.ownerUserId : as.person.accountId,
+          workspace,
+          unique,
+        );
+        const argv = writeFilesPickupExec(
+          unique.map((file) => ({
+            path: file.path,
+            secret: file.secret === true,
+            // A person's saved state stays theirs: 0600 files, no directory opened up.
+            private: as !== undefined && file.path.startsWith(`${as.places.saved}/`),
+          })),
+          ticket,
+        );
+        const result = yield* (
+          as === undefined ? sealant.exec(workspace, argv) : execAsPerson(workspace, as, argv)
+        ).pipe(
+          Effect.ensuring(Effect.sync(() => pickups.discard(ticket))),
+          Effect.mapError((error) => new WorkspaceFileError({ path: "", message: error.message })),
+        );
         if (result.exitCode !== 0) {
           return yield* new WorkspaceFileError({
             path: unique.at(-1)?.path ?? "",
@@ -10886,12 +11068,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspace: Workspace,
           project: Project,
           workspaceImage: WorkspaceImage,
+          /** Into a person's own home, as them, after their dotfiles (docs/adr/0016, decision 11). */
+          as?: PersonExec,
         ) {
-          if (!shellProfileApplies(project, workspaceImage)) return;
-          yield* Effect.gen(function* () {
-            const files = yield* loadShellProfile;
+          // Answers whether the person's first-process marker was written with the profile.
+          if (!shellProfileApplies(project, workspaceImage)) return false;
+          return yield* Effect.gen(function* () {
+            const profile = yield* loadShellProfile;
+            // A person's first-process deliveries are done once this is written in their home.
+            const files =
+              as === undefined
+                ? profile
+                : [
+                    ...profile,
+                    { path: FIRST_PROCESS_DONE, bytes: new TextEncoder().encode("done") },
+                  ];
             for (const argv of writeAbsentHomeFilesExecs(files)) {
-              const result = yield* sealant.exec(workspace, argv);
+              const result = yield* as === undefined
+                ? sealant.exec(workspace, argv)
+                : execAsPerson(workspace, as, argv);
               if (result.exitCode !== 0) {
                 return yield* new WorkspaceFileError({
                   path: "~",
@@ -10899,6 +11094,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 });
               }
               for (const file of parseHomeFileOutcomes(result.stdout)) {
+                if (file.path === FIRST_PROCESS_DONE) continue;
                 yield* Effect.logInfo(
                   file.outcome === "written"
                     ? "session engine: default shell profile · written"
@@ -10906,11 +11102,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ).pipe(Effect.annotateLogs({ sessionId, path: `~/${file.path}` }));
               }
             }
+            return as !== undefined;
           }).pipe(
             Effect.catch((error) =>
               Effect.logWarning(
                 "session engine: the default shell profile was not written in the workspace",
-              ).pipe(Effect.annotateLogs({ sessionId, message: error.message })),
+              ).pipe(Effect.annotateLogs({ sessionId, message: error.message }), Effect.as(false)),
             ),
           );
         },
@@ -10923,29 +11120,60 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * exactly what Mend delivered there is moved aside, never deleted, and said so.
        */
       const deliverSkillsToWorkspace = Effect.fn("SessionEngine.deliverSkillsToWorkspace")(
-        function* (session: Session, project: Project, workspace: Workspace) {
-          const libraries = yield* skillsRepo.forLaunch(session.ownerUserId, project.id);
+        function* (
+          session: Session,
+          project: Project,
+          workspace: Workspace,
+          /**
+           * A person's own delivery (docs/adr/0016, Delivery 15): their library into their home
+           * `R`, as them, with Mend's manifests and anything kept aside in their saved directory
+           * `P` (`.claude/skills` is itself `P`'s, through its link), read from what one exec read.
+           */
+          as?: PersonDelivery,
+        ) {
+          const libraries = yield* skillsRepo.forLaunch(
+            as === undefined ? session.ownerUserId : as.person.accountId,
+            project.id,
+          );
           const bundles = mergeSkillLibraries(libraries, {
             inheritUserSkills: project.inheritUserSkills,
           });
-          const home = HARNESS_HOME_MOUNT_PATH;
-          const manifestPath = path.posix.join(home, MANAGED_SKILLS_MANIFEST);
-          const digestsPath = path.posix.join(home, MANAGED_SKILLS_DIGESTS);
+          const home = as === undefined ? HARNESS_HOME_MOUNT_PATH : as.places.home;
+          const manifestPath =
+            as === undefined
+              ? path.posix.join(home, MANAGED_SKILLS_MANIFEST)
+              : path.posix.join(as.places.saved, PERSON_SKILLS_MANIFEST);
+          const digestsPath =
+            as === undefined
+              ? path.posix.join(home, MANAGED_SKILLS_DIGESTS)
+              : path.posix.join(as.places.saved, PERSON_SKILLS_DIGESTS);
           const readText = (file: string) =>
             sealant
               .exec(workspace, ["cat", file])
               .pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout : null)));
           const plan = planSkills(
-            parseManagedSkills(yield* readText(manifestPath)),
+            parseManagedSkills(
+              as === undefined
+                ? yield* readText(manifestPath)
+                : (as.records.get("skills-manifest") ?? null),
+            ),
             bundles,
-            parseManagedSkillDigests(yield* readText(digestsPath)),
+            parseManagedSkillDigests(
+              as === undefined
+                ? yield* readText(digestsPath)
+                : (as.records.get("skills-digests") ?? null),
+            ),
           );
           if (plan === null) return;
           const inHome = (relative: string) => path.posix.join(home, relative);
-          const prepared = yield* sealant.exec(
-            workspace,
-            vacateSkillsExec(home, skillsKeptDir(), plan),
-          );
+          const kept =
+            as === undefined
+              ? skillsKeptDir()
+              : path.posix.join(as.places.saved, personSavedPathOf(skillsKeptDir()));
+          const vacate = vacateSkillsExec(home, kept, plan);
+          const prepared = yield* as === undefined
+            ? sealant.exec(workspace, vacate)
+            : execAsPerson(workspace, as, vacate);
           const vacated = parseSkillsVacateOutcomes(prepared.stdout);
           yield* logSkillsVacated(session.id, vacated);
           if (prepared.exitCode !== 0) {
@@ -10955,14 +11183,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
           }
           const encoder = new TextEncoder();
-          yield* writeWorkspaceFiles(session, workspace, [
-            ...skillFilesToWrite(plan, vacated).map((file) => ({
-              path: inHome(file.path),
-              bytes: encoder.encode(file.contents),
-            })),
-            { path: manifestPath, bytes: encoder.encode(plan.manifest) },
-            { path: digestsPath, bytes: encoder.encode(plan.digests) },
-          ]);
+          yield* writeWorkspaceFiles(
+            session,
+            workspace,
+            [
+              ...skillFilesToWrite(plan, vacated).map((file) => ({
+                path: inHome(file.path),
+                bytes: encoder.encode(file.contents),
+              })),
+              { path: manifestPath, bytes: encoder.encode(plan.manifest) },
+              { path: digestsPath, bytes: encoder.encode(plan.digests) },
+            ],
+            "workspace-files",
+            as,
+          );
         },
       );
 
@@ -10979,10 +11213,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         project: Project,
         workspace: Workspace,
+        /** A person's own pi profile, into their own home, as them (docs/adr/0016, Delivery 15). */
+        as?: PersonExec,
       ) {
         if (session.harness !== "pi") return;
-        const saved =
-          session.ownerUserId === null ? null : yield* piProfiles.forUser(session.ownerUserId);
+        const owner = as === undefined ? session.ownerUserId : as.person.accountId;
+        const saved = owner === null ? null : yield* piProfiles.forUser(owner);
         const plan =
           saved === null
             ? null
@@ -10995,10 +11231,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* logPiProfileVacated(session.id, outcomes);
           return;
         }
-        const home = HARNESS_HOME_MOUNT_PATH;
-        const prepared = yield* sealant
-          .exec(workspace, preparePiProfileExec(home, piProfileKeptDir(), plan))
-          .pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
+        // A person's profile lives in their home `R`, which is never saved: their keys
+        // (`mcp.json`) never reach their saved directory.
+        const home = as === undefined ? HARNESS_HOME_MOUNT_PATH : as.places.home;
+        const prepare = preparePiProfileExec(home, piProfileKeptDir(), plan);
+        const prepared = yield* (
+          as === undefined ? sealant.exec(workspace, prepare) : execAsPerson(workspace, as, prepare)
+        ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
         const vacated = parseSkillsVacateOutcomes(prepared.stdout);
         yield* logPiProfileVacated(session.id, vacated);
         if (prepared.exitCode !== 0) {
@@ -11019,6 +11258,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             secret: file.path === path.posix.join(PI_PROFILE_HOME_DIR, PI_PROFILE_SECRET_FILE),
           })),
           "pi-profile",
+          as,
         ).pipe(Effect.mapError((error) => piProfileNotDelivered(error.message)));
       });
 
@@ -11035,7 +11275,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         project: Project,
         workspace: Workspace,
+        /**
+         * A person's own memory, into their own saved directory `P` (where `R`'s memory links lead,
+         * and where Codex keeps its summary database), as them (docs/adr/0016, decision 9).
+         */
+        as?: PersonDelivery,
       ) {
+        if (as !== undefined) return yield* deliverPersonMemory(session, project, workspace, as);
         if (session.ownerUserId === null) return;
         const stored = yield* agentMemory.forLaunch(session.ownerUserId, project.id);
         const plan = planAgentMemory(stored);
@@ -11093,6 +11339,62 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               "session engine: agent memory not delivered · the image has no node · said once per image",
             ).pipe(Effect.annotateLogs({ sessionId: session.id, image }));
           }
+          return;
+        }
+        yield* logAgentMemoryDelivered(session.id, parseAgentMemoryOutcomes(delivered.stdout));
+        if (delivered.exitCode !== 0) {
+          return yield* new WorkspaceFileError({
+            path: home,
+            message: `exit ${delivered.exitCode}: ${delivered.stderr.trim()}`,
+          });
+        }
+      });
+
+      /**
+       * A person's memory for the project into their saved directory `P` (docs/adr/0016, decision
+       * 9): Claude's and Codex's memory folders where `R` links to them, Codex's summary database
+       * in `P/codex-db` (`CODEX_SQLITE_HOME`), Mend's record and kept files in `P/.mend-saved`
+       * (`personSavedPathOf`), as the person. No hand-over and no owner record: `P` is theirs.
+       */
+      const deliverPersonMemory = Effect.fn("SessionEngine.deliverPersonMemory")(function* (
+        session: Session,
+        project: Project,
+        workspace: Workspace,
+        as: PersonDelivery,
+      ) {
+        const stored = yield* agentMemory.forLaunch(as.person.accountId, project.id);
+        // Nothing stored and nothing delivered before: nothing to write, not even a record.
+        if (stored.length === 0 && (as.records.get("memory-delivered") ?? null) === null) return;
+        const plan = mapAgentMemoryPlan(planAgentMemory(stored), personSavedPathOf);
+        const home = as.places.saved;
+        yield* writeWorkspaceFiles(
+          session,
+          workspace,
+          plan.staged.map((file) => ({
+            path: path.posix.join(home, file.path),
+            bytes: file.bytes,
+          })),
+          "workspace-files",
+          as,
+        );
+        const delivered = yield* execAsPerson(
+          workspace,
+          as,
+          deliverAgentMemoryExec(home, plan, "", {
+            incoming: plan.incoming,
+            record: personSavedPathOf(AGENT_MEMORY_DELIVERED),
+          }),
+        );
+        // `sh` says 127 for a command it cannot find: an image without node. What was staged goes.
+        if (delivered.exitCode === 127) {
+          yield* execAsPerson(workspace, as, [
+            "rm",
+            "-rf",
+            path.posix.join(home, plan.incoming),
+          ]).pipe(Effect.ignore);
+          yield* Effect.logInfo(
+            "session engine: agent memory not delivered · the image has no node",
+          ).pipe(Effect.annotateLogs({ sessionId: session.id, person: as.person.name }));
           return;
         }
         yield* logAgentMemoryDelivered(session.id, parseAgentMemoryOutcomes(delivered.stdout));
@@ -11394,14 +11696,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const deliverSecretFiles = Effect.fn("SessionEngine.deliverSecretFiles")(function* (
         session: Session,
         workspace: Workspace,
+        /**
+         * A person's own files, into their own home, as them, through a ticket bound to them
+         * (docs/adr/0016, decision 11), with their home's record read by `personRecordsExec`.
+         */
+        as?: PersonDelivery,
       ) {
-        if (session.ownerUserId === null) return;
-        const sealed = yield* secretFiles.sealedForLaunch(session.ownerUserId);
+        const person = as === undefined ? session.ownerUserId : as.person.accountId;
+        if (person === null) return;
+        const run = (argv: ReadonlyArray<string>) =>
+          as === undefined ? sealant.exec(workspace, argv) : execAsPerson(workspace, as, argv);
+        const sealed = yield* secretFiles.sealedForLaunch(person);
         // What an earlier delivery wrote into this home (`~/.mend/secret-files`, sealed with the
         // machine key and bound to this workspace, each file with its digest): a file the person
         // no longer keeps is removed, so a retained executor's next run does not read it. A record
         // that does not unseal, or is another workspace's, is nobody's word and says nothing.
-        const recordText = (yield* sealant.exec(workspace, secretFilesDeliveredExec)).stdout.trim();
+        const recordText =
+          as === undefined
+            ? (yield* sealant.exec(workspace, secretFilesDeliveredExec)).stdout.trim()
+            : (as.records.get("secret-files") ?? "").trim();
         const record =
           recordText === ""
             ? null
@@ -11444,18 +11757,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // platform keeps every exec's argv for good. The exec redeems the ticket over the session
         // channel; the ticket dies with the exec, redeemed or not.
         if (paths.length > 0) {
-          const ticket = yield* mintPickup(
-            "secret-files",
-            session,
-            session.ownerUserId,
-            workspace,
-            plan.files,
-          );
+          const ticket = yield* mintPickup("secret-files", session, person, workspace, plan.files);
           yield* Effect.gen(function* () {
-            const result = yield* sealant.exec(
-              workspace,
-              secretFilesPickupExec(paths, stamp, ticket),
-            );
+            const result = yield* run(secretFilesPickupExec(paths, stamp, ticket));
             outcomes.push(...parseSecretFileOutcomes(result.stdout));
             if (result.exitCode !== 0) {
               return yield* new WorkspaceFileError({
@@ -11468,7 +11772,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.onExit((exit) =>
               Exit.isSuccess(exit)
                 ? Effect.void
-                : sealant.exec(workspace, secretFilesCleanupExec(paths, stamp)).pipe(Effect.ignore),
+                : run(secretFilesCleanupExec(paths, stamp)).pipe(Effect.ignore),
             ),
           );
         }
@@ -11494,7 +11798,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const stale = before.filter((file) => !digests.has(file.path));
         if (stale.length > 0) {
-          const removed = yield* sealant.exec(workspace, secretFilesRemoveExec(stale));
+          const removed = yield* run(secretFilesRemoveExec(stale));
           outcomes.push(...parseSecretFileOutcomes(removed.stdout));
         }
         const written = new Set(
@@ -11517,7 +11821,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : yield* secretCipher
                 .encrypt(encodeSecretFilesRecord({ workspaceId: workspace.id, files: next }))
                 .pipe(Effect.orElseSucceed(() => null));
-        yield* sealant.exec(workspace, secretFilesRecordExec(nextRecord)).pipe(Effect.ignore);
+        yield* run(secretFilesRecordExec(nextRecord)).pipe(Effect.ignore);
         for (const outcome of foldSecretFileOutcomes(outcomes)) {
           yield* (
             outcome.outcome === "refused"
@@ -11549,9 +11853,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         project: Project,
         workspace: Workspace,
+        /**
+         * A person's own conversations, into their saved directory `P` (where `R`'s Codex sessions
+         * link to), listed in `P/.mend-saved`, as them (docs/adr/0016, decision 9).
+         */
+        as?: PersonExec,
       ) {
-        if (session.harness !== "codex" || session.ownerUserId === null) return [];
-        const owner = session.ownerUserId;
+        const owner = as === undefined ? session.ownerUserId : as.person.accountId;
+        if (session.harness !== "codex" || owner === null) return [];
         const stored = yield* agentMemory.forLaunch(owner, project.id);
         const summarised = yield* summarisedThreads(storedCodexDatabase(stored));
         const imported = storedCodexThreadLines(stored);
@@ -11608,6 +11917,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             harnessHomePathOf(project.storePath, session.id),
             files,
           );
+        } else if (as !== undefined) {
+          const carry = carryConversationsExec(as.places.saved, files, {
+            listed: personSavedPathOf(CARRIED_TRANSCRIPTS),
+            incoming: personSavedPathOf(CARRIED_INCOMING),
+          });
+          yield* writeWorkspaceFiles(session, workspace, carry.staged, "workspace-files", as);
+          const result = yield* execAsPerson(workspace, as, carry.argv);
+          outcomes = parseCarryOutcomes(result.stdout);
         } else {
           const carry = carryConversationsExec(HARNESS_HOME_MOUNT_PATH, files);
           yield* writeWorkspaceFiles(session, workspace, carry.staged);
@@ -11634,6 +11951,480 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           outcome.outcome === "written" || outcome.outcome === "present" ? [outcome.id] : [],
         );
       });
+
+      /** One person's deliveries at a time in an executor (docs/adr/0016, decision 11). */
+      const personDeliveryLocks = new Map<string, Semaphore.Semaphore>();
+      const personDeliveryLock = (workspaceId: string, accountId: string) => {
+        const key = `${workspaceId}\u0000${accountId}`;
+        const known = personDeliveryLocks.get(key);
+        if (known !== undefined) return known;
+        const made = Semaphore.makeUnsafe(1);
+        // A cache of locks, rebuilt on a miss: the oldest goes past a bound.
+        if (personDeliveryLocks.size >= 2_048) {
+          const oldest = personDeliveryLocks.keys().next();
+          if (oldest.done !== true) personDeliveryLocks.delete(oldest.value);
+        }
+        personDeliveryLocks.set(key, made);
+        return made;
+      };
+
+      /**
+       * Decision 8a: the in-app logins a person made inside opencode, deleted from their own
+       * opencode database as them (`OPENCODE_SCRUB_PROGRAM`). Skipped while another opencode of
+       * theirs runs in the executor (it may be using one; its own exit scrubs). A scrub that does
+       * not finish (something reads the database, so its log cannot be emptied) is tried twice
+       * more, a second apart, then answers `failed`: the caller refuses the opencode it was about
+       * to start, or says so on that session's own line. Never anyone else's line.
+       */
+      const scrubOpencodeAs = Effect.fn("SessionEngine.scrubOpencodeAs")(function* (
+        sessionId: SessionId,
+        workspace: Workspace,
+        as: PersonExec,
+        when: "before" | "after" | "prepare",
+      ) {
+        if (
+          yield* harnessLiveFor(
+            SealantWorkspaceId.make(workspace.id),
+            as.person.accountId,
+            "opencode",
+          )
+        ) {
+          yield* Effect.logInfo(
+            "session engine: opencode in-app logins left for now · another opencode of theirs runs here",
+          ).pipe(Effect.annotateLogs({ sessionId, person: as.person.name, when }));
+          return { outcome: "skipped" as const, reason: null };
+        }
+        const database = opencodeDatabaseOf(as.places.home);
+        let reason = "the scrub did not run";
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) yield* Effect.sleep(Duration.seconds(1));
+          const ran = yield* execAsPerson(workspace, as, opencodeScrubArgv([database])).pipe(
+            Effect.result,
+          );
+          // An executor that is going (a Stop) runs nothing more: its next one's prepare scrubs.
+          if (ran._tag === "Failure") {
+            yield* Effect.logWarning("session engine: opencode in-app logins not removed").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                person: as.person.name,
+                when,
+                reason: ran.failure.message,
+              }),
+            );
+            return { outcome: "failed" as const, reason: ran.failure.message };
+          }
+          const result = ran.success;
+          const outcomes = parseOpencodeScrub(result.stdout);
+          const failed = outcomes.find((outcome) => outcome.outcome === "failed");
+          if (failed === undefined && result.exitCode === 0) {
+            const rows = outcomes.reduce((sum, outcome) => sum + outcome.rows, 0);
+            if (rows > 0) {
+              yield* Effect.logInfo(
+                "session engine: opencode in-app logins removed · observed",
+              ).pipe(Effect.annotateLogs({ sessionId, person: as.person.name, when, rows }));
+            }
+            return { outcome: "scrubbed" as const, reason: null };
+          }
+          reason =
+            failed?.reason ??
+            (result.stderr.trim() || `the scrub ended with exit ${result.exitCode}`);
+        }
+        yield* Effect.logWarning("session engine: opencode in-app logins not removed").pipe(
+          Effect.annotateLogs({ sessionId, person: as.person.name, when, reason }),
+        );
+        // Said on the line of the session whose opencode ended, and only there.
+        if (when === "after") {
+          yield* noteLaunchWords(sessionId, opencodeScrubFailedWords(reason)).pipe(Effect.ignore);
+        }
+        return { outcome: "failed" as const, reason };
+      });
+
+      /**
+       * A person's own deliveries in a person-layout executor (docs/adr/0016, Delivery 15), into
+       * their own home, as them, never anyone else's:
+       * - at their first process there (`made`): their dotfiles through the platform's
+       *   `dotfiles.apply`, then Mend's links put back over them and Mend's default shell profile
+       *   where the dotfiles left none;
+       * - then, beside each other: their skills and secret files (first process, and every agent
+       *   start), their memory (agents of sessions never shared), their pi profile (a pi, unless
+       *   one of theirs runs here already), their Codex conversations (a Codex), and the opencode
+       *   scrub (an opencode, before it starts).
+       * One exec reads what Mend last delivered there (`personRecordsExec`). Best-effort but for
+       * the pi profile, which stops the start as it stops a shared launch. Serialised per person
+       * and executor.
+       */
+      const deliverToPerson = Effect.fn("SessionEngine.deliverToPerson")(function* (input: {
+        readonly session: Session;
+        readonly workspace: Workspace;
+        readonly home: PersonHome;
+        /** An agent of the session starts (everything it needs); else a shell or a Service. */
+        readonly agent: boolean;
+        /** What the agent runs. */
+        readonly harness: string;
+        /**
+         * The launcher's dotfiles as the cold launch resolved them; absent: resolved here for this
+         * person, when this is their first process.
+         */
+        readonly dotfiles?: {
+          readonly archives: ReadonlyArray<DotfilesArchive>;
+          readonly record: SessionDotfiles;
+        };
+      }) {
+        const { session, workspace, home } = input;
+        const project = yield* projects.byId(session.projectId).pipe(
+          Effect.mapError(
+            (error) =>
+              new SealantPlatformError({
+                code: "project_not_found",
+                status: 404,
+                message: error.message,
+                cause: error,
+              }),
+          ),
+        );
+        const as: PersonExec = {
+          person: home.identity,
+          user: home.user,
+          sessionId: session.id,
+          places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, home.identity),
+        };
+        return yield* personDeliveryLock(workspace.id, home.identity.accountId).withPermit(
+          Effect.gen(function* () {
+            const records = parsePersonRecords(
+              yield* execAsPerson(
+                workspace,
+                as,
+                personRecordsExec(as.places, {
+                  memoryDelivered: personSavedPathOf(AGENT_MEMORY_DELIVERED),
+                }),
+              ).pipe(
+                Effect.map((result) => result.stdout),
+                Effect.orElseSucceed(() => ""),
+              ),
+            );
+            // Their first process in this executor: once, whatever was released or restarted
+            // since, as the executor itself records it (`FIRST_PROCESS_DONE` in their home).
+            let bootstrap: DotfilesBootstrap | null = null;
+            if ((records.get("first-done") ?? null) === null) {
+              const image =
+                session.workspaceImage ??
+                (yield* sessions.executorSessionOf(SealantWorkspaceId.make(workspace.id)))
+                  ?.workspaceImage ??
+                project.workspaceImage ??
+                (yield* settingsRepo.forOrganization(project.organizationId)).workspaceImage;
+              const dotfiles = yield* applyPersonDotfiles(
+                session,
+                project,
+                workspace,
+                image,
+                as,
+                input.dotfiles,
+              );
+              bootstrap = dotfiles.bootstrap;
+              const profiled = yield* applyDefaultShellProfile(
+                session.id,
+                workspace,
+                project,
+                image,
+                as,
+              );
+              // Marked done whatever ran: with no dotfiles and no profile, one small exec.
+              if (!dotfiles.marked && !profiled) {
+                yield* execAsPerson(workspace, as, [
+                  "sh",
+                  "-c",
+                  `mkdir -p "$HOME/.mend" && [ ! -L "$HOME/.mend" ] && printf done > "$HOME/${FIRST_PROCESS_DONE}"`,
+                ]).pipe(Effect.ignore);
+              }
+            }
+            const delivery: PersonDelivery = { ...as, records };
+            const firstOrAgent = home.made || input.agent;
+            const said =
+              (what: string) =>
+              <E extends { readonly message: string }, R>(
+                effect: Effect.Effect<void, E, R>,
+              ): Effect.Effect<void, never, R> =>
+                effect.pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning(`session engine: ${what} not delivered to a person`).pipe(
+                      Effect.annotateLogs({
+                        sessionId: session.id,
+                        person: home.identity.name,
+                        message: error.message,
+                      }),
+                    ),
+                  ),
+                );
+            const samePersonPiLive =
+              input.agent && input.harness === "pi"
+                ? yield* harnessLiveFor(
+                    SealantWorkspaceId.make(workspace.id),
+                    home.identity.accountId,
+                    "pi",
+                  )
+                : false;
+            const [, , , , carried] = yield* Effect.all(
+              [
+                firstOrAgent
+                  ? deliverSkillsToWorkspace(session, project, workspace, delivery).pipe(
+                      said("skills"),
+                    )
+                  : Effect.void,
+                input.agent && session.sharedControlEnabledAt === null
+                  ? deliverAgentMemory(session, project, workspace, delivery).pipe(
+                      said("agent memory"),
+                    )
+                  : Effect.void,
+                firstOrAgent
+                  ? deliverSecretFiles(session, workspace, delivery).pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("session engine: secret files were not written").pipe(
+                          Effect.annotateLogs({ sessionId: session.id, message: error.message }),
+                          Effect.andThen(
+                            noteLaunchWords(
+                              session.id,
+                              `${SECRET_FILES_SUMMARY_PREFIX} · not written · ${error.message}`,
+                            ).pipe(Effect.ignore),
+                          ),
+                        ),
+                      ),
+                    )
+                  : Effect.void,
+                // Each person's pi runs on their own profile in their own home: another person's
+                // live pi changes nothing here (decision 7, Delivery 11).
+                input.agent && input.harness === "pi" && !samePersonPiLive
+                  ? deliverPiProfile(session, project, workspace, as)
+                  : Effect.void,
+                input.agent && input.harness === "codex"
+                  ? carryCodexConversations(session, project, workspace, as).pipe(
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning(
+                          "session engine: codex conversations were not carried",
+                        ).pipe(
+                          Effect.annotateLogs({
+                            sessionId: session.id,
+                            cause: Cause.pretty(cause),
+                          }),
+                          Effect.as<ReadonlyArray<string>>([]),
+                        ),
+                      ),
+                    )
+                  : Effect.succeed<ReadonlyArray<string>>([]),
+                // Decision 8a: before this person's opencode starts, what an exit Mend did not see
+                // left behind goes.
+                input.agent && input.harness === "opencode"
+                  ? scrubOpencodeAs(session.id, workspace, as, "before").pipe(
+                      Effect.flatMap((scrub) =>
+                        scrub.outcome === "failed"
+                          ? Effect.fail(
+                              new SealantPlatformError({
+                                code: "opencode_login_not_removed",
+                                status: null,
+                                message: `opencode's data still holds an in-app login Mend could not remove (${scrub.reason ?? "unknown"}), so opencode was not started; start it again`,
+                                cause: null,
+                              }),
+                            )
+                          : Effect.void,
+                      ),
+                    )
+                  : Effect.void,
+              ],
+              { concurrency: "unbounded" },
+            );
+            return { carried, bootstrap } satisfies PersonDelivered;
+          }),
+        );
+      });
+
+      /** Whether `accountId` has an agent of `harness` live in the executor already. */
+      const harnessLiveFor = Effect.fn("SessionEngine.harnessLiveFor")(function* (
+        workspaceId: SealantWorkspaceId,
+        accountId: string,
+        harness: string,
+      ) {
+        for (const process of yield* processes.listLiveForWorkspace(workspaceId)) {
+          if (process.harness !== harness || !AGENT_PROCESS_KINDS.has(process.kind)) continue;
+          const owner = yield* sessions.byId(process.sessionId).pipe(
+            Effect.map((row) => row.ownerUserId),
+            Effect.orElseSucceed(() => null),
+          );
+          if (owner === accountId) return true;
+        }
+        return false;
+      });
+
+      /**
+       * A person's dotfiles at their first process in an executor (docs/adr/0016, decision 11):
+       * applied as them into their home through the platform's `dotfiles.apply`, bounded, and
+       * Mend's links put back over whatever they placed there. Recorded on the session as every
+       * launch records its dotfiles. Where the platform cannot apply them as the person yet, none
+       * is applied and the record says why. Never fails the start.
+       */
+      const applyPersonDotfiles = Effect.fn("SessionEngine.applyPersonDotfiles")(function* (
+        session: Session,
+        project: Project,
+        workspace: Workspace,
+        image: WorkspaceImage,
+        as: PersonExec,
+        resolved:
+          | {
+              readonly archives: ReadonlyArray<DotfilesArchive>;
+              readonly record: SessionDotfiles;
+            }
+          | undefined,
+      ) {
+        const dotfiles =
+          resolved ??
+          (personPlatform.dotfilesUser
+            ? yield* resolveDotfiles(session.id, project, image, as.person.accountId).pipe(
+                Effect.map((found) => ({
+                  archives: found.archives,
+                  record: {
+                    repository:
+                      found.repository === null
+                        ? null
+                        : { url: found.repository.url, ref: found.repository.ref },
+                    snapshotSha: found.snapshotSha,
+                    notApplied: found.notApplied,
+                  },
+                })),
+              )
+            : yield* dotfilesNotPerPerson(project, image, as.person.accountId).pipe(
+                Effect.map((found) => ({
+                  archives: found.archives,
+                  record: {
+                    repository:
+                      found.repository === null
+                        ? null
+                        : { url: found.repository.url, ref: found.repository.ref },
+                    snapshotSha: null,
+                    notApplied: found.notApplied,
+                  },
+                })),
+              ));
+        let record = dotfiles.record;
+        let bootstrap: DotfilesBootstrap | null = null;
+        // The links script marks the person's first-process deliveries done.
+        let marked = false;
+        if (dotfiles.archives.length > 0 && personPlatform.dotfilesUser) {
+          const applied = yield* personPlatform
+            .applyDotfiles(workspace, {
+              onBehalfOf: as.person.accountId,
+              user: as.user,
+              home: as.places.home,
+              archives: dotfiles.archives,
+            })
+            .pipe(
+              Effect.timeoutOrElse({
+                duration: Duration.millis(DOTFILES_APPLY_BOUND_MS),
+                orElse: () =>
+                  Effect.fail(
+                    new SealantPlatformError({
+                      code: "dotfiles_apply_timeout",
+                      status: null,
+                      message: `dotfiles were not applied within ${DOTFILES_APPLY_BOUND_MS / 1000} s`,
+                      cause: null,
+                    }),
+                  ),
+              }),
+              Effect.result,
+            );
+          if (applied._tag === "Success") {
+            bootstrap = applied.success.bootstrap;
+            // Mend's links win over anything the dotfiles put in their place.
+            const relinked = yield* execAsPerson(workspace, as, [
+              "sh",
+              "-c",
+              personLinksScript(as.person, { harnessHome: HARNESS_HOME_MOUNT_PATH }),
+            ]).pipe(
+              Effect.tap((result) =>
+                Effect.sync(() => {
+                  marked = result.exitCode === 0;
+                }),
+              ),
+              Effect.map((result) => parseDisplacedLinks(result.stdout)),
+              Effect.orElseSucceed((): ReadonlyArray<string> => []),
+            );
+            if (relinked.length > 0) {
+              yield* Effect.logInfo(
+                "session engine: dotfiles had replaced Mend's links · moved to ~/.mend/displaced",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id, entries: relinked.join(", ") }));
+            }
+          } else {
+            const reason = applied.failure.message;
+            yield* Effect.logWarning("session engine: a person's dotfiles were not applied").pipe(
+              Effect.annotateLogs({ sessionId: session.id, person: as.person.name, reason }),
+            );
+            record = {
+              ...record,
+              notApplied: [
+                ...record.notApplied,
+                ...(record.repository === null ? [] : [{ source: "repository" as const, reason }]),
+                ...(record.snapshotSha === null ? [] : [{ source: "snapshot" as const, reason }]),
+              ],
+            };
+          }
+        }
+        if (
+          record.repository !== null ||
+          record.snapshotSha !== null ||
+          record.notApplied.length > 0
+        ) {
+          yield* sessions.setDotfiles(session.id, record).pipe(Effect.ignore);
+        }
+        return { bootstrap, marked };
+      });
+
+      /**
+       * What a start does about its person's `install.sh` (docs/adr/0016, decision 11): waits for
+       * it (the launcher's agent, as when it ran at boot, and a joiner who turned on "Start my
+       * agents after install.sh"), bounded; else the agent starts beside it. Answers the words to
+       * say once the process has started, and what to watch afterwards.
+       */
+      const awaitBootstrap = Effect.fn("SessionEngine.awaitBootstrap")(function* (
+        bootstrap: DotfilesBootstrap | null,
+        waits: Effect.Effect<boolean>,
+      ) {
+        if (bootstrap === null) return { words: null, watch: null };
+        if (yield* waits) {
+          const ended = yield* bootstrap.ended.pipe(
+            Effect.timeoutOption(Duration.millis(BOOTSTRAP_WAIT_BOUND_MS)),
+            Effect.orElseSucceed(() => Option.some({ exitCode: null })),
+          );
+          if (Option.isSome(ended)) return { words: null, watch: null };
+          return { words: BOOTSTRAP_STILL_RUNNING_WORDS, watch: bootstrap };
+        }
+        return { words: BOOTSTRAP_RUNNING_WORDS, watch: bootstrap };
+      });
+
+      /**
+       * Said once a start that did not wait for `install.sh` has started: "install.sh running",
+       * then, when it ends, "install.sh finished after the agent started" in its place. Off the
+       * start's path.
+       */
+      const watchBootstrap = (
+        sessionId: SessionId,
+        waited: { readonly words: string | null; readonly watch: DotfilesBootstrap | null },
+      ): Effect.Effect<void> =>
+        waited.words === null || waited.watch === null
+          ? Effect.void
+          : Effect.gen(function* () {
+              const words = waited.words;
+              const watch = waited.watch;
+              if (words === null || watch === null) return;
+              yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
+              yield* Effect.forkIn(
+                watch.ended.pipe(
+                  Effect.map((ended) => ended.exitCode),
+                  Effect.orElseSucceed(() => null),
+                  Effect.flatMap((exitCode) =>
+                    replaceLaunchWords(sessionId, words, bootstrapFinishedLateWords(exitCode)),
+                  ),
+                  Effect.ignore,
+                ),
+                scope,
+              );
+            });
 
       /**
        * Whether a worktree's head capture holds a person's saved directory (`harness/people/`):
@@ -11676,27 +12467,65 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         person: Effect.Effect<string | null>,
         /** What the process runs: the session's harness for its agent, `shell` for anything else. */
         harness: string,
+        /** An agent of the session starts: everything it needs is delivered (`deliverToPerson`). */
+        options: { readonly agent: boolean } = { agent: false },
       ): Effect.Effect<
-        { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
+        {
+          readonly user: ProcessUser;
+          readonly env: Readonly<Record<string, string>>;
+          /** What the person's deliveries left for the start (Delivery 15); null: none ran. */
+          readonly delivered: PersonDelivered | null;
+        } | null,
         SealantPlatformError
       > =>
         Effect.gen(function* () {
           if (capture === null || session.ownerUserId === null) return null;
           if (!(yield* layoutSteps.mayRunPerson(session.worktreeId))) return null;
           const accountId = (yield* person) ?? session.ownerUserId;
-          return yield* layoutSteps.processAs({
-            workspace,
-            launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
-            accountId,
-            sessionId: session.id,
-            worktreeId: session.worktreeId,
-            harness,
-            live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
-          });
+          // The person's deliveries start once their user and home exist, beside the write of
+          // their logins; the process starts once both are done (docs/adr/0016, Performance).
+          const homeReady = yield* Deferred.make<PersonHome | null>();
+          const started = layoutSteps
+            .processAs({
+              workspace,
+              launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
+              accountId,
+              sessionId: session.id,
+              worktreeId: session.worktreeId,
+              harness,
+              live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
+              homeReady,
+            })
+            .pipe(Effect.ensuring(Deferred.succeed(homeReady, null)));
+          // Only an agent's start, or a person's first process here, delivers anything.
+          const delivered = Deferred.await(homeReady).pipe(
+            Effect.flatMap((home) =>
+              home === null || (!options.agent && !home.made)
+                ? Effect.succeed(null)
+                : deliverToPerson({ session, workspace, home, agent: options.agent, harness }),
+            ),
+          );
+          const [as, deliveries] = yield* Effect.all([started, delivered], {
+            concurrency: 2,
+          }).pipe(
+            // A start that failed, whenever it failed (a delivery may fail while the person's login
+            // write is still in flight, and Core finishes a write its caller abandoned): the idle
+            // check releases the logins and Mend token of anyone with nothing live here, after
+            // their start's grace (review of mend#566, P3-3 and round 2 P3-1). The launcher's
+            // create-time home is never released.
+            Effect.onError(() =>
+              releaseIdleLogins(SealantWorkspaceId.make(workspace.id), workspace),
+            ),
+          );
+          return as === null ? null : { ...as, delivered: deliveries };
         });
       /** An agent of the session: its owner's (steering, Delivery 18, picks the sender). */
-      const startAsOwner = (session: Session, workspace: Workspace, harness: string) =>
-        startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), harness);
+      const startAsOwner = (
+        session: Session,
+        workspace: Workspace,
+        harness: string,
+        options?: { readonly agent: boolean },
+      ) => startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), harness, options);
 
       /** The memory in a session's head capture, and what was delivered there; null without one. */
       const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
@@ -12613,6 +13442,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Per-person harness homes (docs/adr/0016, decision 14): the layout is decided before the
         // create, which commits to it. A refusal leaves nothing behind: no claim, no executor.
         // The co-located store runs as before.
+        // The image the create will ask for, read only when the layout decision needs it.
+        const launchImage = Effect.suspend(() =>
+          project.workspaceImage === null
+            ? settingsRepo
+                .forOrganization(project.organizationId)
+                .pipe(Effect.map((settings) => settings.workspaceImage))
+            : Effect.succeed(project.workspaceImage),
+        );
         const launchLayout: LaunchLayout =
           capture === null
             ? SHARED_AS_BEFORE
@@ -12627,14 +13464,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ownerUserId,
                   organizationId: project.organizationId,
                   harness: platformShape(session.harness).harness,
-                  image: Effect.suspend(() =>
-                    project.workspaceImage === null
-                      ? settingsRepo
-                          .forOrganization(project.organizationId)
-                          .pipe(Effect.map((settings) => settings.workspaceImage))
-                      : Effect.succeed(project.workspaceImage),
-                  ),
+                  image: launchImage,
                   headHasPeople: headHoldsPeople(session.worktreeId),
+                  // Decision 1's fallback for dotfiles until the platform applies them per person.
+                  launcherHasDotfiles: launchImage.pipe(
+                    Effect.flatMap((image) => dotfilesNotPerPerson(project, image, ownerUserId)),
+                    Effect.map((found) => found.notApplied.length > 0),
+                  ),
                 })
                 .pipe(settleOnFailure);
         if (adopted !== null && claimedEntry !== null && launchLayout.layout === "person") {
@@ -12979,9 +13815,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (provisioned.executorLayout !== "person") {
           yield* applyGitAuthor(sessionId, workspace, ownerUserId);
         }
+        // In a person-layout executor every delivery is the launcher's own, into their own home,
+        // as them (docs/adr/0016, Delivery 15, `deliverToPerson`): nothing goes into `/root` or the
+        // shared harness home, which nobody's process reads there.
+        const personExecutor = provisioned.executorLayout === "person";
         // Mend's default shell profile, beside it and for the same launches: dotfiles were
         // applied at boot, so only a file they left absent is written.
-        yield* applyDefaultShellProfile(sessionId, workspace, project, workspaceImage);
+        if (!personExecutor) {
+          yield* applyDefaultShellProfile(sessionId, workspace, project, workspaceImage);
+        }
 
         // A relaunch restores the ORIGINAL harness's saved state into the
         // fresh workspace before anything starts — for a same-harness launch
@@ -13154,16 +13996,71 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // native imports write into $HOME first; this step moves them into the durable root and
         // replaces each harness directory with a symlink before the process starts. Capture mode's
         // root is local to sealantd, so it does not need the co-located permission keeper.
+        // The launcher's own deliveries in a person executor (docs/adr/0016, Delivery 15): made by
+        // prepare, so this is their first process here.
+        const personDelivered: PersonDelivered | null =
+          personExecutor && launchLayout.layout === "person"
+            ? yield* deliverToPerson({
+                session,
+                workspace,
+                home: {
+                  identity: launchLayout.launcher,
+                  user: processUserOf(launchLayout.launcher),
+                  made: true,
+                },
+                agent: true,
+                harness: interactiveShell ? "shell" : session.harness,
+                dotfiles: {
+                  archives: provisioned.personDotfiles,
+                  record: provisioned.dotfiles,
+                },
+              }).pipe(
+                Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+                settleOnFailure,
+              )
+            : null;
+        // A restored opencode database of anyone prepare made: scrubbed as them, off the launch
+        // path (decision 8a); the launcher's own opencode was scrubbed before it starts above.
+        if (personExecutor && launchLayout.layout === "person") {
+          const scrubbedBeforeStart =
+            session.harness === "opencode" && !interactiveShell
+              ? launchLayout.launcher.accountId
+              : null;
+          for (const person of provisioned.opencodeRestored) {
+            // The launcher's own opencode was scrubbed before it starts; it holds the database now.
+            if (person.accountId === scrubbedBeforeStart) continue;
+            yield* Effect.forkIn(
+              personDeliveryLock(workspace.id, person.accountId).withPermit(
+                scrubOpencodeAs(
+                  sessionId,
+                  workspace,
+                  {
+                    person,
+                    user: processUserOf(person),
+                    sessionId,
+                    places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                  },
+                  "prepare",
+                ),
+              ),
+              scope,
+            );
+          }
+        }
         // A secret file delivered at a path reserved since goes before its directory is captured,
         // or the launch stops here: relocating anyway could save it.
-        yield* evictReservedSecretFiles(session, workspace).pipe(
-          Effect.tapError((error) =>
-            capture === null ? Effect.void : abandonExecutor(workspace, error.message),
-          ),
-          settleOnFailure,
-        );
+        if (!personExecutor) {
+          yield* evictReservedSecretFiles(session, workspace).pipe(
+            Effect.tapError((error) =>
+              capture === null ? Effect.void : abandonExecutor(workspace, error.message),
+            ),
+            settleOnFailure,
+          );
+        }
+        // In a person executor nothing personal is relocated into `/root`'s place: each person's
+        // home links its conversation state into their own saved directory, made at prepare.
         const relocation = relocateHarnessHome(session, workspace);
-        if (capture === null) {
+        if (!personExecutor && capture === null) {
           // Keep the established co-located policy: report a failed mount relocation but let the
           // launch continue. Capture executors are disposable, so their failure is load-bearing.
           yield* relocation.pipe(
@@ -13173,7 +14070,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
-        } else {
+        } else if (!personExecutor) {
           yield* relocation.pipe(
             Effect.tapError((error) => abandonExecutor(workspace, error.message)),
             settleOnFailure,
@@ -13188,47 +14085,52 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
-        yield* handOverAgentMemory(session, workspace).pipe(
-          Effect.tapError((error) => abandonExecutor(workspace, error.message)),
-          settleOnFailure,
-        );
-        yield* deliverAgentMemory(session, project, workspace).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: agent memory was not delivered").pipe(
-              Effect.annotateLogs({ sessionId, message: error.message }),
+        // Codex in a person's own home summarises only their own conversations: nothing of anyone
+        // else's is in their saved directory, so nothing is withheld (docs/adr/0016, decision 9).
+        let codexMemoryOn = true;
+        if (!personExecutor) {
+          yield* handOverAgentMemory(session, workspace).pipe(
+            Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+            settleOnFailure,
+          );
+          yield* deliverAgentMemory(session, project, workspace).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: agent memory was not delivered").pipe(
+                Effect.annotateLogs({ sessionId, message: error.message }),
+              ),
             ),
-          ),
-        );
-        const carried = yield* carryCodexConversations(session, project, workspace).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("session engine: codex conversations were not carried").pipe(
-              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
-              Effect.as([]),
+          );
+          const carried = yield* carryCodexConversations(session, project, workspace).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("session engine: codex conversations were not carried").pipe(
+                Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                Effect.as([]),
+              ),
             ),
-          ),
-        );
-        const codexMemoryOn = yield* withholdCodexThreads(session, workspace, shapedArgv, carried);
-        // Every failure stops the launch, and the workspace is reaped in both modes: its id is not
-        // on the row yet.
-        yield* deliverPiProfile(session, project, workspace).pipe(
-          Effect.tapError((error) => abandonExecutor(workspace, error.message)),
-          settleOnFailure,
-        );
-        // The owner's secret files (docs/adr/0010): into the executor's own home, which no capture
-        // root covers, before the harness starts.
-        yield* deliverSecretFiles(session, workspace).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: secret files were not written").pipe(
-              Effect.annotateLogs({ sessionId, message: error.message }),
-              Effect.andThen(
-                noteLaunchWords(
-                  sessionId,
-                  `${SECRET_FILES_SUMMARY_PREFIX} · not written · ${error.message}`,
+          );
+          codexMemoryOn = yield* withholdCodexThreads(session, workspace, shapedArgv, carried);
+          // Every failure stops the launch, and the workspace is reaped in both modes: its id is
+          // not on the row yet.
+          yield* deliverPiProfile(session, project, workspace).pipe(
+            Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+            settleOnFailure,
+          );
+          // The owner's secret files (docs/adr/0010): into the executor's own home, which no
+          // capture root covers, before the harness starts.
+          yield* deliverSecretFiles(session, workspace).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: secret files were not written").pipe(
+                Effect.annotateLogs({ sessionId, message: error.message }),
+                Effect.andThen(
+                  noteLaunchWords(
+                    sessionId,
+                    `${SECRET_FILES_SUMMARY_PREFIX} · not written · ${error.message}`,
+                  ),
                 ),
               ),
             ),
-          ),
-        );
+          );
+        }
         // Repositories added in an earlier launch (docs/adr/0010): their files came back with the
         // worktree, their links did not. A relink that cannot run costs the links, never the launch.
         const noRepositories: ReadonlyArray<SessionRepositoryRow> = [];
@@ -13321,6 +14223,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 captured: capture !== null,
               })
             : withHarnessSetup(session.harness, memoryShapedArgv, { captured: capture !== null });
+        // The launcher's agent starts after their `install.sh` ends, as it did when the script ran
+        // at boot (docs/adr/0016, decision 11), bounded.
+        const bootstrapWaited = yield* awaitBootstrap(
+          personDelivered?.bootstrap ?? provisioned.fallbackBootstrap,
+          Effect.succeed(true),
+        );
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
           Effect.andThen(
             sealant.openSession(
@@ -13463,6 +14371,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
           yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
         }
+        yield* watchBootstrap(sessionId, bootstrapWaited);
         if (setupSkippedFrom !== null) {
           yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
         }
@@ -14007,6 +14916,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /** `from` on the session line becomes `to`; said at the end when `from` is gone. */
+      const replaceLaunchWords = Effect.fn("SessionEngine.replaceLaunchWords")(function* (
+        sessionId: SessionId,
+        from: string,
+        to: string,
+      ) {
+        const current = yield* sessions.byId(sessionId);
+        const summary = current.summary;
+        if (summary !== null && summary.includes(from)) {
+          yield* sessions.setSummary(sessionId, summary.replace(from, to));
+          return;
+        }
+        yield* noteLaunchWords(sessionId, to);
+      });
+
       /**
        * Whose login a workspace launched with (docs/adr/0013), decided from the workspace a
        * process runs in, never from how the launch reached it. Outside capture mode a session's
@@ -14080,66 +15004,100 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
-          // A secret file delivered at a path reserved since goes before its directory is captured,
-          // or the resume stops here: relocating anyway could save it.
-          yield* evictReservedSecretFiles(session, workspace).pipe(
+          const interactiveShell = argv[0] === "bash";
+          // Per-person harness homes (docs/adr/0016): in a person-layout executor the session's
+          // owner runs as their own user, made there at their first process (a join's one more
+          // exec, and the worktree repair beside it, never awaited), and their own deliveries go
+          // into their own home beside their logins (Delivery 15). Null in a shared executor,
+          // which asks nothing more than before.
+          const personStart = yield* startAsOwner(
+            session,
+            workspace,
+            interactiveShell ? "shell" : session.harness,
+            { agent: true },
+          ).pipe(
             Effect.tapError((error) =>
-              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
-                Effect.ignore,
-              ),
+              settleSession(
+                sessionId,
+                "failed",
+                // A start refused before anything ran (a login not connected, a launch Mend
+                // cannot name) is no failed resume: the session never ran here.
+                error.code === "person_login_refused" || error.code === "harness_layout_refused"
+                  ? `launch refused · ${error.message}`
+                  : error.code === "PI_PROFILE_NOT_DELIVERED"
+                    ? `launch failed: ${error.message}`
+                    : `resume failed: ${error.message}`,
+              ).pipe(Effect.ignore),
             ),
           );
-          const relocation = relocateHarnessHome(session, workspace);
-          if (capture === null) {
-            yield* relocation.pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("session engine: harness-home relocation failed").pipe(
-                  Effect.annotateLogs({ sessionId, error: String(error) }),
-                ),
-              ),
-            );
-          } else {
-            // A retained executor may predate this layout. Re-run the idempotent relocation before
-            // every join or resume rather than start another process with an ephemeral HOME.
-            yield* relocation.pipe(
+          const startAs = personStart;
+          // In a person executor the person's own secret files were written above, as them.
+          let withheldSecretFiles: ReadonlyArray<string> = [];
+          let executorOwner: string | null = null;
+          if (personStart === null) {
+            // A secret file delivered at a path reserved since goes before its directory is
+            // captured, or the resume stops here: relocating anyway could save it.
+            yield* evictReservedSecretFiles(session, workspace).pipe(
               Effect.tapError((error) =>
                 settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
                   Effect.ignore,
                 ),
               ),
             );
-          }
-          // The owner's secret files again (docs/adr/0010): a retained executor may predate a
-          // file the owner added or replaced since its launch, and this run reads the home as it
-          // is now. Only into a home that is the owner's (decision 3): whose it is is decided from
-          // the executor, never from how the launch reached it. A join names the lease holder's
-          // owner; any other retained run (resume, follow-up, shell resume, mode handoff) reads
-          // whose launch made the executor (`launchLoginOfWorkspace`), because a session that once
-          // joined another person's executor keeps that executor on its row. Delivering there
-          // would put the owner's files where the holder's agent reads them, replace the holder's
-          // own at the same path, and remove the holder's files as stale. Unknown reads as
-          // another person's: nothing is written, and the session line says so.
-          const executorOwner = workspaceOverride === null ? workspaceLogin : executorOwnerUserId;
-          const homeIsOwners =
-            session.ownerUserId !== null && executorOwner === session.ownerUserId;
-          const withheldSecretFiles =
-            homeIsOwners || session.ownerUserId === null
-              ? []
-              : (yield* secretFiles.list(session.ownerUserId)).map((file) => file.path);
-          if (homeIsOwners) {
-            yield* deliverSecretFiles(session, workspace).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("session engine: secret files were not written").pipe(
-                  Effect.annotateLogs({ sessionId, message: error.message }),
+            const relocation = relocateHarnessHome(session, workspace);
+            if (capture === null) {
+              yield* relocation.pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session engine: harness-home relocation failed").pipe(
+                    Effect.annotateLogs({ sessionId, error: String(error) }),
+                  ),
                 ),
-              ),
-            );
-          } else if (session.ownerUserId !== null) {
-            yield* Effect.logInfo(
-              executorOwner === null
-                ? "session engine: secret files not written · Mend cannot say whose the executor is"
-                : "session engine: secret files not written · the executor is another person's",
-            ).pipe(Effect.annotateLogs({ sessionId, withheld: withheldSecretFiles.length }));
+              );
+            } else {
+              // A retained executor may predate this layout. Re-run the idempotent relocation
+              // before every join or resume rather than start another process with an ephemeral
+              // HOME.
+              yield* relocation.pipe(
+                Effect.tapError((error) =>
+                  settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
+                    Effect.ignore,
+                  ),
+                ),
+              );
+            }
+            // The owner's secret files again (docs/adr/0010): a retained executor may predate a
+            // file the owner added or replaced since its launch, and this run reads the home as
+            // it is now. Only into a home that is the owner's (decision 3): whose it is is decided
+            // from the executor, never from how the launch reached it. A join names the lease
+            // holder's owner; any other retained run (resume, follow-up, shell resume, mode
+            // handoff) reads whose launch made the executor (`launchLoginOfWorkspace`), because a
+            // session that once joined another person's executor keeps that executor on its row.
+            // Delivering there would put the owner's files where the holder's agent reads them,
+            // replace the holder's own at the same path, and remove the holder's files as stale.
+            // Unknown reads as another person's: nothing is written, and the session line says
+            // so.
+            executorOwner = workspaceOverride === null ? workspaceLogin : executorOwnerUserId;
+            const homeIsOwners =
+              session.ownerUserId !== null && executorOwner === session.ownerUserId;
+            withheldSecretFiles =
+              homeIsOwners || session.ownerUserId === null
+                ? []
+                : (yield* secretFiles.list(session.ownerUserId)).map((file) => file.path);
+            if (homeIsOwners) {
+              yield* deliverSecretFiles(session, workspace).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session engine: secret files were not written").pipe(
+                    Effect.annotateLogs({ sessionId, message: error.message }),
+                  ),
+                ),
+              );
+            } else if (session.ownerUserId !== null) {
+              yield* Effect.logInfo(
+                executorOwner === null
+                  ? "session engine: secret files not written · Mend cannot say whose the executor is"
+                  : "session engine: secret files not written · the executor is another person's",
+              ).pipe(Effect.annotateLogs({ sessionId, withheld: withheldSecretFiles.length }));
+            }
           }
           // A retained workspace may hold a repository whose add this server did not see end
           // (docs/adr/0010): settle it from what the workspace holds, as a fresh launch would.
@@ -14153,13 +15111,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
             ),
           );
-          const interactiveShell = argv[0] === "bash";
           // With no pi live here, a pi launch runs on its owner's freshly delivered profile, on
           // none, or not at all, as a fresh launch does (`deliverPiProfile`): the harness home may
           // hold whoever's pi ran here last. With a pi live here, whoever's it is, the launch runs
           // on the profile already there; pi reads one profile per harness home, and per-person
-          // homes (docs/adr/0016) are what give each person their own.
-          if (session.harness === "pi" && !interactiveShell) {
+          // homes (docs/adr/0016) are what give each person their own (`deliverToPerson`).
+          if (personStart === null && session.harness === "pi" && !interactiveShell) {
             const piLive = (yield* processes.listLiveForWorkspace(
               SealantWorkspaceId.make(workspace.id),
             )).some((process) => process.harness === "pi" && AGENT_PROCESS_KINDS.has(process.kind));
@@ -14178,16 +15135,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : argv;
           // A Codex in a home that is not the launcher's (a join) touches no thread's memory mode:
           // the home owner's selection stands. It starts with its memory off and makes no thread
-          // anyone's Codex will summarise.
+          // anyone's Codex will summarise. In a person executor every home is its person's own.
           // Decided on what runs, not the harness's name: a `mend run -- codex` is a Codex too.
           const ownHome =
+            personStart !== null ||
             capture === null ||
             !launchesCodex(shapedArgv) ||
             (session.ownerUserId !== null &&
               (yield* liveHomeOwnerOf(session, SealantWorkspaceId.make(workspace.id))) ===
                 session.ownerUserId);
           const codexMemoryOn =
-            ownHome && (yield* withholdCodexThreads(session, workspace, shapedArgv, []));
+            personStart !== null ||
+            (ownHome && (yield* withholdCodexThreads(session, workspace, shapedArgv, [])));
           const memoryShapedArgv = codexMemoryOn
             ? shapedArgv
             : withCodexMemoryOff(shapedArgv, { join: !ownHome });
@@ -14210,25 +15169,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   captured: capture !== null,
                 })
               : withHarnessSetup(session.harness, memoryShapedArgv, { captured: capture !== null });
-          // Per-person harness homes (docs/adr/0016): in a person-layout executor the session's
-          // owner runs as their own user, made there at their first process (a join's one more
-          // exec, and the worktree repair beside it, never awaited).
-          const startAs = yield* startAsOwner(
-            session,
-            workspace,
-            interactiveShell ? "shell" : session.harness,
-          ).pipe(
-            Effect.tapError((error) =>
-              settleSession(
-                sessionId,
-                "failed",
-                // A start refused before anything ran (a login not connected, a launch Mend
-                // cannot name) is no failed resume: the session never ran here.
-                error.code === "person_login_refused" || error.code === "harness_layout_refused"
-                  ? `launch refused · ${error.message}`
-                  : `resume failed: ${error.message}`,
-              ).pipe(Effect.ignore),
-            ),
+          // A person's `install.sh` at their first process here: their agent starts beside it,
+          // unless they turned on "Start my agents after install.sh" (docs/adr/0016, decision 11).
+          const bootstrapWaited = yield* awaitBootstrap(
+            personStart?.delivered?.bootstrap ?? null,
+            session.ownerUserId === null
+              ? Effect.succeed(false)
+              : userDotfilesRepo.startAgentsAfterInstall(session.ownerUserId),
           );
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
             Effect.andThen(
@@ -14355,6 +15302,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
             yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
           }
+          yield* watchBootstrap(sessionId, bootstrapWaited);
           // After the stale words go, which would take a `secret files · …` line with them.
           if (withheldSecretFiles.length > 0) {
             yield* noteLaunchWords(
@@ -15733,6 +16681,77 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }).pipe(Effect.forkIn(scope), Effect.asVoid)
           : Effect.void;
 
+      /**
+       * An opencode agent ended in a person executor: the in-app logins its person made inside it
+       * are deleted from their own database, as them (docs/adr/0016, decision 8a). Off the
+       * caller's path, and with the flag off and nothing recorded, not even a read.
+       */
+      const scrubOpencodeAfterExit = (processId: SessionProcessId): Effect.Effect<void> =>
+        layoutSteps.personPossible()
+          ? Effect.gen(function* () {
+              const process = yield* processes.byId(processId);
+              if (
+                process === null ||
+                process.harness !== "opencode" ||
+                !AGENT_PROCESS_KINDS.has(process.kind)
+              ) {
+                return;
+              }
+              const session = yield* sessions
+                .byId(process.sessionId)
+                .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+              if (session === null || session.ownerUserId === null) return;
+              const launchId = yield* executorLaunchIdOf(session, process.sealantWorkspaceId);
+              if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return;
+              const [identity] = yield* harnessLayouts.identitiesOf([session.ownerUserId]);
+              if (identity === undefined) return;
+              const workspace = yield* owned(process.sessionId)(
+                sealant.getWorkspace(process.sealantWorkspaceId),
+              );
+              yield* scrubOpencodeAs(
+                session.id,
+                workspace,
+                {
+                  person: identity,
+                  user: processUserOf(identity),
+                  sessionId: session.id,
+                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, identity),
+                },
+                "after",
+              );
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session engine: opencode in-app logins not removed").pipe(
+                  Effect.annotateLogs({ processId, cause: Cause.pretty(cause) }),
+                ),
+              ),
+              Effect.forkIn(scope),
+              Effect.asVoid,
+            )
+          : Effect.void;
+
+      /**
+       * The idle check of `releaseLoginsAfterExit`, for an executor whose handle is in hand: a
+       * person with a home and nothing live has it released, after the grace. Off the caller's
+       * path.
+       */
+      const releaseIdleLogins = (
+        workspaceId: SealantWorkspaceId,
+        workspace: Workspace,
+      ): Effect.Effect<void> =>
+        layoutSteps.holdsReleasable(workspaceId)
+          ? layoutSteps
+              .releaseIdle({
+                workspaceId,
+                workspace: Effect.succeed(workspace),
+                live: peopleLiveIn(workspaceId),
+                launcher: sessions
+                  .executorSessionOf(workspaceId)
+                  .pipe(Effect.map((creator) => creator?.ownerUserId ?? null)),
+              })
+              .pipe(Effect.forkIn(scope), Effect.asVoid)
+          : Effect.void;
+
       /** Record an observed end and clear any earlier refusal, including after a restart. */
       const markProcessExited = Effect.fn("SessionEngine.markProcessExited")(function* (
         processId: SessionProcessId,
@@ -15740,6 +16759,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         exitCode: number | null,
       ) {
         yield* processes.markExited(processId, how, exitCode);
+        yield* scrubOpencodeAfterExit(processId);
         yield* releaseLoginsAfterExit(processId);
         if (!closeFailed.has(processId)) return;
         const process = yield* processes.byId(processId);
@@ -16379,7 +17399,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           session !== null &&
           session.sealantWorkspaceId !== null &&
           (yield* executorLaunchIdOf(session, session.sealantWorkspaceId)) === grant.launchId;
-        if (session === null || !live) {
+        if (session === null) {
           return { ok: false as const, status: 409, message: CHANNEL_NOT_LIVE_HERE };
         }
         if (!canSteerSession(session, grant.accountId)) {
@@ -16403,12 +17423,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return { ok: false as const, status: 403, message: CHANNEL_MAY_NOT_ACT };
         }
         const closures = socketClosures(sessionId, grant.accountId);
+        // A person's token redeems only that person's tickets, of this launch.
+        const pickup = closures.pickupAs?.({
+          launchId: grant.launchId,
+          accountId: grant.accountId,
+        });
+        // Their session's process has not started in this launch's executor yet (a join, whose row
+        // names the executor once its process opens), and the executor holds the session's
+        // worktree: only their own deliveries are answered, which arrive before that process
+        // starts (docs/adr/0016, Delivery 15). A session anywhere else reaches nothing.
+        if (!live) {
+          const lease = capture === null ? null : yield* capture.repo.leaseOf(session.worktreeId);
+          return pickup === undefined || lease?.launchId !== grant.launchId
+            ? { ok: false as const, status: 409, message: CHANNEL_NOT_LIVE_HERE }
+            : { ok: true as const, api: pickupOnly(pickup) };
+        }
         return {
           ok: true as const,
           api: {
             ...ownedSocketApi(sessionId, closures),
-            // A person's token redeems only that person's tickets, of this launch.
-            pickup: closures.pickupAs?.({ launchId: grant.launchId, accountId: grant.accountId }),
+            pickup,
             channelFor: undefined,
           },
         };

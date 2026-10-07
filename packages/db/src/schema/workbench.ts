@@ -714,6 +714,8 @@ export const agentMemoryHomes = pgTable("agent_memory_homes", {
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),
+  /** "Start my agents after install.sh" (docs/adr/0016, decision 11); off by default. */
+  startAgentsAfterInstall: boolean().notNull().default(false),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

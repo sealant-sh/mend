@@ -12,10 +12,12 @@ import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  type PersonHome,
   UNKNOWN_LAUNCH_REFUSAL,
   loginRefusal,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
+import { DOTFILES_BLOCK_REASON } from "./harness-layout.ts";
 
 /**
  * The per-person steps' own memory (docs/adr/0016): the layout each launch runs, as the session
@@ -115,6 +117,7 @@ const coreCalls = (): CoreCalls => ({
 const platformOf = (core: CoreCalls) =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
+    dotfilesUser: false,
     withOwnerMap: (options) => options,
     imageReport: () =>
       Effect.sync(() => {
@@ -148,7 +151,7 @@ const platformOf = (core: CoreCalls) =>
         core.calls.push("list");
         return core.homes;
       }),
-    applyDotfiles: () => Effect.void,
+    applyDotfiles: () => Effect.succeed({ bootstrap: null }),
   });
 
 const platformLayer = platformOf(coreCalls());
@@ -562,6 +565,82 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.calls.some((call) => call.includes(aliceHome))).toBe(false);
     expect(result.started?.user.home).toBe(`/home/${result.maria.name}`);
     expect(JSON.stringify(result.started?.env)).not.toContain(aliceHome);
+  });
+
+  it("tells a joiner's home ready once their user exists, before their logins are written; a later start at once", async () => {
+    const core = coreCalls();
+    const order: Array<string> = [];
+    const result = await withPersonExecutor(core, ({ steps }) =>
+      Effect.gen(function* () {
+        const ready = (label: string) =>
+          Effect.gen(function* () {
+            const homeReady = yield* Deferred.make<PersonHome | null>();
+            yield* Effect.forkChild(
+              Deferred.await(homeReady).pipe(
+                Effect.tap((home) =>
+                  Effect.sync(() =>
+                    order.push(
+                      `${label}:${home === null ? "none" : home.made ? "made" : "there"}@${core.calls.length}`,
+                    ),
+                  ),
+                ),
+              ),
+            );
+            yield* steps.processAs({
+              workspace,
+              launchId: "launch-1",
+              accountId: "user-maria",
+              sessionId: "sess-1",
+              worktreeId: "wt-1",
+              harness: "claude",
+              live: Effect.succeed(new Set<string>()),
+              homeReady,
+            });
+            yield* Effect.yieldNow;
+            return yield* Deferred.await(homeReady);
+          });
+        const first = yield* ready("first");
+        const second = yield* ready("second");
+        return { first, second };
+      }),
+    );
+    expect(result.first?.made).toBe(true);
+    expect(result.first?.user.name).toBe(result.first?.identity.name);
+    expect(result.second?.made).toBe(false);
+    // Each start tells it, the first once its home exec made her (beside her one Core call).
+    expect(order.map((line) => line.split("@")[0])).toEqual(["first:made", "second:there"]);
+  });
+
+  it("decides a fresh worktree shared while the launcher's dotfiles cannot be applied as them, and asks only then", async () => {
+    const asked: Array<string> = [];
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const withDotfiles = (has: boolean) => ({
+          ...decideInput(`launch-${String(has)}`),
+          launcherHasDotfiles: Effect.sync(() => {
+            asked.push(String(has));
+            return has;
+          }),
+        });
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
+        const blocked = yield* steps.decide(withDotfiles(true));
+        const free = yield* steps.decide({
+          ...withDotfiles(false),
+          worktreeId: WorktreeId.make("wt-2"),
+        });
+        const off = yield* stepsWith("shared", makeHarnessLayoutsMemoryState());
+        const flagOff = yield* off.steps.decide({
+          ...withDotfiles(true),
+          worktreeId: WorktreeId.make("wt-3"),
+        });
+        return { blocked, free, flagOff };
+      }),
+    );
+    expect(result.blocked).toMatchObject({ layout: "shared", reason: DOTFILES_BLOCK_REASON });
+    expect(result.free.layout).toBe("person");
+    expect(result.flagOff.layout).toBe("shared");
+    // Read only where it decides something: never with the flag off.
+    expect(asked).toEqual(["true", "false"]);
   });
 
   it("leaves out a provider the joiner has not connected, and does not ask again for it", async () => {
