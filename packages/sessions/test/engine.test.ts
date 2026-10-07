@@ -27657,10 +27657,13 @@ const writeUnder = (root: string, relative: string, contents: string) => {
 const peopleDir = (account: string) => `people/${account}`;
 
 describe("readers per person (docs/adr/0016, Delivery 16)", () => {
-  it(
-    "two people's transcripts and memory in one capture are each read back only for their own person",
+  it.each([
+    ["never shared", false],
+    ["Alice's shared once, then turned off", true],
+  ] as const)(
+    "two people's transcripts and memory in one capture are each read back only for their own person (%s)",
     { timeout: 30_000 },
-    async () => {
+    async (_label, aliceOnceShared) => {
       const created: Array<CreateOptions> = [];
       const memory = makeMemoryCaptureStore();
       const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
@@ -27724,6 +27727,15 @@ describe("readers per person (docs/adr/0016, Delivery 16)", () => {
               executorRoot,
             );
 
+            if (aliceOnceShared) {
+              // Shared control was on, then turned off: her session still credits nobody.
+              const row = world.sessions.get(holder.id);
+              if (row === undefined) return yield* Effect.die("no holder session");
+              world.sessions.set(
+                holder.id,
+                new Session({ ...row, sharedControlEverAt: new Date(Date.now() - 60_000) }),
+              );
+            }
             yield* engine.stop(joined.id);
             yield* until(() => readBacks.length > 0, "Maria's read-back");
             expect(readBacks.map((input) => input.userId)).toEqual([MARIA]);
@@ -27733,6 +27745,15 @@ describe("readers per person (docs/adr/0016, Delivery 16)", () => {
             expect(world.sessions.get(joined.id)?.providerSessionId).toBe(maria);
 
             yield* engine.stop(holder.id);
+            if (aliceOnceShared) {
+              yield* until(
+                () => world.sessions.get(holder.id)?.providerSessionId === alice,
+                "Alice's harvest",
+              );
+              yield* Effect.sleep("100 millis");
+              expect(readBacks.map((input) => input.userId)).toEqual([MARIA]);
+              return;
+            }
             yield* until(() => readBacks.length > 1, "Alice's read-back");
             expect(readBacks.map((input) => input.userId)).toEqual([MARIA, "user-fixture"]);
             expect(readBacks[1]?.session.map((file) => [file.path, file.contents])).toEqual([
@@ -27770,130 +27791,169 @@ describe("readers per person (docs/adr/0016, Delivery 16)", () => {
     },
   );
 
+  /**
+   * A conversation two captures of the worktree's last shared executor hold, then the worktree
+   * turns person and Alice resumes it. With `marias`, a pre-release terminal session of Maria's in
+   * the same worktree was harvested with the same conversation id.
+   */
+  const resumeAfterSharedEra = async (options: { readonly marias: boolean }) => {
+    const created: Array<CreateOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const memory = makeMemoryCaptureStore();
+    const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
+    const id = crypto.randomUUID();
+    const picked: Array<{ readonly path: string; readonly contents: string }> = [];
+    let resumed: SessionId | null = null;
+    let summary: string | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "before",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          resumed = session.id;
+          // The worktree's last shared executor: an earlier capture, then its final one, which
+          // holds what the conversation said last.
+          yield* engine.launch(session.id, ["claude"]);
+          const request = created[0];
+          if (request === undefined) return yield* Effect.die("the launch made no executor");
+          const executorRoot = path.join(tmp, "shared-executor");
+          const home = configuredHarnessHomePath(request, executorRoot);
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          writeUnder(home, `${PROJECT_DIR}/${id}.jsonl`, claudeLine(id, "first"));
+          yield* shipCapturedHarnessHome(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            request,
+            executorRoot,
+          );
+          writeUnder(
+            home,
+            `${PROJECT_DIR}/${id}.jsonl`,
+            `${claudeLine(id, "first")}${claudeLine(id, "last")}`,
+          );
+          writeUnder(home, `${PROJECT_DIR}/${id}/tool-results/out.txt`, "a tool's output\n");
+          yield* shipCapturedHarnessHome(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            request,
+            executorRoot,
+          );
+          yield* engine.stop(session.id);
+          yield* until(
+            () => world.sessions.get(session.id)?.providerSessionId === id,
+            "the shared executor's harvest",
+          );
+          if (options.marias) {
+            // Maria's terminal agent in the same shared home: its harvest took the newest
+            // transcript there, Alice's.
+            const marias = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: MARIA,
+            });
+            const row = world.sessions.get(marias.id);
+            if (row === undefined) return yield* Effect.die("no session of Maria's");
+            world.sessions.set(marias.id, new Session({ ...row, providerSessionId: id }));
+          }
+          // Then the worktree runs per person, and Alice resumes that conversation.
+          state.worktrees.set(session.worktreeId, { layout: "person", requested: null });
+          yield* engine.resumeSession(session.id, null);
+          summary = world.sessions.get(session.id)?.summary ?? null;
+        }),
+      {
+        captured: memory,
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            flush: headFlush(memory),
+            exec: answerLayout(LAYOUT_READY),
+            execEffect: (argv) => {
+              const command = commandOf(argv);
+              if (command[3] !== "mend-write" || !command.some((part) => part.startsWith("A/"))) {
+                return undefined;
+              }
+              return redeemPickupExec(command, resumed).pipe(
+                Effect.map((answer) => {
+                  for (const file of answer.files) {
+                    picked.push({
+                      path: file.path,
+                      contents: Buffer.from(file.base64, "base64").toString("utf8"),
+                    });
+                  }
+                  return { exitCode: 0, stdout: "", stderr: "" };
+                }),
+                Effect.orDie,
+              );
+            },
+          },
+        ),
+        harnessLayout: { flag: "shared", state, platform: personPlatform([], { person: true }) },
+      },
+    );
+    return { id, picked, execCalls, summary };
+  };
+
   it(
     "a resume copies its conversation from the worktree's last shared-layout capture, the final one, only where its owner has none",
     { timeout: 30_000 },
     async () => {
-      const created: Array<CreateOptions> = [];
-      const execCalls: Array<ReadonlyArray<string>> = [];
-      const memory = makeMemoryCaptureStore();
-      const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
-      const id = crypto.randomUUID();
-      const picked: Array<{ readonly path: string; readonly contents: string }> = [];
-      let resumed: SessionId | null = null;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const project = yield* setup(tmp, world);
-            const engine = yield* SessionEngine;
-            const session = yield* engine.provision({
-              projectId: project.id,
-              harness: "claude",
-              label: null,
-              name: "before",
-              ownerUserId: "user-fixture",
-              base: null,
-            });
-            resumed = session.id;
-            // The worktree's last shared executor: an earlier capture, then its final one, which
-            // holds what the conversation said last.
-            yield* engine.launch(session.id, ["claude"]);
-            const request = created[0];
-            if (request === undefined) return yield* Effect.die("the launch made no executor");
-            const executorRoot = path.join(tmp, "shared-executor");
-            const home = configuredHarnessHomePath(request, executorRoot);
-            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-            writeUnder(home, `${PROJECT_DIR}/${id}.jsonl`, claudeLine(id, "first"));
-            yield* shipCapturedHarnessHome(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              request,
-              executorRoot,
-            );
-            writeUnder(
-              home,
-              `${PROJECT_DIR}/${id}.jsonl`,
-              `${claudeLine(id, "first")}${claudeLine(id, "last")}`,
-            );
-            writeUnder(home, `${PROJECT_DIR}/${id}/tool-results/out.txt`, "a tool's output\n");
-            yield* shipCapturedHarnessHome(
-              tmp,
-              memory,
-              session.worktreeId,
-              epoch,
-              request,
-              executorRoot,
-            );
-            yield* engine.stop(session.id);
-            yield* until(
-              () => world.sessions.get(session.id)?.providerSessionId === id,
-              "the shared executor's harvest",
-            );
-            // Then the worktree runs per person, and Alice resumes that conversation.
-            state.worktrees.set(session.worktreeId, { layout: "person", requested: null });
-            yield* engine.resumeSession(session.id, null);
-            const P = "/workspace/harness-home/people/user-fixture";
-            expect(picked.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual([
-              {
-                path: `${P}/${PROJECT_DIR}/${id}.jsonl`,
-                contents: `${claudeLine(id, "first")}${claudeLine(id, "last")}`,
-              },
-              {
-                path: `${P}/${PROJECT_DIR}/${id}/tool-results/out.txt`,
-                contents: "a tool's output\n",
-              },
-            ]);
-            // Written only where nothing is, as Alice, into her own saved directory.
-            const copies = execCalls.filter(
-              (argv) =>
-                argv[0] === "env" &&
-                argv[5] === "mend-write" &&
-                argv.some((part) => part.startsWith(`A${P}/`)),
-            );
-            expect(copies).toHaveLength(1);
-            expect(copies[0]?.slice(7).every((part) => part.startsWith(`A${P}/`))).toBe(true);
-          }),
+      const { id, picked, execCalls } = await resumeAfterSharedEra({ marias: false });
+      const P = "/workspace/harness-home/people/user-fixture";
+      expect(picked.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual([
         {
-          captured: memory,
-          sealantLayer: sealantLaunchLayer(
-            created,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            execCalls,
-            undefined,
-            {
-              flush: headFlush(memory),
-              exec: answerLayout(LAYOUT_READY),
-              execEffect: (argv) => {
-                const command = argv[0] === "env" ? argv.slice(2) : argv;
-                if (command[3] !== "mend-write" || !command.some((part) => part.startsWith("A"))) {
-                  return undefined;
-                }
-                return redeemPickupExec(command, resumed).pipe(
-                  Effect.map((answer) => {
-                    for (const file of answer.files) {
-                      picked.push({
-                        path: file.path,
-                        contents: Buffer.from(file.base64, "base64").toString("utf8"),
-                      });
-                    }
-                    return { exitCode: 0, stdout: "", stderr: "" };
-                  }),
-                  Effect.orDie,
-                );
-              },
-            },
-          ),
-          harnessLayout: { flag: "shared", state, platform: personPlatform([], { person: true }) },
+          path: `${P}/${PROJECT_DIR}/${id}.jsonl`,
+          contents: `${claudeLine(id, "first")}${claudeLine(id, "last")}`,
         },
+        {
+          path: `${P}/${PROJECT_DIR}/${id}/tool-results/out.txt`,
+          contents: "a tool's output\n",
+        },
+      ]);
+      // Written only where nothing is, 0600, as Alice, into her own saved directory.
+      const copies = execCalls.filter(
+        (argv) =>
+          commandOf(argv)[3] === "mend-write" && argv.some((part) => part.startsWith(`A${P}/`)),
+      );
+      expect(copies).toHaveLength(1);
+      expect(
+        commandOf(copies[0] ?? [])
+          .slice(5)
+          .every((part) => part.startsWith(`A${P}/`)),
+      ).toBe(true);
+    },
+  );
+
+  it(
+    "a conversation another person's pre-release session also holds is never copied, and the session says so",
+    { timeout: 30_000 },
+    async () => {
+      const { picked, summary } = await resumeAfterSharedEra({ marias: true });
+      expect(picked).toEqual([]);
+      expect(summary ?? "").toContain(
+        "conversation from before per-person homes not copied · another person's session in this worktree holds it too",
       );
     },
   );

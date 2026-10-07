@@ -114,6 +114,10 @@ export const conversationFilesOf = (
   const id = providerSessionId.toLowerCase();
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return [];
   return relativePaths.filter((relative) => {
+    // Never a path that climbs or names itself: what is copied stays where it says.
+    if (relative.split("/").some((part) => part === "" || part === "." || part === "..")) {
+      return false;
+    }
     switch (harness) {
       case "claude": {
         const match = /^\.claude\/projects\/[^/]+\/([^/]+)(\.jsonl|\/.+)$/.exec(relative);

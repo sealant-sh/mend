@@ -67,6 +67,7 @@ const session = (
   autoLand: null,
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
+  sharedControlEverAt: null,
   hasTranscript: null,
   idleStoppedAt: null,
   capturePending: null,

@@ -79,6 +79,7 @@ export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => (
   autoLand: null,
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
+  sharedControlEverAt: null,
   hasTranscript: null,
   idleStoppedAt: null,
   capturePending: null,

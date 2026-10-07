@@ -105,5 +105,12 @@ describe("a conversation's files, by exact provider session id", () => {
     ]);
     expect(conversationFilesOf("opencode", ID, paths)).toEqual([]);
     expect(conversationFilesOf("claude", "not-an-id", paths)).toEqual([]);
+    // A path that climbs out of the conversation is never one of its files.
+    expect(
+      conversationFilesOf("claude", ID, [
+        `.claude/projects/-workspace-repo/${ID}/../../../../.bashrc`,
+        `.claude/projects/-workspace-repo/${ID}/./x`,
+      ]),
+    ).toEqual([]);
   });
 });

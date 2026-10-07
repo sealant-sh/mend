@@ -1358,6 +1358,8 @@ export const agentSessions = pgTable(
     // Shared control (0060): both set while the owner lets others steer, both null otherwise.
     sharedControlEnabledByUserId: text(),
     sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),
+    // When shared control was first turned on, never cleared (0116, docs/adr/0016 decision 9).
+    sharedControlEverAt: timestamp({ mode: "date", withTimezone: true }),
     // Null until settle classifies it (0050); false = a dead end the dashboard hides.
     hasTranscript: boolean(),
     // The idle stop's claim (0072): set when Mend stops an idle protocol agent, null on reopen.

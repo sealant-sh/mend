@@ -184,6 +184,7 @@ describe("Mend Drizzle schema", () => {
       "auto_land",
       "shared_control_enabled_by_user_id",
       "shared_control_enabled_at",
+      "shared_control_ever_at",
       "has_transcript",
       "idle_stopped_at",
       "capture_pending",

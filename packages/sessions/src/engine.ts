@@ -1094,10 +1094,18 @@ interface PersonDelivery extends PersonExec {
 }
 
 /**
- * A session whose agent uses its owner's own memory: shared control has not been turned on
- * (docs/adr/0009 as amended; Delivery 17 makes this sticky from the move into `C`).
+ * A session whose agent uses its owner's own memory: shared control has never been turned on for
+ * it, now or before (`sharedControlEverAt` is never cleared; docs/adr/0009 as amended by 0016).
  */
-const neverShared = (session: Session) => session.sharedControlEnabledAt === null;
+const neverShared = (session: Session) =>
+  session.sharedControlEnabledAt === null && session.sharedControlEverAt === null;
+
+/** Said when another person's session holds the same conversation (review of mend#567). */
+const PRE_RELEASE_COPY_REFUSED_WORDS =
+  "conversation from before per-person homes not copied · another person's session in this worktree holds it too";
+/** Said when a conversation from before per-person homes is over what a start copies. */
+const preReleaseTooLargeWords = (bytes: number) =>
+  `conversation from before per-person homes not copied · ${Math.ceil(bytes / (1024 * 1024))} MB is over the 64 MB a start copies`;
 
 /** What a person's deliveries leave for the start that waits on them. */
 interface PersonDelivered {
@@ -12423,8 +12431,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const headManifest = yield* manifestOf(head);
           // Theirs already: nothing to copy.
           if (filesOf(yield* listUnder(headManifest, place.root), place.root).length > 0) return;
+          // Someone else's session in the worktree is known to hold this conversation: a terminal
+          // agent's harvest in a home two people shared took the newest transcript there, which
+          // could be the other person's. Never carried into this person's directory (review of
+          // mend#567, P2-2). One read.
+          const others = (yield* sessions.listForWorktree(session.worktreeId)).filter(
+            (member) => member.id !== session.id && member.ownerUserId !== as.person.accountId,
+          );
+          const othersRows =
+            others.length === 0
+              ? []
+              : yield* processes.listForSessions(others.map((member) => member.id));
+          if (
+            others.some((member) => member.providerSessionId === providerSessionId) ||
+            othersRows.some((row) => row.providerSessionId === providerSessionId)
+          ) {
+            yield* Effect.logWarning(
+              "session engine: a conversation from before per-person homes was not copied · another person's session holds it too",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id }));
+            yield* noteLaunchWords(session.id, PRE_RELEASE_COPY_REFUSED_WORDS).pipe(Effect.ignore);
+            return;
+          }
           // The last capture with no person's saved directory in it: a worktree is shared up to
-          // its first person executor and person ever after, so one binary search finds it.
+          // its first person executor and person ever after, so one binary search finds the edge.
+          // Mend's own capture 0 holds no harness at all and is never the answer.
           const holdsPeople = (row: (typeof chain)[number]) =>
             manifestOf(row).pipe(
               Effect.flatMap((manifest) =>
@@ -12436,31 +12466,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               // Unreadable reads as person: the search only moves earlier past it.
               Effect.orElseSucceed(() => true),
             );
+          const candidates = chain.filter((row) => row.n > 0);
           let low = 0;
-          let high = chain.length - 1;
-          let lastShared: (typeof chain)[number] | null = null;
+          let high = candidates.length - 1;
+          let edge = -1;
           while (low <= high) {
             const middle = Math.floor((low + high) / 2);
-            const row = chain[middle];
+            const row = candidates[middle];
             if (row === undefined) break;
             if (yield* holdsPeople(row)) {
               high = middle - 1;
             } else {
-              lastShared = row;
+              edge = middle;
               low = middle + 1;
             }
           }
+          // From that edge back, the first capture holding any of this harness's conversations and
+          // no person's directory: a capture with no harness files (a section left out) is skipped.
+          let source: (typeof chain)[number] | null = null;
+          let sourceManifest = headManifest;
+          let found: ReturnType<typeof filesOf> = [];
+          for (let index = edge; index >= 0; index--) {
+            const row = candidates[index];
+            if (row === undefined) break;
+            if (yield* holdsPeople(row)) continue;
+            const manifest = yield* manifestOf(row).pipe(Effect.option);
+            if (Option.isNone(manifest)) continue;
+            const listed = yield* listUnder(manifest.value, "harness");
+            if (listed.filter((file) => file.entry.kind === "file").length === 0) continue;
+            source = row;
+            sourceManifest = manifest.value;
+            found = filesOf(listed, "harness");
+            break;
+          }
           // A person executor captures the old shared home as it found it: the head holds the
-          // same files when the last shared capture itself is no longer readable.
-          const source = lastShared ?? head;
-          const sourceManifest = source === head ? headManifest : yield* manifestOf(source);
-          const found = filesOf(yield* listUnder(sourceManifest, "harness"), "harness");
+          // same files when no shared capture can be read any more.
+          if (source === null) {
+            source = head;
+            sourceManifest = headManifest;
+            found = filesOf(yield* listUnder(headManifest, "harness"), "harness");
+          }
           if (found.length === 0) return;
           const total = found.reduce((sum, { file }) => sum + (file.entry.size ?? 0), 0);
           if (total > PRE_RELEASE_COPY_MAX_BYTES) {
             yield* Effect.logWarning(
               "session engine: a conversation from before per-person homes is too large to copy",
             ).pipe(Effect.annotateLogs({ sessionId: session.id, bytes: total }));
+            yield* noteLaunchWords(session.id, preReleaseTooLargeWords(total)).pipe(Effect.ignore);
             return;
           }
           const bytes = yield* Effect.forEach(found, ({ relative, file }) =>

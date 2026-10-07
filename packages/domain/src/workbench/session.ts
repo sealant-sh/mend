@@ -180,6 +180,14 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   /**
+   * When shared control was first turned on, kept after it is turned off (docs/adr/0016,
+   * decision 9): a session once shared runs on no one's memory and credits nobody until it ends.
+   */
+  sharedControlEverAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
    * Whether the harness left a conversation behind — a transcript Mend captured at settle or
    * found in the live harness home. False is a dead end: nothing to resume, nothing to hand
    * off, so the dashboard hides such settled sessions. Null until settle (or for rows the
