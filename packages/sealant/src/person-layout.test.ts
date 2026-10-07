@@ -15,7 +15,13 @@ import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { SealantClients } from "./client.ts";
-import { PersonLayoutPlatformLive, imageLayoutReportOf } from "./person-layout-live.ts";
+import { SealantPlatformError } from "./errors.ts";
+import {
+  CONTROL_PLANE_NO_PROCESS_USER,
+  CONTROL_PLANE_UNREADABLE,
+  PersonLayoutPlatformLive,
+  imageLayoutReportOf,
+} from "./person-layout-live.ts";
 import {
   PersonLayoutPlatform,
   PersonLayoutPlatformNone,
@@ -148,8 +154,11 @@ const inspection = (
 const clientsLayer = (
   inspections: Array<CreateOptions>,
   answer: WorkspaceImageInspection = inspection("supported"),
+  features: () => Effect.Effect<{ readonly processUser: boolean }, SealantPlatformError> = () =>
+    Effect.succeed({ processUser: true }),
 ) =>
   Layer.mock(SealantClients, {
+    controlPlaneFeatures: features,
     connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
     sshKeys: () => ({ ensure: unused, list: unused }),
     sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
@@ -398,6 +407,42 @@ describe("the live platform (Core 0.39)", () => {
     });
     expect(imageLayoutReportOf(inspection("supported")).person).toBe(true);
   });
+});
+
+describe("what the control plane says it can do (review of mend#569, P3-4)", () => {
+  effectIt.effect("refuses the person layout by Core's own report, read once while it lasts", () =>
+    Effect.gen(function* () {
+      const answers: Array<boolean | null> = [false, true, null];
+      let asked = 0;
+      const features = () =>
+        Effect.suspend(() => {
+          const answer = answers[asked++];
+          return answer === null || answer === undefined
+            ? Effect.fail(
+                new SealantPlatformError({ code: "x", status: 503, message: "down", cause: null }),
+              )
+            : Effect.succeed({ processUser: answer });
+        });
+      const platform = yield* PersonLayoutPlatform.pipe(
+        Effect.provide(
+          PersonLayoutPlatformLive.pipe(
+            Layer.provide(clientsLayer([], inspection("supported"), features)),
+          ),
+        ),
+      );
+      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_NO_PROCESS_USER);
+      // Kept: asked once while the answer lasts.
+      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_NO_PROCESS_USER);
+      expect(asked).toBe(1);
+      // An upgraded control plane is seen once it has passed.
+      yield* TestClock.adjust("6 minutes");
+      expect(yield* platform.controlPlaneObstacle).toBeNull();
+      yield* TestClock.adjust("6 minutes");
+      // Unreadable is no, and asked again soon.
+      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_UNREADABLE);
+      expect(asked).toBe(3);
+    }),
+  );
 });
 
 describe("a credentials call Core never answers (review 2 of mend#564, P3-5)", () => {

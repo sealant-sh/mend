@@ -64,6 +64,11 @@ export class HarnessLayoutConfig extends Context.Service<
      * is written once the platform has opened it.
      */
     readonly loginReleaseGrace?: Duration.Duration;
+    /**
+     * How long a start waits for a person's dotfiles apply before the agent starts beside it
+     * (`DOTFILES_APPLY_BOUND_MS` unless a test says).
+     */
+    readonly dotfilesApplyBound?: Duration.Duration;
   }
 >()("@mend/sessions/HarnessLayoutConfig") {}
 
@@ -217,6 +222,23 @@ export const loginRefusal = (provider: LoginProvider, reason: LoginRefusalReason
   }
 };
 
+const CHATGPT_SKIP_WORDS: Readonly<Record<LoginRefusalReason, string>> = {
+  "connected-account-missing": "no Codex account is connected",
+  "connected-account-invalid": "the Codex login needs reconnecting",
+  "connected-account-unsupported": "the Codex account is not a ChatGPT login",
+  "login-file-unusable": "its login file in your home is not a plain file of yours",
+};
+
+/**
+ * The session line when Core left pi's or opencode's ChatGPT login out of a person's put
+ * (sealant#336/#337): what was observed, never a verdict. Null for any other provider, whose
+ * absence an open workbench does not need said.
+ */
+export const loginLeftOutWords = (skip: LoginSkip): string | null =>
+  skip.provider === "pi" || skip.provider === "opencode"
+    ? `${PROVIDER_NAMES[skip.provider]} login not written · ${CHATGPT_SKIP_WORDS[skip.reason]}`
+    : null;
+
 /** A process refused because its person's needed login is missing (`loginRefusal`). */
 export const loginRefused = (message: string) =>
   new SealantPlatformError({ code: "person_login_refused", status: 409, message, cause: null });
@@ -354,6 +376,11 @@ export interface HarnessLayoutSteps {
     readonly fallback: {
       /** The launcher's create-time logins: what their home holds once the layout is person. */
       readonly credentials: WorkspaceCredentialsOptions | undefined;
+      /**
+       * What the launch starts (`loginNeedOf`): the providers the `/root` write must not leave
+       * out. Null when unknown: then every provider the create named is needed.
+       */
+      readonly harness?: string | null;
       readonly dotfiles: ReadonlyArray<{
         readonly data: string;
         readonly manager: string;
@@ -404,7 +431,12 @@ export interface HarnessLayoutSteps {
      */
     readonly homeReady?: Deferred.Deferred<PersonHome | null>;
   }) => Effect.Effect<
-    { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
+    {
+      readonly user: ProcessUser;
+      readonly env: Readonly<Record<string, string>>;
+      /** The session line's words for an optional login this start's put left out. */
+      readonly loginsLeftOut: ReadonlyArray<string>;
+    } | null,
     SealantPlatformError
   >;
   /**
@@ -712,7 +744,11 @@ export const makeHarnessLayoutSteps = (deps: {
     ownerUserId: string,
     harness: Harness,
   ) {
-    const obstacle = staticLayoutObstacle(image, { processUser: platform.processUser });
+    // What Mend knows without asking, then what the control plane says of itself (one cached
+    // read): a Core that cannot run a process as a person is refused here, before create.
+    const obstacle =
+      staticLayoutObstacle(image, { processUser: platform.processUser }) ??
+      (yield* platform.controlPlaneObstacle);
     if (obstacle !== null) {
       return {
         capability: { person: false, missing: [obstacle], source: "static" } as const,
@@ -958,20 +994,21 @@ export const makeHarnessLayoutSteps = (deps: {
     yield* platform.deleteCredentials(input.workspace, { home });
     const rootLogins = homeLoginsOf(input.fallback.credentials);
     if (Object.keys(rootLogins).length > 0) {
-      yield* platform
-        .postCredentials(input.workspace, {
-          onBehalfOf: layout.launcher.accountId,
-          home: "/root",
-          logins: rootLogins,
-        })
-        .pipe(
-          Effect.mapError((error) => {
-            const refused = refusedAccountOf(error);
-            return refused === null
-              ? error
-              : loginRefused(loginRefusal(refused.provider, refused.reason));
-          }),
-        );
+      // Partial, as a start's (sealant#337): a provider disconnected since the create is left
+      // out, and only one the harness needs refuses the launch.
+      const written = yield* platform.postCredentials(input.workspace, {
+        onBehalfOf: layout.launcher.accountId,
+        home: "/root",
+        logins: rootLogins,
+        partial: true,
+      });
+      const harness = input.fallback.harness ?? null;
+      const needed = (provider: LoginProvider) =>
+        harness === null || loginNeedOf(harness).required.includes(provider);
+      const refused = written.skipped.find((skip) => needed(skip.provider));
+      if (refused !== undefined) {
+        return yield* loginRefused(loginRefusal(refused.provider, refused.reason));
+      }
     }
     const reason = `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
     yield* repo.recordFallback(input.launchId, reason);
@@ -1078,7 +1115,7 @@ export const makeHarnessLayoutSteps = (deps: {
     const { identity, need } = input;
     const people = executorOf(input.workspace.id, input.launchId).people;
     const holding = people.get(identity.accountId);
-    if (covers(holding, need)) return;
+    if (covers(holding, need)) return [];
     const required = new Set(need.required);
     const choices = new Map<LoginProvider, true | null>();
     for (const provider of [...need.required, ...need.optional]) {
@@ -1114,7 +1151,7 @@ export const makeHarnessLayoutSteps = (deps: {
         if (refused !== undefined) {
           return yield* loginRefused(loginRefusal(refused.provider, refused.reason));
         }
-        return;
+        return written.success.skipped;
       }
       const error = written.failure;
       if (error.code === "home-busy" && busy < 3) {
@@ -1128,6 +1165,11 @@ export const makeHarnessLayoutSteps = (deps: {
         continue;
       }
       keepHeldFor(input.workspace.id, input.launchId, identity);
+      // A put Core refused whole for an account (never a partial one's, sealant#337): its words.
+      const refusedWhole = refusedAccountOf(error);
+      if (refusedWhole !== null) {
+        return yield* loginRefused(loginRefusal(refusedWhole.provider, refusedWhole.reason));
+      }
       return yield* new SealantPlatformError({
         code: "person_login_not_written",
         status: error.status,
@@ -1168,7 +1210,7 @@ export const makeHarnessLayoutSteps = (deps: {
       // The start's whole make-and-POST holds the home's lock, so a release or the startup
       // reconciliation never runs between what it reads and what it writes (review of mend#564,
       // P2-1); the make and the POST still run beside each other inside it.
-      yield* lockOf(key).withPermit(
+      const leftOut = yield* lockOf(key).withPermit(
         Effect.gen(function* () {
           startedAt.set(key, yield* Clock.currentTimeMillis);
           const made = madeIn.get(workspaceId) ?? new Set<string>();
@@ -1186,7 +1228,7 @@ export const makeHarnessLayoutSteps = (deps: {
                   made: madeNow,
                 }).pipe(Effect.asVoid);
           if (!needsHome) yield* tellHomeReady(false);
-          if (!needsHome && !needsLogins) return;
+          if (!needsHome && !needsLogins) return [];
           const homeMade = yield* Deferred.make<void>();
           let minted = false;
           // Their first process in this executor: their user, home and saved directory (one exec,
@@ -1232,7 +1274,7 @@ export const makeHarnessLayoutSteps = (deps: {
                 need,
                 homeMade: needsHome ? homeMade : null,
               })
-            : Effect.void;
+            : Effect.succeed<ReadonlyArray<LoginSkip>>([]);
           /**
            * A start that did not finish (refused, or interrupted): the Mend token its home exec
            * minted goes (review of mend#564, P2-3), and their next start makes them again; their
@@ -1268,6 +1310,7 @@ export const makeHarnessLayoutSteps = (deps: {
             return yield* logins.failure;
           }
           if (home._tag === "Failure") return yield* home.failure;
+          return logins.success;
         }),
       );
       const last = lastIn.get(workspaceId);
@@ -1298,6 +1341,10 @@ export const makeHarnessLayoutSteps = (deps: {
       return {
         user: processUserOf(identity),
         env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
+        loginsLeftOut: leftOut.flatMap((skip) => {
+          const words = loginLeftOutWords(skip);
+          return words === null ? [] : [words];
+        }),
       };
     },
   );

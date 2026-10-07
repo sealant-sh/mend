@@ -30,6 +30,7 @@ import {
   createRunOp,
   createSshKeyOp,
   expireWorkspaceOp,
+  getIndexOp,
   getSessionOutputOp,
   getSetupStateOp,
   inferenceRespondOp,
@@ -1294,6 +1295,14 @@ export class SealantClients extends Context.Service<
       userId: string,
       options: CreateOptions,
     ) => Effect.Effect<WorkspaceImageInspection, SealantPlatformError>;
+    /**
+     * What the control plane says it can do that an older one cannot (its index's `features`):
+     * `processUser`, a process run as a given Linux user. One call, nothing changed.
+     */
+    readonly controlPlaneFeatures: () => Effect.Effect<
+      { readonly processUser: boolean },
+      SealantPlatformError
+    >;
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -1526,6 +1535,14 @@ export const SealantClientsLive: Layer.Layer<
       return yield* wrap(() => facade.workspaces.inspectImage(options));
     });
 
+    const controlPlaneFeatures = Effect.fn("SealantClients.controlPlaneFeatures")(function* () {
+      const index = yield* getIndexOp().pipe(
+        Effect.provideContext(adminContext),
+        Effect.mapError(toPlatformError),
+      );
+      return { processUser: index.features?.processUser === true };
+    });
+
     return {
       forUser,
       forPrincipal,
@@ -1535,6 +1552,7 @@ export const SealantClientsLive: Layer.Layer<
       sshKeys,
       imageKey,
       inspectImage,
+      controlPlaneFeatures,
     };
   }),
 );

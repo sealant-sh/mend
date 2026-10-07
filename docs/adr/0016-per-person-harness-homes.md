@@ -104,10 +104,21 @@ process uses, by default and by every path Mend controls.
     its prepare records the answer, so the next launch on that image can be `person`.
   - **A wrong prediction never leaves an agent without a login.** If Core said yes and prepare finds
     otherwise on a worktree with no layout yet, Mend releases the create-time home (DELETE),
-    re-POSTs the launcher's logins with `home: /root`, applies their dotfiles there through the
-    verb, records `shared` and corrects the record; the agent starts only after the login is
-    written. This is paid once per image digest, inside the cold-launch budget. On a worktree
-    already `person`, prepare refuses (decision 14).
+    re-POSTs the launcher's logins with `home: /root` (one partial POST: a provider disconnected
+    since the create is left out, and only one the harness needs refuses the launch), records
+    `shared` and corrects the record; the agent starts only after the login is written. Their
+    dotfiles are not applied: Core's `dotfiles.apply` runs only as a person and refuses root, and
+    the create, made for a `person` launch, applied none at boot. The session records each source as
+    not applied, with that reason; every later session of the worktree joins the same executor
+    without them, and a workspace started next on that image (decided `shared` before create from
+    the recorded answer) applies them at boot. This is paid once per image digest, inside the
+    cold-launch budget. On a worktree already `person`, prepare refuses (decision 14).
+  - **The control plane must say it can.** Before anything else Mend reads Core's own report of what
+    it can do (its index's `features.processUser`, kept five minutes): without it no process can
+    start as a person, so a fresh worktree runs `shared` with the reason and a `person` worktree is
+    refused with it, before create. A Core that reports it carries every API this layout uses (the
+    dotfiles verb, partial puts, pi's and opencode's logins); Core 0.39.0-next.703 does not report
+    it yet.
 - **The layout is sticky per worktree** (decision 14): once a worktree has had a `person` launch,
   every later launch of it is `person` or refused with the reason. The flag decides only worktrees
   with no layout yet. Every server-side rule that differs between layouts (the container token's
@@ -366,8 +377,13 @@ workspaces.create({ …, credentialsHome })
   `invalid` ("Connect Claude to start a session here"); DELETE when a person's last process ends,
   retried, except the launcher's create-time home, which stays while the executor lives (their
   Remote-SSH session uses it with no Mend process); reconciliation against `GET` at startup; one
-  re-POST after an authentication failure. Mend's ChatGPT-login program writes pi's and opencode's
-  copies in place, as the user, never by a rename through a link into `P`.
+  re-POST after an authentication failure. Every POST is partial (`partial: true`): what the person
+  has connected is written, what Core leaves out (`skipped`) is not asked for again, a provider the
+  harness needs refuses the start, and a join is exactly one Core call. In a `person` executor Core
+  writes pi's and opencode's ChatGPT logins too (`pi` and `opencode` on the POST, made from the
+  person's Codex account), following opencode's link back into the home, and a release removes them
+  with the rest; the session line says when Core left one out. In a `shared` executor Mend's
+  ChatGPT-login program still writes the copies at `$HOME`, since a create cannot name them.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 
@@ -936,8 +952,8 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
 - **A login made inside opencode** (`opencode console login`, the integration routes) is saved in
   the captures taken while that opencode process ran, in that person's own directory; Mend deletes
   it when opencode exits (decision 8a).
-- **Settings edited by hand** last until the executor ends; pi's and opencode's ChatGPT copies are
-  refreshed at process start.
+- **Settings edited by hand** last until the executor ends; pi's and opencode's ChatGPT logins are
+  refreshed by Core in a `person` executor, and at process start in a `shared` one.
 
 ## Consequences
 
@@ -1065,34 +1081,34 @@ launches.
     member, at first process for joiners, after a passwd and group collision check; the layout
     chosen before create (decision 1): the worktree's sticky layout, then Core's image capability
     and Mend's record per image digest and runtime, then the flag; prepare's check as the backstop,
-    refusing on a `person` worktree and re-posting the launcher's logins and dotfiles to `/root` on
-    a fresh one; `harness_layout` on the launch and `worktrees.harness_layout`, set with the first
-    `person` launch and never cleared; the operator-only `harnessLayout` on a start that creates a
-    worktree; the refusal lines; the Codex adapter's `thread/start` fallback removed; `user` on
-    every session and exec; `P` (0710) with decision 2's conversation-state links, `C` and
-    `P/codex-db`; `core.sharedRepository`; the worktree repair (`-cnewer` a per-repair marker,
-    `chmod g+rwX`, one asynchronous exec); install and setup as the launcher; `/root` 0755; the
-    exec-count budget test for cold launch, join and resume. Tests: each harness writes only under
-    its user's home and `P`; a Claude task list, plan file and archived Codex thread survive a Stop
-    and resume; two users edit the same worktree file; after `tar x` of an archive with old mtimes,
-    `install -m 644` and `open(…, 0644)` by one user, the repair lets the other write and create in
-    every entry, and a second repair walks only what changed since the first; a JVM tool and
-    `ssh-keygen` use the person's home; bytes in saved state per person outside conversation state
-    and memory under 64 KB. **No way back:** a worktree with a `person` launch, then the flag set to
-    `shared`, launches `person`; the same worktree with an image whose capability says no `sudo`
-    (and, separately, a nix image, uid 40001 in the image's passwd, a sealantd without the
-    capabilities) is refused before create with the line and no executor; with the capability
-    unknown, prepare refuses, releases the executor and runs nothing; a Codex session of that
-    worktree whose rollout is missing fails the turn and the adapter never sends `thread/start`, and
-    the same holds in a `shared` launch; `harnessLayout: shared` on an existing `person` worktree is
-    refused, and on a new worktree is recorded with its source. **Capability before create:** a
-    fresh worktree on an image whose capability is unknown launches `shared` with the logins at
-    `$HOME` and records prepare's answer for the digest; Core saying yes and prepare saying no on a
-    fresh worktree re-posts the launcher's logins to `/root`, applies their dotfiles there, records
-    `shared` and corrects the record, and the agent starts with a login. M, ~1,250. Perf: `useradd`
-    folded into existing execs; the repair one asynchronous exec in the join budget; cold launch
-    exec count unchanged, the capability read with the image Mend already resolves; new session and
-    join scenarios.
+    refusing on a `person` worktree and re-posting the launcher's logins to `/root` on a fresh one
+    (their dotfiles are not applied there: the verb refuses root, decision 1); `harness_layout` on
+    the launch and `worktrees.harness_layout`, set with the first `person` launch and never cleared;
+    the operator-only `harnessLayout` on a start that creates a worktree; the refusal lines; the
+    Codex adapter's `thread/start` fallback removed; `user` on every session and exec; `P` (0710)
+    with decision 2's conversation-state links, `C` and `P/codex-db`; `core.sharedRepository`; the
+    worktree repair (`-cnewer` a per-repair marker, `chmod g+rwX`, one asynchronous exec); install
+    and setup as the launcher; `/root` 0755; the exec-count budget test for cold launch, join and
+    resume. Tests: each harness writes only under its user's home and `P`; a Claude task list, plan
+    file and archived Codex thread survive a Stop and resume; two users edit the same worktree file;
+    after `tar x` of an archive with old mtimes, `install -m 644` and `open(…, 0644)` by one user,
+    the repair lets the other write and create in every entry, and a second repair walks only what
+    changed since the first; a JVM tool and `ssh-keygen` use the person's home; bytes in saved state
+    per person outside conversation state and memory under 64 KB. **No way back:** a worktree with a
+    `person` launch, then the flag set to `shared`, launches `person`; the same worktree with an
+    image whose capability says no `sudo` (and, separately, a nix image, uid 40001 in the image's
+    passwd, a sealantd without the capabilities) is refused before create with the line and no
+    executor; with the capability unknown, prepare refuses, releases the executor and runs nothing;
+    a Codex session of that worktree whose rollout is missing fails the turn and the adapter never
+    sends `thread/start`, and the same holds in a `shared` launch; `harnessLayout: shared` on an
+    existing `person` worktree is refused, and on a new worktree is recorded with its source.
+    **Capability before create:** a fresh worktree on an image whose capability is unknown launches
+    `shared` with the logins at `$HOME` and records prepare's answer for the digest; Core saying yes
+    and prepare saying no on a fresh worktree re-posts the launcher's logins to `/root`, records
+    their dotfiles as not applied (no Core verb applies them as root), records `shared` and corrects
+    the record, and the agent starts with a login. M, ~1,250. Perf: `useradd` folded into existing
+    execs; the repair one asynchronous exec in the join budget; cold launch exec count unchanged,
+    the capability read with the image Mend already resolves; new session and join scenarios.
 13. **Mend · git and Mend identity.** The per-(launch, person) token, binding and revocation; the
     container token refused, keyed on the executor's recorded layout so pre-release executors keep
     working; no `mend.sock` in capture mode; transport signs as the token's person; helper routes
@@ -1102,10 +1118,10 @@ launches.
     (benchmark).
 14. **Mend · logins per person.** `credentialsHome` only for `person` launches; POST per person in
     parallel; DELETE, retried, with the launcher's create-time home kept while the executor lives;
-    reconciliation at startup; refusal before start; re-post on authentication failure; ChatGPT
-    copies in place. Tests: a join never reads the holder's login; files owned by the user; no
-    regular `auth.json` under `P`; the join adds exactly one Core call. M, ~400. Perf: join
-    scenario.
+    reconciliation at startup; refusal before start; re-post on authentication failure; pi's and
+    opencode's ChatGPT logins written by Core. Tests: a join never reads the holder's login; files
+    owned by the user; no regular `auth.json` under `P`; the join adds exactly one Core call. M,
+    ~400. Perf: join scenario.
 15. **Mend · deliveries per person.** Dotfiles through the verb (with `bootstrap`; a joiner's
     `install.sh` beside the agent unless "Start my agents after install.sh" is on, and the line when
     it finishes late), shell profile, skills, pi profile, memory, Codex carry, secret files, as the
@@ -1285,4 +1301,12 @@ benchmark once more, before 0.36 is tagged.
   the dependency cache is keyed by layout, and a worktree's first `person` launch runs
   `pnpm install --force --prefer-offline` once on a tree from the other layout; `openSftp` takes no
   user yet.
+- 2026-10-08, with Core 0.39.0-next.703 (sealant#334–#341, mend#569): every person's dotfiles, the
+  launcher's included, go through `dotfiles.apply`; a start waits for it bounded, and an apply that
+  outlives the wait is seen through when it lands (Mend's links, then the first-process marker, the
+  record and the line made true), never asked for twice; every start of a person waits for, or says,
+  their `install.sh` while it runs. The fallback to `/root` applies no dotfiles (the verb refuses
+  root) and writes the launcher's logins in one partial POST. Every login POST is partial; Core
+  writes pi's and opencode's ChatGPT logins in `person` executors. The layout needs the control
+  plane to report `features.processUser`, which 0.39.0-next.703 does not yet.
 - Open: gate B's history record.

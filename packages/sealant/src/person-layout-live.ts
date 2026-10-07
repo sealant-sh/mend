@@ -106,6 +106,18 @@ const IMAGE_ANSWER_MS = 24 * 60 * 60_000;
 const UNKNOWN_IMAGE_ANSWER_MS = 10 * 60_000;
 const IMAGE_ANSWERS = 512;
 
+/** How long the control plane's answer about itself is kept: an upgrade is seen within it. */
+const CONTROL_PLANE_ANSWER_MS = 5 * 60_000;
+/** How long an unreadable answer is kept before the control plane is asked again. */
+const CONTROL_PLANE_FAILURE_MS = 15_000;
+
+/** The control plane does not report running a process as a given user. */
+export const CONTROL_PLANE_NO_PROCESS_USER =
+  "the Sealant control plane does not run processes as a user (it does not report processUser)";
+/** The control plane could not be asked: unknown is no, for a layout every process depends on. */
+export const CONTROL_PLANE_UNREADABLE =
+  "the Sealant control plane could not be asked whether it runs processes as a user";
+
 export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, SealantClients> =
   Layer.effect(
     PersonLayoutPlatform,
@@ -156,8 +168,32 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         return report;
       });
 
+      let controlPlane: { readonly obstacle: string | null; readonly until: number } | null = null;
+      const controlPlaneObstacle = Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (controlPlane !== null && now < controlPlane.until) return controlPlane.obstacle;
+        const answer = yield* clients.controlPlaneFeatures().pipe(
+          Effect.map((features) => ({
+            obstacle: features.processUser ? null : CONTROL_PLANE_NO_PROCESS_USER,
+            until: now + CONTROL_PLANE_ANSWER_MS,
+          })),
+          Effect.catch((error) =>
+            Effect.logWarning("person layout: the control plane's features were not read").pipe(
+              Effect.annotateLogs({ message: error.message }),
+              Effect.as({
+                obstacle: CONTROL_PLANE_UNREADABLE,
+                until: now + CONTROL_PLANE_FAILURE_MS,
+              }),
+            ),
+          ),
+        );
+        controlPlane = answer;
+        return answer.obstacle;
+      }).pipe(Effect.withSpan("PersonLayoutPlatform.controlPlaneObstacle"));
+
       return {
         processUser: true,
+        controlPlaneObstacle,
         // Core 0.39.0-next.703 (sealant#334, sealantd 0.20.0-next.152): `workspace.dotfiles.apply`.
         dotfilesUser: true,
         // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, and Core passes

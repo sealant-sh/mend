@@ -271,7 +271,10 @@ import {
   PI_PERSON_SEED,
 } from "../src/harness-seeds.ts";
 import {
+  DOTFILES_LANDED_LATE_WORDS,
   DOTFILES_NOT_PER_PERSON,
+  DOTFILES_STILL_APPLYING,
+  DOTFILES_STILL_APPLYING_WORDS,
   FIRST_PROCESS_DONE,
   dotfilesRefusalWords,
 } from "../src/person-deliveries.ts";
@@ -3164,6 +3167,8 @@ const withEngine = <A, E>(
       readonly anyRecordedQueries?: Array<string>;
       /** Runs once an operator's layout request is written, before the write returns. */
       readonly afterRequest?: Effect.Effect<void>;
+      /** How long a start waits for a person's dotfiles apply; 120 s unless a test says. */
+      readonly dotfilesApplyBound?: Duration.Duration;
     };
     /** Every session row read by id (`SessionsRepo.byId`), in order. */
     readonly sessionReads?: Array<string>;
@@ -3322,6 +3327,9 @@ const withEngine = <A, E>(
         Layer.succeed(HarnessLayoutConfig, {
           flag: options.harnessLayout?.flag ?? "shared",
           loginReleaseGrace: Duration.zero,
+          ...(options.harnessLayout?.dotfilesApplyBound === undefined
+            ? {}
+            : { dotfilesApplyBound: options.harnessLayout.dotfilesApplyBound }),
         }),
       ),
     ),
@@ -23501,6 +23509,7 @@ const personPlatform = (
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: dotfiles !== undefined,
+    controlPlaneObstacle: Effect.succeed(null),
     // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
       options.source?.kind === "capture"
@@ -27151,6 +27160,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     ) => Effect.Effect<void, unknown>;
     readonly before?: (worktreeId: string) => void;
     readonly state?: HarnessLayoutsMemoryState;
+    /** How long a start waits for a person's dotfiles apply; 120 s unless a test says. */
+    readonly dotfilesApplyBound?: Duration.Duration;
     /** The join itself, when the test drives it (a waited install.sh). */
     readonly joinWith?: (
       engine: SessionEngine["Service"],
@@ -27247,6 +27258,9 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           flag: options.flag ?? "person",
           ...(options.state === undefined ? {} : { state: options.state }),
           platform: (options.platform ?? ((log) => personPlatform(log, { person: true })))(calls),
+          ...(options.dotfilesApplyBound === undefined
+            ? {}
+            : { dotfilesApplyBound: options.dotfilesApplyBound }),
         },
         ...options.layers,
       },
@@ -27636,6 +27650,223 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         }),
     });
     expect(run.opened).toHaveLength(2);
+  });
+
+  /** A person platform whose apply for `who` lands only after `delay`, counting every apply. */
+  const slowApplyFor =
+    (who: string, delay: Duration.Input, applies: Array<string>) => (calls: Array<string>) =>
+      Layer.effect(
+        PersonLayoutPlatform,
+        Effect.map(PersonLayoutPlatform, (inner) => ({
+          ...inner,
+          applyDotfiles: (workspace: Workspace, input: Parameters<typeof inner.applyDotfiles>[1]) =>
+            Effect.sync(() => applies.push(input.user.name)).pipe(
+              Effect.andThen(input.user.name === who ? Effect.sleep(delay) : Effect.void),
+              Effect.andThen(inner.applyDotfiles(workspace, input)),
+            ),
+        })),
+      ).pipe(Layer.provide(personPlatform(calls, { person: true }, { bootstrapEnds: () => null })));
+  const linksRanAs = (run: DeliveryRun) =>
+    asWho(run, (argv) =>
+      (commandOf(argv)[2] ?? "").includes(`printf done > "$H/${FIRST_PROCESS_DONE}"`),
+    );
+  const markedAs = (run: DeliveryRun) =>
+    asWho(run, (argv) =>
+      (commandOf(argv)[2] ?? "").includes(`printf done > "$HOME/${FIRST_PROCESS_DONE}"`),
+    );
+
+  it("an apply that outlives the start's wait is seen through when it lands: links, then the marker, the record and the line made true (review of mend#569, P2-1)", async () => {
+    const applies: Array<string> = [];
+    const observed: {
+      before?: {
+        readonly links: ReadonlyArray<string | null>;
+        readonly marked: ReadonlyArray<string | null>;
+        readonly summary: string;
+        readonly record: SessionDotfiles | null;
+      };
+      after?: { readonly summary: string; readonly record: SessionDotfiles | null };
+    } = {};
+    const run = await launchAndJoin({
+      platform: slowApplyFor(JOINER, "700 millis", applies),
+      dotfilesApplyBound: Duration.millis(200),
+      layers: {
+        dotfilesStoreLayer: dotfilesStoreLayer(() =>
+          Effect.succeed({ sha: SNAPSHOT.sha, data: SNAPSHOT.data }),
+        ),
+      },
+      inspect: (_engine, world, ids, seen) =>
+        Effect.gen(function* () {
+          const joined = ids.joined;
+          if (joined === null) throw new Error("no join");
+          // Her agent started beside the apply, which Core still runs.
+          expect(seen.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(1);
+          observed.before = {
+            links: linksRanAs(seen),
+            marked: markedAs(seen),
+            summary: world.sessions.get(joined)?.summary ?? "",
+            record: world.sessions.get(joined)?.dotfiles ?? null,
+          };
+          yield* Effect.sleep("900 millis");
+          observed.after = {
+            summary: world.sessions.get(joined)?.summary ?? "",
+            record: world.sessions.get(joined)?.dotfiles ?? null,
+          };
+        }),
+    });
+    const seenBefore = observed.before;
+    const seenAfter = observed.after;
+    if (seenBefore === undefined || seenAfter === undefined) throw new Error("not inspected");
+    // Before it lands: no links, no marker for her, and the line and record say it still applies.
+    expect(seenBefore.links).toEqual([LAUNCHER]);
+    expect(seenBefore.marked).not.toContain(JOINER);
+    expect(seenBefore.summary).toContain(DOTFILES_STILL_APPLYING_WORDS);
+    expect(seenBefore.record?.notApplied).toEqual([
+      { source: "snapshot", reason: DOTFILES_STILL_APPLYING },
+    ]);
+    // Once it lands: Mend's links put back as her (which marks her done), the line and record true.
+    expect(linksRanAs(run)).toEqual([LAUNCHER, JOINER]);
+    expect(seenAfter.summary).toContain(DOTFILES_LANDED_LATE_WORDS);
+    expect(seenAfter.summary).not.toContain(DOTFILES_STILL_APPLYING_WORDS);
+    expect(seenAfter.record?.notApplied).toEqual([]);
+    // Core was asked once for her.
+    expect(applies.filter((user) => user === JOINER)).toHaveLength(1);
+  });
+
+  it("a start refused while its apply runs leaves it to be seen through, and the next start never asks Core again (review of mend#569, P3-1)", async () => {
+    const applies: Array<string> = [];
+    let posts = 0;
+    const run = await launchAndJoin({
+      platform: (calls) =>
+        Layer.effect(
+          PersonLayoutPlatform,
+          Effect.map(PersonLayoutPlatform, (inner) => ({
+            ...inner,
+            // Her first write is answered late and leaves Claude out: that start is refused.
+            postCredentials: (
+              workspace: Workspace,
+              input: Parameters<typeof inner.postCredentials>[1],
+            ) =>
+              input.onBehalfOf === MARIA && posts++ === 0
+                ? inner.postCredentials(workspace, input).pipe(
+                    Effect.delay("150 millis"),
+                    Effect.as({
+                      skipped: [
+                        {
+                          provider: "claude" as const,
+                          reason: "connected-account-missing" as const,
+                          message: "none",
+                        },
+                      ],
+                    }),
+                  )
+                : inner.postCredentials(workspace, input),
+          })),
+        ).pipe(Layer.provide(slowApplyFor(JOINER, "900 millis", applies)(calls))),
+      layers: {
+        dotfilesStoreLayer: dotfilesStoreLayer(() =>
+          Effect.succeed({ sha: SNAPSHOT.sha, data: SNAPSHOT.data }),
+        ),
+      },
+      joinWith: (engine, _world, joined) =>
+        Effect.gen(function* () {
+          const refused = yield* engine.launch(joined, ["claude"]).pipe(Effect.flip);
+          expect(refused.message).toContain("Connect Claude");
+          // Her next start comes while Core still runs the first one's apply: it joins it.
+          yield* Effect.sleep("200 millis");
+          yield* engine.launch(joined, ["claude"]);
+          // Past when the first start's watch would have seen it through: nothing more.
+          yield* Effect.sleep("300 millis");
+        }),
+    });
+    // One apply for her, seen through once: Mend's links put back once, as her.
+    expect(applies.filter((user) => user === JOINER)).toHaveLength(1);
+    expect(linksRanAs(run).filter((user) => user === JOINER)).toHaveLength(1);
+    expect(run.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(1);
+  });
+
+  it('a person\'s second start while their install.sh runs waits for it too, with "Start my agents after install.sh" on (review of mend#569, P3-2)', async () => {
+    const joinerEnds = Effect.runSync(Deferred.make<number>());
+    let waitsForInstall = false;
+    await launchAndJoin({
+      platform: (calls) =>
+        personPlatform(
+          calls,
+          { person: true },
+          { bootstrapEnds: (user) => (user === JOINER ? joinerEnds : null) },
+        ),
+      layers: {
+        dotfilesStoreLayer: dotfilesStoreLayer(() =>
+          Effect.succeed({ sha: SNAPSHOT.sha, data: SNAPSHOT.data }),
+        ),
+        userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+          repository: () => Effect.succeed(null),
+          setRepository: (_userId, value) => Effect.succeed(value),
+          startAgentsAfterInstall: () => Effect.sync(() => waitsForInstall),
+          setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
+        }),
+      },
+      joinWith: (engine, world, joined, seen) =>
+        Effect.gen(function* () {
+          // Her first agent starts beside her install.sh.
+          yield* engine.launch(joined, ["claude"]);
+          expect(world.sessions.get(joined)?.summary ?? "").toContain("install.sh running");
+          // She turns the setting on and starts a second session while it still runs.
+          waitsForInstall = true;
+          const holderWorktree = world.sessions.get(joined)?.worktreeId;
+          if (holderWorktree === undefined) throw new Error("no worktree");
+          const second = yield* engine.provisionSessionIn(holderWorktree, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          const starting = yield* Effect.forkChild(engine.launch(second.id, ["claude"]));
+          yield* Effect.sleep("150 millis");
+          expect(seen.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(1);
+          yield* Deferred.succeed(joinerEnds, 0);
+          yield* Fiber.join(starting);
+          expect(seen.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(2);
+        }),
+    });
+  });
+
+  it("says on the line when Core left a joiner's pi ChatGPT login out (review of mend#569, P3-5)", async () => {
+    let summary = "";
+    await launchAndJoin({
+      join: "pi",
+      layers: people,
+      platform: (calls) =>
+        Layer.effect(
+          PersonLayoutPlatform,
+          Effect.map(PersonLayoutPlatform, (inner) => ({
+            ...inner,
+            postCredentials: (
+              workspace: Workspace,
+              input: Parameters<typeof inner.postCredentials>[1],
+            ) =>
+              inner.postCredentials(workspace, input).pipe(
+                Effect.as({
+                  skipped:
+                    input.onBehalfOf === MARIA && input.logins.pi === true
+                      ? [
+                          {
+                            provider: "pi" as const,
+                            reason: "connected-account-unsupported" as const,
+                            message: "not a ChatGPT login",
+                          },
+                        ]
+                      : [],
+                }),
+              ),
+          })),
+        ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+      inspect: (_engine, world, ids) =>
+        Effect.sync(() => {
+          summary = ids.joined === null ? "" : (world.sessions.get(ids.joined)?.summary ?? "");
+        }),
+    });
+    expect(summary).toContain(
+      "pi's ChatGPT login not written · the Codex account is not a ChatGPT login",
+    );
   });
 
   it('with "Start my agents after install.sh" on, a joiner\'s agent waits for it', async () => {

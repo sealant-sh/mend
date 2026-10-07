@@ -116,6 +116,8 @@ interface CoreCalls {
   /** Held open, a POST waits on it after saying so in `calls`. */
   postGate: Deferred.Deferred<void> | null;
   imageReports: number;
+  /** How often the control plane was asked what it can do. */
+  controlPlaneReads: number;
 }
 
 type CoreAnswer = SealantPlatformError | ReadonlyArray<LoginSkip> | null;
@@ -128,12 +130,20 @@ const coreCalls = (): CoreCalls => ({
   deleteGate: null,
   postGate: null,
   imageReports: 0,
+  controlPlaneReads: 0,
 });
 
-const platformOf = (core: CoreCalls, can: { readonly dotfilesUser?: boolean } = {}) =>
+const platformOf = (
+  core: CoreCalls,
+  can: { readonly dotfilesUser?: boolean; readonly controlPlaneObstacle?: string | null } = {},
+) =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: can.dotfilesUser ?? true,
+    controlPlaneObstacle: Effect.sync(() => {
+      core.controlPlaneReads++;
+      return can.controlPlaneObstacle ?? null;
+    }),
     withOwnerMap: (options) => options,
     imageReport: () =>
       Effect.sync(() => {
@@ -435,6 +445,51 @@ const skipped = (
 const notConnected = (provider: LoginProvider) => skipped(provider, "connected-account-missing");
 const needsReconnect = (provider: LoginProvider) => skipped(provider, "connected-account-invalid");
 
+describe("a control plane that cannot run the person layout (review of mend#569, P3-4)", () => {
+  const obstacle =
+    "the Sealant control plane does not run processes as a user (it does not report processUser)";
+  it("decides a fresh worktree shared with its reason, before create and before asking about the image", async () => {
+    const core = coreCalls();
+    const layout = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+          platform: platformOf(core, { controlPlaneObstacle: obstacle }),
+        });
+        return yield* steps.decide(decideInput("launch-old-core"));
+      }),
+    );
+    expect(layout).toMatchObject({ layout: "shared", source: "capability" });
+    expect(layout.layout === "shared" ? layout.reason : null).toContain(obstacle);
+    expect(core.imageReports).toBe(0);
+    expect(core.controlPlaneReads).toBe(1);
+  });
+
+  it("refuses a worktree already person, naming it, and asks nothing with the flag off", async () => {
+    const core = coreCalls();
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        const { steps } = yield* stepsWith("shared", state, {
+          platform: platformOf(core, { controlPlaneObstacle: obstacle }),
+        });
+        const refused = yield* steps.decide(decideInput("launch-sticky")).pipe(Effect.flip);
+        const off = yield* stepsWith("shared", makeHarnessLayoutsMemoryState(), {
+          platform: platformOf(core, { controlPlaneObstacle: obstacle }),
+        });
+        const reads = core.controlPlaneReads;
+        yield* off.steps.decide({
+          ...decideInput("launch-off"),
+          worktreeId: WorktreeId.make("wt-9"),
+        });
+        return { message: refused.message, reads, after: core.controlPlaneReads };
+      }),
+    );
+    expect(result.message).toContain(obstacle);
+    expect(result.after).toBe(result.reads);
+  });
+});
+
 describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
   it("a launch that could be person never claims a standby: its owner map is read only at boot", async () => {
     const result = await Effect.runPromise(
@@ -707,8 +762,10 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       expect(core.posts.map((post) => post.logins)).toEqual([
         { claude: true, codex: true, github: true, [harness]: true },
       ]);
-      // An open workbench: nothing it leaves out refuses it.
-      expect(result.started).not.toBeNull();
+      // An open workbench: nothing it leaves out refuses it, and the line says what was left out.
+      expect(result.started?.loginsLeftOut).toEqual([
+        `${harness}'s ChatGPT login not written · the Codex account is not a ChatGPT login`,
+      ]);
       // Mend writes no ChatGPT copy of its own into her home.
       expect(result.execs.some((exec) => exec.script.includes("openai"))).toBe(false);
     }
@@ -1225,39 +1282,47 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       dotfilesNotApplied: DOTFILES_NOT_TO_ROOT,
     });
     expect(outcome.layout).toBe("shared");
-    // The create-time home released, the logins at /root (a whole put), no apply as root.
+    // The create-time home released, the logins at /root (a partial put), no apply as root.
     expect(core.calls).toEqual([`delete:/home/${outcome.alice.name}`, "post:user-alice:/root"]);
     expect(core.posts.map((post) => [post.logins, post.partial])).toEqual([
-      [{ claude: true, github: true }, false],
+      [{ claude: true, github: true }, true],
     ]);
     expect(applied).toBe(0);
   });
 
-  it("refuses the /root fallback in Mend's words when Core refuses an account, by its reason and provider", async () => {
-    const core = coreCalls();
-    core.answer = () =>
-      new SealantPlatformError({
-        code: "connected-account-invalid",
-        status: 409,
-        provider: "claude",
-        message: "anything Core says",
-        cause: null,
-      });
-    const refused = await Effect.runPromise(
-      Effect.gen(function* () {
-        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
-          platform: platformOf(core),
-        });
-        const layout = yield* steps.decide(decideInput("launch-wrong"));
-        return yield* steps
-          .settlePrepare({
-            layout,
-            ...settleInput("launch-wrong", "mend-layout probed\nmend-layout missing no sudo\n"),
-          })
-          .pipe(Effect.flip);
-      }),
+  it("writes the /root fallback's logins in one partial put, refusing only for what the harness needs (review of mend#569, P3-6)", async () => {
+    const settle = (harness: string | null, answer: ReadonlyArray<LoginSkip>) => {
+      const core = coreCalls();
+      core.answer = () => answer;
+      return Effect.runPromise(
+        Effect.gen(function* () {
+          const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+            platform: platformOf(core),
+          });
+          const layout = yield* steps.decide(decideInput("launch-wrong"));
+          const base = settleInput(
+            "launch-wrong",
+            "mend-layout probed\nmend-layout missing no sudo\n",
+          );
+          return yield* steps
+            .settlePrepare({ layout, ...base, fallback: { ...base.fallback, harness } })
+            .pipe(Effect.result);
+        }),
+      );
+    };
+    // GitHub disconnected since the create: left out, and the Claude launch goes on.
+    const optional = await settle("claude", notConnected("github"));
+    expect(optional._tag).toBe("Success");
+    // The harness's own provider left out: refused, in Mend's words, by Core's reason.
+    const required = await settle("claude", needsReconnect("claude"));
+    expect(required._tag === "Failure" ? required.failure.message : null).toBe(
+      loginRefusal("claude", "connected-account-invalid"),
     );
-    expect(refused.message).toBe(loginRefusal("claude", "connected-account-invalid"));
+    // A harness Mend cannot name: every provider the create named is needed.
+    const unknown = await settle(null, notConnected("github"));
+    expect(unknown._tag === "Failure" ? unknown.failure.message : null).toBe(
+      loginRefusal("github", "connected-account-missing"),
+    );
   });
 
   it("reads a refused account from Core's stable reason and provider, never from its words (sealant#335)", () => {

@@ -296,8 +296,25 @@ export const opencodeScrubFailedWords = (reason: string): string =>
 
 // ─── install.sh (decision 11) ────────────────────────────────────────────────
 
-/** How long a person's `dotfiles.apply` may take before it is given up (it is bounded). */
+/**
+ * How long a start waits for a person's `dotfiles.apply` before the agent starts beside it. Core's
+ * run goes on past it, and Mend sees it through when it lands (review of mend#569, P2-1).
+ */
 export const DOTFILES_APPLY_BOUND_MS = 120_000;
+
+/** The record's reason for a source whose apply still runs after the bound. */
+export const DOTFILES_STILL_APPLYING = `still applying after ${DOTFILES_APPLY_BOUND_MS / 1000} s; Mend puts its links back once they land`;
+
+/** The session line while a person's dotfiles still apply after the bound. */
+export const DOTFILES_STILL_APPLYING_WORDS =
+  "dotfiles still applying · the agent started beside them";
+
+/** The session line once an apply that outlived the bound has landed and Mend relinked. */
+export const DOTFILES_LANDED_LATE_WORDS = "dotfiles applied after the agent started";
+
+/** The session line when an apply that outlived the bound ended without applying. */
+export const dotfilesNotAppliedWords = (reason: string): string =>
+  `dotfiles not applied · ${reason}`;
 
 /**
  * How long an agent waits for its person's `install.sh` when it waits at all (the launcher's, and
@@ -329,11 +346,12 @@ export const DOTFILES_NOT_PER_PERSON =
 /**
  * Decision 1's fallback to `/root` (a person prediction prepare found wrong on a fresh worktree),
  * said on the session line: Core applies dotfiles only as a person, never as root (sealant#334),
- * and the create, made for a person launch, applied none at boot. The next launch on the image
- * runs as one person from its create, and its dotfiles apply at boot again.
+ * and the create, made for a person launch, applied none at boot. Every later session in this
+ * worktree joins the same executor without them; a workspace started next on the image runs as
+ * one person from its create, and applies them at boot.
  */
 export const DOTFILES_NOT_TO_ROOT =
-  "this workspace fell back to one person after its create, and Sealant applies dotfiles only as a person, never as root, so they were not applied; the next launch applies them";
+  "this workspace fell back to one person after its create, and Sealant applies dotfiles only as a person, never as root, so they were not applied; a workspace started next on this image applies them at boot";
 
 /**
  * What the session line says for a person's dotfiles that `dotfiles.apply` refused or could not
@@ -349,8 +367,6 @@ export const dotfilesRefusalWords = (error: {
       return "this workspace's sealantd cannot apply dotfiles as each person, so they were not applied";
     case "user-unknown":
       return "your user was not found in this workspace when the dotfiles were applied, so they were not applied";
-    case "user-root":
-      return "Sealant applies dotfiles only as a person, never as root, so they were not applied";
     case "home-mismatch":
       return "the home Mend named is not your user's home in this workspace, so they were not applied";
     case "home-unusable":

@@ -157,6 +157,14 @@ export class PersonLayoutPlatform extends Context.Service<
     /** Sessions and exec can start a process as a given user (`ProcessUserOption`). */
     readonly processUser: boolean;
     /**
+     * Why the control plane cannot run the person layout, in the words a refusal names, or null
+     * when it can: read from what Core itself reports (its index's `features.processUser`), never
+     * learned by a launch failing later. Only a Core that reports it can carry the person layout's
+     * every API (Core 0.39.0-next.703 still does not: its exec and sessions refuse a `user`), so
+     * the one capability is the floor. Read only when a launch could be person; kept a while.
+     */
+    readonly controlPlaneObstacle: Effect.Effect<string | null>;
+    /**
      * `applyDotfiles` works: a person's dotfiles can be applied as them into their home. Where it
      * is false, a person launch follows decision 1's fallback for dotfiles
      * (`harness-layout-steps.ts`, `dotfilesBlocked`).
@@ -249,6 +257,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
   {
     processUser: false,
     dotfilesUser: false,
+    controlPlaneObstacle: Effect.succeed(null),
     withOwnerMap: (options) => options,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),
     postCredentials: () =>

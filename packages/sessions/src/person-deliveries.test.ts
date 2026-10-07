@@ -548,7 +548,6 @@ describe("a person's dotfiles Core refused, as the session says it (decisions 11
     for (const code of [
       "dotfiles-user-unsupported",
       "user-unknown",
-      "user-root",
       "home-mismatch",
       "home-unusable",
       "home-held",
@@ -565,7 +564,7 @@ describe("a person's dotfiles Core refused, as the session says it (decisions 11
     expect(words("dotfiles_apply_timeout", "dotfiles were not applied within 120 s")).toBe(
       "dotfiles were not applied within 120 s",
     );
-    // No verdicts: never "safe", never "ready".
-    expect(words("user-root")).not.toMatch(/safe|ready/);
+    // Core refuses root before staging, with no code (a 400): its own words, never Mend's.
+    expect(words("WorkspaceBadRequestError", "root is not a person")).toBe("root is not a person");
   });
 });

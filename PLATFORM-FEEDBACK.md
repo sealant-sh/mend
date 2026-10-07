@@ -7,6 +7,26 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-08 · 0.39.0-next.703 · The person layout needs Core to say it runs processes as a user
+
+- **Missing, now load-bearing:** `features.processUser` on the control plane's index is `false` in
+  0.39.0-next.703 (`apps/api/src/routes/system/system.module.ts`), and exec and sessions refuse a
+  `user` (`user-unsupported`), so no process can start as a person even though sealantd
+  0.20.0-next.152 can. Mend now reads that report before deciding a launch's layout
+  (`PersonLayoutPlatform.controlPlaneObstacle`, `SealantClients.controlPlaneFeatures`): a fresh
+  worktree runs `shared` with the reason and a `person` worktree is refused with it, before create.
+  Turning the feature on in Core is what makes the flag usable.
+- **Suggested:** report the rest of what this layout uses the same way (`features.dotfilesApply`,
+  `features.credentialsPartial`, `features.chatgptLogins`), so a client can refuse an older Core by
+  capability for each, not only by the one flag that implies them today. The API's own `version` is
+  `0.0.0` in the bundle, so a version floor cannot be read.
+- **Missing:** a way to stop a `dotfiles.apply` run. Mend's start waits for it 120 s and Core's run
+  goes on for up to 10 minutes; Mend now keeps the run and sees it through when it lands (relinks,
+  marks the person done, corrects the session), but cannot cancel one it no longer needs.
+- **Measure before the flag goes on:** a person's first start now waits on a queued Core run (a
+  POST, then polls of the run) where boot-time dotfiles cost nothing of this kind. Gate P1/P2 on the
+  box must time it.
+
 ## 2026-10-07 · 0.39.0-next.696 · Per-person deliveries (ADR 0016 Delivery 15): the dotfiles verb, and an exec's environment
 
 - **Shipped (0.39.0-next.703, sealant#334, sealantd 0.20.0-next.152) and used:**

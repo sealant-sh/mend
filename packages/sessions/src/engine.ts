@@ -168,6 +168,7 @@ import {
   captureDrainOf,
   type CaptureFlushKind,
   type CaptureOwnerMap,
+  type DotfilesApplied,
   type DotfilesArchive,
   type DotfilesBootstrap,
   PersonLayoutPlatform,
@@ -380,7 +381,11 @@ import {
   bootstrapFinishedLateWords,
   DOTFILES_APPLY_BOUND_MS,
   BOOTSTRAP_WAIT_BOUND_MS,
+  DOTFILES_LANDED_LATE_WORDS,
   DOTFILES_NOT_PER_PERSON,
+  DOTFILES_STILL_APPLYING,
+  DOTFILES_STILL_APPLYING_WORDS,
+  dotfilesNotAppliedWords,
   dotfilesRefusalWords,
   FIRST_PROCESS_DONE,
   opencodeDatabaseOf,
@@ -782,6 +787,29 @@ const withDotfilesNotApplied = (
       : [{ source: "snapshot" as const, reason }]),
   ];
 };
+
+/** A person in an executor: what their in-flight apply and their `install.sh` are kept by. */
+const personKeyOf = (workspaceId: string, accountId: string) => `${workspaceId}\u0000${accountId}`;
+
+/** One more entry in a map kept as a cache: the oldest goes past a bound. */
+const boundedSet = <V>(map: Map<string, V>, key: string, value: V) => {
+  map.delete(key);
+  if (map.size >= 2_048) {
+    const oldest = map.keys().next();
+    if (oldest.done !== true) map.delete(oldest.value);
+  }
+  map.set(key, value);
+};
+
+/** A record with every source the apply was asked with said `reason`. */
+const dotfilesRecordWith = (record: SessionDotfiles, reason: string): SessionDotfiles => ({
+  ...record,
+  notApplied: [
+    ...record.notApplied,
+    ...(record.repository === null ? [] : [{ source: "repository" as const, reason }]),
+    ...(record.snapshotSha === null ? [] : [{ source: "snapshot" as const, reason }]),
+  ],
+});
 
 /** What one memory delivery did, counted; a file it could not place is said by name. */
 const logAgentMemoryDelivered = (
@@ -9811,6 +9839,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           /** What decision 1's fallback re-posts to `/root` when a person prediction was wrong. */
           readonly fallback: {
             readonly credentials: WorkspaceCredentialsOptions | undefined;
+            readonly harness: string | null;
             readonly dotfiles: ReadonlyArray<{
               readonly data: string;
               readonly manager: string;
@@ -10546,6 +10575,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         worktreeId: input.layout.worktreeId,
                         fallback: {
                           credentials: shape.credentialAttempts[0],
+                          harness: input.warmHarness ?? null,
                           dotfiles: dotfilesArchives.map((archive) => ({
                             data: archive.data,
                             manager: archive.manager,
@@ -11209,6 +11239,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceImage: WorkspaceImage,
           /** Into a person's own home, as them, after their dotfiles (docs/adr/0016, decision 11). */
           as?: PersonExec,
+          /** Whether the person's first-process marker rides the profile (not while dotfiles apply). */
+          options: { readonly mark: boolean } = { mark: true },
         ) {
           // Answers whether the person's first-process marker was written with the profile.
           if (!shellProfileApplies(project, workspaceImage)) return false;
@@ -11216,7 +11248,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const profile = yield* loadShellProfile;
             // A person's first-process deliveries are done once this is written in their home.
             const files =
-              as === undefined
+              as === undefined || !options.mark
                 ? profile
                 : [
                     ...profile,
@@ -11241,7 +11273,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ).pipe(Effect.annotateLogs({ sessionId, path: `~/${file.path}` }));
               }
             }
-            return as !== undefined;
+            return as !== undefined && options.mark;
           }).pipe(
             Effect.catch((error) =>
               Effect.logWarning(
@@ -12245,7 +12277,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
             // Their first process in this executor: once, whatever was released or restarted
             // since, as the executor itself records it (`FIRST_PROCESS_DONE` in their home).
-            let bootstrap: DotfilesBootstrap | null = null;
+            // Their `install.sh` if it still runs from an earlier start (review of mend#569, P3-2):
+            // this start waits for it, or says it runs, as their first did.
+            let bootstrap: DotfilesBootstrap | null =
+              personBootstraps.get(personKeyOf(workspace.id, home.identity.accountId)) ?? null;
             if ((records.get("first-done") ?? null) === null) {
               const image =
                 session.workspaceImage ??
@@ -12261,16 +12296,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 as,
                 input.dotfiles,
               );
-              bootstrap = dotfiles.bootstrap;
+              bootstrap = dotfiles.bootstrap ?? bootstrap;
+              // While their apply still runs nothing marks them done: it does once it lands.
               const profiled = yield* applyDefaultShellProfile(
                 session.id,
                 workspace,
                 project,
                 image,
                 as,
+                { mark: !dotfiles.pending },
               );
               // Marked done whatever ran: with no dotfiles and no profile, one small exec.
-              if (!dotfiles.marked && !profiled) {
+              if (!dotfiles.pending && !dotfiles.marked && !profiled) {
                 yield* execAsPerson(workspace, as, [
                   "sh",
                   "-c",
@@ -12590,11 +12627,179 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * A person's dotfiles apply that Core runs in an executor, by workspace and person (review of
+       * mend#569, P2-1 and P3-1). Core's run goes on whatever Mend waits for, so the apply is kept
+       * here until a start has seen it through: a start that comes while it runs joins it rather
+       * than ask Core again, and one that lands after every start stopped waiting is seen through
+       * then (`seeDotfilesThrough`).
+       */
+      interface DotfilesInFlight {
+        readonly fiber: Fiber.Fiber<DotfilesApplied, SealantPlatformError>;
+        /** The record the apply was asked with, for a start that joins it. */
+        readonly record: SessionDotfiles;
+        /** Seen through: Mend's links put back and every waiting session told. */
+        handled: boolean;
+        /** Something waits for it to land after its starts stopped waiting. */
+        watched: boolean;
+        /** The sessions whose start stopped waiting for it, told once it lands. */
+        readonly told: Array<{ readonly sessionId: SessionId; record: SessionDotfiles }>;
+      }
+      const dotfilesInFlight = new Map<string, DotfilesInFlight>();
+      /**
+       * Each person's `install.sh` still running in an executor (review of mend#569, P3-2): every
+       * start of theirs waits for it, or says it runs, not only their first.
+       */
+      const personBootstraps = new Map<string, DotfilesBootstrap>();
+      /** A person's `install.sh`, kept until it ends, so each start of theirs sees it. */
+      const trackBootstrap = (key: string, bootstrap: DotfilesBootstrap) =>
+        Effect.gen(function* () {
+          boundedSet(personBootstraps, key, bootstrap);
+          yield* Effect.forkIn(
+            bootstrap.ended.pipe(
+              Effect.ignore,
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (personBootstraps.get(key) === bootstrap) personBootstraps.delete(key);
+                }),
+              ),
+            ),
+            scope,
+          );
+        });
+
+      /**
+       * What an apply that landed leaves: Mend's links put back over what the dotfiles placed, as
+       * the person (which marks their first-process deliveries done), their `install.sh` kept for
+       * every start of theirs, and each session whose start stopped waiting told what happened.
+       * Run under the person's delivery lock, once per apply.
+       */
+      const seeDotfilesThrough = Effect.fn("SessionEngine.seeDotfilesThrough")(function* (
+        key: string,
+        entry: DotfilesInFlight,
+        exit: Exit.Exit<DotfilesApplied, SealantPlatformError>,
+        workspace: Workspace,
+        as: PersonExec,
+      ) {
+        entry.handled = true;
+        if (dotfilesInFlight.get(key) === entry) dotfilesInFlight.delete(key);
+        let marked = false;
+        let bootstrap: DotfilesBootstrap | null = null;
+        let reason: string | null = null;
+        if (Exit.isSuccess(exit)) {
+          bootstrap = exit.value.bootstrap;
+          if (bootstrap !== null) yield* trackBootstrap(key, bootstrap);
+          // Mend's links win over anything the dotfiles put in their place.
+          const relinked = yield* execAsPerson(workspace, as, [
+            "sh",
+            "-c",
+            personLinksScript(as.person, { harnessHome: HARNESS_HOME_MOUNT_PATH }),
+          ]).pipe(
+            Effect.tap((result) =>
+              Effect.sync(() => {
+                marked = result.exitCode === 0;
+              }),
+            ),
+            Effect.map((result) => parseDisplacedLinks(result.stdout)),
+            Effect.orElseSucceed((): ReadonlyArray<string> => []),
+          );
+          if (relinked.length > 0) {
+            yield* Effect.logInfo(
+              "session engine: dotfiles had replaced Mend's links · moved to ~/.mend/displaced",
+            ).pipe(Effect.annotateLogs({ sessionId: as.sessionId, entries: relinked.join(", ") }));
+          }
+        } else {
+          const failure = Cause.findErrorOption(exit.cause);
+          // Core's refusal as the session line says it (decision 13), by its stable code.
+          reason = Option.isSome(failure)
+            ? dotfilesRefusalWords(failure.value)
+            : "the dotfiles apply was interrupted";
+          yield* Effect.logWarning("session engine: a person's dotfiles were not applied").pipe(
+            Effect.annotateLogs({
+              sessionId: as.sessionId,
+              person: as.person.name,
+              code: Option.isSome(failure) ? failure.value.code : null,
+              reason,
+            }),
+          );
+        }
+        // The sessions whose start went on without it: the record and the line made true.
+        for (const told of entry.told.splice(0)) {
+          const kept = told.record.notApplied.filter(
+            (item) => item.reason !== DOTFILES_STILL_APPLYING,
+          );
+          const corrected = { ...told.record, notApplied: kept };
+          yield* sessions
+            .setDotfiles(
+              told.sessionId,
+              reason === null ? corrected : dotfilesRecordWith(corrected, reason),
+            )
+            .pipe(Effect.ignore);
+          yield* replaceLaunchWords(
+            told.sessionId,
+            DOTFILES_STILL_APPLYING_WORDS,
+            reason === null ? DOTFILES_LANDED_LATE_WORDS : dotfilesNotAppliedWords(reason),
+          ).pipe(Effect.ignore);
+          if (bootstrap !== null) {
+            yield* watchBootstrap(told.sessionId, {
+              words: BOOTSTRAP_RUNNING_WORDS,
+              watch: bootstrap,
+            });
+          }
+        }
+        return { marked, bootstrap, reason };
+      });
+
+      /**
+       * An apply a start stopped waiting for (its bound passed, or the start was refused or went
+       * away): seen through once it lands, under the person's lock, unless a later start of theirs
+       * joined it and saw it through first. Their first-process marker is written only then, so a
+       * restart in between applies again rather than skip.
+       */
+      const watchDotfilesLanding = (
+        key: string,
+        entry: DotfilesInFlight,
+        workspace: Workspace,
+        as: PersonExec,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          if (entry.watched) return;
+          entry.watched = true;
+          yield* Effect.forkIn(
+            Fiber.await(entry.fiber).pipe(
+              Effect.flatMap((exit) =>
+                personDeliveryLock(workspace.id, as.person.accountId).withPermit(
+                  Effect.gen(function* () {
+                    if (entry.handled) return;
+                    const seen = yield* seeDotfilesThrough(key, entry, exit, workspace, as);
+                    if (!seen.marked) {
+                      yield* execAsPerson(workspace, as, [
+                        "sh",
+                        "-c",
+                        `mkdir -p "$HOME/.mend" && [ ! -L "$HOME/.mend" ] && printf done > "$HOME/${FIRST_PROCESS_DONE}"`,
+                      ]).pipe(Effect.ignore);
+                    }
+                  }),
+                ),
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning(
+                  "session engine: a late dotfiles apply was not seen through",
+                ).pipe(Effect.annotateLogs({ person: as.person.name, cause: Cause.pretty(cause) })),
+              ),
+            ),
+            scope,
+          );
+        });
+
+      /**
        * A person's dotfiles at their first process in an executor (docs/adr/0016, decision 11):
-       * applied as them into their home through the platform's `dotfiles.apply`, bounded, and
-       * Mend's links put back over whatever they placed there. Recorded on the session as every
-       * launch records its dotfiles. Where the platform cannot apply them as the person yet, none
-       * is applied and the record says why. Never fails the start.
+       * applied as them into their home through the platform's `dotfiles.apply`, and Mend's links
+       * put back over whatever they placed there. The start waits for it, bounded; Core's run goes
+       * on past that bound, and is seen through when it lands (`watchDotfilesLanding`), never
+       * asked for twice. Recorded on the session as every launch records its dotfiles. Where the
+       * platform cannot apply them as the person, none is applied and the record says why. Never
+       * fails the start. `pending`: the apply still runs, so the caller writes no first-process
+       * marker.
        */
       const applyPersonDotfiles = Effect.fn("SessionEngine.applyPersonDotfiles")(function* (
         session: Session,
@@ -12609,102 +12814,85 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           | undefined,
       ) {
+        const key = personKeyOf(workspace.id, as.person.accountId);
+        const known = dotfilesInFlight.get(key);
+        // An apply of theirs Core still runs here (a start that went on without it, or one that
+        // was refused): joined, never asked for again, nor its sources resolved again.
         const dotfiles =
-          resolved ??
-          (personPlatform.dotfilesUser
-            ? yield* resolveDotfiles(session.id, project, image, as.person.accountId).pipe(
-                Effect.map((found) => ({
-                  archives: found.archives,
-                  record: {
-                    repository:
-                      found.repository === null
-                        ? null
-                        : { url: found.repository.url, ref: found.repository.ref },
-                    snapshotSha: found.snapshotSha,
-                    notApplied: found.notApplied,
-                  },
-                })),
-              )
-            : yield* dotfilesNotPerPerson(project, image, as.person.accountId).pipe(
-                Effect.map((found) => ({
-                  archives: found.archives,
-                  record: {
-                    repository:
-                      found.repository === null
-                        ? null
-                        : { url: found.repository.url, ref: found.repository.ref },
-                    snapshotSha: null,
-                    notApplied: found.notApplied,
-                  },
-                })),
-              ));
+          known !== undefined
+            ? { archives: [], record: known.record }
+            : (resolved ??
+              (personPlatform.dotfilesUser
+                ? yield* resolveDotfiles(session.id, project, image, as.person.accountId).pipe(
+                    Effect.map((found) => ({
+                      archives: found.archives,
+                      record: {
+                        repository:
+                          found.repository === null
+                            ? null
+                            : { url: found.repository.url, ref: found.repository.ref },
+                        snapshotSha: found.snapshotSha,
+                        notApplied: found.notApplied,
+                      },
+                    })),
+                  )
+                : yield* dotfilesNotPerPerson(project, image, as.person.accountId).pipe(
+                    Effect.map((found) => ({
+                      archives: found.archives,
+                      record: {
+                        repository:
+                          found.repository === null
+                            ? null
+                            : { url: found.repository.url, ref: found.repository.ref },
+                        snapshotSha: null,
+                        notApplied: found.notApplied,
+                      },
+                    })),
+                  )));
         let record = dotfiles.record;
         let bootstrap: DotfilesBootstrap | null = null;
         // The links script marks the person's first-process deliveries done.
         let marked = false;
-        if (dotfiles.archives.length > 0 && personPlatform.dotfilesUser) {
-          const applied = yield* personPlatform
-            .applyDotfiles(workspace, {
-              onBehalfOf: as.person.accountId,
-              user: as.user,
-              home: as.places.home,
-              archives: dotfiles.archives,
-            })
-            .pipe(
-              Effect.timeoutOrElse({
-                duration: Duration.millis(DOTFILES_APPLY_BOUND_MS),
-                orElse: () =>
-                  Effect.fail(
-                    new SealantPlatformError({
-                      code: "dotfiles_apply_timeout",
-                      status: null,
-                      message: `dotfiles were not applied within ${DOTFILES_APPLY_BOUND_MS / 1000} s`,
-                      cause: null,
-                    }),
-                  ),
-              }),
-              Effect.result,
-            );
-          if (applied._tag === "Success") {
-            bootstrap = applied.success.bootstrap;
-            // Mend's links win over anything the dotfiles put in their place.
-            const relinked = yield* execAsPerson(workspace, as, [
-              "sh",
-              "-c",
-              personLinksScript(as.person, { harnessHome: HARNESS_HOME_MOUNT_PATH }),
-            ]).pipe(
-              Effect.tap((result) =>
-                Effect.sync(() => {
-                  marked = result.exitCode === 0;
-                }),
-              ),
-              Effect.map((result) => parseDisplacedLinks(result.stdout)),
-              Effect.orElseSucceed((): ReadonlyArray<string> => []),
-            );
-            if (relinked.length > 0) {
-              yield* Effect.logInfo(
-                "session engine: dotfiles had replaced Mend's links · moved to ~/.mend/displaced",
-              ).pipe(Effect.annotateLogs({ sessionId: session.id, entries: relinked.join(", ") }));
-            }
+        let pending = false;
+        const entry: DotfilesInFlight | null =
+          known ??
+          (dotfiles.archives.length > 0 && personPlatform.dotfilesUser
+            ? {
+                fiber: yield* Effect.forkIn(
+                  personPlatform.applyDotfiles(workspace, {
+                    onBehalfOf: as.person.accountId,
+                    user: as.user,
+                    home: as.places.home,
+                    archives: dotfiles.archives,
+                  }),
+                  scope,
+                ),
+                record: dotfiles.record,
+                handled: false,
+                watched: false,
+                told: [],
+              }
+            : null);
+        if (entry !== null && known === undefined) boundedSet(dotfilesInFlight, key, entry);
+        if (entry !== null) {
+          // The start waits, bounded; Core's run does not stop with it.
+          const landed = yield* Fiber.await(entry.fiber).pipe(
+            Effect.timeoutOption(
+              harnessLayoutConfig.dotfilesApplyBound ?? Duration.millis(DOTFILES_APPLY_BOUND_MS),
+            ),
+            Effect.onInterrupt(() => watchDotfilesLanding(key, entry, workspace, as)),
+          );
+          if (Option.isSome(landed)) {
+            const seen = yield* seeDotfilesThrough(key, entry, landed.value, workspace, as);
+            bootstrap = seen.bootstrap;
+            marked = seen.marked;
+            if (seen.reason !== null) record = dotfilesRecordWith(record, seen.reason);
           } else {
-            // Core's refusal as the session line says it (decision 13), by its stable code.
-            const reason = dotfilesRefusalWords(applied.failure);
-            yield* Effect.logWarning("session engine: a person's dotfiles were not applied").pipe(
-              Effect.annotateLogs({
-                sessionId: session.id,
-                person: as.person.name,
-                code: applied.failure.code,
-                reason,
-              }),
-            );
-            record = {
-              ...record,
-              notApplied: [
-                ...record.notApplied,
-                ...(record.repository === null ? [] : [{ source: "repository" as const, reason }]),
-                ...(record.snapshotSha === null ? [] : [{ source: "snapshot" as const, reason }]),
-              ],
-            };
+            pending = true;
+            record = dotfilesRecordWith(record, DOTFILES_STILL_APPLYING);
+            entry.told.push({ sessionId: session.id, record });
+            yield* noteLaunchWords(session.id, DOTFILES_STILL_APPLYING_WORDS).pipe(Effect.ignore);
+            yield* watchDotfilesLanding(key, entry, workspace, as);
           }
         }
         if (
@@ -12714,7 +12902,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           yield* sessions.setDotfiles(session.id, record).pipe(Effect.ignore);
         }
-        return { bootstrap, marked };
+        return { bootstrap, marked, pending };
       });
 
       /**
@@ -12815,6 +13003,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         {
           readonly user: ProcessUser;
           readonly env: Readonly<Record<string, string>>;
+          /** The line's words for an optional login Core left out of the person's put. */
+          readonly loginsLeftOut: ReadonlyArray<string>;
           /** What the person's deliveries left for the start (Delivery 15); null: none ran. */
           readonly delivered: PersonDelivered | null;
         } | null,
@@ -14775,6 +14965,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
         }
         yield* watchBootstrap(sessionId, bootstrapWaited);
+        // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
+        for (const words of startAs?.loginsLeftOut ?? []) {
+          yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
+        }
         if (setupSkippedFrom !== null) {
           yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
         }
@@ -15717,6 +15911,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
           }
           yield* watchBootstrap(sessionId, bootstrapWaited);
+          // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
+          for (const words of personStart?.loginsLeftOut ?? []) {
+            yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
+          }
           // After the stale words go, which would take a `secret files · …` line with them.
           if (withheldSecretFiles.length > 0) {
             yield* noteLaunchWords(
