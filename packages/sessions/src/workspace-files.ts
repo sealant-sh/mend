@@ -169,9 +169,11 @@ export const writeFilesExecs = (
  * ticket, then each absolute path behind one letter: `P` a plain file, written as `put` does
  * (0644, its directories made 0755), or `S` a file that holds someone's keys, written 0600 by
  * `pinnedPut`, in a directory made 0700 that must be physically where its name says, never
- * through a link, or `Q` a file of someone's own saved state, written 0600 in directories made
- * 0700, changing no directory already there. It redeems the ticket once over the session
- * channel; a path the answer lacks,
+ * through a link, `Q` a file of someone's own saved state, written 0600 in directories made 0700,
+ * changing no directory already there, or `A` such a file written only where nothing is (no file,
+ * no link): staged, then linked into place, which refuses to replace anything; `present <path>` is
+ * printed for one left as it was. It redeems the ticket once over the session channel; a path the
+ * answer lacks,
  * or any refusal, fails the exec with a reason that names paths only, never a byte of a file.
  */
 const WRITE_PICKUP_PROGRAM =
@@ -181,7 +183,7 @@ const WRITE_PICKUP_PROGRAM =
   [
     'const path=require("path"),crypto=require("crypto");',
     "const [ticket,...marked]=process.argv.slice(1);",
-    'const targets=marked.map((m)=>({secret:m[0]==="S",private:m[0]==="Q",path:m.slice(1)}));',
+    'const targets=marked.map((m)=>({secret:m[0]==="S",private:m[0]==="Q",absent:m[0]==="A",path:m.slice(1)}));',
     'const fail=(why)=>{process.stderr.write("mend-write: "+why+"\\n");process.exit(3);};',
     "const put=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true});",
     'fs.chmodSync(d,0o755);const t=path.join(d,".mend-part-"+crypto.randomBytes(8).toString("hex"));',
@@ -192,20 +194,25 @@ const WRITE_PICKUP_PROGRAM =
     "const putPrivate=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true,mode:0o700});",
     'const t=path.join(d,".mend-part-"+crypto.randomBytes(8).toString("hex"));',
     'fs.writeFileSync(t,b,{flag:"wx",mode:0o600});fs.chmodSync(t,0o600);fs.renameSync(t,p);};',
+    "const putAbsent=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true,mode:0o700});",
+    'const t=path.join(d,".mend-part-"+crypto.randomBytes(8).toString("hex"));fs.writeFileSync(t,b,{flag:"wx",mode:0o600});fs.chmodSync(t,0o600);',
+    'try{fs.linkSync(t,p);}catch(e){if(e.code!=="EEXIST")throw e;process.stdout.write("present "+p+"\\n");}finally{fs.rmSync(t,{force:true});}};',
     "redeemPickup(ticket,(reason,files)=>{if(reason!==null)return fail(reason);",
     'const missing=targets.filter((t)=>!files.has(t.path)).map((t)=>t.path);if(missing.length>0)return fail("not in the pickup: "+missing.join(", "));',
-    "for(const t of targets){try{(t.secret?putSecret:t.private?putPrivate:put)(t.path,files.get(t.path));}",
+    "for(const t of targets){try{(t.secret?putSecret:t.private?putPrivate:t.absent?putAbsent:put)(t.path,files.get(t.path));}",
     'catch(e){return fail("not written: "+t.path+" ("+(e&&e.code?e.code:e&&e.message?e.message:"error")+")");}}});',
   ].join("");
 
 /**
  * One file the pickup writer puts in place: `secret` for one that holds someone's keys, `private`
- * for one of a person's own saved state (docs/adr/0016, decision 2).
+ * for one of a person's own saved state (docs/adr/0016, decision 2), `absent` for such a file
+ * written only where nothing is.
  */
 export interface PickupTarget {
   readonly path: string;
   readonly secret?: boolean;
   readonly private?: boolean;
+  readonly absent?: boolean;
 }
 
 /**
@@ -224,7 +231,7 @@ export const writeFilesPickupExec = (
   ticket,
   ...targets.map(
     (target) =>
-      `${target.secret === true ? "S" : target.private === true ? "Q" : "P"}${target.path}`,
+      `${target.secret === true ? "S" : target.private === true ? "Q" : target.absent === true ? "A" : "P"}${target.path}`,
   ),
 ];
 

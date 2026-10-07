@@ -2361,3 +2361,74 @@ describe.skipIf(!reachable)("0109 opencode models", () => {
     expect(fresh[0]?.id).toBe(OPENCODE_DEFAULT_MODEL);
   });
 });
+
+describe.skipIf(!reachable)("0116 shared control ever", () => {
+  const EVER_DB = `${SCRATCH_DB}_shared_ever`;
+  const everLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${EVER_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withEverDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(everLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${EVER_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${EVER_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("counts a session shared and then unshared before it from its first shared-control-on, and one shared now", async () => {
+    const rows = await withEverDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0115_start_agents_after_install");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('anna', 'Anna', 'anna@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status,
+             shared_control_enabled_by_user_id, shared_control_enabled_at)
+          VALUES
+            ('unshared', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', NULL, NULL),
+            ('shared-now', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running',
+             'anna', '2026-10-05T10:00:00Z'),
+            ('never', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', NULL, NULL)`;
+        yield* sql`
+          INSERT INTO session_control_events (id, session_id, actor_user_id, kind, created_at)
+          VALUES
+            ('e-1', 'unshared', 'anna', 'shared-control-on', '2026-10-01T09:00:00Z'),
+            ('e-2', 'unshared', 'anna', 'shared-control-off', '2026-10-01T10:00:00Z'),
+            ('e-3', 'unshared', 'anna', 'shared-control-on', '2026-10-02T09:00:00Z'),
+            ('e-4', 'never', 'anna', 'interrupt', '2026-10-02T09:00:00Z')`;
+        yield* migrations["0116_shared_control_ever"];
+        return yield* sql<{ readonly id: string; readonly ever: Date | null }>`
+          SELECT id, shared_control_ever_at AS ever FROM agent_sessions ORDER BY id`;
+      }),
+    );
+    expect(rows.map((row) => [row.id, row.ever?.toISOString() ?? null])).toEqual([
+      ["never", null],
+      ["shared-now", "2026-10-05T10:00:00.000Z"],
+      ["unshared", "2026-10-01T09:00:00.000Z"],
+    ]);
+  });
+});

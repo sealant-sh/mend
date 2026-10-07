@@ -3155,6 +3155,29 @@ const startAgentsAfterInstallMigration = Effect.gen(function* () {
       ADD COLUMN start_agents_after_install boolean NOT NULL DEFAULT false`;
 });
 
+/**
+ * 0116 (docs/adr/0016, decision 9): when a session's shared control was first turned on, never
+ * cleared, so a session once shared keeps running on no one's memory after control is turned
+ * off. Backfilled from the `shared-control-on` events, then from sessions shared now.
+ */
+const sharedControlEverMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN shared_control_ever_at timestamptz`;
+  // Exact: every enable since 0060 left a `shared-control-on` event, so a session shared and then
+  // unshared before this migration counts too, from its first one.
+  yield* sql`
+    UPDATE agent_sessions s
+    SET shared_control_ever_at = COALESCE(e.first_on, s.shared_control_enabled_at)
+    FROM (
+      SELECT session_id, min(created_at) AS first_on FROM session_control_events
+      WHERE kind = 'shared-control-on' GROUP BY session_id
+    ) e
+    WHERE s.id = e.session_id`;
+  yield* sql`
+    UPDATE agent_sessions SET shared_control_ever_at = shared_control_enabled_at
+    WHERE shared_control_ever_at IS NULL AND shared_control_enabled_at IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3271,4 +3294,5 @@ export const migrations = {
   "0113_person_identity": personIdentityMigration,
   "0114_executor_workspace_index": executorWorkspaceIndexMigration,
   "0115_start_agents_after_install": startAgentsAfterInstallMigration,
+  "0116_shared_control_ever": sharedControlEverMigration,
 };

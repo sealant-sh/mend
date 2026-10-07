@@ -1131,6 +1131,12 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .set({
             sharedControlEnabledByUserId: enabledByUserId,
             sharedControlEnabledAt: enabledByUserId === null ? null : new Date(),
+            // Once shared, always so for this session: turning it off keeps when it was first on.
+            ...(enabledByUserId === null
+              ? {}
+              : {
+                  sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
+                }),
             updatedAt: new Date(),
           })
           .where(eq(agentSessions.id, id))

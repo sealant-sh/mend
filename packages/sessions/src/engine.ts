@@ -306,7 +306,12 @@ import {
   layoutRefused,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
-import { gitAuthorConfigText, identityFilesOf, processUserOf } from "./harness-layout.ts";
+import {
+  gitAuthorConfigText,
+  identityFilesOf,
+  PEOPLE_DIR,
+  processUserOf,
+} from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
   CODEX_SHELL_SNAPSHOT_OFF,
@@ -392,6 +397,15 @@ import {
   personRecordsExec,
   personSavedPathOf,
 } from "./person-deliveries.ts";
+import {
+  type ConversationPlace,
+  conversationFilesOf,
+  conversationPlaceOf,
+  personalPlaceOf,
+  relativeTo,
+  SHARED_PLACE,
+  underPlace,
+} from "./person-readers.ts";
 import {
   materializePiProfile,
   piProfileFilesToWrite,
@@ -520,9 +534,11 @@ const capturedOpencode = (
     readonly path: string;
     readonly entry: { readonly kind: string; readonly torn?: boolean };
   }>,
+  /** Whose database: the shared home's, or a person's own (docs/adr/0016, decision 12). */
+  place: ConversationPlace = SHARED_PLACE,
 ) =>
   Effect.gen(function* () {
-    const stateFile = `harness/${OPENCODE_DATABASE}`;
+    const stateFile = underPlace(place, OPENCODE_DATABASE);
     const database = files.find((file) => file.path === stateFile);
     if (database === undefined || database.entry.kind !== "file") {
       return { state: "absent" } as const;
@@ -1076,6 +1092,20 @@ export const personExecPrefix = (sessionId: string): ReadonlyArray<string> => [
 interface PersonDelivery extends PersonExec {
   readonly records: ReadonlyMap<PersonRecord, string | null>;
 }
+
+/**
+ * A session whose agent uses its owner's own memory: shared control has never been turned on for
+ * it, now or before (`sharedControlEverAt` is never cleared; docs/adr/0009 as amended by 0016).
+ */
+const neverShared = (session: Session) =>
+  session.sharedControlEnabledAt === null && session.sharedControlEverAt === null;
+
+/** Said when another person's session holds the same conversation (review of mend#567). */
+const PRE_RELEASE_COPY_REFUSED_WORDS =
+  "conversation from before per-person homes not copied · another person's session in this worktree holds it too";
+/** Said when a conversation from before per-person homes is over what a start copies. */
+const preReleaseTooLargeWords = (bytes: number) =>
+  `conversation from before per-person homes not copied · ${Math.ceil(bytes / (1024 * 1024))} MB is over the 64 MB a start copies`;
 
 /** What a person's deliveries leave for the start that waits on them. */
 interface PersonDelivered {
@@ -7844,6 +7874,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the manifest commits it exactly as the co-located harvest does.
        */
       /**
+       * Where a session's process read and wrote its conversation and memory in the worktree's
+       * captures (docs/adr/0016, decision 12): by the layout of the executor it ran in, else the
+       * worktree's own layout, which a `person` worktree never leaves. With the flag off and
+       * nothing recorded, the shared home with no read at all. Null: its person is not known.
+       */
+      const conversationPlaceFor = Effect.fn("SessionEngine.conversationPlaceFor")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId | null,
+        harness: string,
+      ) {
+        if (capture === null || !layoutSteps.personPossible()) return SHARED_PLACE;
+        const launchId =
+          workspaceId === null ? null : yield* executorLaunchIdOf(session, workspaceId);
+        const layout: HarnessLayout =
+          launchId !== null
+            ? yield* layoutSteps.layoutOfLaunch(launchId)
+            : (yield* harnessLayouts.worktreeLayout(session.worktreeId)).layout === "person"
+              ? "person"
+              : "shared";
+        // The process ran as the session's owner: steering by anyone else arrives with
+        // Delivery 18, and a conversation moves into `C` with Delivery 17.
+        return conversationPlaceOf({
+          layout,
+          person: session.ownerUserId,
+          harness,
+          sharedConversation: null,
+        });
+      });
+
+      /**
+       * The provider session ids other sessions of the same person in the worktree are known to
+       * hold: never this session's conversation, though they share the person's saved directory.
+       */
+      const conversationsOfOtherSessions = Effect.fn("SessionEngine.conversationsOfOtherSessions")(
+        function* (session: Session) {
+          const others = (yield* sessions.listForWorktree(session.worktreeId)).filter(
+            (member) => member.id !== session.id && member.ownerUserId === session.ownerUserId,
+          );
+          if (others.length === 0) return new Set<string>();
+          const rows = yield* processes.listForSessions(others.map((member) => member.id));
+          return new Set(
+            rows.flatMap((row) => (row.providerSessionId === null ? [] : [row.providerSessionId])),
+          );
+        },
+      );
+
+      /**
        * Every read of the head capture `self` makes shares one pass (`withCaptureReadPass`): the
        * section's dir packs, pack indexes and packs are fetched once, not once per file. A Codex
        * memory read-back of 33 small files fetched the same 64 MiB pack 33 times without it: 28 s
@@ -7863,13 +7940,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         agent: SessionProcess,
         listed: ReadonlyArray<OpencodeConversation>,
+        place: ConversationPlace = SHARED_PLACE,
       ) {
         const project = yield* projects.byId(session.projectId);
         // The processes that open the same database: in capture mode the harness home rides the
-        // worktree's captures, so every session of the worktree; co-located, each session has a
-        // home of its own (`harnessHomePathOf`), so only this session's.
+        // worktree's captures, so every session of the worktree, and in a person's saved
+        // directory only that person's sessions there (docs/adr/0016); co-located, each session
+        // has a home of its own (`harnessHomePathOf`), so only this session's.
         const sharing =
-          capture === null ? [session] : yield* sessions.listForWorktree(session.worktreeId);
+          capture === null
+            ? [session]
+            : (yield* sessions.listForWorktree(session.worktreeId)).filter(
+                (member) => place.kind !== "person" || member.ownerUserId === place.person,
+              );
         const rows = yield* processes.listForSessions(sharing.map((row) => row.id));
         const spanOf = (row: SessionProcess) =>
           readOpencodeLaunchSnapshot(
@@ -7898,6 +7981,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         storePath: string,
         liveExecutor: Workspace | null,
+        /** Whose database the launch opens: a person's own in a person executor (docs/adr/0016). */
+        place: ConversationPlace = SHARED_PLACE,
       ) {
         if (capture === null)
           return yield* snapshotOpencodeHome(harnessHomePathOf(storePath, session.id));
@@ -7930,8 +8015,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const blobs = capture.blobs;
         const found = yield* withCaptureReadPass(
           Effect.gen(function* () {
-            const files = yield* listCaptureFiles(manifest, "workspace", "harness");
-            return yield* capturedOpencode(manifest, files);
+            const files = yield* listCaptureFiles(manifest, "workspace", place.root);
+            return yield* capturedOpencode(manifest, files, place);
           }),
         ).pipe(Effect.provideService(BlobStore, blobs));
         if (found.state === "absent") return [];
@@ -8053,7 +8138,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
           ),
         );
-        const files = yield* listCaptureFiles(manifest, "workspace", "harness").pipe(
+        // Whose conversations to read (docs/adr/0016, decision 12): the shared home's, or the
+        // saved directory of the person the process ran as, and never past it.
+        const place = yield* conversationPlaceFor(session, agent.sealantWorkspaceId, harness);
+        if (place === null) return null;
+        const files = yield* listCaptureFiles(manifest, "workspace", place.root).pipe(
           Effect.provideService(BlobStore, blobs),
           Effect.mapError(
             (cause) =>
@@ -8071,8 +8160,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // A harness with no transcript file (opencode): its database in the capture holds the
           // conversations, and the one this process held is read out of it by id. The capture
           // itself is what a resume materialises; the manifest names the conversation to open.
-          const stateFile = `harness/${shape.stateFile}`;
-          const found = yield* capturedOpencode(manifest, files).pipe(
+          const stateFile = underPlace(place, shape.stateFile ?? OPENCODE_DATABASE);
+          const found = yield* capturedOpencode(manifest, files, place).pipe(
             Effect.provideService(BlobStore, blobs),
             Effect.mapError(
               (cause) =>
@@ -8115,7 +8204,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           if (listed.length === 0) return null;
-          const providerSessionId = yield* opencodeConversationFor(session, agent, listed);
+          const providerSessionId = yield* opencodeConversationFor(session, agent, listed, place);
           if (providerSessionId === null) {
             // A process that named no conversation, and whose launch snapshot holds every one
             // the database lists, started none: a provable absence, not an unknown.
@@ -8146,18 +8235,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         // Never a conversation Mend carried in from another session (docs/adr/0009, "Codex"),
         // and the newest of the rest: a resumed session's home holds several of its own.
+        const carriedAt = place.carried;
         const carried = parseCarriedTranscripts(
-          yield* readCaptureFileBytes(manifest, "workspace", `harness/${CARRIED_TRANSCRIPTS}`).pipe(
-            Effect.provideService(BlobStore, blobs),
-            Effect.map((bytes) => new TextDecoder().decode(bytes)),
-            Effect.orElseSucceed(() => null),
-          ),
+          carriedAt === null
+            ? null
+            : yield* readCaptureFileBytes(manifest, "workspace", carriedAt).pipe(
+                Effect.provideService(BlobStore, blobs),
+                Effect.map((bytes) => new TextDecoder().decode(bytes)),
+                Effect.orElseSucceed(() => null),
+              ),
         );
+        // In a person's saved directory, a conversation another session of theirs is known to hold
+        // is that session's: go by exact provider session id (docs/adr/0016, decision 12).
+        const othersHold =
+          place.kind === "person"
+            ? yield* conversationsOfOtherSessions(session)
+            : new Set<string>();
+        // Links are skipped: only a file is anyone's conversation.
         const own = files.filter((file) => {
-          const relative = file.path.replace(/^harness\//, "");
-          if (file.entry.kind !== "file" || !pattern.test(relative)) return false;
+          const relative = relativeTo(place, file.path);
+          if (relative === null || file.entry.kind !== "file" || !pattern.test(relative)) {
+            return false;
+          }
           const id = shape.providerSessionId(relative);
-          return id === null || !carried.has(id);
+          return (
+            id === null ||
+            (!carried.has(id) && (id === agent.providerSessionId || !othersHold.has(id)))
+          );
         });
         // The conversation this agent is known to hold first (a resume names it); else the newest.
         const known =
@@ -8165,7 +8269,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? undefined
             : own.find(
                 (file) =>
-                  shape.providerSessionId(file.path.replace(/^harness\//, "")) ===
+                  shape.providerSessionId(relativeTo(place, file.path) ?? "") ===
                   agent.providerSessionId,
               );
         const transcript =
@@ -8633,7 +8737,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // the way of the settle: a memory that could not be read back is said.
           Effect.tap(() =>
             sessions.byId(agentProcess.sessionId).pipe(
-              Effect.flatMap(readBackAgentMemory),
+              Effect.flatMap((session) => readBackAgentMemory(session, agentProcess)),
               Effect.catchCause((cause) =>
                 Effect.logWarning("session engine: agent memory was not read back").pipe(
                   Effect.annotateLogs({
@@ -11012,7 +11116,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const writeWorkspaceFiles = Effect.fn("SessionEngine.writeWorkspaceFiles")(function* (
         session: Session,
         workspace: Workspace,
-        files: ReadonlyArray<WorkspaceFile & { readonly secret?: boolean }>,
+        files: ReadonlyArray<
+          WorkspaceFile & { readonly secret?: boolean; readonly absent?: boolean }
+        >,
         purpose: PickupBinding["purpose"] = "workspace-files",
         /**
          * A person's own delivery (docs/adr/0016, Delivery 15): written as their user, through a
@@ -11021,7 +11127,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          */
         as?: PersonExec,
       ) {
-        const latest = new Map<string, WorkspaceFile & { readonly secret?: boolean }>();
+        const latest = new Map<
+          string,
+          WorkspaceFile & { readonly secret?: boolean; readonly absent?: boolean }
+        >();
         for (const file of files) latest.set(file.path, file);
         const unique = [...latest.values()];
         if (unique.length === 0) return;
@@ -11037,7 +11146,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             path: file.path,
             secret: file.secret === true,
             // A person's saved state stays theirs: 0600 files, no directory opened up.
-            private: as !== undefined && file.path.startsWith(`${as.places.saved}/`),
+            private:
+              file.absent !== true &&
+              as !== undefined &&
+              file.path.startsWith(`${as.places.saved}/`),
+            absent: file.absent === true,
           })),
           ticket,
         );
@@ -12069,6 +12182,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly archives: ReadonlyArray<DotfilesArchive>;
           readonly record: SessionDotfiles;
         };
+        /** The conversation the agent resumes, by provider session id (decision 14's copy). */
+        readonly resumeId?: string | null;
       }) {
         const { session, workspace, home } = input;
         const project = yield* projects.byId(session.projectId).pipe(
@@ -12170,7 +12285,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       said("skills"),
                     )
                   : Effect.void,
-                input.agent && session.sharedControlEnabledAt === null
+                input.agent && neverShared(session)
                   ? deliverAgentMemory(session, project, workspace, delivery).pipe(
                       said("agent memory"),
                     )
@@ -12228,6 +12343,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       ),
                     )
                   : Effect.void,
+                // A conversation from before the worktree ran per person, into its owner's `P`.
+                input.agent && input.resumeId !== undefined && input.resumeId !== null
+                  ? copyPreReleaseConversation(
+                      session,
+                      workspace,
+                      as,
+                      input.harness,
+                      input.resumeId,
+                    )
+                  : Effect.void,
               ],
               { concurrency: "unbounded" },
             );
@@ -12235,6 +12360,191 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
         );
       });
+
+      /** Where each harness keeps a conversation's files, relative to a home (decision 14). */
+      const CONVERSATION_ROOTS: Readonly<Record<string, ReadonlyArray<string>>> = {
+        claude: [".claude/projects"],
+        codex: [".codex/sessions", ".codex/archived_sessions"],
+        pi: [".pi/agent/sessions"],
+      };
+      /** The most a pre-release conversation copy carries in one start. */
+      const PRE_RELEASE_COPY_MAX_BYTES = 64 * 1024 * 1024;
+
+      /**
+       * A session's conversation from before its worktree ran per person (docs/adr/0016, decision
+       * 14): when it resumes in a person executor and its owner's saved directory does not hold
+       * it, its files are copied by exact provider session id from the worktree's last
+       * `shared`-layout capture (the final flush of the last shared executor) into their `P`, only
+       * where nothing is. Nothing is moved or deleted: the old captures keep it. Never fails the
+       * start; a copy that cannot be made is said in the log.
+       */
+      const copyPreReleaseConversation = Effect.fn("SessionEngine.copyPreReleaseConversation")(
+        function* (
+          session: Session,
+          workspace: Workspace,
+          as: PersonExec,
+          harness: string,
+          providerSessionId: string | null,
+        ) {
+          const roots = CONVERSATION_ROOTS[harness];
+          if (capture === null || providerSessionId === null || roots === undefined) return;
+          const blobs = capture.blobs;
+          const manifestOf = (row: { readonly manifestKey: string }) =>
+            blobs
+              .get(row.manifestKey)
+              .pipe(Effect.flatMap((bytes) => decodeManifest(row.manifestKey, bytes)));
+          const listUnder = (manifest: Parameters<typeof listCaptureFiles>[0], root: string) =>
+            Effect.forEach(roots, (dir) =>
+              listCaptureFiles(manifest, "workspace", `${root}/${dir}`).pipe(
+                Effect.provideService(BlobStore, blobs),
+                Effect.orElseSucceed(() => []),
+              ),
+            ).pipe(Effect.map((lists) => lists.flat()));
+          const filesOf = (
+            listed: ReadonlyArray<{
+              readonly path: string;
+              readonly entry: { readonly kind: string; readonly size?: number };
+            }>,
+            root: string,
+          ) => {
+            const files = listed.filter((file) => file.entry.kind === "file");
+            const relative = new Map(
+              files.flatMap((file) =>
+                file.path.startsWith(`${root}/`)
+                  ? [[file.path.slice(root.length + 1), file] as const]
+                  : [],
+              ),
+            );
+            return conversationFilesOf(harness, providerSessionId, [...relative.keys()]).flatMap(
+              (at) => {
+                const file = relative.get(at);
+                return file === undefined ? [] : [{ relative: at, file }];
+              },
+            );
+          };
+          const place = personalPlaceOf(as.person.accountId);
+          const chain = [...(yield* capture.repo.listChain(session.worktreeId))].toSorted(
+            (left, right) => left.n - right.n,
+          );
+          const head = chain.at(-1);
+          if (head === undefined) return;
+          const headManifest = yield* manifestOf(head);
+          // Theirs already: nothing to copy.
+          if (filesOf(yield* listUnder(headManifest, place.root), place.root).length > 0) return;
+          // Someone else's session in the worktree is known to hold this conversation: a terminal
+          // agent's harvest in a home two people shared took the newest transcript there, which
+          // could be the other person's. Never carried into this person's directory (review of
+          // mend#567, P2-2). One read.
+          const others = (yield* sessions.listForWorktree(session.worktreeId)).filter(
+            (member) => member.id !== session.id && member.ownerUserId !== as.person.accountId,
+          );
+          const othersRows =
+            others.length === 0
+              ? []
+              : yield* processes.listForSessions(others.map((member) => member.id));
+          if (
+            others.some((member) => member.providerSessionId === providerSessionId) ||
+            othersRows.some((row) => row.providerSessionId === providerSessionId)
+          ) {
+            yield* Effect.logWarning(
+              "session engine: a conversation from before per-person homes was not copied · another person's session holds it too",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id }));
+            yield* noteLaunchWords(session.id, PRE_RELEASE_COPY_REFUSED_WORDS).pipe(Effect.ignore);
+            return;
+          }
+          // The last capture with no person's saved directory in it: a worktree is shared up to
+          // its first person executor and person ever after, so one binary search finds the edge.
+          // Mend's own capture 0 holds no harness at all and is never the answer.
+          const holdsPeople = (row: (typeof chain)[number]) =>
+            manifestOf(row).pipe(
+              Effect.flatMap((manifest) =>
+                listCaptureFiles(manifest, "workspace", `harness/${PEOPLE_DIR}`).pipe(
+                  Effect.provideService(BlobStore, blobs),
+                ),
+              ),
+              Effect.map((listed) => listed.length > 0),
+              // Unreadable reads as person: the search only moves earlier past it.
+              Effect.orElseSucceed(() => true),
+            );
+          const candidates = chain.filter((row) => row.n > 0);
+          let low = 0;
+          let high = candidates.length - 1;
+          let edge = -1;
+          while (low <= high) {
+            const middle = Math.floor((low + high) / 2);
+            const row = candidates[middle];
+            if (row === undefined) break;
+            if (yield* holdsPeople(row)) {
+              high = middle - 1;
+            } else {
+              edge = middle;
+              low = middle + 1;
+            }
+          }
+          // From that edge back, the first capture holding any of this harness's conversations and
+          // no person's directory: a capture with no harness files (a section left out) is skipped.
+          let source: (typeof chain)[number] | null = null;
+          let sourceManifest = headManifest;
+          let found: ReturnType<typeof filesOf> = [];
+          for (let index = edge; index >= 0; index--) {
+            const row = candidates[index];
+            if (row === undefined) break;
+            if (yield* holdsPeople(row)) continue;
+            const manifest = yield* manifestOf(row).pipe(Effect.option);
+            if (Option.isNone(manifest)) continue;
+            const listed = yield* listUnder(manifest.value, "harness");
+            if (listed.filter((file) => file.entry.kind === "file").length === 0) continue;
+            source = row;
+            sourceManifest = manifest.value;
+            found = filesOf(listed, "harness");
+            break;
+          }
+          // A person executor captures the old shared home as it found it: the head holds the
+          // same files when no shared capture can be read any more.
+          if (source === null) {
+            source = head;
+            sourceManifest = headManifest;
+            found = filesOf(yield* listUnder(headManifest, "harness"), "harness");
+          }
+          if (found.length === 0) return;
+          const total = found.reduce((sum, { file }) => sum + (file.entry.size ?? 0), 0);
+          if (total > PRE_RELEASE_COPY_MAX_BYTES) {
+            yield* Effect.logWarning(
+              "session engine: a conversation from before per-person homes is too large to copy",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, bytes: total }));
+            yield* noteLaunchWords(session.id, preReleaseTooLargeWords(total)).pipe(Effect.ignore);
+            return;
+          }
+          const bytes = yield* Effect.forEach(found, ({ relative, file }) =>
+            readCaptureFileBytes(sourceManifest, "workspace", file.path).pipe(
+              Effect.provideService(BlobStore, blobs),
+              Effect.map((content) => ({
+                path: `${as.places.saved}/${relative}`,
+                bytes: content,
+                absent: true,
+              })),
+            ),
+          );
+          yield* writeWorkspaceFiles(session, workspace, bytes, "workspace-files", as);
+          yield* Effect.logInfo(
+            "session engine: a conversation from before per-person homes copied into its owner's saved directory · observed",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              capture: source.n,
+              files: found.length,
+            }),
+          );
+        },
+        (effect, session) =>
+          inOneReadPass(effect).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "session engine: a conversation from before per-person homes was not copied",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id, cause: Cause.pretty(cause) })),
+            ),
+          ),
+      );
 
       /** Whether `accountId` has an agent of `harness` live in the executor already. */
       const harnessLiveFor = Effect.fn("SessionEngine.harnessLiveFor")(function* (
@@ -12468,7 +12778,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         /** What the process runs: the session's harness for its agent, `shell` for anything else. */
         harness: string,
         /** An agent of the session starts: everything it needs is delivered (`deliverToPerson`). */
-        options: { readonly agent: boolean } = { agent: false },
+        options: { readonly agent: boolean; readonly resumeId?: string | null } = { agent: false },
       ): Effect.Effect<
         {
           readonly user: ProcessUser;
@@ -12502,7 +12812,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.flatMap((home) =>
               home === null || (!options.agent && !home.made)
                 ? Effect.succeed(null)
-                : deliverToPerson({ session, workspace, home, agent: options.agent, harness }),
+                : deliverToPerson({
+                    session,
+                    workspace,
+                    home,
+                    agent: options.agent,
+                    harness,
+                    resumeId: options.resumeId ?? null,
+                  }),
             ),
           );
           const [as, deliveries] = yield* Effect.all([started, delivered], {
@@ -12524,12 +12841,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         workspace: Workspace,
         harness: string,
-        options?: { readonly agent: boolean },
+        options?: { readonly agent: boolean; readonly resumeId?: string | null },
       ) => startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), harness, options);
 
       /** The memory in a session's head capture, and what was delivered there; null without one. */
       const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
         session: Session,
+        /**
+         * Whose memory: the shared home's, or a person's own saved directory, where Codex's summary
+         * database and Mend's record have places of their own (docs/adr/0016, decision 9). Every
+         * path read back is the home-relative one the store keeps.
+         */
+        place: ConversationPlace = SHARED_PLACE,
       ) {
         if (capture === null) return null;
         const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
@@ -12541,6 +12864,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readCaptureFileBytes(manifest, "workspace", relative).pipe(
             Effect.provideService(BlobStore, capture.blobs),
           );
+        /** A home-relative path, as it lies in the capture. */
+        const at = (homeRelative: string) => underPlace(place, place.savedPathOf(homeRelative));
         const files: Array<{
           readonly path: string;
           readonly encoding: "utf8" | "base64";
@@ -12548,12 +12873,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }> = [];
         const skipped: Array<string> = [];
         for (const { root } of AGENT_MEMORY_ROOTS) {
-          const listed = yield* listCaptureFiles(manifest, "workspace", `harness/${root}`).pipe(
+          const listed = yield* listCaptureFiles(manifest, "workspace", at(root)).pipe(
             Effect.provideService(BlobStore, capture.blobs),
           );
           for (const file of listed) {
-            const relative = file.path.replace(/^harness\//, "");
-            if (file.entry.kind !== "file") continue;
+            const under = relativeTo(place, file.path);
+            if (under === null || file.entry.kind !== "file") continue;
+            const relative = place.homePathOf(under);
             if (file.entry.size > agentMemoryMaxFileBytes(relative)) {
               skipped.push(relative);
               continue;
@@ -12564,9 +12890,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Single memory files (Codex's summary database): read with the write-ahead log the
         // capture holds beside it, and stored as one consolidated file.
         for (const { path: relative } of AGENT_MEMORY_FILES) {
-          const bytes = yield* read(`harness/${relative}`).pipe(Effect.option);
+          const bytes = yield* read(at(relative)).pipe(Effect.option);
           if (Option.isNone(bytes)) continue;
-          const wal = yield* read(`harness/${relative}-wal`).pipe(Effect.option);
+          const wal = yield* read(at(`${relative}-wal`)).pipe(Effect.option);
           const consolidated = yield* consolidateCodexDatabase(
             bytes.value,
             Option.isNone(wal) ? null : wal.value,
@@ -12581,15 +12907,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           files.push(asMemoryFile(relative, consolidated));
         }
         const text = (relative: string) =>
-          read(`harness/${relative}`).pipe(
+          read(relative).pipe(
             Effect.map((bytes) => new TextDecoder().decode(bytes)),
             Effect.orElseSucceed(() => null),
           );
-        return {
-          delivered: parseAgentMemoryDelivered(yield* text(AGENT_MEMORY_DELIVERED)),
-          files,
-          skipped,
-        };
+        // The record's keys are where each file lay when delivered: home-relative again.
+        const delivered = Object.fromEntries(
+          Object.entries(parseAgentMemoryDelivered(yield* text(at(AGENT_MEMORY_DELIVERED)))).map(
+            ([key, digest]) => [place.homePathOf(key), digest] as const,
+          ),
+        );
+        return { delivered, files, skipped };
       });
 
       /**
@@ -12781,6 +13109,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const readBackAgentMemory = Effect.fn("SessionEngine.readBackAgentMemory")(function* (
         session: Session,
+        /** The process that ended: whose executor, and so whose memory (docs/adr/0016). */
+        agent?: SessionProcess,
       ) {
         if (session.ownerUserId === null) return;
         const project = yield* projects.byId(session.projectId);
@@ -12789,6 +13119,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             harnessHomePathOf(project.storePath, session.id),
           );
           return yield* creditAgentMemory(session.ownerUserId, session.id, project.id, read);
+        }
+        // In a person executor each process's memory is its person's own, in their saved
+        // directory: read back for them, for a session never shared, with no hand-over record to
+        // ask (docs/adr/0016, decision 9). Elsewhere, as before.
+        const place = yield* conversationPlaceFor(
+          session,
+          agent?.sealantWorkspaceId ?? session.sealantWorkspaceId,
+          agent?.harness ?? session.harness,
+        );
+        if (place !== null && place.kind !== "shared") {
+          if (place.kind !== "person" || place.person === null || !neverShared(session)) {
+            yield* Effect.logInfo(
+              "session engine: agent memory not read back · a shared session's agent uses no one's memory",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id }));
+            return;
+          }
+          const person = place.person;
+          const read = yield* inOneReadPass(agentMemoryFromCapture(session, place));
+          if (read === null) return;
+          return yield* creditAgentMemory(person, session.id, project.id, read);
+        }
+        if (place === null) {
+          yield* Effect.logInfo(
+            "session engine: agent memory not read back · Mend cannot say whose process it was",
+          ).pipe(Effect.annotateLogs({ sessionId: session.id }));
+          return;
         }
         // Decided from the server first; the capture is read only for someone to credit.
         const owner =
@@ -14014,6 +14370,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   archives: provisioned.personDotfiles,
                   record: provisioned.dotfiles,
                 },
+                resumeId:
+                  manifest !== null && manifest.harness === session.harness
+                    ? manifest.providerSessionId
+                    : protocolResumeId,
               }).pipe(
                 Effect.tapError((error) => abandonExecutor(workspace, error.message)),
                 settleOnFailure,
@@ -14208,7 +14568,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
         const opencodeAtLaunch =
           session.harness === "opencode" && !interactiveShell && protocolStart === null
-            ? yield* opencodeLaunchSnapshot(session, project.storePath, null).pipe(
+            ? yield* opencodeLaunchSnapshot(
+                session,
+                project.storePath,
+                null,
+                personExecutor && session.ownerUserId !== null
+                  ? personalPlaceOf(session.ownerUserId)
+                  : SHARED_PLACE,
+              ).pipe(
                 Effect.catchCause((cause) =>
                   Effect.logWarning("session engine: opencode launch snapshot not read").pipe(
                     Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
@@ -15014,7 +15381,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             session,
             workspace,
             interactiveShell ? "shell" : session.harness,
-            { agent: true },
+            { agent: true, resumeId: interactiveShell ? null : providerSessionId },
           ).pipe(
             Effect.tapError((error) =>
               settleSession(
@@ -15154,7 +15521,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
           const opencodeAtLaunch =
             session.harness === "opencode" && !interactiveShell && protocolStart === null
-              ? yield* opencodeLaunchSnapshot(session, project.storePath, workspace).pipe(
+              ? yield* opencodeLaunchSnapshot(
+                  session,
+                  project.storePath,
+                  workspace,
+                  personStart !== null && session.ownerUserId !== null
+                    ? personalPlaceOf(session.ownerUserId)
+                    : SHARED_PLACE,
+                ).pipe(
                   Effect.catchCause((cause) =>
                     Effect.logWarning("session engine: opencode launch snapshot not read").pipe(
                       Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
