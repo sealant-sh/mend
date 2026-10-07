@@ -5,6 +5,12 @@ human. It is a development experiment, not part of the current release. The norm
 not create containers through Docker: session desktops start as Services through the public Sealant
 SDK. The standalone Docker fixture below is for local acceptance testing only.
 
+The accepted POC is documented in the
+[implementation handoff](../../docs/experiments/computer-use.md), with portable recordings,
+architecture, and release acceptance. Use the
+[local runbook](../../docs/experiments/computer-use-local.md) to reproduce the real session setup or
+recover the isolated test installation.
+
 ## Run locally
 
 ```sh

@@ -1368,6 +1368,15 @@ understand the work.
 
 ### Decided
 
+- **2026-10-08: the computer-use experiment succeeded; shipping is deferred.** Real Claude and Codex
+  terminal sessions operated the same Chromium desktop the human viewed beside the terminal,
+  retained recordings, and supported takeover without ending the coding conversation. This validates
+  a container desktop plus image-provided MCP tools through the public Sealant SDK. No release
+  version or production architecture is approved by this experiment. Before implementing desktop
+  tools, viewing, takeover, or recordings, read the
+  [implementation handoff](docs/experiments/computer-use.md) for proven cases, retained evidence,
+  current limitations, and proposed release acceptance; use its local runbook to reproduce the POC.
+
 - **2026-09-17: organizations are the tenant.** One organization per account, owners and members, an
   operator role with no default read access, private and shared projects, owner-only steering with
   opt-in shared control, invitation-only registration, and `MEND_TENANCY=single|multi` with `multi`

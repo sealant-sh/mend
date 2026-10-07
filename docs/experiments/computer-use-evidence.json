@@ -1,0 +1,104 @@
+{
+  "documentedOn": "2026-10-08",
+  "observedOn": "2026-10-07",
+  "branch": "feat/desktop-pilot",
+  "implementationCommit": "b96af101b",
+  "baseCommit": "d56e81b07",
+  "sdkVersion": "0.39.0-next.696",
+  "records": [
+    {
+      "sessionId": "0c28afa3-a5b1-4f49-b57e-ba8c8c8e15ff",
+      "worktreeId": "a1a9a8dc-21ed-42e5-b536-306550517fbd",
+      "image": "mend-desktop:pilot-v3",
+      "observation": {
+        "id": "aea7c1d0-5047-492e-b21a-7fd21d5bd645",
+        "source": "terminal",
+        "harness": "codex",
+        "mode": "code",
+        "goal": "Verify the counter page at http://127.0.0.1:3000 starts at Count: 0, then click Increment five times and enter Mend to observe Count: 5 and Hello, Mend!.",
+        "model": "",
+        "sessionId": "0c28afa3-a5b1-4f49-b57e-ba8c8c8e15ff",
+        "status": "completed",
+        "startedAt": "2026-10-07T19:34:25.277Z",
+        "finishedAt": "2026-10-07T19:34:49.493Z",
+        "result": "Opened Chromium at http://127.0.0.1:3000 and inspected its screenshot: the page initially displayed Count: 0 and Hello, world! with an empty Name input. Clicked Increment five times and typed Mend into Name. The resulting screenshot visibly displayed Count: 5, the input value Mend, and Hello, Mend!. No failures observed.",
+        "actions": 3
+      },
+      "video": {
+        "file": "assets/codex-terminal.mp4",
+        "sha256": "ea6946681f909ab365afad8094e3dacb2a7b5b00a65cbeac161d246a67778d71",
+        "probe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "h264",
+              "width": 1440,
+              "height": 900
+            }
+          ],
+          "format": {
+            "duration": "24.083333",
+            "size": "114544"
+          }
+        }
+      }
+    },
+    {
+      "sessionId": "ba7ded16-50e2-446b-be57-16bf29441103",
+      "worktreeId": "2eda5d04-bec1-44a4-8ba2-df54ee615939",
+      "image": "mend-desktop:pilot-v4",
+      "observation": {
+        "id": "a1fd83ea-8dfa-4326-b56d-62cd672910b9",
+        "source": "terminal",
+        "harness": "claude",
+        "mode": "code",
+        "goal": "Verify the desktop counter reads 2 and Hello, Claude!",
+        "model": "",
+        "sessionId": "ba7ded16-50e2-446b-be57-16bf29441103",
+        "status": "completed",
+        "startedAt": "2026-10-07T19:36:03.535Z",
+        "finishedAt": "2026-10-07T19:37:00.432Z",
+        "result": "Opened http://127.0.0.1:6090/demo in the desktop Chromium. The page title is \"Mend desktop check\". The counter started at \"Count: 0\". The increment button is labeled \"Add one\", not \"Increment\". Clicked it twice; the counter read \"Count: 1\" then \"Count: 2\". Clicked the \"Your name\" field and typed \"Claude\". The page then showed the greeting \"Hello, Claude\" below the field. Final screenshot: Count: 2 and \"Hello, Claude\" are both visible. PARTIAL MISMATCH with the goal: the greeting has no exclamation mark. The page source builds it as \"Hello, \" + the input value, so \"Hello, Claude!\" is never rendered. Counter check passed; greeting text differs from the expected \"Hello, Claude!\" by the missing \"!\".",
+        "actions": 7
+      },
+      "video": {
+        "file": "assets/claude-terminal.mp4",
+        "sha256": "9a977ff35ceea2ba3c56e4846a4e1906770b151377825255865421f990c3d4df",
+        "probe": {
+          "programs": [],
+          "stream_groups": [],
+          "streams": [
+            {
+              "codec_name": "h264",
+              "width": 1440,
+              "height": 900
+            }
+          ],
+          "format": {
+            "duration": "56.833333",
+            "size": "176772"
+          }
+        }
+      }
+    }
+  ],
+  "takeover": {
+    "sessionId": "0c28afa3-a5b1-4f49-b57e-ba8c8c8e15ff",
+    "observation": {
+      "id": "447ff3c9-5da1-4890-b910-637a2fc5f430",
+      "source": "terminal",
+      "harness": "codex",
+      "mode": "code",
+      "goal": "Verify takeover aborts active desktop code without stopping the coding agent",
+      "model": "",
+      "sessionId": "0c28afa3-a5b1-4f49-b57e-ba8c8c8e15ff",
+      "status": "cancelled",
+      "startedAt": "2026-10-07T19:37:35.631Z",
+      "finishedAt": "2026-10-07T19:37:36.850Z",
+      "result": "The user took desktop control.",
+      "actions": 1
+    },
+    "diagnostic": "A controlled workspace HTTP probe ran a code worker with six 5-second waits. Takeover aborted it with HTTP 400 and The operation was aborted. The primary coding process remained alive. This was a controller diagnostic, not another provider-driven task."
+  }
+}
