@@ -2532,7 +2532,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("respondAgentRequest", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.agentRequest(params.id);
+        const asked = yield* steering.agentRequest(params.id);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
         return yield* engine.respondRequest(params.id, payload, caller.user.id).pipe(
@@ -2544,6 +2544,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           ),
           Effect.catchTag("AgentRequestAlreadyResolvedError", () =>
             Effect.fail(new AgentRequestResolved({ requestId: params.id })),
+          ),
+          // Only a person's process's own person answers its questions (docs/adr/0016).
+          Effect.catchTag("SessionTurnRefusedError", (error) =>
+            Effect.fail(
+              new SessionNotSteerable({ sessionId: asked.session.id, message: error.message }),
+            ),
           ),
         );
       }),

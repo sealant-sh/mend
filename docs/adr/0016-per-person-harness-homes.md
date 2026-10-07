@@ -492,15 +492,25 @@ the new sender's user, on their login.
     `item/completed` with no `turn/started` (goals, the mailbox and queued prompts start turns on
     their own after `turn/completed`). `app-server` is initialised with
     `capabilities.experimentalApi`.
-  - **The stop:** decide, re-check after the settle, then close stdin. A `turn/started` between the
-    check and the exit is the old process's turn; the new process starts only after the old one has
-    exited. A Codex turn that starts on its own after stdin is closed (a goal or a queued prompt) is
-    aborted by Codex; Mend records it on the conversation as "interrupted by the hand-over", under
-    the old person.
+  - **The stop:** decide, re-check after the settle; then prepare the next process (the sender's
+    login, their user, the conversation's take) and, right before the stop, ask once more whether
+    the turn still waits and the process is still quiescent. If not, nothing is stopped or written,
+    the take goes back to the old process, and the turn waits again. Then close stdin. A
+    `turn/started` between that check and the exit is the old process's turn; the new process starts
+    only after the old one has exited. A Codex turn that starts on its own after stdin is closed (a
+    goal or a queued prompt) is aborted by Codex; Mend records it on the conversation as
+    "interrupted by the hand-over", under the old person.
   - **Who can end background work:** the person the process runs as, and the session owner, from the
-    waiting line: Claude's task stop, Codex `thread/backgroundTerminals/terminate` and
-    `thread/goal/clear`. A wakeup or monitor ends on its own (at most an hour, at most 30 minutes).
-    The sender, or the owner, may withdraw the waiting turn. Turns keep their order: a waiting turn
+    waiting line: Claude's task stop (a monitor's too), Codex `thread/backgroundTerminals/terminate`
+    and `thread/goal/clear`. A wakeup ends on its own within an hour. A session cron is waited for
+    at most 10 minutes and then ends with the process, which the session line says. An agent that
+    will not say what it runs is never stopped on a guess: after a minute the waiting turn fails
+    with words and the agent goes on. A Codex initialised without `experimentalApi` (started before
+    shared steering) takes its owner's turns only until it ends or restarts. The sender, or the
+    owner, may withdraw the waiting turn.
+  - **The agent's questions** (permission prompts, free-text questions) are answered only by the
+    person its process runs as: an answer continues a turn on that person's login. Anyone else is
+    told "Only Alice can answer this; send a turn instead." Turns keep their order: a waiting turn
     holds the ones behind it.
   - **Scheduled prompts:** Claude processes of a once-shared session start with
     `CLAUDE_CODE_DISABLE_CRON=1` in the neutral settings, so none creates or fires a cron there. A

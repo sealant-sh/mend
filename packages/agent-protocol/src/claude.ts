@@ -860,6 +860,7 @@ export const ClaudeAdapter: AgentAdapter = {
         respondInput,
         events: Stream.fromPubSub(events),
         quiescence,
+        reportsBackgroundWork: () => Effect.succeed(true),
         endWork,
         close,
       } satisfies AgentSession;

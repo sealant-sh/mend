@@ -29,7 +29,7 @@ describe("the waiting line (docs/adr/0016, decision 6)", () => {
     );
   });
 
-  it("says how long it waits for what nothing can end (review of mend#572, P3-2 and P3-3)", () => {
+  it("says how long it waits for what nothing can end, and what happens then (review 2 of mend#572, P2-1 and P3-4)", () => {
     expect(
       conversationWaitLine({
         runsAs: "Alice",
@@ -38,7 +38,7 @@ describe("the waiting line (docs/adr/0016, decision 6)", () => {
         work: [{ kind: "cron" }, { kind: "unknown" }, { kind: "unknown" }],
       }),
     ).toBe(
-      "Waits for Alice's 1 scheduled prompt and unreported work to finish before Bob's turn starts. It waits at most 10 minutes for scheduled prompts and at most 1 minute for unreported work.",
+      "Waits for Alice's 1 scheduled prompt and unreported work to finish before Bob's turn starts. It waits at most 10 minutes for scheduled prompts, which then end with Alice's agent. If Alice's agent has still not said what it runs after 1 minute, Bob's turn is not started.",
     );
   });
 

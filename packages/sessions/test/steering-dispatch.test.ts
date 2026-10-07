@@ -8,11 +8,13 @@ import {
   SessionProcessId,
 } from "@mend/domain";
 import { AgentItem, AgentTurn, SessionProcess, type TurnPayer } from "@mend/domain/workbench";
+import { SealantPlatformError } from "@mend/sealant";
 import type { InteractiveSession } from "@sealant/sdk";
 import { Effect, Fiber, Layer } from "effect";
 
 import {
   type ConversationWait,
+  HAND_OVER_NOT_NOW,
   INTERRUPTED_BY_HAND_OVER,
   ProtocolHost,
   ProtocolHostLive,
@@ -205,6 +207,11 @@ const conversationWorld = () => {
         }
       }),
     resolveProviderRequest: () => Effect.void,
+    // What a rehydrate reads: nothing pending, no cursor yet.
+    listRequests: () => Effect.succeed([]),
+    protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
+    saveProtocolCursor: () => Effect.void,
+    resetSendingResponses: () => Effect.void,
   });
   return { turns, layer, ordered, update };
 };
@@ -353,6 +360,12 @@ const steeredWorld = (harness: "claude" | "codex") => {
   const live = new Set<string>([processA.id]);
   /** What the engine would decide instead, once something changed (control off, say). */
   const decision: { override: ((turn: AgentTurn) => SteeringDecision) | null } = { override: null };
+  /**
+   * The engine's preparation before the stop (the login, the user, the take), run before it asks
+   * the host its last question; what the host answers decides whether anything stops.
+   */
+  const preparation: { during: Effect.Effect<void> } = { during: Effect.void };
+  const atStop: Array<boolean> = [];
   const processes = Layer.mock(SessionProcessesRepo, {
     listForSession: () =>
       Effect.sync(() => [processA, processB].filter((process) => live.has(process.id))),
@@ -377,9 +390,20 @@ const steeredWorld = (harness: "claude" | "codex") => {
               : { kind: "hand-over", sender: turn.author ?? ALICE },
         ),
       waiting: (wait) => Effect.sync(() => void waits.push(wait)),
-      handOver: (sender) =>
+      handOver: (sender, _turnId, check) =>
         Effect.gen(function* () {
           handOvers.push({ sender, at: Date.now() });
+          yield* preparation.during;
+          const go = yield* check.stillQuiescent;
+          atStop.push(go);
+          if (!go) {
+            return yield* new SealantPlatformError({
+              code: HAND_OVER_NOT_NOW,
+              status: null,
+              message: "not now",
+              cause: null,
+            });
+          }
           const protocolHost = yield* ProtocolHost;
           yield* protocolHost.detachForHandOver(processA.id);
           live.delete(processA.id);
@@ -388,7 +412,20 @@ const steeredWorld = (harness: "claude" | "codex") => {
         }).pipe(Effect.provide(host)),
     },
   });
-  return { world, processA, processB, waits, handOvers, pipes, live, host, hooksFor, decision };
+  return {
+    world,
+    processA,
+    processB,
+    waits,
+    handOvers,
+    pipes,
+    live,
+    host,
+    hooksFor,
+    decision,
+    preparation,
+    atStop,
+  };
 };
 
 const attachAs = (process: SessionProcess, pipe: InteractiveSession, hooks: ProtocolHostHooks) =>
@@ -775,44 +812,202 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
       ),
   );
 
-  it("a session cron and what the harness would not say are waited for, bounded", () => {
+  it("a session cron is waited for at most 10 minutes; what the harness would not say never times out into a stop", () => {
     const firstSeen = new Map<string, number>();
-    const looked = {
-      quiescent: false,
-      openTurn: false,
-      settleMs: 0,
-      work: [
-        { kind: "cron" as const, id: "cron-1", description: null, endable: false },
-        { kind: "unknown" as const, id: "thread/goal/get", description: null, endable: false },
-      ],
+    const cron = { kind: "cron" as const, id: "cron-1", description: null, endable: false };
+    const unknown = {
+      kind: "unknown" as const,
+      id: "thread/backgroundTerminals/list",
+      description: null,
+      endable: false,
     };
-    const bounds = { cron: 600_000, unknown: 60_000 };
-    expect(waitedOut(looked, firstSeen, 1_000, bounds).quiescent).toBe(false);
-    // A minute on: what the harness would not say is no longer waited for; the cron still is.
-    const later = waitedOut(looked, firstSeen, 61_000, bounds);
-    expect(later.quiescent).toBe(false);
-    expect(later.work.map((work) => work.kind)).toEqual(["cron"]);
-    // Ten minutes on: nothing holds the hand-over.
-    expect(waitedOut(looked, firstSeen, 601_000, bounds)).toMatchObject({
-      quiescent: true,
-      work: [],
-    });
+    const looked = { quiescent: false, openTurn: false, settleMs: 0, work: [cron] };
+    expect(waitedOut(looked, firstSeen, 1_000).quiescent).toBe(false);
+    expect(waitedOut(looked, firstSeen, 300_000).quiescent).toBe(false);
+    // Ten minutes on: the cron no longer holds the hand-over (it ends with the process, said).
+    expect(waitedOut(looked, firstSeen, 601_000)).toMatchObject({ quiescent: true, work: [] });
+    // Unreported work is never dropped here, however long (the wait fails the turn instead).
+    expect(
+      waitedOut({ ...looked, work: [unknown] }, firstSeen, 100_000_000).work.map((w) => w.kind),
+    ).toEqual(["unknown"]);
     // A task is never bounded; an open turn still holds it.
     expect(
       waitedOut(
-        {
-          ...looked,
-          work: [{ kind: "task", id: "bash-1", description: null, endable: true }],
-        },
+        { ...looked, work: [{ kind: "task", id: "bash-1", description: null, endable: true }] },
         firstSeen,
         10_000_000,
-        bounds,
       ).quiescent,
     ).toBe(false);
-    expect(waitedOut({ ...looked, openTurn: true }, firstSeen, 10_000_000, bounds).quiescent).toBe(
-      false,
-    );
+    expect(waitedOut({ ...looked, openTurn: true }, firstSeen, 10_000_000).quiescent).toBe(false);
   });
+
+  /**
+   * Alice's Claude, idle; Bob's turn waits and the hand-over begins. While the engine prepares it
+   * (Bob's login, his user, the take), `during` runs; the host's last look at the stop decides.
+   */
+  const preparedHandOver = (
+    during: (alice: Harnessed, steered: ReturnType<typeof steeredWorld>, bobs: AgentTurn) => void,
+  ) => {
+    const steered = steeredWorld("claude");
+    const alice = claudePipe("pipe-a");
+    const bob = claudePipe("pipe-b");
+    let attachBob: Effect.Effect<void> = Effect.void;
+    const aliceHooks = steered.hooksFor(
+      ALICE,
+      Effect.suspend(() => attachBob),
+    );
+    attachBob = attachAs(steered.processB, bob.pipe, steered.hooksFor(BOB, Effect.void)).pipe(
+      Effect.orDie,
+      Effect.provide(steered.host),
+    );
+    const turns: { bobs: AgentTurn | null } = { bobs: null };
+    let prepared = 0;
+    steered.preparation.during = Effect.suspend(() => {
+      prepared += 1;
+      if (prepared > 1 || turns.bobs === null) return Effect.void;
+      during(alice, steered, turns.bobs);
+      return pause(150);
+    });
+    return { steered, alice, bob, turns, aliceHooks };
+  };
+
+  it.live(
+    "a turn A's agent opens while B's hand-over is prepared is never cut off: nothing stops, and B's turn waits again (review 2 of mend#572, P2-2)",
+    () => {
+      const { steered, alice, bob, turns, aliceHooks } = preparedHandOver((agent) => {
+        // A wakeup fires: Claude opens a turn of its own, on Alice's login.
+        agent.push({ type: "system", subtype: "session_state_changed", state: "running" });
+        agent.push({
+          type: "system",
+          subtype: "init",
+          uuid: "wake-1",
+          session_id: "11111111-1111-4111-8111-111111111111",
+        });
+      });
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachAs(steered.processA, alice.pipe, aliceHooks);
+        alice.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        yield* pause(30);
+        turns.bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        yield* waitUntil(() => steered.atStop.length === 1, "the first look at the stop");
+        expect(steered.atStop).toEqual([false]);
+        // Nothing was stopped: Alice's process is live, its own turn runs, Bob's waits.
+        expect(steered.live.has(steered.processA.id)).toBe(true);
+        expect(bob.sent).toEqual([]);
+        const wake = steered.world.ordered().find((turn) => turn.origin === "harness");
+        expect(wake).toMatchObject({ status: "running", billedUserId: ALICE });
+        // Alice's own turn ends; then the hand-over goes on.
+        alice.push({ type: "result", subtype: "success" });
+        alice.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        yield* waitUntil(() => steered.atStop.length === 2, "the second look at the stop");
+        expect(steered.atStop).toEqual([false, true]);
+        expect(steered.world.ordered().find((turn) => turn.origin === "harness")).toMatchObject({
+          status: "completed",
+          billedUserId: ALICE,
+        });
+        yield* waitUntil(
+          () => bob.sent.some((message) => message["type"] === "user"),
+          "Bob's turn sent",
+        );
+        expect(steered.world.turns.get(turns.bobs.id)).toMatchObject({
+          processId: steered.processB.id,
+          billedUserId: BOB,
+        });
+        yield* host.detach(steered.processB.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
+
+  it.live(
+    "a turn withdrawn while its hand-over is prepared stops nothing and starts nothing (review 2 of mend#572, P2-2)",
+    () => {
+      const { steered, alice, bob, turns, aliceHooks } = preparedHandOver((_alice, world, bobs) => {
+        world.world.update(bobs.id, { status: "cancelled", endedAt: now() });
+      });
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachAs(steered.processA, alice.pipe, aliceHooks);
+        alice.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        yield* pause(30);
+        turns.bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        yield* waitUntil(() => steered.atStop.length === 1, "the look at the stop");
+        yield* pause(400);
+        expect(steered.atStop).toEqual([false]);
+        expect(steered.handOvers).toHaveLength(1);
+        expect(steered.live.has(steered.processA.id)).toBe(true);
+        expect(bob.sent).toEqual([]);
+        expect(steered.world.turns.get(turns.bobs.id)?.status).toBe("cancelled");
+        // The queue is Alice's again.
+        yield* host.submitTurn(sessionId, "Alice's next", ALICE);
+        yield* waitUntil(
+          () => JSON.stringify(alice.sent).includes("Alice's next"),
+          "Alice's turn sent",
+        );
+        yield* host.detach(steered.processA.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
+
+  it.live(
+    "a Codex started before shared steering takes its owner's turns only, and is never stopped for another's (review 2 of mend#572, P2-1)",
+    () => {
+      const steered = steeredWorld("codex");
+      // Codex 0.160.1 answering an app-server initialized without `experimentalApi`.
+      const alice = scriptedPipe("pipe-a", (message, push) => {
+        const rpc = message["id"];
+        if (typeof rpc !== "number" && typeof rpc !== "string") return;
+        switch (message["method"]) {
+          case "thread/backgroundTerminals/list":
+            push({
+              id: rpc,
+              error: {
+                code: -32600,
+                message: "thread/backgroundTerminals/list requires experimentalApi capability",
+              },
+            });
+            return;
+          case "turn/start":
+            push({ id: rpc, result: { turn: { id: "alice-turn" } } });
+            return;
+          default:
+            push({ id: rpc, result: {} });
+        }
+      });
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        // Mend restarted over it: the process is taken over, not initialized again.
+        yield* host.rehydrate({
+          process: steered.processA,
+          pipe: alice.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          launchedWithLoginOf: ALICE,
+          runsAs: ALICE,
+          hooks: steered.hooksFor(ALICE, Effect.void),
+          highWater: 0n,
+        });
+        const bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        yield* waitUntil(
+          () => steered.world.turns.get(bobs.id)?.status === "failed",
+          "Bob's turn refused",
+        );
+        expect(steered.world.turns.get(bobs.id)?.error).toBe(
+          "This agent was started before shared steering, so it takes only its owner's turns until it ends or restarts.",
+        );
+        expect(steered.handOvers).toEqual([]);
+        expect(steered.waits).toEqual([]);
+        expect(steered.live.has(steered.processA.id)).toBe(true);
+        // Alice's own turn is sent as before.
+        yield* host.submitTurn(sessionId, "Alice's own", ALICE);
+        yield* waitUntil(
+          () => alice.sent.some((message) => message["method"] === "turn/start"),
+          "Alice's turn sent",
+        );
+        yield* host.detach(steered.processA.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
 
   it.live("same-person turns pay nothing: no hand-over, no wait", () => {
     const steered = steeredWorld("claude");

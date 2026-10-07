@@ -72,6 +72,7 @@ import {
   agentMemoryDigest,
 } from "@mend/db";
 import {
+  AgentRequestId,
   AgentTurnId,
   ChangeId,
   CheckpointId,
@@ -96,6 +97,7 @@ import {
   type DotfilesRepository,
 } from "@mend/domain";
 import {
+  AgentRequest,
   AgentTurn,
   Change,
   Checkpoint,
@@ -28661,6 +28663,135 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     const ptyAgent = [...state.conversationHolders.values()][0]?.processId ?? null;
     expect(ptyAgent).not.toBeNull();
   }, 30_000);
+
+  it("a takeover that loses the conversation to a waiting turn's hand-over says so (review 2 of mend#572, P3-1)", async () => {
+    const spawned: Array<ReadonlyArray<string>> = [];
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const calls: Array<string> = [];
+    const attached: Array<{
+      readonly process: SessionProcess;
+      readonly hooks: ProtocolHostHooks;
+      readonly resumePath: string | null;
+    }> = [];
+    const stops: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
+    let sessionId: SessionId | null = null;
+    let takesAtStart = 0;
+    let lostWith = "";
+    const exec = (argv: ReadonlyArray<string>) => {
+      if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
+      if (isStage(argv)) {
+        const resume = (argv[2] ?? "").includes(provider)
+          ? `mend-conv resume /run/mend/conv/${sessionId ?? ""}/.claude/projects/-workspace-repo/${provider}.jsonl\n`
+          : "";
+        const moved = (argv[2] ?? "").includes("moved=0") ? "mend-conv moved 1\n" : "";
+        return { exitCode: 0, stdout: `${moved}${resume}mend-conv empty\n`, stderr: "" };
+      }
+      if (isExchange(argv)) {
+        return { exitCode: 0, stdout: "mend-conv exchanged renameat2\n", stderr: "" };
+      }
+      return undefined;
+    };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          sessionId = session.id;
+          const row = world.sessions.get(session.id);
+          if (row === undefined) return yield* Effect.die("no session");
+          world.sessions.set(
+            session.id,
+            new Session({ ...row, sharedControlEnabledAt: now(), sharedControlEverAt: now() }),
+          );
+          yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+          const alice = attached[0]?.process;
+          if (alice === undefined) return yield* Effect.die("no protocol process");
+          world.processes.set(
+            alice.id,
+            new SessionProcess({ ...alice, providerSessionId: provider }),
+          );
+          // What the harvest leaves for the terminal to resume.
+          const stateDir = processStatePathOf(project.storePath, session.id, alice.id);
+          fs.mkdirSync(stateDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(stateDir, "manifest.json"),
+            JSON.stringify({
+              harness: "claude",
+              providerSessionId: provider,
+              capturedAt: new Date().toISOString(),
+            }),
+          );
+          takesAtStart = state.conversationHolders.get(session.id)?.fence ?? 0;
+          // Maria's turn waits, and its hand-over takes the conversation first.
+          const steering = attached[0]?.hooks.steering;
+          if (steering === undefined) return yield* Effect.die("no steering");
+          yield* steering.waiting({
+            sessionId: session.id,
+            processId: alice.id,
+            turnId: AgentTurnId.make("turn-maria"),
+            runsAs: "user-fixture",
+            sender: MARIA,
+            openTurn: false,
+            work: [],
+          });
+          const held = state.conversationHolders.get(session.id);
+          if (held === undefined) return yield* Effect.die("no holder");
+          state.conversationHolders.set(session.id, {
+            ...held,
+            processId: null,
+            fence: held.fence + 1,
+            takenAt: Date.now(),
+          });
+          const lost = yield* engine
+            .handoff(session.id, "pty", { mode: "pty" }, "user-fixture")
+            .pipe(Effect.flip);
+          lostWith = lost.message;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          execCalls,
+          undefined,
+          { exec },
+        ),
+        protocolHostLayer: steeringHost(attached, stops),
+        harnessLayout: { flag: "person", state, platform: personPlatform(calls, { person: true }) },
+      },
+    );
+    expect(lostWith).toContain("waiting turn took the conversation first");
+    // Nothing of the terminal's started, and the hand-over's take stands.
+    expect(spawned.some((argv) => !argv.includes("stream-json") && argv[0] === "claude")).toBe(
+      false,
+    );
+    expect(takesAtStart).toBeGreaterThan(0);
+  }, 30_000);
+});
+
+/** What the host says at a hand-over's stop: the turn still waits and the process is quiescent. */
+const atTheStop = (stillQuiescent: Effect.Effect<boolean> = Effect.succeed(true)) => ({
+  stillQuiescent,
+  endedCrons: 0,
 });
 
 /** A protocol host that records each attach with its hooks, and each stop for a hand-over. */
@@ -28791,7 +28922,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           });
 
           // Maria's turn: her own user, her own login, Alice's conversation.
-          yield* steering.handOver(MARIA, AgentTurnId.make("turn-maria"));
+          yield* steering.handOver(MARIA, AgentTurnId.make("turn-maria"), atTheStop());
           const maria = attached[1];
           expect(maria?.process.runsAs).toBe(MARIA);
           expect(stops).toEqual([alice.process.id]);
@@ -28827,7 +28958,11 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             new SessionProcess({ ...maria.process, providerSessionId: provider }),
           );
           const before = { calls: calls.length, opened: opened.length, stops: stops.length };
-          yield* steeringOfMaria.handOver("user-fixture", AgentTurnId.make("turn-alice"));
+          yield* steeringOfMaria.handOver(
+            "user-fixture",
+            AgentTurnId.make("turn-alice"),
+            atTheStop(),
+          );
           expect(calls.slice(before.calls)).toEqual([
             `delete:${home}`,
             `post:user-fixture:${home}`,
@@ -28866,6 +29001,10 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
   const handOverToMaria = async (options: {
     readonly logins?: (accountId: string) => "active" | "invalid" | "missing" | "unknown";
     readonly postFails?: (onBehalfOf: string, home: string) => boolean;
+    /** What the host says at the stop (review 2 of mend#572, P2-2). */
+    readonly stillQuiescent?: Effect.Effect<boolean>;
+    /** Maria's next turn asks for the conversation again at once (review 2, P3-3). */
+    readonly again?: boolean;
   }) => {
     const spawned: Array<ReadonlyArray<string>> = [];
     const opened: Array<SessionOptions | PersonSessionOptions> = [];
@@ -28880,9 +29019,12 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     const state = makeHarnessLayoutsMemoryState();
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
-    const result: { outcome: { readonly code: string; readonly message: string } | null } = {
-      outcome: null,
-    };
+    const result: {
+      outcome: { readonly code: string; readonly message: string } | null;
+      second: { readonly code: string; readonly message: string } | null;
+      stopsBeforeSecond: number;
+      summary: string | null;
+    } = { outcome: null, second: null, stopsBeforeSecond: 0, summary: null };
     const exec = (argv: ReadonlyArray<string>) => {
       if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
       if (isStage(argv)) {
@@ -28928,11 +29070,22 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             new SessionProcess({ ...alice.process, providerSessionId: provider }),
           );
           const handed = yield* steering
-            .handOver(MARIA, AgentTurnId.make("turn-maria"))
+            .handOver(MARIA, AgentTurnId.make("turn-maria"), atTheStop(options.stillQuiescent))
             .pipe(Effect.result);
           if (handed._tag === "Failure") {
             result.outcome = { code: handed.failure.code, message: handed.failure.message };
           }
+          if (options.again === true) {
+            result.stopsBeforeSecond = stops.length;
+            const restarted = attached.at(-1);
+            const again = yield* (restarted?.hooks.steering ?? steering)
+              .handOver(MARIA, AgentTurnId.make("turn-maria-2"), atTheStop())
+              .pipe(Effect.result);
+            if (again._tag === "Failure") {
+              result.second = { code: again.failure.code, message: again.failure.message };
+            }
+          }
+          result.summary = world.sessions.get(session.id)?.summary ?? null;
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -28998,6 +29151,9 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       failed,
       state,
       outcome: result.outcome,
+      second: result.second,
+      stopsBeforeSecond: result.stopsBeforeSecond,
+      summary: result.summary,
     };
   };
 
@@ -29029,6 +29185,46 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     expect(run.failed).toEqual([
       { turnId: "turn-maria", words: expect.stringContaining("Core did not answer") },
     ]);
+  }, 30_000);
+
+  it("a hand-over whose turn is withdrawn while it is prepared stops nothing and writes nothing into the home (review 2 of mend#572, P2-2)", async () => {
+    // S6: Maria withdraws while Mend asks Core for her login; the host's look at the stop says so.
+    let withdrawn = false;
+    const run = await handOverToMaria({
+      logins: (accountId) => {
+        if (accountId === MARIA) withdrawn = true;
+        return "active";
+      },
+      stillQuiescent: Effect.sync(() => !withdrawn),
+    });
+    const home = `/run/mend/conv/${run.sessionId}`;
+    expect(withdrawn).toBe(true);
+    expect(run.outcome?.code).toBe("hand_over_not_now");
+    expect(run.stops).toEqual([]);
+    expect(run.attached).toHaveLength(1);
+    expect(run.calls).not.toContain(`post:${MARIA}:${home}`);
+    expect(run.calls.filter((call) => call === `delete:${home}`)).toEqual([]);
+    // Alice's process still holds the conversation.
+    expect(run.state.conversationHolders.get(run.sessionId)?.processId).toBe(
+      run.attached[0]?.process.id,
+    );
+    expect(run.failed).toEqual([]);
+  }, 30_000);
+
+  it("a hand-over that failed after its stop is not tried again at once, and a restart that fails too says why on the session line (review 2 of mend#572, P3-2 and P3-3)", async () => {
+    const backoff = await handOverToMaria({
+      postFails: (onBehalfOf, home) => onBehalfOf === MARIA && home.startsWith("/run/mend/conv/"),
+      again: true,
+    });
+    expect(backoff.second?.message).toContain("failed less than a minute ago");
+    expect(backoff.stops).toHaveLength(backoff.stopsBeforeSecond);
+    // Every write into the home after the owner's first fails: Maria's, then Alice's restart.
+    let intoHome = 0;
+    const restart = await handOverToMaria({
+      postFails: (_onBehalfOf, home) => home.startsWith("/run/mend/conv/") && intoHome++ > 0,
+    });
+    expect(restart.outcome?.message).toContain("Core did not answer");
+    expect(restart.summary).toContain("could not be started again");
   }, 30_000);
 
   it("a hand-over whose sender's login went invalid while the turn waited stops nothing (review of mend#572, P2-2)", async () => {
@@ -29088,6 +29284,113 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       "Connect Claude to steer this session.",
     ]);
     expect(calls).toEqual([`login:${MARIA}`, `login:${MARIA}`]);
+  }, 30_000);
+
+  it("only the person a process runs as answers its agent's questions; a steerer sends a turn instead (owner's rule, review 2 of mend#572)", async () => {
+    const answered: Array<string> = [];
+    const refusals: Array<string> = [];
+    const attached: Array<{
+      readonly process: SessionProcess;
+      readonly hooks: ProtocolHostHooks;
+      readonly resumePath: string | null;
+    }> = [];
+    const askedBy = (processId: SessionProcessId, sessionId: SessionId) =>
+      new AgentRequest({
+        id: AgentRequestId.make("request-1"),
+        sessionId,
+        processId,
+        turnId: AgentTurnId.make("turn-alice"),
+        kind: "tool-permission",
+        providerRequestId: "provider-request-1",
+        providerItemId: null,
+        title: "Run npm test?",
+        detail: null,
+        questions: null,
+        status: "pending",
+        decision: null,
+        decidedBy: null,
+        answers: null,
+        createdAt: now(),
+        decidedAt: null,
+      });
+    let asking: AgentRequest | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // Alice's own process in a person executor: it runs as her.
+          yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+          const alice = attached[0]?.process;
+          expect(alice?.runsAs).toBe("user-fixture");
+          if (alice === undefined) return yield* Effect.die("no protocol process");
+          asking = askedBy(alice.id, session.id);
+          const steerer = yield* engine
+            .respondRequest(AgentRequestId.make("request-1"), { decision: "accept" }, MARIA)
+            .pipe(Effect.flip);
+          refusals.push(steerer.message);
+          yield* engine.respondRequest(
+            AgentRequestId.make("request-1"),
+            { decision: "accept" },
+            "user-fixture",
+          );
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        protocolHostLayer: Layer.succeed(ProtocolHost, {
+          attach: (input) =>
+            Effect.sync(() => {
+              attached.push({ process: input.process, hooks: input.hooks, resumePath: null });
+            }),
+          rehydrate: () => Effect.void,
+          submitTurn: () => Effect.die("not in test"),
+          interruptTurn: () => Effect.void,
+          respondRequest: (request, _response, decidedBy) =>
+            Effect.sync(() => {
+              answered.push(decidedBy);
+              return request;
+            }),
+          detach: () => Effect.void,
+          has: () => Effect.succeed(true),
+          quiescence: () => Effect.succeed(null),
+          awaitQuiescent: () => Effect.void,
+          endWork: () => Effect.void,
+          detachForHandOver: () => Effect.void,
+        }),
+        conversationLayer: Layer.succeed(AgentConversationRepo, {
+          ...agentConversationStub,
+          byRequestId: () => Effect.sync(() => asking),
+        }),
+        harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+      },
+    );
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toMatch(/^Only .+ can answer this; send a turn instead\.$/);
+    // The owner's own answer reaches the agent; Maria's never did.
+    expect(answered).toEqual(["user-fixture"]);
   }, 30_000);
 
   /** A Claude conversation of Alice's in a person executor, shared, and a turn sent to it. */

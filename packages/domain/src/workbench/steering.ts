@@ -67,16 +67,34 @@ const NOUNS: Readonly<Record<ConversationWaitWork["kind"], readonly [string, str
 };
 
 /**
- * How long a waiting turn waits for work nothing in the waiting line can end (review of mend#572,
- * P3-2 and P3-3): a session's scheduled prompt (it lives up to seven days), and work the harness
- * would not say anything about. After this the hand-over goes on, and the waiting line says so.
+ * How long a waiting turn waits for a session's scheduled prompt (it lives up to seven days, and
+ * nothing in the waiting line can end it): after this the hand-over goes on, the scheduled prompts
+ * end with the agent, and the session line says so (review of mend#572, P3-2; review 2, P3-4).
  */
 export const CONVERSATION_WAIT_BOUNDS_MS: Readonly<
   Partial<Record<ConversationWaitWork["kind"], number>>
 > = {
   cron: 10 * 60_000,
-  unknown: 60_000,
 };
+
+/**
+ * How long a waiting turn waits for an agent that will not say what it runs (a Codex refusing
+ * `thread/backgroundTerminals/list`). It never times out into a stop: after this the waiting turn
+ * fails with `UNREPORTED_WORK_REFUSAL` and the agent goes on (review 2 of mend#572, P2-1).
+ */
+export const CONVERSATION_UNREPORTED_WAIT_MS = 60_000;
+
+/** Why a waiting turn was not started when the agent never said what it runs. */
+export const UNREPORTED_WORK_REFUSAL =
+  "The agent did not say whether its background work has finished, so this turn was not started and nothing was stopped. The person whose agent it is can end that work, or restart the session.";
+
+/**
+ * Why another person's turn is not sent to an agent started before shared steering (a Codex
+ * initialized without the capability that reports background work): it takes its owner's turns
+ * only until it ends or restarts (review 2 of mend#572, P2-1).
+ */
+export const STARTED_BEFORE_STEERING =
+  "This agent was started before shared steering, so it takes only its owner's turns until it ends or restarts.";
 
 const boundWords = (ms: number): string =>
   ms % 60_000 === 0
@@ -129,14 +147,22 @@ export const conversationWaitLine = (input: {
     );
   }
   const waited = parts.length === 0 ? "agent" : listed(parts);
-  const bounded = ORDER.flatMap((kind) => {
-    const bound = CONVERSATION_WAIT_BOUNDS_MS[kind];
-    return bound !== undefined && input.work.some((work) => work.kind === kind)
-      ? [`at most ${boundWords(bound)} for ${NOUNS[kind][1]}`]
-      : [];
-  });
-  const line = `Waits for ${input.runsAs}'s ${waited} to finish before ${input.sender}'s turn starts.`;
-  return bounded.length === 0 ? line : `${line} It waits ${listed(bounded)}.`;
+  const after: Array<string> = [];
+  const cronBound = CONVERSATION_WAIT_BOUNDS_MS.cron;
+  if (cronBound !== undefined && input.work.some((work) => work.kind === "cron")) {
+    after.push(
+      `It waits at most ${boundWords(cronBound)} for scheduled prompts, which then end with ${input.runsAs}'s agent.`,
+    );
+  }
+  if (input.work.some((work) => work.kind === "unknown")) {
+    after.push(
+      `If ${input.runsAs}'s agent has still not said what it runs after ${boundWords(CONVERSATION_UNREPORTED_WAIT_MS)}, ${input.sender}'s turn is not started.`,
+    );
+  }
+  return [
+    `Waits for ${input.runsAs}'s ${waited} to finish before ${input.sender}'s turn starts.`,
+    ...after,
+  ].join(" ");
 };
 
 /** Why another person's turn is not sent to an opencode session (decision 6). */

@@ -138,6 +138,13 @@ export interface AgentSession {
   readonly events: Stream.Stream<AgentEvent>;
   /** What the agent has in flight now (decision 6); Codex asks the app-server. */
   readonly quiescence: () => Effect.Effect<AgentQuiescence, AgentProtocolError>;
+  /**
+   * Whether the agent can say what it runs in the background (decision 6). Claude always can; a
+   * Codex app-server only when it was initialized with `experimentalApi`, which a process started
+   * before shared steering was not. One that cannot takes its owner's turns only until it restarts
+   * (review 2 of mend#572, P2-1).
+   */
+  readonly reportsBackgroundWork: () => Effect.Effect<boolean>;
   /** End one piece of background work the waiting line offers (`endable`). */
   readonly endWork: (
     work: Pick<AgentBackgroundWork, "kind" | "id">,

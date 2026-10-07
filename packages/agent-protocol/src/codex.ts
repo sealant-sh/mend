@@ -800,6 +800,30 @@ export const CodexAdapter: AgentAdapter = {
         } satisfies AgentQuiescence;
       });
 
+      /**
+       * Whether this app-server reports its background terminals and goals: known when this
+       * adapter initialized it (with `experimentalApi` or without); asked once, by listing the
+       * terminals, when it took over one another Mend process initialized (a rehydrate). A Codex
+       * that refuses, or cannot be asked, does not (review 2 of mend#572, P2-1).
+       */
+      let reports: boolean | null =
+        rehydrate === undefined
+          ? options.steering === true || options.providerSessionPath !== undefined
+          : null;
+      const reportsBackgroundWork = (): Effect.Effect<boolean> =>
+        Effect.suspend(() => {
+          if (reports !== null) return Effect.succeed(reports);
+          if (threadId === null) return Effect.succeed(false);
+          return optional("thread/backgroundTerminals/list", { threadId }).pipe(
+            Effect.map((answer) => {
+              reports = answer !== REFUSED;
+              return reports;
+            }),
+            // Not answered this time: not known, so not trusted; asked again next time.
+            Effect.catch(() => Effect.succeed(false)),
+          );
+        });
+
       /** Background work ended from the waiting line: a terminal terminated, a goal cleared. */
       const endWork = Effect.fn("CodexAdapter.endWork")(function* (
         work: Pick<AgentBackgroundWork, "kind" | "id">,
@@ -851,6 +875,7 @@ export const CodexAdapter: AgentAdapter = {
         respondInput,
         events: Stream.fromPubSub(events),
         quiescence,
+        reportsBackgroundWork,
         endWork,
         close,
       } satisfies AgentSession;
