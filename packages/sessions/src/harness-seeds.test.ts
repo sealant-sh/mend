@@ -13,9 +13,10 @@ import {
   COPY_REFRESH_TOKEN,
   HARNESS_UPDATES_OFF_ENV,
   OPENCODE_CAPTURED_SEED,
+  OPENCODE_PERSON_SEED,
   OPENCODE_SEED,
+  PI_PERSON_SEED,
   PI_SEED,
-  chatgptCopiesScrubArgv,
   withCodexMemory,
   launchesCodex,
   withCodexMemoryOff,
@@ -308,7 +309,8 @@ const runToolSeed = (seed: string, home: string) => {
 };
 
 describe("pi and opencode seeds in a person's home (docs/adr/0016, decision 5)", () => {
-  it("write the ChatGPT copies in place: no regular auth.json under P, and every link stays a link", () => {
+  /** Maria's home as a person's first process makes it, with her saved directory `P`. */
+  const mariasHome = () => {
     const root = makeHome();
     const harnessHome = path.join(root, "harness-home");
     const home = path.join(root, "home", "m3kq7xj2a");
@@ -328,77 +330,66 @@ describe("pi and opencode seeds in a person's home (docs/adr/0016, decision 5)",
       { encoding: "utf8" },
     );
     expect(made.status).toBe(0);
-    const saved = path.join(harnessHome, "people", "maria-1");
-    // Core's copy of Maria's own Codex login, in her home.
-    const access = codexCopy(home, 1_800_000_000);
-    expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
-    expect(runToolSeed(PI_SEED, home)).toBe("ran\n");
-    // opencode's data directory is saved; its auth.json there is a link into the home.
-    const inSaved = path.join(saved, ".local/share/opencode/auth.json");
-    expect(fs.lstatSync(inSaved).isSymbolicLink()).toBe(true);
-    expect(readJson(path.join(home, ".mend/opencode/auth.json"))).toMatchObject({
-      openai: { type: "oauth", access, refresh: COPY_REFRESH_TOKEN },
-    });
-    expect(fs.statSync(path.join(home, ".mend/opencode/auth.json")).mode & 0o777).toBe(0o600);
-    // pi's settings, saved, stay a link into P: written through, never replaced.
+    return { home, saved: path.join(harnessHome, "people", "maria-1") };
+  };
+
+  it("write no ChatGPT login of their own: Core wrote it (sealant#336), and every link stays a link", () => {
+    const { home, saved } = mariasHome();
+    // A Codex login in her home, as Core writes it: the person seeds never copy it.
+    codexCopy(home, 1_800_000_000);
+    expect(runToolSeed(OPENCODE_PERSON_SEED, home)).toBe("ran\n");
+    expect(runToolSeed(PI_PERSON_SEED, home)).toBe("ran\n");
+    expect(fs.existsSync(path.join(home, ".mend/opencode/auth.json"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".pi/agent/auth.json"))).toBe(false);
+    // pi's settings stay a link into P, and nothing names a provider without a login.
     const piSettings = path.join(home, ".pi/agent/settings.json");
     expect(fs.lstatSync(piSettings).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(saved, ".pi/agent/settings.json"))).toBe(false);
+    // opencode's data directory is saved; its auth.json there is a link into the home.
+    expect(fs.lstatSync(path.join(saved, ".local/share/opencode/auth.json")).isSymbolicLink()).toBe(
+      true,
+    );
+  });
+
+  it("with the logins Core wrote, pi defaults to ChatGPT and opencode opens on its model, written through the links", () => {
+    const { home, saved } = mariasHome();
+    const login = { type: "oauth", access: "a", refresh: "core-copy", expires: 1, accountId: "x" };
+    write(path.join(home, ".pi/agent/auth.json"), JSON.stringify({ "openai-codex": login }));
+    write(path.join(home, ".mend/opencode/auth.json"), JSON.stringify({ openai: login }));
+    expect(runToolSeed(PI_PERSON_SEED, home)).toBe("ran\n");
+    expect(runToolSeed(OPENCODE_PERSON_SEED, home)).toBe("ran\n");
     expect(readJson(path.join(saved, ".pi/agent/settings.json"))).toEqual({
       defaultProvider: "openai-codex",
     });
-    // No regular file named auth.json anywhere under P.
-    const regular: Array<string> = [];
-    const walk = (dir: string) => {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) walk(full);
-        else if (entry.name === "auth.json" && !entry.isSymbolicLink()) regular.push(full);
-      }
-    };
-    walk(saved);
-    expect(regular).toEqual([]);
-  });
-});
-
-describe("a release removes Mend's ChatGPT copies (docs/adr/0016, decision 5)", () => {
-  it("drops only the copies, in place, and keeps a login the person made themselves", () => {
-    const home = makeHome();
-    write(
-      path.join(home, ".pi/agent/auth.json"),
-      JSON.stringify({
-        "openai-codex": { type: "oauth", access: "a", refresh: COPY_REFRESH_TOKEN },
-        anthropic: { type: "oauth", access: "mine", refresh: "real" },
-      }),
-    );
-    fs.mkdirSync(path.join(home, ".mend/opencode"), { recursive: true });
-    const real = path.join(home, ".mend/opencode/auth.json");
-    write(
-      real,
-      JSON.stringify({ openai: { type: "oauth", access: "b", refresh: COPY_REFRESH_TOKEN } }),
-    );
-    // opencode's file is reached through the link in its saved data directory: still a file.
-    const [command, ...args] = chatgptCopiesScrubArgv(home);
-    const run = spawnSync(command ?? "node", args, { encoding: "utf8" });
-    expect(run.status).toBe(0);
-    expect(readJson(path.join(home, ".pi/agent/auth.json"))).toEqual({
-      anthropic: { type: "oauth", access: "mine", refresh: "real" },
+    expect(fs.lstatSync(path.join(home, ".pi/agent/settings.json")).isSymbolicLink()).toBe(true);
+    // Core's logins are left exactly as Core wrote them.
+    expect(readJson(path.join(home, ".pi/agent/auth.json"))).toEqual({ "openai-codex": login });
+    expect(readJson(path.join(home, ".mend/opencode/auth.json"))).toEqual({ openai: login });
+    const [providerID, modelID] = OPENCODE_DEFAULT_MODEL.split("/");
+    expect(readJson(path.join(home, ".local/state/opencode/model.json"))).toMatchObject({
+      recent: [{ providerID, modelID }],
     });
-    expect(readJson(real)).toEqual({});
-    // A login the person made in opencode (a real refresh token) stays.
-    write(real, JSON.stringify({ openai: { type: "oauth", access: "c", refresh: "real" } }));
-    spawnSync(command ?? "node", args, { encoding: "utf8" });
-    expect(readJson(real)).toMatchObject({ openai: { refresh: "real" } });
+    // A provider the person chose stays theirs.
+    write(path.join(saved, ".pi/agent/settings.json"), JSON.stringify({ defaultProvider: "x" }));
+    runToolSeed(PI_PERSON_SEED, home);
+    expect(readJson(path.join(saved, ".pi/agent/settings.json"))).toEqual({
+      defaultProvider: "x",
+    });
   });
 
-  it("never writes through a link put where a copy was", () => {
-    const home = makeHome();
-    const target = path.join(home, "target.json");
-    write(target, JSON.stringify({ "openai-codex": { refresh: COPY_REFRESH_TOKEN } }));
-    fs.mkdirSync(path.join(home, ".pi/agent"), { recursive: true });
-    fs.symlinkSync(target, path.join(home, ".pi/agent/auth.json"));
-    const [command, ...args] = chatgptCopiesScrubArgv(home);
-    expect(spawnSync(command ?? "node", args, { encoding: "utf8" }).status).toBe(0);
-    expect(readJson(target)).toEqual({ "openai-codex": { refresh: COPY_REFRESH_TOKEN } });
+  it("are what a person executor's pi and opencode start behind, and only there", () => {
+    expect(withHarnessSetup("pi", ["pi"], { person: true })[2]).toBe(PI_PERSON_SEED);
+    expect(withHarnessSetup("opencode", ["opencode"], { captured: true, person: true })[2]).toBe(
+      OPENCODE_PERSON_SEED,
+    );
+    expect(withHarnessSetup("pi", ["pi"], { captured: true })[2]).toBe(PI_SEED);
+    expect(withHarnessSetup("opencode", ["opencode"], { captured: true })[2]).toBe(
+      OPENCODE_CAPTURED_SEED,
+    );
+    expect(OPENCODE_PERSON_SEED).toContain("mcp-auth.json");
+    for (const seed of [PI_PERSON_SEED, OPENCODE_PERSON_SEED]) {
+      expect(seed).not.toContain(".codex/auth.json");
+    }
   });
 });
 

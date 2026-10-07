@@ -85,6 +85,7 @@ const fakeWorkspace = (id: string): Workspace => ({
   },
   expire: async () => undefined,
   image: async () => null,
+  dotfiles: { apply: async () => new Promise(() => {}) },
   credentials: {
     put: async () => new Promise(() => {}),
     release: async () => new Promise(() => {}),

@@ -5,6 +5,8 @@ import type {
   SessionOptions,
   Workspace,
   WorkspaceCaptureOwnerMap,
+  WorkspaceCredentialSkip,
+  WorkspaceDotfilesManager,
   WorkspaceExecOptions,
 } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
@@ -65,10 +67,20 @@ export const UNKNOWN_IMAGE_REPORT: ImageLayoutReport = {
   missing: [],
 };
 
-/** A provider whose login Core writes into a home (decision 5). */
-export type LoginProvider = "claude" | "codex" | "github";
+/**
+ * A provider whose login Core writes into a home (decision 5): `pi` and `opencode` are the
+ * ChatGPT logins Core makes from one of the person's Codex accounts, as entries of each tool's
+ * own `auth.json` (sealant#336).
+ */
+export type LoginProvider = WorkspaceCredentialSkip["provider"];
 
-export const LOGIN_PROVIDERS: ReadonlyArray<LoginProvider> = ["claude", "codex", "github"];
+export const LOGIN_PROVIDERS: ReadonlyArray<LoginProvider> = [
+  "claude",
+  "codex",
+  "github",
+  "pi",
+  "opencode",
+];
 
 /**
  * What a POST puts into a home, per provider: `true` for the person's account named `default`, a
@@ -76,6 +88,14 @@ export const LOGIN_PROVIDERS: ReadonlyArray<LoginProvider> = ["claude", "codex",
  * connected it), absent to leave it as it is.
  */
 export type HomeLogins = Partial<Record<LoginProvider, true | string | null>>;
+
+/**
+ * A provider a partial POST left out, and why (sealant#337): its account is missing, needs
+ * reconnecting, or is not one the provider takes (a Codex account that is not a ChatGPT login,
+ * named for pi or opencode), or its login file in the home cannot be written. Core removed that
+ * provider's login from the home, as `null` would.
+ */
+export type LoginSkip = WorkspaceCredentialSkip;
 
 /** One home of a running executor and the providers whose logins Core keeps there (`GET`). */
 export interface HeldHome {
@@ -98,7 +118,7 @@ export type CaptureOwnerMap = WorkspaceCaptureOwnerMap;
 /** One dotfiles tree, as the launch resolved it (a repository clone or the store's snapshot). */
 export interface DotfilesArchive {
   readonly data: string;
-  readonly manager: string;
+  readonly manager: WorkspaceDotfilesManager;
   /** Run the tree's `./install.sh` once its files are applied. */
   readonly bootstrap: boolean;
 }
@@ -109,7 +129,11 @@ export interface DotfilesArchive {
  * person's agent beside it or after it (docs/adr/0016, decision 11).
  */
 export interface DotfilesBootstrap {
-  /** Ends when the script does: its exit code, null when the platform could not say. */
+  /**
+   * Ends when the script does (Core's `bootstrap.wait()`): its exit code, a datum, so a failing
+   * `install.sh` ends too. Fails (`dotfiles_failed`) when its end was not observed or it ran past
+   * Core's 30 minutes.
+   */
   readonly ended: Effect.Effect<{ readonly exitCode: number | null }, SealantPlatformError>;
 }
 
@@ -123,10 +147,9 @@ export interface DotfilesApplied {
  * The platform surface the person layout needs (docs/adr/0016, decisions 1, 5 and 11), behind one
  * contract so the engine is written against the ADR's stated interface. The live layer
  * (`PersonLayoutPlatformLive`, `person-layout-live.ts`) passes each piece through to Core's SDK
- * (0.39): processes as a user, the image's per-person capability before create, and the
- * credentials API (one person per home). Dotfiles as a person through sealantd's
- * `dotfiles.apply` have no SDK surface yet (PLATFORM-FEEDBACK.md), so `dotfilesUser` is false and
- * that piece fails until Core ships it.
+ * (0.39): processes as a user, the image's per-person capability before create, the credentials
+ * API (one person per home), and a person's dotfiles applied as them (`workspace.dotfiles.apply`,
+ * sealant#334).
  */
 export class PersonLayoutPlatform extends Context.Service<
   PersonLayoutPlatform,
@@ -134,9 +157,17 @@ export class PersonLayoutPlatform extends Context.Service<
     /** Sessions and exec can start a process as a given user (`ProcessUserOption`). */
     readonly processUser: boolean;
     /**
-     * `applyDotfiles` works: a person's dotfiles can be applied as them into their home. False
-     * until Core's SDK carries sealantd's `dotfiles.apply`; a person launch then follows decision
-     * 1's fallback for dotfiles (`harness-layout-steps.ts`, `dotfilesBlocked`).
+     * Why the control plane cannot run the person layout, in the words a refusal names, or null
+     * when it can: read from what Core itself reports (its index's `features.processUser`), never
+     * learned by a launch failing later. Only a Core that reports it can carry the person layout's
+     * every API (Core 0.39.0-next.703 still does not: its exec and sessions refuse a `user`), so
+     * the one capability is the floor. Read only when a launch could be person; kept a while.
+     */
+    readonly controlPlaneObstacle: Effect.Effect<string | null>;
+    /**
+     * `applyDotfiles` works: a person's dotfiles can be applied as them into their home. Where it
+     * is false, a person launch follows decision 1's fallback for dotfiles
+     * (`harness-layout-steps.ts`, `dotfilesBlocked`).
      */
     readonly dotfilesUser: boolean;
     /**
@@ -157,12 +188,13 @@ export class PersonLayoutPlatform extends Context.Service<
     }) => Effect.Effect<ImageLayoutReport>;
     /**
      * `POST /v1/workspaces/:id/credentials { onBehalfOf, home, uid?, gid?, claude?, codex?,
-     * github? }` (decision 5): the Mend account `onBehalfOf`'s logins written into `home`, owned
-     * by that home's user, and kept refreshed. With `owner`, a home that does not exist yet is made
-     * for them (so the POST runs beside the `useradd` that makes the user). Core refuses another
-     * person for a held home (409 `home-held`), an account the person cannot name (404, "No claude
-     * connected account matches …") and an account that needs reconnecting (409
-     * `connected-account-invalid`); nothing is written then.
+     * github?, pi?, opencode?, partial? }` (decision 5): the Mend account `onBehalfOf`'s logins
+     * written into `home`, owned by that home's user, and kept refreshed. With `owner`, a home that
+     * does not exist yet is made for them (so the POST runs beside the `useradd` that makes the
+     * user). Core refuses another person for a held home (409 `home-held`). A refused account
+     * fails a whole POST with `code` `connected-account-missing`, `-invalid` or `-unsupported` and
+     * its `provider`, and nothing is written; a `partial` POST writes the rest and answers what it
+     * left out in `skipped` (sealant#337).
      */
     readonly postCredentials: (
       workspace: Workspace,
@@ -171,8 +203,9 @@ export class PersonLayoutPlatform extends Context.Service<
         readonly home: string;
         readonly owner?: { readonly uid: number; readonly gid: number };
         readonly logins: HomeLogins;
+        readonly partial?: boolean;
       },
-    ) => Effect.Effect<void, SealantPlatformError>;
+    ) => Effect.Effect<{ readonly skipped: ReadonlyArray<LoginSkip> }, SealantPlatformError>;
     /** `DELETE /v1/workspaces/:id/credentials { home }`: the files and the record removed. */
     readonly deleteCredentials: (
       workspace: Workspace,
@@ -185,17 +218,20 @@ export class PersonLayoutPlatform extends Context.Service<
       workspace: Workspace,
     ) => Effect.Effect<ReadonlyArray<HeldHome>, SealantPlatformError>;
     /**
-     * sealantd's dotfiles applier through the control verb (decision 11; sealantd Delivery 5,
-     * Core Delivery 8): a person's dotfiles applied as `user` into `home`, or as root into `home`
-     * when `user` is null (decision 1's fallback to `/root`). Answers once every file is applied;
-     * `install.sh` (each tree whose `bootstrap` is on) then runs as that user, beside the caller.
+     * sealantd's dotfiles applier through Core's verb (`workspace.dotfiles.apply`, decision 11):
+     * a person's dotfiles applied as `user` into `home`, their passwd home. Never as root: Core
+     * refuses root (`user-root`), so decision 1's fallback to `/root` has no dotfiles. Answers
+     * once every file is applied; `install.sh` (each tree whose `bootstrap` is on) then runs as
+     * that user, beside the caller. A refusal fails with Core's code (`dotfiles-user-unsupported`,
+     * `user-unknown`, `user-root`, `home-mismatch`, `home-unusable`, `home-held`,
+     * `workspace-not-running`, or `dotfiles_failed` with the daemon's words).
      */
     readonly applyDotfiles: (
       workspace: Workspace,
       input: {
         /** The Mend account whose dotfiles these are. */
         readonly onBehalfOf: string;
-        readonly user: ProcessUser | null;
+        readonly user: ProcessUser;
         readonly home: string;
         readonly archives: ReadonlyArray<DotfilesArchive>;
       },
@@ -221,6 +257,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
   {
     processUser: false,
     dotfilesUser: false,
+    controlPlaneObstacle: Effect.succeed(null),
     withOwnerMap: (options) => options,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),
     postCredentials: () =>

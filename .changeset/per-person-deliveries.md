@@ -10,7 +10,4 @@ person's. A login someone makes inside opencode is removed from their opencode d
 opencode starts and after it ends. Your agents can wait for your dotfiles' `install.sh` where
 someone else started the workspace: turn on "Start my agents after install.sh"
 (`PUT /api/dotfiles/start-after-install`); otherwise the agent starts beside it and the session line
-says "install.sh running" until it ends. Until Sealant can apply dotfiles as each person, a new
-worktree whose launcher has dotfiles runs as one person, as before, and a worktree that already runs
-per person starts without them and says so on the session. With the flag off, sessions run exactly
-as before.
+says "install.sh running" until it ends. With the flag off, sessions run exactly as before.

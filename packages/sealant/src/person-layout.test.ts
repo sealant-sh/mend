@@ -3,8 +3,11 @@ import { defaultWorkspaceImage } from "@mend/domain";
 import {
   claudeCode,
   type CreateOptions,
+  SealantApiError,
+  SealantError,
   type Workspace,
   type WorkspaceCredentialsPutOptions,
+  type WorkspaceDotfilesApplyOptions,
   type WorkspaceImageInspection,
 } from "@sealant/sdk";
 import { Effect, Exit, Fiber, Layer } from "effect";
@@ -12,7 +15,13 @@ import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { SealantClients } from "./client.ts";
-import { PersonLayoutPlatformLive, imageLayoutReportOf } from "./person-layout-live.ts";
+import { SealantPlatformError } from "./errors.ts";
+import {
+  CONTROL_PLANE_NO_PROCESS_USER,
+  CONTROL_PLANE_UNREADABLE,
+  PersonLayoutPlatformLive,
+  imageLayoutReportOf,
+} from "./person-layout-live.ts";
 import {
   PersonLayoutPlatform,
   PersonLayoutPlatformNone,
@@ -36,8 +45,12 @@ const never = async (): Promise<never> => {
   throw new Error("not in test");
 };
 
-/** A workspace whose credentials API records what it was asked. */
-const workspaceRecording = (calls: Array<string>, puts: Array<WorkspaceCredentialsPutOptions>) => {
+/** A workspace whose credentials and dotfiles APIs record what they were asked. */
+const workspaceRecording = (
+  calls: Array<string>,
+  puts: Array<WorkspaceCredentialsPutOptions>,
+  applies: Array<WorkspaceDotfilesApplyOptions> = [],
+) => {
   const workspace: Workspace = {
     id: "ws-1",
     name: "ws",
@@ -59,11 +72,39 @@ const workspaceRecording = (calls: Array<string>, puts: Array<WorkspaceCredentia
     restart: never,
     expire: never,
     image: never,
+    dotfiles: {
+      apply: async (options) => {
+        calls.push(`dotfiles:${options.user}:${options.home}`);
+        applies.push(options);
+        return {
+          onBehalfOf: options.onBehalfOf,
+          user: options.user,
+          home: options.home,
+          runId: "run-dotfiles",
+          bootstrap: null,
+        };
+      },
+    },
     credentials: {
       put: async (options) => {
         calls.push(`put:${options.home}`);
         puts.push(options);
-        return { home: options.home, onBehalfOf: options.onBehalfOf, accounts: {} };
+        // A partial put leaves out a GitHub the person has not connected (sealant#337).
+        return {
+          home: options.home,
+          onBehalfOf: options.onBehalfOf,
+          accounts: {},
+          skipped:
+            options.partial === true && options.github === true
+              ? [
+                  {
+                    provider: "github" as const,
+                    reason: "connected-account-missing" as const,
+                    message: 'No github connected account matches "default".',
+                  },
+                ]
+              : [],
+        };
       },
       release: async (home) => {
         calls.push(`release:${home}`);
@@ -113,8 +154,11 @@ const inspection = (
 const clientsLayer = (
   inspections: Array<CreateOptions>,
   answer: WorkspaceImageInspection = inspection("supported"),
+  features: () => Effect.Effect<{ readonly processUser: boolean }, SealantPlatformError> = () =>
+    Effect.succeed({ processUser: true }),
 ) =>
   Layer.mock(SealantClients, {
+    controlPlaneFeatures: features,
     connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
     sshKeys: () => ({ ensure: unused, list: unused }),
     sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
@@ -155,7 +199,7 @@ describe("the live platform (Core 0.39)", () => {
     const calls: Array<string> = [];
     const puts: Array<WorkspaceCredentialsPutOptions> = [];
     const workspace = workspaceRecording(calls, puts);
-    await Effect.runPromise(
+    const whole = await Effect.runPromise(
       platform.postCredentials(workspace, {
         onBehalfOf: "maria",
         home: "/home/mxyz2345a",
@@ -163,6 +207,7 @@ describe("the live platform (Core 0.39)", () => {
         logins: { claude: true, github: null },
       }),
     );
+    expect(whole.skipped).toEqual([]);
     // Core is named the person's Sealant user, and the home's numeric owner.
     expect(puts).toEqual([
       {
@@ -181,16 +226,135 @@ describe("the live platform (Core 0.39)", () => {
       { home: "/home/mxyz2345a", onBehalfOf: "su-maria", providers: ["codex", "github"] },
     ]);
     expect(calls).toEqual(["put:/home/mxyz2345a", "release:/home/mxyz2345a", "list"]);
-    // Dotfiles as a person have no SDK surface yet: refused, never run as root in their place.
-    const dotfiles = await Effect.runPromiseExit(
+  });
+
+  it("puts a join's logins in one partial call, pi's and opencode's ChatGPT logins included, and answers what Core left out (sealant#336, #337)", async () => {
+    const platform = await platformWith(
+      PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
+    );
+    const puts: Array<WorkspaceCredentialsPutOptions> = [];
+    const written = await Effect.runPromise(
+      platform.postCredentials(workspaceRecording([], puts), {
+        onBehalfOf: "maria",
+        home: "/home/mxyz2345a",
+        owner: { uid: 40_002, gid: 40_000 },
+        logins: { codex: true, github: true, pi: true, opencode: true },
+        partial: true,
+      }),
+    );
+    expect(puts).toEqual([
+      {
+        home: "/home/mxyz2345a",
+        onBehalfOf: "su-maria",
+        uid: 40_002,
+        gid: 40_000,
+        codex: true,
+        github: true,
+        pi: true,
+        opencode: true,
+        partial: true,
+      },
+    ]);
+    expect(written.skipped).toEqual([
+      {
+        provider: "github",
+        reason: "connected-account-missing",
+        message: 'No github connected account matches "default".',
+      },
+    ]);
+  });
+
+  it("applies a person's dotfiles as their user into their home, and waits for install.sh once (sealant#334)", async () => {
+    const platform = await platformWith(
+      PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
+    );
+    expect(platform.dotfilesUser).toBe(true);
+    const calls: Array<string> = [];
+    const applies: Array<WorkspaceDotfilesApplyOptions> = [];
+    const base = workspaceRecording(calls, [], applies);
+    let waits = 0;
+    const workspace: Workspace = {
+      ...base,
+      dotfiles: {
+        apply: async (options) => {
+          const applied = await base.dotfiles.apply(options);
+          return {
+            ...applied,
+            bootstrap: {
+              processId: "proc-install",
+              wait: async () => {
+                waits++;
+                return { exitCode: 3, stdout: "", stderr: "boom" };
+              },
+            },
+          };
+        },
+      },
+    };
+    const archives = [
+      { data: "cmVwbw==", manager: "auto" as const, bootstrap: true },
+      { data: "c25hcA==", manager: "copy" as const, bootstrap: false },
+    ];
+    const applied = await Effect.runPromise(
       platform.applyDotfiles(workspace, {
         onBehalfOf: "user-alice",
         user,
         home: user.home,
-        archives: [],
+        archives,
       }),
     );
-    expect(Exit.isFailure(dotfiles)).toBe(true);
+    // Named by their Sealant user and their passwd name, never root; the archives as resolved.
+    expect(applies).toEqual([
+      { onBehalfOf: "su-user-alice", user: user.name, home: user.home, archives },
+    ]);
+    expect(calls).toEqual([`dotfiles:${user.name}:${user.home}`]);
+    const bootstrap = applied.bootstrap;
+    expect(bootstrap).not.toBeNull();
+    if (bootstrap === null) return;
+    // A failing install.sh ends with its exit code, a datum; asked twice, Core is waited on once.
+    expect(await Effect.runPromise(bootstrap.ended)).toEqual({ exitCode: 3 });
+    expect(await Effect.runPromise(bootstrap.ended)).toEqual({ exitCode: 3 });
+    expect(waits).toBe(1);
+  });
+
+  it("fails a refused dotfiles apply with Core's stable code, and a failed one with dotfiles_failed", async () => {
+    const platform = await platformWith(
+      PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
+    );
+    const base = workspaceRecording([], []);
+    const refusing = (error: Error): Workspace => ({
+      ...base,
+      dotfiles: {
+        apply: async () => {
+          throw error;
+        },
+      },
+    });
+    const codeOf = async (error: Error) => {
+      const exit = await Effect.runPromiseExit(
+        platform.applyDotfiles(refusing(error), {
+          onBehalfOf: "user-alice",
+          user,
+          home: user.home,
+          archives: [{ data: "eA==", manager: "copy", bootstrap: false }],
+        }),
+      );
+      if (Exit.isSuccess(exit)) return null;
+      const failure = exit.cause.reasons.find((reason) => reason._tag === "Fail");
+      return failure?._tag === "Fail" ? failure.error.code : null;
+    };
+    expect(
+      await codeOf(
+        new SealantApiError("home-mismatch", {
+          code: "WorkspaceConflictError",
+          status: 409,
+          reason: "home-mismatch",
+        }),
+      ),
+    ).toBe("home-mismatch");
+    expect(await codeOf(new SealantError("chezmoi: exit 1", { code: "dotfiles_failed" }))).toBe(
+      "dotfiles_failed",
+    );
   });
 
   it("puts a person launch's owner map on its capture source, and leaves any other create as it is", async () => {
@@ -245,6 +409,42 @@ describe("the live platform (Core 0.39)", () => {
   });
 });
 
+describe("what the control plane says it can do (review of mend#569, P3-4)", () => {
+  effectIt.effect("refuses the person layout by Core's own report, read once while it lasts", () =>
+    Effect.gen(function* () {
+      const answers: Array<boolean | null> = [false, true, null];
+      let asked = 0;
+      const features = () =>
+        Effect.suspend(() => {
+          const answer = answers[asked++];
+          return answer === null || answer === undefined
+            ? Effect.fail(
+                new SealantPlatformError({ code: "x", status: 503, message: "down", cause: null }),
+              )
+            : Effect.succeed({ processUser: answer });
+        });
+      const platform = yield* PersonLayoutPlatform.pipe(
+        Effect.provide(
+          PersonLayoutPlatformLive.pipe(
+            Layer.provide(clientsLayer([], inspection("supported"), features)),
+          ),
+        ),
+      );
+      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_NO_PROCESS_USER);
+      // Kept: asked once while the answer lasts.
+      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_NO_PROCESS_USER);
+      expect(asked).toBe(1);
+      // An upgraded control plane is seen once it has passed.
+      yield* TestClock.adjust("6 minutes");
+      expect(yield* platform.controlPlaneObstacle).toBeNull();
+      yield* TestClock.adjust("6 minutes");
+      // Unreadable is no, and asked again soon.
+      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_UNREADABLE);
+      expect(asked).toBe(3);
+    }),
+  );
+});
+
 describe("a credentials call Core never answers (review 2 of mend#564, P3-5)", () => {
   effectIt.effect(
     "gives up after 30 s with words, so a person's lock is never held for minutes",
@@ -296,8 +496,8 @@ describe("a platform with none of the person layout", () => {
       platform.listCredentials(workspace),
       platform.applyDotfiles(workspace, {
         onBehalfOf: "user-alice",
-        user: null,
-        home: "/root",
+        user,
+        home: user.home,
         archives: [],
       }),
     ]) {

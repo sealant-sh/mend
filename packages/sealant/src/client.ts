@@ -30,6 +30,7 @@ import {
   createRunOp,
   createSshKeyOp,
   expireWorkspaceOp,
+  getIndexOp,
   getSessionOutputOp,
   getSetupStateOp,
   inferenceRespondOp,
@@ -1294,6 +1295,14 @@ export class SealantClients extends Context.Service<
       userId: string,
       options: CreateOptions,
     ) => Effect.Effect<WorkspaceImageInspection, SealantPlatformError>;
+    /**
+     * What the control plane says it can do that an older one cannot (its index's `features`):
+     * `processUser`, a process run as a given Linux user. One call, nothing changed.
+     */
+    readonly controlPlaneFeatures: () => Effect.Effect<
+      { readonly processUser: boolean },
+      SealantPlatformError
+    >;
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -1526,6 +1535,14 @@ export const SealantClientsLive: Layer.Layer<
       return yield* wrap(() => facade.workspaces.inspectImage(options));
     });
 
+    const controlPlaneFeatures = Effect.fn("SealantClients.controlPlaneFeatures")(function* () {
+      const index = yield* getIndexOp().pipe(
+        Effect.provideContext(adminContext),
+        Effect.mapError(toPlatformError),
+      );
+      return { processUser: index.features?.processUser === true };
+    });
+
     return {
       forUser,
       forPrincipal,
@@ -1535,6 +1552,7 @@ export const SealantClientsLive: Layer.Layer<
       sshKeys,
       imageKey,
       inspectImage,
+      controlPlaneFeatures,
     };
   }),
 );
@@ -1667,17 +1685,27 @@ const stableCodeOf = (value: unknown): string | null => {
   return null;
 };
 
-/** The code `SealantPlatformError` carries: the body's stable code, else the SDK/tag code. */
+/**
+ * The code `SealantPlatformError` carries: the body's stable code (`SealantApiError.reason`, or the
+ * decoded contract error's own), else the SDK/tag code.
+ */
 export const platformErrorCode = (cause: unknown): string =>
-  stableCodeOf(cause) ?? (cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"));
+  (cause instanceof SealantApiError && cause.reason !== undefined && cause.reason !== ""
+    ? cause.reason
+    : null) ??
+  stableCodeOf(cause) ??
+  (cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"));
 
-export const toPlatformError = (cause: unknown) =>
-  new SealantPlatformError({
+export const toPlatformError = (cause: unknown) => {
+  const provider = cause instanceof SealantApiError ? cause.provider : undefined;
+  return new SealantPlatformError({
     code: platformErrorCode(cause),
     status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
     message: cause instanceof Error ? cause.message : String(cause),
+    ...(provider === undefined ? {} : { provider }),
     cause,
   });
+};
 
 /**
  * Maps a typed contract failure onto what the settings page reports. A typed

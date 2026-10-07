@@ -7,6 +7,7 @@ import {
   captureStatusOf,
   platformErrorCode,
   runtimeDeadlineOf,
+  toPlatformError,
   runChangesOf,
   runtimeResourceIdOf,
   stopWith,
@@ -51,6 +52,21 @@ describe("platformErrorCode", () => {
     );
     expect(platformErrorCode({ _tag: "SomethingElse", message: "x" })).toBe("SomethingElse");
     expect(platformErrorCode(new Error("plain"))).toBe("UNKNOWN");
+  });
+
+  it("carries a refused account's stable reason and provider, never its words (sealant#335)", () => {
+    const refused = new SealantApiError('No codex connected account matches "default".', {
+      code: "WorkspaceNotFoundError",
+      status: 404,
+      reason: "connected-account-missing",
+      provider: "codex",
+    });
+    const error = toPlatformError(refused);
+    expect(error.code).toBe("connected-account-missing");
+    expect(error.provider).toBe("codex");
+    expect(error.status).toBe(404);
+    // Anything without a provider carries none.
+    expect(toPlatformError(new Error("plain")).provider).toBeUndefined();
   });
 });
 

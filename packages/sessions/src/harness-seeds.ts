@@ -119,6 +119,8 @@ export const COPY_REFRESH_TOKEN = "sealant-copy-cannot-refresh";
  * access token's own; a session that outlives it gets the platform's newer copy at its next launch
  * or resume. pi's default provider becomes `openai-codex` only when the user has chosen none.
  *
+ * Shared executors only: in a person's executor Core writes these logins (`PI_PERSON_SEED`).
+ *
  * `argv[1]` is the auth file, `argv[2]` the entry's key, `argv[3]` pi's settings file or "".
  */
 const CHATGPT_LOGIN_PROGRAM = [
@@ -136,35 +138,22 @@ const CHATGPT_LOGIN_PROGRAM = [
 ].join("");
 
 /**
- * What a release of a person's logins removes beside Core's own files (docs/adr/0016, decision 5):
- * the ChatGPT copies `CHATGPT_LOGIN_PROGRAM` wrote into pi's and opencode's `auth.json`, which Core
- * does not know of. Only an entry whose refresh token is the copy placeholder goes, so a login the
- * person made inside pi or opencode stays (decision 8a). Written in place, never through a rename;
- * a file that is not a JSON object, or a link, is left as it is. Run as the person.
+ * pi's default provider in a person's executor, where Core writes pi's ChatGPT login into their
+ * home (the `openai-codex` entry of `auth.json`, sealant#336) and leaves `defaultProvider` to Mend:
+ * `openai-codex` when pi holds that login and the person chose none, as `CHATGPT_LOGIN_PROGRAM`
+ * does beside the copy it writes. Written in place, as the process's user; a file that is not a
+ * JSON object is left as it is.
  *
- * `argv` pairs: the auth file, the entry's key.
+ * `argv[1]` is pi's `auth.json`, `argv[2]` its settings file.
  */
-const CHATGPT_COPIES_SCRUB_PROGRAM = [
-  `const fs=require("fs"),a=process.argv.slice(1);`,
-  `for(let i=0;i+1<a.length;i+=2){const file=a[i],key=a[i+1];`,
-  `let fd;try{fd=fs.openSync(file,fs.constants.O_RDWR|fs.constants.O_NOFOLLOW)}catch{continue}`,
-  `try{let v;try{v=JSON.parse(fs.readFileSync(fd,"utf8"))}catch{continue}`,
-  `if(v===null||typeof v!=="object"||Array.isArray(v))continue;`,
-  `const e=v[key];if(!e||typeof e!=="object"||e.refresh!==${JSON.stringify(COPY_REFRESH_TOKEN)})continue;`,
-  `delete v[key];const out=Buffer.from(JSON.stringify(v,null,2));fs.ftruncateSync(fd,0);fs.writeSync(fd,out,0,out.length,0)`,
-  `}finally{fs.closeSync(fd)}}`,
+const PI_DEFAULT_PROVIDER_PROGRAM = [
+  `const fs=require("fs"),path=require("path"),[file,settings]=process.argv.slice(1);`,
+  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
+  `const auth=read(file);if(!auth||!auth["openai-codex"])process.exit(0);`,
+  `const s=read(settings);if(s===null||s.defaultProvider)process.exit(0);`,
+  `s.defaultProvider="openai-codex";fs.mkdirSync(path.dirname(settings),{recursive:true,mode:0o700});`,
+  `fs.writeFileSync(settings,JSON.stringify(s,null,2),{mode:0o600})`,
 ].join("");
-
-/** The argv that removes Mend's ChatGPT copies from a person's home (`CHATGPT_COPIES_SCRUB_PROGRAM`). */
-export const chatgptCopiesScrubArgv = (home: string): ReadonlyArray<string> => [
-  "node",
-  "-e",
-  CHATGPT_COPIES_SCRUB_PROGRAM,
-  `${home}/.pi/agent/auth.json`,
-  "openai-codex",
-  `${home}/.mend/opencode/auth.json`,
-  "openai",
-];
 
 /**
  * The model opencode opens on when nothing chose one (`OPENCODE_DEFAULT_MODEL`), written as its
@@ -218,10 +207,13 @@ export const OPENCODE_MCP_AUTH_SEED =
   `{ mkdir -p "$d" && { ln -sfn "$kp/mcp-auth.json" "$f" 2>/dev/null || [ "$(readlink "$f" 2>/dev/null)" = "$kp/mcp-auth.json" ]; }; } || ` +
   `{ echo "mend: opencode's MCP logins cannot be kept out of saved state here; not starting opencode" >&2; exit 1; }; `;
 
+/** opencode's model step (`OPENCODE_MODEL_PROGRAM`), after its login is in place. */
+const OPENCODE_MODEL_STEP = `node -e '${OPENCODE_MODEL_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" "\${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json" '${OPENCODE_DEFAULT_MODEL}' 2>/dev/null; `;
+
 /** opencode's seed up to its MCP logins, which a capture launch adds (`OPENCODE_CAPTURED_SEED`). */
 const OPENCODE_SEED_HEAD =
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" openai "" 2>/dev/null; ` +
-  `node -e '${OPENCODE_MODEL_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" "\${XDG_STATE_HOME:-$HOME/.local/state}/opencode/model.json" '${OPENCODE_DEFAULT_MODEL}' 2>/dev/null; `;
+  OPENCODE_MODEL_STEP;
 
 /**
  * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the
@@ -238,6 +230,19 @@ export const OPENCODE_CAPTURED_SEED =
 export const PI_SEED =
   `node -e '${PI_PROFILE_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; ` +
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" openai-codex "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json" 2>/dev/null; ` +
+  `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
+
+/**
+ * opencode's and pi's seeds in a person's executor (docs/adr/0016, decision 5): Core writes their
+ * ChatGPT logins into the person's home (`put({ pi, opencode })`, sealant#336) and removes them at
+ * a release, so these write no copy of their own. The rest is as above; a person executor is
+ * always a capture launch.
+ */
+export const OPENCODE_PERSON_SEED =
+  OPENCODE_MODEL_STEP + OPENCODE_MCP_AUTH_SEED + `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
+export const PI_PERSON_SEED =
+  `node -e '${PI_PROFILE_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; ` +
+  `node -e '${PI_DEFAULT_PROVIDER_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json" 2>/dev/null; ` +
   `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
 
 /**
@@ -413,12 +418,13 @@ export const withoutCodexShellSnapshot = (argv: ReadonlyArray<string>): Readonly
 /**
  * `argv` behind its harness's seed; a harness without one runs as it is. `captured`: a capture
  * launch, whose harness home the next session in the worktree materialises (opencode keeps its MCP
- * logins out of it then, `OPENCODE_CAPTURED_SEED`).
+ * logins out of it then, `OPENCODE_CAPTURED_SEED`). `person`: a process of a person-layout
+ * executor, whose ChatGPT logins Core writes (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`).
  */
 export const withHarnessSetup = (
   harness: string,
   argv: ReadonlyArray<string>,
-  options: { readonly captured?: boolean } = {},
+  options: { readonly captured?: boolean; readonly person?: boolean } = {},
 ): ReadonlyArray<string> => {
   if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
   if (harness === "codex") {
@@ -431,9 +437,16 @@ export const withHarnessSetup = (
     ];
   }
   if (harness === "opencode") {
-    const seed = options.captured === true ? OPENCODE_CAPTURED_SEED : OPENCODE_SEED;
+    const seed =
+      options.person === true
+        ? OPENCODE_PERSON_SEED
+        : options.captured === true
+          ? OPENCODE_CAPTURED_SEED
+          : OPENCODE_SEED;
     return ["sh", "-c", seed, "sh", ...argv];
   }
-  if (harness === "pi") return ["sh", "-c", PI_SEED, "sh", ...argv];
+  if (harness === "pi") {
+    return ["sh", "-c", options.person === true ? PI_PERSON_SEED : PI_SEED, "sh", ...argv];
+  }
   return argv;
 };
