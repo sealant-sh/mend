@@ -268,7 +268,7 @@ import {
   OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
 } from "../src/harness-seeds.ts";
-import { DOTFILES_NOT_PER_PERSON } from "../src/person-deliveries.ts";
+import { DOTFILES_NOT_PER_PERSON, FIRST_PROCESS_DONE } from "../src/person-deliveries.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
 import { writeOpencodeDatabase } from "./opencode-db.ts";
@@ -27404,6 +27404,47 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     expect(run.calls).not.toContain(`delete:/home/${LAUNCHER}`);
   });
 
+  it("a join whose delivery fails while its login write is still in flight releases what Core wrote", async () => {
+    let refused: string | null = null;
+    const run = await launchAndJoin({
+      join: "pi",
+      layers: people,
+      // Core takes Maria's login write and answers late; her pi profile fails at once.
+      platform: (calls) =>
+        Layer.effect(
+          PersonLayoutPlatform,
+          Effect.map(PersonLayoutPlatform, (inner) => ({
+            ...inner,
+            postCredentials: (
+              workspace: Workspace,
+              input: Parameters<typeof inner.postCredentials>[1],
+            ) =>
+              input.onBehalfOf === MARIA
+                ? inner
+                    .postCredentials(workspace, input)
+                    .pipe(Effect.andThen(Effect.sleep("400 millis")))
+                : inner.postCredentials(workspace, input),
+          })),
+        ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+      exec: (argv) =>
+        named(argv, "mend-pi-profile") && commandOf(argv)[4] === `/home/${JOINER}`
+          ? { exitCode: 1, stdout: "", stderr: "a disk that is full" }
+          : undefined,
+      joinWith: (engine, _world, joined) =>
+        engine.launch(joined, ["pi"]).pipe(
+          Effect.flip,
+          Effect.map((error) => {
+            refused = error.message;
+          }),
+          Effect.andThen(Effect.sleep("200 millis")),
+        ),
+    });
+    expect(refused).toContain("the pi profile could not be set up");
+    expect(run.calls).toContain(`post:${MARIA}:/home/${JOINER}`);
+    expect(run.calls).toContain(`delete:/home/${JOINER}`);
+    expect(run.calls).not.toContain(`delete:/home/${LAUNCHER}`);
+  });
+
   it("refuses to start an opencode whose in-app login could not be removed, and says another person's failed scrub nowhere but the log", async () => {
     const failing = (argv: ReadonlyArray<string>) => {
       const command = commandOf(argv);
@@ -27491,7 +27532,9 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           expect(summary).not.toContain("install.sh running");
           // Mend's links go back over what the dotfiles placed, as each of them.
           expect(
-            asWho(seen, (argv) => (commandOf(argv)[2] ?? "").includes("mend-links displaced")),
+            asWho(seen, (argv) =>
+              (commandOf(argv)[2] ?? "").includes(`printf done > "$H/${FIRST_PROCESS_DONE}"`),
+            ),
           ).toEqual([LAUNCHER, JOINER]);
         }),
     });

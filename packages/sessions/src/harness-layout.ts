@@ -528,6 +528,22 @@ const parentsOf = (paths: ReadonlyArray<string>): ReadonlyArray<string> => [
 ];
 
 /**
+ * The shell that moves something out of a person's way, never over anything (`aside <path>`):
+ * into `~/.mend/displaced/` under a flat name of its own (a stamp, a count and the path with `/`
+ * as `%`), so a destination is never resolved through anything the dotfiles placed, and a second
+ * move of the same path keeps both. A link is recorded as a link to the absolute place it pointed
+ * at (a relative one would dangle from there), and only the link itself is removed. Needs `H`
+ * (the home); prints `mend-links displaced <path>`.
+ */
+export const ASIDE_FUNCTION =
+  `A="$H/.mend/displaced"; aside_n=0; aside_stamp=$(date +%s%N 2>/dev/null || date +%s); ` +
+  `aside() { [ -L "$H/.mend" ] && { printf 'mend: unexpected link: %s\\n' "$H/.mend" >&2; return 1; }; ` +
+  `mkdir -p "$A" || return 1; [ -L "$A" ] && return 1; aside_n=$((aside_n + 1)); ` +
+  `aside_d="$A/$aside_stamp-$aside_n-$(printf %s "$1" | tr / %)"; ` +
+  `if [ -L "$H/$1" ]; then aside_t=$(readlink -f "$H/$1" 2>/dev/null || readlink "$H/$1"); ln -s "$aside_t" "$aside_d" && rm -f "$H/$1"; ` +
+  `else mv -T -- "$H/$1" "$aside_d"; fi && printf 'mend-links displaced %s\\n' "$1"; }`;
+
+/**
  * The part of a person's home and saved directory that is theirs to make (`personHomeScript`),
  * run as them: `P`'s `conversations/` (2710), `codex-db` and `.mend-saved` (0700), and in `R` one
  * link per entry of `PERSON_SAVED_STATE` into `P`. A real directory the image or a tool left at an
@@ -550,7 +566,8 @@ const personHomeAsPerson = (places: { readonly home: string; readonly saved: str
   return [
     `set -e`,
     `umask 077`,
-    `H=${shellQuote(places.home)}; S=${shellQuote(places.saved)}; A="$H/.mend/displaced"`,
+    `H=${shellQuote(places.home)}; S=${shellQuote(places.saved)}`,
+    ASIDE_FUNCTION,
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
     // A link anywhere on these paths is refused before anything is made through it.
     `for p in ${savedDirs.map((dir) => `"$S/${dir}"`).join(" ")} ` +
@@ -561,7 +578,6 @@ const personHomeAsPerson = (places: { readonly home: string; readonly saved: str
     `chmod 0700 "$S/codex-db" "$S/${PERSON_RECORDS_IN_SAVED}"`,
     `for d in ${parentsOf(all).join(" ")}; do mkdir -p "$S/$d" "$H/$d"; done`,
     `for d in ${dirs.map((entry) => entry.path).join(" ")}; do mkdir -p "$S/$d"; done`,
-    `aside() { mkdir -p "$A/$(dirname "$1")" && mv -f "$H/$1" "$A/$1"; }`,
     // A link per entry; a real directory or file the image or a tool left there first moves
     // into `P`, nothing already in `P` overwritten and nothing deleted, then the link takes its
     // place.
@@ -587,7 +603,7 @@ const personHomeAsPerson = (places: { readonly home: string; readonly saved: str
     `chmod 0700 "$H/${OPENCODE_LOGIN_DIR}"`,
     `oc="$S/${OPENCODE_AUTH_IN_DATA}"; ock="$H/${OPENCODE_LOGIN_DIR}/auth.json"`,
     `if [ -L "$oc" ]; then [ "$(readlink "$oc")" = "$ock" ] || fail "unexpected link: $oc"; ` +
-      `else if [ -e "$oc" ]; then if [ ! -e "$ock" ]; then mv "$oc" "$ock"; else mkdir -p "$A"; mv -f "$oc" "$A/opencode-auth.json"; fi; fi; ` +
+      `else if [ -e "$oc" ]; then if [ ! -e "$ock" ]; then mv "$oc" "$ock"; else mkdir -p "$A"; mv -T -- "$oc" "$A/$aside_stamp-opencode-auth.json"; fi; fi; ` +
       `ln -s "$ock" "$oc"; fi`,
   ].join("\n");
 };
@@ -664,7 +680,12 @@ export const personHomeScript = (
     `mkdir -p ${q(home)}`,
     `[ "$root" = 1 ] && chown ${owner} ${q(home)} || true`,
     `chmod 0700 ${q(home)}`,
-    `for d in ${q(tmp)} ${q(run)}; do [ -L "$d" ] && fail "unexpected link: $d"; mkdir -p "$d"; [ -L "$d" ] && fail "unexpected link: $d"; ` +
+    // One someone else made first (in `/tmp`, anyone can) is renamed out of the way, never
+    // adopted with whatever it holds, and theirs is made new (review of mend#566, round 2 P3-2).
+    `for d in ${q(tmp)} ${q(run)}; do [ -L "$d" ] && fail "unexpected link: $d"; ` +
+      `if [ "$root" = 1 ] && [ -e "$d" ] && [ "$(stat -c %u "$d")" != ${person.uid} ]; then ` +
+      `mv -T -- "$d" "$d.mend-set-aside-$(date +%s%N 2>/dev/null || date +%s)" || fail "could not move aside: $d"; fi; ` +
+      `mkdir -p "$(dirname "$d")"; [ -d "$d" ] || mkdir -m 0700 "$d"; [ -L "$d" ] && fail "unexpected link: $d"; ` +
       `[ "$root" = 1 ] && chown -h ${owner} "$d"; chmod 0700 "$d"; done`,
     // `P`: the people root is root's and traversable; each saved directory is its person's.
     `[ -L ${q(`${options.harnessHome}/${PEOPLE_DIR}`)} ] && fail "unexpected link: ${options.harnessHome}/${PEOPLE_DIR}"`,

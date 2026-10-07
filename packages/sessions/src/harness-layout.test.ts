@@ -512,6 +512,37 @@ describe("a link a person left in their own saved directory (review of mend#566,
   );
 });
 
+describe("a private TMPDIR someone else made first (review of mend#566, round 2 P3-2)", () => {
+  it("is moved out of the way, never adopted with what it holds, and theirs is made new", () => {
+    const root = fakeRoot();
+    const harnessHome = path.join(root.dir, "harness-home");
+    const tmpRoot = path.join(root.dir, "tmp");
+    const planted = path.join(tmpRoot, `u-${alice.uid}`);
+    fs.mkdirSync(path.join(planted, "shared"), { recursive: true, mode: 0o777 });
+    fs.symlinkSync(path.join(root.dir, "elsewhere"), path.join(planted, "cache"));
+    const run = root.run(
+      personHomeScript(alice, {
+        harnessHome,
+        home: path.join(root.dir, "home", alice.name),
+        tmpRoot,
+        runRoot: path.join(root.dir, "run"),
+        skel: root.skel,
+      }),
+    );
+    expect(run.status).toBe(0);
+    expect(fs.readdirSync(planted)).toEqual([]);
+    expect(fs.statSync(planted).mode & 0o777).toBe(0o700);
+    const asideName = fs
+      .readdirSync(tmpRoot)
+      .find((name) => name.startsWith(`u-${alice.uid}.mend-set-aside-`));
+    expect(asideName).toBeDefined();
+    expect(fs.readdirSync(path.join(tmpRoot, asideName ?? "")).toSorted()).toEqual([
+      "cache",
+      "shared",
+    ]);
+  });
+});
+
 describe("a home Core wrote into before its user existed (decision 5)", () => {
   it("becomes the user's, logins included, with the skeleton copied in and nothing replaced", () => {
     const root = fakeRoot();

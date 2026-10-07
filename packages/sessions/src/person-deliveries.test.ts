@@ -118,6 +118,33 @@ describe("what was delivered before, in one read (personRecordsExec)", () => {
   });
 });
 
+/** Everything under `root`, each path with what it is (a link's target, a file's text). */
+const listTree = (root: string): ReadonlyArray<string> =>
+  fs
+    .readdirSync(root, { recursive: true, encoding: "utf8" })
+    .toSorted()
+    .map((relative) => {
+      const at = path.join(root, relative);
+      const stat = fs.lstatSync(at);
+      return stat.isSymbolicLink()
+        ? `${relative} -> ${fs.readlinkSync(at)}`
+        : stat.isDirectory()
+          ? `${relative}/`
+          : `${relative}: ${fs.readFileSync(at, "utf8")}`;
+    });
+
+/** What was moved aside for a home-relative path, under its flat names. */
+const displacedAt = (home: string, relative: string): ReadonlyArray<string> => {
+  const dir = path.join(home, ".mend/displaced");
+  const suffix = `-${relative.replaceAll("/", "%")}`;
+  return fs.existsSync(dir)
+    ? fs
+        .readdirSync(dir)
+        .filter((name) => name.endsWith(suffix))
+        .map((name) => path.join(dir, name))
+    : [];
+};
+
 describe("Mend's links after a person's dotfiles (decision 11)", () => {
   it("puts its links back, merging what the dotfiles left and moving their own links aside", () => {
     const root = tmp();
@@ -151,53 +178,92 @@ describe("Mend's links after a person's dotfiles (decision 11)", () => {
     }
     // Nothing lost: the command moved into P, the stowed link is kept aside where it points.
     expect(fs.readFileSync(path.join(places.saved, ".claude/commands/go.md"), "utf8")).toBe("go\n");
-    expect(fs.readlinkSync(path.join(places.home, ".mend/displaced/.claude/agents"))).toBe(
+    expect(displacedAt(places.home, ".claude/agents").map((at) => fs.readlinkSync(at))).toEqual([
       checkout,
-    );
+    ]);
     // Run again: nothing to do. Their first-process deliveries are marked done.
     expect(parseDisplacedLinks(run(["sh", "-c", script]).stdout)).toEqual([]);
     expect(fs.readFileSync(path.join(places.home, FIRST_PROCESS_DONE), "utf8")).toBe("done");
   });
 
-  it("never writes into the dotfiles checkout a stow-folded ~/.claude leads to, and deletes nothing (S4)", () => {
-    const root = tmp();
-    const places = placesIn(root);
-    // What `P` already holds: their own reviewer agent.
-    fs.mkdirSync(path.join(places.saved, ".claude/agents"), { recursive: true });
-    fs.writeFileSync(path.join(places.saved, ".claude/agents/reviewer.md"), "P's reviewer\n");
-    // Their dotfiles folded all of `~/.claude` into the checkout, which has its own reviewer.
-    const checkout = path.join(root, "dotfiles/.claude");
-    fs.mkdirSync(path.join(checkout, "agents"), { recursive: true });
-    fs.writeFileSync(path.join(checkout, "agents/reviewer.md"), "the dotfiles' reviewer\n");
-    fs.writeFileSync(path.join(checkout, "CLAUDE.md"), "my instructions\n");
-    fs.symlinkSync(checkout, path.join(places.home, ".claude"));
-    const out = run([
-      "sh",
-      "-c",
-      personLinksScript(alice, { harnessHome: places.harnessHome, home: places.home }),
-    ]);
-    expect(out.status).toBe(0);
-    // The checkout is as it was.
-    expect(fs.readFileSync(path.join(checkout, "agents/reviewer.md"), "utf8")).toBe(
-      "the dotfiles' reviewer\n",
-    );
-    expect(fs.lstatSync(path.join(checkout, "agents")).isDirectory()).toBe(true);
-    // `~/.claude` is a real directory now: their CLAUDE.md still reaches the checkout, and the
-    // agents are `P`'s.
-    expect(fs.lstatSync(path.join(places.home, ".claude")).isDirectory()).toBe(true);
-    expect(fs.readFileSync(path.join(places.home, ".claude/CLAUDE.md"), "utf8")).toBe(
-      "my instructions\n",
-    );
-    expect(fs.readlinkSync(path.join(places.home, ".claude/agents"))).toBe(
-      path.join(places.saved, ".claude/agents"),
-    );
-    expect(fs.readFileSync(path.join(places.saved, ".claude/agents/reviewer.md"), "utf8")).toBe(
-      "P's reviewer\n",
-    );
-    expect(parseDisplacedLinks(out.stdout)).toEqual(
-      expect.arrayContaining([".claude", ".claude/agents"]),
-    );
-  });
+  it.each(["absolute", "relative"] as const)(
+    "unfolds a stow-folded ~/.claude and ~/.pi (%s links) into real directories, reads the checkout only, and changes nothing run twice",
+    (kind) => {
+      const root = tmp();
+      const places = placesIn(root);
+      // What `P` already holds: their own reviewer agent.
+      fs.mkdirSync(path.join(places.saved, ".claude/agents"), { recursive: true });
+      fs.writeFileSync(path.join(places.saved, ".claude/agents/reviewer.md"), "P's reviewer\n");
+      // Their dotfiles folded all of `~/.claude` and `~/.pi` into the checkout.
+      const dotfiles = path.join(places.home, "dotfiles");
+      fs.mkdirSync(path.join(dotfiles, ".claude/agents"), { recursive: true });
+      fs.writeFileSync(
+        path.join(dotfiles, ".claude/agents/reviewer.md"),
+        "the dotfiles' reviewer\n",
+      );
+      fs.writeFileSync(path.join(dotfiles, ".claude/agents/other.md"), "another agent\n");
+      fs.writeFileSync(path.join(dotfiles, ".claude/CLAUDE.md"), "my instructions\n");
+      fs.mkdirSync(path.join(dotfiles, ".pi/agent"), { recursive: true });
+      fs.writeFileSync(path.join(dotfiles, ".pi/agent/settings.json"), '{"theme":"dots"}');
+      for (const name of [".claude", ".pi"]) {
+        fs.symlinkSync(
+          kind === "absolute" ? path.join(dotfiles, name) : path.join("dotfiles", name),
+          path.join(places.home, name),
+        );
+      }
+      const before = listTree(dotfiles);
+      const script = personLinksScript(alice, {
+        harnessHome: places.harnessHome,
+        home: places.home,
+      });
+      const out = run(["sh", "-c", script]);
+      expect(out.stderr).toBe("");
+      expect(out.status).toBe(0);
+      // The checkout is exactly as it was: nothing written, moved or removed in it.
+      expect(listTree(dotfiles)).toEqual(before);
+      // Every saved-state entry is a link to `P`, under real directories.
+      for (const name of [".claude", ".pi", ".pi/agent"]) {
+        expect(fs.lstatSync(path.join(places.home, name)).isDirectory()).toBe(true);
+      }
+      for (const entry of PERSON_SAVED_STATE) {
+        expect(fs.readlinkSync(path.join(places.home, entry.path))).toBe(
+          path.join(places.saved, entry.path),
+        );
+      }
+      // Their instructions still apply, as a copy; `P`'s reviewer stays, the dotfiles' new agent
+      // joins it, and the dotfiles' reviewer and settings are kept aside.
+      expect(fs.readFileSync(path.join(places.home, ".claude/CLAUDE.md"), "utf8")).toBe(
+        "my instructions\n",
+      );
+      expect(fs.readFileSync(path.join(places.saved, ".claude/agents/reviewer.md"), "utf8")).toBe(
+        "P's reviewer\n",
+      );
+      expect(fs.readFileSync(path.join(places.saved, ".claude/agents/other.md"), "utf8")).toBe(
+        "another agent\n",
+      );
+      expect(fs.readFileSync(path.join(places.saved, ".pi/agent/settings.json"), "utf8")).toBe(
+        '{"theme":"dots"}',
+      );
+      expect(
+        displacedAt(places.home, ".claude/agents/reviewer.md").map((at) =>
+          fs.readFileSync(at, "utf8"),
+        ),
+      ).toEqual(["the dotfiles' reviewer\n"]);
+      // The folded links are recorded aside, pointing where they pointed, absolutely.
+      expect(displacedAt(places.home, ".claude").map((at) => fs.readlinkSync(at))).toEqual([
+        path.join(dotfiles, ".claude"),
+      ]);
+      // Running again changes nothing.
+      const displacedBefore = fs.readdirSync(path.join(places.home, ".mend/displaced")).toSorted();
+      const again = run(["sh", "-c", script]);
+      expect(again.status).toBe(0);
+      expect(parseDisplacedLinks(again.stdout)).toEqual([]);
+      expect(fs.readdirSync(path.join(places.home, ".mend/displaced")).toSorted()).toEqual(
+        displacedBefore,
+      );
+      expect(listTree(dotfiles)).toEqual(before);
+    },
+  );
 
   it("merges a real directory into P entry by entry, moving aside what P already holds", () => {
     const root = tmp();
@@ -220,8 +286,25 @@ describe("Mend's links after a person's dotfiles (decision 11)", () => {
       "new\n",
     );
     expect(
-      fs.readFileSync(path.join(places.home, ".mend/displaced/.claude/commands/go.md"), "utf8"),
-    ).toBe("the dotfiles' go\n");
+      displacedAt(places.home, ".claude/commands/go.md").map((at) => fs.readFileSync(at, "utf8")),
+    ).toEqual(["the dotfiles' go\n"]);
+    // A second copy at the same path, moved aside later, keeps the first (review of mend#566,
+    // P3-3).
+    fs.rmSync(path.join(places.home, ".claude/commands"));
+    fs.mkdirSync(path.join(places.home, ".claude/commands"));
+    fs.writeFileSync(path.join(places.home, ".claude/commands/go.md"), "a later go\n");
+    expect(
+      run([
+        "sh",
+        "-c",
+        personLinksScript(alice, { harnessHome: places.harnessHome, home: places.home }),
+      ]).status,
+    ).toBe(0);
+    expect(
+      displacedAt(places.home, ".claude/commands/go.md")
+        .map((at) => fs.readFileSync(at, "utf8"))
+        .toSorted(),
+    ).toEqual(["a later go\n", "the dotfiles' go\n"]);
   });
 });
 

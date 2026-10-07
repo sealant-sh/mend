@@ -11071,8 +11071,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           /** Into a person's own home, as them, after their dotfiles (docs/adr/0016, decision 11). */
           as?: PersonExec,
         ) {
-          if (!shellProfileApplies(project, workspaceImage)) return;
-          yield* Effect.gen(function* () {
+          // Answers whether the person's first-process marker was written with the profile.
+          if (!shellProfileApplies(project, workspaceImage)) return false;
+          return yield* Effect.gen(function* () {
             const profile = yield* loadShellProfile;
             // A person's first-process deliveries are done once this is written in their home.
             const files =
@@ -11101,11 +11102,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ).pipe(Effect.annotateLogs({ sessionId, path: `~/${file.path}` }));
               }
             }
+            return as !== undefined;
           }).pipe(
             Effect.catch((error) =>
               Effect.logWarning(
                 "session engine: the default shell profile was not written in the workspace",
-              ).pipe(Effect.annotateLogs({ sessionId, message: error.message })),
+              ).pipe(Effect.annotateLogs({ sessionId, message: error.message }), Effect.as(false)),
             ),
           );
         },
@@ -12110,7 +12112,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ?.workspaceImage ??
                 project.workspaceImage ??
                 (yield* settingsRepo.forOrganization(project.organizationId)).workspaceImage;
-              bootstrap = yield* applyPersonDotfiles(
+              const dotfiles = yield* applyPersonDotfiles(
                 session,
                 project,
                 workspace,
@@ -12118,7 +12120,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 as,
                 input.dotfiles,
               );
-              yield* applyDefaultShellProfile(session.id, workspace, project, image, as);
+              bootstrap = dotfiles.bootstrap;
+              const profiled = yield* applyDefaultShellProfile(
+                session.id,
+                workspace,
+                project,
+                image,
+                as,
+              );
+              // Marked done whatever ran: with no dotfiles and no profile, one small exec.
+              if (!dotfiles.marked && !profiled) {
+                yield* execAsPerson(workspace, as, [
+                  "sh",
+                  "-c",
+                  `mkdir -p "$HOME/.mend" && [ ! -L "$HOME/.mend" ] && printf done > "$HOME/${FIRST_PROCESS_DONE}"`,
+                ]).pipe(Effect.ignore);
+              }
             }
             const delivery: PersonDelivery = { ...as, records };
             const firstOrAgent = home.made || input.agent;
@@ -12287,6 +12304,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ));
         let record = dotfiles.record;
         let bootstrap: DotfilesBootstrap | null = null;
+        // The links script marks the person's first-process deliveries done.
+        let marked = false;
         if (dotfiles.archives.length > 0 && personPlatform.dotfilesUser) {
           const applied = yield* personPlatform
             .applyDotfiles(workspace, {
@@ -12318,6 +12337,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               "-c",
               personLinksScript(as.person, { harnessHome: HARNESS_HOME_MOUNT_PATH }),
             ]).pipe(
+              Effect.tap((result) =>
+                Effect.sync(() => {
+                  marked = result.exitCode === 0;
+                }),
+              ),
               Effect.map((result) => parseDisplacedLinks(result.stdout)),
               Effect.orElseSucceed((): ReadonlyArray<string> => []),
             );
@@ -12348,7 +12372,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           yield* sessions.setDotfiles(session.id, record).pipe(Effect.ignore);
         }
-        return bootstrap;
+        return { bootstrap, marked };
       });
 
       /**
@@ -12481,27 +12505,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : deliverToPerson({ session, workspace, home, agent: options.agent, harness }),
             ),
           );
-          let wrote = false;
-          const [as, deliveries] = yield* Effect.all(
-            [
-              started.pipe(
-                Effect.tap((user) =>
-                  Effect.sync(() => {
-                    wrote = user !== null;
-                  }),
-                ),
-              ),
-              delivered,
-            ],
-            { concurrency: 2 },
-          ).pipe(
-            // A start that failed after the person's logins were written (a pi profile that could
-            // not be delivered): nothing of theirs may run, so their logins and Mend token go,
-            // once the grace after the start has passed (review of mend#566, P3-3).
+          const [as, deliveries] = yield* Effect.all([started, delivered], {
+            concurrency: 2,
+          }).pipe(
+            // A start that failed, whenever it failed (a delivery may fail while the person's login
+            // write is still in flight, and Core finishes a write its caller abandoned): the idle
+            // check releases the logins and Mend token of anyone with nothing live here, after
+            // their start's grace (review of mend#566, P3-3 and round 2 P3-1). The launcher's
+            // create-time home is never released.
             Effect.onError(() =>
-              wrote
-                ? releaseIdleLogins(SealantWorkspaceId.make(workspace.id), workspace)
-                : Effect.void,
+              releaseIdleLogins(SealantWorkspaceId.make(workspace.id), workspace),
             ),
           );
           return as === null ? null : { ...as, delivered: deliveries };

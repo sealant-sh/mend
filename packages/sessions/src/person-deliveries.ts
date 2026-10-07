@@ -8,6 +8,7 @@
 import { linuxHomeOf, type LinuxIdentity } from "@mend/domain/workbench";
 
 import {
+  ASIDE_FUNCTION,
   assertScriptSafe,
   PERSON_RECORDS_IN_SAVED,
   PERSON_SAVED_STATE,
@@ -167,16 +168,17 @@ export const FIRST_PROCESS_DONE = ".mend/first-process-done";
 /**
  * Mend's links put back over whatever a person's dotfiles put in their place (decision 11: the
  * links win), as the person, in their home, and their first-process deliveries marked done
- * (`FIRST_PROCESS_DONE`). Nothing is deleted and nothing outside their home is changed:
- * - a parent directory the dotfiles made a link (a stow-folded `~/.claude` into their checkout)
- *   is unfolded: the link moves to `~/.mend/displaced/` and a real directory takes its place,
- *   holding a link to each thing the checkout had there, so the checkout itself is never written;
- * - an entry that is a link anywhere but `P` moves to `~/.mend/displaced/`, and Mend's goes in
- *   its place;
+ * (`FIRST_PROCESS_DONE`). Nothing is deleted and nothing outside their home is written:
+ * - a parent directory the dotfiles made a link (a stow-folded `~/.claude`, absolute or relative)
+ *   is unfolded: its target is resolved from the link's own directory, the link is recorded aside,
+ *   and a real directory holding a copy of what the target had takes its place; the checkout is
+ *   only read;
+ * - an entry that is a link anywhere but `P` is recorded aside, and Mend's goes in its place;
  * - a real directory is merged into `P` entry by entry: whatever `P` already holds under the same
- *   name stays, and the dotfiles' one moves to `~/.mend/displaced/`;
- * - a file moves into `P` when `P` has none, else to `~/.mend/displaced/`.
- * Prints `mend-links displaced <path>` for each thing it moved aside.
+ *   name stays, and the other copy is moved aside;
+ * - a file moves into `P` when `P` has none, else aside.
+ * Running it again changes nothing. Prints `mend-links displaced <path>` for each thing moved
+ * aside (`ASIDE_FUNCTION`).
  */
 export const personLinksScript = (
   person: LinuxIdentity,
@@ -186,19 +188,18 @@ export const personLinksScript = (
   const home = options.home ?? linuxHomeOf(person);
   const saved = savedDirOf(options.harnessHome, person.accountId);
   return [
-    `H=${shellQuote(home)}; S=${shellQuote(saved)}; A="$H/.mend/displaced"`,
-    `aside() { mkdir -p "$A/$(dirname "$1")" && mv -f "$H/$1" "$A/$1" && printf 'mend-links displaced %s\\n' "$1"; }`,
+    `H=${shellQuote(home)}; S=${shellQuote(saved)}`,
+    ASIDE_FUNCTION,
     `for p in ${SAVED_STATE_PARENTS.join(" ")}; do if [ -L "$H/$p" ]; then ` +
-      `t=$(readlink -f "$H/$p" 2>/dev/null || true); aside "$p"; mkdir -p "$H/$p"; ` +
-      `if [ -n "$t" ] && [ -d "$t" ]; then for c in "$t"/* "$t"/.[!.]* "$t"/..?*; do ` +
-      `[ -e "$c" ] || [ -L "$c" ] || continue; ln -s "$c" "$H/$p/\${c##*/}"; done; fi; fi; done`,
+      `t=$(readlink -f "$H/$p" 2>/dev/null || true); aside "$p" || exit 1; mkdir -p "$H/$p"; ` +
+      `if [ -n "$t" ] && [ -d "$t" ]; then cp -a "$t/." "$H/$p/" || exit 1; fi; fi; done`,
     `for e in ${PERSON_SAVED_STATE.map(({ path: entry }) => entry).join(" ")}; do f="$H/$e"; t="$S/$e"; ` +
       `if [ -L "$f" ]; then [ "$(readlink "$f")" = "$t" ] || { aside "$e" && ln -s "$t" "$f"; }; ` +
       `elif [ -d "$f" ]; then mkdir -p "$t"; for c in "$f"/* "$f"/.[!.]* "$f"/..?*; do ` +
       `[ -e "$c" ] || [ -L "$c" ] || continue; n=\${c##*/}; ` +
       `if [ -e "$t/$n" ] || [ -L "$t/$n" ]; then aside "$e/$n"; else mv "$c" "$t/$n"; fi; done; ` +
       `rmdir "$f" && ln -s "$t" "$f"; ` +
-      `elif [ -e "$f" ]; then { if [ ! -e "$t" ]; then mv "$f" "$t"; else aside "$e"; fi; } && ln -s "$t" "$f"; ` +
+      `elif [ -e "$f" ]; then { if [ ! -e "$t" ]; then mkdir -p "$(dirname "$t")" && mv "$f" "$t"; else aside "$e"; fi; } && ln -s "$t" "$f"; ` +
       `else mkdir -p "$(dirname "$f")" && ln -s "$t" "$f"; fi; done`,
     `mkdir -p "$H/.mend" && printf done > "$H/${FIRST_PROCESS_DONE}"`,
     `exit 0`,
