@@ -86,6 +86,7 @@ function PrimaryNav({ horizontal = false }: { readonly horizontal?: boolean }) {
       <NavItem to="/projects">Projects</NavItem>
       <NavItem to="/skills">Skills</NavItem>
       <NavItem to="/settings">Settings</NavItem>
+      {import.meta.env.DEV ? <NavItem to="/desktop-experiment">Desktop experiment</NavItem> : null}
     </nav>
   );
 }

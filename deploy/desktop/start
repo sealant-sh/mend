@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+export DISPLAY=:1
+export MEND_DESKTOP_HOME="${MEND_DESKTOP_HOME:-$HOME/.mend/desktop}"
+mkdir -p "$MEND_DESKTOP_HOME"
+children=()
+stop() { for child in "${children[@]}"; do kill -TERM "$child" 2>/dev/null || true; done; wait || true; }
+trap stop EXIT
+trap 'exit 0' TERM INT
+Xvnc :1 -geometry 1440x900 -depth 24 -SecurityTypes None -localhost yes -rfbport 5901 -AlwaysShared >"$MEND_DESKTOP_HOME/display.log" 2>&1 &
+children+=("$!")
+for attempt in {1..100}; do if xdpyinfo >/dev/null 2>&1; then break; fi; sleep 0.1; done
+xdpyinfo >/dev/null
+# No GPU is required; the browser, agent and recorder all use this one display.
+dbus-run-session -- startxfce4 >"$MEND_DESKTOP_HOME/xfce.log" 2>&1 &
+children+=("$!")
+websockify 127.0.0.1:6080 127.0.0.1:5901 >"$MEND_DESKTOP_HOME/vnc.log" 2>&1 &
+children+=("$!")
+node /opt/mend-desktop/server.mjs &
+children+=("$!")
+wait -n

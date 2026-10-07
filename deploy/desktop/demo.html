@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mend desktop check</title>
+    <style>
+      body {
+        font: 20px system-ui;
+        background: #faf9f7;
+        color: #1b1b1d;
+        display: grid;
+        place-items: center;
+        min-height: 90vh;
+      }
+      main {
+        width: 520px;
+      }
+      h1 {
+        font-size: 36px;
+      }
+      button,
+      input {
+        padding: 14px 20px;
+        font: 20px system-ui;
+        border-radius: 12px;
+        border: 1px solid #cbc8c1;
+      }
+      button {
+        background: #2052cc;
+        color: white;
+        cursor: pointer;
+      }
+      input {
+        display: block;
+        margin-top: 32px;
+        width: 90%;
+      }
+      p {
+        min-height: 30px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Mend desktop check</h1>
+      <h2 id="count">Count: 0</h2>
+      <button id="add">Add one</button
+      ><input id="name" placeholder="Your name" aria-label="Your name" />
+      <p id="greeting"></p>
+      <small>A real browser on the agent's desktop.</small>
+    </main>
+    <script>
+      let count = 0;
+      document.getElementById("add").onclick = () =>
+        (document.getElementById("count").textContent = "Count: " + ++count);
+      document.getElementById("name").oninput = (event) =>
+        (document.getElementById("greeting").textContent = event.target.value
+          ? "Hello, " + event.target.value
+          : "");
+    </script>
+  </body>
+</html>

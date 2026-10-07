@@ -98,6 +98,15 @@ export const defaultWorkspaceImage: WorkspaceImage = {
   services: { docker: true },
 };
 
+/** Experimental amd64 desktop base, built with deploy/desktop/Dockerfile on the executor host. */
+export const desktopWorkspaceImage: WorkspaceImage = {
+  mode: "custom",
+  baseImage: "mend-desktop:local",
+  packages: [],
+  setupCommands: [],
+  services: { docker: false },
+};
+
 const listsEqual = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 

@@ -21,17 +21,32 @@ const allowedHosts = [
 
 const apiTarget = process.env.MEND_API_URL ?? "http://localhost:3101";
 
+// The standalone acceptance fixture is opt-in and loopback-only. Real sessions use SDK Services.
+const desktopPreview = process.env.MEND_DESKTOP_PREVIEW_URL;
+if (desktopPreview && new URL(desktopPreview).hostname !== "127.0.0.1") {
+  throw new Error("MEND_DESKTOP_PREVIEW_URL must target this machine's loopback");
+}
+
 const config = defineConfig({
   server: {
     // The workbench is steered from any device on the operator's network
     // (ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
-    host: true,
+    host: desktopPreview ? "127.0.0.1" : true,
     port: 3105,
     allowedHosts,
     proxy: {
       // Vite owns WebSocket upgrades for terminals and tunnels. Nitro's
       // earlier middleware handles HTTP through devProxy below.
       "/api": { target: apiTarget, ws: true },
+      ...(desktopPreview
+        ? {
+            "/__desktop-preview": {
+              target: desktopPreview,
+              ws: true,
+              rewrite: (path: string) => path.replace(/^\/__desktop-preview/, ""),
+            },
+          }
+        : {}),
       // /trpc needs no proxy: it is a Start SERVER route, served by vite dev
       // itself (and by nitro in production).
     },

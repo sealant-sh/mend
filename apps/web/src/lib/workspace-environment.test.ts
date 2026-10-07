@@ -1,3 +1,4 @@
+import { desktopWorkspaceImage } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import type { SettingsDto, WorkspacePackageResolutionDto } from "./api";
@@ -32,6 +33,17 @@ const resolution = (
 });
 
 describe("workspace environment form", () => {
+  it("applies the desktop preset as an unsaved edit", () => {
+    const original = image(["pnpm"]);
+    const initial = createWorkspaceEnvironmentForm(original);
+    const applied = workspaceEnvironmentFormReducer(initial, {
+      type: "image-applied",
+      image: desktopWorkspaceImage,
+    });
+    expect(workspaceImageFromForm(applied)).toEqual(desktopWorkspaceImage);
+    expect(applied.savedImage).toEqual(original);
+    expect(workspaceImagesEqual(workspaceImageFromForm(applied), applied.savedImage)).toBe(false);
+  });
   it("normalizes the package draft without changing package order", () => {
     expect(parsePackageDraft(" PNPM\npython, pnpm\n\nuv ")).toEqual({
       packages: ["pnpm", "python", "uv"],

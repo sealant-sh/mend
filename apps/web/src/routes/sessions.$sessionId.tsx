@@ -13,6 +13,7 @@ import { ProjectCrumbs } from "#/components/breadcrumb";
 import { FollowUpBanner } from "#/components/follow-up";
 import { SessionLandingLineView } from "#/components/land-panel";
 import { ServicesCard } from "#/components/services-card";
+import { SessionDesktop } from "#/components/session-desktop";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot, StatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
@@ -540,6 +541,15 @@ function SessionPage() {
           </section>
         </div>
       </div>
+      <SessionDesktop
+        sessionId={sessionId}
+        enabled={
+          session.workspaceImage?.mode === "custom" &&
+          session.workspaceImage.baseImage === "mend-desktop:local"
+        }
+        canRun={control.terminalInput}
+        live={ACTIVE.has(session.status)}
+      />
     </AppShell>
   );
 }

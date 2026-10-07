@@ -56,6 +56,7 @@ export interface WorkspaceEnvironmentFormState {
 }
 
 export type WorkspaceEnvironmentFormAction =
+  | { readonly type: "image-applied"; readonly image: WorkspaceImage }
   | { readonly type: "mode-changed"; readonly mode: WorkspaceImage["mode"] }
   | { readonly type: "os-changed"; readonly os: WorkspaceImageOs }
   | { readonly type: "shell-changed"; readonly shell: WorkspaceImageShell }
@@ -108,6 +109,8 @@ export const workspaceEnvironmentFormReducer = (
   action: WorkspaceEnvironmentFormAction,
 ): WorkspaceEnvironmentFormState => {
   switch (action.type) {
+    case "image-applied":
+      return { ...createWorkspaceEnvironmentForm(action.image), savedImage: state.savedImage };
     case "mode-changed":
       return edited({ ...state, mode: action.mode });
     case "os-changed":

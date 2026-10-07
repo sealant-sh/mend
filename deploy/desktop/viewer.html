@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body,
+      #screen {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #1b1b1d;
+      }
+      #message {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        color: white;
+        font: 13px sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="screen"></div>
+    <span id="message">Connecting to desktop…</span>
+    <script type="module">
+      import RFB from "./novnc/core/rfb.js";
+      const base = new URL(".", location.href);
+      const ws = new URL("vnc", base);
+      ws.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      let rfb;
+      function connect() {
+        document.getElementById("screen").replaceChildren();
+        const message = document.getElementById("message");
+        message.hidden = false;
+        message.textContent = "Connecting to desktop…";
+        rfb = new RFB(document.getElementById("screen"), ws.href);
+        rfb.scaleViewport = true;
+        rfb.resizeSession = false;
+        rfb.viewOnly = true;
+        rfb.addEventListener("connect", () => {
+          message.hidden = true;
+          refresh();
+        });
+        rfb.addEventListener("disconnect", () => {
+          message.hidden = false;
+          message.textContent = "Desktop disconnected. Reconnecting…";
+          setTimeout(connect, 2000);
+        });
+      }
+      async function refresh() {
+        try {
+          const state = await fetch(new URL("state", base)).then((response) => response.json());
+          rfb.viewOnly = !state.humanControl;
+        } catch {}
+      }
+      setInterval(refresh, 750);
+      connect();
+    </script>
+  </body>
+</html>
