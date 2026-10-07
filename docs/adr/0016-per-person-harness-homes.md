@@ -440,18 +440,19 @@ the new sender's user, on their login.
     `output-styles/`, `plugins/`, `workflows/`, `routines/`, `agent-memory/`, `loop.md` or hooks; no
     user MCP servers in `.claude.json`, and never `hasClaudeMdExternalIncludesApproved`, so a
     repository `CLAUDE.md` cannot `@~/`-import a personal file; `settings.json` with
-    `autoMemoryEnabled: false`. The switches go in a Mend settings file passed with
-    `--settings /run/mend/claude/neutral.json` (root-owned, 0644): `autoMemoryEnabled: false` and
-    `env` with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, `CLAUDE_CODE_DISABLE_ORG_MEMORY=1` (organization
-    memory comes from the login, not from files), `CLAUDE_CODE_DISABLE_CRON=1` and
-    `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`. Claude applies a settings file's `env` over the
-    process environment, so a repository's `.claude/settings.json` or the worktree's
-    `settings.local.json` with `"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}` would otherwise
-    turn memory back on (and `""` for the cron switch, the cron tools); flag settings rank above
-    project and local settings, so the file wins over both (verified 2026-10-06 against 2.1.289:
-    with `--settings`, no memory section, no memory directory, no cron tools and no personal canary
-    in the request, whatever the repository or local `env` says). The same variables are also set in
-    the process environment, for older Claude versions. What loads is the repository's: `CLAUDE.md`,
+    `autoMemoryEnabled: false`. The switches go in Mend's settings, passed inline as JSON with
+    `--settings '<json>'` (no file, so nothing has to exist in an executor prepared earlier):
+    `autoMemoryEnabled: false` and `env` with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`,
+    `CLAUDE_CODE_DISABLE_ORG_MEMORY=1` (organization memory comes from the login, not from files),
+    `CLAUDE_CODE_DISABLE_CRON=1` and `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`. Claude applies the
+    `--settings` `env` over the process environment, so a repository's `.claude/settings.json` or
+    the worktree's `settings.local.json` with `"env": {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"}`
+    would otherwise turn memory back on (and `""` for the cron switch, the cron tools); flag
+    settings rank above project and local settings, so Mend's win over both (verified 2026-10-06
+    against 2.1.289: with `--settings`, no memory section, no memory directory, no cron tools and no
+    personal canary in the request, whatever the repository or local `env` says; and again on
+    2026-10-07 against 2.1.292 with the settings inline). The same variables are also set in the
+    process environment, for older Claude versions. What loads is the repository's: `CLAUDE.md`,
     `.claude/` (settings, agents, commands, skills, rules, hooks) and `.mcp.json`, with the sender's
     approvals and MCP logins in `H`. Skills Mend delivers for the project, not the person, are
     placed.
@@ -500,17 +501,16 @@ the new sender's user, on their login.
     The sender, or the owner, may withdraw the waiting turn. Turns keep their order: a waiting turn
     holds the ones behind it.
   - **Scheduled prompts:** Claude processes of a once-shared session start with
-    `CLAUDE_CODE_DISABLE_CRON=1` in the neutral settings file, so none creates or fires a cron
-    there. A durable cron lives in the worktree's `.claude/scheduled_tasks.json` and fires in
-    whichever Claude process next holds its lock in that worktree, so in a person-layout executor
-    only the worktree's change owner's own processes run with crons on: anyone else's personal
-    Claude processes start with `--settings /run/mend/claude/no-cron.json` (`env` with
-    `CLAUDE_CODE_DISABLE_CRON=1` and `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`), so a repository's
-    `env` cannot turn crons back on, and they have no scheduled prompts (`CronCreate` and its kin
-    are not offered) in that worktree. The owner's own personal processes get
-    `/run/mend/claude/personal.json`, with only the session-state switch. When shared control is
-    turned on, the session's session crons are background work the switch to the neutral context
-    waits for.
+    `CLAUDE_CODE_DISABLE_CRON=1` in the neutral settings, so none creates or fires a cron there. A
+    durable cron lives in the worktree's `.claude/scheduled_tasks.json` and fires in whichever
+    Claude process next holds its lock in that worktree, so in a person-layout executor only the
+    worktree's change owner's own processes run with crons on: anyone else's personal Claude
+    processes start with the inline `no-cron` settings (`env` with `CLAUDE_CODE_DISABLE_CRON=1` and
+    `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`), so a repository's `env` cannot turn crons back on,
+    and they have no scheduled prompts (`CronCreate` and its kin are not offered) in that worktree.
+    The owner's own personal processes get the inline `personal` settings, with only the
+    session-state switch. When shared control is turned on, the session's session crons are
+    background work the switch to the neutral context waits for.
 - **One live agent process per conversation,** recorded in Postgres by (launch id, process id),
   taken by every start path (dispatch, handoff, takeover, resume, retained run, follow-up), released
   only when the platform reports the process exited or the executor ended. An unreachable executor
@@ -845,7 +845,7 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
   `session_state_changed: idle`; `H`'s seed is staged while the old process stops, so only the two
   Core calls (DELETE, then POST), the directory exchange and the start wait for the exit; Codex's
   plugin sync is off in `H`; Claude and Codex start directly, with no shell profile. The Claude
-  settings files are written once per executor, so `--settings` adds no exec.
+  settings go inline on the command line, so `--settings` adds no exec and no file.
 - **The worktree repair is asynchronous:** one exec after another person's process starts, never
   awaited by it; its walk of the worktree (`node_modules` included) costs disk reads, not latency.
 - **Removed from the launch path:** mend#528's hand-over (a capture read, an `sh` exec and a forced
@@ -1140,37 +1140,37 @@ launches.
     turns on, kept for the rest of the session; `H` with its links (Claude `projects/`, `plans/`,
     `todos/`, `tasks/`, `jobs/`, `teams/`; Codex `sessions/`, `archived_sessions/`,
     `session_index.jsonl`), `CODEX_SQLITE_HOME=H/.codex`, the neutral seed and the Claude settings
-    files passed with `--settings` (`neutral.json`: `autoMemoryEnabled: false` and `env` with
+    passed inline with `--settings '<json>'` (`neutral`: `autoMemoryEnabled: false` and `env` with
     `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, `CLAUDE_CODE_DISABLE_ORG_MEMORY`, `CLAUDE_CODE_DISABLE_CRON`
-    and `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`; `no-cron.json`; `personal.json`), the same
-    variables in the environment, no external-include approval; Codex `HOME=H` with
-    `shell_environment_policy` and `features.plugins=false`; `H.next` made as the sender, 0700,
-    exchanged with `H` by `renameat2(RENAME_EXCHANGE)` once the old process group and cgroup are
-    empty, the old directory removed in the background; the root `chmod -R g+rwX C`; one live
-    process per conversation with fencing; the stop protocol; no-fork resume; a rejection of foreign
-    reasoning failing the turn with its line; Shared control on a terminal session changing nothing;
-    the hand-over budget test (two Core calls, DELETE then POST, one stop, one start). Tests with
-    fake harnesses: Alice's transcript created 0600, Bob's resume works, then Alice's (five turns,
-    two uids); a steered Claude turn's large tool output and a steered Codex sub-agent's rollout
-    land in `C` and stay; the task list survives a change of sender; after a steered Codex turn,
-    `P_bob/codex-db/state_5` has no row for Alice's thread; every personal canary (the sender's
-    home, the worktree's local settings, a repository `@~/` import) stays out of the request; an
-    `env` canary (`CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0"` and `CLAUDE_CODE_DISABLE_CRON: ""` in the
-    repository's settings and in `settings.local.json`) leaves no memory section, no memory
-    directory in `C` and no cron tools; no Codex `git` child outlives a hand-over and the exchange
-    never fails on a busy directory; the owner's transcript has no path under the steerer's home; a
-    missing rollout fails the turn. M, ~1,000. Perf: hand-over under 5 s, Codex's one-conversation
-    re-index and both Core calls included.
+    and `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`; `no-cron`; `personal`), the same variables in the
+    environment, no external-include approval; Codex `HOME=H` with `shell_environment_policy` and
+    `features.plugins=false`; `H.next` made as the sender, 0700, exchanged with `H` by
+    `renameat2(RENAME_EXCHANGE)` once the old process group and cgroup are empty, the old directory
+    removed in the background; the root `chmod -R g+rwX C`; one live process per conversation with
+    fencing; the stop protocol; no-fork resume; a rejection of foreign reasoning failing the turn
+    with its line; Shared control on a terminal session changing nothing; the hand-over budget test
+    (two Core calls, DELETE then POST, one stop, one start). Tests with fake harnesses: Alice's
+    transcript created 0600, Bob's resume works, then Alice's (five turns, two uids); a steered
+    Claude turn's large tool output and a steered Codex sub-agent's rollout land in `C` and stay;
+    the task list survives a change of sender; after a steered Codex turn, `P_bob/codex-db/state_5`
+    has no row for Alice's thread; every personal canary (the sender's home, the worktree's local
+    settings, a repository `@~/` import) stays out of the request; an `env` canary
+    (`CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0"` and `CLAUDE_CODE_DISABLE_CRON: ""` in the repository's
+    settings and in `settings.local.json`) leaves no memory section, no memory directory in `C` and
+    no cron tools; no Codex `git` child outlives a hand-over and the exchange never fails on a busy
+    directory; the owner's transcript has no path under the steerer's home; a missing rollout fails
+    the turn. M, ~1,000. Perf: hand-over under 5 s, Codex's one-conversation re-index and both Core
+    calls included.
 18. **Mend · steering dispatch.** Quiescence for Claude (session state, background-task set, paused
     tasks, wakeups, monitors, session crons) and Codex (child threads, background terminals, goals,
     1 s settle); the Claude adapter handling the events it drops today; a Codex turn aborted by the
     stop recorded as interrupted by the hand-over; the waiting line and its actions; the queue on
-    the conversation; crons off in shared sessions and for everyone but the change owner (the
-    `no-cron.json` settings file); handoff and takeover through the same rules; payer from the
-    process; cancellations; Slack; automatic landing; shared control refused for opencode sessions,
-    at the toggle and at submit. Engine tests: B's turn runs as B with A's conversation; A's
-    sub-agent, goal, background terminal and monitor each delay B's turn and finish as A; a takeover
-    waits. M, ~900. Perf: the steered-turn scenario; same-person turns pay nothing.
+    the conversation; crons off in shared sessions and for everyone but the change owner (the inline
+    `no-cron` settings); handoff and takeover through the same rules; payer from the process;
+    cancellations; Slack; automatic landing; shared control refused for opencode sessions, at the
+    toggle and at submit. Engine tests: B's turn runs as B with A's conversation; A's sub-agent,
+    goal, background terminal and monitor each delay B's turn and finish as A; a takeover waits. M,
+    ~900. Perf: the steered-turn scenario; same-person turns pay nothing.
 
 **P1 · Gate: budgets met,** `person` launches against `shared` launches at the same commit, each on
 a fresh worktree, on the scratch instance, then on the box once the conditions above hold; and
