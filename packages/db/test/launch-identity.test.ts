@@ -192,7 +192,7 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
     });
     expect(result.after).toBeNull();
   });
-  it("a person's tokens in one launch end when their logins there are released, and nobody else's do (docs/adr/0016, Delivery 14)", async () => {
+  it("a person's tokens in one launch end when their logins there are released, and nobody else's do, nor one minted after (docs/adr/0016, Delivery 14)", async () => {
     const result = await run(
       Effect.gen(function* () {
         const tokens = yield* SessionChannelTokensRepo;
@@ -200,10 +200,16 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
         const maria = yield* tokens.issuePerson("launch:s-release:1:a", "user-maria");
         const alice = yield* tokens.issuePerson("launch:s-release:1:a", "user-alice");
         const elsewhere = yield* tokens.issuePerson("launch:s-other:1:a", "user-maria");
-        yield* tokens.revokePerson("launch:s-release:1:a", "user-maria");
+        yield* Effect.sleep("5 millis");
+        const releaseBegan = new Date();
+        yield* Effect.sleep("5 millis");
+        // A start of Maria's after the release began: its token is not the release's to revoke.
+        const restarted = yield* tokens.issuePerson("launch:s-release:1:a", "user-maria");
+        yield* tokens.revokePerson("launch:s-release:1:a", "user-maria", releaseBegan);
         // Idempotent.
-        yield* tokens.revokePerson("launch:s-release:1:a", "user-maria");
+        yield* tokens.revokePerson("launch:s-release:1:a", "user-maria", releaseBegan);
         return {
+          restarted: (yield* tokens.resolve(restarted))?.accountId ?? null,
           maria: yield* tokens.resolve(maria),
           alice: (yield* tokens.resolve(alice))?.accountId ?? null,
           own: (yield* tokens.resolve(own))?.sessionId ?? null,
@@ -212,6 +218,7 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
       }),
     );
     expect(result).toEqual({
+      restarted: "user-maria",
       maria: null,
       alice: "user-alice",
       own: "s-release",

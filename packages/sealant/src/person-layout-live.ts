@@ -73,8 +73,13 @@ export const heldHomeOf = (home: WorkspaceCredentialHome): HeldHome => ({
   ),
 });
 
-/** How long an answer about an image is kept before Core is asked again. */
-const IMAGE_ANSWER_MS = 10 * 60_000;
+/**
+ * How long an answer about an image is kept before Core is asked again: a capability changes only
+ * with a new build (a new digest), so a yes or a no lasts a day; an unknown (nothing built yet)
+ * ten minutes, so a build that lands is seen soon.
+ */
+const IMAGE_ANSWER_MS = 24 * 60 * 60_000;
+const UNKNOWN_IMAGE_ANSWER_MS = 10 * 60_000;
 const IMAGE_ANSWERS = 512;
 
 export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, SealantClients> =
@@ -101,7 +106,13 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         const key = `${input.ownerUserId}\u0000${yield* clients.imageKey(options)}`;
         const now = yield* Clock.currentTimeMillis;
         const known = answers.get(key);
-        if (known !== undefined && now - known.at < IMAGE_ANSWER_MS) return known.report;
+        if (
+          known !== undefined &&
+          now - known.at <
+            (known.report.person === null ? UNKNOWN_IMAGE_ANSWER_MS : IMAGE_ANSWER_MS)
+        ) {
+          return known.report;
+        }
         const report = yield* clients.inspectImage(input.ownerUserId, options).pipe(
           Effect.map(imageLayoutReportOf),
           // Unknown, never a refusal: the launch runs shared and its prepare records the answer.
@@ -149,6 +160,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             yield* call(() => workspace.credentials.release(input.home));
           },
         ),
+        sealantUserOf: (accountId) => clients.sealantUserId(accountId),
         listCredentials: Effect.fn("PersonLayoutPlatform.listCredentials")(function* (workspace) {
           const homes = yield* call(() => workspace.credentials.list());
           return homes.map(heldHomeOf);

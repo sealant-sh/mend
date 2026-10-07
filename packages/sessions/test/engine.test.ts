@@ -260,7 +260,12 @@ import {
 } from "effect";
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
-import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
+import {
+  HarnessLayoutConfig,
+  HarnessLayoutConfigShared,
+  NO_OWNER_MAP_REASON,
+  NO_OWNER_MAP_REFUSAL,
+} from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
   OPENCODE_CAPTURED_SEED,
@@ -2980,9 +2985,9 @@ const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelToken
         Effect.sync(() => events.push(`revokeLaunch:${launchId}`)).pipe(
           Effect.andThen(inner.revokeLaunch(launchId)),
         ),
-      revokePerson: (launchId: string, accountId: string) =>
+      revokePerson: (launchId: string, accountId: string, issuedBefore: Date) =>
         Effect.sync(() => events.push(`revokePerson:${launchId}:${accountId}`)).pipe(
-          Effect.andThen(inner.revokePerson(launchId, accountId)),
+          Effect.andThen(inner.revokePerson(launchId, accountId, issuedBefore)),
         ),
     })),
   ).pipe(Layer.provide(SessionChannelTokensRepoMemory));
@@ -23471,7 +23476,9 @@ const personPlatform = (
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
-    withOwnerMap: null,
+    // A Sealant that takes the capture owner map (sealant#333): the map rides the create.
+    withOwnerMap: (options) => options,
+    sealantUserOf: (accountId) => Effect.succeed(accountId),
     imageReport: () =>
       Effect.succeed({
         digest: "sha256:img",
@@ -23773,6 +23780,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
 
   it("refuses Maria's join before her agent starts when she has not connected Claude, and never lends Alice's", async () => {
     const calls: Array<string> = [];
+    const tokenEvents: Array<string> = [];
     const opened: Array<PersonSessionOptions> = [];
     const base = personPlatform(calls, { person: true });
     const platform = Layer.effect(
@@ -23820,7 +23828,11 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             ownerUserId: MARIA,
           });
           const refused = yield* engine.launch(joined.id, ["claude"]).pipe(Effect.flip);
-          return { message: refused.message, openedForJoin: opened.length - before };
+          return {
+            message: refused.message,
+            openedForJoin: opened.length - before,
+            summary: world.sessions.get(joined.id)?.summary ?? null,
+          };
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -23840,11 +23852,49 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           { exec: answerLayout(LAYOUT_READY) },
         ),
         harnessLayout: { flag: "person", platform },
+        tokenEvents,
       },
     );
     expect(failure.message).toContain("Connect Claude to start a session here.");
     expect(failure.openedForJoin).toBe(0);
+    // The line says the start was refused, not that a resume failed.
+    expect(failure.summary).toContain("launch refused · Connect Claude to start a session here.");
+    expect(failure.summary).not.toContain("resume failed");
+    // The Mend token minted for her beside the refused POST is revoked.
+    expect(tokenEvents.filter((event) => event.startsWith("revokePerson:"))).toEqual([
+      expect.stringContaining(`:${MARIA}`),
+    ]);
     expect(calls).toEqual([`post:${MARIA}:/home/${JOINER}`]);
+  });
+
+  it("while Sealant cannot take the owner map, the flag on runs every new worktree shared before create, saying why", async () => {
+    const calls: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const base = personPlatform(calls, { person: true });
+    const platform = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({ ...inner, withOwnerMap: null })),
+    ).pipe(Layer.provide(base));
+    const run = await launchPersonOnce({ flag: "person", state, platform });
+    expect(run.failure).toBeNull();
+    // No executor made to be refused: no person create, no user, no Core call.
+    expect(run.created).toHaveLength(1);
+    expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
+    expect(calls).toEqual([]);
+    expect([...state.launches.values()]).toEqual([
+      expect.objectContaining({ layout: "shared", reason: NO_OWNER_MAP_REASON }),
+    ]);
+    // A worktree already per person is refused before create.
+    const personState = recordedBeforeStart(makeHarnessLayoutsMemoryState());
+    const refused = await launchPersonOnce({
+      flag: "shared",
+      state: personState,
+      platform,
+      before: (worktreeId) =>
+        personState.worktrees.set(worktreeId, { layout: "person", requested: null }),
+    });
+    expect(refused.failure).toContain(NO_OWNER_MAP_REFUSAL);
+    expect(refused.created).toHaveLength(0);
   });
 
   it("with the flag off, the platform's credentials API is never called", async () => {

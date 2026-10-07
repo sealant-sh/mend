@@ -136,6 +136,37 @@ const CHATGPT_LOGIN_PROGRAM = [
 ].join("");
 
 /**
+ * What a release of a person's logins removes beside Core's own files (docs/adr/0016, decision 5):
+ * the ChatGPT copies `CHATGPT_LOGIN_PROGRAM` wrote into pi's and opencode's `auth.json`, which Core
+ * does not know of. Only an entry whose refresh token is the copy placeholder goes, so a login the
+ * person made inside pi or opencode stays (decision 8a). Written in place, never through a rename;
+ * a file that is not a JSON object, or a link, is left as it is. Run as the person.
+ *
+ * `argv` pairs: the auth file, the entry's key.
+ */
+const CHATGPT_COPIES_SCRUB_PROGRAM = [
+  `const fs=require("fs"),a=process.argv.slice(1);`,
+  `for(let i=0;i+1<a.length;i+=2){const file=a[i],key=a[i+1];`,
+  `let fd;try{fd=fs.openSync(file,fs.constants.O_RDWR|fs.constants.O_NOFOLLOW)}catch{continue}`,
+  `try{let v;try{v=JSON.parse(fs.readFileSync(fd,"utf8"))}catch{continue}`,
+  `if(v===null||typeof v!=="object"||Array.isArray(v))continue;`,
+  `const e=v[key];if(!e||typeof e!=="object"||e.refresh!==${JSON.stringify(COPY_REFRESH_TOKEN)})continue;`,
+  `delete v[key];const out=Buffer.from(JSON.stringify(v,null,2));fs.ftruncateSync(fd,0);fs.writeSync(fd,out,0,out.length,0)`,
+  `}finally{fs.closeSync(fd)}}`,
+].join("");
+
+/** The argv that removes Mend's ChatGPT copies from a person's home (`CHATGPT_COPIES_SCRUB_PROGRAM`). */
+export const chatgptCopiesScrubArgv = (home: string): ReadonlyArray<string> => [
+  "node",
+  "-e",
+  CHATGPT_COPIES_SCRUB_PROGRAM,
+  `${home}/.pi/agent/auth.json`,
+  "openai-codex",
+  `${home}/.mend/opencode/auth.json`,
+  "openai",
+];
+
+/**
  * The model opencode opens on when nothing chose one (`OPENCODE_DEFAULT_MODEL`), written as its
  * last used model: `model.json` in its state directory, `{recent: [{providerID, modelID}], …}`,
  * the list opencode reads after `--model` and the `model` of its config and before falling back

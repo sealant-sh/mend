@@ -8,10 +8,16 @@ import {
 import { OrganizationId, WorktreeId, defaultWorkspaceImage } from "@mend/domain";
 import { type HomeLogins, PersonLayoutPlatform, SealantPlatformError } from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
-import { Duration, Effect, Layer } from "effect";
+import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { loginRefusal, makeHarnessLayoutSteps } from "./harness-layout-steps.ts";
+import {
+  NO_OWNER_MAP_REASON,
+  NO_OWNER_MAP_REFUSAL,
+  UNKNOWN_LAUNCH_REFUSAL,
+  loginRefusal,
+  makeHarnessLayoutSteps,
+} from "./harness-layout-steps.ts";
 
 /**
  * The per-person steps' own memory (docs/adr/0016): the layout each launch runs, as the session
@@ -76,6 +82,7 @@ const workspace: Workspace = {
 
 /** Every credentials call the platform was asked for, and how Core answers a POST. */
 interface CoreCalls {
+  /** Every call and step, in order: `post:`, `delete:`, `list`, `mint:`, `revoke:`, `exec:`. */
   readonly calls: Array<string>;
   readonly posts: Array<{
     readonly onBehalfOf: string;
@@ -90,16 +97,32 @@ interface CoreCalls {
     onBehalfOf: string;
     providers: ReadonlyArray<"claude" | "codex" | "github">;
   }>;
+  /** Held open, a DELETE waits on it after saying so in `calls`. */
+  deleteGate: Deferred.Deferred<void> | null;
+  /** Whether the platform can take the capture owner map (sealant#333). */
+  ownerMap: boolean;
+  imageReports: number;
 }
 
-const coreCalls = (): CoreCalls => ({ calls: [], posts: [], answer: () => null, homes: [] });
+const coreCalls = (): CoreCalls => ({
+  calls: [],
+  posts: [],
+  answer: () => null,
+  homes: [],
+  deleteGate: null,
+  ownerMap: true,
+  imageReports: 0,
+});
 
 const platformOf = (core: CoreCalls) =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
-    withOwnerMap: null,
+    withOwnerMap: core.ownerMap ? (options) => options : null,
     imageReport: () =>
-      Effect.succeed({ digest: "sha256:img", runtime: "docker", person: true, missing: [] }),
+      Effect.sync(() => {
+        core.imageReports++;
+        return { digest: "sha256:img", runtime: "docker", person: true, missing: [] };
+      }),
     postCredentials: (_workspace, input) =>
       Effect.suspend(() => {
         const index = core.posts.length;
@@ -114,9 +137,11 @@ const platformOf = (core: CoreCalls) =>
         return failure === null ? Effect.void : Effect.fail(failure);
       }),
     deleteCredentials: (_workspace, input) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         core.calls.push(`delete:${input.home}`);
+        if (core.deleteGate !== null) yield* Deferred.await(core.deleteGate);
       }),
+    sealantUserOf: (accountId) => Effect.succeed(`su-${accountId}`),
     listCredentials: () =>
       Effect.sync(() => {
         core.calls.push("list");
@@ -135,8 +160,11 @@ const stepsWith = (
   state: HarnessLayoutsMemoryState,
   options: {
     readonly platform?: Layer.Layer<PersonLayoutPlatform>;
-    readonly execs?: Array<string>;
-    readonly revoked?: Array<string>;
+    /** Every exec's script (or argv, for a non-shell exec) and the user it ran as. */
+    readonly execs?: Array<{ readonly script: string; readonly user: string | null }>;
+    /** Where mints, revocations and execs are logged in order, beside Core's calls. */
+    readonly log?: Array<string>;
+    readonly revoked?: Array<{ readonly accountId: string; readonly issuedBefore: number }>;
     readonly forks?: Array<Effect.Effect<void>>;
     readonly grace?: Duration.Duration;
   } = {},
@@ -161,22 +189,31 @@ const stepsWith = (
       platform: yield* PersonLayoutPlatform,
       organizations: yield* OrganizationsRepo,
       sealant: {
-        exec: (_workspace, argv) => {
+        exec: (_workspace, argv, execOptions) => {
           const execs = options.execs;
           return execs === undefined
             ? Effect.die("not in test")
             : Effect.sync(() => {
-                execs.push(argv[2] ?? "");
+                const script = argv[0] === "sh" ? (argv[2] ?? "") : argv.join(" ");
+                execs.push({ script, user: execOptions?.user?.name ?? null });
+                options.log?.push(`exec:${execOptions?.user?.name ?? "root"}`);
                 return { exitCode: 0, stdout: "", stderr: "", run: execRun };
               });
         },
       },
       harnessHome: "/workspace/harness-home",
       fork: (effect) => Effect.sync(() => options.forks?.push(effect)),
-      identityTicket: () => Effect.succeed("t".repeat(43)),
+      identityTicket: (input) =>
+        Effect.sync(() => {
+          options.log?.push(`mint:${input.person.accountId}@${Date.now()}`);
+          return "t".repeat(43);
+        }),
       discardTicket: () => {},
-      revokePersonToken: (launchId, accountId) =>
-        Effect.sync(() => options.revoked?.push(`${launchId}:${accountId}`)),
+      revokePersonToken: (_launchId, accountId, issuedBefore) =>
+        Effect.sync(() => {
+          options.log?.push(`revoke:${accountId}`);
+          options.revoked?.push({ accountId, issuedBefore: issuedBefore.getTime() });
+        }),
       ...(options.grace === undefined ? {} : { loginReleaseGrace: options.grace }),
     });
     return { steps, reads, repo };
@@ -406,40 +443,62 @@ describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
 });
 
 describe("logins per person (docs/adr/0016, decision 5)", () => {
-  /** Alice's person launch, prepared; then whatever `then` does with its steps. */
+  interface Executor {
+    readonly steps: ReturnType<typeof makeHarnessLayoutSteps>;
+    readonly repo: HarnessLayoutsRepo["Service"];
+    readonly execs: Array<{ readonly script: string; readonly user: string | null }>;
+    readonly log: Array<string>;
+    readonly revoked: Array<{ readonly accountId: string; readonly issuedBefore: number }>;
+    readonly forks: Array<Effect.Effect<void>>;
+    readonly state: HarnessLayoutsMemoryState;
+  }
+
+  /**
+   * Alice's person launch, prepared (unless `prepared` is false: a Mend that restarted, whose
+   * memory of the executor is empty); then whatever `then` does with its steps.
+   */
   const withPersonExecutor = <A, E>(
     core: CoreCalls,
-    then: (input: {
-      readonly steps: ReturnType<typeof makeHarnessLayoutSteps>;
-      readonly repo: HarnessLayoutsRepo["Service"];
-      readonly execs: Array<string>;
-      readonly revoked: Array<string>;
-      readonly forks: Array<Effect.Effect<void>>;
-    }) => Effect.Effect<A, E>,
-    grace: Duration.Duration = Duration.zero,
+    then: (executor: Executor) => Effect.Effect<A, E>,
+    options: { readonly grace?: Duration.Duration; readonly prepared?: boolean } = {},
   ) =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const execs: Array<string> = [];
-        const revoked: Array<string> = [];
+        const execs: Array<{ readonly script: string; readonly user: string | null }> = [];
+        const log: Array<string> = [];
+        const revoked: Array<{ readonly accountId: string; readonly issuedBefore: number }> = [];
         const forks: Array<Effect.Effect<void>> = [];
-        const { steps, repo } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+        const state = makeHarnessLayoutsMemoryState();
+        const first = yield* stepsWith("person", state, {
           platform: platformOf(core),
           execs,
+          log,
           revoked,
           forks,
-          grace,
+          grace: options.grace ?? Duration.zero,
         });
-        const layout = yield* steps.decide(decideInput("launch-1"));
-        const alice = yield* repo.ensureIdentity("user-alice");
-        yield* steps.settlePrepare({
+        const layout = yield* first.steps.decide(decideInput("launch-1"));
+        const alice = yield* first.repo.ensureIdentity("user-alice");
+        yield* first.steps.settlePrepare({
           layout,
           ...settleInput(
             "launch-1",
             `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
           ),
         });
-        return yield* then({ steps, repo, execs, revoked, forks });
+        // A restart: a new engine over the same store, remembering nothing of the executor.
+        const steps =
+          options.prepared === false
+            ? (yield* stepsWith("person", state, {
+                platform: platformOf(core),
+                execs,
+                log,
+                revoked,
+                forks,
+                grace: options.grace ?? Duration.zero,
+              })).steps
+            : first.steps;
+        return yield* then({ steps, repo: first.repo, execs, log, revoked, forks, state });
       }),
     );
 
@@ -455,6 +514,18 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       sessionId: "sess-1",
       worktreeId: "wt-1",
       harness,
+    });
+
+  const release = (
+    steps: ReturnType<typeof makeHarnessLayoutSteps>,
+    live: ReadonlyArray<string>,
+    handle: Effect.Effect<Workspace> = Effect.succeed(workspace),
+  ) =>
+    steps.releaseIdle({
+      workspaceId: workspace.id,
+      workspace: handle,
+      live: Effect.succeed(new Set(live)),
+      launcher: Effect.succeed("user-alice"),
     });
 
   it("a join writes only the joiner's own logins, once, into their own home, and never touches the holder's", async () => {
@@ -484,7 +555,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     ]);
     // Nothing anyone ran for Maria reads, names or writes Alice's home.
     const aliceHome = `/home/${result.alice.name}`;
-    for (const script of result.execs) expect(script).not.toContain(aliceHome);
+    for (const exec of result.execs) expect(exec.script).not.toContain(aliceHome);
     expect(core.calls.some((call) => call.includes(aliceHome))).toBe(false);
     expect(result.started?.user.home).toBe(`/home/${result.maria.name}`);
     expect(JSON.stringify(result.started?.env)).not.toContain(aliceHome);
@@ -506,21 +577,37 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     ]);
   });
 
-  it("refuses a join whose harness login is not connected, or needs reconnecting, with nothing written and nobody else's login used", async () => {
+  it("refuses a join whose harness login is not connected or needs reconnecting, and revokes the token minted for it", async () => {
     for (const [failure, words] of [
-      [notConnected("claude"), loginRefusal("claude", false)],
-      [needsReconnect("claude"), loginRefusal("claude", true)],
+      [notConnected("claude"), "Connect Claude to start a session here."],
+      [
+        needsReconnect("claude"),
+        "Your Claude login needs reconnecting. Reconnect Claude to start a session here.",
+      ],
     ] as const) {
       const core = coreCalls();
       core.answer = () => failure;
-      const refused = await withPersonExecutor(core, ({ steps }) =>
-        start(steps, "user-maria").pipe(Effect.flip),
+      const result = await withPersonExecutor(core, ({ steps, log, execs }) =>
+        Effect.gen(function* () {
+          const refused = yield* start(steps, "user-maria").pipe(Effect.flip);
+          const releasable = steps.holdsReleasable(workspace.id);
+          // Once connected, her next start makes her again: a new token, her logins written.
+          core.answer = () => null;
+          const homes = execs.length;
+          yield* start(steps, "user-maria");
+          return { refused, log: [...log], releasable, again: execs.length - homes };
+        }),
       );
-      expect(refused.message).toBe(words);
-      expect(core.posts).toHaveLength(1);
+      expect(result.refused.message).toBe(words);
+      expect(words).toBe(loginRefusal("claude", failure.code === "connected-account-invalid"));
+      // Her user and home were made beside the POST; the token minted for her is revoked.
+      expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual([
+        "revoke:user-maria",
+      ]);
+      expect(result.releasable).toBe(false);
+      expect(result.again).toBe(1);
       expect(core.calls.filter((call) => call.startsWith("post:user-alice"))).toEqual([]);
     }
-    expect(loginRefusal("claude", false)).toBe("Connect Claude to start a session here.");
   });
 
   it("asks again once the home is made when its POST raced the useradd that makes it", async () => {
@@ -538,23 +625,27 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.posts).toHaveLength(2);
   });
 
-  it("releases a person's logins once nothing of theirs runs, retried, with their token; never the launcher's", async () => {
+  it("releases a person's logins once nothing of theirs runs: Core's files, Mend's ChatGPT copies as them, and their token", async () => {
     const core = coreCalls();
-    const result = await withPersonExecutor(core, ({ steps, repo, revoked, execs }) =>
+    const result = await withPersonExecutor(core, ({ steps, repo, revoked, execs, forks }) =>
       Effect.gen(function* () {
         yield* start(steps, "user-maria");
         const maria = yield* repo.ensureIdentity("user-maria");
         const releasable = steps.holdsReleasable(workspace.id);
-        yield* steps.releaseIdle({
-          workspaceId: workspace.id,
-          workspace: Effect.succeed(workspace),
-          live: Effect.succeed(new Set(["user-alice"])),
-        });
+        yield* release(steps, ["user-alice"]);
+        // The ChatGPT copies are removed off the path: run what was forked.
+        for (const fork of forks.splice(0)) yield* fork;
         const afterRelease = steps.holdsReleasable(workspace.id);
-        // Maria starts again: made again (a new token), and her logins written again.
         const homeExecs = execs.length;
         yield* start(steps, "user-maria");
-        return { maria, releasable, afterRelease, revoked, rehomed: execs.length - homeExecs };
+        return {
+          maria,
+          releasable,
+          afterRelease,
+          revoked,
+          execs,
+          rehomed: execs.length - homeExecs,
+        };
       }),
     );
     expect(result.releasable).toBe(true);
@@ -562,8 +653,72 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([
       `delete:/home/${result.maria.name}`,
     ]);
-    expect(result.revoked).toEqual(["launch-1:user-maria"]);
+    const scrub = result.execs.find((exec) => exec.script.startsWith("node -e"));
+    expect(scrub?.user).toBe(result.maria.name);
+    expect(scrub?.script).toContain(`/home/${result.maria.name}/.pi/agent/auth.json openai-codex`);
+    expect(scrub?.script).toContain(`/home/${result.maria.name}/.mend/opencode/auth.json openai`);
+    expect(result.revoked.map((entry) => entry.accountId)).toEqual(["user-maria"]);
+    // Her next start makes her again (a new token) and writes her logins again.
     expect(result.rehomed).toBe(1);
+    expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(2);
+  });
+
+  it("race: a start while a release waits for the workspace handle keeps its logins and token (review of mend#564, P2-1 B)", async () => {
+    const core = coreCalls();
+    const result = await withPersonExecutor(
+      core,
+      ({ steps, log }) =>
+        Effect.gen(function* () {
+          yield* start(steps, "user-maria");
+          const handleGate = yield* Deferred.make<void>();
+          const releasing = yield* release(
+            steps,
+            [],
+            Deferred.await(handleGate).pipe(Effect.as(workspace)),
+          ).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          // Maria starts again while the release waits for its handle.
+          const started = yield* start(steps, "user-maria");
+          yield* Deferred.succeed(handleGate, undefined);
+          yield* Fiber.join(releasing);
+          return { started: started?.user.name ?? null, log };
+        }),
+      { grace: Duration.minutes(1) },
+    );
+    expect(result.started).not.toBeNull();
+    expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([]);
+    expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual([]);
+  });
+
+  it("race: a start while a release's DELETE is in flight waits for it, then gets a new token the release never revokes (review of mend#564, P2-1 A)", async () => {
+    const core = coreCalls();
+    const result = await withPersonExecutor(core, ({ steps, log, revoked }) =>
+      Effect.gen(function* () {
+        yield* start(steps, "user-maria");
+        core.deleteGate = yield* Deferred.make<void>();
+        const gate = core.deleteGate;
+        const releasing = yield* release(steps, []).pipe(Effect.forkChild);
+        // Wait until the DELETE is in flight.
+        while (!core.calls.some((call) => call.startsWith("delete:"))) yield* Effect.yieldNow;
+        const starting = yield* start(steps, "user-maria").pipe(Effect.forkChild);
+        yield* Effect.sleep(Duration.millis(5));
+        const postsWhileDeleting = core.posts.length;
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(releasing);
+        yield* Fiber.join(starting);
+        return { log, revoked, postsWhileDeleting };
+      }),
+    );
+    // The start waited: nothing of it ran while the DELETE was in flight.
+    expect(result.postsWhileDeleting).toBe(1);
+    const order = result.log.map((line) => line.replace(/@\d+$/, ""));
+    const revokedAt = order.indexOf("revoke:user-maria");
+    const mintedAgain = order.lastIndexOf("mint:user-maria");
+    expect(revokedAt).toBeGreaterThan(-1);
+    expect(mintedAgain).toBeGreaterThan(revokedAt);
+    // The release revokes only what was minted before it began.
+    const minted = Number(result.log.findLast((line) => line.startsWith("mint:"))?.split("@")[1]);
+    expect(result.revoked[0]?.issuedBefore ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(minted);
     expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(2);
   });
 
@@ -574,67 +729,188 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       ({ steps, forks }) =>
         Effect.gen(function* () {
           yield* start(steps, "user-maria");
-          yield* steps.releaseIdle({
-            workspaceId: workspace.id,
-            workspace: Effect.succeed(workspace),
-            live: Effect.succeed(new Set<string>()),
-          });
+          yield* release(steps, []);
           return forks;
         }),
-      Duration.minutes(1),
+      { grace: Duration.minutes(1) },
     );
     expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([]);
     // One fork is the worktree repair of Maria's join; the other the later check.
     expect(scheduled.length).toBe(2);
   });
 
-  it("writes a person's logins again once after an authentication failure, not again within a minute", async () => {
+  it("after a restart, the launcher's create-time home stays pinned even when their process starts first (review of mend#564, P2-2)", async () => {
     const core = coreCalls();
-    await withPersonExecutor(core, ({ steps }) =>
+    await withPersonExecutor(
+      core,
+      ({ steps }) =>
+        Effect.gen(function* () {
+          // Remembering nothing, Mend writes Alice's logins into her home again: still hers.
+          yield* start(steps, "user-alice");
+          yield* release(steps, []);
+        }),
+      { prepared: false },
+    );
+    expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([]);
+  });
+
+  it("writes a person's logins again once after an authentication failure, not again within a minute, and never into an idle person's home", async () => {
+    const core = coreCalls();
+    const releasable = await withPersonExecutor(core, ({ steps }) =>
       Effect.gen(function* () {
+        yield* steps.relogin({
+          workspace,
+          launchId: "launch-1",
+          accountId: "user-maria",
+          harness: "claude",
+          live: Effect.succeed(new Set(["user-alice"])),
+        });
         for (let i = 0; i < 3; i++) {
           yield* steps.relogin({
             workspace,
             launchId: "launch-1",
             accountId: "user-alice",
             harness: "claude",
+            live: Effect.succeed(new Set(["user-alice"])),
           });
         }
+        return steps.holdsReleasable(workspace.id);
       }),
     );
     expect(core.posts.map((post) => [post.onBehalfOf, post.logins])).toEqual([
       ["user-alice", { claude: true, github: true }],
     ]);
+    expect(releasable).toBe(false);
   });
 
-  it("at startup, knows the homes Core keeps and releases the one whose person runs nothing", async () => {
+  it("records a re-POST, so a release reaches it", async () => {
     const core = coreCalls();
-    const result = await withPersonExecutor(core, ({ steps, repo }) =>
+    const releasable = await withPersonExecutor(core, ({ steps }) =>
       Effect.gen(function* () {
-        const alice = yield* repo.ensureIdentity("user-alice");
-        const maria = yield* repo.ensureIdentity("user-maria");
-        core.homes = [
-          { home: `/home/${alice.name}`, onBehalfOf: "su-alice", providers: ["claude"] },
-          { home: `/home/${maria.name}`, onBehalfOf: "su-maria", providers: ["claude", "github"] },
-          { home: "/home/mgone2345", onBehalfOf: "su-bob", providers: ["codex"] },
-        ];
-        steps.forgetExecutor(workspace.id);
-        yield* steps.reconcileLogins({
+        yield* steps.relogin({
           workspace,
           launchId: "launch-1",
-          launcher: "user-alice",
-          live: new Set(["user-maria"]),
+          accountId: "user-maria",
+          harness: "claude",
+          live: Effect.succeed(new Set(["user-maria"])),
         });
-        const callsAfterReconcile = core.calls.length;
-        // Maria's next process: her home holds what it needs, so no POST.
-        yield* start(steps, "user-maria");
-        return { callsAfterReconcile };
+        return steps.holdsReleasable(workspace.id);
       }),
     );
-    expect(core.calls.slice(0, result.callsAfterReconcile)).toEqual([
-      "list",
-      "delete:/home/mgone2345",
+    expect(releasable).toBe(true);
+  });
+
+  it("at startup, lists Core's homes first and releases only the one whose person runs nothing, not one held for a start since", async () => {
+    const core = coreCalls();
+    const result = await withPersonExecutor(
+      core,
+      ({ steps, repo }) =>
+        Effect.gen(function* () {
+          const alice = yield* repo.ensureIdentity("user-alice");
+          const maria = yield* repo.ensureIdentity("user-maria");
+          const bob = yield* repo.ensureIdentity("user-bob");
+          core.homes = [
+            { home: `/home/${alice.name}`, onBehalfOf: "su-user-alice", providers: ["claude"] },
+            {
+              home: `/home/${maria.name}`,
+              onBehalfOf: "su-user-maria",
+              providers: ["claude", "github"],
+            },
+            { home: `/home/${bob.name}`, onBehalfOf: "su-user-bob", providers: ["codex"] },
+          ];
+          // Bob's first process since the restart: Mend holds his home now.
+          yield* start(steps, "user-bob", "codex");
+          const order: Array<string> = [];
+          yield* steps.reconcileLogins({
+            workspace,
+            launchId: "launch-1",
+            launcher: "user-alice",
+            // Read after the list; a snapshot that predates Bob's row.
+            live: Effect.sync(() => {
+              order.push(`live after ${core.calls.at(-1) ?? ""}`);
+              return new Set(["user-maria"]);
+            }),
+          });
+          const callsAfterReconcile = core.calls.length;
+          yield* start(steps, "user-maria");
+          yield* release(steps, ["user-maria", "user-bob"]);
+          return { callsAfterReconcile, order, maria, bob };
+        }),
+      { prepared: false },
+    );
+    expect(result.order).toEqual(["live after list"]);
+    // Nothing released: Alice's is pinned, Maria is live, Bob's is held for his start.
+    expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([]);
+    // Maria's next process: her home holds what it needs, so no POST for her.
+    expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(0);
+  });
+
+  it("at startup, releases a home Core holds for anyone but its person, never adopting it (review of mend#564, P3-2)", async () => {
+    const core = coreCalls();
+    const marias = await withPersonExecutor(
+      core,
+      ({ steps, repo }) =>
+        Effect.gen(function* () {
+          const maria = yield* repo.ensureIdentity("user-maria");
+          core.homes = [
+            { home: `/home/${maria.name}`, onBehalfOf: "su-user-alice", providers: ["claude"] },
+          ];
+          yield* steps.reconcileLogins({
+            workspace,
+            launchId: "launch-1",
+            launcher: "user-alice",
+            live: Effect.succeed(new Set(["user-maria"])),
+          });
+          yield* start(steps, "user-maria");
+          return maria;
+        }),
+      { prepared: false },
+    );
+    expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([
+      `delete:/home/${marias.name}`,
     ]);
-    expect(core.posts).toHaveLength(0);
+    // Her own logins are written for her start.
+    expect(core.posts.map((post) => post.onBehalfOf)).toEqual(["user-maria"]);
+  });
+
+  it("refuses a process whose launch Mend cannot name in a person worktree, never running it as root", async () => {
+    const result = await withPersonExecutor(coreCalls(), ({ steps, state }) =>
+      Effect.gen(function* () {
+        state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        return yield* steps
+          .processAs({
+            workspace,
+            launchId: null,
+            accountId: "user-alice",
+            sessionId: "sess-1",
+            worktreeId: "wt-1",
+            harness: "shell",
+          })
+          .pipe(Effect.flip);
+      }),
+    );
+    expect(result.message).toBe(UNKNOWN_LAUNCH_REFUSAL);
+  });
+
+  it("while Sealant cannot take the owner map, a fresh worktree runs shared before create, and a person one is refused", async () => {
+    const core = coreCalls();
+    core.ownerMap = false;
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps } = yield* stepsWith("person", state, { platform: platformOf(core) });
+        const fresh = yield* steps.decide(decideInput("launch-fresh"));
+        state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        const refused = yield* steps.decide(decideInput("launch-person")).pipe(Effect.flip);
+        return { fresh, refused: refused.message, recorded: [...state.launches.values()] };
+      }),
+    );
+    expect(result.fresh).toMatchObject({ layout: "shared", reason: NO_OWNER_MAP_REASON });
+    expect(result.refused).toBe(NO_OWNER_MAP_REFUSAL);
+    expect(result.recorded).toEqual([
+      expect.objectContaining({ layout: "shared", reason: NO_OWNER_MAP_REASON, confirmed: true }),
+    ]);
+    // Decided with no call to Core.
+    expect(core.imageReports).toBe(0);
   });
 });

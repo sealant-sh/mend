@@ -607,6 +607,11 @@ export const personHomeScript = (
     // it is a link to `~/.mend/opencode/auth.json` in the home, so a login written there in place
     // (opencode's own, and Mend's ChatGPT copy) never lands in saved state (decision 5). A
     // regular file found there (from before this layout) moves into the home, never over one.
+    // Root follows no link the person could have planted on the way (review of mend#564, P3-7).
+    `[ -L ${q(`${home}/${OPENCODE_LOGIN_DIR}`)} ] && fail "unexpected link: ${home}/${OPENCODE_LOGIN_DIR}"`,
+    ...[".local", ".local/share", ".local/share/opencode"].map(
+      (dir) => `[ -L ${q(`${saved}/${dir}`)} ] && fail "unexpected link: ${saved}/${dir}"`,
+    ),
     `mkdir -p ${q(`${home}/${OPENCODE_LOGIN_DIR}`)}`,
     `chmod 0700 ${q(`${home}/${OPENCODE_LOGIN_DIR}`)}`,
     `oc=${q(`${saved}/${OPENCODE_AUTH_IN_DATA}`)}; ock=${q(`${home}/${OPENCODE_LOGIN_DIR}/auth.json`)}`,

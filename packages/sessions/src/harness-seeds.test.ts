@@ -15,6 +15,7 @@ import {
   OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
   PI_SEED,
+  chatgptCopiesScrubArgv,
   withCodexMemory,
   launchesCodex,
   withCodexMemoryOff,
@@ -356,6 +357,48 @@ describe("pi and opencode seeds in a person's home (docs/adr/0016, decision 5)",
     };
     walk(saved);
     expect(regular).toEqual([]);
+  });
+});
+
+describe("a release removes Mend's ChatGPT copies (docs/adr/0016, decision 5)", () => {
+  it("drops only the copies, in place, and keeps a login the person made themselves", () => {
+    const home = makeHome();
+    write(
+      path.join(home, ".pi/agent/auth.json"),
+      JSON.stringify({
+        "openai-codex": { type: "oauth", access: "a", refresh: COPY_REFRESH_TOKEN },
+        anthropic: { type: "oauth", access: "mine", refresh: "real" },
+      }),
+    );
+    fs.mkdirSync(path.join(home, ".mend/opencode"), { recursive: true });
+    const real = path.join(home, ".mend/opencode/auth.json");
+    write(
+      real,
+      JSON.stringify({ openai: { type: "oauth", access: "b", refresh: COPY_REFRESH_TOKEN } }),
+    );
+    // opencode's file is reached through the link in its saved data directory: still a file.
+    const [command, ...args] = chatgptCopiesScrubArgv(home);
+    const run = spawnSync(command ?? "node", args, { encoding: "utf8" });
+    expect(run.status).toBe(0);
+    expect(readJson(path.join(home, ".pi/agent/auth.json"))).toEqual({
+      anthropic: { type: "oauth", access: "mine", refresh: "real" },
+    });
+    expect(readJson(real)).toEqual({});
+    // A login the person made in opencode (a real refresh token) stays.
+    write(real, JSON.stringify({ openai: { type: "oauth", access: "c", refresh: "real" } }));
+    spawnSync(command ?? "node", args, { encoding: "utf8" });
+    expect(readJson(real)).toMatchObject({ openai: { refresh: "real" } });
+  });
+
+  it("never writes through a link put where a copy was", () => {
+    const home = makeHome();
+    const target = path.join(home, "target.json");
+    write(target, JSON.stringify({ "openai-codex": { refresh: COPY_REFRESH_TOKEN } }));
+    fs.mkdirSync(path.join(home, ".pi/agent"), { recursive: true });
+    fs.symlinkSync(target, path.join(home, ".pi/agent/auth.json"));
+    const [command, ...args] = chatgptCopiesScrubArgv(home);
+    expect(spawnSync(command ?? "node", args, { encoding: "utf8" }).status).toBe(0);
+    expect(readJson(target)).toEqual({ "openai-codex": { refresh: COPY_REFRESH_TOKEN } });
   });
 });
 

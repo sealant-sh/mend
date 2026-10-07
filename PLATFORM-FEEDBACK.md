@@ -30,6 +30,10 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   "Connect Claude to start a session here" and to leave an optional provider out. A stable code with
   the provider (`connected-account-missing` / `connected-account-invalid` and `provider: "claude"`)
   would remove that coupling.
+- **Missing:** pi's and opencode's ChatGPT logins as providers of the credentials API. Mend writes
+  copies of the Codex login into `~/.pi/agent/auth.json` and opencode's `auth.json` itself, so a
+  release has to remove them with an exec of its own; Core writing them per home would release them
+  with everything else.
 - **Missing:** a put that leaves out a provider the person has not connected, rather than failing
   whole. A joiner with no GitHub login costs Mend a second `put` (`github: null`); one call with
   "write what is connected, say what is not" would keep every join at exactly one Core call.

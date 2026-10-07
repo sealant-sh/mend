@@ -554,6 +554,25 @@ describe("a person's home and saved directory (decision 2)", () => {
     expect(fs.existsSync(path.join(saved, ".codex/auth.json"))).toBe(false);
   });
 
+  it("follows no link planted on the way to opencode's logins: it fails instead", () => {
+    for (const plant of ["home", "saved"] as const) {
+      const { home, saved, script, root } = layout();
+      expect(sh(script).status).toBe(0);
+      const elsewhere = path.join(root, "elsewhere");
+      fs.mkdirSync(elsewhere, { recursive: true });
+      const at =
+        plant === "home"
+          ? path.join(home, ".mend/opencode")
+          : path.join(saved, ".local/share/opencode");
+      fs.rmSync(at, { recursive: true, force: true });
+      fs.symlinkSync(elsewhere, at);
+      const run = sh(script);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("unexpected link");
+      expect(fs.readdirSync(elsewhere)).toEqual([]);
+    }
+  });
+
   it("keeps Claude's file history in the home, never in P: it holds copies of edited secret files", () => {
     const { home, saved, script } = layout();
     expect(sh(script).status).toBe(0);

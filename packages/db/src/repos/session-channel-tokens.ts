@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -81,11 +81,16 @@ export class SessionChannelTokensRepo extends Context.Service<
     /** Revoke the tokens of one launch — its executor's end was observed. Idempotent. */
     readonly revokeLaunch: (launchId: string) => Effect.Effect<void>;
     /**
-     * Revoke one person's tokens in one launch (docs/adr/0016, decision 4): their logins there
-     * were released, with their last process. Their next process in that executor is given a new
-     * one. The launch's own token and everyone else's stay. Idempotent.
+     * Revoke one person's tokens in one launch issued before `issuedBefore` (docs/adr/0016,
+     * decision 4): their logins there were released, with their last process, or their start was
+     * refused. A token minted for a start after that moment stays, and so do the launch's own
+     * token and everyone else's. Idempotent.
      */
-    readonly revokePerson: (launchId: string, accountId: string) => Effect.Effect<void>;
+    readonly revokePerson: (
+      launchId: string,
+      accountId: string,
+      issuedBefore: Date,
+    ) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionChannelTokensRepo") {}
 
@@ -195,6 +200,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
       const revokePerson = Effect.fn("SessionChannelTokensRepo.revokePerson")(function* (
         launchId: string,
         accountId: string,
+        issuedBefore: Date,
       ) {
         yield* db
           .update(sessionChannelTokens)
@@ -204,6 +210,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
               eq(sessionChannelTokens.launchId, launchId),
               eq(sessionChannelTokens.sessionId, personTokenSession(accountId)),
               eq(sessionChannelTokens.accountId, accountId),
+              lt(sessionChannelTokens.createdAt, issuedBefore),
               isNull(sessionChannelTokens.revokedAt),
             ),
           )
@@ -227,6 +234,7 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
         readonly sessionId: string;
         readonly launchId: string;
         readonly accountId: string | null;
+        readonly createdAt: number;
         revoked: boolean;
       }
     >();
@@ -239,6 +247,7 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
         readonly sessionId: string;
         readonly launchId: string;
         readonly accountId: string | null;
+        readonly createdAt: number;
       }) => boolean,
     ) =>
       Effect.sync(() => {
@@ -252,6 +261,7 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
             sessionId,
             launchId,
             accountId: null,
+            createdAt: Date.now(),
             revoked: false,
           });
           return token;
@@ -263,6 +273,7 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
             sessionId: personTokenSession(accountId),
             launchId,
             accountId,
+            createdAt: Date.now(),
             revoked: false,
           });
           return token;
@@ -283,12 +294,13 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
         }),
       revoke: (sessionId) => revokeWhere((row) => row.sessionId === sessionId),
       revokeLaunch: (launchId) => revokeWhere((row) => row.launchId === launchId),
-      revokePerson: (launchId, accountId) =>
+      revokePerson: (launchId, accountId, issuedBefore) =>
         revokeWhere(
           (row) =>
             row.launchId === launchId &&
             row.accountId === accountId &&
-            row.sessionId === personTokenSession(accountId),
+            row.sessionId === personTokenSession(accountId) &&
+            row.createdAt < issuedBefore.getTime(),
         ),
     };
   },

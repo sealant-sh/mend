@@ -294,6 +294,7 @@ import {
   type LaunchLayout,
   SHARED_AS_BEFORE,
   isAuthenticationFailure,
+  layoutRefused,
   makeHarnessLayoutSteps,
 } from "./harness-layout-steps.ts";
 import { gitAuthorConfigText, identityFilesOf, processUserOf } from "./harness-layout.ts";
@@ -6857,7 +6858,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),
         discardTicket: (ticket) => discardPickup(ticket),
-        revokePersonToken: (launchId, accountId) => channelTokens.revokePerson(launchId, accountId),
+        revokePersonToken: (launchId, accountId, issuedBefore) =>
+          channelTokens.revokePerson(launchId, accountId, issuedBefore),
       });
       // Service lifecycle calls are rare and may span platform I/O. One engine-local permit keeps
       // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
@@ -10081,6 +10083,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : null;
         const withLayoutOptions = (options: CreateOptions): CreateOptions =>
           ownerMap === null || withOwnerMap === null ? options : withOwnerMap(options, ownerMap);
+        // A person launch's logins go into the launcher's own home, never `$HOME` and the
+        // environment (docs/adr/0016, decision 5): decided by the layout alone, and a person
+        // launch that could not send it is refused rather than run with the logins elsewhere.
+        const credentialsHome =
+          launchLayout.layout === "person"
+            ? {
+                path: linuxHomeOf(launchLayout.launcher),
+                uid: launchLayout.launcher.uid,
+                gid: MEND_GROUP.gid,
+              }
+            : undefined;
+        if (credentialsHome !== undefined && input.createKey === undefined) {
+          return yield* layoutRefused(
+            "This launch runs each person as their own user and has no create key to send the launcher's home with, so nothing was created.",
+          );
+        }
         let createAsked = false;
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
           Effect.suspend(() => {
@@ -10151,15 +10169,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   : {
                       idempotencyKey: input.createKey.key,
                       launchId: input.launchId,
-                      ...(launchLayout.layout === "person"
-                        ? {
-                            credentialsHome: {
-                              path: linuxHomeOf(launchLayout.launcher),
-                              uid: launchLayout.launcher.uid,
-                              gid: MEND_GROUP.gid,
-                            },
-                          }
-                        : {}),
+                      ...(credentialsHome === undefined ? {} : { credentialsHome }),
                     },
                 input.watchCreate,
               ),
@@ -13520,7 +13530,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               workspace: workspace.value,
               launchId: launch.launchId,
               launcher: creator.ownerUserId,
-              live: yield* peopleLiveIn(workspaceId),
+              live: peopleLiveIn(workspaceId),
             });
           }
         }).pipe(
@@ -13546,6 +13556,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchId,
             accountId: session.ownerUserId,
             harness: agentProcess.harness ?? session.harness,
+            live: peopleLiveIn(agentProcess.sealantWorkspaceId),
           });
         }).pipe(
           Effect.catchCause((cause) =>
@@ -13567,9 +13578,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // A turn refused for its login, in a person executor: its person's logins are
             // written into their home once more (docs/adr/0016, decision 5), off the turn's path.
             if (
+              layoutSteps.personPossible() &&
               turn.status === "failed" &&
-              isAuthenticationFailure(turn.error) &&
-              layoutSteps.personPossible()
+              isAuthenticationFailure(turn.error)
             ) {
               yield* reloginAfterFailure(agentProcess).pipe(Effect.forkIn(scope));
             }
@@ -14190,9 +14201,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             interactiveShell ? "shell" : session.harness,
           ).pipe(
             Effect.tapError((error) =>
-              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
-                Effect.ignore,
-              ),
+              settleSession(
+                sessionId,
+                "failed",
+                // A start refused before anything ran (a login not connected, a launch Mend
+                // cannot name) is no failed resume: the session never ran here.
+                error.code === "person_login_refused" || error.code === "harness_layout_refused"
+                  ? `launch refused · ${error.message}`
+                  : `resume failed: ${error.message}`,
+              ).pipe(Effect.ignore),
             ),
           );
           const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
@@ -15691,6 +15708,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   sealant.getWorkspace(process.sealantWorkspaceId),
                 ),
                 live: peopleLiveIn(process.sealantWorkspaceId),
+                launcher: sessions
+                  .executorSessionOf(process.sealantWorkspaceId)
+                  .pipe(Effect.map((creator) => creator?.ownerUserId ?? null)),
               });
             }).pipe(Effect.forkIn(scope), Effect.asVoid)
           : Effect.void;
