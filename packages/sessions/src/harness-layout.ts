@@ -597,7 +597,7 @@ const personHomeAsPerson = (places: { readonly home: string; readonly saved: str
     `chmod 0700 "$H/.mend"`,
     // opencode keeps its logins (`auth.json`) in its data directory, which is saved (`P`): there
     // it is a link to `~/.mend/opencode/auth.json` in the home, so a login written there in place
-    // (opencode's own, and Mend's ChatGPT copy) never lands in saved state (decision 5). A
+    // (opencode's own, and Core's ChatGPT login, sealant#336) never lands in saved state. A
     // regular file found there (from before this layout) moves into the home, never over one.
     `mkdir -p "$H/${OPENCODE_LOGIN_DIR}"`,
     `chmod 0700 "$H/${OPENCODE_LOGIN_DIR}"`,

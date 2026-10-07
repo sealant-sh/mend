@@ -1,9 +1,10 @@
 /**
  * The person layout's platform surface (docs/adr/0016), passed through to Core's SDK (0.39): the
  * image's per-person capability before create (`workspaces.inspectImage`), processes as a user
- * (`withProcessUser`, in the client), and one person's logins per home of a running executor
- * (`workspace.credentials`). Mend names people by their Mend account; Core by their Sealant user,
- * which the identity mapping answers from Mend's own table.
+ * (`withProcessUser`, in the client), one person's logins per home of a running executor
+ * (`workspace.credentials`), and a person's dotfiles applied as them (`workspace.dotfiles`). Mend
+ * names people by their Mend account; Core by their Sealant user, which the identity mapping
+ * answers from Mend's own table.
  */
 import type { WorkspaceImage } from "@mend/domain";
 import type {
@@ -24,7 +25,6 @@ import {
   type LoginProvider,
   PersonLayoutPlatform,
   UNKNOWN_IMAGE_REPORT,
-  personLayoutUnsupported,
 } from "./person-layout.ts";
 
 const call = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: toPlatformError });
@@ -158,17 +158,8 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
 
       return {
         processUser: true,
-        // Core's `workspace.dotfiles.apply` (sealant#334) is not in a build Mend pins yet
-        // (PLATFORM-FEEDBACK.md, 2026-10-07). With the pin, this is `true` and `applyDotfiles`
-        // below is one pass-through:
-        //   Effect.gen(function* () {
-        //     const onBehalfOf = yield* clients.sealantUserId(input.onBehalfOf);
-        //     const applied = yield* call(() => workspace.dotfiles.apply({ onBehalfOf,
-        //       user: input.user?.name ?? "root", home: input.home, archives: input.archives }));
-        //     return { bootstrap: applied.bootstrap === null ? null : {
-        //       ended: call(() => applied.bootstrap.wait()).pipe(Effect.map((done) => ({ exitCode: done.exitCode }))) } };
-        //   })
-        dotfilesUser: false,
+        // Core 0.39.0-next.703 (sealant#334, sealantd 0.20.0-next.152): `workspace.dotfiles.apply`.
+        dotfilesUser: true,
         // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, and Core passes
         // it to sealantd as `SEALANT_CAPTURE_OWNER_MAP` at boot.
         withOwnerMap: (options, map) =>
@@ -179,7 +170,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         postCredentials: Effect.fn("PersonLayoutPlatform.postCredentials")(
           function* (workspace, input) {
             const onBehalfOf = yield* clients.sealantUserId(input.onBehalfOf);
-            yield* boundedCall("write", input.home, () =>
+            const written = yield* boundedCall("write", input.home, () =>
               workspace.credentials.put({
                 home: input.home,
                 onBehalfOf,
@@ -187,8 +178,10 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
                   ? {}
                   : { uid: input.owner.uid, gid: input.owner.gid }),
                 ...input.logins,
+                ...(input.partial === true ? { partial: true } : {}),
               }),
             );
+            return { skipped: written.skipped };
           },
         ),
         deleteCredentials: Effect.fn("PersonLayoutPlatform.deleteCredentials")(
@@ -203,14 +196,36 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
           const homes = yield* call(() => workspace.credentials.list());
           return homes.map(heldHomeOf);
         }),
-        // No SDK surface yet for sealantd's dotfiles verb (PLATFORM-FEEDBACK.md, 2026-10-07).
-        applyDotfiles: () =>
-          Effect.fail(
-            personLayoutUnsupported(
-              "apply dotfiles as a person",
-              "sealantd Delivery 5, Core Delivery 8",
-            ),
-          ),
+        // One pass-through: the archives as Mend resolved them (a repository Mend cloned with
+        // the person's own git access, then their synced snapshot), applied as their user.
+        applyDotfiles: Effect.fn("PersonLayoutPlatform.applyDotfiles")(
+          function* (workspace, input) {
+            const onBehalfOf = yield* clients.sealantUserId(input.onBehalfOf);
+            const applied = yield* call(() =>
+              workspace.dotfiles.apply({
+                onBehalfOf,
+                user: input.user.name,
+                home: input.home,
+                archives: input.archives.map((archive) => ({
+                  data: archive.data,
+                  manager: archive.manager,
+                  bootstrap: archive.bootstrap,
+                })),
+              }),
+            );
+            const bootstrap = applied.bootstrap;
+            if (bootstrap === null) return { bootstrap: null };
+            // One wait, however many callers ask how it ended (the start, then the session line).
+            let waited: Promise<{ readonly exitCode: number }> | undefined;
+            return {
+              bootstrap: {
+                ended: call(() => (waited ??= bootstrap.wait())).pipe(
+                  Effect.map((done) => ({ exitCode: done.exitCode })),
+                ),
+              },
+            };
+          },
+        ),
       };
     }),
   );

@@ -381,6 +381,7 @@ import {
   DOTFILES_APPLY_BOUND_MS,
   BOOTSTRAP_WAIT_BOUND_MS,
   DOTFILES_NOT_PER_PERSON,
+  dotfilesRefusalWords,
   FIRST_PROCESS_DONE,
   opencodeDatabaseOf,
   opencodeScrubArgv,
@@ -756,9 +757,31 @@ const withPermissionDefaults = (
 const withHarnessBootstrap = (
   harness: string,
   argv: ReadonlyArray<string>,
-  options: { readonly captured?: boolean } = {},
+  options: { readonly captured?: boolean; readonly person?: boolean } = {},
 ): ReadonlyArray<string> =>
   withHarnessSetup(harness, withPermissionDefaults(harness, argv), options);
+
+/**
+ * A launch's dotfiles record with every source it resolved said not applied for `reason` (none
+ * without one), beside what was already left out.
+ */
+const withDotfilesNotApplied = (
+  notApplied: ReadonlyArray<SessionDotfilesNotApplied>,
+  resolved: { readonly repository: object | null; readonly snapshotSha: string | null },
+  reason: string | null,
+): ReadonlyArray<SessionDotfilesNotApplied> => {
+  if (reason === null) return notApplied;
+  const said = new Set(notApplied.map((entry) => entry.source));
+  return [
+    ...notApplied,
+    ...(resolved.repository === null || said.has("repository")
+      ? []
+      : [{ source: "repository" as const, reason }]),
+    ...(resolved.snapshotSha === null || said.has("snapshot")
+      ? []
+      : [{ source: "snapshot" as const, reason }]),
+  ];
+};
 
 /** What one memory delivery did, counted; a file it could not place is said by name. */
 const logAgentMemoryDelivered = (
@@ -9943,7 +9966,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           layout: outcome.layout,
           fallback: outcome.layout === "shared" ? outcome.fallback : null,
           opencode: outcome.layout === "person" ? outcome.opencode : [],
-          bootstrap: outcome.layout === "shared" ? (outcome.bootstrap ?? null) : null,
+          dotfilesNotApplied:
+            outcome.layout === "shared" ? (outcome.dotfilesNotApplied ?? null) : null,
         };
       });
 
@@ -10542,8 +10566,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           layoutFallback: prepared?.fallback ?? null,
           /** People whose restored opencode database prepare found (decision 8a). */
           opencodeRestored: prepared?.opencode ?? [],
-          /** The launcher's `install.sh` from decision 1's fallback to `/root`, if any. */
-          fallbackBootstrap: prepared?.bootstrap ?? null,
           environmentManifest,
           dotfiles: {
             repository:
@@ -10551,7 +10573,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ? null
                 : { url: dotfilesRepository.url, ref: dotfilesRepository.ref },
             snapshotSha: dotfilesSnapshotSha,
-            notApplied: dotfilesNotApplied,
+            // Decision 1's fallback to `/root` applies no dotfiles: each source says why.
+            notApplied: withDotfilesNotApplied(
+              dotfilesNotApplied,
+              { repository: dotfilesRepository, snapshotSha: dotfilesSnapshotSha },
+              prepared?.dotfilesNotApplied ?? null,
+            ),
           },
           /**
            * A person launch's dotfiles, applied as the launcher once prepare has made them
@@ -10905,7 +10932,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           layoutFallback: null,
           opencodeRestored: [],
           personDotfiles: [],
-          fallbackBootstrap: null,
         };
       });
 
@@ -12661,9 +12687,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ).pipe(Effect.annotateLogs({ sessionId: session.id, entries: relinked.join(", ") }));
             }
           } else {
-            const reason = applied.failure.message;
+            // Core's refusal as the session line says it (decision 13), by its stable code.
+            const reason = dotfilesRefusalWords(applied.failure);
             yield* Effect.logWarning("session engine: a person's dotfiles were not applied").pipe(
-              Effect.annotateLogs({ sessionId: session.id, person: as.person.name, reason }),
+              Effect.annotateLogs({
+                sessionId: session.id,
+                person: as.person.name,
+                code: applied.failure.code,
+                reason,
+              }),
             );
             record = {
               ...record,
@@ -14588,12 +14620,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolStart === null
             ? withHarnessBootstrap(session.harness, memoryShapedArgv, {
                 captured: capture !== null,
+                person: startAs !== null,
               })
-            : withHarnessSetup(session.harness, memoryShapedArgv, { captured: capture !== null });
+            : withHarnessSetup(session.harness, memoryShapedArgv, {
+                captured: capture !== null,
+                person: startAs !== null,
+              });
         // The launcher's agent starts after their `install.sh` ends, as it did when the script ran
         // at boot (docs/adr/0016, decision 11), bounded.
         const bootstrapWaited = yield* awaitBootstrap(
-          personDelivered?.bootstrap ?? provisioned.fallbackBootstrap,
+          personDelivered?.bootstrap ?? null,
           Effect.succeed(true),
         );
         const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
@@ -15541,8 +15577,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             protocolStart === null
               ? withHarnessBootstrap(session.harness, memoryShapedArgv, {
                   captured: capture !== null,
+                  person: personStart !== null,
                 })
-              : withHarnessSetup(session.harness, memoryShapedArgv, { captured: capture !== null });
+              : withHarnessSetup(session.harness, memoryShapedArgv, {
+                  captured: capture !== null,
+                  person: personStart !== null,
+                });
           // A person's `install.sh` at their first process here: their agent starts beside it,
           // unless they turned on "Start my agents after install.sh" (docs/adr/0016, decision 11).
           const bootstrapWaited = yield* awaitBootstrap(

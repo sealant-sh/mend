@@ -6,7 +6,13 @@ import {
   makeHarnessLayoutsMemoryState,
 } from "@mend/db";
 import { OrganizationId, WorktreeId, defaultWorkspaceImage } from "@mend/domain";
-import { type HomeLogins, PersonLayoutPlatform, SealantPlatformError } from "@mend/sealant";
+import {
+  type HomeLogins,
+  type LoginProvider,
+  type LoginSkip,
+  PersonLayoutPlatform,
+  SealantPlatformError,
+} from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
@@ -14,10 +20,13 @@ import { describe, expect, it } from "vitest";
 import {
   type PersonHome,
   UNKNOWN_LAUNCH_REFUSAL,
+  loginNeedOf,
   loginRefusal,
   makeHarnessLayoutSteps,
+  refusedAccountOf,
 } from "./harness-layout-steps.ts";
 import { DOTFILES_BLOCK_REASON } from "./harness-layout.ts";
+import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
 
 /**
  * The per-person steps' own memory (docs/adr/0016): the layout each launch runs, as the session
@@ -77,6 +86,7 @@ const workspace: Workspace = {
   },
   expire: async () => undefined,
   image: async () => null,
+  dotfiles: { apply: never },
   credentials: { put: never, release: never, list: async () => [] },
 };
 
@@ -89,13 +99,17 @@ interface CoreCalls {
     readonly home: string;
     readonly owner: { readonly uid: number; readonly gid: number } | undefined;
     readonly logins: HomeLogins;
+    readonly partial: boolean;
   }>;
-  /** Core's answer to the nth POST (0-based): a failure, or nothing for a write. */
-  answer: (index: number, logins: HomeLogins) => SealantPlatformError | null;
+  /**
+   * Core's answer to the nth POST (0-based): a failure, the providers a partial POST leaves out
+   * (only those it named), or nothing for a write.
+   */
+  answer: (index: number, logins: HomeLogins) => CoreAnswer;
   homes: ReadonlyArray<{
     home: string;
     onBehalfOf: string;
-    providers: ReadonlyArray<"claude" | "codex" | "github">;
+    providers: ReadonlyArray<LoginProvider>;
   }>;
   /** Held open, a DELETE waits on it after saying so in `calls`. */
   deleteGate: Deferred.Deferred<void> | null;
@@ -103,6 +117,8 @@ interface CoreCalls {
   postGate: Deferred.Deferred<void> | null;
   imageReports: number;
 }
+
+type CoreAnswer = SealantPlatformError | ReadonlyArray<LoginSkip> | null;
 
 const coreCalls = (): CoreCalls => ({
   calls: [],
@@ -114,10 +130,10 @@ const coreCalls = (): CoreCalls => ({
   imageReports: 0,
 });
 
-const platformOf = (core: CoreCalls) =>
+const platformOf = (core: CoreCalls, can: { readonly dotfilesUser?: boolean } = {}) =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
-    dotfilesUser: false,
+    dotfilesUser: can.dotfilesUser ?? true,
     withOwnerMap: (options) => options,
     imageReport: () =>
       Effect.sync(() => {
@@ -132,12 +148,20 @@ const platformOf = (core: CoreCalls) =>
           home: input.home,
           owner: input.owner,
           logins: input.logins,
+          partial: input.partial === true,
         });
         core.calls.push(`post:${input.onBehalfOf}:${input.home}`);
-        const failure = core.answer(index, input.logins);
+        const answer = core.answer(index, input.logins);
         const gate = core.postGate;
         return (gate === null ? Effect.void : Deferred.await(gate)).pipe(
-          Effect.andThen(failure === null ? Effect.void : Effect.fail(failure)),
+          Effect.andThen(
+            answer instanceof SealantPlatformError
+              ? Effect.fail(answer)
+              : Effect.succeed({
+                  // Core leaves out only providers the POST named for an account.
+                  skipped: (answer ?? []).filter((skip) => input.logins[skip.provider] === true),
+                }),
+          ),
         );
       }),
     deleteCredentials: (_workspace, input) =>
@@ -403,20 +427,13 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
   });
 });
 
-const notConnected = (provider: string) =>
-  new SealantPlatformError({
-    code: "WorkspaceNotFoundError",
-    status: 404,
-    message: `No ${provider} connected account matches "default".`,
-    cause: null,
-  });
-const needsReconnect = (provider: string) =>
-  new SealantPlatformError({
-    code: "connected-account-invalid",
-    status: 409,
-    message: `Connected ${provider} account "default" is invalid — reconnect it.`,
-    cause: null,
-  });
+/** What a partial POST answers for a provider Core left out (sealant#337). */
+const skipped = (
+  provider: LoginProvider,
+  reason: LoginSkip["reason"],
+): ReadonlyArray<LoginSkip> => [{ provider, reason, message: `${provider}: ${reason}` }];
+const notConnected = (provider: LoginProvider) => skipped(provider, "connected-account-missing");
+const needsReconnect = (provider: LoginProvider) => skipped(provider, "connected-account-invalid");
 
 describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
   it("a launch that could be person never claims a standby: its owner map is read only at boot", async () => {
@@ -445,6 +462,10 @@ describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
     expect(result).toEqual([false, false, false, true]);
   });
 });
+
+/** `refusedAccountOf` over an error with these fields. */
+const refusedOf = (fields: { code: string; status: number; provider?: string; message: string }) =>
+  refusedAccountOf(new SealantPlatformError({ ...fields, cause: null }));
 
 describe("logins per person (docs/adr/0016, decision 5)", () => {
   interface Executor {
@@ -557,6 +578,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         home: `/home/${result.maria.name}`,
         owner: { uid: result.maria.uid, gid: 40_000 },
         logins: { claude: true, github: true },
+        partial: true,
       },
     ]);
     // Nothing anyone ran for Maria reads, names or writes Alice's home.
@@ -622,49 +644,100 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
             return has;
           }),
         });
-        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
+        const noVerb = platformOf(coreCalls(), { dotfilesUser: false });
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+          platform: noVerb,
+        });
         const blocked = yield* steps.decide(withDotfiles(true));
         const free = yield* steps.decide({
           ...withDotfiles(false),
           worktreeId: WorktreeId.make("wt-2"),
         });
-        const off = yield* stepsWith("shared", makeHarnessLayoutsMemoryState());
+        const off = yield* stepsWith("shared", makeHarnessLayoutsMemoryState(), {
+          platform: noVerb,
+        });
         const flagOff = yield* off.steps.decide({
           ...withDotfiles(true),
           worktreeId: WorktreeId.make("wt-3"),
         });
-        return { blocked, free, flagOff };
+        // Core 0.39.0-next.703 applies them as the launcher (sealant#334): person, nothing asked.
+        const verb = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
+        const applied = yield* verb.steps.decide({
+          ...withDotfiles(true),
+          worktreeId: WorktreeId.make("wt-4"),
+        });
+        return { blocked, free, flagOff, applied };
       }),
     );
     expect(result.blocked).toMatchObject({ layout: "shared", reason: DOTFILES_BLOCK_REASON });
     expect(result.free.layout).toBe("person");
     expect(result.flagOff.layout).toBe("shared");
-    // Read only where it decides something: never with the flag off.
+    expect(result.applied.layout).toBe("person");
+    // Read only where it decides something: never with the flag off, nor with the verb.
     expect(asked).toEqual(["true", "false"]);
   });
 
-  it("leaves out a provider the joiner has not connected, and does not ask again for it", async () => {
+  it("leaves out a provider the joiner has not connected in the same one call, and does not ask again for it (sealant#337)", async () => {
     const core = coreCalls();
-    core.answer = (index, logins) =>
-      index === 0 && logins.github === true ? notConnected("github") : null;
+    core.answer = () => notConnected("github");
     await withPersonExecutor(core, ({ steps }) =>
       Effect.gen(function* () {
         yield* start(steps, "user-maria");
         yield* start(steps, "user-maria");
       }),
     );
-    expect(core.posts.map((post) => post.logins)).toEqual([
-      { claude: true, github: true },
-      { claude: true, github: null },
+    // One partial call: Core wrote Claude and left GitHub out; no second `github: null` call.
+    expect(core.posts.map((post) => [post.logins, post.partial])).toEqual([
+      [{ claude: true, github: true }, true],
     ]);
   });
 
-  it("refuses a join whose harness login is not connected or needs reconnecting, and revokes the token minted for it", async () => {
+  it("a pi or opencode join names its ChatGPT login for Core to write, in the same one call (sealant#336)", async () => {
+    for (const harness of ["pi", "opencode"] as const) {
+      const core = coreCalls();
+      // Maria's Codex account is not a ChatGPT login: Core leaves pi's or opencode's out.
+      core.answer = () => skipped(harness, "connected-account-unsupported");
+      const result = await withPersonExecutor(core, ({ steps, execs }) =>
+        Effect.gen(function* () {
+          const started = yield* start(steps, "user-maria", harness);
+          yield* start(steps, "user-maria", harness);
+          return { started, execs };
+        }),
+      );
+      expect(core.posts.map((post) => post.logins)).toEqual([
+        { claude: true, codex: true, github: true, [harness]: true },
+      ]);
+      // An open workbench: nothing it leaves out refuses it.
+      expect(result.started).not.toBeNull();
+      // Mend writes no ChatGPT copy of its own into her home.
+      expect(result.execs.some((exec) => exec.script.includes("openai"))).toBe(false);
+    }
+    expect(loginNeedOf("shell").optional).toEqual(["claude", "codex", "github"]);
+  });
+
+  it("the launcher's pi start asks Core for pi's login only: the create wrote the rest", async () => {
+    const core = coreCalls();
+    await withPersonExecutor(core, ({ steps }) =>
+      Effect.gen(function* () {
+        yield* start(steps, "user-alice", "pi");
+        yield* start(steps, "user-alice", "pi");
+      }),
+    );
+    expect(core.posts.map((post) => [post.onBehalfOf, post.logins])).toEqual([
+      ["user-alice", { codex: true, pi: true }],
+    ]);
+  });
+
+  it("refuses a join whose harness login is not connected or needs reconnecting, by Core's reason, and revokes the token minted for it", async () => {
     for (const [failure, words] of [
       [notConnected("claude"), "Connect Claude to start a session here."],
       [
         needsReconnect("claude"),
         "Your Claude login needs reconnecting. Reconnect Claude to start a session here.",
+      ],
+      [
+        skipped("claude", "login-file-unusable"),
+        "Your Claude login could not be written into your home in this workspace: its file there is not a plain file of yours. Start a new worktree, or remove the file.",
       ],
     ] as const) {
       const core = coreCalls();
@@ -681,13 +754,16 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         }),
       );
       expect(result.refused.message).toBe(words);
-      expect(words).toBe(loginRefusal("claude", failure.code === "connected-account-invalid"));
+      expect(words).toBe(loginRefusal("claude", failure[0]?.reason ?? "connected-account-missing"));
       // Her user and home were made beside the POST; the token minted for her is revoked.
       expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual([
         "revoke:user-maria",
       ]);
-      expect(result.releasable).toBe(false);
+      // The one partial call wrote her GitHub login: recorded, so the release after a refused
+      // start reaches it.
+      expect(result.releasable).toBe(true);
       expect(result.again).toBe(1);
+      expect(core.posts.every((post) => post.partial)).toBe(true);
       expect(core.calls.filter((call) => call.startsWith("post:user-alice"))).toEqual([]);
     }
   });
@@ -707,7 +783,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.posts).toHaveLength(2);
   });
 
-  it("releases a person's logins once nothing of theirs runs: Core's files, Mend's ChatGPT copies as them, and their token", async () => {
+  it("releases a person's logins once nothing of theirs runs: Core's files, ChatGPT logins included, and their token", async () => {
     const core = coreCalls();
     const result = await withPersonExecutor(core, ({ steps, repo, revoked, execs, forks }) =>
       Effect.gen(function* () {
@@ -715,7 +791,6 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         const maria = yield* repo.ensureIdentity("user-maria");
         const releasable = steps.holdsReleasable(workspace.id);
         yield* release(steps, ["user-alice"]);
-        // The ChatGPT copies are removed off the path: run what was forked.
         for (const fork of forks.splice(0)) yield* fork;
         const afterRelease = steps.holdsReleasable(workspace.id);
         const homeExecs = execs.length;
@@ -735,10 +810,9 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([
       `delete:/home/${result.maria.name}`,
     ]);
-    const scrub = result.execs.find((exec) => exec.script.startsWith("node -e"));
-    expect(scrub?.user).toBe(result.maria.name);
-    expect(scrub?.script).toContain(`/home/${result.maria.name}/.pi/agent/auth.json openai-codex`);
-    expect(scrub?.script).toContain(`/home/${result.maria.name}/.mend/opencode/auth.json openai`);
+    // Core's release removes pi's and opencode's ChatGPT logins with the rest (sealant#336):
+    // Mend runs nothing of its own in her home for it.
+    expect(result.execs.some((exec) => exec.script.startsWith("node -e"))).toBe(false);
     expect(result.revoked.map((entry) => entry.accountId)).toEqual(["user-maria"]);
     // Her next start makes her again (a new token) and writes her logins again.
     expect(result.rehomed).toBe(1);
@@ -1016,17 +1090,17 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     }
   });
 
-  it("at startup, looks again after the grace at a home it left for a start", async () => {
+  it("at startup, leaves a home a refused start recorded, and the release after that start looks again after the grace", async () => {
     const core = coreCalls();
-    const laterChecks = await withPersonExecutor(
+    const checks = await withPersonExecutor(
       core,
       ({ steps, repo, forks }) =>
         Effect.gen(function* () {
           const maria = yield* repo.ensureIdentity("user-maria");
           core.homes = [
-            { home: `/home/${maria.name}`, onBehalfOf: "su-user-maria", providers: ["claude"] },
+            { home: `/home/${maria.name}`, onBehalfOf: "su-user-maria", providers: ["github"] },
           ];
-          // A refused start of hers sets its time and records nothing.
+          // A refused start of hers: the partial call wrote her GitHub login, recorded.
           core.answer = () => notConnected("claude");
           yield* start(steps, "user-maria").pipe(Effect.ignore);
           const before = forks.length;
@@ -1036,15 +1110,18 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
             launcher: "user-alice",
             live: Effect.succeed(new Set<string>()),
           });
-          return forks.length - before;
+          const byReconcile = forks.length - before;
+          // The engine releases after a refused start: inside the grace, it looks again later.
+          yield* release(steps, []);
+          return { byReconcile, byRelease: forks.length - before - byReconcile };
         }),
       { grace: Duration.minutes(1), prepared: false },
     );
     expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([]);
-    expect(laterChecks).toBe(1);
+    expect(checks).toEqual({ byReconcile: 0, byRelease: 1 });
   });
 
-  it("at startup, a home of someone idle is released whole: Core's files, their ChatGPT copies as them, their token", async () => {
+  it("at startup, a home of someone idle is released whole: Core's files and their token, and nothing run in it", async () => {
     const core = coreCalls();
     const result = await withPersonExecutor(
       core,
@@ -1065,9 +1142,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       { prepared: false },
     );
     expect(core.calls).toEqual(["list", `delete:/home/${result.maria.name}`]);
-    expect(result.execs.find((exec) => exec.script.startsWith("node -e"))?.user).toBe(
-      result.maria.name,
-    );
+    expect(result.execs).toEqual([]);
     expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual(["revoke:user-maria"]);
   });
 
@@ -1110,6 +1185,110 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     );
     expect(result.releasable).toBe(true);
     expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual(["revoke:user-maria"]);
+  });
+
+  it("a person prediction prepare finds wrong writes the launcher's logins to /root and says their dotfiles have no way there (sealant#334)", async () => {
+    const core = coreCalls();
+    let applied = 0;
+    const platform = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({
+        ...inner,
+        applyDotfiles: (on: Workspace, input: Parameters<typeof inner.applyDotfiles>[1]) => {
+          applied++;
+          return inner.applyDotfiles(on, input);
+        },
+      })),
+    ).pipe(Layer.provide(platformOf(core)));
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps, repo } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+          platform,
+        });
+        const layout = yield* steps.decide(decideInput("launch-wrong"));
+        const alice = yield* repo.ensureIdentity("user-alice");
+        const settled = yield* steps.settlePrepare({
+          layout,
+          ...settleInput("launch-wrong", "mend-layout probed\nmend-layout missing no sudo\n"),
+          fallback: {
+            credentials: { claude: true, github: true },
+            dotfiles: [{ data: "eA==", manager: "copy", bootstrap: true }],
+          },
+        });
+        return { settled, alice, layout: yield* steps.layoutOfLaunch("launch-wrong") };
+      }),
+    );
+    expect(outcome.settled).toEqual({
+      layout: "shared",
+      fallback:
+        "this image cannot run per-person users (no sudo), so this workspace takes one person",
+      dotfilesNotApplied: DOTFILES_NOT_TO_ROOT,
+    });
+    expect(outcome.layout).toBe("shared");
+    // The create-time home released, the logins at /root (a whole put), no apply as root.
+    expect(core.calls).toEqual([`delete:/home/${outcome.alice.name}`, "post:user-alice:/root"]);
+    expect(core.posts.map((post) => [post.logins, post.partial])).toEqual([
+      [{ claude: true, github: true }, false],
+    ]);
+    expect(applied).toBe(0);
+  });
+
+  it("refuses the /root fallback in Mend's words when Core refuses an account, by its reason and provider", async () => {
+    const core = coreCalls();
+    core.answer = () =>
+      new SealantPlatformError({
+        code: "connected-account-invalid",
+        status: 409,
+        provider: "claude",
+        message: "anything Core says",
+        cause: null,
+      });
+    const refused = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+          platform: platformOf(core),
+        });
+        const layout = yield* steps.decide(decideInput("launch-wrong"));
+        return yield* steps
+          .settlePrepare({
+            layout,
+            ...settleInput("launch-wrong", "mend-layout probed\nmend-layout missing no sudo\n"),
+          })
+          .pipe(Effect.flip);
+      }),
+    );
+    expect(refused.message).toBe(loginRefusal("claude", "connected-account-invalid"));
+  });
+
+  it("reads a refused account from Core's stable reason and provider, never from its words (sealant#335)", () => {
+    expect(
+      refusedOf({
+        code: "connected-account-missing",
+        status: 404,
+        provider: "github",
+        message: "?",
+      }),
+    ).toEqual({ provider: "github", reason: "connected-account-missing" });
+    expect(
+      refusedOf({
+        code: "connected-account-unsupported",
+        status: 409,
+        provider: "codex",
+        message: "",
+      }),
+    ).toEqual({ provider: "codex", reason: "connected-account-unsupported" });
+    // Core's old words with no stable code are not a refusal any more, nor a code with no provider.
+    expect(
+      refusedOf({
+        code: "WorkspaceNotFoundError",
+        status: 404,
+        message: 'No claude connected account matches "default".',
+      }),
+    ).toBeNull();
+    expect(refusedOf({ code: "connected-account-invalid", status: 409, message: "" })).toBeNull();
+    expect(
+      refusedOf({ code: "home-held", status: 409, provider: "claude", message: "" }),
+    ).toBeNull();
   });
 
   it("maps a person launch refused for its owner map to Mend's words, and records the image's answer (sealant#333)", async () => {

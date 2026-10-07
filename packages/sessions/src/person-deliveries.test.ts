@@ -20,6 +20,7 @@ import { CARRIED_INCOMING, carryConversationsExec } from "./codex-memory.ts";
 import { PERSON_SAVED_STATE } from "./harness-layout.ts";
 import { CARRIED_TRANSCRIPTS } from "./harness-state.ts";
 import {
+  dotfilesRefusalWords,
   homePathOfPersonSaved,
   opencodeScrubArgv,
   FIRST_PROCESS_DONE,
@@ -536,5 +537,35 @@ describe("pi's settings through a person's link (decision 2)", () => {
       fs.readFileSync(path.join(places.saved, ".pi/agent/settings.json"), "utf8"),
     );
     expect(saved.theme).toBe("dark");
+  });
+});
+
+const words = (code: string, message = "the daemon's words") =>
+  dotfilesRefusalWords({ code, message });
+
+describe("a person's dotfiles Core refused, as the session says it (decisions 11 and 13)", () => {
+  it("says what was observed for each of Core's codes, and Core's own words for any other", () => {
+    for (const code of [
+      "dotfiles-user-unsupported",
+      "user-unknown",
+      "user-root",
+      "home-mismatch",
+      "home-unusable",
+      "home-held",
+    ]) {
+      expect(words(code)).toMatch(/, so they were not applied$/);
+      expect(words(code)).not.toContain("the daemon's words");
+    }
+    expect(words("workspace-not-running")).toBe(
+      "the workspace stopped before the dotfiles were applied",
+    );
+    expect(words("dotfiles_failed", "chezmoi: exit 1")).toBe(
+      "the dotfiles apply failed, so they were not applied: chezmoi: exit 1",
+    );
+    expect(words("dotfiles_apply_timeout", "dotfiles were not applied within 120 s")).toBe(
+      "dotfiles were not applied within 120 s",
+    );
+    // No verdicts: never "safe", never "ready".
+    expect(words("user-root")).not.toMatch(/safe|ready/);
   });
 });

@@ -9,18 +9,19 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-10-07 · 0.39.0-next.696 · Per-person deliveries (ADR 0016 Delivery 15): the dotfiles verb, and an exec's environment
 
-- **Missing, now load-bearing:** sealantd's `dotfiles.apply` through Core's SDK. Mend's side is
-  built behind `PersonLayoutPlatform.applyDotfiles` (`packages/sealant/src/person-layout.ts`): a
-  person's archives applied as their user into their home, answering once every file is applied,
-  with `install.sh` (each tree whose `bootstrap` is on) as one managed process of that user whose
-  end Mend can wait on (`DotfilesApplied.bootstrap.ended`, sealantd's `DotfilesApplied.bootstrap` is
-  the `ExecAccepted` of that process). Suggested surface:
-  `workspace.dotfiles.apply({ user, archives }) → { bootstrap: { executionId, wait() } | null }`,
-  staging the archives as `SEALANT_DOTFILES_ARCHIVE_DIR` holds them, bounded by the caller. Until it
-  ships, `dotfilesUser` is false and Mend follows decision 1's fallback: a fresh worktree whose
-  launcher has dotfiles runs `shared` (their dotfiles apply at boot, as before), and a worktree
-  already `person` starts without them, recorded on the session as not applied with the reason.
-  Wiring it is the live layer's `applyDotfiles` and `dotfilesUser: true`.
+- **Shipped (0.39.0-next.703, sealant#334, sealantd 0.20.0-next.152) and used:**
+  `workspace.dotfiles.apply({ onBehalfOf, user, home, repository?, archives? })`, answering once
+  every file is applied with `bootstrap: { processId, wait() } | null`. Mend passes it through
+  `PersonLayoutPlatformLive.applyDotfiles` with `dotfilesUser: true`: every person's archives (the
+  repository Mend cloned with their own git access, then their synced snapshot) as their user into
+  their home, and `bootstrap.wait()` for the launcher's agent, for "Start my agents after
+  install.sh", and for "install.sh finished after the agent started". Its refusals
+  (`dotfiles-user-unsupported`, `user-unknown`, `user-root`, `home-mismatch`, `home-unusable`,
+  `home-held`, `workspace-not-running`, `dotfiles_failed`) become the session's not-applied words
+  (`dotfilesRefusalWords`). The verb refuses root by design, so decision 1's fallback to `/root` (a
+  `person` prediction prepare finds wrong on a fresh worktree) applies no dotfiles: the session says
+  so, and the image's recorded answer makes the next launch `shared` from create, with its dotfiles
+  at boot. **Open, low:** a root apply for that one path would close the gap.
 - **Missing:** an environment on `workspace.exec`. A person's delivery exec must name the session it
   speaks for over the session channel (`MEND_SESSION_ID`), and the executor's own environment names
   the launcher's session. Mend prefixes the argv with `env MEND_SESSION_ID=<id>` (not secret; the
@@ -40,21 +41,21 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   on every standby claim (standbys serve only shared launches), and maps `owner-map-unsupported` and
   the Kubernetes and Cloudflare refusals to its own refusal lines. A standby that could serve a
   person launch would need Core to take the map at claim, not only at boot.
-- **Missing:** the dotfiles verb (apply a person's dotfiles as their user into their home, after
-  create). Without it decision 1's fallback (a wrong `person` prediction on a fresh worktree) fails
-  the launch when the launcher has dotfiles, and Delivery 15 cannot give a joiner theirs.
-- **Missing:** a way to tell which provider a refused `put` named other than its message. Mend reads
-  `No <provider> connected account matches …` and `Connected <provider> account … is invalid` to say
-  "Connect Claude to start a session here" and to leave an optional provider out. A stable code with
-  the provider (`connected-account-missing` / `connected-account-invalid` and `provider: "claude"`)
-  would remove that coupling.
-- **Missing:** pi's and opencode's ChatGPT logins as providers of the credentials API. Mend writes
-  copies of the Codex login into `~/.pi/agent/auth.json` and opencode's `auth.json` itself, so a
-  release has to remove them with an exec of its own; Core writing them per home would release them
-  with everything else.
-- **Missing:** a put that leaves out a provider the person has not connected, rather than failing
-  whole. A joiner with no GitHub login costs Mend a second `put` (`github: null`); one call with
-  "write what is connected, say what is not" would keep every join at exactly one Core call.
+- **Shipped (0.39.0-next.703, sealant#334):** the dotfiles verb, used as the 0.39.0-next.696 entry
+  above says.
+- **Shipped (0.39.0-next.703, sealant#335) and used:** a refused account's stable code,
+  `SealantApiError.reason` (`connected-account-missing`, `connected-account-invalid`,
+  `connected-account-unsupported`) with its `provider`. `SealantPlatformError` carries both, and
+  `refusedAccountOf` (`harness-layout-steps.ts`) reads them; Mend no longer matches Core's words.
+- **Shipped (0.39.0-next.703, sealant#336) and used:** pi's and opencode's ChatGPT logins as
+  providers of the credentials API (`put({ pi, opencode })`). In a person executor Core writes and
+  releases them; Mend's own copy (`CHATGPT_LOGIN_PROGRAM`) and its release-time scrub are gone there
+  (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`). A shared executor still writes its copy at `$HOME`,
+  since a create cannot name `pi` or `opencode`.
+- **Shipped (0.39.0-next.703, sealant#337) and used:** the partial put (`partial: true`, `skipped`,
+  `login-file-unusable` included). Every person's login write is one call: what they have connected
+  is written, the rest is recorded as absent and not asked for again, and a required provider left
+  out refuses the start with Core's reason. The second `github: null` put is gone.
 
 ## 2026-10-06 · 0.38.1 · Exec arguments are stored forever and in plaintext: unrecorded stdin, redaction, retention and a purge
 

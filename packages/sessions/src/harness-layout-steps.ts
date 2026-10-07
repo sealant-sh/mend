@@ -16,9 +16,9 @@ import {
   linuxHomeOf,
 } from "@mend/domain/workbench";
 import {
-  type DotfilesBootstrap,
   type HomeLogins,
   type LoginProvider,
+  type LoginSkip,
   PersonLayoutPlatform,
   type ProcessUser,
   SealantPlatformError,
@@ -49,7 +49,7 @@ import {
   staticLayoutObstacle,
   worktreeRepairScript,
 } from "./harness-layout.ts";
-import { chatgptCopiesScrubArgv } from "./harness-seeds.ts";
+import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
 
 // ─── configuration ───────────────────────────────────────────────────────────
 
@@ -145,10 +145,11 @@ export type PrepareOutcome =
       readonly layout: "shared";
       readonly fallback: string | null;
       /**
-       * Decision 1's fallback applied the launcher's dotfiles to `/root` through the verb: their
-       * `install.sh`, which the agent waits for, as it did when the script ran at boot.
+       * Why the launcher's dotfiles were not applied, when decision 1's fallback to `/root` had
+       * some: Core's `dotfiles.apply` runs only as a person, never as root (sealant#334), and the
+       * create, made for a person launch, applied none at boot. Null otherwise.
        */
-      readonly bootstrap?: DotfilesBootstrap | null;
+      readonly dotfilesNotApplied?: string | null;
     };
 
 /** Until Delivery 18, a turn from anyone but the process's person is refused in a person executor. */
@@ -159,9 +160,10 @@ export const PERSON_STEER_REFUSAL =
 
 /**
  * The logins a process needs in its person's home: the harness's own provider, without which it
- * is refused before anything is written, and the rest, written when connected and left out when
- * not. A shell, a Service, pi and opencode are open workbenches (the create's own ladder for them
- * names every provider), so nothing is required of them.
+ * is refused, and the rest, written when connected and left out when not. A shell, a Service, pi
+ * and opencode are open workbenches (the create's own ladder for them names every provider), so
+ * nothing is required of them. pi and opencode also take the ChatGPT login Core makes for each
+ * from the person's Codex account (sealant#336), in place of the copy Mend's seed made.
  */
 export interface LoginNeed {
   readonly required: ReadonlyArray<LoginProvider>;
@@ -174,6 +176,10 @@ export const loginNeedOf = (harness: string): LoginNeed => {
       return { required: ["claude"], optional: ["github"] };
     case "codex":
       return { required: ["codex"], optional: ["github"] };
+    case "pi":
+      return { required: [], optional: ["claude", "codex", "github", "pi"] };
+    case "opencode":
+      return { required: [], optional: ["claude", "codex", "github", "opencode"] };
     default:
       return { required: [], optional: ["claude", "codex", "github"] };
   }
@@ -183,56 +189,74 @@ const PROVIDER_NAMES: Readonly<Record<LoginProvider, string>> = {
   claude: "Claude",
   codex: "Codex",
   github: "GitHub",
+  pi: "pi's ChatGPT",
+  opencode: "opencode's ChatGPT",
 };
 
+/** Why Core refused or left out a provider's login (`SealantApiError.reason`, sealant#335/#337). */
+export type LoginRefusalReason = LoginSkip["reason"];
+
 /**
- * The refusal before start (decision 5): the needed provider is not connected, or its login needs
- * reconnecting. Core writes no login, and nobody else's login is used. The person's user and home
- * may already be made (that runs beside the POST); the Mend token minted for them is revoked.
+ * The refusal before start (decision 5): the needed provider is not connected, its login needs
+ * reconnecting, its account is not one the provider takes, or its login file in the person's home
+ * cannot be written. Nobody else's login is used. The person's user and home may already be made
+ * (that runs beside the POST), and what the POST wrote of the rest is released with the Mend token
+ * minted for them.
  */
-export const loginRefusal = (provider: LoginProvider, invalid: boolean): string =>
-  invalid
-    ? `Your ${PROVIDER_NAMES[provider]} login needs reconnecting. Reconnect ${PROVIDER_NAMES[provider]} to start a session here.`
-    : `Connect ${PROVIDER_NAMES[provider]} to start a session here.`;
+export const loginRefusal = (provider: LoginProvider, reason: LoginRefusalReason): string => {
+  const name = PROVIDER_NAMES[provider];
+  switch (reason) {
+    case "connected-account-invalid":
+      return `Your ${name} login needs reconnecting. Reconnect ${name} to start a session here.`;
+    case "connected-account-unsupported":
+      return `Your connected ${name} account cannot be used for this. Connect another to start a session here.`;
+    case "login-file-unusable":
+      return `Your ${name} login could not be written into your home in this workspace: its file there is not a plain file of yours. Start a new worktree, or remove the file.`;
+    case "connected-account-missing":
+      return `Connect ${name} to start a session here.`;
+  }
+};
 
 /** A process refused because its person's needed login is missing (`loginRefusal`). */
 export const loginRefused = (message: string) =>
   new SealantPlatformError({ code: "person_login_refused", status: 409, message, cause: null });
 
-const MISSING_ACCOUNT = /^\s*No (claude|codex|github) connected account matches\b/i;
-const INVALID_ACCOUNT =
-  /^\s*Connected (claude|codex|github) account\b.*\b(?:is invalid|unusable)\b/i;
-
 const loginProviderOf = (word: string | undefined): LoginProvider | null => {
-  const lower = word?.toLowerCase();
-  return lower === "claude" || lower === "codex" || lower === "github" ? lower : null;
+  switch (word) {
+    case "claude":
+    case "codex":
+    case "github":
+    case "pi":
+    case "opencode":
+      return word;
+    default:
+      return null;
+  }
+};
+
+const refusalReasonOf = (code: string): LoginRefusalReason | null => {
+  switch (code) {
+    case "connected-account-missing":
+    case "connected-account-invalid":
+    case "connected-account-unsupported":
+      return code;
+    default:
+      return null;
+  }
 };
 
 /**
- * The provider a refused POST named, as Core words it: "No claude connected account matches
- * \"default\"" (404) or "Connected codex account \"default\" is invalid — reconnect it" (409
- * `connected-account-invalid`). Null for any other failure. Nothing was written either way: Core
- * resolves every account before it writes any.
+ * The account a whole POST was refused for, by Core's stable code (`SealantApiError.reason`:
+ * `connected-account-missing`, `-invalid` or `-unsupported`) and its `provider` (sealant#335).
+ * Null for any other failure. Nothing was written: Core resolves every account before it writes
+ * any.
  */
-export const refusedLoginOf = (
+export const refusedAccountOf = (
   error: SealantPlatformError,
-): { readonly provider: LoginProvider; readonly invalid: boolean } | null => {
-  // Only Core's own refusals of an account, anchored at the start of its words and carrying its
-  // status or code: a 502 that happens to quote such words is not one (until Core says which
-  // provider in a stable code, PLATFORM-FEEDBACK.md 2026-10-07).
-  const notFound = error.status === 404 || error.code === "WorkspaceNotFoundError";
-  const invalid = error.code === "connected-account-invalid" || error.status === 409;
-  const missing = notFound ? MISSING_ACCOUNT.exec(error.message) : null;
-  if (missing !== null) {
-    const provider = loginProviderOf(missing[1]);
-    return provider === null ? null : { provider, invalid: false };
-  }
-  const unusable = invalid ? INVALID_ACCOUNT.exec(error.message) : null;
-  if (unusable !== null) {
-    const provider = loginProviderOf(unusable[1]);
-    return provider === null ? null : { provider, invalid: true };
-  }
-  return null;
+): { readonly provider: LoginProvider; readonly reason: LoginRefusalReason } | null => {
+  const reason = refusalReasonOf(error.code);
+  const provider = loginProviderOf(error.provider);
+  return provider === null || reason === null ? null : { provider, reason };
 };
 
 /**
@@ -355,8 +379,9 @@ export interface HarnessLayoutSteps {
    * The user a person's process starts as in a person-layout executor, made there first when it
    * is their first process (one exec), with their own logins written into their home before it
    * starts (one Core call, beside that exec), and the worktree repair started when the person
-   * differs from the last one whose process started there (one exec, never awaited). Refused,
-   * with no login written, when the harness's provider is not connected or needs reconnecting,
+   * differs from the last one whose process started there (one exec, never awaited). Refused
+   * when Core left the harness's own provider out of that call (not connected, needs
+   * reconnecting, or its file unusable), what it did write recorded for the release that follows,
    * and when the launch is unknown in a worktree that runs per person (never run as root there).
    * Null in a shared executor: the process runs as root, as before.
    */
@@ -519,13 +544,47 @@ interface HeldLogins {
   readonly held: ReadonlySet<LoginProvider>;
   /** Optional providers the person had not connected when Mend last asked. */
   readonly absent: ReadonlySet<LoginProvider>;
+  /**
+   * Optional providers whose login file in the home Core could not write (`login-file-unusable`):
+   * not named again while the home is held, since only the person can change the file.
+   */
+  readonly unusable: ReadonlySet<LoginProvider>;
 }
 
 /** Whether what a home holds covers what a process needs: no POST then. */
 const covers = (holding: HeldLogins | undefined, need: LoginNeed): boolean =>
   holding !== undefined &&
   need.required.every((provider) => holding.held.has(provider)) &&
-  need.optional.every((provider) => holding.held.has(provider) || holding.absent.has(provider));
+  need.optional.every(
+    (provider) =>
+      holding.held.has(provider) || holding.absent.has(provider) || holding.unusable.has(provider),
+  );
+
+/**
+ * What a home holds once a partial POST answered (sealant#337): a provider named `true` and not
+ * left out is held; one named `null`, or left out for its account, is absent (Core removed its
+ * login); one left out for its file is unusable.
+ */
+const heldAfter = (
+  holding: HeldLogins | undefined,
+  identity: LinuxIdentity,
+  choices: ReadonlyMap<LoginProvider, true | null>,
+  skipped: ReadonlyMap<LoginProvider, LoginSkip>,
+): HeldLogins => {
+  const held = new Set(holding?.held ?? []);
+  const absent = new Set(holding?.absent ?? []);
+  const unusable = new Set(holding?.unusable ?? []);
+  for (const [provider, choice] of choices) {
+    const skip = skipped.get(provider);
+    held.delete(provider);
+    absent.delete(provider);
+    unusable.delete(provider);
+    if (choice === true && skip === undefined) held.add(provider);
+    else if (skip?.reason === "login-file-unusable") unusable.add(provider);
+    else absent.add(provider);
+  }
+  return { identity, held, absent, unusable };
+};
 
 /**
  * The key of one person's home in one executor: what their starts, releases, re-POSTs and the
@@ -858,6 +917,7 @@ export const makeHarnessLayoutSteps = (deps: {
         identity: layout.launcher,
         held: new Set(loginsOfCreate(input.fallback.credentials)),
         absent: new Set(),
+        unusable: new Set(),
       });
       const opencode = new Set(report.opencode);
       return {
@@ -888,32 +948,39 @@ export const makeHarnessLayoutSteps = (deps: {
           : `This worktree's sessions are saved per person, and its image cannot run per-person users (${missing.join(", ")}). Pick an image that can, or start a new worktree.`,
       );
     }
-    // A wrong prediction never leaves an agent without a login: the create-time home is released,
-    // the launcher's logins are written to `/root` and their dotfiles applied there, before
-    // anything starts. Any of it failing fails the launch.
+    // A wrong prediction never leaves an agent without a login: the create-time home is released
+    // and the launcher's logins are written to `/root`, before anything starts. Either failing
+    // fails the launch. Their dotfiles have no way to `/root`: Core's `dotfiles.apply` runs only as
+    // a person (sealant#334) and the create applied none at boot, so the session says they were
+    // not applied. The image's answer is recorded below, so the next launch on it decides shared
+    // before create and its dotfiles apply at boot, as before.
     const home = linuxHomeOf(layout.launcher);
     yield* platform.deleteCredentials(input.workspace, { home });
     const rootLogins = homeLoginsOf(input.fallback.credentials);
     if (Object.keys(rootLogins).length > 0) {
-      yield* platform.postCredentials(input.workspace, {
-        onBehalfOf: layout.launcher.accountId,
-        home: "/root",
-        logins: rootLogins,
-      });
+      yield* platform
+        .postCredentials(input.workspace, {
+          onBehalfOf: layout.launcher.accountId,
+          home: "/root",
+          logins: rootLogins,
+        })
+        .pipe(
+          Effect.mapError((error) => {
+            const refused = refusedAccountOf(error);
+            return refused === null
+              ? error
+              : loginRefused(loginRefusal(refused.provider, refused.reason));
+          }),
+        );
     }
-    const applied =
-      input.fallback.dotfiles.length > 0
-        ? yield* platform.applyDotfiles(input.workspace, {
-            onBehalfOf: layout.launcher.accountId,
-            user: null,
-            home: "/root",
-            archives: input.fallback.dotfiles,
-          })
-        : null;
     const reason = `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
     yield* repo.recordFallback(input.launchId, reason);
     layoutByLaunch.set(input.launchId, "shared");
-    return { layout: "shared", fallback: reason, bootstrap: applied?.bootstrap ?? null };
+    return {
+      layout: "shared",
+      fallback: reason,
+      dotfilesNotApplied: input.fallback.dotfiles.length > 0 ? DOTFILES_NOT_TO_ROOT : null,
+    };
   });
 
   const refusedOwnerMap: HarnessLayoutSteps["refusedOwnerMap"] = Effect.fn(
@@ -978,15 +1045,6 @@ export const makeHarnessLayoutSteps = (deps: {
     return layout;
   });
 
-  /**
-   * A person's logins written into their home in this executor (decision 5): one POST naming the
-   * providers the process needs that the home does not hold yet. A required provider the person
-   * has not connected, or whose login needs reconnecting, refuses the process with no login
-   * written; an optional one is left out (`null`) and not asked for again. A POST that raced the
-   * `useradd` making the home (`home-unusable`) is asked again once the home is made; one Core
-   * answered `home-busy` is asked again shortly. Any other failure leaves the home recorded as
-   * held (Core may have written it), so a release still reaches it. Run under the home's lock.
-   */
   /** A home recorded as held although Mend cannot say what Core wrote: a release reaches it. */
   const keepHeldFor = (workspaceId: string, launchId: string | null, identity: LinuxIdentity) => {
     const people = executorOf(workspaceId, launchId).people;
@@ -995,9 +1053,21 @@ export const makeHarnessLayoutSteps = (deps: {
       identity,
       held: new Set(holding?.held ?? []),
       absent: new Set(holding?.absent ?? []),
+      unusable: new Set(holding?.unusable ?? []),
     });
   };
 
+  /**
+   * A person's logins written into their home in this executor (decision 5): one partial POST
+   * (sealant#337) naming the providers the process needs that the home does not hold yet, so a
+   * join is exactly one Core call. Core writes what the person has connected and answers what it
+   * left out: an optional provider left out is not asked for again; a required one refuses the
+   * process with Core's reason, and what the POST did write is recorded held, so the release
+   * that follows a refused start reaches it. A POST that raced the `useradd` making the home
+   * (`home-unusable`) is asked again once the home is made; one Core answered `home-busy` is asked
+   * again shortly. Any other failure leaves the home recorded as held (Core may have written it),
+   * so a release still reaches it. Run under the home's lock.
+   */
   const writeLogins = Effect.fn("HarnessLayoutSteps.writeLogins")(function* (input: {
     readonly workspace: Workspace;
     readonly launchId: string | null;
@@ -1013,56 +1083,40 @@ export const makeHarnessLayoutSteps = (deps: {
     const choices = new Map<LoginProvider, true | null>();
     for (const provider of [...need.required, ...need.optional]) {
       if (holding?.held.has(provider) === true || choices.has(provider)) continue;
+      // A file only the person can fix is not named again while the home is held.
+      if (holding?.unusable.has(provider) === true && !required.has(provider)) continue;
       choices.set(
         provider,
         holding?.absent.has(provider) === true && !required.has(provider) ? null : true,
       );
     }
+    const logins: HomeLogins = {};
+    for (const [provider, choice] of choices) logins[provider] = choice;
     const home = linuxHomeOf(identity);
-    /** What Mend records when it cannot say what Core wrote: held, so a release reaches it. */
-    const keepHeld = () =>
-      people.set(identity.accountId, {
-        identity,
-        held: new Set(holding?.held ?? []),
-        absent: new Set(holding?.absent ?? []),
-      });
     let busy = 0;
     let waitedForHome = false;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const logins: HomeLogins = {};
-      for (const [provider, choice] of choices) logins[provider] = choice;
+    for (let attempt = 0; attempt < 6; attempt++) {
       const written = yield* platform
         .postCredentials(input.workspace, {
           onBehalfOf: identity.accountId,
           home,
           owner: { uid: identity.uid, gid: MEND_GROUP.gid },
           logins,
+          partial: true,
         })
         .pipe(Effect.result);
       if (written._tag === "Success") {
-        const held = new Set(holding?.held ?? []);
-        const absent = new Set(holding?.absent ?? []);
-        for (const [provider, choice] of choices) {
-          if (choice === true) {
-            held.add(provider);
-            absent.delete(provider);
-          } else {
-            held.delete(provider);
-            absent.add(provider);
-          }
+        const skipped = new Map(written.success.skipped.map((skip) => [skip.provider, skip]));
+        people.set(identity.accountId, heldAfter(holding, identity, choices, skipped));
+        const refused = need.required
+          .map((provider) => skipped.get(provider))
+          .find((skip) => skip !== undefined);
+        if (refused !== undefined) {
+          return yield* loginRefused(loginRefusal(refused.provider, refused.reason));
         }
-        people.set(identity.accountId, { identity, held, absent });
         return;
       }
       const error = written.failure;
-      const refused = refusedLoginOf(error);
-      if (refused !== null && choices.get(refused.provider) === true) {
-        if (required.has(refused.provider)) {
-          return yield* loginRefused(loginRefusal(refused.provider, refused.invalid));
-        }
-        choices.set(refused.provider, null);
-        continue;
-      }
       if (error.code === "home-busy" && busy < 3) {
         busy++;
         yield* Effect.sleep(Duration.millis(200 * busy));
@@ -1073,7 +1127,7 @@ export const makeHarnessLayoutSteps = (deps: {
         yield* Deferred.await(input.homeMade);
         continue;
       }
-      keepHeld();
+      keepHeldFor(input.workspace.id, input.launchId, identity);
       return yield* new SealantPlatformError({
         code: "person_login_not_written",
         status: error.status,
@@ -1081,7 +1135,7 @@ export const makeHarnessLayoutSteps = (deps: {
         cause: error,
       });
     }
-    keepHeld();
+    keepHeldFor(input.workspace.id, input.launchId, identity);
     return yield* new SealantPlatformError({
       code: "person_login_not_written",
       status: null,
@@ -1255,7 +1309,10 @@ export const makeHarnessLayoutSteps = (deps: {
     return false;
   };
 
-  /** One person's home released: Core's files and record, Mend's ChatGPT copies, their token. */
+  /**
+   * One person's home released: Core's files and record (pi's and opencode's ChatGPT logins among
+   * them, which Core writes and removes, sealant#336), and their token.
+   */
   const releaseHome = Effect.fn("HarnessLayoutSteps.releaseHome")(function* (input: {
     readonly workspace: Workspace;
     readonly launchId: string | null;
@@ -1282,28 +1339,6 @@ export const makeHarnessLayoutSteps = (deps: {
     );
     const identity = input.identity;
     if (identity === null) return;
-    // Mend's own ChatGPT copies for pi and opencode, which Core does not know of: removed as the
-    // person (review of mend#564, P2-3), under the home's lock and awaited, so it never lands
-    // after their next start's fresh copy. Every release runs off the callers' paths.
-    yield* sealant
-      .exec(input.workspace, chatgptCopiesScrubArgv(input.home), {
-        user: processUserOf(identity),
-      })
-      .pipe(
-        Effect.tap((result) =>
-          result.exitCode === 0
-            ? Effect.void
-            : Effect.logWarning("session engine: Mend's ChatGPT copies were not removed").pipe(
-                Effect.annotateLogs({ workspaceId, home: input.home, stderr: result.stderr }),
-              ),
-        ),
-        Effect.catch((error) =>
-          Effect.logWarning("session engine: Mend's ChatGPT copies were not removed").pipe(
-            Effect.annotateLogs({ workspaceId, home: input.home, message: error.message }),
-          ),
-        ),
-        Effect.asVoid,
-      );
     // Only tokens minted before the release began: one minted for a start since stays.
     if (input.revoke && input.launchId !== null) {
       yield* deps.revokePersonToken(
@@ -1396,20 +1431,36 @@ export const makeHarnessLayoutSteps = (deps: {
             ...loginNeedOf(input.harness).required,
           ]);
           if (providers.size === 0) return;
+          const choices = new Map<LoginProvider, true>();
           const logins: HomeLogins = {};
-          for (const provider of providers) logins[provider] = true;
+          for (const provider of providers) {
+            choices.set(provider, true);
+            logins[provider] = true;
+          }
           // Recorded before the write: whatever Core does with it, a release reaches it.
           people.set(input.accountId, {
             identity,
             held: providers,
             absent: new Set(holding?.absent ?? []),
+            unusable: new Set(holding?.unusable ?? []),
           });
-          yield* platform.postCredentials(input.workspace, {
+          // Partial, as a start's: an account refused since leaves the rest written.
+          const written = yield* platform.postCredentials(input.workspace, {
             onBehalfOf: identity.accountId,
             home,
             owner: { uid: identity.uid, gid: MEND_GROUP.gid },
             logins,
+            partial: true,
           });
+          people.set(
+            input.accountId,
+            heldAfter(
+              holding,
+              identity,
+              choices,
+              new Map(written.skipped.map((skip) => [skip.provider, skip])),
+            ),
+          );
           yield* Effect.logInfo(
             "session engine: a person's logins written again after an authentication failure · observed",
           ).pipe(Effect.annotateLogs({ workspaceId: input.workspace.id, home }));
@@ -1477,6 +1528,7 @@ export const makeHarnessLayoutSteps = (deps: {
                 identity,
                 held: new Set(held.providers),
                 absent: new Set(),
+                unusable: new Set(),
               });
               // They are made in this executor (they run here), and their token file is theirs:
               // a later start makes them again only once released, so it rewrites and revokes

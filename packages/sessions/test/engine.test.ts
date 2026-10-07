@@ -143,6 +143,7 @@ import type { HarnessLayout } from "@mend/domain/workbench";
 import {
   asSealantUser,
   type CaptureFlushKind,
+  type HomeLogins,
   PersonLayoutPlatform,
   PersonLayoutPlatformNone,
   type PersonSessionOptions,
@@ -267,8 +268,13 @@ import {
   HARNESS_UPDATES_OFF_ENV,
   OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
+  PI_PERSON_SEED,
 } from "../src/harness-seeds.ts";
-import { DOTFILES_NOT_PER_PERSON, FIRST_PROCESS_DONE } from "../src/person-deliveries.ts";
+import {
+  DOTFILES_NOT_PER_PERSON,
+  FIRST_PROCESS_DONE,
+  dotfilesRefusalWords,
+} from "../src/person-deliveries.ts";
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
 import { writeOpencodeDatabase } from "./opencode-db.ts";
@@ -603,6 +609,7 @@ const sealantLaunchLayer = (
     },
     expire: async () => undefined,
     image: async () => null,
+    dotfiles: { apply: async () => new Promise(() => {}) },
     credentials: {
       put: async () => {
         throw new Error("not in test");
@@ -23484,11 +23491,11 @@ const personPlatform = (
   calls: Array<string>,
   report: { readonly person?: boolean | null; readonly missing?: ReadonlyArray<string> } = {},
   /**
-   * The platform applies dotfiles as a person (`dotfiles.apply`, not in Core's SDK yet): each
-   * person's `install.sh` ends when their `bootstrapEnds` does; null runs none.
+   * The platform applies dotfiles as a person (`dotfiles.apply`, sealant#334): each person's
+   * `install.sh` ends when their `bootstrapEnds` does; null runs none.
    */
   dotfiles?: {
-    readonly bootstrapEnds: (user: string | null) => Deferred.Deferred<number> | null;
+    readonly bootstrapEnds: (user: string) => Deferred.Deferred<number> | null;
   },
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
@@ -23510,6 +23517,7 @@ const personPlatform = (
     postCredentials: (_workspace, input) =>
       Effect.sync(() => {
         calls.push(`post:${input.onBehalfOf}:${input.home}`);
+        return { skipped: [] };
       }),
     deleteCredentials: (_workspace, input) =>
       Effect.sync(() => {
@@ -23522,8 +23530,8 @@ const personPlatform = (
       }),
     applyDotfiles: (_workspace, input) =>
       Effect.sync(() => {
-        calls.push(`dotfiles:${input.user?.name ?? "root"}:${input.home}`);
-        const ends = dotfiles?.bootstrapEnds(input.user?.name ?? null) ?? null;
+        calls.push(`dotfiles:${input.user.name}:${input.home}`);
+        const ends = dotfiles?.bootstrapEnds(input.user.name) ?? null;
         return {
           bootstrap:
             ends === null
@@ -23822,17 +23830,17 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           input: Parameters<typeof inner.postCredentials>[1],
         ) =>
           input.onBehalfOf === MARIA
-            ? inner.postCredentials(workspace, input).pipe(
-                Effect.andThen(
-                  Effect.fail(
-                    new SealantPlatformError({
-                      code: "WorkspaceNotFoundError",
-                      status: 404,
+            ? // One partial call: Core writes the rest and leaves Claude out (sealant#337).
+              inner.postCredentials(workspace, input).pipe(
+                Effect.as({
+                  skipped: [
+                    {
+                      provider: "claude" as const,
+                      reason: "connected-account-missing" as const,
                       message: 'No claude connected account matches "default".',
-                      cause: null,
-                    }),
-                  ),
-                ),
+                    },
+                  ],
+                }),
               )
             : inner.postCredentials(workspace, input),
       })),
@@ -27053,6 +27061,8 @@ interface DeliveryRun {
   readonly calls: ReadonlyArray<string>;
   /** How many execs ran before the join started. */
   readonly cold: number;
+  /** Every argv a session was opened with, in order. */
+  readonly spawned: ReadonlyArray<ReadonlyArray<string>>;
 }
 
 /** The command a person's exec runs, past its umask and the session it names (`personExecPrefix`). */
@@ -27160,8 +27170,17 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     const opened: Array<PersonSessionOptions> = [];
     const created: Array<CreateOptions> = [];
     const calls: Array<string> = [];
+    const spawned: Array<ReadonlyArray<string>> = [];
     const run: { cold: number } = { cold: 0 };
-    const view = (): DeliveryRun => ({ execs, users, opened, created, calls, cold: run.cold });
+    const view = (): DeliveryRun => ({
+      execs,
+      users,
+      opened,
+      created,
+      calls,
+      cold: run.cold,
+      spawned,
+    });
     const holderHarness = options.holderHarness ?? "claude";
     await withEngine(
       (world, tmp) =>
@@ -27210,7 +27229,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           created,
           undefined,
           undefined,
-          undefined,
+          spawned,
           undefined,
           undefined,
           undefined,
@@ -27349,6 +27368,84 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     expect(writes[1]?.targets.some((target) => target.includes(`extensions/${MARIA}/`))).toBe(true);
   });
 
+  it("pi in a person executor starts behind no ChatGPT copy of Mend's: Core writes pi's login, in each person's one call (sealant#336)", async () => {
+    const posts: Array<{ readonly onBehalfOf: string; readonly logins: HomeLogins }> = [];
+    const run = await launchAndJoin({
+      holderHarness: "pi",
+      join: "pi",
+      layers: people,
+      platform: (calls) =>
+        Layer.effect(
+          PersonLayoutPlatform,
+          Effect.map(PersonLayoutPlatform, (inner) => ({
+            ...inner,
+            postCredentials: (
+              workspace: Workspace,
+              input: Parameters<typeof inner.postCredentials>[1],
+            ) => {
+              posts.push({ onBehalfOf: input.onBehalfOf, logins: input.logins });
+              return inner.postCredentials(workspace, input);
+            },
+          })),
+        ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+    });
+    const piStarts = run.spawned.filter((argv) => argv.includes("pi"));
+    expect(piStarts).toHaveLength(2);
+    for (const argv of piStarts) expect(argv[2]).toBe(PI_PERSON_SEED);
+    // The launcher's create wrote the rest; each person's pi asks Core once, pi's login named.
+    expect(posts.map((post) => [post.onBehalfOf, post.logins.pi])).toEqual([
+      ["user-fixture", true],
+      [MARIA, true],
+    ]);
+  });
+
+  it("a joiner's dotfiles Core refuses are recorded not applied in Mend's words, and their agent starts (sealant#334)", async () => {
+    let recorded: SessionDotfiles | null = null;
+    const refusal = new SealantPlatformError({
+      code: "home-mismatch",
+      status: 409,
+      message: "the home is not the user's passwd home",
+      cause: null,
+    });
+    const run = await launchAndJoin({
+      platform: (calls) =>
+        Layer.effect(
+          PersonLayoutPlatform,
+          Effect.map(PersonLayoutPlatform, (inner) => ({
+            ...inner,
+            applyDotfiles: (
+              workspace: Workspace,
+              input: Parameters<typeof inner.applyDotfiles>[1],
+            ) =>
+              input.user.name === JOINER
+                ? Effect.fail(refusal)
+                : inner.applyDotfiles(workspace, input),
+          })),
+        ).pipe(
+          Layer.provide(personPlatform(calls, { person: true }, { bootstrapEnds: () => null })),
+        ),
+      layers: {
+        dotfilesStoreLayer: dotfilesStoreLayer(() =>
+          Effect.succeed({ sha: SNAPSHOT.sha, data: SNAPSHOT.data }),
+        ),
+      },
+      inspect: (_engine, world, ids) =>
+        Effect.sync(() => {
+          recorded =
+            ids.joined === null ? null : (world.sessions.get(ids.joined)?.dotfiles ?? null);
+        }),
+    });
+    expect(run.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(1);
+    expect(recorded).toEqual({
+      repository: null,
+      snapshotSha: SNAPSHOT.sha,
+      notApplied: [{ source: "snapshot", reason: dotfilesRefusalWords(refusal) }],
+    });
+    expect(dotfilesRefusalWords(refusal)).toBe(
+      "the home Mend named is not your user's home in this workspace, so they were not applied",
+    );
+  });
+
   it("an opencode's in-app logins are scrubbed as its person before it starts and after it ends", async () => {
     const run = await launchAndJoin({
       holderHarness: "opencode",
@@ -27422,7 +27519,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
               input.onBehalfOf === MARIA
                 ? inner
                     .postCredentials(workspace, input)
-                    .pipe(Effect.andThen(Effect.sleep("400 millis")))
+                    .pipe(Effect.tap(() => Effect.sleep("400 millis")))
                 : inner.postCredentials(workspace, input),
           })),
         ).pipe(Layer.provide(personPlatform(calls, { person: true }))),

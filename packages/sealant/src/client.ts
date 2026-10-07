@@ -1667,17 +1667,27 @@ const stableCodeOf = (value: unknown): string | null => {
   return null;
 };
 
-/** The code `SealantPlatformError` carries: the body's stable code, else the SDK/tag code. */
+/**
+ * The code `SealantPlatformError` carries: the body's stable code (`SealantApiError.reason`, or the
+ * decoded contract error's own), else the SDK/tag code.
+ */
 export const platformErrorCode = (cause: unknown): string =>
-  stableCodeOf(cause) ?? (cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"));
+  (cause instanceof SealantApiError && cause.reason !== undefined && cause.reason !== ""
+    ? cause.reason
+    : null) ??
+  stableCodeOf(cause) ??
+  (cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"));
 
-export const toPlatformError = (cause: unknown) =>
-  new SealantPlatformError({
+export const toPlatformError = (cause: unknown) => {
+  const provider = cause instanceof SealantApiError ? cause.provider : undefined;
+  return new SealantPlatformError({
     code: platformErrorCode(cause),
     status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
     message: cause instanceof Error ? cause.message : String(cause),
+    ...(provider === undefined ? {} : { provider }),
     cause,
   });
+};
 
 /**
  * Maps a typed contract failure onto what the settings page reports. A typed
