@@ -150,6 +150,7 @@ const platformOf = (
         core.imageReports++;
         return { digest: "sha256:img", runtime: "docker", person: true, missing: [] };
       }),
+    loginOf: () => Effect.succeed("active" as const),
     postCredentials: (_workspace, input) =>
       Effect.suspend(() => {
         const index = core.posts.length;

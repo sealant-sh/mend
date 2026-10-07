@@ -22,6 +22,8 @@ import {
   AgentProtocolError,
   AgentTurnBusyError,
   type AgentAdapter,
+  type AgentBackgroundWork,
+  type AgentQuiescence,
   type AgentSession,
   type AgentStartOptions,
   type AgentTransport,
@@ -68,6 +70,19 @@ export const CLAUDE_HARNESS_TURN_PREFIX = "harness:";
 
 /** What a turn Claude opened on its own is answering, when no task notification said. */
 const HARNESS_TURN_REASON = "Claude started a turn on its own";
+
+/** A monitor ends on its own within this (Claude caps `timeout_ms` at 30 minutes). */
+const MONITOR_MAX_MS = 30 * 60_000;
+/** A wakeup fires within this (`delaySeconds` is clamped to [60, 3600]). */
+const WAKEUP_MAX_MS = 60 * 60_000;
+/** A session cron auto-expires after this (CronCreate's `recurring`: "auto-expired after 7 days"). */
+const CRON_MAX_MS = 7 * 24 * 60 * 60_000;
+/**
+ * Without session-state events (a Claude older than `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`), a
+ * turn's result counts as settled after this; with them, `idle` is waited for at most this long.
+ */
+const CLAUDE_SETTLE_MS = 1_000;
+const CLAUDE_IDLE_WAIT_MS = 5_000;
 
 const encodeLine = (value: unknown): Uint8Array =>
   new TextEncoder().encode(`${JSON.stringify(value)}\n`);
@@ -186,6 +201,25 @@ export const ClaudeAdapter: AgentAdapter = {
       >();
       // The latest task notification, until a turn Claude opens on its own answers it.
       let notificationReason: string | null = null;
+      // What a new sender's turn waits for (docs/adr/0016, decision 6). Claude says its state
+      // (`session_state_changed`, with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`) and its live
+      // background tasks as a level (`background_tasks_changed`); wakeups, monitors and session
+      // crons are read from its tool calls and their results.
+      let sessionState: string | null = null;
+      /** Claude reported `idle` with no `system/init` or turn after it. */
+      let idleSinceTurn = false;
+      let lastResultAt: number | null = null;
+      /** The last turn any line ran in: where a task first reported outside a turn sits. */
+      let lastTurnId: string | null = currentTurnId;
+      const background = new Map<
+        string,
+        { readonly type: string | null; readonly description: string; readonly ambient: boolean }
+      >();
+      const pausedTasks = new Map<string, string>();
+      const toolNames = new Map<string, string>();
+      const monitors = new Map<string, { readonly description: string; readonly until: number }>();
+      const wakeups = new Map<string, number>();
+      const crons = new Map<string, number>();
 
       const publish = (event: AgentEvent): Effect.Effect<void> =>
         (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
@@ -353,11 +387,16 @@ export const ClaudeAdapter: AgentAdapter = {
        * same output opens the same turn.
        */
       const handleInit = (message: JsonObject): Effect.Effect<void> => {
+        idleSinceTurn = false;
         if (currentTurnId !== null) return Effect.void;
+        // A turn Claude starts on its own after a wakeup was due is that wakeup firing.
+        const now = Date.now();
+        for (const [id, due] of wakeups) if (due <= now + 60_000) wakeups.delete(id);
         const uuid = stringField(message, "uuid");
         if (uuid === null) return Effect.void;
         const providerTurnId = `${CLAUDE_HARNESS_TURN_PREFIX}${uuid}`;
         currentTurnId = providerTurnId;
+        lastTurnId = providerTurnId;
         messageOrdinal = 0;
         blockIds.clear();
         const reason = notificationReason ?? HARNESS_TURN_REASON;
@@ -370,11 +409,28 @@ export const ClaudeAdapter: AgentAdapter = {
         if (taskId === null) return Effect.void;
         if (subtype === "task_notification") {
           notificationReason = stringField(message, "summary") ?? notificationReason;
+          pausedTasks.delete(taskId);
+          monitors.delete(taskId);
+        }
+        if (subtype === "task_updated") {
+          const status = stringField(objectField(message, "patch"), "status");
+          if (status === "paused") {
+            pausedTasks.set(
+              taskId,
+              stringField(objectField(message, "patch"), "description") ??
+                tasks.get(taskId)?.data.description ??
+                "",
+            );
+          } else if (status !== null) {
+            pausedTasks.delete(taskId);
+            if (status !== "running" && status !== "pending") monitors.delete(taskId);
+          }
         }
         const tracked = tasks.get(taskId);
-        // A task Claude reports before any turn of Mend's (one a resumed conversation left
-        // running) has no turn to sit on; it is not recorded.
-        const providerTurnId = tracked?.providerTurnId ?? currentTurnId;
+        // A task Claude reports outside any turn (one a resumed conversation left running, or one
+        // that outlived the turn that started it before Mend attached) sits on the last turn the
+        // conversation ran; with none at all it is only counted as background work.
+        const providerTurnId = tracked?.providerTurnId ?? currentTurnId ?? lastTurnId;
         if (providerTurnId === null) return Effect.void;
         const data = foldTaskLine(tracked?.data, subtype, message);
         if (data === null) return Effect.void;
@@ -400,6 +456,7 @@ export const ClaudeAdapter: AgentAdapter = {
             : subtype === "success"
               ? "completed"
               : "failed";
+        lastResultAt = Date.now();
         // Replay: advance to the next dispatched turn, replicating the resets
         // sendTurn performed live so fallback item ids replay byte-identical.
         currentTurnId = replayQueue.shift() ?? null;
@@ -414,6 +471,72 @@ export const ClaudeAdapter: AgentAdapter = {
           usage: usageFrom(message["usage"]),
           error,
         });
+      };
+
+      /** The tools whose results say what wakes the conversation later: by tool use id. */
+      const noteToolUses = (envelope: JsonObject): void => {
+        const content = objectField(envelope, "message")?.["content"];
+        if (!Array.isArray(content)) return;
+        for (const block of content) {
+          if (stringField(block, "type") !== "tool_use") continue;
+          const id = stringField(block, "id");
+          const name = stringField(block, "name");
+          if (id === null || name === null) continue;
+          if (
+            name === "Monitor" ||
+            name === "ScheduleWakeup" ||
+            name === "CronCreate" ||
+            name === "CronDelete"
+          ) {
+            toolNames.set(id, name);
+          }
+        }
+      };
+
+      /**
+       * A tool's result (`tool_use_result`, Claude's structured output): a monitor's task and
+       * deadline, a wakeup's time, a session cron made or deleted. A durable cron lives in the
+       * worktree, not in the session, and is not waited for here.
+       */
+      const noteToolResults = (envelope: JsonObject): void => {
+        const content = objectField(envelope, "message")?.["content"];
+        if (!Array.isArray(content)) return;
+        const result = objectField(envelope, "tool_use_result");
+        const now = Date.now();
+        for (const block of content) {
+          if (stringField(block, "type") !== "tool_result") continue;
+          const id = stringField(block, "tool_use_id");
+          if (id === null) continue;
+          const name = toolNames.get(id);
+          if (name === undefined) continue;
+          toolNames.delete(id);
+          if (result === null) continue;
+          if (name === "Monitor") {
+            const taskId = stringField(result, "taskId");
+            if (taskId === null) continue;
+            const timeout = integerField(result, "timeoutMs") ?? MONITOR_MAX_MS;
+            monitors.set(taskId, {
+              description: background.get(taskId)?.description ?? "a monitor",
+              until:
+                result["persistent"] === true
+                  ? Number.POSITIVE_INFINITY
+                  : now + Math.min(timeout === 0 ? MONITOR_MAX_MS : timeout, MONITOR_MAX_MS),
+            });
+          } else if (name === "ScheduleWakeup") {
+            if (result["stopped"] === true) {
+              wakeups.clear();
+              continue;
+            }
+            const at = integerField(result, "scheduledFor");
+            wakeups.set(id, Math.min(at ?? now + WAKEUP_MAX_MS, now + WAKEUP_MAX_MS));
+          } else if (name === "CronCreate") {
+            const cronId = stringField(result, "id");
+            if (cronId !== null && result["durable"] !== true) crons.set(cronId, now);
+          } else if (name === "CronDelete") {
+            const cronId = stringField(result, "id");
+            if (cronId !== null) crons.delete(cronId);
+          }
+        }
       };
 
       const handleMessage = (value: unknown): Effect.Effect<void> => {
@@ -436,6 +559,27 @@ export const ClaudeAdapter: AgentAdapter = {
             if (isTaskSubtype(subtype)) {
               return ready.pipe(Effect.andThen(handleTaskLine(subtype ?? "", value)));
             }
+            if (subtype === "session_state_changed") {
+              sessionState = stringField(value, "state");
+              idleSinceTurn = sessionState === "idle";
+              return ready;
+            }
+            if (subtype === "background_tasks_changed") {
+              const listed = value["tasks"];
+              background.clear();
+              if (Array.isArray(listed)) {
+                for (const entry of listed) {
+                  const taskId = stringField(entry, "task_id");
+                  if (taskId === null) continue;
+                  background.set(taskId, {
+                    type: stringField(entry, "task_type"),
+                    description: stringField(entry, "description") ?? "",
+                    ambient: isObject(entry) && entry["ambient"] === true,
+                  });
+                }
+              }
+              return ready;
+            }
             return ready.pipe(
               Effect.andThen(
                 publish({
@@ -448,7 +592,11 @@ export const ClaudeAdapter: AgentAdapter = {
           case "stream_event":
             return ready.pipe(Effect.andThen(handleStreamEvent(value)));
           case "assistant":
+            noteToolUses(value);
             return ready.pipe(Effect.andThen(completeContentBlocks(value)));
+          case "user":
+            noteToolResults(value);
+            return ready;
           case "control_request":
             return ready.pipe(Effect.andThen(handleControlRequest(value)));
           case "result":
@@ -516,6 +664,8 @@ export const ClaudeAdapter: AgentAdapter = {
         }
         const providerTurnId = crypto.randomUUID();
         currentTurnId = providerTurnId;
+        lastTurnId = providerTurnId;
+        idleSinceTurn = false;
         messageOrdinal = 0;
         blockIds.clear();
         const message: ClaudeUserMessage = {
@@ -596,6 +746,77 @@ export const ClaudeAdapter: AgentAdapter = {
         pending.delete(providerRequestId);
       });
 
+      /**
+       * Claude is quiescent (docs/adr/0016, decision 6) with no open turn, `idle` reported with no
+       * turn after it, no live background task (an ambient one aside, unless a monitor started
+       * it), no task it paused, no pending wakeup, no live monitor and no session cron.
+       */
+      const quiescence = (): Effect.Effect<AgentQuiescence> =>
+        Effect.sync(() => {
+          const now = Date.now();
+          for (const [id, due] of wakeups) if (due <= now) wakeups.delete(id);
+          for (const [id, monitor] of monitors) if (monitor.until <= now) monitors.delete(id);
+          for (const [id, made] of crons) if (made + CRON_MAX_MS <= now) crons.delete(id);
+          const work: Array<AgentBackgroundWork> = [];
+          for (const [id, task] of background) {
+            if (monitors.has(id) || pausedTasks.has(id) || task.ambient) continue;
+            work.push({
+              kind: task.type === "local_agent" ? "sub-agent" : "task",
+              id,
+              description: task.description,
+              endable: true,
+            });
+          }
+          for (const [id, description] of pausedTasks) {
+            work.push({ kind: "paused-task", id, description, endable: true });
+          }
+          for (const [id, monitor] of monitors) {
+            work.push({ kind: "monitor", id, description: monitor.description, endable: false });
+          }
+          for (const id of wakeups.keys()) {
+            work.push({ kind: "wakeup", id, description: null, endable: false });
+          }
+          for (const id of crons.keys()) {
+            work.push({ kind: "cron", id, description: null, endable: false });
+          }
+          const openTurn =
+            currentTurnId !== null ||
+            sessionState === "running" ||
+            sessionState === "requires_action";
+          const sinceResult = lastResultAt === null ? Number.POSITIVE_INFINITY : now - lastResultAt;
+          const settleMs =
+            sessionState === null
+              ? Math.max(0, CLAUDE_SETTLE_MS - sinceResult)
+              : idleSinceTurn
+                ? 0
+                : Math.max(0, CLAUDE_IDLE_WAIT_MS - sinceResult);
+          return {
+            quiescent: !openTurn && work.length === 0 && settleMs === 0,
+            openTurn,
+            work,
+            settleMs,
+          } satisfies AgentQuiescence;
+        });
+
+      /** A background task stopped from the waiting line: Claude's `stop_task`. */
+      const endWork = Effect.fn("ClaudeAdapter.endWork")(function* (
+        work: Pick<AgentBackgroundWork, "kind" | "id">,
+      ) {
+        if (work.kind !== "task" && work.kind !== "paused-task" && work.kind !== "sub-agent") {
+          return yield* protocolError(
+            "endWork",
+            `Claude ends a ${work.kind} on its own; Mend cannot stop it.`,
+            null,
+          );
+        }
+        const request: ClaudeControlRequest = {
+          type: "control_request",
+          request_id: crypto.randomUUID(),
+          request: { subtype: "stop_task", task_id: work.id },
+        };
+        yield* send(request);
+      });
+
       const close = Effect.fn("ClaudeAdapter.close")(function* () {
         if (closed) return;
         closed = true;
@@ -613,12 +834,26 @@ export const ClaudeAdapter: AgentAdapter = {
         yield* PubSub.shutdown(events);
       });
 
+      // A Mend that restarted re-asks Claude for its background tasks (decision 6): a repeated
+      // `initialize` is answered with the current set, which the replay of the recorded output
+      // has already rebuilt for a CLI that does not send it.
+      if (rehydrate !== undefined && options.steering === true) {
+        const reinitialize: ClaudeControlRequest = {
+          type: "control_request",
+          request_id: crypto.randomUUID(),
+          request: { subtype: "initialize" },
+        };
+        yield* send(reinitialize).pipe(Effect.ignore);
+      }
+
       return {
         sendTurn,
         interrupt,
         respond,
         respondInput,
         events: Stream.fromPubSub(events),
+        quiescence,
+        endWork,
         close,
       } satisfies AgentSession;
     }),

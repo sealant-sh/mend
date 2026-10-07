@@ -658,6 +658,8 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(SessionEngine, {
       launchUnderWay: () => false,
+      // The sender's own login, as a person-layout worktree asks for it (docs/adr/0016).
+      steeringRefusal: () => Effect.succeed(null),
       stop: (sessionId) =>
         note(`engine.stop:${sessionId}`).pipe(
           Effect.andThen(

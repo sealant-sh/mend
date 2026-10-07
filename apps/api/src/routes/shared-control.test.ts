@@ -1,5 +1,5 @@
 import { SessionId, SessionProcessId } from "@mend/domain";
-import { Session, SessionProcess } from "@mend/domain/workbench";
+import { AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -220,6 +220,77 @@ describe("shared control", () => {
         status: 200,
         body: { path: "/tmp/mend-paste/shot.png", mediaType: "image/png", bytes: 8 },
       });
+    } finally {
+      await world.dispose();
+    }
+  });
+
+  it("opencode is one person's: shared control is refused for it, and nothing moves", async () => {
+    const opencode = SessionId.make("session-shared-a-opencode");
+    const world = await createTenancyApi(
+      {},
+      {
+        sessions: [
+          new Session({
+            ...makeSession(opencode, sharedA.project, sharedA.worktree, "alice"),
+            harness: "opencode",
+          }),
+        ],
+      },
+    );
+    try {
+      const refused = await world.request(
+        "alice",
+        "PUT",
+        `/api/sessions/${opencode}/shared-control`,
+        {
+          enabled: true,
+        },
+      );
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({
+        message:
+          "opencode sessions are one person's. Shared control is not available for them; start your own session in this worktree.",
+      });
+      expect(world.world.calls).toEqual([]);
+    } finally {
+      await world.dispose();
+    }
+  });
+
+  it("turning it off cancels the turns other people queued (docs/adr/0016, decision 6)", async () => {
+    const world = await createTenancyApi();
+    try {
+      await world.request("alice", "PUT", toggle, { enabled: true });
+      world.world.calls.splice(0, world.world.calls.length);
+      const off = await world.request("alice", "PUT", toggle, { enabled: false });
+      expect(off.status).toBe(200);
+      expect(world.world.calls).toContain("engine.cancelSteeredTurns");
+    } finally {
+      await world.dispose();
+    }
+  });
+
+  it("a waiting turn is withdrawn by its sender or the owner, and nobody else", async () => {
+    const world = await createTenancyApi();
+    try {
+      await world.request("alice", "PUT", toggle, { enabled: true });
+      // Dave's turn waits on alice's session; Carol steers too, but it is not hers to withdraw.
+      const running = world.world.turns.get(sharedA.turn);
+      if (running === undefined) throw new Error("no fixture turn");
+      world.world.turns.set(
+        sharedA.turn,
+        new AgentTurn({ ...running, author: "dave", status: "queued", providerTurnId: null }),
+      );
+      const interrupt = `/api/turns/${sharedA.turn}/interrupt`;
+      world.world.calls.splice(0, world.world.calls.length);
+      const carols = await world.request("carol", "POST", interrupt);
+      expect(carols.status).toBe(403);
+      expect(world.world.calls.filter((call) => call.startsWith("engine."))).toEqual([]);
+      // The owner withdraws it.
+      const alices = await world.request("alice", "POST", interrupt);
+      expect(alices.status).not.toBe(403);
+      expect(world.world.calls).toContain("engine.interruptTurn");
     } finally {
       await world.dispose();
     }

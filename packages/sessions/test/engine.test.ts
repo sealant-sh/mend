@@ -184,6 +184,7 @@ import {
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
   ProtocolHost,
+  type ProtocolHostHooks,
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
@@ -925,6 +926,10 @@ const protocolHostStubLayer = Layer.succeed(ProtocolHost, {
   respondRequest: () => Effect.die("not in test"),
   detach: () => Effect.void,
   has: () => Effect.succeed(false),
+  quiescence: () => Effect.succeed(null),
+  awaitQuiescent: () => Effect.void,
+  endWork: () => Effect.void,
+  detachForHandOver: () => Effect.void,
 });
 
 const recordingProtocolHostLayer = (
@@ -971,6 +976,10 @@ const recordingProtocolHostLayer = (
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,
     has: () => Effect.succeed(true),
+    quiescence: () => Effect.succeed(null),
+    awaitQuiescent: () => Effect.void,
+    endWork: () => Effect.void,
+    detachForHandOver: () => Effect.void,
   });
 
 /** Services bind no real sockets in these worlds. */
@@ -4872,6 +4881,10 @@ describe("SessionEngine", () => {
       respondRequest: () => Effect.die("not in test"),
       detach: () => Effect.void,
       has: () => Effect.succeed(false),
+      quiescence: () => Effect.succeed(null),
+      awaitQuiescent: () => Effect.void,
+      endWork: () => Effect.void,
+      detachForHandOver: () => Effect.void,
     });
     await withEngine(
       (world, tmp) =>
@@ -23505,6 +23518,8 @@ const personPlatform = (
   dotfiles?: {
     readonly bootstrapEnds: (user: string) => Deferred.Deferred<number> | null;
   },
+  /** Each person's own login for a provider, as Core says it stands; `active` unless said. */
+  logins?: (accountId: string) => "active" | "invalid" | "missing" | "unknown",
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
@@ -23522,6 +23537,11 @@ const personPlatform = (
         runtime: "docker",
         person: report.person ?? null,
         missing: report.missing ?? [],
+      }),
+    loginOf: (accountId) =>
+      Effect.sync(() => {
+        calls.push(`login:${accountId}`);
+        return logins?.(accountId) ?? "active";
       }),
     postCredentials: (_workspace, input) =>
       Effect.sync(() => {
@@ -24396,7 +24416,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(refused._tag).toBe("HarnessLayoutNotAppliedError");
   });
 
-  it("refuses a turn from anyone but the owner in a person executor, until per-person steering", async () => {
+  it("takes another person's turn onto the conversation in a person executor, on their own login (Delivery 18)", async () => {
     const authors: Array<string | null> = [];
     const submitted: Array<string> = [];
     const state = makeHarnessLayoutsMemoryState();
@@ -24414,9 +24434,9 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             base: null,
           });
           yield* engine.launch(session.id, ["claude"]);
-          const refused = yield* engine.submitTurn(session.id, "hi", MARIA).pipe(Effect.flip);
+          yield* engine.submitTurn(session.id, "hi", MARIA);
           yield* engine.submitTurn(session.id, "mine", "user-fixture");
-          return refused;
+          return "taken";
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -24438,9 +24458,10 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         harnessLayout: { flag: "person", state, platform: personPlatform([], { person: true }) },
       },
     );
-    expect(outcome._tag).toBe("SessionTurnRefusedError");
-    expect(authors).toEqual(["user-fixture"]);
-    expect(submitted).toEqual(["mine"]);
+    // Both queue on the conversation; dispatch runs Maria's in a process of hers (decision 6).
+    expect(outcome).toBe("taken");
+    expect(authors).toEqual([MARIA, "user-fixture"]);
+    expect(submitted).toEqual(["hi", "mine"]);
   });
 
   it("with the flag off and nothing recorded, a steered turn reads nothing and nothing polls the store", async () => {
@@ -28306,6 +28327,10 @@ const resumingHost = (
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,
     has: () => Effect.succeed(false),
+    quiescence: () => Effect.succeed(null),
+    awaitQuiescent: () => Effect.void,
+    endWork: () => Effect.void,
+    detachForHandOver: () => Effect.void,
   });
 
 describe("the conversation home of a shared conversation (docs/adr/0016, Delivery 17)", () => {
@@ -28508,5 +28533,346 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
     for (const options of run.opened) {
       if ("env" in options) expect(options.env?.["CLAUDE_CONFIG_DIR"]).toBeUndefined();
     }
+  }, 30_000);
+});
+
+/** A protocol host that records each attach with its hooks, and each stop for a hand-over. */
+const steeringHost = (
+  attached: Array<{
+    readonly process: SessionProcess;
+    readonly hooks: ProtocolHostHooks;
+    readonly resumePath: string | null;
+  }>,
+  stops: Array<string>,
+) =>
+  Layer.succeed(ProtocolHost, {
+    attach: (input) =>
+      Effect.sync(() => {
+        attached.push({
+          process: input.process,
+          hooks: input.hooks,
+          resumePath: input.resumePath ?? null,
+        });
+      }),
+    rehydrate: () => Effect.void,
+    submitTurn: () => Effect.die("not in test"),
+    interruptTurn: () => Effect.void,
+    respondRequest: () => Effect.die("not in test"),
+    detach: () => Effect.void,
+    has: () => Effect.succeed(true),
+    quiescence: () => Effect.succeed(null),
+    awaitQuiescent: () => Effect.void,
+    endWork: () => Effect.void,
+    detachForHandOver: (processId) =>
+      Effect.sync(() => {
+        stops.push(processId);
+      }),
+  });
+
+describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () => {
+  const turnBy = (author: string | null, processId: SessionProcessId, sessionId: SessionId) =>
+    new AgentTurn({
+      id: AgentTurnId.make(`turn-${author ?? "mend"}`),
+      sessionId,
+      processId,
+      ordinal: 0,
+      author,
+      input: "go",
+      status: "running",
+      providerTurnId: null,
+      error: null,
+      usage: null,
+      createdAt: now(),
+      startedAt: now(),
+      endedAt: null,
+    });
+
+  it("B's turn runs as B with A's conversation, and a hand-over costs two Core calls, DELETE then POST, one stop and one start", async () => {
+    const created: Array<CreateOptions> = [];
+    const spawned: Array<ReadonlyArray<string>> = [];
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const calls: Array<string> = [];
+    const attached: Array<{
+      readonly process: SessionProcess;
+      readonly hooks: ProtocolHostHooks;
+      readonly resumePath: string | null;
+    }> = [];
+    const stops: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
+    let sessionId: SessionId | null = null;
+    const exec = (argv: ReadonlyArray<string>) => {
+      if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
+      if (isStage(argv)) {
+        const resume = (argv[2] ?? "").includes(provider)
+          ? `mend-conv resume /run/mend/conv/${sessionId ?? ""}/.claude/projects/-workspace-repo/${provider}.jsonl\n`
+          : "";
+        const moved = (argv[2] ?? "").includes("moved=0") ? "mend-conv moved 1\n" : "";
+        return { exitCode: 0, stdout: `${moved}${resume}mend-conv empty\n`, stderr: "" };
+      }
+      if (isExchange(argv)) {
+        return { exitCode: 0, stdout: "mend-conv exchanged renameat2\n", stderr: "" };
+      }
+      return undefined;
+    };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          sessionId = session.id;
+          const row = world.sessions.get(session.id);
+          if (row === undefined) return yield* Effect.die("no session");
+          world.sessions.set(
+            session.id,
+            new Session({ ...row, sharedControlEnabledAt: now(), sharedControlEverAt: now() }),
+          );
+          yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+          const alice = attached[0];
+          if (alice === undefined) return yield* Effect.die("no process attached");
+          expect(alice.process.runsAs).toBe("user-fixture");
+          const steering = alice.hooks.steering;
+          if (steering === undefined)
+            return yield* Effect.die("no steering for a person's process");
+          // The conversation holds a transcript now, as its first turn leaves it.
+          world.processes.set(
+            alice.process.id,
+            new SessionProcess({ ...alice.process, providerSessionId: provider }),
+          );
+          // Who each turn runs as: the owner's turn on her own process, Maria's in a new one of
+          // hers, Mend's own as the owner.
+          expect(
+            yield* steering.decide(turnBy("user-fixture", alice.process.id, session.id)),
+          ).toEqual({
+            kind: "send",
+          });
+          expect(yield* steering.decide(turnBy(null, alice.process.id, session.id))).toEqual({
+            kind: "send",
+          });
+          expect(yield* steering.decide(turnBy(MARIA, alice.process.id, session.id))).toEqual({
+            kind: "hand-over",
+            sender: MARIA,
+          });
+
+          // Maria's turn: her own user, her own login, Alice's conversation.
+          yield* steering.handOver(MARIA);
+          const maria = attached[1];
+          expect(maria?.process.runsAs).toBe(MARIA);
+          expect(stops).toEqual([alice.process.id]);
+          expect(world.processes.get(alice.process.id)?.exitedAt).not.toBeNull();
+          const home = `/run/mend/conv/${session.id}`;
+          const mariasOpen = opened.at(-1);
+          const mariasUser =
+            mariasOpen !== undefined && "user" in mariasOpen ? mariasOpen.user : undefined;
+          expect(typeof mariasUser === "string" ? mariasUser : mariasUser?.name).toBe(
+            linuxLoginNameOf(MARIA),
+          );
+          expect(mariasOpen?.env?.["CLAUDE_CONFIG_DIR"]).toBe(`${home}/.claude`);
+          const mariasArgv = spawned.at(-1) ?? [];
+          expect(mariasArgv[mariasArgv.indexOf("--resume") + 1]).toBe(
+            `${home}/.claude/projects/-workspace-repo/${provider}.jsonl`,
+          );
+          // Her own login into H, after Alice's was released; nobody else's is ever written.
+          expect(calls.filter((call) => call.includes(home))).toEqual([
+            `post:user-fixture:${home}`,
+            `delete:${home}`,
+            `post:${MARIA}:${home}`,
+          ]);
+          // One live process: Maria's holds the conversation now.
+          expect(state.conversationHolders.get(session.id)?.processId).toBe(maria?.process.id);
+
+          // And back to Alice: the hand-over's budget, with both people already made here.
+          const steeringOfMaria = maria?.hooks.steering;
+          if (steeringOfMaria === undefined || maria === undefined) {
+            return yield* Effect.die("no steering for Maria's process");
+          }
+          world.processes.set(
+            maria.process.id,
+            new SessionProcess({ ...maria.process, providerSessionId: provider }),
+          );
+          const before = { calls: calls.length, opened: opened.length, stops: stops.length };
+          yield* steeringOfMaria.handOver("user-fixture");
+          expect(calls.slice(before.calls)).toEqual([
+            `delete:${home}`,
+            `post:user-fixture:${home}`,
+          ]);
+          expect(stops.length - before.stops).toBe(1);
+          expect(opened.length - before.opened).toBe(1);
+          expect(attached.at(-1)?.process.runsAs).toBe("user-fixture");
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          execCalls,
+          undefined,
+          { exec },
+        ),
+        protocolHostLayer: steeringHost(attached, stops),
+        harnessLayout: { flag: "person", state, platform: personPlatform(calls, { person: true }) },
+      },
+    );
+  }, 30_000);
+
+  /** A Claude conversation of Alice's in a person executor, shared, and a turn sent to it. */
+  const submitScenario = async (options: {
+    readonly harness: "claude" | "opencode";
+    readonly author: string;
+    readonly logins?: (accountId: string) => "active" | "invalid" | "missing" | "unknown";
+  }) => {
+    const calls: Array<string> = [];
+    const submitted: Array<string> = [];
+    let refused: string | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: options.harness,
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const row = world.sessions.get(session.id);
+          if (row === undefined) return yield* Effect.die("no session");
+          world.sessions.set(
+            session.id,
+            new Session({
+              ...row,
+              sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+              sharedControlEnabledAt: now(),
+            }),
+          );
+          const sent = yield* engine
+            .submitTurn(session.id, "please", options.author)
+            .pipe(Effect.result);
+          if (sent._tag === "Failure" && sent.failure._tag === "SessionTurnRefusedError") {
+            refused = sent.failure.message;
+          }
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        protocolHostLayer: recordingProtocolHostLayer([], submitted),
+        harnessLayout: {
+          flag: "person",
+          platform: personPlatform(calls, { person: true }, undefined, options.logins),
+        },
+      },
+    );
+    return { calls, submitted, refused };
+  };
+
+  it("refuses a steerer whose own login is missing or needs reconnecting, before anything is queued", async () => {
+    const missing = await submitScenario({
+      harness: "claude",
+      author: MARIA,
+      logins: () => "missing",
+    });
+    expect(missing.refused).toBe("Connect Claude to steer this session.");
+    expect(missing.submitted).toEqual([]);
+    const invalid = await submitScenario({
+      harness: "claude",
+      author: MARIA,
+      logins: () => "invalid",
+    });
+    expect(invalid.refused).toBe(
+      "Your Claude login needs reconnecting. Reconnect Claude to steer this session.",
+    );
+    // Connected: queued, on the conversation, with one look at Core.
+    const active = await submitScenario({ harness: "claude", author: MARIA });
+    expect(active.refused).toBeNull();
+    expect(active.submitted).toEqual(["please"]);
+    expect(active.calls).toEqual([`login:${MARIA}`]);
+  }, 30_000);
+
+  it("the owner's own turns ask Core nothing", async () => {
+    const own = await submitScenario({
+      harness: "claude",
+      author: "user-fixture",
+      logins: () => "missing",
+    });
+    expect(own.refused).toBeNull();
+    expect(own.calls).toEqual([]);
+  }, 30_000);
+
+  it("refuses another person's turn to an opencode session: it is one person's", async () => {
+    const run = await submitScenario({ harness: "opencode", author: MARIA });
+    expect(run.refused).toBe(
+      "opencode sessions are one person's. Shared control is not available for them; start your own session in this worktree.",
+    );
+    expect(run.submitted).toEqual([]);
+  }, 30_000);
+
+  it("in a person executor, only the change owner's own Claude processes keep scheduled prompts", async () => {
+    const spawned: Array<ReadonlyArray<string>> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const holder = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(holder.id, ["claude"]);
+          const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(joined.id, ["claude"]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+      },
+    );
+    const claudes = spawned.filter((argv) => argv.includes("claude"));
+    expect(claudes).toHaveLength(2);
+    // Alice made the worktree: hers keep crons, with only the session-state switch.
+    expect(claudes[0]?.slice(-2)).toEqual(["--settings", "/run/mend/claude/personal.json"]);
+    // Maria's personal Claude in Alice's worktree: no scheduled prompts, whatever the repository says.
+    expect(claudes[1]?.slice(-2)).toEqual(["--settings", "/run/mend/claude/no-cron.json"]);
   }, 30_000);
 });

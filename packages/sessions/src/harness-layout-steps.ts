@@ -159,10 +159,6 @@ export type PrepareOutcome =
       readonly dotfilesNotApplied?: string | null;
     };
 
-/** Until Delivery 18, a turn from anyone but the process's person is refused in a person executor. */
-export const PERSON_STEER_REFUSAL =
-  "This session's workspace runs each person as their own user, and turns from anyone but its owner arrive with per-person steering. Until then only the owner sends turns here.";
-
 // ─── logins per person (decision 5) ──────────────────────────────────────────
 
 /**
@@ -492,12 +488,6 @@ export interface HarnessLayoutSteps {
   }) => Effect.Effect<void>;
   /** An executor ended: what Mend kept about its people goes with it. */
   readonly forgetExecutor: (workspaceId: string) => void;
-  /** The refusal of a turn whose author is not the process's person, in a person executor. */
-  readonly turnRefusal: (input: {
-    readonly launchId: string | null;
-    readonly ownerUserId: string | null;
-    readonly author: string | null;
-  }) => Effect.Effect<string | null>;
 }
 
 /** A person's home in an executor, ready for their deliveries (`processAs`'s `homeReady`). */
@@ -1637,13 +1627,6 @@ export const makeHarnessLayoutSteps = (deps: {
     lastIn.delete(workspaceId);
   };
 
-  const turnRefusal: HarnessLayoutSteps["turnRefusal"] = Effect.fn(
-    "HarnessLayoutSteps.turnRefusal",
-  )(function* (input) {
-    if (input.author === null || input.author === input.ownerUserId) return null;
-    return (yield* layoutOfLaunch(input.launchId)) === "person" ? PERSON_STEER_REFUSAL : null;
-  });
-
   return {
     flag,
     decide,
@@ -1664,6 +1647,5 @@ export const makeHarnessLayoutSteps = (deps: {
     relogin,
     reconcileLogins,
     forgetExecutor,
-    turnRefusal,
   };
 };

@@ -118,6 +118,15 @@ export const MemberRemovalLive: Layer.Layer<
           }),
         { discard: true },
       );
+      // Their queued turns in anyone's session go: none of them runs (docs/adr/0016, decision 6).
+      const inOrganization = yield* projects.listForOrganization(input.organizationId);
+      const live = (yield* Effect.forEach(inOrganization, (project) =>
+        sessions.listForProject(project.id),
+      ))
+        .flat()
+        .filter((session) => session.settledAt === null)
+        .map((session) => session.id);
+      yield* engine.cancelQueuedTurnsBy(input.userId, live);
       yield* users.deactivate(input.userId);
       yield* users.revokeAuthSessions(input.userId);
       yield* devices.revokeAllForUser(input.userId);

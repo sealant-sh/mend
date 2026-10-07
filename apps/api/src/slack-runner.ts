@@ -1547,10 +1547,17 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         case "resume":
           break;
       }
-      // A resume spends the owner's credentials, whoever sends the turn.
+      // A resume's workspace starts on the owner's credentials; in a worktree that runs per
+      // person the sender's turn then runs on their own login (docs/adr/0016, decision 6), which
+      // is checked as the web app's turns are.
       const noCredential = yield* credentialProblem(session.ownerUserId ?? userId, session.harness);
       if (noCredential !== null) {
         yield* refuse(token, mention, notResumed(noCredential), true);
+        return false;
+      }
+      const steeringRefused = yield* engine.steeringRefusal(session, userId);
+      if (steeringRefused !== null) {
+        yield* refuse(token, mention, notResumed(steeringRefused), true);
         return false;
       }
       const resumed = yield* start
@@ -1678,8 +1685,8 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         images: new Map(attached.map((image) => [image.file.id, image])),
       });
       const sent = yield* engine.submitTurn(session.id, turn, userId).pipe(Effect.result);
-      // A person-layout executor takes turns from its owner only (docs/adr/0016): said, and
-      // nothing is resumed or started in its place.
+      // A turn the sender could not run on their own login (docs/adr/0016, decision 6), or one to
+      // another person's opencode session: said, and nothing is resumed or started in its place.
       if (sent._tag === "Failure" && sent.failure._tag === "SessionTurnRefusedError") {
         return yield* refuse(token, mention, notSent(sent.failure.message), false);
       }

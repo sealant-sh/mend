@@ -162,6 +162,10 @@ import {
   MEND_GROUP,
   canSteerSession,
   canTypeInTerminal,
+  ConversationWait,
+  type ConversationWaitWork,
+  conversationWaitLine,
+  OPENCODE_NOT_STEERABLE,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -216,6 +220,7 @@ import type {
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import {
   Cause,
+  Clock,
   Config,
   Deferred,
   Duration,
@@ -294,6 +299,7 @@ import {
   withholdCodexThreadsExec,
 } from "./codex-memory.ts";
 import {
+  claudeSettingsFileOf,
   type ConversationHarness,
   conversationArgv,
   foreignReasoningLine,
@@ -439,9 +445,11 @@ import {
   type PickupFile,
 } from "./pickup-tickets.ts";
 import {
+  type ConversationWait as HostedConversationWait,
   ProtocolHost,
   type ProtocolHostHooks,
-  type ProtocolHostNotLiveError,
+  ProtocolHostNotLiveError,
+  type ProtocolSteering,
 } from "./protocol-host.ts";
 import {
   mergeRecipes,
@@ -1552,9 +1560,9 @@ export class HarnessLayoutNotAppliedError extends Schema.TaggedErrorClass<Harnes
 ) {}
 
 /**
- * A turn the session will not take from its author now (docs/adr/0016): until per-person steering,
- * a person-layout executor takes turns from the session's owner only, so no turn runs on its
- * process's login for anyone else.
+ * A turn the session will not take from its author now (docs/adr/0016, decision 6): another
+ * person's turn to an opencode session, or one from a sender whose own login for the harness is
+ * not connected or needs reconnecting. Mend never runs it on the owner's login instead.
  */
 export class SessionTurnRefusedError extends Schema.TaggedErrorClass<SessionTurnRefusedError>()(
   "SessionTurnRefusedError",
@@ -1853,14 +1861,48 @@ export class SessionEngine extends Context.Service<
       | WorktreeBaseConflictError
     >;
     /**
-     * Queue one authored turn on the live protocol process. Refused, before anything is queued,
-     * from anyone but the owner in a person-layout executor (docs/adr/0016, until Delivery 18).
+     * Queue one authored turn on the conversation (docs/adr/0016, decision 6): in a person-layout
+     * executor it runs on its sender's own login, in a process of their own user. Refused, before
+     * anything is queued, for another person's turn to an opencode session, and for a sender who
+     * has not connected the harness's provider or whose login needs reconnecting.
      */
     readonly submitTurn: (
       sessionId: SessionId,
       input: string,
       author: string | null,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | SessionTurnRefusedError>;
+    /**
+     * What holds the next sender's turn in a shared conversation, as both people see it
+     * (decision 6, the waiting line); null when nothing waits.
+     */
+    readonly conversationWait: (sessionId: SessionId) => Effect.Effect<ConversationWait | null>;
+    /**
+     * End one piece of the previous sender's background work from the waiting line: the person
+     * the conversation's process runs as, or the session's owner (decision 6).
+     */
+    readonly endBackgroundWork: (
+      sessionId: SessionId,
+      actor: string,
+      work: { readonly kind: ConversationWaitWork["kind"]; readonly id: string },
+    ) => Effect.Effect<
+      void,
+      SessionNotFoundError | ProtocolHostNotLiveError | SessionTurnRefusedError
+    >;
+    /**
+     * Shared control was turned off (decision 6, "Refusals and cancellations"): every queued turn
+     * of anyone but the owner is cancelled. Answers how many.
+     */
+    readonly cancelSteeredTurns: (sessionId: SessionId) => Effect.Effect<number>;
+    /** A person left the organization: their queued turns in these sessions are cancelled. */
+    readonly cancelQueuedTurnsBy: (
+      userId: string,
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<number>;
+    /**
+     * Whether a person may send a turn to a session's conversation now (decision 6): the words of
+     * the refusal, or null. Read where a turn would resume the session (Slack).
+     */
+    readonly steeringRefusal: (session: Session, sender: string) => Effect.Effect<string | null>;
     /** Interrupt the running protocol turn. */
     readonly interruptTurn: (turnId: AgentTurnId) => Effect.Effect<void, ProtocolHostNotLiveError>;
     /** Route and record one human response to a live provider request. */
@@ -12260,8 +12302,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         /** The conversation the agent resumes, by provider session id (decision 14's copy). */
         readonly resumeId?: string | null;
+        /**
+         * The agent runs in a conversation home (decision 6): no skills, memory, pi profile or
+         * carried conversations of the person's own are read there, so none is delivered.
+         */
+        readonly conversation?: boolean;
       }) {
         const { session, workspace, home } = input;
+        const personal = input.conversation !== true;
         const project = yield* projects.byId(session.projectId).pipe(
           Effect.mapError(
             (error) =>
@@ -12361,12 +12409,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : false;
             const [, , , , carried] = yield* Effect.all(
               [
-                firstOrAgent
+                firstOrAgent && personal
                   ? deliverSkillsToWorkspace(session, project, workspace, delivery).pipe(
                       said("skills"),
                     )
                   : Effect.void,
-                input.agent && neverShared(session)
+                input.agent && personal && neverShared(session)
                   ? deliverAgentMemory(session, project, workspace, delivery).pipe(
                       said("agent memory"),
                     )
@@ -12388,10 +12436,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   : Effect.void,
                 // Each person's pi runs on their own profile in their own home: another person's
                 // live pi changes nothing here (decision 7, Delivery 11).
-                input.agent && input.harness === "pi" && !samePersonPiLive
+                input.agent && personal && input.harness === "pi" && !samePersonPiLive
                   ? deliverPiProfile(session, project, workspace, as)
                   : Effect.void,
-                input.agent && input.harness === "codex"
+                input.agent && personal && input.harness === "codex"
                   ? carryCodexConversations(session, project, workspace, as).pipe(
                       Effect.catchCause((cause) =>
                         Effect.logWarning(
@@ -12425,7 +12473,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     )
                   : Effect.void,
                 // A conversation from before the worktree ran per person, into its owner's `P`.
-                input.agent && input.resumeId !== undefined && input.resumeId !== null
+                input.agent && personal && input.resumeId !== undefined && input.resumeId !== null
                   ? copyPreReleaseConversation(
                       session,
                       workspace,
@@ -13015,8 +13063,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         person: Effect.Effect<string | null>,
         /** What the process runs: the session's harness for its agent, `shell` for anything else. */
         harness: string,
-        /** An agent of the session starts: everything it needs is delivered (`deliverToPerson`). */
-        options: { readonly agent: boolean; readonly resumeId?: string | null } = { agent: false },
+        /**
+         * An agent of the session starts: everything it needs is delivered (`deliverToPerson`).
+         * `conversation`: it runs in a conversation home, where nothing personal is read, so only
+         * what its tools need (secret files, a first process's dotfiles) is delivered.
+         */
+        options: {
+          readonly agent: boolean;
+          readonly resumeId?: string | null;
+          readonly conversation?: boolean;
+        } = { agent: false },
       ): Effect.Effect<
         {
           readonly user: ProcessUser;
@@ -13059,6 +13115,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     agent: options.agent,
                     harness,
                     resumeId: options.resumeId ?? null,
+                    conversation: options.conversation === true,
                   }),
             ),
           );
@@ -13076,13 +13133,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           return as === null ? null : { ...as, delivered: deliveries };
         });
-      /** An agent of the session: its owner's (steering, Delivery 18, picks the sender). */
-      const startAsOwner = (
+      /**
+       * Scheduled prompts in a person-layout executor (docs/adr/0016, decision 6): a durable cron
+       * lives in the worktree and fires in whichever Claude process next holds its lock there, so
+       * only the worktree's change owner's own Claude processes run with crons on
+       * (`personal.json`, the session-state switch only); anyone else's personal Claude processes
+       * get `no-cron.json`, which a repository's `env` cannot turn back on. A launch that names
+       * its own `--settings` is left as it is. Null `runsAs`: root, as before, nothing added.
+       */
+      const withClaudeSettings = (
         session: Session,
-        workspace: Workspace,
-        harness: string,
-        options?: { readonly agent: boolean; readonly resumeId?: string | null },
-      ) => startAsPerson(session, workspace, Effect.succeed(session.ownerUserId), harness, options);
+        argv: ReadonlyArray<string>,
+        runsAs: string | null,
+      ): Effect.Effect<ReadonlyArray<string>> =>
+        Effect.gen(function* () {
+          if (runsAs === null || argv[0] !== "claude" || argv.includes("--settings")) return argv;
+          const first = (yield* sessions.listForWorktree(session.worktreeId))
+            .filter((member) => member.ownerUserId !== null)
+            .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
+          const changeOwner = first?.ownerUserId ?? session.ownerUserId;
+          return [
+            ...argv,
+            "--settings",
+            claudeSettingsFileOf(changeOwner === runsAs ? "personal" : "no-cron"),
+          ];
+        });
 
       /**
        * Whether a protocol agent of `session` runs in its conversation home in the executor of
@@ -14942,9 +15017,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
 
-        const memoryShapedArgv = codexMemoryOn
-          ? shapedArgv
-          : withCodexMemoryOff(shapedArgv, { join: false });
+        const memoryShapedArgv = yield* withClaudeSettings(
+          session,
+          codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: false }),
+          startAs === null ? null : ownerUserId,
+        );
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
         const opencodeAtLaunch =
@@ -15148,6 +15225,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
               resumePath: inConversation?.resumePath ?? null,
+              runsAs: agentProcess.runsAs,
             })
             .pipe(
               Effect.tapError((error) =>
@@ -15368,51 +15446,270 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
-      const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => ({
-        onRequestChanged: (changedSessionId) =>
-          reconcileSession(changedSessionId, { sweep: false }).pipe(
-            Effect.catchTag("SessionNotFoundError", () => Effect.void),
-            Effect.asVoid,
-          ),
-        onTurnCompleted: (turn) =>
-          Effect.gen(function* () {
-            // A turn refused for its login, in a person executor: its person's logins are
-            // written into their home once more (docs/adr/0016, decision 5), off the turn's path.
-            if (
-              layoutSteps.personPossible() &&
-              turn.status === "failed" &&
-              isAuthenticationFailure(turn.error)
-            ) {
-              yield* reloginAfterFailure(agentProcess).pipe(Effect.forkIn(scope));
-            }
-            // A provider that refused reasoning another account made (decision 6): the turn
-            // fails with the reason and who can continue; nothing is retried.
-            if (
-              layoutSteps.personPossible() &&
-              turn.status === "failed" &&
-              isForeignReasoningRefusal(turn.error)
-            ) {
-              yield* sayForeignReasoning(turn, agentProcess).pipe(
-                Effect.catchCause((cause) =>
-                  Effect.logWarning("session engine: a refused turn's words were not set").pipe(
-                    Effect.annotateLogs({ turnId: turn.id, cause: Cause.pretty(cause) }),
-                  ),
-                ),
-              );
-            }
-            const currentSession = yield* sessions.byId(turn.sessionId);
-            const run =
-              agentProcess.sealantRunId === null
-                ? null
-                : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
-            yield* tryCheckpoint(currentSession, "turn-boundary", {
-              sealantRunId: agentProcess.sealantRunId,
-              sequence: run?.lastSeenSequence ?? 0n,
-            });
-            yield* refreshChangeHead(currentSession).pipe(Effect.ignore);
-          }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
+      /**
+       * The waiting line of each conversation whose next sender's turn waits (docs/adr/0016,
+       * decision 6), as both people see it. Memory only: after a restart, dispatch decides again
+       * and the line comes back with its first look.
+       */
+      const conversationWaits = new Map<SessionId, ConversationWait>();
+
+      /** People's names in a session's organization, for the lines both of them read. */
+      const namesFor = Effect.fn("SessionEngine.namesFor")(function* (sessionId: SessionId) {
+        const session = yield* sessions.byId(sessionId);
+        const project = yield* projects.byId(session.projectId);
+        const members = yield* organizations.members(project.organizationId);
+        return (userId: string | null) =>
+          userId === null
+            ? "the agent"
+            : (members.find((member) => member.userId === userId)?.name ?? "another person");
       });
+
+      /**
+       * The waiting line changed (decision 6): what holds the next sender's turn, said once per
+       * change, or gone once the turn starts.
+       */
+      const recordConversationWait = (wait: HostedConversationWait | null, sessionId: SessionId) =>
+        Effect.gen(function* () {
+          if (wait === null) {
+            conversationWaits.delete(sessionId);
+            return;
+          }
+          const before = conversationWaits.get(sessionId);
+          const same =
+            before !== undefined &&
+            before.turnId === wait.turnId &&
+            before.openTurn === wait.openTurn &&
+            JSON.stringify(before.work) === JSON.stringify(wait.work);
+          if (same) return;
+          const nameOf = yield* namesFor(sessionId);
+          conversationWaits.set(
+            sessionId,
+            new ConversationWait({
+              sessionId,
+              turnId: wait.turnId,
+              runsAs: wait.runsAs,
+              sender: wait.sender,
+              openTurn: wait.openTurn,
+              work: wait.work.map((work) => ({
+                kind: work.kind,
+                id: work.id,
+                description: work.description,
+                endable: work.endable,
+              })),
+              line: conversationWaitLine({
+                runsAs: nameOf(wait.runsAs),
+                sender: nameOf(wait.sender),
+                openTurn: wait.openTurn,
+                work: wait.work,
+              }),
+              since: before?.turnId === wait.turnId ? before.since : new Date(),
+            }),
+          );
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: the waiting line was not said").pipe(
+              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+            ),
+          ),
+        );
+
+      /** Why a turn queued before shared control was turned off is not sent (decision 6). */
+      const STEERED_AFTER_SHARING_OFF = "Shared control was turned off, so this turn was not sent.";
+
+      /**
+       * Shared steering for an agent process that runs as a person (docs/adr/0016, decision 6):
+       * every queued turn runs as its sender, Mend's own as the owner. A turn of the person the
+       * process runs as is sent to it; another sender's turn, or any turn once shared control
+       * asks for the neutral context of a conversation not moved yet, hands the conversation to a
+       * new process once this one's own work has finished. Same-person turns pay nothing more.
+       */
+      const steeringFor = (agentProcess: SessionProcess): ProtocolSteering | undefined => {
+        const runsAs = agentProcess.runsAs;
+        if (runsAs === null || !isConversationHarness(agentProcess.harness)) return undefined;
+        return {
+          decide: (turn) =>
+            Effect.gen(function* () {
+              const session = yield* sessions.byId(turn.sessionId);
+              const owner = session.ownerUserId;
+              if (owner === null) return { kind: "send" } as const;
+              const sender = turn.author ?? owner;
+              if (sender !== owner && session.sharedControlEnabledAt === null) {
+                return { kind: "refuse", words: STEERED_AFTER_SHARING_OFF } as const;
+              }
+              const moved = (yield* harnessLayouts.sharedConversationOf(session.id)) !== null;
+              if (sender === runsAs && (moved || session.sharedControlEnabledAt === null)) {
+                return { kind: "send" } as const;
+              }
+              return { kind: "hand-over", sender } as const;
+            }).pipe(
+              Effect.catchTag("SessionNotFoundError", () =>
+                Effect.succeed({ kind: "send" } as const),
+              ),
+            ),
+          waiting: (wait) => recordConversationWait(wait, agentProcess.sessionId),
+          handOver: (sender) => handOverConversation(agentProcess, sender),
+        };
+      };
+
+      /**
+       * The stop of decision 6, once the process is quiescent: a turn its harness starts on its
+       * own from now is recorded as interrupted by the hand-over, under its person; its input is
+       * closed (the session hung up: the SDK has no end of input for a pipe, PLATFORM-FEEDBACK.md)
+       * and the process recorded as ended, which frees the conversation for its next process. Its
+       * capture and harvest run off the hand-over's path.
+       */
+      const stopForHandOver = (agentProcess: SessionProcess, toWhom: string) =>
+        Effect.gen(function* () {
+          yield* protocolHost.detachForHandOver(agentProcess.id);
+          if (agentProcess.sealantSessionId !== null) {
+            const closed = yield* closeProcessPty(
+              agentProcess.sealantWorkspaceId,
+              agentProcess.sealantSessionId,
+            );
+            if (!closed) {
+              return yield* new SealantPlatformError({
+                code: "conversation_not_stopped",
+                status: null,
+                message:
+                  "This conversation's process could not be stopped, so nothing was started. Try again.",
+                cause: null,
+              });
+            }
+          }
+          const recorded = yield* endAgentProcess(agentProcess, {
+            how: "stopped",
+            exitCode: null,
+            outcome: "stopped",
+            summary: `handed over to ${toWhom}`,
+          }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)));
+          if (recorded) {
+            yield* finishAgentProcess(agentProcess, "turn-boundary", false).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session engine: a handed-over process was not finished").pipe(
+                  Effect.annotateLogs({ processId: agentProcess.id, cause: Cause.pretty(cause) }),
+                ),
+              ),
+              Effect.forkIn(scope),
+            );
+          }
+        });
+
+      /**
+       * The hand-over of decision 6: the conversation's process stops and its next one starts in
+       * the same workspace as `sender`, on their own login, resuming the same conversation (its
+       * own file, never a fork). The seed is staged while the old process stops; the new process
+       * takes the conversation's queued turns.
+       */
+      const handOverConversation = (
+        agentProcess: SessionProcess,
+        sender: string,
+      ): Effect.Effect<void, SealantPlatformError> =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(agentProcess.sessionId);
+          const workspace = yield* sealant.getWorkspace(agentProcess.sealantWorkspaceId);
+          const options = agentProcess.protocolOptions;
+          const start: LaunchStart = {
+            mode: "protocol",
+            ...(options?.model === null || options?.model === undefined
+              ? {}
+              : { model: options.model }),
+            ...(options?.effort === null || options?.effort === undefined
+              ? {}
+              : { effort: options.effort }),
+            permissionMode: options?.permissionMode ?? "bypass",
+          };
+          const providerSessionId =
+            (yield* processes.byId(agentProcess.id))?.providerSessionId ??
+            agentProcess.providerSessionId ??
+            session.providerSessionId;
+          const composed = composeProtocolArgv(
+            session.harness,
+            start,
+            providerSessionId ?? undefined,
+          );
+          if (composed instanceof ProtocolHarnessUnsupportedError) {
+            return yield* new SealantPlatformError({
+              code: "conversation_not_handed_over",
+              status: null,
+              message: composed.message,
+              cause: composed,
+            });
+          }
+          const nameOf = yield* namesFor(session.id);
+          yield* launchInRetainedWorkspace(
+            session.id,
+            composed,
+            null,
+            null,
+            providerSessionId,
+            start,
+            null,
+            workspace,
+            null,
+            { sender, stop: stopForHandOver(agentProcess, nameOf(sender)) },
+          );
+        }).pipe(
+          Effect.mapError((error) =>
+            error instanceof SealantPlatformError
+              ? error
+              : new SealantPlatformError({
+                  code: "conversation_not_handed_over",
+                  status: null,
+                  message: `The conversation could not be handed over: ${error.message}`,
+                  cause: error,
+                }),
+          ),
+        );
+
+      /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
+      const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => {
+        const steering = steeringFor(agentProcess);
+        return {
+          ...(steering === undefined ? {} : { steering }),
+          onRequestChanged: (changedSessionId) =>
+            reconcileSession(changedSessionId, { sweep: false }).pipe(
+              Effect.catchTag("SessionNotFoundError", () => Effect.void),
+              Effect.asVoid,
+            ),
+          onTurnCompleted: (turn) =>
+            Effect.gen(function* () {
+              // A turn refused for its login, in a person executor: its person's logins are
+              // written into their home once more (docs/adr/0016, decision 5), off the turn's path.
+              if (
+                layoutSteps.personPossible() &&
+                turn.status === "failed" &&
+                isAuthenticationFailure(turn.error)
+              ) {
+                yield* reloginAfterFailure(agentProcess).pipe(Effect.forkIn(scope));
+              }
+              // A provider that refused reasoning another account made (decision 6): the turn
+              // fails with the reason and who can continue; nothing is retried.
+              if (
+                layoutSteps.personPossible() &&
+                turn.status === "failed" &&
+                isForeignReasoningRefusal(turn.error)
+              ) {
+                yield* sayForeignReasoning(turn, agentProcess).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("session engine: a refused turn's words were not set").pipe(
+                      Effect.annotateLogs({ turnId: turn.id, cause: Cause.pretty(cause) }),
+                    ),
+                  ),
+                );
+              }
+              const currentSession = yield* sessions.byId(turn.sessionId);
+              const run =
+                agentProcess.sealantRunId === null
+                  ? null
+                  : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
+              yield* tryCheckpoint(currentSession, "turn-boundary", {
+                sealantRunId: agentProcess.sealantRunId,
+                sequence: run?.lastSeenSequence ?? 0n,
+              });
+              yield* refreshChangeHead(currentSession).pipe(Effect.ignore);
+            }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void)),
+        };
+      };
 
       const launchProtocol = Effect.fn("SessionEngine.launchProtocol")(function* (
         sessionId: SessionId,
@@ -15513,29 +15810,61 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ).pipe(Effect.catchTag("SessionNotLiveError", launchFresh));
       });
 
+      /** A person's own login, as Core said it stood within the last minute: active only. */
+      const activeLogins = new Map<string, number>();
+      const ACTIVE_LOGIN_TTL_MS = 60_000;
+
+      /**
+       * Why `sender` may not send a turn to `session`'s conversation now (docs/adr/0016, decision
+       * 6; ADR 0013), or null. opencode is one person's: shared control is not available for it.
+       * In a worktree that runs per person, another person's turn runs on their own login, so one
+       * who has not connected the harness's provider, or whose login needs reconnecting, is
+       * refused before anything is queued; Mend never falls back to the owner's. The owner's own
+       * turns ask nothing more, and with the flag off and nothing recorded nothing is read.
+       */
+      const steeringRefusal = Effect.fn("SessionEngine.steeringRefusal")(function* (
+        session: Session,
+        sender: string,
+      ) {
+        if (session.ownerUserId === null || sender === session.ownerUserId) return null;
+        if (session.harness === "opencode") return OPENCODE_NOT_STEERABLE;
+        if (capture === null || !layoutSteps.personPossible()) return null;
+        if (!isConversationHarness(session.harness)) return null;
+        if (!(yield* layoutSteps.mayRunPerson(session.worktreeId))) return null;
+        const provider = session.harness === "claude" ? "claude" : "codex";
+        const key = `${sender}\u0000${provider}`;
+        const now = yield* Clock.currentTimeMillis;
+        if ((activeLogins.get(key) ?? 0) > now) return null;
+        const login = yield* personPlatform.loginOf(sender, provider);
+        const name = provider === "claude" ? "Claude" : "Codex";
+        switch (login) {
+          case "active":
+            activeLogins.set(key, now + ACTIVE_LOGIN_TTL_MS);
+            return null;
+          case "missing":
+            return `Connect ${name} to steer this session.`;
+          case "invalid":
+            return `Your ${name} login needs reconnecting. Reconnect ${name} to steer this session.`;
+          case "unknown":
+            // Core could not be asked: the hand-over's own write refuses a login that is not there.
+            return null;
+        }
+      });
+
       const submitTurn = Effect.fn("SessionEngine.submitTurn")(function* (
         sessionId: SessionId,
         input: string,
         author: string | null,
       ) {
-        // The owner's own turns ask nothing more; only another person's turn reads the layout,
-        // and only once some worktree may run person: with the flag off and nothing recorded, a
-        // turn reads nothing here (docs/adr/0016).
-        if (capture !== null && author !== null && layoutSteps.personPossible()) {
+        // The owner's own turns ask nothing more; another person's turn is refused before it is
+        // queued when it could not run on their own login (docs/adr/0016, decision 6). With the
+        // flag off and nothing recorded, a turn reads nothing here.
+        if (author !== null && capture !== null && layoutSteps.personPossible()) {
           const session = yield* sessions
             .byId(sessionId)
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if (
-            session !== null &&
-            author !== session.ownerUserId &&
-            session.sealantWorkspaceId !== null &&
-            (yield* layoutSteps.mayRunPerson(session.worktreeId))
-          ) {
-            const refusal = yield* layoutSteps.turnRefusal({
-              launchId: yield* executorLaunchIdOf(session, session.sealantWorkspaceId),
-              ownerUserId: session.ownerUserId,
-              author,
-            });
+          if (session !== null && author !== session.ownerUserId) {
+            const refusal = yield* steeringRefusal(session, author);
             if (refusal !== null) {
               return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
             }
@@ -15543,6 +15872,63 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         return yield* protocolHost.submitTurn(sessionId, input, author);
       });
+
+      /** The waiting line of a conversation (decision 6), as both people see it. */
+      const conversationWait = (sessionId: SessionId) =>
+        Effect.sync(() => conversationWaits.get(sessionId) ?? null);
+
+      /**
+       * End one piece of the previous sender's background work from the waiting line (decision 6):
+       * the person the conversation's process runs as, or the session's owner. Anything else is
+       * theirs to end, or ends on its own.
+       */
+      const endBackgroundWork = Effect.fn("SessionEngine.endBackgroundWork")(function* (
+        sessionId: SessionId,
+        actor: string,
+        work: { readonly kind: ConversationWaitWork["kind"]; readonly id: string },
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const process = currentAgentProcess(yield* processes.listForSession(sessionId));
+        if (process === null || process.kind !== "agent-protocol" || process.exitedAt !== null) {
+          return yield* new ProtocolHostNotLiveError({ processId: sessionId });
+        }
+        if (actor !== session.ownerUserId && actor !== process.runsAs) {
+          return yield* new SessionTurnRefusedError({
+            sessionId,
+            message:
+              "Only the person whose agent runs it, or the session's owner, ends its background work.",
+          });
+        }
+        yield* protocolHost.endWork(process.id, work);
+      });
+
+      /** Cancel the queued turns of a session that `which` picks; how many were cancelled. */
+      const cancelQueued = (sessionId: SessionId, which: (turn: AgentTurn) => boolean) =>
+        Effect.gen(function* () {
+          let cancelled = 0;
+          for (const turn of yield* conversations.openTurns(sessionId)) {
+            if (turn.status !== "queued" || !which(turn)) continue;
+            yield* conversations.cancelOpenForTurn(turn.id);
+            cancelled++;
+          }
+          return cancelled;
+        });
+
+      /** Shared control was turned off: every queued turn of anyone but the owner goes (decision 6). */
+      const cancelSteeredTurns = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId);
+          return yield* cancelQueued(
+            sessionId,
+            (turn) => turn.author !== null && turn.author !== session.ownerUserId,
+          );
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(0)));
+
+      /** A person removed from the organization: their queued turns go (decision 6). */
+      const cancelQueuedTurnsBy = (userId: string, sessionIds: ReadonlyArray<SessionId>) =>
+        Effect.forEach(sessionIds, (sessionId) =>
+          cancelQueued(sessionId, (turn) => turn.author === userId),
+        ).pipe(Effect.map((counts) => counts.reduce((sum, count) => sum + count, 0)));
 
       const interruptTurn = (turnId: AgentTurnId) => protocolHost.interruptTurn(turnId);
 
@@ -15864,6 +16250,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
            * receives no secret files of its own there.
            */
           executorOwnerUserId: string | null = null,
+          /**
+           * A hand-over of a shared conversation (docs/adr/0016, decision 6): the next process
+           * runs as `sender`, and `stop` ends the conversation's current one, beside the staging.
+           * A failure leaves the session as it is: the waiting turn fails with the words.
+           */
+          handOver: {
+            readonly sender: string;
+            readonly stop: Effect.Effect<void, SealantPlatformError>;
+          } | null = null,
         ) {
           const session = yield* sessions.byId(sessionId);
           // As at a cold launch: a run the session's settle left open takes its words first.
@@ -15900,16 +16295,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // exec, and the worktree repair beside it, never awaited), and their own deliveries go
           // into their own home beside their logins (Delivery 15). Null in a shared executor,
           // which asks nothing more than before.
-          const personStart = yield* startAsOwner(
+          //
+          // Shared steering (decision 6): a conversation's process runs as the person whose turn
+          // it runs. A hand-over names them; a start that opens with a steerer's turn while control
+          // is shared starts as them, so their turn needs no hand-over of its own.
+          const sender =
+            handOver?.sender ??
+            (protocolStart !== null &&
+            protocolAuthor !== null &&
+            session.sharedControlEnabledAt !== null &&
+            isConversationHarness(session.harness)
+              ? protocolAuthor
+              : session.ownerUserId);
+          const settleUnlessHandedOver = (words: string) =>
+            handOver === null ? settleSession(sessionId, "failed", words) : Effect.void;
+          const personStart = yield* startAsPerson(
             session,
             workspace,
+            Effect.succeed(sender),
             interactiveShell ? "shell" : session.harness,
-            { agent: true, resumeId: interactiveShell ? null : providerSessionId },
+            // A hand-over needs only the sender's user, home and logins: in the conversation
+            // home nothing personal of theirs is read, and what their tools read (their secret
+            // files, their dotfiles) arrived at their first process here (Performance).
+            {
+              agent: handOver === null,
+              resumeId: interactiveShell ? null : providerSessionId,
+              conversation: handOver !== null,
+            },
           ).pipe(
             Effect.tapError((error) =>
-              settleSession(
-                sessionId,
-                "failed",
+              settleUnlessHandedOver(
                 // A start refused before anything ran (a login not connected, a launch Mend
                 // cannot name) is no failed resume: the session never ran here.
                 error.code === "person_login_refused" || error.code === "harness_layout_refused"
@@ -16037,9 +16452,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const codexMemoryOn =
             personStart !== null ||
             (ownHome && (yield* withholdCodexThreads(session, workspace, shapedArgv, [])));
-          const memoryShapedArgv = codexMemoryOn
-            ? shapedArgv
-            : withCodexMemoryOff(shapedArgv, { join: !ownHome });
+          const memoryShapedArgv = yield* withClaudeSettings(
+            session,
+            codexMemoryOn ? shapedArgv : withCodexMemoryOff(shapedArgv, { join: !ownHome }),
+            personStart === null ? null : sender,
+          );
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
           const opencodeAtLaunch =
@@ -16090,29 +16507,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             conversation === null ||
             personStart === null ||
             executorLaunch === null ||
-            session.ownerUserId === null
+            sender === null
               ? null
               : yield* startInConversation({
                   session,
                   workspace,
                   launchId: executorLaunch,
                   conversation,
-                  sender: session.ownerUserId,
+                  sender,
                   personEnv: personStart.env,
                   providerSessionId,
                   model: protocolStart?.model ?? null,
-                  stop: null,
+                  stop: handOver?.stop ?? null,
                 }).pipe(
                   Effect.tapError((error) =>
-                    settleSession(
-                      sessionId,
-                      "failed",
+                    settleUnlessHandedOver(
                       error.code === "person_login_refused"
                         ? `launch refused · ${error.message}`
                         : `resume failed: ${error.message}`,
                     ).pipe(Effect.ignore),
                   ),
                 );
+          // A hand-over outside a conversation home (none should reach here): the old process
+          // still stops before the next one starts, never beside it.
+          if (handOver !== null && inConversation === null) yield* handOver.stop;
           const startedArgv =
             conversation === null || inConversation === null
               ? launchedArgv
@@ -16142,9 +16560,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
             ),
             Effect.tapError((error) =>
-              settleSession(sessionId, "failed", `resume failed: ${error.message}`).pipe(
-                Effect.ignore,
-              ),
+              settleUnlessHandedOver(`resume failed: ${error.message}`).pipe(Effect.ignore),
             ),
           );
           const sealantRunId = SealantRunId.make(pty.runId);
@@ -16201,7 +16617,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             label: session.harness,
             argv: shapedArgv,
             // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-            runsAs: personStart === null ? null : (inConversation?.runsAs ?? session.ownerUserId),
+            runsAs: personStart === null ? null : (inConversation?.runsAs ?? sender),
           });
           if (inConversation !== null && inConversation.fence !== null) {
             yield* bindConversationProcess(agentProcess, inConversation.fence).pipe(
@@ -16247,6 +16663,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 hooks: protocolHooksFor(agentProcess),
                 launchedWithLoginOf,
                 resumePath: inConversation?.resumePath ?? null,
+                // The payer of every turn the process runs: the person it runs as (decision 6).
+                runsAs: agentProcess.runsAs,
               })
               .pipe(
                 Effect.tapError((error) =>
@@ -17058,7 +17476,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // without the sweep tail, so the workspace stays leased across the gap.
         let handedOver: SessionProcess | null = null;
         for (const agent of liveAgents) {
-          if (agent.kind === "agent-protocol") {
+          if (agent.kind === "agent-protocol" && agent.runsAs !== null) {
+            // A person's conversation follows the waiting rule (docs/adr/0016, decision 6): its
+            // process finishes its own work first, nothing is killed, and its open turns are not
+            // cancelled; queued ones wait for the conversation's next process.
+            yield* protocolHost.awaitQuiescent(agent.id);
+            yield* protocolHost.detachForHandOver(agent.id, to === "protocol");
+          } else if (agent.kind === "agent-protocol") {
             yield* protocolHost.detach(agent.id);
             yield* conversations.cancelOpenForProcess(agent.id);
           }
@@ -17603,10 +18027,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * The people with a live process in an executor (docs/adr/0016, decision 5): a Service's
-       * whoever started it, anything else its session's owner (a shell runs as its owner; a
-       * steerer's turn runs as them until Delivery 18). Read only where Mend holds a home that an
-       * idle person's could be.
+       * The people with a live process in an executor (docs/adr/0016, decision 5): the person a
+       * process runs as, recorded on it (a shared conversation's process runs as its sender);
+       * for a row from before that was recorded, a Service's whoever started it, anything else
+       * its session's owner. Read only where Mend holds a home that an idle person's could be.
        */
       const peopleLiveIn = (workspaceId: SealantWorkspaceId): Effect.Effect<ReadonlySet<string>> =>
         Effect.gen(function* () {
@@ -17614,6 +18038,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const owners = new Map<string, string | null>();
           const people = new Set<string>();
           for (const process of live) {
+            if (process.runsAs !== null) {
+              people.add(process.runsAs);
+              continue;
+            }
             if (process.kind === "service" && process.serviceId !== null) {
               const startedBy = yield* services.startedByOf(process.serviceId);
               if (startedBy !== null) {
@@ -19173,6 +19601,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               permissionMode: options?.permissionMode ?? "bypass",
               hooks: protocolHooksFor(protocolProcess),
               launchedWithLoginOf: yield* launchLoginOfProcess(protocolProcess),
+              runsAs: protocolProcess.runsAs,
               highWater: status.outputHighWater,
             })
             .pipe(
@@ -19887,6 +20316,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,
         respondRequest,
+        conversationWait,
+        endBackgroundWork,
+        cancelSteeredTurns,
+        cancelQueuedTurnsBy,
+        steeringRefusal,
         launchFollowUp: (sessionId, instruction, launchCorrelationId, author) =>
           detached(
             owned(sessionId)(

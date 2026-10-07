@@ -211,6 +211,16 @@ export class PersonLayoutPlatform extends Context.Service<
       workspace: Workspace,
       input: { readonly home: string },
     ) => Effect.Effect<void, SealantPlatformError>;
+    /**
+     * A person's own login for a provider, as Core says it stands (their account named
+     * `default`): `active`, `invalid` (it needs reconnecting), `missing`, or `unknown` when Core
+     * could not be asked. What a steerer's turn is refused for at submit (docs/adr/0016, decision
+     * 6; ADR 0013): "Connect Claude to steer this session."
+     */
+    readonly loginOf: (
+      accountId: string,
+      provider: LoginProvider,
+    ) => Effect.Effect<"active" | "invalid" | "missing" | "unknown">;
     /** The Sealant user a Mend account acts as: what `GET` names a home's person by. */
     readonly sealantUserOf: (accountId: string) => Effect.Effect<string, SealantPlatformError>;
     /** `GET /v1/workspaces/:id/credentials`: the homes of the running executor. */
@@ -266,6 +276,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
       ),
     deleteCredentials: () =>
       Effect.fail(personLayoutUnsupported("release a home's logins", "Core Delivery 7")),
+    loginOf: () => Effect.succeed("unknown"),
     sealantUserOf: () =>
       Effect.fail(personLayoutUnsupported("name a person's Sealant user", "Core Delivery 7")),
     listCredentials: () =>
