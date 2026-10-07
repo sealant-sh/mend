@@ -188,6 +188,26 @@ describe("the live platform (Core 0.39)", () => {
     expect(Exit.isFailure(dotfiles)).toBe(true);
   });
 
+  it("puts a person launch's owner map on its capture source, and leaves any other create as it is", async () => {
+    const platform = await platformWith(
+      PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
+    );
+    const map = { gid: 40_000, worktreeUid: 40_001, people: [{ id: "alice", uid: 40_001 }] };
+    const capture: CreateOptions = {
+      harness: claudeCode(),
+      source: { kind: "capture", endpoint: "https://mend.test", token: "t".repeat(43) },
+    };
+    const mapped = platform.withOwnerMap(capture, map);
+    expect(mapped.source).toEqual({ ...capture.source, ownerMap: map });
+    // The create it was given is unchanged.
+    expect(capture.source).not.toHaveProperty("ownerMap");
+    const standby: CreateOptions = {
+      harness: claudeCode(),
+      source: { kind: "standby", rootPath: "/store/worktrees" },
+    };
+    expect(platform.withOwnerMap(standby, map)).toBe(standby);
+  });
+
   it("asks Core about an image once per key while the answer lasts, as the launcher", async () => {
     const asked: Array<CreateOptions> = [];
     const platform = await platformWith(

@@ -239,6 +239,7 @@ import type {
   TimelineEntry,
   Workspace,
   WorkspaceCaptureDrain,
+  WorkspaceCaptureOwnerMap,
   WorkspaceCaptureReplanned,
   WorkspaceCaptureStatus,
   WorkspaceRuntimeInfo,
@@ -260,12 +261,7 @@ import {
 } from "effect";
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
-import {
-  HarnessLayoutConfig,
-  HarnessLayoutConfigShared,
-  NO_OWNER_MAP_REASON,
-  NO_OWNER_MAP_REFUSAL,
-} from "../src/harness-layout-steps.ts";
+import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
   OPENCODE_CAPTURED_SEED,
@@ -489,6 +485,7 @@ const sealantLaunchLayer = (
     ) => Effect.Effect<WorkspaceCaptureStatus | null, SealantPlatformError>;
     readonly replan?: (
       workspace: Workspace,
+      options?: { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null },
     ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
     /** While true, every workspace lookup fails the way an unreachable Core does (503). */
     readonly unreachablePlatform?: () => boolean;
@@ -752,10 +749,10 @@ const sealantLaunchLayer = (
       Effect.sync(() => captureOps?.findByKey?.(key) ?? { kind: "unsupported" as const }),
     fenceWorkspaceCreate: (key) =>
       Effect.sync(() => captureOps?.fenceCreate?.(key) ?? { kind: "unsupported" as const }),
-    captureReplan: (target) =>
+    captureReplan: (target, options) =>
       captureOps?.replan === undefined
         ? Effect.die("capture.replan not in this test world")
-        : captureOps.replan(target),
+        : captureOps.replan(target, options),
     expireWorkspace: renewWorkspace,
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
@@ -23476,8 +23473,11 @@ const personPlatform = (
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
-    // A Sealant that takes the capture owner map (sealant#333): the map rides the create.
-    withOwnerMap: (options) => options,
+    // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
+    withOwnerMap: (options, map) =>
+      options.source?.kind === "capture"
+        ? { ...options, source: { ...options.source, ownerMap: map } }
+        : options,
     sealantUserOf: (accountId) => Effect.succeed(accountId),
     imageReport: () =>
       Effect.succeed({
@@ -23867,34 +23867,137 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(calls).toEqual([`post:${MARIA}:/home/${JOINER}`]);
   });
 
-  it("while Sealant cannot take the owner map, the flag on runs every new worktree shared before create, saying why", async () => {
-    const calls: Array<string> = [];
-    const state = makeHarnessLayoutsMemoryState();
-    const base = personPlatform(calls, { person: true });
-    const platform = Layer.effect(
-      PersonLayoutPlatform,
-      Effect.map(PersonLayoutPlatform, (inner) => ({ ...inner, withOwnerMap: null })),
-    ).pipe(Layer.provide(base));
-    const run = await launchPersonOnce({ flag: "person", state, platform });
-    expect(run.failure).toBeNull();
-    // No executor made to be refused: no person create, no user, no Core call.
-    expect(run.created).toHaveLength(1);
-    expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
-    expect(calls).toEqual([]);
-    expect([...state.launches.values()]).toEqual([
-      expect.objectContaining({ layout: "shared", reason: NO_OWNER_MAP_REASON }),
-    ]);
-    // A worktree already per person is refused before create.
-    const personState = recordedBeforeStart(makeHarnessLayoutsMemoryState());
-    const refused = await launchPersonOnce({
-      flag: "shared",
-      state: personState,
-      platform,
-      before: (worktreeId) =>
-        personState.worktrees.set(worktreeId, { layout: "person", requested: null }),
+  it("a person launch sends its capture owner map; a shared launch sends none (sealant#333)", async () => {
+    const person = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform([], { person: true }),
+      exec: answerLayout(LAYOUT_READY),
     });
-    expect(refused.failure).toContain(NO_OWNER_MAP_REFUSAL);
-    expect(refused.created).toHaveLength(0);
+    expect(person.failure).toBeNull();
+    const sent = person.created[0]?.source;
+    expect(sent?.kind === "capture" ? sent.ownerMap : undefined).toEqual({
+      gid: 40_000,
+      worktreeUid: 40_001,
+      people: [{ id: "user-fixture", uid: 40_001 }],
+    });
+    const shared = await launchPersonOnce({
+      flag: "shared",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform([], { person: true }),
+    });
+    expect(shared.failure).toBeNull();
+    expect(shared.created[0]?.source).not.toHaveProperty("ownerMap");
+  });
+
+  it("the owner map gives the worktree to the change's owner, the owner of its first session", async () => {
+    const created: Array<CreateOptions> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          // Maria's session made the worktree; Alice's is the first to launch in it.
+          const first = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "theirs",
+            ownerUserId: MARIA,
+            base: null,
+          });
+          const alices = yield* engine.provisionSessionIn(first.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          yield* engine.launch(alices.id, ["claude"]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+          undefined,
+          { exec: answerLayout(LAYOUT_READY) },
+        ),
+        harnessLayout: { flag: "person", state, platform: personPlatform([], { person: true }) },
+      },
+    );
+    const maria = state.identities.get(MARIA);
+    const sent = created[0]?.source;
+    const map = sent?.kind === "capture" ? sent.ownerMap : undefined;
+    expect(map?.gid).toBe(40_000);
+    expect(maria).toBeDefined();
+    expect(map?.worktreeUid).toBe(maria?.uid);
+    expect(map?.people).toContainEqual({
+      id: "user-fixture",
+      uid: state.identities.get("user-fixture")?.uid,
+    });
+  });
+
+  it("a person launch refused for its owner map says so in Mend's words, and the image is known from then on", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    let failure: string | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "pph",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
+          if (launched._tag === "Failure") failure = launched.failure.message;
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () =>
+            Effect.fail(
+              new SealantPlatformError({
+                code: "owner-map-unsupported",
+                status: null,
+                message:
+                  "The workspace was not launched: its capture source names an owner map, and its image records no probe.",
+                cause: null,
+              }),
+            ),
+          [],
+        ),
+        harnessLayout: { flag: "person", state, platform: personPlatform([], { person: true }) },
+      },
+    );
+    expect(failure).toContain(
+      "This workspace cannot run per-person users (its sealantd does not restore files per person), so nothing was started.",
+    );
+    expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false });
+    expect([...state.launches.values()]).toEqual([
+      expect.objectContaining({ layout: "shared", source: "fallback" }),
+    ]);
   });
 
   it("with the flag off, the platform's credentials API is never called", async () => {
@@ -24770,6 +24873,9 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
 
   it("the standby's own launch is the one a claimed launch's ticket is bound to", async () => {
     const created: Array<CreateOptions> = [];
+    const replanned: Array<
+      { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null } | undefined
+    > = [];
     const pool = memoryHotPool();
     const answers: Array<string> = [];
     let executor: SessionId | null = null;
@@ -24799,9 +24905,10 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
         secretFilesLayer: sealedNpmrc(),
         sealantLayer: lifecycleLayer(created, {
           captureOps: {
-            replan: (workspace) =>
+            replan: (workspace, options) =>
               Effect.gen(function* () {
                 void workspace;
+                replanned.push(options);
                 const api = servedSocketApis.get(executor ?? SessionId.make(""))?.capture;
                 if (api === undefined) throw new Error("the executor serves no capture api");
                 const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(Effect.orDie);
@@ -24842,6 +24949,9 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
         }),
       },
     );
+    // A standby boots with no owner map, and a claim says it expects none (sealant#333), so Core
+    // refuses one booted with a map before its daemon is reached.
+    expect(replanned).toEqual([{ expectedOwnerMap: null }]);
   });
 });
 

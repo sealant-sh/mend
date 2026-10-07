@@ -10073,16 +10073,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           clusterBindingNames,
           clusterServiceAccount: clusterBindings.serviceAccount,
         };
-        // The capture owner map of a person launch (docs/adr/0016, decision 8), handed to the
-        // create where the platform can take it: none can yet (`withOwnerMap` null), and then
-        // nothing is built or read for it.
-        const withOwnerMap = personPlatform.withOwnerMap;
+        // The capture owner map of a person launch (docs/adr/0016, decision 8), on its capture
+        // source: sealantd restores each person's saved directory as theirs and the worktree to
+        // the group. A shared launch sends none, and builds or reads nothing for one.
         const ownerMap =
-          launchLayout.layout === "person" && withOwnerMap !== null && input.layout !== undefined
+          launchLayout.layout === "person" && input.layout !== undefined
             ? yield* captureOwnerMapOf(launchLayout, input.layout.worktreeId)
             : null;
         const withLayoutOptions = (options: CreateOptions): CreateOptions =>
-          ownerMap === null || withOwnerMap === null ? options : withOwnerMap(options, ownerMap);
+          ownerMap === null ? options : personPlatform.withOwnerMap(options, ownerMap);
         // A person launch's logins go into the launcher's own home, never `$HOME` and the
         // environment (docs/adr/0016, decision 5): decided by the layout alone, and a person
         // launch that could not send it is refused rather than run with the logins elsewhere.
@@ -10221,6 +10220,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             return error;
           }),
+          // A person launch refused for its owner map (sealant#333): Mend's words, the image's
+          // answer recorded, the worktree as the ADR says (docs/adr/0016, decisions 13 and 14).
+          Effect.catch((error) =>
+            launchLayout.layout === "person"
+              ? layoutSteps
+                  .refusedOwnerMap({ layout: launchLayout, launchId: input.launchId, error })
+                  .pipe(Effect.flatMap((mapped) => Effect.fail(mapped ?? error)))
+              : Effect.fail(error),
+          ),
           report,
           Effect.onInterrupt(() =>
             input.onFailure("workspace provisioning was interrupted").pipe(Effect.ignore),
@@ -10642,8 +10650,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         // Read under the claim's lease: the head this replan plans, unless the daemon names it.
         const headBefore = yield* restoredCaptureOf(session.worktreeId);
+        // A standby boots with no owner map and serves only shared launches (`standbyMayServe`):
+        // the claim says it expects none, so Core refuses one booted with a map
+        // (`owner-map-mismatch`) before its daemon is reached, and the launch goes cold.
         const outcome = yield* sealant
-          .captureReplan(workspace)
+          .captureReplan(workspace, { expectedOwnerMap: null })
           .pipe(Effect.timeoutOption(STANDBY_REPLAN_TIMEOUT), Effect.result);
         const annotations = {
           sessionId: session.id,
@@ -10651,9 +10662,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId: workspace.id,
         };
         if (Result.isFailure(outcome)) {
-          yield* Effect.logWarning("session engine: standby replan · refused · cold launch").pipe(
-            Effect.annotateLogs({ ...annotations, error: outcome.failure.message }),
-          );
+          const ownerMapRefused =
+            outcome.failure.code === "owner-map-mismatch" ||
+            outcome.failure.code === "owner-map-unsupported";
+          yield* Effect.logWarning(
+            ownerMapRefused
+              ? "session engine: standby replan · the standby booted with another owner map · cold launch"
+              : "session engine: standby replan · refused · cold launch",
+          ).pipe(Effect.annotateLogs({ ...annotations, error: outcome.failure.message }));
           return null;
         }
         if (Option.isNone(outcome.success)) {

@@ -12,8 +12,6 @@ import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
-  NO_OWNER_MAP_REASON,
-  NO_OWNER_MAP_REFUSAL,
   UNKNOWN_LAUNCH_REFUSAL,
   loginRefusal,
   makeHarnessLayoutSteps,
@@ -101,8 +99,6 @@ interface CoreCalls {
   deleteGate: Deferred.Deferred<void> | null;
   /** Held open, a POST waits on it after saying so in `calls`. */
   postGate: Deferred.Deferred<void> | null;
-  /** Whether the platform can take the capture owner map (sealant#333). */
-  ownerMap: boolean;
   imageReports: number;
 }
 
@@ -113,14 +109,13 @@ const coreCalls = (): CoreCalls => ({
   homes: [],
   deleteGate: null,
   postGate: null,
-  ownerMap: true,
   imageReports: 0,
 });
 
 const platformOf = (core: CoreCalls) =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
-    withOwnerMap: core.ownerMap ? (options) => options : null,
+    withOwnerMap: (options) => options,
     imageReport: () =>
       Effect.sync(() => {
         core.imageReports++;
@@ -901,27 +896,6 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(result.message).toBe(UNKNOWN_LAUNCH_REFUSAL);
   });
 
-  it("while Sealant cannot take the owner map, a fresh worktree runs shared before create, and a person one is refused", async () => {
-    const core = coreCalls();
-    core.ownerMap = false;
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const state = makeHarnessLayoutsMemoryState();
-        const { steps } = yield* stepsWith("person", state, { platform: platformOf(core) });
-        const fresh = yield* steps.decide(decideInput("launch-fresh"));
-        state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
-        const refused = yield* steps.decide(decideInput("launch-person")).pipe(Effect.flip);
-        return { fresh, refused: refused.message, recorded: [...state.launches.values()] };
-      }),
-    );
-    expect(result.fresh).toMatchObject({ layout: "shared", reason: NO_OWNER_MAP_REASON });
-    expect(result.refused).toBe(NO_OWNER_MAP_REFUSAL);
-    expect(result.recorded).toEqual([
-      expect.objectContaining({ layout: "shared", reason: NO_OWNER_MAP_REASON, confirmed: true }),
-    ]);
-    // Decided with no call to Core.
-    expect(core.imageReports).toBe(0);
-  });
   it("after a restart, a refused start of a person who still runs something here revokes and rewrites nothing of theirs (review 2 of mend#564, P2)", async () => {
     for (const reconciled of [true, false]) {
       const core = coreCalls();
@@ -1059,19 +1033,71 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual(["revoke:user-maria"]);
   });
 
-  it("with the flag on and no owner map, a standby serves any worktree that is not person", async () => {
-    const core = coreCalls();
-    core.ownerMap = false;
+  it("maps a person launch refused for its owner map to Mend's words, and records the image's answer (sealant#333)", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();
-        const { steps } = yield* stepsWith("person", state, { platform: platformOf(core) });
-        const fresh = yield* steps.standbyMayServe(WorktreeId.make("wt-1"));
-        state.worktrees.set(WorktreeId.make("wt-2"), { layout: "person", requested: null });
-        const person = yield* steps.standbyMayServe(WorktreeId.make("wt-2"));
-        return { fresh, person };
+        const { steps } = yield* stepsWith("person", state);
+        const layout = yield* steps.decide(decideInput("launch-fresh"));
+        const unsupported = new SealantPlatformError({
+          code: "owner-map-unsupported",
+          status: null,
+          message:
+            "The workspace was not launched: its capture source names an owner map, and its image's sealantd does not report restore.owner_map.",
+          cause: null,
+        });
+        const fresh = yield* steps.refusedOwnerMap({
+          layout,
+          launchId: "launch-fresh",
+          error: unsupported,
+        });
+        const freshLayout = yield* steps.layoutOfLaunch("launch-fresh");
+        const afterFresh = [...state.capabilities.values()].map((record) => record.missing);
+        // A worktree already person: decision 14's words, and it stays person.
+        state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        const sticky = yield* steps
+          .decide(decideInput("launch-sticky"))
+          .pipe(Effect.catch(() => Effect.succeed(layout)));
+        const kubernetes = yield* steps.refusedOwnerMap({
+          layout: sticky.layout === "person" ? { ...sticky, onMissing: "refuse" } : layout,
+          launchId: "launch-sticky",
+          error: new SealantPlatformError({
+            code: "unsupported-runtime-requirement",
+            status: 422,
+            message:
+              "An owner map (a per-person executor) is not available on Kubernetes: workspace Pods run with allowPrivilegeEscalation: false, so the kubelet sets no-new-privileges and no person's sudo could work.",
+            cause: null,
+          }),
+        });
+        const other = yield* steps.refusedOwnerMap({
+          layout,
+          launchId: "launch-other",
+          error: new SealantPlatformError({
+            code: "control_plane_unavailable",
+            status: 503,
+            message: "the control plane did not answer",
+            cause: null,
+          }),
+        });
+        return {
+          fresh: fresh?.message ?? null,
+          freshLayout,
+          kubernetes: kubernetes?.message ?? null,
+          other,
+          capabilities: afterFresh,
+          worktree: state.worktrees.get(WorktreeId.make("wt-1"))?.layout ?? null,
+        };
       }),
     );
-    expect(result).toEqual({ fresh: true, person: false });
+    expect(result.fresh).toBe(
+      "This workspace cannot run per-person users (its sealantd does not restore files per person), so nothing was started. The next launch here runs as one person.",
+    );
+    expect(result.freshLayout).toBe("shared");
+    expect(result.kubernetes).toBe(
+      "This worktree's sessions are saved per person, and its image cannot run per-person users (Kubernetes workspaces cannot run per-person users: no one's sudo works there). Pick an image that can, or start a new worktree.",
+    );
+    expect(result.other).toBeNull();
+    expect(result.capabilities).toEqual([["its sealantd does not restore files per person"]]);
+    expect(result.worktree).toBe("person");
   });
 });

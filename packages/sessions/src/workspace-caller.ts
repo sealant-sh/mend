@@ -340,7 +340,8 @@ export const byWorkspaceCreator = (
       act(workspace.id)(client.forward(workspace, port, host, protocol)),
     bindWorkspace: (workspace, options) =>
       act(workspace.id)(client.bindWorkspace(workspace, options)),
-    captureReplan: (workspace) => act(workspace.id)(client.captureReplan(workspace)),
+    captureReplan: (workspace, options) =>
+      act(workspace.id)(client.captureReplan(workspace, options)),
     expireWorkspace: (workspaceId, ttlSeconds) =>
       act(workspaceId)(client.expireWorkspace(workspaceId, ttlSeconds)),
     diffCommits: (workspaceId, base, head) =>

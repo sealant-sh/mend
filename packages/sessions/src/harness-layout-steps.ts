@@ -37,8 +37,10 @@ import {
   imageLayoutKeyOf,
   identityRefusal,
   layoutProbeScript,
+  operatorPersonRefusal,
   ownerMapRefusal,
   parseLayoutReport,
+  personLayoutRefusal,
   personHomeScript,
   personPrepareScript,
   personProcessEnv,
@@ -314,6 +316,18 @@ export interface HarnessLayoutSteps {
       }>;
     };
   }) => Effect.Effect<PrepareOutcome, SealantPlatformError>;
+  /**
+   * A person launch's create, refused for its owner map (decision 13's words): Core's
+   * `owner-map-unsupported` (the image's sealantd does not restore files per person) or a
+   * runtime where no person's sudo works (Kubernetes, Cloudflare). What it found is recorded
+   * against the image, so the next launch of a fresh worktree decides shared before create; a
+   * worktree already person stays person and is refused. Null for any other failure.
+   */
+  readonly refusedOwnerMap: (input: {
+    readonly layout: LaunchLayout;
+    readonly launchId: string | undefined;
+    readonly error: SealantPlatformError;
+  }) => Effect.Effect<SealantPlatformError | null>;
   /** The layout of the executor a launch made: its record, or `shared` without one. */
   readonly layoutOfLaunch: (launchId: string | null) => Effect.Effect<HarnessLayout>;
   /**
@@ -436,6 +450,23 @@ const bounded = <K, V>() => {
   };
 };
 
+/**
+ * What a create refused for its owner map lacks, in the words a refusal line names, or null when
+ * the failure is not about the owner map (sealant#333's words and code).
+ */
+export const ownerMapRefusalOf = (error: SealantPlatformError): string | null => {
+  if (error.message.includes("is not available on Kubernetes")) {
+    return "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
+  }
+  if (error.message.includes("is not available in Cloudflare")) {
+    return "Cloudflare sandboxes cannot run per-person users";
+  }
+  if (error.code === "owner-map-unsupported" || error.message.includes("names an owner map")) {
+    return "its sealantd does not restore files per person";
+  }
+  return null;
+};
+
 /** What a POST names for the launcher's create-time logins, put elsewhere (decision 1's fallback). */
 const homeLoginsOf = (credentials: WorkspaceCredentialsOptions | undefined): HomeLogins => {
   const logins: HomeLogins = {};
@@ -471,14 +502,6 @@ const homeKey = (workspaceId: string, home: string) => `${workspaceId}\u0000${ho
 /** A launch Mend cannot name, in a worktree that runs per person: never run as root there. */
 export const UNKNOWN_LAUNCH_REFUSAL =
   "Mend cannot tell which workspace launch this process belongs to, and this worktree runs each person as their own user, so nothing was started. Start the session again.";
-
-/** The session line while this Mend's Sealant cannot restore a workspace per person. */
-export const NO_OWNER_MAP_REASON =
-  "per-person users need a Sealant release that restores each person's files (sealant#333), so this workspace takes one person";
-
-/** A person worktree while this Mend's Sealant cannot restore a workspace per person. */
-export const NO_OWNER_MAP_REFUSAL =
-  "This worktree's sessions are saved per person, and this Mend's Sealant cannot restore a workspace per person yet (it needs sealant#333). Nothing was started; update Sealant, or start a new worktree.";
 
 /** DELETE is retried: a release that fails leaves a login where nobody runs any more. */
 const RELEASE_RETRY = Schedule.exponential("200 millis").pipe(Schedule.both(Schedule.recurs(4)));
@@ -564,7 +587,6 @@ export const makeHarnessLayoutSteps = (deps: {
   /** Whether a start of this home's person was asked for within the grace. */
   const startedWithinGrace = (key: string, now: number) =>
     now - (startedAt.get(key) ?? Number.NEGATIVE_INFINITY) < releaseGraceMs;
-  const logOnce = { noOwnerMap: false };
   const releaseGraceMs = Duration.toMillis(deps.loginReleaseGrace ?? LOGIN_RELEASE_GRACE);
   /** Some launch or worktree has a layout recorded (at startup, or since). */
   let layoutsRecorded = deps.anyRecorded;
@@ -646,48 +668,6 @@ export const makeHarnessLayoutSteps = (deps: {
       // where the flag is on and the worktree has no record.
       const headHasPeople =
         worktree.layout === null && flag === "person" ? yield* input.headHasPeople : false;
-      // A Sealant that cannot take the capture owner map (sealant#333 not pinned) restores no
-      // workspace per person, so prepare would refuse every person launch after its executor was
-      // made: decided here, before create, with no executor and no call to Core.
-      if (platform.processUser && platform.withOwnerMap === null) {
-        if (worktree.layout === "person" || headHasPeople) {
-          return yield* layoutRefused(NO_OWNER_MAP_REFUSAL);
-        }
-        if (worktree.requested === "person") {
-          return yield* layoutRefused(
-            "harnessLayout person was asked for, and this Mend's Sealant cannot restore a workspace per person yet (it needs sealant#333).",
-          );
-        }
-        if (flag === "person" && !logOnce.noOwnerMap) {
-          logOnce.noOwnerMap = true;
-          yield* Effect.logWarning(
-            "session engine: MEND_HARNESS_LAYOUT=person is set, and this Sealant cannot restore a workspace per person (sealant#333): every new worktree runs shared",
-          );
-        }
-        const operator = worktree.requested === "shared";
-        const imageKey = imageLayoutKeyOf(yield* input.image, null);
-        const reason = operator ? null : NO_OWNER_MAP_REASON;
-        yield* repo.recordLaunch({
-          launchId: input.launchId,
-          worktreeId: input.worktreeId,
-          sessionId: input.sessionId,
-          layout: "shared",
-          source: operator ? "operator" : "capability",
-          reason,
-          imageKey,
-          confirmed: true,
-        });
-        layoutByLaunch.set(input.launchId, "shared");
-        return {
-          layout: "shared",
-          source: operator ? "operator" : "capability",
-          reason,
-          probe: false,
-          imageKey,
-          runtime: "unknown",
-          recorded: true,
-        };
-      }
       const { capability, imageKey, runtime } = yield* capabilityFor(
         yield* input.image,
         input.ownerUserId,
@@ -760,9 +740,7 @@ export const makeHarnessLayoutSteps = (deps: {
   const standbyMayServe: HarnessLayoutSteps["standbyMayServe"] = Effect.fn(
     "HarnessLayoutSteps.standbyMayServe",
   )(function* (worktreeId) {
-    // While Sealant cannot take the owner map, no launch is person (each is decided shared, or
-    // refused, before create), so a standby may serve any worktree that is not person.
-    if (flag === "person" && platform.withOwnerMap !== null) return false;
+    if (flag === "person") return false;
     if (nothingRecorded()) return true;
     const worktree = yield* repo.worktreeLayout(worktreeId);
     return worktree.layout === null && worktree.requested !== "person";
@@ -874,6 +852,46 @@ export const makeHarnessLayoutSteps = (deps: {
     yield* repo.recordFallback(input.launchId, reason);
     layoutByLaunch.set(input.launchId, "shared");
     return { layout: "shared", fallback: reason };
+  });
+
+  const refusedOwnerMap: HarnessLayoutSteps["refusedOwnerMap"] = Effect.fn(
+    "HarnessLayoutSteps.refusedOwnerMap",
+  )(function* (input) {
+    const { layout } = input;
+    if (layout.layout !== "person") return null;
+    const lacks = ownerMapRefusalOf(input.error);
+    if (lacks === null) return null;
+    yield* repo.recordCapability({
+      imageKey: layout.imageKey,
+      runtime: layout.runtime,
+      person: false,
+      missing: [lacks],
+    });
+    const refused = (message: string) =>
+      new SealantPlatformError({
+        code: "harness_layout_refused",
+        status: 409,
+        message,
+        cause: input.error,
+      });
+    if (layout.onMissing === "refuse") {
+      return refused(
+        layout.source === "operator"
+          ? operatorPersonRefusal([lacks])
+          : personLayoutRefusal([lacks]),
+      );
+    }
+    // A fresh worktree: nothing ran, and it stays without a layout; the image is known now.
+    if (input.launchId !== undefined) {
+      yield* repo.recordFallback(
+        input.launchId,
+        `this image cannot run per-person users (${lacks})`,
+      );
+      layoutByLaunch.set(input.launchId, "shared");
+    }
+    return refused(
+      `This workspace cannot run per-person users (${lacks}), so nothing was started. The next launch here runs as one person.`,
+    );
   });
 
   const layoutOfLaunch: HarnessLayoutSteps["layoutOfLaunch"] = Effect.fn(
@@ -1453,6 +1471,7 @@ export const makeHarnessLayoutSteps = (deps: {
     prepareTickets,
     prepareScript: layoutPrepareScript,
     settlePrepare,
+    refusedOwnerMap,
     layoutOfLaunch,
     processAs,
     holdsReleasable,
