@@ -27055,14 +27055,16 @@ interface DeliveryRun {
   readonly cold: number;
 }
 
-/** The command an exec runs, past the session id it names (`env MEND_SESSION_ID=… …`). */
+/** The command a person's exec runs, past its umask and the session it names (`personExecPrefix`). */
 const commandOf = (argv: ReadonlyArray<string>) =>
-  argv[0] === "env" && (argv[1] ?? "").startsWith("MEND_SESSION_ID=") ? argv.slice(2) : argv;
+  argv[3] === "mend-as-person" && (argv[5] ?? "").startsWith("MEND_SESSION_ID=")
+    ? argv.slice(6)
+    : argv;
 const named = (argv: ReadonlyArray<string>, name: string) => commandOf(argv)[3] === name;
 const asWho = (run: DeliveryRun, test: (argv: ReadonlyArray<string>) => boolean) =>
   run.execs.flatMap((argv, index) => (test(argv) ? [run.users[index] ?? null] : []));
 const sessionNamed = (argv: ReadonlyArray<string>) =>
-  argv[0] === "env" ? (argv[1] ?? "").slice("MEND_SESSION_ID=".length) : null;
+  argv[3] === "mend-as-person" ? (argv[5] ?? "").slice("MEND_SESSION_ID=".length) : null;
 /** Every opencode scrub a run made: as whom, and of which database. */
 const scrubsOf = (run: DeliveryRun) =>
   run.execs.flatMap((argv, index) => {
@@ -27127,6 +27129,10 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     readonly platform?: (calls: Array<string>) => Layer.Layer<PersonLayoutPlatform>;
     readonly layers?: Partial<Parameters<typeof withEngine>[1]>;
     readonly prepareStdout?: string;
+    /** Answers an exec before the layout's own answer (undefined falls through). */
+    readonly exec?: (
+      argv: ReadonlyArray<string>,
+    ) => { exitCode: number; stdout: string; stderr: string } | undefined;
     readonly inspect?: (
       engine: SessionEngine["Service"],
       world: World,
@@ -27214,7 +27220,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           undefined,
           {
             execUsers: users,
-            exec: answerLayout(options.prepareStdout ?? LAYOUT_READY),
+            exec: (argv) =>
+              options.exec?.(argv) ?? answerLayout(options.prepareStdout ?? LAYOUT_READY)(argv),
           },
         ),
         harnessLayout: {
@@ -27372,6 +27379,70 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
       { user: LAUNCHER, database: `/home/${LAUNCHER}/.local/share/opencode/opencode.db` },
     ]);
   });
+
+  it("a join that fails after its logins were written releases them and its token", async () => {
+    let refused: string | null = null;
+    const run = await launchAndJoin({
+      join: "pi",
+      layers: people,
+      // Maria's pi profile cannot be set up: her start fails after her one Core call.
+      exec: (argv) =>
+        named(argv, "mend-pi-profile") && commandOf(argv)[4] === `/home/${JOINER}`
+          ? { exitCode: 1, stdout: "", stderr: "a disk that is full" }
+          : undefined,
+      joinWith: (engine, _world, joined) =>
+        engine.launch(joined, ["pi"]).pipe(
+          Effect.flip,
+          Effect.map((error) => {
+            refused = error.message;
+          }),
+        ),
+    });
+    expect(refused).toContain("the pi profile could not be set up");
+    expect(run.calls).toContain(`post:${MARIA}:/home/${JOINER}`);
+    expect(run.calls).toContain(`delete:/home/${JOINER}`);
+    expect(run.calls).not.toContain(`delete:/home/${LAUNCHER}`);
+  });
+
+  it("refuses to start an opencode whose in-app login could not be removed, and says another person's failed scrub nowhere but the log", async () => {
+    const failing = (argv: ReadonlyArray<string>) => {
+      const command = commandOf(argv);
+      return command[0] === "node" && (command[2] ?? "").includes("mend-scrub")
+        ? {
+            exitCode: 1,
+            stdout: `mend-scrub failed ${command[3] ?? ""} the database is in use, so its write-ahead log still holds what was deleted\n`,
+            stderr: "",
+          }
+        : undefined;
+    };
+    let failure: string | null = null;
+    await launchAndJoin({
+      holderHarness: "opencode",
+      join: null,
+      exec: failing,
+      launchWith: (engine, _world, holder) =>
+        engine.launch(holder, ["opencode"]).pipe(
+          Effect.flip,
+          Effect.map((error) => {
+            failure = error.message;
+          }),
+        ),
+    });
+    expect(failure).toContain("opencode's data still holds an in-app login Mend could not remove");
+    // A prepare-time scrub that fails is logged, never put on the launcher's line.
+    let summary: string | null = "unread";
+    await launchAndJoin({
+      join: null,
+      exec: failing,
+      prepareStdout: `mend-layout probed\nmend-layout made ${LAUNCHER}\nmend-layout opencode ${LAUNCHER}\nmend-layout ready\n`,
+      inspect: (_engine, world, ids) =>
+        Effect.gen(function* () {
+          yield* Effect.sleep("2500 millis");
+          summary = world.sessions.get(ids.holder)?.summary ?? null;
+        }),
+    });
+    expect(summary ?? "").not.toContain("opencode logins not removed");
+  }, 20_000);
 
   it("with dotfiles as a person: none at boot, the launcher's agent after their install.sh, a joiner's beside theirs", async () => {
     const launcherEnds = Effect.runSync(Deferred.make<number>());

@@ -223,6 +223,32 @@ describe("writeFilesPickupExec", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("writes a person's saved state 0600, in directories made 0700, opening up none already there", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
+    const records = path.join(root, ".mend-saved");
+    fs.mkdirSync(records, { mode: 0o700 });
+    fs.chmodSync(records, 0o700);
+    const manifest = path.join(records, "managed-skills.json");
+    const memory = path.join(root, ".claude/projects/-workspace-repo/memory/MEMORY.md");
+    const files = [
+      { path: manifest, bytes: new TextEncoder().encode("{}") },
+      { path: memory, bytes: new TextEncoder().encode("- learned\n") },
+    ];
+    const result = await runExec(
+      writeFilesPickupExec(
+        files.map((file) => ({ path: file.path, private: true })),
+        channel.mint(files),
+      ),
+      channel.env,
+    );
+    expect(result.status).toBe(0);
+    expect(fs.statSync(records).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(manifest).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(memory).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(path.dirname(memory)).mode & 0o777).toBe(0o700);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("writes a secret file into no directory reached through a link, and leaves nothing behind", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-elsewhere-"));

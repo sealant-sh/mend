@@ -87,7 +87,9 @@ export type PersonRecord =
   | "skills-manifest"
   | "skills-digests"
   | "memory-delivered"
-  | "secret-files";
+  | "secret-files"
+  /** Their first-process deliveries ran in this executor (`FIRST_PROCESS_DONE`). */
+  | "first-done";
 
 /**
  * The one exec, as the person, that reads what Mend last delivered into their home and saved
@@ -115,8 +117,8 @@ export const personRecordsExec = (
       ...records.map(([name, file]) => `out ${name} ${q(file)}`),
       // The secret files' record is in the home's own `~/.mend`, read as `secretFilesDeliveredExec`
       // reads it: nothing through a link.
-      `if [ -L ${q(`${places.home}/.mend`)} ]; then printf 'mend-record secret-files -\\n'; ` +
-        `else out secret-files ${q(`${places.home}/.mend/secret-files`)}; fi`,
+      `if [ -L ${q(`${places.home}/.mend`)} ]; then printf 'mend-record secret-files -\\n'; printf 'mend-record first-done -\\n'; ` +
+        `else out secret-files ${q(`${places.home}/.mend/secret-files`)}; out first-done ${q(`${places.home}/.mend/first-process-done`)}; fi`,
       `exit 0`,
     ].join("\n"),
   ];
@@ -127,7 +129,7 @@ export const parsePersonRecords = (stdout: string): ReadonlyMap<PersonRecord, st
   const found = new Map<PersonRecord, string | null>();
   for (const line of stdout.split("\n")) {
     const match =
-      /^mend-record (skills-manifest|skills-digests|memory-delivered|secret-files) (\S+)$/.exec(
+      /^mend-record (skills-manifest|skills-digests|memory-delivered|secret-files|first-done) (\S+)$/.exec(
         line.trim(),
       );
     const name = match?.[1];
@@ -137,7 +139,8 @@ export const parsePersonRecords = (stdout: string): ReadonlyMap<PersonRecord, st
       (name !== "skills-manifest" &&
         name !== "skills-digests" &&
         name !== "memory-delivered" &&
-        name !== "secret-files")
+        name !== "secret-files" &&
+        name !== "first-done")
     ) {
       continue;
     }
@@ -148,38 +151,56 @@ export const parsePersonRecords = (stdout: string): ReadonlyMap<PersonRecord, st
 
 // ─── after a person's dotfiles ───────────────────────────────────────────────
 
+/** Every parent directory of the saved state's entries, shallowest first, once each. */
+const SAVED_STATE_PARENTS: ReadonlyArray<string> = [
+  ...new Set(
+    PERSON_SAVED_STATE.flatMap(({ path: entry }) => {
+      const parts = entry.split("/").slice(0, -1);
+      return parts.map((_, index) => parts.slice(0, index + 1).join("/"));
+    }),
+  ),
+].toSorted((left, right) => left.split("/").length - right.split("/").length);
+
+/** Marks a person's first-process deliveries (dotfiles, shell profile) done in this executor. */
+export const FIRST_PROCESS_DONE = ".mend/first-process-done";
+
 /**
  * Mend's links put back over whatever a person's dotfiles put in their place (decision 11: the
- * links win), as the person, in their home. For each entry of `PERSON_SAVED_STATE`: the link to
- * `P` stays; a link anywhere else moves to `~/.mend/displaced/` and Mend's goes in its place; a
- * real directory is copied into `P` without replacing anything there and then removed; a file
- * moves into `P` when `P` has none, else to `~/.mend/displaced/`. Prints
- * `mend-links displaced <entry>` for each entry it moved aside. Nothing is ever deleted that `P`
- * does not hold a copy of.
+ * links win), as the person, in their home, and their first-process deliveries marked done
+ * (`FIRST_PROCESS_DONE`). Nothing is deleted and nothing outside their home is changed:
+ * - a parent directory the dotfiles made a link (a stow-folded `~/.claude` into their checkout)
+ *   is unfolded: the link moves to `~/.mend/displaced/` and a real directory takes its place,
+ *   holding a link to each thing the checkout had there, so the checkout itself is never written;
+ * - an entry that is a link anywhere but `P` moves to `~/.mend/displaced/`, and Mend's goes in
+ *   its place;
+ * - a real directory is merged into `P` entry by entry: whatever `P` already holds under the same
+ *   name stays, and the dotfiles' one moves to `~/.mend/displaced/`;
+ * - a file moves into `P` when `P` has none, else to `~/.mend/displaced/`.
+ * Prints `mend-links displaced <path>` for each thing it moved aside.
  */
 export const personLinksScript = (
   person: LinuxIdentity,
   options: { readonly harnessHome: string; readonly home?: string },
 ): string => {
   assertScriptSafe(person);
-  const q = shellQuote;
   const home = options.home ?? linuxHomeOf(person);
   const saved = savedDirOf(options.harnessHome, person.accountId);
-  const aside = `${home}/.mend/displaced`;
   return [
-    `aside() { mkdir -p ${q(aside)}/"$(dirname "$1")" && mv -f ${q(home)}/"$1" ${q(aside)}/"$1" && printf 'mend-links displaced %s\\n' "$1"; }`,
-    ...PERSON_SAVED_STATE.map(({ path: entry, kind }) => {
-      const from = q(`${home}/${entry}`);
-      const to = q(`${saved}/${entry}`);
-      return (
-        `if [ -L ${from} ]; then [ "$(readlink ${from})" = ${to} ] || { aside ${q(entry)} && ln -s ${to} ${from}; }; ` +
-        `elif [ -e ${from} ]; then ` +
-        (kind === "directory"
-          ? `mkdir -p ${to} && cp -an ${from}/. ${to}/ && rm -rf ${from} && ln -s ${to} ${from}; `
-          : `if [ ! -e ${to} ]; then mv ${from} ${to}; else aside ${q(entry)}; fi && ln -s ${to} ${from}; `) +
-        `else mkdir -p "$(dirname ${from})" && ln -s ${to} ${from}; fi`
-      );
-    }),
+    `H=${shellQuote(home)}; S=${shellQuote(saved)}; A="$H/.mend/displaced"`,
+    `aside() { mkdir -p "$A/$(dirname "$1")" && mv -f "$H/$1" "$A/$1" && printf 'mend-links displaced %s\\n' "$1"; }`,
+    `for p in ${SAVED_STATE_PARENTS.join(" ")}; do if [ -L "$H/$p" ]; then ` +
+      `t=$(readlink -f "$H/$p" 2>/dev/null || true); aside "$p"; mkdir -p "$H/$p"; ` +
+      `if [ -n "$t" ] && [ -d "$t" ]; then for c in "$t"/* "$t"/.[!.]* "$t"/..?*; do ` +
+      `[ -e "$c" ] || [ -L "$c" ] || continue; ln -s "$c" "$H/$p/\${c##*/}"; done; fi; fi; done`,
+    `for e in ${PERSON_SAVED_STATE.map(({ path: entry }) => entry).join(" ")}; do f="$H/$e"; t="$S/$e"; ` +
+      `if [ -L "$f" ]; then [ "$(readlink "$f")" = "$t" ] || { aside "$e" && ln -s "$t" "$f"; }; ` +
+      `elif [ -d "$f" ]; then mkdir -p "$t"; for c in "$f"/* "$f"/.[!.]* "$f"/..?*; do ` +
+      `[ -e "$c" ] || [ -L "$c" ] || continue; n=\${c##*/}; ` +
+      `if [ -e "$t/$n" ] || [ -L "$t/$n" ]; then aside "$e/$n"; else mv "$c" "$t/$n"; fi; done; ` +
+      `rmdir "$f" && ln -s "$t" "$f"; ` +
+      `elif [ -e "$f" ]; then { if [ ! -e "$t" ]; then mv "$f" "$t"; else aside "$e"; fi; } && ln -s "$t" "$f"; ` +
+      `else mkdir -p "$(dirname "$f")" && ln -s "$t" "$f"; fi; done`,
+    `mkdir -p "$H/.mend" && printf done > "$H/${FIRST_PROCESS_DONE}"`,
     `exit 0`,
   ].join("\n");
 };
@@ -199,7 +220,8 @@ export const opencodeDatabaseOf = (root: string): string => `${root}/${OPENCODE_
 /**
  * Decision 8a: a login a person made inside opencode stays in their own opencode data, which only
  * their own sessions use, and Mend deletes it when opencode exits, before that person's opencode
- * starts, and at prepare for every restored database. As the person's user, with `node:sqlite`:
+ * starts, and at prepare for every restored database. A checkpoint something else's read blocked
+ * is a failure, not a scrub: the log would still hold the rows. As the person's user, with `node:sqlite`:
  * every row of `account`, `control_account` and `credential` deleted and every
  * `session_share.secret` nulled (with `secure_delete` on), then `VACUUM` and
  * `PRAGMA wal_checkpoint(TRUNCATE)`, so neither the database nor its write-ahead log keeps a page
@@ -214,13 +236,17 @@ export const OPENCODE_SCRUB_PROGRAM = [
   `let failed=false;`,
   `for(const file of process.argv.slice(1)){`,
   `if(!fs.existsSync(file)){console.log("mend-scrub absent "+file);continue}`,
-  `let db=null;try{db=new DatabaseSync(file);db.exec("PRAGMA busy_timeout=10000");db.exec("PRAGMA secure_delete=ON");`,
+  `let db=null;try{db=new DatabaseSync(file);db.exec("PRAGMA busy_timeout=2000");db.exec("PRAGMA secure_delete=ON");`,
   `const has=(t)=>db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t)!==undefined;`,
   `let rows=0;db.exec("BEGIN IMMEDIATE");`,
   `for(const t of ["account","control_account","credential"]){if(has(t))rows+=Number(db.prepare("DELETE FROM \\""+t+"\\"").run().changes)}`,
   `if(has("session_share")&&db.prepare("PRAGMA table_info(session_share)").all().some((c)=>c.name==="secret")){`,
   `rows+=Number(db.prepare("UPDATE session_share SET secret=NULL WHERE secret IS NOT NULL").run().changes)}`,
-  `db.exec("COMMIT");db.exec("VACUUM");db.exec("PRAGMA wal_checkpoint(TRUNCATE)");db.close();db=null;`,
+  `db.exec("COMMIT");db.exec("VACUUM");`,
+  // The log is emptied only when nothing reads the database: one that is is said, never passed.
+  `const cp=db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get()||{};`,
+  `if(Number(cp.busy)!==0||(Number(cp.log)!==-1&&Number(cp.log)!==Number(cp.checkpointed)))throw new Error("the database is in use, so its write-ahead log still holds what was deleted");`,
+  `db.close();db=null;`,
   `console.log("mend-scrub scrubbed "+rows+" "+file)}`,
   `catch(e){failed=true;try{if(db!==null&&db.isTransaction)db.exec("ROLLBACK")}catch{}try{if(db!==null)db.close()}catch{}`,
   `console.log("mend-scrub failed "+file+" "+String((e&&e.message)||e).replace(/\\s+/g," "))}}`,

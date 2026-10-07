@@ -376,6 +376,7 @@ import {
   DOTFILES_APPLY_BOUND_MS,
   BOOTSTRAP_WAIT_BOUND_MS,
   DOTFILES_NOT_PER_PERSON,
+  FIRST_PROCESS_DONE,
   opencodeDatabaseOf,
   opencodeScrubArgv,
   opencodeScrubFailedWords,
@@ -1056,6 +1057,20 @@ interface PersonExec {
   readonly sessionId: SessionId;
   readonly places: PersonPlaces;
 }
+
+/**
+ * What a person's exec runs ahead of its own argv (`execAsPerson`): umask 077, so what a delivery
+ * makes in their home and saved directory is theirs alone unless it says otherwise, and the
+ * session it speaks for over the session channel.
+ */
+export const personExecPrefix = (sessionId: string): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  'umask 077 && exec "$@"',
+  "mend-as-person",
+  "env",
+  `MEND_SESSION_ID=${sessionId}`,
+];
 
 /** A person's deliveries, with what Mend last delivered into their home (`personRecordsExec`). */
 interface PersonDelivery extends PersonExec {
@@ -6487,9 +6502,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         as: PersonExec,
         argv: ReadonlyArray<string>,
       ): Effect.Effect<WorkspaceExecResult, SealantPlatformError> =>
-        sealant.exec(workspace, ["env", `MEND_SESSION_ID=${as.sessionId}`, ...argv], {
-          user: as.user,
-        });
+        sealant.exec(workspace, [...personExecPrefix(as.sessionId), ...argv], { user: as.user });
 
       /**
        * A ticket for `files`, bound to the purpose, the session and its worktree, its owner, and
@@ -11020,7 +11033,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           unique,
         );
         const argv = writeFilesPickupExec(
-          unique.map((file) => ({ path: file.path, secret: file.secret === true })),
+          unique.map((file) => ({
+            path: file.path,
+            secret: file.secret === true,
+            // A person's saved state stays theirs: 0600 files, no directory opened up.
+            private: as !== undefined && file.path.startsWith(`${as.places.saved}/`),
+          })),
           ticket,
         );
         const result = yield* (
@@ -11055,7 +11073,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           if (!shellProfileApplies(project, workspaceImage)) return;
           yield* Effect.gen(function* () {
-            const files = yield* loadShellProfile;
+            const profile = yield* loadShellProfile;
+            // A person's first-process deliveries are done once this is written in their home.
+            const files =
+              as === undefined
+                ? profile
+                : [
+                    ...profile,
+                    { path: FIRST_PROCESS_DONE, bytes: new TextEncoder().encode("done") },
+                  ];
             for (const argv of writeAbsentHomeFilesExecs(files)) {
               const result = yield* as === undefined
                 ? sealant.exec(workspace, argv)
@@ -11067,6 +11093,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 });
               }
               for (const file of parseHomeFileOutcomes(result.stdout)) {
+                if (file.path === FIRST_PROCESS_DONE) continue;
                 yield* Effect.logInfo(
                   file.outcome === "written"
                     ? "session engine: default shell profile · written"
@@ -11941,8 +11968,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * Decision 8a: the in-app logins a person made inside opencode, deleted from their own
-       * opencode database as them (`OPENCODE_SCRUB_PROGRAM`). A scrub that fails leaves the
-       * database as it is and is said on the session line.
+       * opencode database as them (`OPENCODE_SCRUB_PROGRAM`). Skipped while another opencode of
+       * theirs runs in the executor (it may be using one; its own exit scrubs). A scrub that does
+       * not finish (something reads the database, so its log cannot be emptied) is tried twice
+       * more, a second apart, then answers `failed`: the caller refuses the opencode it was about
+       * to start, or says so on that session's own line. Never anyone else's line.
        */
       const scrubOpencodeAs = Effect.fn("SessionEngine.scrubOpencodeAs")(function* (
         sessionId: SessionId,
@@ -11950,41 +11980,61 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         as: PersonExec,
         when: "before" | "after" | "prepare",
       ) {
+        if (
+          yield* harnessLiveFor(
+            SealantWorkspaceId.make(workspace.id),
+            as.person.accountId,
+            "opencode",
+          )
+        ) {
+          yield* Effect.logInfo(
+            "session engine: opencode in-app logins left for now · another opencode of theirs runs here",
+          ).pipe(Effect.annotateLogs({ sessionId, person: as.person.name, when }));
+          return { outcome: "skipped" as const, reason: null };
+        }
         const database = opencodeDatabaseOf(as.places.home);
-        const ran = yield* execAsPerson(workspace, as, opencodeScrubArgv([database])).pipe(
-          Effect.result,
-        );
-        // An executor that is going (a Stop) runs nothing more: its next one's prepare scrubs.
-        if (ran._tag === "Failure") {
-          yield* Effect.logWarning("session engine: opencode in-app logins not removed").pipe(
-            Effect.annotateLogs({
-              sessionId,
-              person: as.person.name,
-              when,
-              reason: ran.failure.message,
-            }),
+        let reason = "the scrub did not run";
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt > 0) yield* Effect.sleep(Duration.seconds(1));
+          const ran = yield* execAsPerson(workspace, as, opencodeScrubArgv([database])).pipe(
+            Effect.result,
           );
-          return;
-        }
-        const result = ran.success;
-        const outcomes = parseOpencodeScrub(result.stdout);
-        const failed = outcomes.find((outcome) => outcome.outcome === "failed");
-        if (failed === undefined && result.exitCode === 0) {
-          const rows = outcomes.reduce((sum, outcome) => sum + outcome.rows, 0);
-          if (rows > 0) {
-            yield* Effect.logInfo("session engine: opencode in-app logins removed · observed").pipe(
-              Effect.annotateLogs({ sessionId, person: as.person.name, when, rows }),
+          // An executor that is going (a Stop) runs nothing more: its next one's prepare scrubs.
+          if (ran._tag === "Failure") {
+            yield* Effect.logWarning("session engine: opencode in-app logins not removed").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                person: as.person.name,
+                when,
+                reason: ran.failure.message,
+              }),
             );
+            return { outcome: "failed" as const, reason: ran.failure.message };
           }
-          return;
+          const result = ran.success;
+          const outcomes = parseOpencodeScrub(result.stdout);
+          const failed = outcomes.find((outcome) => outcome.outcome === "failed");
+          if (failed === undefined && result.exitCode === 0) {
+            const rows = outcomes.reduce((sum, outcome) => sum + outcome.rows, 0);
+            if (rows > 0) {
+              yield* Effect.logInfo(
+                "session engine: opencode in-app logins removed · observed",
+              ).pipe(Effect.annotateLogs({ sessionId, person: as.person.name, when, rows }));
+            }
+            return { outcome: "scrubbed" as const, reason: null };
+          }
+          reason =
+            failed?.reason ??
+            (result.stderr.trim() || `the scrub ended with exit ${result.exitCode}`);
         }
-        const reason =
-          failed?.reason ??
-          (result.stderr.trim() || `the scrub ended with exit ${result.exitCode}`);
         yield* Effect.logWarning("session engine: opencode in-app logins not removed").pipe(
           Effect.annotateLogs({ sessionId, person: as.person.name, when, reason }),
         );
-        yield* noteLaunchWords(sessionId, opencodeScrubFailedWords(reason)).pipe(Effect.ignore);
+        // Said on the line of the session whose opencode ended, and only there.
+        if (when === "after") {
+          yield* noteLaunchWords(sessionId, opencodeScrubFailedWords(reason)).pipe(Effect.ignore);
+        }
+        return { outcome: "failed" as const, reason };
       });
 
       /**
@@ -12038,8 +12088,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         return yield* personDeliveryLock(workspace.id, home.identity.accountId).withPermit(
           Effect.gen(function* () {
+            const records = parsePersonRecords(
+              yield* execAsPerson(
+                workspace,
+                as,
+                personRecordsExec(as.places, {
+                  memoryDelivered: personSavedPathOf(AGENT_MEMORY_DELIVERED),
+                }),
+              ).pipe(
+                Effect.map((result) => result.stdout),
+                Effect.orElseSucceed(() => ""),
+              ),
+            );
+            // Their first process in this executor: once, whatever was released or restarted
+            // since, as the executor itself records it (`FIRST_PROCESS_DONE` in their home).
             let bootstrap: DotfilesBootstrap | null = null;
-            if (home.made) {
+            if ((records.get("first-done") ?? null) === null) {
               const image =
                 session.workspaceImage ??
                 (yield* sessions.executorSessionOf(SealantWorkspaceId.make(workspace.id)))
@@ -12056,18 +12120,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
               yield* applyDefaultShellProfile(session.id, workspace, project, image, as);
             }
-            const records = parsePersonRecords(
-              yield* execAsPerson(
-                workspace,
-                as,
-                personRecordsExec(as.places, {
-                  memoryDelivered: personSavedPathOf(AGENT_MEMORY_DELIVERED),
-                }),
-              ).pipe(
-                Effect.map((result) => result.stdout),
-                Effect.orElseSucceed(() => ""),
-              ),
-            );
             const delivery: PersonDelivery = { ...as, records };
             const firstOrAgent = home.made || input.agent;
             const said =
@@ -12088,7 +12140,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 );
             const samePersonPiLive =
               input.agent && input.harness === "pi"
-                ? yield* piLiveFor(SealantWorkspaceId.make(workspace.id), home.identity.accountId)
+                ? yield* harnessLiveFor(
+                    SealantWorkspaceId.make(workspace.id),
+                    home.identity.accountId,
+                    "pi",
+                  )
                 : false;
             const [, , , , carried] = yield* Effect.all(
               [
@@ -12140,7 +12196,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 // Decision 8a: before this person's opencode starts, what an exit Mend did not see
                 // left behind goes.
                 input.agent && input.harness === "opencode"
-                  ? scrubOpencodeAs(session.id, workspace, as, "before")
+                  ? scrubOpencodeAs(session.id, workspace, as, "before").pipe(
+                      Effect.flatMap((scrub) =>
+                        scrub.outcome === "failed"
+                          ? Effect.fail(
+                              new SealantPlatformError({
+                                code: "opencode_login_not_removed",
+                                status: null,
+                                message: `opencode's data still holds an in-app login Mend could not remove (${scrub.reason ?? "unknown"}), so opencode was not started; start it again`,
+                                cause: null,
+                              }),
+                            )
+                          : Effect.void,
+                      ),
+                    )
                   : Effect.void,
               ],
               { concurrency: "unbounded" },
@@ -12150,13 +12219,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      /** Whether `accountId` has a pi agent live in the executor already. */
-      const piLiveFor = Effect.fn("SessionEngine.piLiveFor")(function* (
+      /** Whether `accountId` has an agent of `harness` live in the executor already. */
+      const harnessLiveFor = Effect.fn("SessionEngine.harnessLiveFor")(function* (
         workspaceId: SealantWorkspaceId,
         accountId: string,
+        harness: string,
       ) {
         for (const process of yield* processes.listLiveForWorkspace(workspaceId)) {
-          if (process.harness !== "pi" || !AGENT_PROCESS_KINDS.has(process.kind)) continue;
+          if (process.harness !== harness || !AGENT_PROCESS_KINDS.has(process.kind)) continue;
           const owner = yield* sessions.byId(process.sessionId).pipe(
             Effect.map((row) => row.ownerUserId),
             Effect.orElseSucceed(() => null),
@@ -12410,7 +12480,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : deliverToPerson({ session, workspace, home, agent: options.agent, harness }),
             ),
           );
-          const [as, deliveries] = yield* Effect.all([started, delivered], { concurrency: 2 });
+          let wrote = false;
+          const [as, deliveries] = yield* Effect.all(
+            [
+              started.pipe(
+                Effect.tap((user) =>
+                  Effect.sync(() => {
+                    wrote = user !== null;
+                  }),
+                ),
+              ),
+              delivered,
+            ],
+            { concurrency: 2 },
+          ).pipe(
+            // A start that failed after the person's logins were written (a pi profile that could
+            // not be delivered): nothing of theirs may run, so their logins and Mend token go,
+            // once the grace after the start has passed (review of mend#566, P3-3).
+            Effect.onError(() =>
+              wrote
+                ? releaseIdleLogins(SealantWorkspaceId.make(workspace.id), workspace)
+                : Effect.void,
+            ),
+          );
           return as === null ? null : { ...as, delivered: deliveries };
         });
       /** An agent of the session: its owner's (steering, Delivery 18, picks the sender). */
@@ -13924,16 +14016,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // The launcher's own opencode was scrubbed before it starts; it holds the database now.
             if (person.accountId === scrubbedBeforeStart) continue;
             yield* Effect.forkIn(
-              scrubOpencodeAs(
-                sessionId,
-                workspace,
-                {
-                  person,
-                  user: processUserOf(person),
+              personDeliveryLock(workspace.id, person.accountId).withPermit(
+                scrubOpencodeAs(
                   sessionId,
-                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
-                },
-                "prepare",
+                  workspace,
+                  {
+                    person,
+                    user: processUserOf(person),
+                    sessionId,
+                    places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                  },
+                  "prepare",
+                ),
               ),
               scope,
             );
@@ -16620,6 +16714,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.forkIn(scope),
               Effect.asVoid,
             )
+          : Effect.void;
+
+      /**
+       * The idle check of `releaseLoginsAfterExit`, for an executor whose handle is in hand: a
+       * person with a home and nothing live has it released, after the grace. Off the caller's
+       * path.
+       */
+      const releaseIdleLogins = (
+        workspaceId: SealantWorkspaceId,
+        workspace: Workspace,
+      ): Effect.Effect<void> =>
+        layoutSteps.holdsReleasable(workspaceId)
+          ? layoutSteps
+              .releaseIdle({
+                workspaceId,
+                workspace: Effect.succeed(workspace),
+                live: peopleLiveIn(workspaceId),
+                launcher: sessions
+                  .executorSessionOf(workspaceId)
+                  .pipe(Effect.map((creator) => creator?.ownerUserId ?? null)),
+              })
+              .pipe(Effect.forkIn(scope), Effect.asVoid)
           : Effect.void;
 
       /** Record an observed end and clear any earlier refusal, including after a restart. */

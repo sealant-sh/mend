@@ -434,6 +434,7 @@ export const layoutProbeScript = (
     `command -v sudo >/dev/null 2>&1 || missing "no sudo"`,
     `command -v useradd >/dev/null 2>&1 || missing "no useradd"`,
     `command -v setfacl >/dev/null 2>&1 || missing "no setfacl"`,
+    `command -v setpriv >/dev/null 2>&1 || missing "no setpriv"`,
     `caps=$(sealantd capabilities --json 2>/dev/null || true)`,
     `for c in exec.user dotfiles.user restore.owner_map; do case "$caps" in *"\\"$c\\""*) ;; ` +
       `*) missing "its sealantd cannot run processes as a user"; break ;; esac; done`,
@@ -527,6 +528,71 @@ const parentsOf = (paths: ReadonlyArray<string>): ReadonlyArray<string> => [
 ];
 
 /**
+ * The part of a person's home and saved directory that is theirs to make (`personHomeScript`),
+ * run as them: `P`'s `conversations/` (2710), `codex-db` and `.mend-saved` (0700), and in `R` one
+ * link per entry of `PERSON_SAVED_STATE` into `P`. A real directory the image or a tool left at an
+ * entry is merged into `P` without replacing anything there: an entry `P` already holds moves to
+ * `~/.mend/displaced/`, never deleted. A link they left anywhere on these paths is refused by
+ * name, and could lead only where they can already write.
+ */
+const personHomeAsPerson = (places: { readonly home: string; readonly saved: string }): string => {
+  const dirs = PERSON_SAVED_STATE.filter((entry) => entry.kind === "directory");
+  const all = PERSON_SAVED_STATE.map((entry) => entry.path);
+  const savedDirs = [
+    "conversations",
+    "codex-db",
+    PERSON_RECORDS_IN_SAVED,
+    ...parentsOf(all),
+    ...dirs.map((entry) => entry.path),
+  ];
+  // Every path below is `$H` or `$S` and a fixed relative path with no space or quote, so the
+  // script stays small enough to ride inside another one's single quotes.
+  return [
+    `set -e`,
+    `umask 077`,
+    `H=${shellQuote(places.home)}; S=${shellQuote(places.saved)}; A="$H/.mend/displaced"`,
+    `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
+    // A link anywhere on these paths is refused before anything is made through it.
+    `for p in ${savedDirs.map((dir) => `"$S/${dir}"`).join(" ")} ` +
+      `${[".mend", ".mend/opencode", ".config", ...parentsOf(all)].map((dir) => `"$H/${dir}"`).join(" ")}; ` +
+      `do [ -L "$p" ] && fail "unexpected link: $p"; done; :`,
+    `mkdir -p "$S/conversations" "$S/codex-db" "$S/${PERSON_RECORDS_IN_SAVED}"`,
+    `chmod 2710 "$S/conversations"`,
+    `chmod 0700 "$S/codex-db" "$S/${PERSON_RECORDS_IN_SAVED}"`,
+    `for d in ${parentsOf(all).join(" ")}; do mkdir -p "$S/$d" "$H/$d"; done`,
+    `for d in ${dirs.map((entry) => entry.path).join(" ")}; do mkdir -p "$S/$d"; done`,
+    `aside() { mkdir -p "$A/$(dirname "$1")" && mv -f "$H/$1" "$A/$1"; }`,
+    // A link per entry; a real directory or file the image or a tool left there first moves
+    // into `P`, nothing already in `P` overwritten and nothing deleted, then the link takes its
+    // place.
+    `for e in ${all.join(" ")}; do f="$H/$e"; t="$S/$e"; ` +
+      `if [ -L "$f" ]; then [ "$(readlink "$f")" = "$t" ] || fail "unexpected link: $f"; ` +
+      `else if [ -e "$f" ]; then ` +
+      `if [ -d "$f" ]; then for c in "$f"/* "$f"/.[!.]* "$f"/..?*; do ` +
+      `[ -e "$c" ] || [ -L "$c" ] || continue; n=\${c##*/}; ` +
+      `if [ -e "$t/$n" ] || [ -L "$t/$n" ]; then aside "$e/$n"; else mv "$c" "$t/$n"; fi; done; rmdir "$f"; ` +
+      `elif [ ! -e "$t" ]; then mv "$f" "$t"; else aside "$e"; fi; fi; ` +
+      `ln -s "$t" "$f"; fi; done`,
+    // Where their Mend token and git author go (decision 4): real directories, theirs. What goes
+    // in them arrives through a pickup (`identityPickupScript`), never in this script.
+    `mkdir -p "$H/.mend"`,
+    // A `~/.config/git` their dotfiles made (a link into their checkout included) stays theirs.
+    `[ -e "$H/.config/git" ] || [ -L "$H/.config/git" ] || mkdir -p "$H/.config/git"`,
+    `chmod 0700 "$H/.mend"`,
+    // opencode keeps its logins (`auth.json`) in its data directory, which is saved (`P`): there
+    // it is a link to `~/.mend/opencode/auth.json` in the home, so a login written there in place
+    // (opencode's own, and Mend's ChatGPT copy) never lands in saved state (decision 5). A
+    // regular file found there (from before this layout) moves into the home, never over one.
+    `mkdir -p "$H/${OPENCODE_LOGIN_DIR}"`,
+    `chmod 0700 "$H/${OPENCODE_LOGIN_DIR}"`,
+    `oc="$S/${OPENCODE_AUTH_IN_DATA}"; ock="$H/${OPENCODE_LOGIN_DIR}/auth.json"`,
+    `if [ -L "$oc" ]; then [ "$(readlink "$oc")" = "$ock" ] || fail "unexpected link: $oc"; ` +
+      `else if [ -e "$oc" ]; then if [ ! -e "$ock" ]; then mv "$oc" "$ock"; else mkdir -p "$A"; mv -f "$oc" "$A/opencode-auth.json"; fi; fi; ` +
+      `ln -s "$ock" "$oc"; fi`,
+  ].join("\n");
+};
+
+/**
  * One person's user, home and saved directory, as root (decisions 1 and 2): the user made with its
  * fixed uid, primary group `mend`, the image's login shell and a home from `/etc/skel` set 0700;
  * the private temporary and runtime directories; `P` (0710, `conversations/` 2710, `codex-db`)
@@ -562,8 +628,6 @@ export const personHomeScript = (
   const run = `${options.runRoot ?? "/run/user"}/${person.uid}`;
   const owner = `${person.uid}:${MEND_GROUP.gid}`;
   const q = shellQuote;
-  const dirs = PERSON_SAVED_STATE.filter((entry) => entry.kind === "directory");
-  const all = PERSON_SAVED_STATE.map((entry) => entry.path);
   return [
     `set -e`,
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
@@ -592,68 +656,30 @@ export const personHomeScript = (
       `if [ -d ${q(skel)} ]; then cp -an ${q(`${skel}/.`)} ${q(home)}/ || true; fi; ` +
       `chown -hR ${owner} ${q(home)}; ` +
       `fi; fi`,
+    // Root touches only what no person can replace: the home itself (under root's `/home`), the
+    // private temporary and runtime directories (each checked not to be a link first: `/tmp` is
+    // everyone's), the people root and `P` itself (under root's `people/`). Nothing below `P` or
+    // the home: those are made as the person (below), so a link they left there leads root
+    // nowhere (review of mend#566, P2-1).
     `mkdir -p ${q(home)}`,
     `[ "$root" = 1 ] && chown ${owner} ${q(home)} || true`,
     `chmod 0700 ${q(home)}`,
-    `mkdir -p ${q(tmp)} ${q(run)}`,
-    `[ "$root" = 1 ] && chown ${owner} ${q(tmp)} ${q(run)} || true`,
-    `chmod 0700 ${q(tmp)} ${q(run)}`,
+    `for d in ${q(tmp)} ${q(run)}; do [ -L "$d" ] && fail "unexpected link: $d"; mkdir -p "$d"; [ -L "$d" ] && fail "unexpected link: $d"; ` +
+      `[ "$root" = 1 ] && chown -h ${owner} "$d"; chmod 0700 "$d"; done`,
     // `P`: the people root is root's and traversable; each saved directory is its person's.
+    `[ -L ${q(`${options.harnessHome}/${PEOPLE_DIR}`)} ] && fail "unexpected link: ${options.harnessHome}/${PEOPLE_DIR}"`,
+    `[ -L ${q(saved)} ] && fail "unexpected link: ${saved}"`,
     `mkdir -p ${q(`${options.harnessHome}/${PEOPLE_DIR}`)} ${q(saved)}`,
     // A directory a restore brought back as root (before sealantd's owner map) becomes the
-    // person's; one already theirs is not walked.
-    `if [ "$root" = 1 ] && [ "$(stat -c %u ${q(saved)})" != ${person.uid} ]; then chown -R ${owner} ${q(saved)}; fi`,
+    // person's; one already theirs is not walked. `-R` follows no link inside it.
+    `if [ "$root" = 1 ] && [ "$(stat -c %u ${q(saved)})" != ${person.uid} ]; then chown -hR ${owner} ${q(saved)}; fi`,
     `chmod 0710 ${q(saved)}`,
-    `mkdir -p ${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)} ${q(`${saved}/${PERSON_RECORDS_IN_SAVED}`)}`,
-    `chmod 2710 ${q(`${saved}/conversations`)}`,
-    `chmod 0700 ${q(`${saved}/codex-db`)} ${q(`${saved}/${PERSON_RECORDS_IN_SAVED}`)}`,
-    ...parentsOf(all).map((dir) => `mkdir -p ${q(`${saved}/${dir}`)} ${q(`${home}/${dir}`)}`),
-    ...dirs.map((entry) => `mkdir -p ${q(`${saved}/${entry.path}`)}`),
-    // A link per entry; a real directory or file the image or a tool left there first moves
-    // into `P` (nothing already in `P` is overwritten), then the link takes its place.
-    ...all.map((entry) => {
-      const from = q(`${home}/${entry}`);
-      const to = q(`${saved}/${entry}`);
-      return (
-        `if [ -L ${from} ]; then [ "$(readlink ${from})" = ${to} ] || fail "unexpected link: ${home}/${entry}"; ` +
-        `else if [ -e ${from} ]; then ` +
-        `if [ -d ${from} ]; then cp -an ${from}/. ${to}/ && rm -rf ${from}; ` +
-        `elif [ ! -e ${to} ]; then mv ${from} ${to}; else rm -f ${from}; fi; fi; ` +
-        `ln -s ${to} ${from}; fi`
-      );
-    }),
-    `if [ "$root" = 1 ]; then ` +
-      `chown -h ${owner} ${all.map((entry) => q(`${home}/${entry}`)).join(" ")}; ` +
-      `chown ${owner} ${parentsOf(all)
-        .map((dir) => `${q(`${saved}/${dir}`)} ${q(`${home}/${dir}`)}`)
-        .join(" ")} ${dirs.map((entry) => q(`${saved}/${entry.path}`)).join(" ")} ` +
-      `${q(`${saved}/conversations`)} ${q(`${saved}/codex-db`)} ${q(`${saved}/${PERSON_RECORDS_IN_SAVED}`)}; ` +
-      `chgrp ${MEND_GROUP.gid} ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}; fi`,
+    `if [ "$root" = 1 ]; then chgrp ${MEND_GROUP.gid} ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}; fi`,
     `chmod 0711 ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}`,
-    // Where their Mend token and git author go (decision 4): real directories, theirs. What goes
-    // in them arrives through a pickup (`identityPickupScript`), never in this script.
-    `[ -L ${q(`${home}/.mend`)} ] && fail "unexpected link: ${home}/.mend"`,
-    `mkdir -p ${q(`${home}/.mend`)}`,
-    // A `~/.config/git` their dotfiles made (a link into their checkout included) stays theirs.
-    `[ -e ${q(`${home}/.config/git`)} ] || [ -L ${q(`${home}/.config/git`)} ] || mkdir -p ${q(`${home}/.config/git`)}`,
-    `chmod 0700 ${q(`${home}/.mend`)}`,
-    `[ "$root" = 1 ] && chown -h ${owner} ${q(`${home}/.mend`)} ${q(`${home}/.config`)} ${q(`${home}/.config/git`)} || true`,
-    // opencode keeps its logins (`auth.json`) in its data directory, which is saved (`P`): there
-    // it is a link to `~/.mend/opencode/auth.json` in the home, so a login written there in place
-    // (opencode's own, and Mend's ChatGPT copy) never lands in saved state (decision 5). A
-    // regular file found there (from before this layout) moves into the home, never over one.
-    // Root follows no link the person could have planted on the way (review of mend#564, P3-7).
-    `[ -L ${q(`${home}/${OPENCODE_LOGIN_DIR}`)} ] && fail "unexpected link: ${home}/${OPENCODE_LOGIN_DIR}"`,
-    ...[".local", ".local/share", ".local/share/opencode"].map(
-      (dir) => `[ -L ${q(`${saved}/${dir}`)} ] && fail "unexpected link: ${saved}/${dir}"`,
-    ),
-    `mkdir -p ${q(`${home}/${OPENCODE_LOGIN_DIR}`)}`,
-    `chmod 0700 ${q(`${home}/${OPENCODE_LOGIN_DIR}`)}`,
-    `oc=${q(`${saved}/${OPENCODE_AUTH_IN_DATA}`)}; ock=${q(`${home}/${OPENCODE_LOGIN_DIR}/auth.json`)}`,
-    `if [ -L "$oc" ]; then [ "$(readlink "$oc")" = "$ock" ] || fail "unexpected link: $oc"; ` +
-      `else if [ -e "$oc" ]; then if [ ! -e "$ock" ]; then mv "$oc" "$ock"; else rm -f "$oc"; fi; fi; ` +
-      `ln -s "$ock" "$oc"; fi`,
-    `[ "$root" = 1 ] && chown -h ${owner} ${q(`${home}/.mend/opencode`)} "$oc" || true`,
+    // Everything else, as the person: `setpriv` (util-linux, which the person layout requires).
+    `as_person=${q(personHomeAsPerson({ home, saved }))}`,
+    `if [ "$root" = 1 ]; then (cd / && setpriv --reuid=${person.uid} --regid=${MEND_GROUP.gid} --clear-groups -- sh -c "$as_person") || exit 1; ` +
+      `else sh -c "$as_person" || exit 1; fi`,
   ].join("\n");
 };
 

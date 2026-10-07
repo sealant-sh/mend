@@ -22,6 +22,7 @@ import { CARRIED_TRANSCRIPTS } from "./harness-state.ts";
 import {
   homePathOfPersonSaved,
   opencodeScrubArgv,
+  FIRST_PROCESS_DONE,
   parseDisplacedLinks,
   parseOpencodeScrub,
   parsePersonRecords,
@@ -104,6 +105,7 @@ describe("what was delivered before, in one read (personRecordsExec)", () => {
     expect(records.get("skills-digests")).toBeNull();
     expect(records.get("memory-delivered")).toBe("{}");
     expect(records.get("secret-files")).toBe("sealed-record\n");
+    expect(records.get("first-done")).toBeNull();
     // A `~/.mend` that became a link says nothing.
     fs.rmSync(path.join(places.home, ".mend"), { recursive: true });
     const elsewhere = tmp();
@@ -152,8 +154,74 @@ describe("Mend's links after a person's dotfiles (decision 11)", () => {
     expect(fs.readlinkSync(path.join(places.home, ".mend/displaced/.claude/agents"))).toBe(
       checkout,
     );
-    // Run again: nothing to do.
+    // Run again: nothing to do. Their first-process deliveries are marked done.
     expect(parseDisplacedLinks(run(["sh", "-c", script]).stdout)).toEqual([]);
+    expect(fs.readFileSync(path.join(places.home, FIRST_PROCESS_DONE), "utf8")).toBe("done");
+  });
+
+  it("never writes into the dotfiles checkout a stow-folded ~/.claude leads to, and deletes nothing (S4)", () => {
+    const root = tmp();
+    const places = placesIn(root);
+    // What `P` already holds: their own reviewer agent.
+    fs.mkdirSync(path.join(places.saved, ".claude/agents"), { recursive: true });
+    fs.writeFileSync(path.join(places.saved, ".claude/agents/reviewer.md"), "P's reviewer\n");
+    // Their dotfiles folded all of `~/.claude` into the checkout, which has its own reviewer.
+    const checkout = path.join(root, "dotfiles/.claude");
+    fs.mkdirSync(path.join(checkout, "agents"), { recursive: true });
+    fs.writeFileSync(path.join(checkout, "agents/reviewer.md"), "the dotfiles' reviewer\n");
+    fs.writeFileSync(path.join(checkout, "CLAUDE.md"), "my instructions\n");
+    fs.symlinkSync(checkout, path.join(places.home, ".claude"));
+    const out = run([
+      "sh",
+      "-c",
+      personLinksScript(alice, { harnessHome: places.harnessHome, home: places.home }),
+    ]);
+    expect(out.status).toBe(0);
+    // The checkout is as it was.
+    expect(fs.readFileSync(path.join(checkout, "agents/reviewer.md"), "utf8")).toBe(
+      "the dotfiles' reviewer\n",
+    );
+    expect(fs.lstatSync(path.join(checkout, "agents")).isDirectory()).toBe(true);
+    // `~/.claude` is a real directory now: their CLAUDE.md still reaches the checkout, and the
+    // agents are `P`'s.
+    expect(fs.lstatSync(path.join(places.home, ".claude")).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(places.home, ".claude/CLAUDE.md"), "utf8")).toBe(
+      "my instructions\n",
+    );
+    expect(fs.readlinkSync(path.join(places.home, ".claude/agents"))).toBe(
+      path.join(places.saved, ".claude/agents"),
+    );
+    expect(fs.readFileSync(path.join(places.saved, ".claude/agents/reviewer.md"), "utf8")).toBe(
+      "P's reviewer\n",
+    );
+    expect(parseDisplacedLinks(out.stdout)).toEqual(
+      expect.arrayContaining([".claude", ".claude/agents"]),
+    );
+  });
+
+  it("merges a real directory into P entry by entry, moving aside what P already holds", () => {
+    const root = tmp();
+    const places = placesIn(root);
+    fs.mkdirSync(path.join(places.saved, ".claude/commands"), { recursive: true });
+    fs.writeFileSync(path.join(places.saved, ".claude/commands/go.md"), "P's go\n");
+    fs.mkdirSync(path.join(places.home, ".claude/commands"), { recursive: true });
+    fs.writeFileSync(path.join(places.home, ".claude/commands/go.md"), "the dotfiles' go\n");
+    fs.writeFileSync(path.join(places.home, ".claude/commands/new.md"), "new\n");
+    const out = run([
+      "sh",
+      "-c",
+      personLinksScript(alice, { harnessHome: places.harnessHome, home: places.home }),
+    ]);
+    expect(out.status).toBe(0);
+    expect(fs.readFileSync(path.join(places.saved, ".claude/commands/go.md"), "utf8")).toBe(
+      "P's go\n",
+    );
+    expect(fs.readFileSync(path.join(places.saved, ".claude/commands/new.md"), "utf8")).toBe(
+      "new\n",
+    );
+    expect(
+      fs.readFileSync(path.join(places.home, ".mend/displaced/.claude/commands/go.md"), "utf8"),
+    ).toBe("the dotfiles' go\n");
   });
 });
 
@@ -212,6 +280,28 @@ describe("the opencode scrub (decision 8a)", () => {
     expect(wal.byteLength).toBe(0);
     const bytes = Buffer.concat([fs.readFileSync(file), wal]).toString("latin1");
     for (const canary of CANARIES) expect(bytes).not.toContain(canary);
+  });
+
+  it("says failed, never scrubbed, when a reader keeps its log from being emptied", () => {
+    const file = path.join(tmp("mend-scrub-"), "opencode.db");
+    const writer = opencodeDatabase(file);
+    // A second opencode of the person's, mid-read.
+    const reader = new DatabaseSync(file);
+    reader.exec("BEGIN");
+    reader.prepare("SELECT count(*) FROM session").get();
+    const result = run(opencodeScrubArgv([file]));
+    expect(result.status).toBe(1);
+    expect(parseOpencodeScrub(result.stdout)).toEqual([
+      {
+        outcome: "failed",
+        file,
+        rows: 0,
+        reason: "the database is in use, so its write-ahead log still holds what was deleted",
+      },
+    ]);
+    reader.exec("COMMIT");
+    reader.close();
+    writer.close();
   });
 
   it("says absent for no database and failed for one that is not a database, leaving it as it is", () => {

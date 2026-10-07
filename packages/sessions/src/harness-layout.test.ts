@@ -82,6 +82,11 @@ const fakeRoot = () => {
   stub("chgrp", `echo "chgrp $*" >> "${log}"`);
   stub("sudo", "exit 0");
   stub("setfacl", "exit 0");
+  // As the person: the stand-in drops its options and runs the rest as the test's own user.
+  stub(
+    "setpriv",
+    'while [ "$#" -gt 0 ]; do case "$1" in --) shift; break ;; -*) shift ;; *) break ;; esac; done; exec "$@"',
+  );
   stub("sealantd", `echo '{"exec.user":true,"dotfiles.user":true,"restore.owner_map":true}'`);
   // The image's skeleton: a dotfile and the link to a shared cache decision 3 depends on.
   const skel = path.join(dir, "skel");
@@ -471,6 +476,42 @@ describe("what prepare makes (decision 1)", () => {
   });
 });
 
+describe("a link a person left in their own saved directory (review of mend#566, P2-1)", () => {
+  const plant = (entry: string) => {
+    const root = fakeRoot();
+    const harnessHome = path.join(root.dir, "harness-home");
+    const saved = path.join(harnessHome, "people", alice.accountId);
+    fs.mkdirSync(saved, { recursive: true });
+    // Someone else's home, as it would sit beside theirs.
+    const target = path.join(root.dir, "maria-home");
+    fs.mkdirSync(target, { mode: 0o755 });
+    fs.chmodSync(target, 0o755);
+    fs.symlinkSync(target, path.join(saved, entry));
+    const run = root.run(
+      personHomeScript(alice, {
+        harnessHome,
+        home: path.join(root.dir, "home", alice.name),
+        tmpRoot: path.join(root.dir, "tmp"),
+        runRoot: path.join(root.dir, "run"),
+        skel: root.skel,
+      }),
+    );
+    return { root, run, target };
+  };
+
+  it.each([".mend-saved", "codex-db", "conversations", ".claude", ".local"])(
+    "at %s leads root nowhere: refused before anything is made, changed or given away through it",
+    (entry) => {
+      const { root, run, target } = plant(entry);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("unexpected link");
+      expect(fs.statSync(target).mode & 0o7777).toBe(0o755);
+      expect(fs.readdirSync(target)).toEqual([]);
+      for (const line of root.log().split("\n")) expect(line).not.toContain(target);
+    },
+  );
+});
+
 describe("a home Core wrote into before its user existed (decision 5)", () => {
   it("becomes the user's, logins included, with the skeleton copied in and nothing replaced", () => {
     const root = fakeRoot();
@@ -526,9 +567,9 @@ describe("a home Core wrote into before its user existed (decision 5)", () => {
     expect(log.indexOf(`chown ${alice.uid}:40000 ${home}\n`)).toBeGreaterThanOrEqual(0);
     expect(run.stderr).toContain("already exists");
     // The skeleton copied in becomes theirs: one walk of a home that holds only it.
-    expect(log.split("\n").filter((line) => line.startsWith("chown -hR"))).toEqual([
-      `chown -hR ${alice.uid}:40000 ${home}`,
-    ]);
+    expect(
+      log.split("\n").filter((line) => line.startsWith("chown -hR") && line.endsWith(home)),
+    ).toEqual([`chown -hR ${alice.uid}:40000 ${home}`]);
   });
 
   it("a home Core's POST made first, logins inside, is kept and becomes the user's", () => {
@@ -1126,16 +1167,20 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(opened.tickets.size()).toBe(1);
   });
 
-  it("as root gives the files to their person", async () => {
-    // Under a fake root, `id -u` says 0; node's own uid decides the chown, so as a non-root test
-    // it only shows the files are written where a root run would give them away.
+  it("as root makes what is in the home as the person, never giving anything away through a link", async () => {
+    // Under a fake root, `id -u` says 0, and `setpriv` runs the rest as the test's own user.
     const root = fakeRoot();
     const { home, script } = homeOf(root);
     expect(root.run(script).status).toBe(0);
-    // `-h`: a link their dotfiles made is given away, never what it points at.
-    expect(root.log()).toContain(
-      `chown -h 40012:40000 ${home}/.mend ${home}/.config ${home}/.config/git`,
-    );
+    expect(script).toContain("setpriv --reuid=40012 --regid=40000 --clear-groups");
+    // Root gives away only the home itself: `.mend`, `.config` and the rest are the person's own.
+    for (const line of root
+      .log()
+      .split("\n")
+      .filter((entry) => entry.startsWith("chown"))) {
+      expect(line).not.toContain(`${home}/`);
+    }
+    expect(fs.statSync(path.join(home, ".mend")).isDirectory()).toBe(true);
   });
 
   it("refuses a ~/.mend that is a link, and a ticket that is not one", () => {
