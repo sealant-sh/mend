@@ -27639,3 +27639,262 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     });
   });
 });
+
+/** One line of a Claude transcript (Delivery 16's tests). */
+const claudeLine = (id: string, text: string) =>
+  `${JSON.stringify({
+    type: "user",
+    sessionId: id,
+    cwd: "/workspace/repo",
+    message: { role: "user", content: text },
+  })}\n`;
+const PROJECT_DIR = ".claude/projects/-workspace-repo";
+const writeUnder = (root: string, relative: string, contents: string) => {
+  fs.mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+  fs.writeFileSync(path.join(root, relative), contents);
+};
+/** A person's saved directory, under a harness home. */
+const peopleDir = (account: string) => `people/${account}`;
+
+describe("readers per person (docs/adr/0016, Delivery 16)", () => {
+  it(
+    "two people's transcripts and memory in one capture are each read back only for their own person",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
+      const alice = crypto.randomUUID();
+      const maria = crypto.randomUUID();
+      const old = crypto.randomUUID();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const holder = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "shared",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(holder.id, ["claude"]);
+            const joined = yield* engine.provisionSessionIn(holder.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: MARIA,
+            });
+            yield* engine.launch(joined.id, ["claude"]);
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            // One executor's harness home, with both people's saved directories in it, and the
+            // shared home a pre-release executor left beside them.
+            const executorRoot = path.join(tmp, "person-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            writeUnder(
+              home,
+              `${peopleDir("user-fixture")}/${PROJECT_DIR}/${alice}.jsonl`,
+              claudeLine(alice, "alice's turn"),
+            );
+            writeUnder(
+              home,
+              `${peopleDir("user-fixture")}/${PROJECT_DIR}/memory/MEMORY.md`,
+              "- alice learned\n",
+            );
+            writeUnder(
+              home,
+              `${peopleDir(MARIA)}/${PROJECT_DIR}/${maria}.jsonl`,
+              claudeLine(maria, "maria's turn"),
+            );
+            writeUnder(
+              home,
+              `${peopleDir(MARIA)}/${PROJECT_DIR}/memory/MEMORY.md`,
+              "- maria learned\n",
+            );
+            writeUnder(home, `${PROJECT_DIR}/${old}.jsonl`, claudeLine(old, "before 0.36"));
+            writeUnder(home, `${PROJECT_DIR}/memory/MEMORY.md`, "- the old shared home\n");
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              holder.worktreeId,
+              memory.leases.get(holder.worktreeId)?.epoch ?? 0,
+              request,
+              executorRoot,
+            );
+
+            yield* engine.stop(joined.id);
+            yield* until(() => readBacks.length > 0, "Maria's read-back");
+            expect(readBacks.map((input) => input.userId)).toEqual([MARIA]);
+            expect(readBacks[0]?.session.map((file) => [file.path, file.contents])).toEqual([
+              [`${PROJECT_DIR}/memory/MEMORY.md`, "- maria learned\n"],
+            ]);
+            expect(world.sessions.get(joined.id)?.providerSessionId).toBe(maria);
+
+            yield* engine.stop(holder.id);
+            yield* until(() => readBacks.length > 1, "Alice's read-back");
+            expect(readBacks.map((input) => input.userId)).toEqual([MARIA, "user-fixture"]);
+            expect(readBacks[1]?.session.map((file) => [file.path, file.contents])).toEqual([
+              [`${PROJECT_DIR}/memory/MEMORY.md`, "- alice learned\n"],
+            ]);
+            expect(world.sessions.get(holder.id)?.providerSessionId).toBe(alice);
+          }),
+        {
+          captured: memory,
+          prepareWorld: (world) => world.members.set(MARIA, "member"),
+          agentMemoryLayer: agentMemoryLayerOf({
+            readBack: (input) =>
+              Effect.sync(() => {
+                readBacks.push(input);
+                return { saved: [], merged: [], deleted: [], skipped: [] };
+              }),
+          }),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            [],
+            undefined,
+            { flush: headFlush(memory), exec: answerLayout(LAYOUT_READY) },
+          ),
+          harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+        },
+      );
+    },
+  );
+
+  it(
+    "a resume copies its conversation from the worktree's last shared-layout capture, the final one, only where its owner has none",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const execCalls: Array<ReadonlyArray<string>> = [];
+      const memory = makeMemoryCaptureStore();
+      const state = recordedBeforeStart(makeHarnessLayoutsMemoryState());
+      const id = crypto.randomUUID();
+      const picked: Array<{ readonly path: string; readonly contents: string }> = [];
+      let resumed: SessionId | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "before",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            resumed = session.id;
+            // The worktree's last shared executor: an earlier capture, then its final one, which
+            // holds what the conversation said last.
+            yield* engine.launch(session.id, ["claude"]);
+            const request = created[0];
+            if (request === undefined) return yield* Effect.die("the launch made no executor");
+            const executorRoot = path.join(tmp, "shared-executor");
+            const home = configuredHarnessHomePath(request, executorRoot);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            writeUnder(home, `${PROJECT_DIR}/${id}.jsonl`, claudeLine(id, "first"));
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              request,
+              executorRoot,
+            );
+            writeUnder(
+              home,
+              `${PROJECT_DIR}/${id}.jsonl`,
+              `${claudeLine(id, "first")}${claudeLine(id, "last")}`,
+            );
+            writeUnder(home, `${PROJECT_DIR}/${id}/tool-results/out.txt`, "a tool's output\n");
+            yield* shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              request,
+              executorRoot,
+            );
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.providerSessionId === id,
+              "the shared executor's harvest",
+            );
+            // Then the worktree runs per person, and Alice resumes that conversation.
+            state.worktrees.set(session.worktreeId, { layout: "person", requested: null });
+            yield* engine.resumeSession(session.id, null);
+            const P = "/workspace/harness-home/people/user-fixture";
+            expect(picked.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual([
+              {
+                path: `${P}/${PROJECT_DIR}/${id}.jsonl`,
+                contents: `${claudeLine(id, "first")}${claudeLine(id, "last")}`,
+              },
+              {
+                path: `${P}/${PROJECT_DIR}/${id}/tool-results/out.txt`,
+                contents: "a tool's output\n",
+              },
+            ]);
+            // Written only where nothing is, as Alice, into her own saved directory.
+            const copies = execCalls.filter(
+              (argv) =>
+                argv[0] === "env" &&
+                argv[5] === "mend-write" &&
+                argv.some((part) => part.startsWith(`A${P}/`)),
+            );
+            expect(copies).toHaveLength(1);
+            expect(copies[0]?.slice(7).every((part) => part.startsWith(`A${P}/`))).toBe(true);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            execCalls,
+            undefined,
+            {
+              flush: headFlush(memory),
+              exec: answerLayout(LAYOUT_READY),
+              execEffect: (argv) => {
+                const command = argv[0] === "env" ? argv.slice(2) : argv;
+                if (command[3] !== "mend-write" || !command.some((part) => part.startsWith("A"))) {
+                  return undefined;
+                }
+                return redeemPickupExec(command, resumed).pipe(
+                  Effect.map((answer) => {
+                    for (const file of answer.files) {
+                      picked.push({
+                        path: file.path,
+                        contents: Buffer.from(file.base64, "base64").toString("utf8"),
+                      });
+                    }
+                    return { exitCode: 0, stdout: "", stderr: "" };
+                  }),
+                  Effect.orDie,
+                );
+              },
+            },
+          ),
+          harnessLayout: { flag: "shared", state, platform: personPlatform([], { person: true }) },
+        },
+      );
+    },
+  );
+});

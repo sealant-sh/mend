@@ -249,6 +249,42 @@ describe("writeFilesPickupExec", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it("writes an absent-only file where nothing is, and leaves a file or a link already there as it was", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
+    const fresh = path.join(root, "sessions", "new.jsonl");
+    const there = path.join(root, "sessions", "there.jsonl");
+    const linked = path.join(root, "sessions", "linked.jsonl");
+    fs.mkdirSync(path.dirname(there), { recursive: true });
+    fs.writeFileSync(there, "the person's own\n");
+    fs.symlinkSync(path.join(root, "nowhere"), linked);
+    const files = [fresh, there, linked].map((at) => ({
+      path: at,
+      bytes: new TextEncoder().encode("from before\n"),
+    }));
+    const result = await runExec(
+      writeFilesPickupExec(
+        files.map((file) => ({ path: file.path, absent: true })),
+        channel.mint(files),
+      ),
+      channel.env,
+    );
+    expect(result.status).toBe(0);
+    expect(fs.readFileSync(fresh, "utf8")).toBe("from before\n");
+    // Its own saved state: theirs alone.
+    expect(fs.statSync(fresh).mode & 0o777).toBe(0o600);
+    expect(fs.readFileSync(there, "utf8")).toBe("the person's own\n");
+    expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(root, "nowhere"))).toBe(false);
+    expect(result.stdout).toBe(`present ${there}\npresent ${linked}\n`);
+    // Nothing staged is left.
+    expect(fs.readdirSync(path.dirname(fresh)).toSorted()).toEqual([
+      "linked.jsonl",
+      "new.jsonl",
+      "there.jsonl",
+    ]);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   it("writes a secret file into no directory reached through a link, and leaves nothing behind", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-pickup-"));
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-workspace-elsewhere-"));
