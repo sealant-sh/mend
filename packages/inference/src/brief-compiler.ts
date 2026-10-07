@@ -41,7 +41,7 @@ The register — the brief is a working surface, not a report:
 Method:
 1. read_issue — restate the issue in one line; quote the failing reproduction if the issue carries one.
 2. read_change — the diff and per-file counts; write the mono facts line from these numbers only.
-3. read_recording — work through the recording (page and narrow as needed; processStarted/processExited carry commands and exit codes, fileChange carries edits, network kinds carry sources). Match every edit in the diff to its cause in the recording.
+3. read_recording — work through the recording (page and narrow as needed; processStarted carries the program and its working directory, but no arguments, which are no longer recorded; processExited carries the exit code; fileChange carries edits; network kinds carry sources). Match every edit in the diff to its cause in the recording.
 4. read_brief — when a brief already exists, amend it.
 5. Decompose the review into numbered questions a careful reviewer would ask (typically 3-7), give each its earned disposition and evidence pointers, then publish_brief exactly once.
 

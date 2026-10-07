@@ -3,11 +3,12 @@
 Status: accepted 2026-10-05, for 0.36; rewritten 2026-10-06 on the owner's direction after three
 adversarial design reviews (round 1: 7 P1, 9 P2, 12 P3; round 2: 5 P1, 9 P2, 12 P3; round 3: 5 P1, 9
 P2, 10 P3), then revised after round 4 (4 P1, 7 P2, 15 P3) and round 5's fix check (1 P1, 5 P2, 10
-P3). The design is final; the build starts with Delivery 2. Earlier drafts gave every process a
-`HOME` of its own inside root; this one gives every person a Linux user. Amends
-[ADR 0003](0003-organizations-and-tenancy.md) (a session runs as its owner),
-[ADR 0009](0009-agent-memory-per-person-per-project.md) (memory in capture mode, and under shared
-control), [ADR 0010](0010-secret-files.md) (where secret files go) and
+P3). The design is final; the build starts with Delivery 2. Amended 2026-10-07 with what the
+platform's builds and reviews settled (sealantd#144–#148, sealant#327–#332, mend#551–#559; see the
+decision log). Earlier drafts gave every process a `HOME` of its own inside root; this one gives
+every person a Linux user. Amends [ADR 0003](0003-organizations-and-tenancy.md) (a session runs as
+its owner), [ADR 0009](0009-agent-memory-per-person-per-project.md) (memory in capture mode, and
+under shared control), [ADR 0010](0010-secret-files.md) (where secret files go) and
 [ADR 0013](0013-whoever-sends-a-turn-pays.md) (the steering switch, which ships in 0.36). Read
 against Mend `c9b645b0b` with mend#526 (`ac3bdce06`) open, Sealant Core `bc9ec42` (SDK 0.38.1) with
 sealant#315 and sealant#316 open, and sealantd `07ada50`.
@@ -76,13 +77,24 @@ process uses, by default and by every path Mend controls.
   0700 set explicitly): for the launcher, and for every current member with a saved directory in the
   restored head, so every recorded path resolves. A person who joins later is added at their first
   process. Prepare first checks the image's passwd and group for the reserved ids and names; a
-  collision is a capability the image lacks (below).
+  collision is a capability the image lacks (below). Before it makes anyone, it checks that the
+  restore applied the owner map: the restored worktree's group must be `mend` (40000), or the launch
+  is refused (decision 8, mend#552).
 - **The person layout needs the platform to say it can, before create.** An executor can run
   `person` when its sealantd reports `exec.user`, `dotfiles.user` and `restore.owner_map`, the image
-  has `sudo`, `useradd`, `setfacl` and no user or group in the reserved range other than `mend`, and
-  the runtime supports ACLs on `/workspace`. Mend needs that answer before create, because create
-  already commits to a layout: `credentialsHome`, the launcher's dotfiles and the owner map
-  (decisions 5, 8, 11). So:
+  has a setuid `sudo`, `useradd`, `setfacl` and no user or group in the reserved range other than
+  `mend`, the runtime supports ACLs on `/workspace`, and nothing imposes no-new-privileges on the
+  executor, since `sudo` cannot work under it. sealantd leaves no-new-privileges unset in a
+  per-person executor (decision 8); an orchestrator can still impose it (Kubernetes
+  `allowPrivilegeEscalation: false`). Core's image probe records both as `setuid-sudo` and
+  `sudo-no-new-privileges`, and Mend's probe matches it: `sudo` must carry its setuid bit, and in a
+  `person` executor prepare reads the executor's no-new-privileges state (`NoNewPrivs` in
+  `/proc/self/status`, or sealantd's `noNewPrivileges`) and treats it set as missing. Any other
+  executor has no-new-privileges set by sealantd itself, so only a `person` executor can answer.
+  Outside that setup a person's `CAP_FOWNER` (below) amounts to root that `sudo` does not already
+  give (sealantd#147). Mend needs that answer before create, because create already commits to a
+  layout: `credentialsHome`, whether the launcher's dotfiles go to `/root` at boot, and the owner
+  map (decisions 5, 8, 11). So:
   - **Core reports it per image.** Core's image build runs `sealantd capabilities --json` and the
     tool and passwd probe inside the built image and records the result on the image; it reports ACL
     support per runtime. The SDK exposes both (Delivery 8, 9).
@@ -105,6 +117,28 @@ process uses, by default and by every path Mend controls.
   passwd entry, umask `0002`, a private `TMPDIR=/tmp/u-<uid>` and `XDG_RUNTIME_DIR=/run/user/<uid>`
   (both 0700), so sockets and temporary files a tool leaves to the umask are not reachable through
   the shared `/tmp`.
+- **The image's person environment is sealantd's to apply.** sealantd applies
+  `/etc/sealant/person-env` (Core's images write it; its first line is `# person-env 1`, and a file
+  without that marker applies nothing) to every process it runs as a person: executions, sessions
+  and the `dotfiles.apply` bootstrap, never root's. Precedence: the filtered daemon environment,
+  then the file (its `PATH_PREPEND` goes in front of the base `PATH`), then the passwd identity,
+  then the caller's `env`. Mend applies nothing from it (sealantd#147, sealant#330).
+- **What reaches a person from the executor's environment.** A person's process inherits the
+  daemon's environment less the named harness and provider logins (`CLAUDE_CODE_OAUTH_TOKEN`,
+  `GH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and their kin, even when a project sets one,
+  since a harness would bill them instead of the person's own login), every `SEALANT_*` key and the
+  keys Core's injector declares (`SEALANT_HARNESS_ENV_KEYS`). The project's secrets (the launcher's
+  secret environment, Mend's `--secret` values) reach every person under any name. sealantd's
+  secret-name rule applies only to `person-env`, never to this inheritance (sealantd#147).
+- **`CAP_FOWNER` in a per-person executor.** Where sealantd runs as root without no-new-privileges
+  and holds `CAP_FOWNER` in its bounding set, a person's process holds that one capability, ambient,
+  so every program it runs keeps it: a person can change the mode and times of files they do not
+  own, which pnpm needs to relink a restored package's bins (`ERR_PNPM_CMD_SHIM_CHMOD` without it).
+  It amounts to root, which the person already has through `sudo`; that is the owner-approved
+  posture (2026-10-06), and the reason the person layout requires a setuid `sudo` and no
+  no-new-privileges (above). Under no-new-privileges sealantd withholds it, and
+  `runtime.getCapabilities` reports `personCapabilities` and `personCapabilitiesWithheld` with the
+  reason, which Mend surfaces on the executor.
 
 | Process                                                                                      | Runs as                                                                                                                                             |
 | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -150,12 +184,16 @@ starts. A person's live process, Services included, keeps their user's logins he
   under `P/conversations/` (2710). Claude creates its transcript 0600, which masks the ACL, so Mend
   restores group access before each process of the session starts (a root `chmod -R g+rwX C` in the
   step that stages its harness directory, decision 6), and sealantd restores `C` group-readable and
-  -writable whatever the recorded modes.
+  -writable whatever the recorded modes. `C`'s default ACL does not survive a restore: sealantd sets
+  default ACLs only on the worktree root, `/opt` and `/var/cache` (decision 8). That is harmless:
+  people's umask `0002` makes new entries group-writable, the setgid bit gives them the group, and
+  Mend's per-process `chmod` repairs a file a harness made 0600.
 - **The worktree is shared.** `/workspace/repo` and its git directory are owned by the change's
-  owner and group `mend`, group-writable, setgid on directories, with a default ACL for the group,
-  as sealantd restores them (decision 8) and as people's umask `0002` keeps them. Mend sets
-  `core.sharedRepository=group` in the worktree's git config, and the image's `/etc/gitconfig` sets
-  `safe.directory = *`, since files belong to several uids and git before 2.46 has no prefix
+  owner and group `mend`, group-writable, setgid on directories, with a default ACL for the group;
+  every restored entry inside them is root's, in group `mend`, with the owner's bits copied to the
+  group, as sealantd restores them (decision 8), and people's umask `0002` keeps new ones so. Mend
+  sets `core.sharedRepository=group` in the worktree's git config, and the image's `/etc/gitconfig`
+  sets `safe.directory = *`, since files belong to several uids and git before 2.46 has no prefix
   wildcard for nested and linked repositories; with `sudo` open, a narrower list protects nothing. A
   file a tool creates with an explicit mode (`install -m 644`, `tar x`, `open(…, 0644)`) is not
   group-writable whatever the ACL; Mend repairs those in the worktree when another person's process
@@ -179,21 +217,21 @@ lose default ACLs set at build time, so sealantd sets the group's default ACL on
 directories at boot, as root, when the person layout is requested; `sudo` runs with
 `Defaults umask=0002, umask_override`; people's umask is `0002`. Anything one person installs is
 then usable by everyone; a toolchain tree unpacked with explicit modes (mise, uv's Pythons, rustup,
-Playwright) can be extended or repaired by another person only with `sudo` (Known limits). Core's
-images change to:
+Playwright) can be extended or repaired by another person only after a `chmod`, which their
+`CAP_FOWNER` allows (decision 1), or with `sudo` (Known limits). Core's images change to:
 
-| Tool                                                                | Shared (image `ENV`)                                                                                                                                                                                     | Per user (in `R`, natively)                               |
-| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| mise                                                                | `MISE_DATA_DIR=/opt/mise`, `MISE_CACHE_DIR=/var/cache/mise`, shims on `PATH`                                                                                                                             | `~/.config/mise`, trust in `~/.local/state/mise`          |
-| uv                                                                  | `UV_PYTHON_INSTALL_DIR=/opt/uv/python`, `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, `UV_CACHE_DIR`                                                                                                                 | `~/.local/share/uv/credentials`                           |
-| Rust                                                                | `RUSTUP_HOME=/opt/rust/rustup`, binaries in `/opt/rust/cargo/bin`; `/etc/skel/.cargo/registry` links to `/var/cache/cargo/registry`                                                                      | `CARGO_HOME=~/.cargo` (`credentials.toml`, `config.toml`) |
-| pnpm, npm, corepack, bun                                            | `PNPM_HOME=/opt/pnpm`, `npm_config_store_dir=/var/cache/pnpm`, `npm_config_cache=/var/cache/npm`, `npm_config_prefix=/opt/npm-global` (on `PATH`), `COREPACK_HOME=/opt/corepack`, `BUN_INSTALL=/opt/bun` | `~/.npmrc`, `~/.bunfig.toml`                              |
-| Browsers for tests                                                  | `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, `PUPPETEER_CACHE_DIR`, `CYPRESS_CACHE_FOLDER`, `npm_config_devdir`                                                                                        | none                                                      |
-| Go, pip                                                             | `GOMODCACHE`, `GOCACHE`, `PIP_CACHE_DIR` under `/var/cache`                                                                                                                                              | `~/.netrc`, `pip.conf`                                    |
-| JVM                                                                 | `/etc/skel/.gradle/{caches,wrapper}` and `/etc/skel/.m2/repository` link to `/var/cache`                                                                                                                 | `~/.gradle/gradle.properties`, `~/.m2/settings.xml`       |
-| nvm, pyenv                                                          | `NVM_DIR=/opt/nvm`, `PYENV_ROOT=/opt/pyenv`                                                                                                                                                              | none                                                      |
-| nix                                                                 | none: nix images run in the `shared` layout and take one person (their passwd is in the read-only store, the store cannot hold a setuid `sudo`, and non-root nix needs the daemon)                       | `~/.config/nix`                                           |
-| gcloud, AWS, kubectl, Docker, gh, Hugging Face, firebase, git, curl | none                                                                                                                                                                                                     | their usual paths under `~`                               |
+| Tool                                                                | Shared (image `ENV`)                                                                                                                                                                                                                                 | Per user (in `R`, natively)                               |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| mise                                                                | `MISE_DATA_DIR=/opt/mise`, `MISE_CACHE_DIR=/var/cache/mise`, shims on `PATH`                                                                                                                                                                         | `~/.config/mise`, trust in `~/.local/state/mise`          |
+| uv                                                                  | `UV_PYTHON_INSTALL_DIR=/opt/uv/python`, `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, `UV_CACHE_DIR`                                                                                                                                                             | `~/.local/share/uv/credentials`                           |
+| Rust                                                                | `RUSTUP_HOME=/opt/rust/rustup`, binaries in `/opt/rust/cargo/bin`; `/etc/skel/.cargo/registry` links to `/var/cache/cargo/registry`                                                                                                                  | `CARGO_HOME=~/.cargo` (`credentials.toml`, `config.toml`) |
+| pnpm, npm, corepack, bun                                            | `PNPM_HOME=/opt/pnpm` (global bins in `/opt/pnpm/bin`, on `PATH`), `npm_config_store_dir=/var/cache/pnpm`, `npm_config_cache=/var/cache/npm`, `npm_config_prefix=/opt/npm-global` (on `PATH`), `COREPACK_HOME=/opt/corepack`, `BUN_INSTALL=/opt/bun` | `~/.npmrc`, `~/.bunfig.toml`                              |
+| Browsers for tests                                                  | `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`, `PUPPETEER_CACHE_DIR`, `CYPRESS_CACHE_FOLDER`, `npm_config_devdir`                                                                                                                                    | none                                                      |
+| Go, pip                                                             | `GOMODCACHE`, `GOCACHE`, `PIP_CACHE_DIR` under `/var/cache`                                                                                                                                                                                          | `~/.netrc`, `pip.conf`                                    |
+| JVM                                                                 | `/etc/skel/.gradle/{caches,wrapper}` and `/etc/skel/.m2/repository` link to `/var/cache`                                                                                                                                                             | `~/.gradle/gradle.properties`, `~/.m2/settings.xml`       |
+| nvm, pyenv                                                          | `NVM_DIR=/opt/nvm`, `PYENV_ROOT=/opt/pyenv`                                                                                                                                                                                                          | none                                                      |
+| nix                                                                 | none: nix images run in the `shared` layout and take one person (their passwd is in the read-only store, the store cannot hold a setuid `sudo`, and non-root nix needs the daemon)                                                                   | `~/.config/nix`                                           |
+| gcloud, AWS, kubectl, Docker, gh, Hugging Face, firebase, git, curl | none                                                                                                                                                                                                                                                 | their usual paths under `~`                               |
 
 `sudo` keeps the toolchain variables (`Defaults env_keep`), so `sudo npm i -g` lands where a
 person's own install would. A tool not in the table keeps its state under the user's home: per
@@ -204,6 +242,16 @@ root's; Mend makes `/root` traversable (0755) in the person layout so they still
 person's own installs land in their home (Known limits). A custom image without `sudo`, `useradd` or
 ACL support runs in the `shared` layout and takes one person; a worktree that is already `person`
 refuses it (decision 14).
+
+**A pnpm tree belongs to the layout that installed it.** pnpm records its store in
+`node_modules/.modules.yaml`, and the two layouts use different stores (root's environment is the
+image's as before; a person's comes from `person-env`), so a tree installed in one layout and used
+in the other fails, in both directions (`ERR_PNPM_UNEXPECTED_STORE` on pnpm 10 and 11; sealant#330).
+So Mend keys the project's dependency cache by layout as well as platform (or by the store a tree's
+`.modules.yaml` records), and never serves one layout's tree to the other. When a worktree first
+moves to a `person` executor and its tree records another store, Mend runs
+`pnpm install --force --prefer-offline` once, as the launcher (who runs dependency installs), before
+setup commands. It is paid once per worktree, on its first `person` launch.
 
 ### 4. Git, SSH and the Mend identity
 
@@ -239,7 +287,8 @@ refuses it (decision 14).
   store, by any launch, join, process start or channel request, until one is recorded.
 - **No shared login in a person's environment.** Until Core stops putting the launcher's
   `GITHUB_TOKEN`, `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` into the container (Deliveries 7–8),
-  every process Mend starts as a person has them set empty.
+  every process Mend starts as a person has them set empty; sealantd withholds the named logins from
+  a person's process as well (decision 1).
 - **Git over SSH** to origin goes through the shim; the server signs as the token's person, with
   their Mend key or their own bridge.
 - **The helper** (`mend land`, `repo add`, `runService`, `runServiceRecipe`) authorises the token's
@@ -501,33 +550,48 @@ agent writes goes to the executor's owner" no longer hold.
   mtime, not owners, and today restores as root. It gains an owner map, passed in the capture spec
   at launch (`people/<account id>` → uid for each current member, the change owner's uid for the
   worktree, and the shared gid). On materialize, in the `chmod` it already makes for each entry:
-  - in `tree/`, the git section and every `people/<id>/conversations/`, every mode gets group write
-    where the owner can write and group execute where the owner can execute, and directories get
-    setgid (a raw `fchmod` would clear it). Every existing capture was made by root with umask 022,
-    so its files are 0644 and its directories 0755; restored as recorded under a default ACL they
-    would be masked to read-only for the group;
+  - in `tree/`, the bulk class, the git section and every `people/<id>/conversations/`, the owner's
+    read, write and execute bits are copied to the group (never write without read), and directories
+    get setgid (a raw `fchmod` would clear it): a 0600 file comes back 0660, never 0620, and a 0700
+    directory 2770. The worktree metadata overlay does the same, so tracked files get it too. Every
+    existing capture was made by root with umask 022, so its files are 0644 and its directories
+    0755; restored as recorded under a default ACL they would be masked to read-only for the group;
   - `people/<id>/` is owned by that uid and the `mend` group, `P` itself 0710; `conversations/`
     entries are group-readable and -writable whatever their recorded mode (Claude records its
     transcripts 0600); every other entry under `people/<id>/` keeps its recorded mode, with nothing
     added, so a person's own transcripts, memory and `codex-db` stay theirs (decision 2);
-  - `tree/` and the git section are owned by the change's owner and the `mend` group, with the
-    group's default ACL on each root.
+  - the roots of `tree/` and the git section are owned by the change's owner and the `mend` group,
+    with the group's default ACL on each root; every entry inside them stays root's and takes the
+    group from the setgid root, so nothing else is `chown`ed.
 
-  It applies the same to a file it reuses, and sets the default ACL on the image's `/opt` and
-  `/var/cache` top directories at boot. Captures still record no owner: ownership comes from the
-  path and the map, so a uid can change without touching a capture. A removed member's directory
-  gets no entry in the map: it stays in the captures, owned by root, and no user is made for it.
+  It applies the same to a file it reuses. Boot, before the restore, gives the worktree root to the
+  change's owner and the group (group-writable, setgid) and sets the group's default ACL on it and
+  on the image's `/opt` and `/var/cache` with one `setfacl`; a filesystem without ACLs is logged and
+  the boot goes on, which prepare's probe catches (decision 1). Captures still record no owner:
+  ownership comes from the path and the map, so a uid can change without touching a capture. A
+  removed member's directory gets no entry in the map: it stays in the captures, owned by root, and
+  no user is made for it.
 
 - **Prepare checks that the restore applied the map.** In a `person` executor, before anyone is
-  made, prepare reads the restored worktree's group (sealantd gives `/workspace/repo` to the
-  change's owner and group `mend`, and reports the restore, sealantd#145). A worktree that is not
-  `mend`'s came back root's, 0644: nobody could edit a restored file and the worktree repair never
-  reaches it. The launch is refused with what was found, whatever the worktree, and nothing runs:
-  "This workspace's restore did not give its files to the people working in it (the restored
-  worktree's group is 0, not mend (40000)), so nobody could edit them. Nothing was started; the next
-  launch tries again." Nothing is recorded against the image, and there is no fallback to `shared`.
-- **sealantd reports what it can do** (`exec.user`, `dotfiles.user`, `restore.owner_map`), and Mend
-  records the `person` layout only when it does (decision 1).
+  made, prepare reads the restored worktree's group (`stat -c %g /workspace/repo`; sealantd gives it
+  to the change's owner and group `mend`, and `capture.status` reports `ownerMap`, sealantd#145), in
+  the exec it already makes (mend#552). A worktree that is not `mend`'s came back root's, 0644:
+  nobody could edit a restored file and the worktree repair never reaches it. The launch is refused
+  with what was found, whatever the worktree, and nothing runs: "This workspace's restore did not
+  give its files to the people working in it (the restored worktree's group is 0, not mend (40000)),
+  so nobody could edit them. Nothing was started; the next launch tries again." Nothing is recorded
+  against the image, and there is no fallback to `shared`.
+- **sealantd reports what it can do** (`exec.user`, `dotfiles.user`, `restore.owner_map`, also
+  offline through `sealantd capabilities --json`), and Mend records the `person` layout only when it
+  does (decision 1).
+- **The owner map also decides no-new-privileges.** sealantd sets no-new-privileges on itself (its
+  plan §18) in every executor but a per-person one: a root daemon whose capture spec carries an
+  owner map naming at least one person skips it, at boot and in its runtime, so every person's
+  `sudo` works and their processes hold `CAP_FOWNER` (decision 1). Such an executor is root by
+  design, not a sandbox; its boundary is the executor. Every other executor, and every launch
+  without a map, keeps no-new-privileges. Boot logs its posture and `runtime.getCapabilities`
+  reports `noNewPrivileges` (absent means unknown) (sealantd#148). A launcher passes a map only for
+  a `person` launch.
 - **Logins are never saved.** The homes, conversation homes and `/run` are outside every capture
   root. sealantd applies `HARNESS_CREDENTIALS` and `HARNESS_MACHINE_STATE`, sibling-suffix rule
   included, under each `people/<id>/` as well as at the root: load-bearing for anything a
@@ -582,26 +646,33 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   owner, the launcher, and runs the session as the user Mend names for the workspace at create
   (`sshUser`, new in Core). The extension, its terminals and the Claude Code extension then run on
   the launcher's logins, save into their `P`, and find their tools in their home. A joiner cannot
-  open Remote-SSH into an executor someone else launched.
+  open Remote-SSH into an executor someone else launched. sealantd's `openSftp` takes no user yet,
+  so an SFTP bridge runs as root; it gains one with Core's `sshUser` (Follow-ups).
 - **Anything else** (`docker exec`, a custom image's own entrypoint work) runs as root, which is no
   person: `/root` holds no login and no Mend token, and nothing written under `/root` is saved.
 
 ### 11. Secret files and dotfiles per person (amends ADR 0010 decision 3)
 
-- Each person's secret files go into their own home, as their user, joins included; the delivery
-  record (`~/.mend/secret-files`) is per person. `.config/gh/` and `.config/git/` are reserved.
+- Each person's secret files go into their own home, as their user, joins included, through a pickup
+  ticket bound to that person, never exec argv (mend#555; ADR 0010 decision 5); the delivery record
+  (`~/.mend/secret-files`) is per person. `.config/gh/` and `.config/git/` are reserved.
 - **Dotfiles apply for every person, as that person, scripts included.** sealantd's applier
   (repository clone, chezmoi, stow or copy, then `./install.sh` when the person's `bootstrap`
-  setting is on) runs as the person's user into their home: at create for the launcher, and at a
-  person's first process in an executor for everyone else, through a new control verb. It runs in
-  parallel with the person's login and deliveries. A joiner's agent starts once the files are
-  applied, and `install.sh` runs beside it ("install.sh running" on the session line, and "finished
-  after the agent started" when it does), so a join stays inside its budget (Performance). An agent
-  started that way does not see what `install.sh` installs or changes later (Claude snapshots the
-  shell profile at start). A person who needs it first turns on "Start my agents after install.sh"
-  (a per-person setting, off by default), and their joins then wait for it, outside the join budget.
-  The launcher's `install.sh` runs at boot, before their agent, as today. A script can `sudo`; that
-  is the accepted limit, not a new one.
+  setting is on) runs as the person's user into their home, through sealantd's `dotfiles.apply`
+  verb, for every person, the launcher included. There are no user dotfiles at boot: boot applies
+  only root's, into `/root`, and a `person` launch passes none (sealantd#147). The verb runs once
+  prepare, or a joiner's first process, has made the person's user, and before the link step that
+  places their saved directories and Mend's files in their home, so Mend's links win over anything
+  the dotfiles put there. It is serialised per person (one apply at a time for a person, however
+  many of their processes start together) and bounded in time. It runs in parallel with the person's
+  login and deliveries. A joiner's agent starts once the files are applied, and `install.sh` runs
+  beside it ("install.sh running" on the session line, and "finished after the agent started" when
+  it does), so a join stays inside its budget (Performance). An agent started that way does not see
+  what `install.sh` installs or changes later (Claude snapshots the shell profile at start). A
+  person who needs it first turns on "Start my agents after install.sh" (a per-person setting, off
+  by default), and their joins then wait for it, outside the join budget. The launcher's agent
+  starts after their `install.sh` ends, as it did when `install.sh` ran at boot. A script can
+  `sudo`; that is the accepted limit, not a new one.
 - Mend's default shell profile is written into each home.
 
 ### 12. Readers
@@ -737,18 +808,23 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
 
 ### What the design does to stay inside them
 
-- **No new Core call on the cold path:** `credentialsHome` at create. A join's Core call, `useradd`,
-  dotfiles and deliveries run in parallel; only the agent start waits for them.
+- **No new Core call on the cold path:** `credentialsHome` at create. A join's `useradd` comes
+  first; its Core call, dotfiles and deliveries then run in parallel, and only the agent start waits
+  for them.
 - **A joiner's `install.sh` runs beside the agent,** not before it: the agent starts when the
   dotfiles' files are applied, and the session line says "install.sh running" until it ends. The
-  launcher's runs at boot, as today.
+  launcher's runs before their agent, as it did at boot.
 - **Codex's thread index and memory database stay saved,** as they are today:
   `CODEX_SQLITE_HOME=P/codex-db`, so a first start does not re-index (up to 30 s otherwise). The
   logs database and the `*-shm` files are set aside as machine state.
 - **sealantd's ownership costs no extra pass:** files under `tree/` and the git section take their
   group from the setgid root and their modes from the `chmod` sealantd already makes, with group
   write, group execute and setgid added (decision 8); the default ACL is inherited; only
-  `people/<id>/` entries, a small tree, are `lchown`ed.
+  `people/<id>/` entries, a small tree, are `lchown`ed. Measured on a 148,732-file, 2.7 GB worktree,
+  the owner map costs about +0.3 s at the median (+5.5%) and +0.4 s at the p90, inside the restore
+  limit's +1 s. The cost is the kernel writing the inherited default ACL on each new inode, which no
+  syscall count shows, so gate P1 measures restore wall time on the box's largest worktree,
+  interleaved, on the box's own filesystem (sealantd#145).
 - **The hand-over:** the settle is 1 s for Codex and none for Claude once it reports
   `session_state_changed: idle`; `H`'s seed is staged while the old process stops, so only the two
   Core calls (DELETE, then POST), the directory exchange and the start wait for the exit; Codex's
@@ -796,7 +872,9 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
 
 ## Known limits
 
-- **Everyone can read and change everyone's files** with passwordless sudo (decision 13).
+- **Everyone can read and change everyone's files** with passwordless sudo (decision 13), and with
+  the `CAP_FOWNER` every person's process holds in a per-person executor, which amounts to root
+  (decision 1).
 - **`docker exec` and processes Mend did not start run as root,** with no person's login, and what
   they write under `/root` is not saved.
 - **VS Code Remote-SSH reaches only workspaces you launched,** as your user.
@@ -804,7 +882,8 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
   the person exports `GITHUB_TOKEN=$(mend-git-credential token)`; a person's own `gh auth login` is
   overwritten by Core's next push.
 - **A file another person's tool created with an explicit mode** is repaired in the worktree when
-  someone else's process starts there; elsewhere it needs `sudo` until the next restore.
+  someone else's process starts there; elsewhere it needs a `chmod` (`CAP_FOWNER`) or `sudo` until
+  the next restore.
 - **Custom images:** toolchains under `/root` run for everyone but take each person's installs into
   their own home; an image without `sudo`, `useradd` or ACLs takes one person.
 - **Shared control:** a payer change waits for background work and holds the turns behind it, costs
@@ -828,9 +907,15 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
   before the move into `C` no longer resolve, so those full outputs are not re-readable by path; the
   transcript keeps what it showed the model.
 - **A rejection of reasoning made on another account fails the turn;** there is no retry.
-- **Restored files are the change owner's:** a joiner cannot `chmod` them (`git checkout` recreates
-  a file and works), and a toolchain unpacked with explicit modes by one person can be extended by
-  another only with `sudo`. `npm i -g` lands in `/opt/npm-global`.
+- **Restored worktree files belong to root and the `mend` group.** Without `CAP_FOWNER` nobody but
+  `sudo` could `chmod` or `utime` them, the change's owner included; a rewrite (`git checkout`, an
+  editor's save by rename) makes them the writer's (sealantd#145). A person's processes hold
+  `CAP_FOWNER` in a per-person executor (decision 1, sealantd#147 and #148), which is what lets pnpm
+  relink a restored package's bins (`ERR_PNPM_CMD_SHIM_CHMOD` otherwise). A toolchain unpacked with
+  explicit modes by one person can be extended by another only after such a `chmod`, or with `sudo`.
+  `npm i -g` lands in `/opt/npm-global`.
+- **A pnpm tree from the other layout** is reinstalled once
+  (`pnpm install --force --prefer-offline`) when a worktree first runs per person (decision 3).
 - **Sockets and files a tool leaves to the umask** are group-reachable outside the private `TMPDIR`
   and `XDG_RUNTIME_DIR`; within the accepted sudo limit.
 - **nix images take one person.**
@@ -846,7 +931,8 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
   are not resumable in the person layout.
 - **opencode is one person's:** shared control is refused for opencode sessions.
 - **Claude's `/rewind` file history is never saved:** it ends with the executor, and in a shared
-  session at the next change of sender.
+  session at the next change of sender, so `/rewind` cannot restore edits made before a move to
+  another executor.
 - **A login made inside opencode** (`opencode console login`, the integration routes) is saved in
   the captures taken while that opencode process ran, in that person's own directory; Mend deletes
   it when opencode exits (decision 8a).
@@ -869,6 +955,7 @@ Each limit applies to the median and to the 90th percentile of the runs, `person
 - **Provider session ids pinned at launch** (Claude and pi `--session-id`).
 - **Claiming uncredited memory** from before 0.36.
 - **sealantd scrubbing opencode's login tables.**
+- **An SFTP bridge as the workspace's user:** `openSftp` with a user, set from Core's `sshUser`.
 
 ## Delivery
 
@@ -920,12 +1007,12 @@ launches.
    and a regular `auth.json` where a link was, restores none of them; a `codex-db` with its `-wal`
    and `-shm` files restores the WAL and not the `-shm`. S, ~150. Perf: none (listing filter).
 4. **sealantd · ownership on restore.** The owner map in the capture spec; in the `chmod` it already
-   makes, for `tree/`, git and `conversations/` only, group write where the owner can write, group
-   execute where the owner can execute, setgid on directories; `people/<id>/` `lchown`ed to its uid
-   with `P` 0710, `conversations/` group-readable and -writable whatever the recorded mode, and the
-   rest of `people/<id>/` at its recorded mode; `tree/` and git owned by the change's owner; default
-   ACLs on the roots and, at boot, on the image's `/opt` and `/var/cache` top directories; reused
-   files included; the capability report. Tests: a capture recorded 0644/0755 is writable and
+   makes, for `tree/`, git and `conversations/` only, the owner's read, write and execute bits
+   copied to the group, setgid on directories; `people/<id>/` `lchown`ed to its uid with `P` 0710,
+   `conversations/` group-readable and -writable whatever the recorded mode, and the rest of
+   `people/<id>/` at its recorded mode; the roots of `tree/` and git owned by the change's owner;
+   default ACLs on the roots and, at boot, on the image's `/opt` and `/var/cache` top directories;
+   reused files included; the capability report. Tests: a capture recorded 0644/0755 is writable and
    creatable-in by a second uid after restore; a 0600 transcript in `conversations/` comes back
    group-writable; a 0600 transcript and `codex-db` outside `conversations/` come back 0600; two
    people's directories restored with their uids; no owner recorded; a restore of a 200k-entry tree
@@ -933,12 +1020,12 @@ launches.
    budget, measured on the box's largest worktree.
 5. **sealantd · run as a user, and dotfiles as a user.** Exec and sessions with a uid (setgid,
    initgroups, setuid, passwd `HOME`, umask, the private `TMPDIR` and `XDG_RUNTIME_DIR`); the
-   dotfiles applier as a given user into their home, at boot and through a control verb, reporting
-   when files are applied separately from `install.sh`; the capabilities `exec.user` and
-   `dotfiles.user`, also printed by `sealantd capabilities --json` without booting, so an image
-   build can record them. Tests: a process's ids and `HOME`; `install.sh` runs as the user; the
-   offline report matches the booted one. M, ~500. Perf: process start unchanged within noise (unit
-   timing of the spawn path).
+   dotfiles applier as a given user into their home, through a control verb (boot applies only
+   root's, into `/root`), reporting when files are applied separately from `install.sh`; the
+   capabilities `exec.user` and `dotfiles.user`, also printed by `sealantd capabilities --json`
+   without booting, so an image build can record them. Tests: a process's ids and `HOME`;
+   `install.sh` runs as the user; the offline report matches the booted one. M, ~500. Perf: process
+   start unchanged within noise (unit timing of the spawn path).
 6. **Core · sealant#316 as it is.** S, open. Perf: none.
 7. **Core · sealant#315 reshaped into per-home injection.** `home` (a person's home, a conversation
    home, or `/root` for decision 1's fallback); files owned by the home's owner; the record per
@@ -1180,4 +1267,22 @@ benchmark once more, before 0.36 is tagged.
   through a pickup ticket bound to them (mend#555's mechanism), minted at redemption; a person's
   token is rechecked against membership and project access on every request, names no session in its
   row, and a person's process without Mend's environment finds it in its passwd home.
+- 2026-10-07, after the platform's builds and reviews (sealantd#144–#148, sealant#327–#332,
+  mend#551–#559): Claude's file history is never saved, and `/rewind` does not survive a move to
+  another executor; sealantd's restore copies the owner's read to the group too, so a 0600 file
+  comes back 0660, at about +0.3 s on a large restore, measured by wall time at gate P1; restored
+  worktree entries are root's in group `mend`, only the roots go to the change's owner, and `C`'s
+  default ACL is not restored, which umask `0002` and Mend's per-process `chmod` make harmless;
+  there are no user dotfiles at boot, and every person, the launcher included, goes through
+  `dotfiles.apply` after prepare and before the link step, serialised per person and bounded;
+  prepare refuses a `person` executor whose restored worktree is not group `mend`'s (mend#552); a
+  person's processes hold `CAP_FOWNER`, owner-approved, so pnpm relinks bins, and sealantd withholds
+  it under no-new-privileges; the person layout needs a setuid `sudo` and no no-new-privileges, in
+  Core's image probe and Mend's alike; sealantd skips no-new-privileges only in a per-person
+  executor, a root daemon with an owner map naming at least one person (sealantd#148); sealantd
+  applies `person-env` to every person's process and Mend applies nothing; the project's secrets
+  reach every person while named provider logins, `SEALANT_*` and the injector's keys are withheld;
+  the dependency cache is keyed by layout, and a worktree's first `person` launch runs
+  `pnpm install --force --prefer-offline` once on a tree from the other layout; `openSftp` takes no
+  user yet.
 - Open: gate B's history record.

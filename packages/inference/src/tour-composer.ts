@@ -51,7 +51,7 @@ The voice — plain technical prose for a professional reviewer:
 
 Method — budget your rounds; reads first, then answer:
 1. read_change — the full diff and per-file counts.
-2. read_terminal — the harness process's ACTUAL output and reconstructed commands; for a TUI session this is where the work is visible (the timeline's PTY payloads are content-addressed hashes).
+2. read_terminal — the harness process's ACTUAL output and the programs it ran, with exit codes (arguments are not recorded); for a TUI session this is where the work is visible (the timeline's PTY payloads are content-addressed hashes).
 3. read_recording — the structured timeline for sequence anchors. The prompt tells you the record's extent — never probe beyond it; two or three selective calls suffice.
 4. Answer with the tour document in the required JSON shape. Sequences are decimal strings. File paths must be paths from the diff.`;
 
