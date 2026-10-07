@@ -56,6 +56,12 @@ export interface AgentRehydrateOptions {
 export interface AgentStartOptions {
   readonly cwd: string;
   readonly providerSessionId?: string | undefined;
+  /**
+   * The full path of the conversation's file a resume continues (docs/adr/0016, decision 6,
+   * "Resume never forks"): Codex resumes `thread/resume { path }`, so a conversation home's
+   * thread is never looked up by id in an index that does not hold it.
+   */
+  readonly providerSessionPath?: string | undefined;
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";

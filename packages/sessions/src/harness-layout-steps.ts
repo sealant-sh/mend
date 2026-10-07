@@ -16,6 +16,7 @@ import {
   linuxHomeOf,
 } from "@mend/domain/workbench";
 import {
+  type HeldHome,
   type HomeLogins,
   type LoginProvider,
   type LoginSkip,
@@ -29,6 +30,7 @@ import { Clock, Config, Deferred, Duration, Effect, Layer, Schedule } from "effe
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
+import { CONVERSATION_HOMES } from "./conversation-home.ts";
 import {
   type LayoutCapability,
   type PrepareFinding,
@@ -482,6 +484,11 @@ export interface HarnessLayoutSteps {
     readonly launcher: string;
     /** Who has a live process there, read after Core's homes are listed. */
     readonly live: Effect.Effect<ReadonlySet<string>>;
+    /**
+     * A conversation home Core lists (`/run/mend/conv/<session id>`, decision 6): kept for the
+     * conversation's live process, or released, by the caller.
+     */
+    readonly conversationHome?: (held: HeldHome) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
   /** An executor ended: what Mend kept about its people goes with it. */
   readonly forgetExecutor: (workspaceId: string) => void;
@@ -1531,7 +1538,14 @@ export const makeHarnessLayoutSteps = (deps: {
       executor.launcher = input.launcher;
       // Core's homes first, then who is live: a person whose first process starts in between is
       // live by then, or inside the grace below (review of mend#564, P2-2).
-      const homes = (yield* platform.listCredentials(input.workspace)).filter((held) =>
+      const listed = yield* platform.listCredentials(input.workspace);
+      // A conversation home is its conversation's, whoever's login it holds: the caller decides.
+      if (input.conversationHome !== undefined) {
+        for (const held of listed) {
+          if (held.home.startsWith(`${CONVERSATION_HOMES}/`)) yield* input.conversationHome(held);
+        }
+      }
+      const homes = listed.filter((held) =>
         // Only a person's home under /home: `/root` is no person's in this layout.
         held.home.startsWith("/home/"),
       );

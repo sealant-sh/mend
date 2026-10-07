@@ -139,4 +139,14 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   ),
   exitedAt: Schema.NullOr(Timestamp),
   updatedAt: Timestamp,
+  /**
+   * The Mend account whose Linux user the process runs as in a person-layout executor
+   * (docs/adr/0016, decision 1: "the person a process runs as is recorded on the process when it
+   * starts"). Null for a process that runs as root (a `shared` executor), on rows from before it
+   * was recorded, and where older servers omit it.
+   */
+  runsAs: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
 }) {}

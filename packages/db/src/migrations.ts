@@ -3178,6 +3178,40 @@ const sharedControlEverMigration = Effect.gen(function* () {
     WHERE shared_control_ever_at IS NULL AND shared_control_enabled_at IS NOT NULL`;
 });
 
+/**
+ * 0117 (docs/adr/0016, decision 6, Delivery 17): shared conversations and the one live agent
+ * process per conversation.
+ *
+ * - `shared_conversations`: a session whose conversation moved into its owner's shared directory
+ *   (`C`) when shared control was turned on. "Once shared" from the move on: never cleared while
+ *   the session lives, so its files never split between `C` and a personal directory.
+ * - `conversation_processes`: the one live agent process of a conversation, by (launch, process),
+ *   taken by every start path and released only when the platform reports the process exited or
+ *   the executor ended. `fence` grows with every take, so a start that lost its take cannot bind.
+ * - `session_processes.runs_as`: the account whose Linux user a process runs as.
+ */
+const conversationHomesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE shared_conversations (
+      session_id text PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      owner_user_id text NOT NULL,
+      moved_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE TABLE conversation_processes (
+      session_id text PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      launch_id text,
+      process_id text,
+      fence bigint NOT NULL DEFAULT 0,
+      taken_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX conversation_processes_launch_idx ON conversation_processes (launch_id)
+    WHERE launch_id IS NOT NULL`;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN runs_as text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3295,4 +3329,5 @@ export const migrations = {
   "0114_executor_workspace_index": executorWorkspaceIndexMigration,
   "0115_start_agents_after_install": startAgentsAfterInstallMigration,
   "0116_shared_control_ever": sharedControlEverMigration,
+  "0117_conversation_homes": conversationHomesMigration,
 };

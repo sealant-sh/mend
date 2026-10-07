@@ -477,6 +477,29 @@ describe("rehydrate (restart policy v2)", () => {
     ),
   );
 
+  it.effect(
+    "resumes a conversation home's thread by the full path of its rollout, and asks for the experimental API",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fake = yield* codexTransport;
+          const path = `/run/mend/conv/s-1/.codex/sessions/2026/10/07/rollout-2026-10-07T10-00-00-${GONE_THREAD}.jsonl`;
+          yield* CodexAdapter.start(fake.transport, {
+            cwd: "/workspace/repo",
+            permissionMode: "bypass",
+            providerSessionId: GONE_THREAD,
+            providerSessionPath: path,
+          });
+          expect(fake.sent[0]?.["params"]).toEqual({
+            clientInfo: { name: "mend", version: "0.0.0" },
+            capabilities: { experimentalApi: true },
+          });
+          expect(fake.sent[2]?.["method"]).toBe("thread/resume");
+          expect(fake.sent[2]?.["params"]).toMatchObject({ threadId: GONE_THREAD, path });
+        }),
+      ),
+  );
+
   it.effect("a resume that fails for another reason fails with Codex's own words", () =>
     Effect.scoped(
       Effect.gen(function* () {

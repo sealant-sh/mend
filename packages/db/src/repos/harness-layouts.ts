@@ -116,6 +116,47 @@ const CapabilityRow = Schema.Struct({
 });
 const decodeCapabilityRow = Schema.decodeUnknownSync(CapabilityRow);
 
+/** A conversation moved into its owner's shared directory (docs/adr/0016, decision 6). */
+export interface SharedConversationRecord {
+  readonly owner: string;
+  readonly movedAt: Date;
+}
+
+/** Who holds a conversation's one live agent process (docs/adr/0016, decision 6). */
+export interface ConversationHolder {
+  /** The launch of the executor the process runs in; null once released. */
+  readonly launchId: string | null;
+  /** The process, once bound; null while its start runs. */
+  readonly processId: string | null;
+  readonly fence: number;
+}
+
+/**
+ * A take of a conversation's one live agent process: `taken` with the fence a bind must name, or
+ * held by another start or a process the platform has not reported exited.
+ */
+export type ConversationTake =
+  | { readonly taken: true; readonly fence: number }
+  | {
+      readonly taken: false;
+      readonly launchId: string | null;
+      readonly processId: string | null;
+    };
+
+/** A start that took a conversation and never bound a process is taken as gone after this. */
+export const CONVERSATION_TAKE_STALE_MS = 2 * 60_000;
+
+const HolderRow = Schema.Struct({
+  launchId: Schema.NullOr(Schema.String),
+  processId: Schema.NullOr(Schema.String),
+  fence: Schema.Union([Schema.Number, Schema.String]),
+});
+const decodeHolderRow = Schema.decodeUnknownSync(HolderRow);
+const holderOf = (row: unknown): ConversationHolder => {
+  const decoded = decodeHolderRow(row);
+  return { launchId: decoded.launchId, processId: decoded.processId, fence: Number(decoded.fence) };
+};
+
 export class LinuxIdentityExhaustedError extends Schema.TaggedErrorClass<LinuxIdentityExhaustedError>()(
   "LinuxIdentityExhaustedError",
   { accountId: Schema.String, message: Schema.String },
@@ -177,6 +218,43 @@ export class HarnessLayoutsRepo extends Context.Service<
     readonly recordCapability: (
       record: Omit<ImageLayoutCapabilityRecord, "observedAt">,
     ) => Effect.Effect<void>;
+    /**
+     * A session's conversation moved into its owner's shared directory (decision 6): once shared
+     * from now on, until the session ends. Idempotent: the first move's record stays.
+     */
+    readonly markConversationShared: (sessionId: string, owner: string) => Effect.Effect<void>;
+    /** The record of a session's move into `C`; null for a conversation never shared. */
+    readonly sharedConversationOf: (
+      sessionId: string,
+    ) => Effect.Effect<SharedConversationRecord | null>;
+    /**
+     * Take a conversation's one live agent process for a start in `launchId` (decision 6): taken
+     * when nothing holds it, when its holder was released, when the process it names has exited,
+     * or when a start took it and bound nothing for `CONVERSATION_TAKE_STALE_MS`. Every take grows
+     * the fence. Otherwise held: a process the platform has not reported exited is still the
+     * conversation's, an unreachable executor included, and nobody starts a second.
+     */
+    readonly takeConversation: (
+      sessionId: string,
+      launchId: string,
+    ) => Effect.Effect<ConversationTake>;
+    /** The started process, bound to the take whose fence it names; false when fenced out. */
+    readonly bindConversation: (
+      sessionId: string,
+      fence: number,
+      processId: string,
+    ) => Effect.Effect<boolean>;
+    /**
+     * Release a conversation: by the process the platform reported exited, or by the fence of a
+     * start that ended before it bound one. A newer take is never released by an older one.
+     */
+    readonly releaseConversation: (
+      sessionId: string,
+      by: { readonly processId: string } | { readonly fence: number },
+    ) => Effect.Effect<void>;
+    /** An executor ended: every conversation its launch held is released. */
+    readonly releaseConversationsOfLaunch: (launchId: string) => Effect.Effect<void>;
+    readonly conversationHolder: (sessionId: string) => Effect.Effect<ConversationHolder | null>;
   }
 >()("@mend/db/HarnessLayoutsRepo") {}
 
@@ -373,6 +451,99 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return rows[0]?.recorded === true;
       });
 
+      const markConversationShared = Effect.fn("HarnessLayoutsRepo.markConversationShared")(
+        function* (sessionId: string, owner: string) {
+          yield* sql`
+            INSERT INTO shared_conversations (session_id, owner_user_id)
+            VALUES (${sessionId}, ${owner})
+            ON CONFLICT (session_id) DO NOTHING`.pipe(Effect.orDie);
+        },
+      );
+
+      const sharedConversationOf = Effect.fn("HarnessLayoutsRepo.sharedConversationOf")(function* (
+        sessionId: string,
+      ) {
+        const rows = yield* sql<{ readonly owner: string; readonly movedAt: Date }>`
+            SELECT owner_user_id AS owner, moved_at AS "movedAt"
+            FROM shared_conversations WHERE session_id = ${sessionId}`.pipe(Effect.orDie);
+        const row = rows[0];
+        return row === undefined ? null : { owner: row.owner, movedAt: new Date(row.movedAt) };
+      });
+
+      const conversationHolder = Effect.fn("HarnessLayoutsRepo.conversationHolder")(function* (
+        sessionId: string,
+      ) {
+        const rows = yield* sql`
+          SELECT launch_id AS "launchId", process_id AS "processId", fence
+          FROM conversation_processes WHERE session_id = ${sessionId}`.pipe(Effect.orDie);
+        return rows[0] === undefined ? null : holderOf(rows[0]);
+      });
+
+      const takeConversation = Effect.fn("HarnessLayoutsRepo.takeConversation")(function* (
+        sessionId: string,
+        launchId: string,
+      ) {
+        const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
+        const rows = yield* sql<{ readonly fence: number | string }>`
+          INSERT INTO conversation_processes (session_id, launch_id, process_id, fence)
+          VALUES (${sessionId}, ${launchId}, NULL, 1)
+          ON CONFLICT (session_id) DO UPDATE
+            SET launch_id = excluded.launch_id, process_id = NULL,
+                fence = conversation_processes.fence + 1, taken_at = now()
+            WHERE conversation_processes.launch_id IS NULL
+               OR (conversation_processes.process_id IS NULL
+                   AND conversation_processes.taken_at < now() - make_interval(secs => ${staleSeconds}))
+               OR (conversation_processes.process_id IS NOT NULL AND EXISTS (
+                     SELECT 1 FROM session_processes p
+                     WHERE p.id = conversation_processes.process_id AND p.exited_at IS NOT NULL))
+          RETURNING fence`.pipe(Effect.orDie);
+        const taken = rows[0];
+        if (taken !== undefined) return { taken: true, fence: Number(taken.fence) } as const;
+        const holder = yield* conversationHolder(sessionId);
+        return {
+          taken: false,
+          launchId: holder?.launchId ?? null,
+          processId: holder?.processId ?? null,
+        } as const;
+      });
+
+      const bindConversation = Effect.fn("HarnessLayoutsRepo.bindConversation")(function* (
+        sessionId: string,
+        fence: number,
+        processId: string,
+      ) {
+        const rows = yield* sql`
+          UPDATE conversation_processes SET process_id = ${processId}
+          WHERE session_id = ${sessionId} AND fence = ${fence} AND launch_id IS NOT NULL
+          RETURNING session_id`.pipe(Effect.orDie);
+        return rows.length > 0;
+      });
+
+      const releaseConversation = Effect.fn("HarnessLayoutsRepo.releaseConversation")(function* (
+        sessionId: string,
+        by: { readonly processId: string } | { readonly fence: number },
+      ) {
+        if ("processId" in by) {
+          yield* sql`
+            UPDATE conversation_processes SET launch_id = NULL, process_id = NULL
+            WHERE session_id = ${sessionId} AND process_id = ${by.processId}`.pipe(Effect.orDie);
+          return;
+        }
+        yield* sql`
+          UPDATE conversation_processes SET launch_id = NULL, process_id = NULL
+          WHERE session_id = ${sessionId} AND fence = ${by.fence} AND process_id IS NULL`.pipe(
+          Effect.orDie,
+        );
+      });
+
+      const releaseConversationsOfLaunch = Effect.fn(
+        "HarnessLayoutsRepo.releaseConversationsOfLaunch",
+      )(function* (launchId: string) {
+        yield* sql`
+          UPDATE conversation_processes SET launch_id = NULL, process_id = NULL
+          WHERE launch_id = ${launchId}`.pipe(Effect.orDie);
+      });
+
       return {
         ensureIdentity,
         identitiesOf,
@@ -387,6 +558,13 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         anyRecorded,
         capabilityOf,
         recordCapability,
+        markConversationShared,
+        sharedConversationOf,
+        takeConversation,
+        bindConversation,
+        releaseConversation,
+        releaseConversationsOfLaunch,
+        conversationHolder,
       };
     }),
   );
@@ -397,6 +575,10 @@ export interface HarnessLayoutsMemoryState {
   readonly worktrees: Map<string, WorktreeLayoutRecord>;
   readonly launches: Map<string, ExecutorLayoutRecord>;
   readonly capabilities: Map<string, ImageLayoutCapabilityRecord>;
+  readonly sharedConversations: Map<string, SharedConversationRecord>;
+  readonly conversationHolders: Map<string, ConversationHolder & { readonly takenAt: number }>;
+  /** Processes the platform reported exited, as `session_processes.exited_at` would say. */
+  readonly exitedProcesses: Set<string>;
 }
 
 export const makeHarnessLayoutsMemoryState = (): HarnessLayoutsMemoryState => ({
@@ -404,6 +586,9 @@ export const makeHarnessLayoutsMemoryState = (): HarnessLayoutsMemoryState => ({
   worktrees: new Map(),
   launches: new Map(),
   capabilities: new Map(),
+  sharedConversations: new Map(),
+  conversationHolders: new Map(),
+  exitedProcesses: new Set(),
 });
 
 /** In-memory implementation with the same contract, for tests. */
@@ -508,5 +693,67 @@ export const harnessLayoutsRepoMemory = (
           ...record,
           observedAt: new Date(),
         });
+      }),
+    markConversationShared: (sessionId, owner) =>
+      Effect.sync(() => {
+        if (!state.sharedConversations.has(sessionId)) {
+          state.sharedConversations.set(sessionId, { owner, movedAt: new Date() });
+        }
+      }),
+    sharedConversationOf: (sessionId) =>
+      Effect.sync(() => state.sharedConversations.get(sessionId) ?? null),
+    takeConversation: (sessionId, launchId) =>
+      Effect.sync(() => {
+        const held = state.conversationHolders.get(sessionId);
+        const free =
+          held === undefined ||
+          held.launchId === null ||
+          (held.processId === null && Date.now() - held.takenAt > CONVERSATION_TAKE_STALE_MS) ||
+          (held.processId !== null && state.exitedProcesses.has(held.processId));
+        if (!free) {
+          return { taken: false, launchId: held.launchId, processId: held.processId } as const;
+        }
+        const fence = (held?.fence ?? 0) + 1;
+        state.conversationHolders.set(sessionId, {
+          launchId,
+          processId: null,
+          fence,
+          takenAt: Date.now(),
+        });
+        return { taken: true, fence } as const;
+      }),
+    bindConversation: (sessionId, fence, processId) =>
+      Effect.sync(() => {
+        const held = state.conversationHolders.get(sessionId);
+        if (held === undefined || held.fence !== fence || held.launchId === null) return false;
+        state.conversationHolders.set(sessionId, { ...held, processId });
+        return true;
+      }),
+    releaseConversation: (sessionId, by) =>
+      Effect.sync(() => {
+        const held = state.conversationHolders.get(sessionId);
+        if (held === undefined) return;
+        const matches =
+          "processId" in by
+            ? held.processId === by.processId
+            : held.fence === by.fence && held.processId === null;
+        if (matches) {
+          state.conversationHolders.set(sessionId, { ...held, launchId: null, processId: null });
+        }
+      }),
+    releaseConversationsOfLaunch: (launchId) =>
+      Effect.sync(() => {
+        for (const [sessionId, held] of state.conversationHolders) {
+          if (held.launchId === launchId) {
+            state.conversationHolders.set(sessionId, { ...held, launchId: null, processId: null });
+          }
+        }
+      }),
+    conversationHolder: (sessionId) =>
+      Effect.sync(() => {
+        const held = state.conversationHolders.get(sessionId);
+        return held === undefined
+          ? null
+          : { launchId: held.launchId, processId: held.processId, fence: held.fence };
       }),
   });

@@ -27,6 +27,34 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   POST, then polls of the run) where boot-time dotfiles cost nothing of this kind. Gate P1/P2 on the
   box must time it.
 
+## 2026-10-07 · 0.39.0-next.696 · Shared steering (ADR 0016 Deliveries 17 and 18): the hand-over's exchange, an empty process group, and a pipe's end of input
+
+The hand-over of a shared conversation from one sender's agent process to the next (decision 6) is
+built on what the SDK has today; three pieces would each make it one platform call instead of an
+exec or a stand-in, and none blocks the build.
+
+- **Missing:** the atomic exchange of two directories, `renameat2(RENAME_EXCHANGE)`, as a sealantd
+  verb. Mend runs it in its exchange exec with what the image offers (`mv --exchange`, util-linux
+  `exch`, Python's `ctypes`) and falls back to two renames, which is equivalent only because the old
+  process group is empty and the new process has not started. Ubuntu 24.04's coreutils (9.4) and
+  util-linux (2.39) have neither tool, so those images take the fallback. Suggested surface:
+  `workspace.fs.exchange(a, b)`, as root, refusing a link on either path; Mend would fold it into
+  the Core calls and drop the exec.
+- **Missing:** "this session's process group and cgroup are empty". `InteractiveSession.status()`
+  reports the leader's exit; Codex's plugin and git children can outlive the app-server. Mend's
+  staging exec waits for no process to carry the conversation's marker variable
+  (`MEND_CONVERSATION=<session id>`) or to work under its conversation home (`/proc/*/environ`,
+  `cwd` and `fd`), and ends what an exited agent left behind after 10 s. Suggested surface:
+  `session.wait({ group: true })`, resolving once the leader's process group and its cgroup are
+  empty, with what was left after a timeout. sealantd already records `pgid` on
+  `ProcessStartedEvent`.
+- **Missing:** a half-close of a pipe session's stdin. The ADR's stop closes the agent's input so
+  Claude and Codex exit on their own (Codex aborts a turn it starts by itself after the close, which
+  Mend records as interrupted by the hand-over). `InteractiveSession.close()` hangs the session up
+  instead; Mend calls it only once the process is quiescent, so nothing in flight is lost, but a
+  turn Codex starts on its own in that window ends by the signal, not by Codex. Suggested surface:
+  `session.eof()` on pipe sessions, as `WorkspaceForward.eof()` does for forwards.
+
 ## 2026-10-07 · 0.39.0-next.696 · Per-person deliveries (ADR 0016 Delivery 15): the dotfiles verb, and an exec's environment
 
 - **Shipped (0.39.0-next.703, sealant#334, sealantd 0.20.0-next.152) and used:**

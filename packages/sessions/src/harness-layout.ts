@@ -17,6 +17,7 @@ import {
   linuxHomeOf,
 } from "@mend/domain/workbench";
 
+import { claudeSettingsFilesScript } from "./claude-settings.ts";
 import { GIT_CREDENTIAL_HELPER_PATH } from "./git-credential.ts";
 import { OPENCODE_DATABASE } from "./opencode-state.ts";
 import {
@@ -930,6 +931,8 @@ export const personPrepareScript = (
       readonly aclDir?: string;
       /** The group the restored worktree must have; `mend`'s unless a test names another. */
       readonly worktreeGid?: number;
+      /** Where Mend's Claude settings files go; `/run/mend/claude` unless a test names another. */
+      readonly claudeSettings?: string;
     };
   },
 ): string => {
@@ -1006,6 +1009,8 @@ export const personPrepareScript = (
     // Git over HTTPS to GitHub answers with the calling user's own login (decision 4).
     `git config --system credential.https://github.com.helper ${q(GIT_CREDENTIAL_HELPER_PATH)} 2>/dev/null || true`,
     `mkdir -p ${q(markerDir)} && touch ${q(marker)}`,
+    // Mend's Claude settings files (decision 6), once per executor: `--settings` adds no exec.
+    claudeSettingsFilesScript(places.claudeSettings),
     `printf '%s ready\\n' ${LAYOUT_LINE}`,
     `fi`,
     `fi`,

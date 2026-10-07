@@ -54,6 +54,11 @@ export interface AttachProtocolProcessInput {
    * session owner's, or a capture-mode join's lease holder's. Null when Mend cannot say.
    */
   readonly launchedWithLoginOf: string | null;
+  /**
+   * The full path of the conversation's file a resume continues, in a conversation home
+   * (docs/adr/0016, decision 6, "Resume never forks"); null or absent otherwise.
+   */
+  readonly resumePath?: string | null;
 }
 
 /**
@@ -405,6 +410,7 @@ export const ProtocolHostLive: Layer.Layer<
         .start(transport, {
           cwd: input.cwd,
           providerSessionId: input.process.providerSessionId ?? undefined,
+          providerSessionPath: input.resumePath ?? undefined,
           model: input.model,
           effort: input.effort,
           permissionMode: input.permissionMode,

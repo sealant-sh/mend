@@ -138,6 +138,7 @@ export const processFixture = (patch: Partial<SessionProcessDto> = {}): SessionP
   firstOutputAt: null,
   exitedAt: null,
   updatedAt: AT,
+  runsAs: null,
   ...patch,
 });
 
