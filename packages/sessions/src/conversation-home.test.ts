@@ -11,8 +11,7 @@ import {
   CLAUDE_NEUTRAL_ENV,
   CONVERSATION_LINKS,
   type ConversationHarness,
-  claudeSettingsFileOf,
-  claudeSettingsFilesScript,
+  claudeSettingsArgOf,
   codexNeutralConfig,
   conversationArgv,
   conversationDirOf,
@@ -72,7 +71,6 @@ const world = () => {
   );
   const harnessHome = path.join(dir, "harness-home");
   const homesRoot = path.join(dir, "conv");
-  const settingsDir = path.join(dir, "claude-settings");
   const repo = path.join(dir, "repo");
   const homes = {
     [alice.accountId]: path.join(dir, "home-alice"),
@@ -88,12 +86,10 @@ const world = () => {
   const places = { harnessHome, homesRoot, waitTenths: 5 } as const;
   const env = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` };
   const run = (script: string) => spawnSync("sh", ["-c", script], { encoding: "utf8", env });
-  expect(run(claudeSettingsFilesScript(settingsDir)).status).toBe(0);
   return {
     dir,
     harnessHome,
     homesRoot,
-    settingsDir,
     repo,
     homes,
     places,
@@ -164,7 +160,9 @@ let instructions = [read(path.join(dir, "CLAUDE.md")), read(path.join(dir, "rule
 const repoMd = read(path.join(process.cwd(), "CLAUDE.md")) ?? "";
 instructions += "\n" + repoMd.replace(/@~\/(\S+)/g, (_, rel) => global.hasClaudeMdExternalIncludesApproved === true ? (read(path.join(process.env.HOME, rel)) ?? "") : "");
 const settingsFile = flag("--settings");
-const layers = [path.join(dir, "settings.json"), path.join(process.cwd(), ".claude", "settings.json"), path.join(process.cwd(), ".claude", "settings.local.json"), ...(settingsFile === null ? [] : [settingsFile])].map(json);
+// Claude takes \`--settings\` as a file or as JSON inline.
+const flagLayer = settingsFile === null ? [] : [settingsFile.trim().startsWith("{") ? JSON.parse(settingsFile) : json(settingsFile)];
+const layers = [...[path.join(dir, "settings.json"), path.join(process.cwd(), ".claude", "settings.json"), path.join(process.cwd(), ".claude", "settings.local.json")].map(json), ...flagLayer];
 const env = Object.assign({}, process.env, ...layers.map((layer) => layer.env ?? {}));
 const autoMemory = layers.every((layer) => layer.autoMemoryEnabled !== false) && env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== "1";
 const memoryDir = path.join(dir, "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"), "memory");
@@ -272,7 +270,6 @@ const turnBy = (
     harness: input.harness,
     argv: base,
     resumePath: staged.resume,
-    settingsDir: w.settingsDir,
   });
   const env = conversationProcessEnv({
     harness: input.harness,
@@ -311,13 +308,9 @@ const requests = (w: World) =>
     .split("\n")
     .map((line) => JSON.parse(line));
 
-describe("Claude's settings files (decision 6)", () => {
-  it("are written once, root's and 0644: neutral, no-cron and personal", () => {
-    const w = world();
-    expect(modeOf(w.settingsDir)).toBe(0o755);
-    expect(
-      JSON.parse(fs.readFileSync(claudeSettingsFileOf("neutral", w.settingsDir), "utf8")),
-    ).toEqual({
+describe("Claude's settings (decision 6)", () => {
+  it("are passed inline, so no file has to be there: neutral, no-cron and personal", () => {
+    expect(JSON.parse(claudeSettingsArgOf("neutral"))).toEqual({
       autoMemoryEnabled: false,
       env: {
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -326,29 +319,12 @@ describe("Claude's settings files (decision 6)", () => {
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
       },
     });
-    expect(
-      JSON.parse(fs.readFileSync(claudeSettingsFileOf("no-cron", w.settingsDir), "utf8")),
-    ).toEqual({
+    expect(JSON.parse(claudeSettingsArgOf("no-cron"))).toEqual({
       env: { CLAUDE_CODE_DISABLE_CRON: "1", CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
     });
-    expect(
-      JSON.parse(fs.readFileSync(claudeSettingsFileOf("personal", w.settingsDir), "utf8")),
-    ).toEqual({
+    expect(JSON.parse(claudeSettingsArgOf("personal"))).toEqual({
       env: { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
     });
-    for (const kind of ["neutral", "no-cron", "personal"] as const) {
-      expect(modeOf(claudeSettingsFileOf(kind, w.settingsDir))).toBe(0o644);
-    }
-  });
-
-  it("writes nothing through a link where the directory goes", () => {
-    const w = world();
-    const elsewhere = tempDir("mend-conv-elsewhere-");
-    const link = path.join(w.dir, "linked-settings");
-    fs.symlinkSync(elsewhere, link);
-    const result = w.run(claudeSettingsFilesScript(link));
-    expect(result.stderr).toContain("unexpected link");
-    expect(fs.readdirSync(elsewhere)).toEqual([]);
   });
 });
 
@@ -570,6 +546,51 @@ describe("one shared Claude conversation, each turn on its sender's user (Delive
     expect(report.moved).toBe(0);
     expect(report.kept).toEqual([path.join(project, `${id}.jsonl`)]);
     expect(fs.readFileSync(path.join(moved, `${id}.jsonl`), "utf8")).toContain('"turn":1');
+  });
+
+  it("never follows a link the owner put in C's place: Bob's login stays his (review of mend#572, P2-A)", () => {
+    const w = world();
+    const id = "4a6c8e0a-2b4d-4f6a-8c0e-2a4c6e8a0b99";
+    turnBy(w, { harness: "claude", sender: alice, providerSessionId: null, newId: id, move: true });
+    // A stand-in for Bob's home, his login in it.
+    const bobs = path.join(w.dir, "bob-elsewhere");
+    fs.mkdirSync(path.join(bobs, ".claude"), { recursive: true, mode: 0o700 });
+    fs.chmodSync(bobs, 0o700);
+    fs.writeFileSync(path.join(bobs, ".claude", ".credentials.json"), "{}", { mode: 0o600 });
+    // Bob's staging ran; then Alice swaps C for a link to Bob's home before the exchange.
+    w.run(
+      stageConversationHomeScript({
+        sessionId: SESSION,
+        harness: "claude",
+        owner: alice,
+        sender: bob,
+        providerSessionId: id,
+        model: null,
+        move: false,
+        places: w.places,
+      }),
+    );
+    fs.renameSync(w.conversation, `${w.conversation}.moved`);
+    fs.symlinkSync(bobs, w.conversation);
+    const exchange = w.run(
+      exchangeConversationHomeScript({ sessionId: SESSION, owner: alice, places: w.places }),
+    );
+    expect(exchange.status).not.toBe(0);
+    expect(exchange.stderr).toContain("unexpected link");
+    expect(modeOf(bobs)).toBe(0o700);
+    expect(modeOf(path.join(bobs, ".claude", ".credentials.json"))).toBe(0o600);
+    // And a link above C (the owner's conversations/ directory) reaches nothing either.
+    fs.unlinkSync(w.conversation);
+    fs.renameSync(`${w.conversation}.moved`, w.conversation);
+    const conversations = path.dirname(w.conversation);
+    const elsewhere = path.join(w.dir, "conversations-elsewhere");
+    fs.renameSync(conversations, elsewhere);
+    fs.symlinkSync(elsewhere, conversations);
+    const above = w.run(
+      exchangeConversationHomeScript({ sessionId: SESSION, owner: alice, places: w.places }),
+    );
+    expect(above.status).not.toBe(0);
+    expect(above.stderr).toContain("is not where it should be");
   });
 
   it("restores the group's access a harness's 0600 files masked, before each process", () => {
@@ -802,6 +823,68 @@ describe("one shared Codex conversation (Delivery 17)", () => {
     expect(index()).toBe(`${JSON.stringify({ id: thread, thread_name: "shared" })}\n`);
   });
 
+  it("says the group is busy when a leftover outlives the kill, so nothing is exchanged over it", () => {
+    const w = world();
+    turnBy(w, {
+      harness: "codex",
+      sender: alice,
+      providerSessionId: null,
+      newId: thread,
+      move: true,
+    });
+    // A process list where one entry carries the marker and no kill can end it.
+    const proc = path.join(w.dir, "proc");
+    fs.mkdirSync(path.join(proc, "4242424"), { recursive: true });
+    fs.writeFileSync(
+      path.join(proc, "4242424", "environ"),
+      `PATH=/bin\0MEND_CONVERSATION=${SESSION}\0`,
+    );
+    const stage = w.run(
+      stageConversationHomeScript({
+        sessionId: SESSION,
+        harness: "codex",
+        owner: alice,
+        sender: bob,
+        providerSessionId: thread,
+        model: null,
+        move: false,
+        places: { ...w.places, procRoot: proc, waitTenths: 2 },
+      }),
+    );
+    const report = parseConversationReport(stage.stdout);
+    expect(report.ended).toBe(1);
+    expect(report.empty).toBe(false);
+  });
+
+  it("moves only the threads Alice's thread spawned or forked, never one that merely mentions it", () => {
+    const w = world();
+    const saved = savedDirOf(w.harnessHome, alice.accountId);
+    const day = path.join(saved, ".codex/sessions/2026/10/06");
+    fs.mkdirSync(day, { recursive: true });
+    fs.writeFileSync(
+      path.join(day, `rollout-2026-10-06T09-00-00-${thread}.jsonl`),
+      `${JSON.stringify({ type: "session_meta", payload: { id: thread } })}\n`,
+    );
+    const mentions = "rollout-2026-10-06T08-00-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7e.jsonl";
+    fs.writeFileSync(
+      path.join(day, mentions),
+      `${JSON.stringify({ type: "session_meta", payload: { id: "other", instructions: `see ${thread}` } })}\n`,
+    );
+    const forked = "rollout-2026-10-06T09-10-00-0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a7f.jsonl";
+    fs.writeFileSync(
+      path.join(day, forked),
+      `${JSON.stringify({ type: "session_meta", payload: { id: "fork", forked_from_id: thread } })}\n`,
+    );
+    const first = turnBy(w, {
+      harness: "codex",
+      sender: alice,
+      providerSessionId: thread,
+      move: true,
+    });
+    expect(first.staged.moved).toBe(2);
+    expect(fs.readdirSync(day)).toEqual([mentions]);
+  });
+
   it("fails the turn when the rollout is missing: nothing is staged into H and nothing starts", () => {
     const w = world();
     const missing = turnBy(w, {
@@ -842,7 +925,7 @@ describe("what a conversation home's process gets", () => {
       "--resume",
       `/run/mend/conv/${SESSION}/.claude/projects/-workspace-repo/8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11.jsonl`,
       "--settings",
-      "/run/mend/claude/neutral.json",
+      claudeSettingsArgOf("neutral"),
     ]);
   });
 

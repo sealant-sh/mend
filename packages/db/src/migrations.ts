@@ -3188,7 +3188,9 @@ const sharedControlEverMigration = Effect.gen(function* () {
  * - `conversation_processes`: the one live agent process of a conversation, by (launch, process),
  *   taken by every start path and released only when the platform reports the process exited or
  *   the executor ended. `fence` grows with every take, so a start that lost its take cannot bind.
- * - `session_processes.runs_as`: the account whose Linux user a process runs as.
+ * - `session_processes.runs_as`: the account whose Linux user a process runs as, backfilled for
+ *   agents live in person-layout executors with their session's owner, the only person they could
+ *   have run as.
  */
 const conversationHomesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -3210,6 +3212,23 @@ const conversationHomesMigration = Effect.gen(function* () {
     CREATE INDEX conversation_processes_launch_idx ON conversation_processes (launch_id)
     WHERE launch_id IS NOT NULL`;
   yield* sql`ALTER TABLE session_processes ADD COLUMN runs_as text`;
+  // An agent live in a person-layout executor before this release ran as its session's owner
+  // (until shared steering, nobody else's process ran there): said on its row, so steering never
+  // takes it for a process of nobody's, which would send another person's turn to it (review of
+  // mend#572, P1-1). The executor's launch is the one its creating session's row names.
+  yield* sql`
+    UPDATE session_processes p
+    SET runs_as = s.owner_user_id
+    FROM agent_sessions s
+    WHERE p.session_id = s.id
+      AND p.runs_as IS NULL
+      AND p.exited_at IS NULL
+      AND p.kind IN ('agent-protocol', 'agent-pty')
+      AND s.owner_user_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM agent_sessions l
+        JOIN executor_layouts e ON e.launch_id = l.executor_launch_id
+        WHERE l.sealant_workspace_id = p.sealant_workspace_id AND e.layout = 'person')`;
 });
 
 export const migrations = {

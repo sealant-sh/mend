@@ -65,8 +65,9 @@ export interface HandOverInput {
   /** The sender's own person environment (`personProcessEnv`), which the conversation's wins over. */
   readonly personEnv: Readonly<Record<string, string>>;
   /**
-   * Take the conversation's one live agent process (decision 6), once the old one has stopped and
-   * before any login is touched: its fence. A take that fails stops the hand-over there.
+   * Take the conversation's one live agent process (decision 6), from the process this start
+   * replaces, before anything is stopped or touched: its fence. A take that fails stops the
+   * hand-over there, with the old process still running.
    */
   readonly take?: Effect.Effect<number, SealantPlatformError>;
   /** Give a take back when the hand-over fails after it. */
@@ -165,55 +166,60 @@ export const makeConversationSteps = (deps: {
       return yield* lockOf(key).withPermit(
         Effect.gen(function* () {
           const state = stateOf(key);
+          // The conversation's one live process is taken first, from the process this start
+          // replaces: a second start, racing this one, is refused before anything is stopped
+          // or killed (review of mend#572, P3-2).
+          const fence = input.take === undefined ? null : yield* input.take;
+          const untake = Effect.suspend(() =>
+            fence === null || input.untake === undefined ? Effect.void : input.untake(fence),
+          );
           // From here the old process no longer owns `H`: its exit releases nothing.
           state.process = null;
-          // The seed staged as the sender while the old process stops (decision 6, Performance):
-          // only the two Core calls, the exchange and the start wait for its exit.
-          const stage = sealant.exec(input.workspace, [
-            "sh",
-            "-c",
-            stageConversationHomeScript({
-              sessionId: input.sessionId,
-              harness: input.harness,
-              owner: input.owner,
-              sender: input.sender,
-              providerSessionId: input.providerSessionId,
-              model: input.model,
-              move: input.move,
-              places,
-            }),
-          ]);
-          // A move into `C` takes the conversation's files from under the owner's personal
-          // process, so that one stops first (once per session); every later hand-over stages
-          // beside the stop.
-          const [, staged] = input.move
-            ? yield* Effect.all([input.stop ?? Effect.void, stage], { concurrency: 1 })
-            : yield* Effect.all([input.stop ?? Effect.void, stage], { concurrency: 2 });
-          if (staged.exitCode !== 0) {
-            return yield* handOverFailed(
-              "conversation_not_staged",
-              `This conversation's next process could not be prepared: ${staged.stderr.trim() || `exit ${staged.exitCode}`}`,
-            );
-          }
-          const report = parseConversationReport(staged.stdout);
-          if (report.missing) {
-            return yield* handOverFailed(
-              "conversation_missing",
-              conversationMissingWords(input.harness),
-            );
-          }
-          if (!report.empty) {
-            return yield* handOverFailed(
-              "conversation_busy",
-              "This conversation's previous process did not end, so nothing was started. Try again.",
-            );
-          }
-          const fence = input.take === undefined ? null : yield* input.take;
-          return yield* handTo(input, state, report, fence).pipe(
-            Effect.tapError(() =>
-              fence === null || input.untake === undefined ? Effect.void : input.untake(fence),
-            ),
-          );
+          return yield* Effect.gen(function* () {
+            // The seed staged as the sender while the old process stops (decision 6,
+            // Performance): only the two Core calls, the exchange and the start wait for its
+            // exit.
+            const stage = sealant.exec(input.workspace, [
+              "sh",
+              "-c",
+              stageConversationHomeScript({
+                sessionId: input.sessionId,
+                harness: input.harness,
+                owner: input.owner,
+                sender: input.sender,
+                providerSessionId: input.providerSessionId,
+                model: input.model,
+                move: input.move,
+                places,
+              }),
+            ]);
+            // A move into `C` takes the conversation's files from under the owner's personal
+            // process, so that one stops first (once per session); every later hand-over stages
+            // beside the stop.
+            const [, staged] = input.move
+              ? yield* Effect.all([input.stop ?? Effect.void, stage], { concurrency: 1 })
+              : yield* Effect.all([input.stop ?? Effect.void, stage], { concurrency: 2 });
+            if (staged.exitCode !== 0) {
+              return yield* handOverFailed(
+                "conversation_not_staged",
+                `This conversation's next process could not be prepared: ${staged.stderr.trim() || `exit ${staged.exitCode}`}`,
+              );
+            }
+            const report = parseConversationReport(staged.stdout);
+            if (report.missing) {
+              return yield* handOverFailed(
+                "conversation_missing",
+                conversationMissingWords(input.harness),
+              );
+            }
+            if (!report.empty) {
+              return yield* handOverFailed(
+                "conversation_busy",
+                "This conversation's previous process did not end, so nothing was started. Try again.",
+              );
+            }
+            return yield* handTo(input, state, report, fence);
+          }).pipe(Effect.tapError(() => untake));
         }),
       );
     },

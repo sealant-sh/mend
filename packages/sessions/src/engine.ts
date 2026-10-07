@@ -13122,14 +13122,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const takeConversation = Effect.fn("SessionEngine.takeConversation")(function* (
         sessionId: SessionId,
         launchId: string,
+        /** The process this start replaces, taken from while it still runs (a hand-over's). */
+        replacedProcess: string | null,
       ) {
-        const take = yield* harnessLayouts.takeConversation(sessionId, launchId);
+        const take = yield* harnessLayouts.takeConversation(sessionId, launchId, replacedProcess);
         if (take.taken) return take.fence;
         return yield* new SealantPlatformError({
           code: "conversation_held",
           status: 409,
           message:
-            "This conversation's agent is still running, and Mend has not seen it end, so a second one was not started.",
+            take.processId === null
+              ? "Another start of this conversation is under way, so a second one was not started."
+              : "This conversation's agent is still running, and Mend has not seen it end, so a second one was not started.",
           cause: null,
         });
       });
@@ -13156,6 +13160,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly providerSessionId: string | null;
         readonly model: string | null;
         readonly stop: Effect.Effect<void, SealantPlatformError> | null;
+        /** The process `stop` ends, which the take is made from; null when none runs. */
+        readonly replacing?: string | null;
       }) {
         const identities = yield* Effect.all([
           harnessLayouts.ensureIdentity(input.conversation.owner),
@@ -13173,11 +13179,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           move: input.conversation.move,
           stop: input.stop,
           personEnv: input.personEnv,
-          take: takeConversation(input.session.id, input.launchId),
+          take: takeConversation(input.session.id, input.launchId, input.replacing ?? null),
           untake: (fence) => harnessLayouts.releaseConversation(input.session.id, { fence }),
         });
         if (handed.moved) {
           yield* harnessLayouts.markConversationShared(input.session.id, owner.accountId);
+        }
+        // What the previous agent left running in its home after it exited was ended: said, never
+        // silent (review of mend#572, P3-6).
+        if (handed.staged.ended > 0) {
+          yield* noteLaunchWords(
+            input.session.id,
+            `ended ${handed.staged.ended} process${handed.staged.ended === 1 ? "" : "es"} the previous agent left running`,
+          ).pipe(Effect.ignore);
         }
         return { ...handed, runsAs: sender.accountId };
       });

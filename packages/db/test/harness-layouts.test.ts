@@ -328,7 +328,7 @@ describe.skipIf(!reachable)(
       );
     });
 
-    it("releases by process, by an unbound start's fence, and with its executor, never a newer take", async () => {
+    it("releases by process and by an unbound start's fence, never a newer take; a hand-over takes from the process it replaces", async () => {
       await inDb(
         Effect.gen(function* () {
           const repo = yield* HarnessLayoutsRepo;
@@ -343,13 +343,24 @@ describe.skipIf(!reachable)(
           // An older start's fence releases nothing of the newer take.
           yield* repo.releaseConversation("s-2", { fence: take.fence });
           expect((yield* repo.conversationHolder("s-2"))?.processId).toBe("proc-2");
-          // The executor ended: whatever its launch held is released.
-          yield* repo.releaseConversationsOfLaunch("launch-a");
-          expect(yield* repo.conversationHolder("s-2")).toEqual({
-            launchId: null,
-            processId: null,
-            fence: again.fence,
+          // A start that replaces the live process (a hand-over) takes it from that process, and
+          // only from that one; anyone else is held off.
+          expect(yield* repo.takeConversation("s-2", "launch-b", "proc-other")).toMatchObject({
+            taken: false,
           });
+          expect(yield* repo.takeConversation("s-2", "launch-a", "proc-2")).toEqual({
+            taken: true,
+            fence: again.fence + 1,
+          });
+          // While its start runs, a second start is held off, even one naming the old process.
+          expect(yield* repo.takeConversation("s-2", "launch-a", "proc-2")).toEqual({
+            taken: false,
+            launchId: "launch-a",
+            processId: null,
+          });
+          // The replaced process's exit releases nothing of the newer take.
+          yield* repo.releaseConversation("s-2", { processId: "proc-2" });
+          expect((yield* repo.conversationHolder("s-2"))?.launchId).toBe("launch-a");
         }),
       );
     });

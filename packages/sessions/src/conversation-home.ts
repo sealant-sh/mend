@@ -4,23 +4,21 @@
  * conversation lives (`C`, in its owner's saved directory), the fixed harness directory every
  * agent process of the session runs with (`H`, outside every capture root), the neutral seed that
  * keeps both people's personal memory, instructions and settings out of the request, the Claude
- * settings files passed with `--settings`, and the scripts of the restart path: the move into `C`,
+ * settings passed inline with `--settings`, and the scripts of the restart path: the move into `C`,
  * the staging of `H.next` as the sender while the old process stops, and the exchange once the old
  * process group is empty. Everything here is reached only in a person-layout executor, for a
  * protocol Claude or Codex session that shared control has been turned on for.
  */
 import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbench";
 
-import { CLAUDE_NEUTRAL_ENV, claudeSettingsFileOf } from "./claude-settings.ts";
-import { assertScriptSafe, savedDirOf } from "./harness-layout.ts";
+import { CLAUDE_NEUTRAL_ENV, claudeSettingsArgOf } from "./claude-settings.ts";
+import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 export {
   CLAUDE_NEUTRAL_ENV,
-  CLAUDE_SETTINGS_DIR,
   type ClaudeSettingsKind,
-  claudeSettingsFileOf,
-  claudeSettingsFilesScript,
+  claudeSettingsArgOf,
   claudeSettingsOf,
 } from "./claude-settings.ts";
 
@@ -156,7 +154,7 @@ export const CONVERSATION_MARKER = "MEND_CONVERSATION";
  * The environment of an agent process of a once-shared session, over the sender's own person
  * environment (`personProcessEnv`): its harness directory at `H`, Codex's index there too (never
  * the sender's saved one, so the owner's thread enters no person's saved index or memory), the
- * neutral switches in the environment as well as in the settings file (older Claude versions),
+ * neutral switches in the environment as well as in the inline settings (older Claude versions),
  * and the marker the emptiness check looks for.
  */
 export const conversationProcessEnv = (input: {
@@ -201,7 +199,7 @@ const CODEX_CONVERSATION_FLAGS = [
 
 /**
  * A protocol agent's command line in a conversation home: started directly (no seed, no shell
- * profile), Claude with the neutral settings file and resumed by the full path of its transcript,
+ * profile), Claude with the neutral settings inline and resumed by the full path of its transcript,
  * never by an id another conversation could answer to (decision 6, "Resume never forks").
  */
 export const conversationArgv = (input: {
@@ -210,7 +208,6 @@ export const conversationArgv = (input: {
   readonly argv: ReadonlyArray<string>;
   /** The transcript a resume continues, under `H`; null for a new conversation. */
   readonly resumePath: string | null;
-  readonly settingsDir?: string;
 }): ReadonlyArray<string> => {
   if (input.harness === "codex") {
     const [head, ...rest] = input.argv;
@@ -219,7 +216,7 @@ export const conversationArgv = (input: {
   const argv = [...input.argv];
   const resume = argv.indexOf("--resume");
   if (resume >= 0 && input.resumePath !== null) argv[resume + 1] = input.resumePath;
-  return [...argv, "--settings", claudeSettingsFileOf("neutral", input.settingsDir)];
+  return [...argv, "--settings", claudeSettingsArgOf("neutral")];
 };
 
 // ─── the scripts ─────────────────────────────────────────────────────────────
@@ -312,7 +309,7 @@ const moveIntoConversationAsOwner = (input: {
       // the threads it spawned.
       `for top in sessions archived_sessions; do [ -d "$P/.codex/$top" ] || continue; ` +
         `list=$(mktemp); find "$P/.codex/$top" -type f -name 'rollout-*.jsonl' > "$list.all"; ` +
-        `while IFS= read -r f; do case "$f" in *-${id}.jsonl) ;; *) head -n 1 "$f" 2>/dev/null | grep -q ${q(id)} || continue ;; esac; ` +
+        `while IFS= read -r f; do case "$f" in *-${id}.jsonl) ;; *) head -n 1 "$f" 2>/dev/null | grep -Eq ${q(`"(parent_thread_id|forked_from_id)" *: *"${id}"`)} || continue ;; esac; ` +
         `printf '%s\\n' "$f" >> "$list"; done < "$list.all"; ` +
         `if [ -f "$list" ]; then while IFS= read -r f; do put "$f" "$C/.codex/$top/\${f#"$P/.codex/$top/"}"; done < "$list"; fi; ` +
         `rm -f "$list" "$list.all"; done`,
@@ -467,8 +464,10 @@ export const stageConversationHomeScript = (input: {
     `if [ -n "$left" ]; then n=$(printf '%s\\n' "$left" | wc -l); kill -TERM $left 2>/dev/null || true; ` +
       `j=0; while [ "$j" -lt 10 ] && [ -n "$(leftover)" ]; do sleep 0.1; j=$((j + 1)); done; ` +
       `left=$(leftover); [ -n "$left" ] && kill -KILL $left 2>/dev/null || true; ` +
-      `printf '%s ended %s\\n' ${CONVERSATION_LINE} "$(printf '%s' "$n" | tr -d ' ')"; fi`,
-    `printf '%s empty\\n' ${CONVERSATION_LINE}`,
+      `printf '%s ended %s\\n' ${CONVERSATION_LINE} "$(printf '%s' "$n" | tr -d ' ')"; ` +
+      // Looked at once more after the kill: only a group seen empty is said to be.
+      `j=0; while [ "$j" -lt 10 ] && [ -n "$(leftover)" ]; do sleep 0.1; j=$((j + 1)); done; fi`,
+    `if [ -n "$(leftover)" ]; then printf '%s busy\\n' ${CONVERSATION_LINE}; else printf '%s empty\\n' ${CONVERSATION_LINE}; fi`,
   ].join("\n");
 };
 
@@ -478,8 +477,9 @@ export const stageConversationHomeScript = (input: {
  * --exchange`, util-linux `exch`, or Python's `ctypes`), else two renames, which is the same
  * thing while nothing runs in either directory (the old process group is empty, and the new
  * process starts after this). The first home of a session is a plain rename. The old directory is
- * renamed out of the way and removed in the background; then a root `chmod -R g+rwX C` restores
- * the group access a harness's 0600 files masked (Claude creates its transcript 0600). Prints
+ * renamed out of the way and removed in the background; then a root `chmod -R g+rwX` from inside
+ * `C`, reached with every link resolved and checked, restores the group access a harness's 0600
+ * files masked (Claude creates its transcript 0600). Prints
  * `mend-conv exchanged renameat2|renames|first`.
  */
 export const exchangeConversationHomeScript = (input: {
@@ -505,6 +505,11 @@ export const exchangeConversationHomeScript = (input: {
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
     `[ -d "$N" ] && [ ! -L "$N" ] || fail "nothing is staged for this conversation"`,
     `[ -L "$H" ] && fail "unexpected link: $H"`,
+    // Where `C` must physically be: checked before the exchange, and again from inside it.
+    `B=$(cd -P -- ${q(input.places.harnessHome)} && pwd -P) || fail "the harness home is not there"`,
+    `want="$B/${PEOPLE_DIR}/${input.owner.accountId}/conversations/${sid}"`,
+    `[ -L "$C" ] && fail "unexpected link: $C"`,
+    `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] ) || fail "the conversation's directory is not where it should be: $C"`,
     `how=first`,
     `if [ -e "$H" ]; then ` +
       `if mv --help 2>&1 | grep -q -- '--exchange' && mv --exchange -T -- "$N" "$H" 2>/dev/null; then how=renameat2; ` +
@@ -515,9 +520,14 @@ export const exchangeConversationHomeScript = (input: {
       // never meets it.
       `old="$N.mend-gone-$$"; mv -T -- "$N" "$old" && { (rm -rf -- "$old" >/dev/null 2>&1 &) ; }; ` +
       `else mv -T -- "$N" "$H"; fi`,
-    // Group access a harness's own 0600 files masked; directories setgid, so the group sticks.
-    `chmod -R g+rwX "$C" 2>/dev/null || true`,
-    `find "$C" -type d ! -perm -2000 -exec chmod g+s {} + 2>/dev/null || true`,
+    // Group access a harness's own 0600 files masked. `C` and its parents are the owner's, so
+    // root never takes their word for where they lead: from inside `C`, reached with every link
+    // resolved, its physical path must be the one expected, and the walk starts at `.`, so a link
+    // put in `C`'s place, or anywhere above it, reaches nothing (review of mend#572, P2-A).
+    // `chmod -R` follows no link it meets inside. Every person's primary group is `mend`, so new
+    // entries take the group without setgid.
+    `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] && ` +
+      `chmod -R g+rwX . ) || fail "the conversation's directory is not where it should be: $C"`,
     `printf '%s exchanged %s\\n' ${CONVERSATION_LINE} "$how"`,
   ].join("\n");
 };

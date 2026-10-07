@@ -237,6 +237,12 @@ export class HarnessLayoutsRepo extends Context.Service<
     readonly takeConversation: (
       sessionId: string,
       launchId: string,
+      /**
+       * The process this start replaces (a hand-over's or a takeover's): taken from it while it
+       * still runs, so nothing else can start, and the replaced process is stopped only by the
+       * start that holds the take (review of mend#572, P3-2).
+       */
+      replacing?: string | null,
     ) => Effect.Effect<ConversationTake>;
     /** The started process, bound to the take whose fence it names; false when fenced out. */
     readonly bindConversation: (
@@ -252,8 +258,6 @@ export class HarnessLayoutsRepo extends Context.Service<
       sessionId: string,
       by: { readonly processId: string } | { readonly fence: number },
     ) => Effect.Effect<void>;
-    /** An executor ended: every conversation its launch held is released. */
-    readonly releaseConversationsOfLaunch: (launchId: string) => Effect.Effect<void>;
     readonly conversationHolder: (sessionId: string) => Effect.Effect<ConversationHolder | null>;
   }
 >()("@mend/db/HarnessLayoutsRepo") {}
@@ -482,6 +486,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
       const takeConversation = Effect.fn("HarnessLayoutsRepo.takeConversation")(function* (
         sessionId: string,
         launchId: string,
+        replacing: string | null = null,
       ) {
         const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
         const rows = yield* sql<{ readonly fence: number | string }>`
@@ -496,6 +501,8 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
                OR (conversation_processes.process_id IS NOT NULL AND EXISTS (
                      SELECT 1 FROM session_processes p
                      WHERE p.id = conversation_processes.process_id AND p.exited_at IS NOT NULL))
+               OR (${replacing}::text IS NOT NULL
+                   AND conversation_processes.process_id = ${replacing}::text)
           RETURNING fence`.pipe(Effect.orDie);
         const taken = rows[0];
         if (taken !== undefined) return { taken: true, fence: Number(taken.fence) } as const;
@@ -536,14 +543,6 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         );
       });
 
-      const releaseConversationsOfLaunch = Effect.fn(
-        "HarnessLayoutsRepo.releaseConversationsOfLaunch",
-      )(function* (launchId: string) {
-        yield* sql`
-          UPDATE conversation_processes SET launch_id = NULL, process_id = NULL
-          WHERE launch_id = ${launchId}`.pipe(Effect.orDie);
-      });
-
       return {
         ensureIdentity,
         identitiesOf,
@@ -563,7 +562,6 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         takeConversation,
         bindConversation,
         releaseConversation,
-        releaseConversationsOfLaunch,
         conversationHolder,
       };
     }),
@@ -702,14 +700,15 @@ export const harnessLayoutsRepoMemory = (
       }),
     sharedConversationOf: (sessionId) =>
       Effect.sync(() => state.sharedConversations.get(sessionId) ?? null),
-    takeConversation: (sessionId, launchId) =>
+    takeConversation: (sessionId, launchId, replacing = null) =>
       Effect.sync(() => {
         const held = state.conversationHolders.get(sessionId);
         const free =
           held === undefined ||
           held.launchId === null ||
           (held.processId === null && Date.now() - held.takenAt > CONVERSATION_TAKE_STALE_MS) ||
-          (held.processId !== null && state.exitedProcesses.has(held.processId));
+          (held.processId !== null && state.exitedProcesses.has(held.processId)) ||
+          (replacing !== null && held.processId === replacing);
         if (!free) {
           return { taken: false, launchId: held.launchId, processId: held.processId } as const;
         }
@@ -739,14 +738,6 @@ export const harnessLayoutsRepoMemory = (
             : held.fence === by.fence && held.processId === null;
         if (matches) {
           state.conversationHolders.set(sessionId, { ...held, launchId: null, processId: null });
-        }
-      }),
-    releaseConversationsOfLaunch: (launchId) =>
-      Effect.sync(() => {
-        for (const [sessionId, held] of state.conversationHolders) {
-          if (held.launchId === launchId) {
-            state.conversationHolders.set(sessionId, { ...held, launchId: null, processId: null });
-          }
         }
       }),
     conversationHolder: (sessionId) =>

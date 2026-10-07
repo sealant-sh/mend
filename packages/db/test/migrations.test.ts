@@ -2432,3 +2432,78 @@ describe.skipIf(!reachable)("0116 shared control ever", () => {
     ]);
   });
 });
+
+describe.skipIf(!reachable)("0117 conversation homes", () => {
+  const DB = `${SCRATCH_DB}_conversation_homes`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("says who a live agent in a person-layout executor runs as: its session's owner, and nobody else's", async () => {
+    const rows = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0116_shared_control_ever");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        // Alice's launch made a person executor, Maria joined it; Carol's launch is shared.
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status,
+             owner_user_id, sealant_workspace_id, executor_launch_id)
+          VALUES
+            ('alice', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', 'alice', 'ws-person', 'launch-person'),
+            ('maria', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', 'maria', 'ws-person', NULL),
+            ('carol', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', 'carol', 'ws-shared', 'launch-shared')`;
+        yield* sql`
+          INSERT INTO executor_layouts (launch_id, worktree_id, session_id, layout, source, confirmed)
+          VALUES ('launch-person', 'wt-1', 'alice', 'person', 'flag', true),
+                 ('launch-shared', 'wt-1', 'carol', 'shared', 'flag', true)`;
+        yield* sql`
+          INSERT INTO session_processes (id, session_id, sealant_workspace_id, sealant_session_id, kind, status, exited_at)
+          VALUES
+            ('p-alice', 'alice', 'ws-person', 'pty-1', 'agent-protocol', 'running', NULL),
+            ('p-maria', 'maria', 'ws-person', 'pty-2', 'agent-protocol', 'running', NULL),
+            ('p-alice-shell', 'alice', 'ws-person', 'pty-3', 'shell', 'running', NULL),
+            ('p-alice-old', 'alice', 'ws-person', 'pty-4', 'agent-protocol', 'exited', now()),
+            ('p-carol', 'carol', 'ws-shared', 'pty-5', 'agent-protocol', 'running', NULL)`;
+        yield* migrations["0117_conversation_homes"];
+        return yield* sql<{ readonly id: string; readonly runsAs: string | null }>`
+          SELECT id, runs_as AS "runsAs" FROM session_processes ORDER BY id`;
+      }),
+    );
+    expect(rows.map((row) => [row.id, row.runsAs])).toEqual([
+      ["p-alice", "alice"],
+      ["p-alice-old", null],
+      ["p-alice-shell", null],
+      ["p-carol", null],
+      ["p-maria", "maria"],
+    ]);
+  });
+});

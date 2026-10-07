@@ -28428,7 +28428,18 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
     // Started directly, with the neutral settings file: no seed, no shell profile.
     const agentArgv = run.spawned.filter((argv) => argv.includes("stream-json"));
     expect(agentArgv[0]?.[0]).toBe("claude");
-    expect(agentArgv[0]?.slice(-2)).toEqual(["--settings", "/run/mend/claude/neutral.json"]);
+    expect(agentArgv[0]?.slice(-2)).toEqual([
+      "--settings",
+      JSON.stringify({
+        autoMemoryEnabled: false,
+        env: {
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          CLAUDE_CODE_DISABLE_ORG_MEMORY: "1",
+          CLAUDE_CODE_DISABLE_CRON: "1",
+          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+        },
+      }),
+    ]);
     const agentOptions = run.opened.filter(
       (options) => "env" in options && options.env?.["CLAUDE_CONFIG_DIR"] !== undefined,
     );
