@@ -4,6 +4,7 @@ import type {
   Harness,
   SessionOptions,
   Workspace,
+  WorkspaceCaptureOwnerMap,
   WorkspaceExecOptions,
 } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
@@ -85,22 +86,14 @@ export interface HeldHome {
 }
 
 /**
- * sealantd's capture owner map (docs/adr/0016, decision 8; `SEALANT_CAPTURE_OWNER_MAP`): who each
- * restored `people/<account id>` belongs to, and whose the worktree and its git directory are.
- * Without it sealantd restores everything as root, gives nobody sudo and restores no owners, so
- * prepare refuses the launch (`ownerMapRefusal`). Shaped as Core's `WorkspaceCaptureOwnerMap`
- * (`@sealant/api-contracts/capture-owner-map`, sealant#333), which a capture create carries as
- * `source.ownerMap`; uids are 40001–49999. sealantd reads it only at boot, so an executor keeps
- * the map it booted with: a person launch never claims a standby (`standbyMayServe`).
+ * sealantd's capture owner map (docs/adr/0016, decision 8): who each restored
+ * `people/<account id>` belongs to, and whose the worktree and its git directory are. Core's
+ * `WorkspaceCaptureOwnerMap` (sealant#333), carried as a capture source's `ownerMap`; uids are
+ * 40001–49999. sealantd reads it only at boot, so an executor keeps the map it booted with: a
+ * person launch never claims a standby (`standbyMayServe`), and a claim names the map it expects
+ * (`captureReplan({ expectedOwnerMap })`).
  */
-export interface CaptureOwnerMap {
-  /** The shared group, `mend` (40000). */
-  readonly gid: number;
-  /** The change's owner (the owner of the worktree's first session): the worktree is theirs. */
-  readonly worktreeUid: number;
-  /** Each person prepare may make, by account id: their saved directory is theirs. */
-  readonly people: ReadonlyArray<{ readonly id: string; readonly uid: number }>;
-}
+export type CaptureOwnerMap = WorkspaceCaptureOwnerMap;
 
 /**
  * The platform surface the person layout needs (docs/adr/0016, decisions 1, 5 and 11), behind one
@@ -116,13 +109,11 @@ export class PersonLayoutPlatform extends Context.Service<
     /** Sessions and exec can start a process as a given user (`ProcessUserOption`). */
     readonly processUser: boolean;
     /**
-     * Hands a person launch's capture owner map to the create (`CaptureOwnerMap`, as
-     * `source.ownerMap` of a capture source), or null while the SDK has no option for it: Core
-     * does not pass `SEALANT_CAPTURE_OWNER_MAP` to sealantd until sealant#333 ships, so no real
-     * executor restores per person before Mend pins that build (PLATFORM-FEEDBACK.md,
-     * 2026-10-07). Null costs nothing: Mend builds no map and reads nothing for one.
+     * The create of a person launch with its capture owner map (`CaptureOwnerMap`) on its capture
+     * source, so the executor's sealantd restores each person's files as theirs (decision 8). A
+     * create that is not capture-sourced is left as it is.
      */
-    readonly withOwnerMap: ((options: CreateOptions, map: CaptureOwnerMap) => CreateOptions) | null;
+    readonly withOwnerMap: (options: CreateOptions, map: CaptureOwnerMap) => CreateOptions;
     /**
      * Core's report on the image a create would ask for, read before the create: as `ownerUserId`
      * (the launcher, whose built images Core answers from), for the image-shaping part of the
@@ -199,7 +190,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
   PersonLayoutPlatform,
   {
     processUser: false,
-    withOwnerMap: null,
+    withOwnerMap: (options) => options,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),
     postCredentials: () =>
       Effect.fail(

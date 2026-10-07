@@ -18,6 +18,7 @@ import type {
   WorkspaceCaptureStatus,
   WorkspaceExecResult,
   WorkspaceForward,
+  WorkspaceCaptureOwnerMap,
   WorkspaceImageInspection,
 } from "@sealant/sdk";
 import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
@@ -713,6 +714,12 @@ export interface SealantClientShape {
    */
   readonly captureReplan: (
     workspace: Workspace,
+    /**
+     * The owner map the claim needs, or null for none (sealant#333): Core refuses a standby
+     * booted with another (`owner-map-mismatch`) before its daemon is reached. Absent: nothing is
+     * compared.
+     */
+    options?: { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null },
   ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
   /**
    * When the runtime itself ends this workspace's executor, whatever anyone asks
@@ -968,8 +975,11 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       (workspace: Workspace, launchId?: string) => runtimeResourceIdOf(workspace, launchId),
     );
 
-    const captureReplan = Effect.fn("SealantClient.captureReplan")((workspace: Workspace) =>
-      wrap(() => workspace.capture.replan()),
+    const captureReplan = Effect.fn("SealantClient.captureReplan")(
+      (
+        workspace: Workspace,
+        options?: { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null },
+      ) => wrap(() => workspace.capture.replan(options)),
     );
 
     const expireWorkspace = Effect.fn("SealantClient.expireWorkspace")(
@@ -1572,7 +1582,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       runtimeDeadline: (workspace) => via((c) => c.runtimeDeadline(workspace)),
       runtimeResourceId: (workspace, launchId) =>
         via((c) => c.runtimeResourceId(workspace, launchId)),
-      captureReplan: (workspace) => via((c) => c.captureReplan(workspace)),
+      captureReplan: (workspace, options) => via((c) => c.captureReplan(workspace, options)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),
       getSession: (workspace, sessionId) => via((c) => c.getSession(workspace, sessionId)),

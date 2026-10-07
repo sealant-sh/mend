@@ -158,11 +158,12 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
 
       return {
         processUser: true,
-        // Core 0.39.0-next.695's capture source has no `ownerMap` (sealant#333 adds it; Core
-        // never sets `SEALANT_CAPTURE_OWNER_MAP` for sealantd before then): nothing to hand over
-        // yet. Once Mend pins a build with it, this line becomes, and nothing else in Mend changes:
-        //   withOwnerMap: (options, map) => options.source?.kind === "capture" ? { ...options, source: { ...options.source, ownerMap: map } } : options,
-        withOwnerMap: null,
+        // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, and Core passes
+        // it to sealantd as `SEALANT_CAPTURE_OWNER_MAP` at boot.
+        withOwnerMap: (options, map) =>
+          options.source?.kind === "capture"
+            ? { ...options, source: { ...options.source, ownerMap: map } }
+            : options,
         imageReport,
         postCredentials: Effect.fn("PersonLayoutPlatform.postCredentials")(
           function* (workspace, input) {
