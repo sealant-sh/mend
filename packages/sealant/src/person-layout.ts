@@ -193,6 +193,8 @@ export class PersonLayoutPlatform extends Context.Service<
     readonly applyDotfiles: (
       workspace: Workspace,
       input: {
+        /** The Mend account whose dotfiles these are. */
+        readonly onBehalfOf: string;
         readonly user: ProcessUser | null;
         readonly home: string;
         readonly archives: ReadonlyArray<DotfilesArchive>;

@@ -12290,6 +12290,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (dotfiles.archives.length > 0 && personPlatform.dotfilesUser) {
           const applied = yield* personPlatform
             .applyDotfiles(workspace, {
+              onBehalfOf: as.person.accountId,
               user: as.user,
               home: as.places.home,
               archives: dotfiles.archives,

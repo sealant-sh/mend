@@ -904,6 +904,7 @@ export const makeHarnessLayoutSteps = (deps: {
     const applied =
       input.fallback.dotfiles.length > 0
         ? yield* platform.applyDotfiles(input.workspace, {
+            onBehalfOf: layout.launcher.accountId,
             user: null,
             home: "/root",
             archives: input.fallback.dotfiles,

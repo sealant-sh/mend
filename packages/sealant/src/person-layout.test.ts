@@ -183,7 +183,12 @@ describe("the live platform (Core 0.39)", () => {
     expect(calls).toEqual(["put:/home/mxyz2345a", "release:/home/mxyz2345a", "list"]);
     // Dotfiles as a person have no SDK surface yet: refused, never run as root in their place.
     const dotfiles = await Effect.runPromiseExit(
-      platform.applyDotfiles(workspace, { user, home: user.home, archives: [] }),
+      platform.applyDotfiles(workspace, {
+        onBehalfOf: "user-alice",
+        user,
+        home: user.home,
+        archives: [],
+      }),
     );
     expect(Exit.isFailure(dotfiles)).toBe(true);
   });
@@ -289,7 +294,12 @@ describe("a platform with none of the person layout", () => {
       platform.postCredentials(workspace, { onBehalfOf: "a", home: "/root", logins: {} }),
       platform.deleteCredentials(workspace, { home: "/root" }),
       platform.listCredentials(workspace),
-      platform.applyDotfiles(workspace, { user: null, home: "/root", archives: [] }),
+      platform.applyDotfiles(workspace, {
+        onBehalfOf: "user-alice",
+        user: null,
+        home: "/root",
+        archives: [],
+      }),
     ]) {
       const exit = await Effect.runPromiseExit(call);
       expect(Exit.isFailure(exit)).toBe(true);

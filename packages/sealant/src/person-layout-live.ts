@@ -158,9 +158,16 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
 
       return {
         processUser: true,
-        // Core's SDK does not carry sealantd's `dotfiles.apply` yet (PLATFORM-FEEDBACK.md,
-        // 2026-10-07). Once it does, this is `true` and `applyDotfiles` below passes through,
-        // e.g. `call(() => workspace.dotfiles.apply({ user: input.user?.name ?? "root", ... }))`.
+        // Core's `workspace.dotfiles.apply` (sealant#334) is not in a build Mend pins yet
+        // (PLATFORM-FEEDBACK.md, 2026-10-07). With the pin, this is `true` and `applyDotfiles`
+        // below is one pass-through:
+        //   Effect.gen(function* () {
+        //     const onBehalfOf = yield* clients.sealantUserId(input.onBehalfOf);
+        //     const applied = yield* call(() => workspace.dotfiles.apply({ onBehalfOf,
+        //       user: input.user?.name ?? "root", home: input.home, archives: input.archives }));
+        //     return { bootstrap: applied.bootstrap === null ? null : {
+        //       ended: call(() => applied.bootstrap.wait()).pipe(Effect.map((done) => ({ exitCode: done.exitCode }))) } };
+        //   })
         dotfilesUser: false,
         // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, and Core passes
         // it to sealantd as `SEALANT_CAPTURE_OWNER_MAP` at boot.
