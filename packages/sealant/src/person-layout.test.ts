@@ -1,3 +1,4 @@
+import { it as effectIt } from "@effect/vitest";
 import { defaultWorkspaceImage } from "@mend/domain";
 import {
   claudeCode,
@@ -6,7 +7,8 @@ import {
   type WorkspaceCredentialsPutOptions,
   type WorkspaceImageInspection,
 } from "@sealant/sdk";
-import { Effect, Exit, Layer } from "effect";
+import { Effect, Exit, Fiber, Layer } from "effect";
+import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { SealantClients } from "./client.ts";
@@ -216,6 +218,37 @@ describe("the live platform (Core 0.39)", () => {
     });
     expect(imageLayoutReportOf(inspection("supported")).person).toBe(true);
   });
+});
+
+describe("a credentials call Core never answers (review 2 of mend#564, P3-5)", () => {
+  effectIt.effect(
+    "gives up after 30 s with words, so a person's lock is never held for minutes",
+    () =>
+      Effect.gen(function* () {
+        const platform = yield* PersonLayoutPlatform;
+        const base = workspaceRecording([], []);
+        const hung: Workspace = {
+          ...base,
+          credentials: {
+            ...base.credentials,
+            put: () => new Promise(() => {}),
+            release: () => new Promise(() => {}),
+          },
+        };
+        const writing = yield* platform
+          .postCredentials(hung, { onBehalfOf: "maria", home: "/home/m", logins: { claude: true } })
+          .pipe(Effect.flip, Effect.forkChild);
+        const releasing = yield* platform
+          .deleteCredentials(hung, { home: "/home/m" })
+          .pipe(Effect.flip, Effect.forkChild);
+        yield* TestClock.adjust("31 seconds");
+        const written = yield* Fiber.join(writing);
+        const released = yield* Fiber.join(releasing);
+        expect(written.code).toBe("credentials_timeout");
+        expect(written.message).toContain("within 30 s");
+        expect(released.code).toBe("credentials_timeout");
+      }).pipe(Effect.provide(PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))))),
+  );
 });
 
 describe("a platform with none of the person layout", () => {

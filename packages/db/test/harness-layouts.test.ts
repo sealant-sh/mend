@@ -124,6 +124,9 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
         expect(again).toEqual(first[3]);
         const listed = yield* repo.identitiesOf(["account-3", "account-0", "nobody"]);
         expect(listed.map((identity) => identity.accountId)).toEqual(["account-0", "account-3"]);
+        // By login name, as a home Core lists names its person.
+        const named = yield* repo.identitiesNamed([linuxLoginNameOf("account-5"), "mnobody23"]);
+        expect(named.map((identity) => identity.accountId)).toEqual(["account-5"]);
       }),
     );
   });

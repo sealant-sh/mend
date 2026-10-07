@@ -99,6 +99,8 @@ interface CoreCalls {
   }>;
   /** Held open, a DELETE waits on it after saying so in `calls`. */
   deleteGate: Deferred.Deferred<void> | null;
+  /** Held open, a POST waits on it after saying so in `calls`. */
+  postGate: Deferred.Deferred<void> | null;
   /** Whether the platform can take the capture owner map (sealant#333). */
   ownerMap: boolean;
   imageReports: number;
@@ -110,6 +112,7 @@ const coreCalls = (): CoreCalls => ({
   answer: () => null,
   homes: [],
   deleteGate: null,
+  postGate: null,
   ownerMap: true,
   imageReports: 0,
 });
@@ -134,7 +137,10 @@ const platformOf = (core: CoreCalls) =>
         });
         core.calls.push(`post:${input.onBehalfOf}:${input.home}`);
         const failure = core.answer(index, input.logins);
-        return failure === null ? Effect.void : Effect.fail(failure);
+        const gate = core.postGate;
+        return (gate === null ? Effect.void : Deferred.await(gate)).pipe(
+          Effect.andThen(failure === null ? Effect.void : Effect.fail(failure)),
+        );
       }),
     deleteCredentials: (_workspace, input) =>
       Effect.gen(function* () {
@@ -506,6 +512,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     steps: ReturnType<typeof makeHarnessLayoutSteps>,
     accountId: string,
     harness = "claude",
+    live: ReadonlyArray<string> = [],
   ) =>
     steps.processAs({
       workspace,
@@ -514,6 +521,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       sessionId: "sess-1",
       worktreeId: "wt-1",
       harness,
+      live: Effect.succeed(new Set(live)),
     });
 
   const release = (
@@ -885,6 +893,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
             sessionId: "sess-1",
             worktreeId: "wt-1",
             harness: "shell",
+            live: Effect.succeed(new Set<string>()),
           })
           .pipe(Effect.flip);
       }),
@@ -912,5 +921,157 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     ]);
     // Decided with no call to Core.
     expect(core.imageReports).toBe(0);
+  });
+  it("after a restart, a refused start of a person who still runs something here revokes and rewrites nothing of theirs (review 2 of mend#564, P2)", async () => {
+    for (const reconciled of [true, false]) {
+      const core = coreCalls();
+      const result = await withPersonExecutor(
+        core,
+        ({ steps, repo, log, execs }) =>
+          Effect.gen(function* () {
+            const maria = yield* repo.ensureIdentity("user-maria");
+            // Core still holds Maria's Claude login: her Claude agent runs, with its token.
+            core.homes = [
+              {
+                home: `/home/${maria.name}`,
+                onBehalfOf: "su-user-maria",
+                providers: ["claude", "github"],
+              },
+            ];
+            if (reconciled) {
+              yield* steps.reconcileLogins({
+                workspace,
+                launchId: "launch-1",
+                launcher: "user-alice",
+                live: Effect.succeed(new Set(["user-maria"])),
+              });
+            }
+            // She starts a Codex session with no Codex connected.
+            core.answer = () => notConnected("codex");
+            const refused = yield* start(steps, "user-maria", "codex", ["user-maria"]).pipe(
+              Effect.flip,
+            );
+            return { refused: refused.message, log: [...log], homeExecs: execs.length };
+          }),
+        { prepared: false },
+      );
+      expect(result.refused).toBe("Connect Codex to start a session here.");
+      // Her running processes' token stays good.
+      expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual([]);
+      // Adopted at startup, she is known to be made: no home exec rewrites her token file.
+      if (reconciled) expect(result.homeExecs).toBe(0);
+    }
+  });
+
+  it("at startup, looks again after the grace at a home it left for a start", async () => {
+    const core = coreCalls();
+    const laterChecks = await withPersonExecutor(
+      core,
+      ({ steps, repo, forks }) =>
+        Effect.gen(function* () {
+          const maria = yield* repo.ensureIdentity("user-maria");
+          core.homes = [
+            { home: `/home/${maria.name}`, onBehalfOf: "su-user-maria", providers: ["claude"] },
+          ];
+          // A refused start of hers sets its time and records nothing.
+          core.answer = () => notConnected("claude");
+          yield* start(steps, "user-maria").pipe(Effect.ignore);
+          const before = forks.length;
+          yield* steps.reconcileLogins({
+            workspace,
+            launchId: "launch-1",
+            launcher: "user-alice",
+            live: Effect.succeed(new Set<string>()),
+          });
+          return forks.length - before;
+        }),
+      { grace: Duration.minutes(1), prepared: false },
+    );
+    expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([]);
+    expect(laterChecks).toBe(1);
+  });
+
+  it("at startup, a home of someone idle is released whole: Core's files, their ChatGPT copies as them, their token", async () => {
+    const core = coreCalls();
+    const result = await withPersonExecutor(
+      core,
+      ({ steps, repo, log, execs }) =>
+        Effect.gen(function* () {
+          const maria = yield* repo.ensureIdentity("user-maria");
+          core.homes = [
+            { home: `/home/${maria.name}`, onBehalfOf: "su-user-maria", providers: ["claude"] },
+          ];
+          yield* steps.reconcileLogins({
+            workspace,
+            launchId: "launch-1",
+            launcher: "user-alice",
+            live: Effect.succeed(new Set<string>()),
+          });
+          return { maria, log, execs };
+        }),
+      { prepared: false },
+    );
+    expect(core.calls).toEqual(["list", `delete:/home/${result.maria.name}`]);
+    expect(result.execs.find((exec) => exec.script.startsWith("node -e"))?.user).toBe(
+      result.maria.name,
+    );
+    expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual(["revoke:user-maria"]);
+  });
+
+  it("at startup, a home holding someone else's login is released, and its live person keeps their own token", async () => {
+    const core = coreCalls();
+    const tokens = await withPersonExecutor(
+      core,
+      ({ steps, repo, log }) =>
+        Effect.gen(function* () {
+          const maria = yield* repo.ensureIdentity("user-maria");
+          core.homes = [
+            { home: `/home/${maria.name}`, onBehalfOf: "su-user-alice", providers: ["claude"] },
+          ];
+          yield* steps.reconcileLogins({
+            workspace,
+            launchId: "launch-1",
+            launcher: "user-alice",
+            live: Effect.succeed(new Set(["user-maria"])),
+          });
+          return log;
+        }),
+      { prepared: false },
+    );
+    expect(core.calls.filter((call) => call.startsWith("delete:"))).toHaveLength(1);
+    expect(tokens.filter((line) => line.startsWith("revoke:"))).toEqual([]);
+  });
+
+  it("a start interrupted mid-write records the home for a release, and revokes the token minted for it", async () => {
+    const core = coreCalls();
+    const result = await withPersonExecutor(core, ({ steps, log }) =>
+      Effect.gen(function* () {
+        core.postGate = yield* Deferred.make<void>();
+        const writing = yield* start(steps, "user-maria").pipe(Effect.forkChild);
+        while (!core.calls.some((call) => call.startsWith("post:user-maria"))) {
+          yield* Effect.yieldNow;
+        }
+        yield* Fiber.interrupt(writing);
+        return { releasable: steps.holdsReleasable(workspace.id), log };
+      }),
+    );
+    expect(result.releasable).toBe(true);
+    expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual(["revoke:user-maria"]);
+  });
+
+  it("with the flag on and no owner map, a standby serves any worktree that is not person", async () => {
+    const core = coreCalls();
+    core.ownerMap = false;
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps } = yield* stepsWith("person", state, { platform: platformOf(core) });
+        const fresh = yield* steps.standbyMayServe(WorktreeId.make("wt-1"));
+        state.worktrees.set(WorktreeId.make("wt-2"), { layout: "person", requested: null });
+        const person = yield* steps.standbyMayServe(WorktreeId.make("wt-2"));
+        return { fresh, person };
+      }),
+    );
+    expect(result).toEqual({ fresh: true, person: false });
   });
 });

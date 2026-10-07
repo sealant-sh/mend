@@ -11675,6 +11675,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             sessionId: session.id,
             worktreeId: session.worktreeId,
             harness,
+            live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
           });
         });
       /** An agent of the session: its owner's (steering, Delivery 18, picks the sender). */
@@ -13255,6 +13256,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   sessionId,
                   worktreeId: session.worktreeId,
                   harness: interactiveShell ? "shell" : session.harness,
+                  live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
                 })
                 .pipe(
                   Effect.tapError((error) => abandonExecutor(workspace, error.message)),

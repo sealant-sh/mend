@@ -335,6 +335,8 @@ export interface HarnessLayoutSteps {
     readonly worktreeId: string;
     /** What the process runs, which decides the logins it needs (`loginNeedOf`). */
     readonly harness: string;
+    /** Who has a live process in the executor: read only when a start does not finish. */
+    readonly live: Effect.Effect<ReadonlySet<string>>;
   }) => Effect.Effect<
     { readonly user: ProcessUser; readonly env: Readonly<Record<string, string>> } | null,
     SealantPlatformError
@@ -656,7 +658,7 @@ export const makeHarnessLayoutSteps = (deps: {
             "harnessLayout person was asked for, and this Mend's Sealant cannot restore a workspace per person yet (it needs sealant#333).",
           );
         }
-        if (!logOnce.noOwnerMap) {
+        if (flag === "person" && !logOnce.noOwnerMap) {
           logOnce.noOwnerMap = true;
           yield* Effect.logWarning(
             "session engine: MEND_HARNESS_LAYOUT=person is set, and this Sealant cannot restore a workspace per person (sealant#333): every new worktree runs shared",
@@ -758,7 +760,9 @@ export const makeHarnessLayoutSteps = (deps: {
   const standbyMayServe: HarnessLayoutSteps["standbyMayServe"] = Effect.fn(
     "HarnessLayoutSteps.standbyMayServe",
   )(function* (worktreeId) {
-    if (flag === "person") return false;
+    // While Sealant cannot take the owner map, no launch is person (each is decided shared, or
+    // refused, before create), so a standby may serve any worktree that is not person.
+    if (flag === "person" && platform.withOwnerMap !== null) return false;
     if (nothingRecorded()) return true;
     const worktree = yield* repo.worktreeLayout(worktreeId);
     return worktree.layout === null && worktree.requested !== "person";
@@ -903,6 +907,17 @@ export const makeHarnessLayoutSteps = (deps: {
    * answered `home-busy` is asked again shortly. Any other failure leaves the home recorded as
    * held (Core may have written it), so a release still reaches it. Run under the home's lock.
    */
+  /** A home recorded as held although Mend cannot say what Core wrote: a release reaches it. */
+  const keepHeldFor = (workspaceId: string, launchId: string | null, identity: LinuxIdentity) => {
+    const people = executorOf(workspaceId, launchId).people;
+    const holding = people.get(identity.accountId);
+    people.set(identity.accountId, {
+      identity,
+      held: new Set(holding?.held ?? []),
+      absent: new Set(holding?.absent ?? []),
+    });
+  };
+
   const writeLogins = Effect.fn("HarnessLayoutSteps.writeLogins")(function* (input: {
     readonly workspace: Workspace;
     readonly launchId: string | null;
@@ -1074,22 +1089,38 @@ export const makeHarnessLayoutSteps = (deps: {
                 homeMade: needsHome ? homeMade : null,
               })
             : Effect.void;
+          /**
+           * A start that did not finish (refused, or interrupted): the Mend token its home exec
+           * minted goes (review of mend#564, P2-3), and their next start makes them again; their
+           * user and home stay, holding no login. Unless the person still runs something here:
+           * their processes read the token file this start rewrote, so it stays theirs.
+           */
+          const undoMinted = Effect.gen(function* () {
+            if (!minted) return;
+            if ((yield* input.live).has(identity.accountId)) return;
+            made.delete(identity.accountId);
+            yield* deps.revokePersonToken(
+              launchId,
+              identity.accountId,
+              new Date((yield* Clock.currentTimeMillis) + 1),
+            );
+          });
           const [home, logins] = yield* Effect.all(
             [makeHome.pipe(Effect.result), writeThem.pipe(Effect.result)],
             { concurrency: 2 },
+          ).pipe(
+            // Interrupted mid-write (a client that went away): Core may have written, so the home
+            // is recorded held for a release to reach, and the token minted for it goes.
+            Effect.onInterrupt(() =>
+              Effect.gen(function* () {
+                if (needsLogins) keepHeldFor(workspaceId, launchId, identity);
+                yield* undoMinted;
+              }),
+            ),
           );
-          // A refused login says what to connect; it wins over anything the home exec said. The
-          // Mend token the home exec minted for them goes (review of mend#564, P2-3), and their
-          // next start makes them again: their user and home stay, holding no login.
+          // A refused login says what to connect; it wins over anything the home exec said.
           if (logins._tag === "Failure") {
-            if (minted) {
-              made.delete(identity.accountId);
-              yield* deps.revokePersonToken(
-                launchId,
-                identity.accountId,
-                new Date((yield* Clock.currentTimeMillis) + 1),
-              );
-            }
+            yield* undoMinted;
             return yield* logins.failure;
           }
           if (home._tag === "Failure") return yield* home.failure;
@@ -1142,6 +1173,8 @@ export const makeHarnessLayoutSteps = (deps: {
     readonly identity: LinuxIdentity | null;
     readonly startedAtMs: number;
     readonly why: string;
+    /** Their Mend token goes too: not when the home only held someone else's login. */
+    readonly revoke: boolean;
   }) {
     const workspaceId = input.workspace.id;
     yield* platform.deleteCredentials(input.workspace, { home: input.home }).pipe(
@@ -1160,30 +1193,29 @@ export const makeHarnessLayoutSteps = (deps: {
     const identity = input.identity;
     if (identity === null) return;
     // Mend's own ChatGPT copies for pi and opencode, which Core does not know of: removed as the
-    // person, off the caller's path (review of mend#564, P2-3).
-    yield* deps.fork(
-      sealant
-        .exec(input.workspace, chatgptCopiesScrubArgv(input.home), {
-          user: processUserOf(identity),
-        })
-        .pipe(
-          Effect.tap((result) =>
-            result.exitCode === 0
-              ? Effect.void
-              : Effect.logWarning("session engine: Mend's ChatGPT copies were not removed").pipe(
-                  Effect.annotateLogs({ workspaceId, home: input.home, stderr: result.stderr }),
-                ),
-          ),
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: Mend's ChatGPT copies were not removed").pipe(
-              Effect.annotateLogs({ workspaceId, home: input.home, message: error.message }),
-            ),
-          ),
-          Effect.asVoid,
+    // person (review of mend#564, P2-3), under the home's lock and awaited, so it never lands
+    // after their next start's fresh copy. Every release runs off the callers' paths.
+    yield* sealant
+      .exec(input.workspace, chatgptCopiesScrubArgv(input.home), {
+        user: processUserOf(identity),
+      })
+      .pipe(
+        Effect.tap((result) =>
+          result.exitCode === 0
+            ? Effect.void
+            : Effect.logWarning("session engine: Mend's ChatGPT copies were not removed").pipe(
+                Effect.annotateLogs({ workspaceId, home: input.home, stderr: result.stderr }),
+              ),
         ),
-    );
+        Effect.catch((error) =>
+          Effect.logWarning("session engine: Mend's ChatGPT copies were not removed").pipe(
+            Effect.annotateLogs({ workspaceId, home: input.home, message: error.message }),
+          ),
+        ),
+        Effect.asVoid,
+      );
     // Only tokens minted before the release began: one minted for a start since stays.
-    if (input.launchId !== null) {
+    if (input.revoke && input.launchId !== null) {
       yield* deps.revokePersonToken(
         input.launchId,
         identity.accountId,
@@ -1234,6 +1266,7 @@ export const makeHarnessLayoutSteps = (deps: {
               identity: holding.identity,
               startedAtMs: now,
               why: "",
+              revoke: true,
             });
           }),
         );
@@ -1310,19 +1343,23 @@ export const makeHarnessLayoutSteps = (deps: {
       executor.launcher = input.launcher;
       // Core's homes first, then who is live: a person whose first process starts in between is
       // live by then, or inside the grace below (review of mend#564, P2-2).
-      const homes = yield* platform.listCredentials(input.workspace);
+      const homes = (yield* platform.listCredentials(input.workspace)).filter((held) =>
+        // Only a person's home under /home: `/root` is no person's in this layout.
+        held.home.startsWith("/home/"),
+      );
       if (homes.length === 0) return;
       const live = yield* input.live;
-      const identities = yield* repo.identitiesOf([...new Set([input.launcher, ...live])]);
+      // Whose each home is, by its name, whether or not they run anything now.
+      const identities = yield* repo.identitiesNamed(
+        homes.map((held) => held.home.slice("/home/".length)),
+      );
       const byHome = new Map(identities.map((identity) => [linuxHomeOf(identity), identity]));
+      let recheck = false;
       for (const held of homes) {
-        // Only a person's home under /home: `/root` is no person's in this layout, and Core
-        // keeps the launch's own.
-        if (!held.home.startsWith("/home/")) continue;
         const key = homeKey(workspaceId, held.home);
         yield* lockOf(key).withPermit(
           Effect.gen(function* () {
-            const known = byHome.get(held.home);
+            const identity = byHome.get(held.home) ?? null;
             // A home Mend already holds for someone (a start since this Mend came up) is left as
             // Mend recorded it: never released from under them.
             const holder = [...executor.people.values()].find(
@@ -1330,35 +1367,56 @@ export const makeHarnessLayoutSteps = (deps: {
             );
             if (holder !== undefined) return;
             const now = yield* Clock.currentTimeMillis;
-            if (startedWithinGrace(key, now)) return;
+            if (startedWithinGrace(key, now)) {
+              recheck = true;
+              return;
+            }
+            const running =
+              identity !== null &&
+              (identity.accountId === input.launcher || live.has(identity.accountId));
             // Whose Core says it is must be the person the home belongs to: a login of anyone
             // else in it is released, never adopted (review of mend#564, P3-2).
             const owned =
-              known !== undefined &&
-              (yield* platform.sealantUserOf(known.accountId).pipe(
+              identity !== null &&
+              (yield* platform.sealantUserOf(identity.accountId).pipe(
                 Effect.map((sealantUser) => sealantUser === held.onBehalfOf),
                 Effect.orElseSucceed(() => false),
               ));
-            if (known !== undefined && owned) {
-              executor.people.set(known.accountId, {
-                identity: known,
+            if (running && owned) {
+              executor.people.set(identity.accountId, {
+                identity,
                 held: new Set(held.providers),
                 absent: new Set(),
               });
+              // They are made in this executor (they run here), and their token file is theirs:
+              // a later start makes them again only once released, so it rewrites and revokes
+              // nothing of their running processes (review 2 of mend#564, P2).
+              const made = madeIn.get(workspaceId) ?? new Set<string>();
+              made.add(identity.accountId);
+              madeIn.set(workspaceId, made);
               return;
             }
             // A person whose last process ended while this Mend was down, or a home holding
-            // someone else's login: released.
-            if (known !== undefined) madeIn.get(workspaceId)?.delete(known.accountId);
+            // someone else's login: released. A running person keeps their own Mend token.
+            if (identity !== null && !running) madeIn.get(workspaceId)?.delete(identity.accountId);
             yield* releaseHome({
               workspace: input.workspace,
               launchId: input.launchId,
               home: held.home,
-              identity: known ?? null,
+              identity,
               startedAtMs: now,
               why: "at startup ",
+              revoke: !running,
             });
           }),
+        );
+      }
+      // A home left for a start inside the grace is looked at again once it has passed.
+      if (recheck) {
+        yield* deps.fork(
+          Effect.sleep(Duration.millis(releaseGraceMs)).pipe(
+            Effect.andThen(reconcileLogins(input)),
+          ),
         );
       }
     }).pipe(

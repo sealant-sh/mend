@@ -13,9 +13,10 @@ import type {
   WorkspaceImageInspection,
   WorkspaceImagePersonLayout,
 } from "@sealant/sdk";
-import { Clock, Effect, Layer } from "effect";
+import { Clock, Duration, Effect, Layer } from "effect";
 
 import { SealantClients, toPlatformError } from "./client.ts";
+import { SealantPlatformError } from "./errors.ts";
 import {
   type HeldHome,
   type ImageLayoutReport,
@@ -27,6 +28,29 @@ import {
 } from "./person-layout.ts";
 
 const call = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: toPlatformError });
+
+/**
+ * How long a write or release of a home's logins may take: Mend holds that person's lock across
+ * it, so a call Core never answers must not hold their next start for the transport's own minutes.
+ */
+const CREDENTIALS_CALL_TIMEOUT = Duration.seconds(30);
+
+/** `call`, bounded by `CREDENTIALS_CALL_TIMEOUT`, failing with words when Core does not answer. */
+const boundedCall = <A>(what: string, home: string, run: () => Promise<A>) =>
+  call(run).pipe(
+    Effect.timeoutOrElse({
+      duration: CREDENTIALS_CALL_TIMEOUT,
+      orElse: () =>
+        Effect.fail(
+          new SealantPlatformError({
+            code: "credentials_timeout",
+            status: null,
+            message: `Sealant did not answer the ${what} of ${home}'s logins within 30 s; nothing is taken as done`,
+            cause: null,
+          }),
+        ),
+    }),
+  );
 
 /** The words a refusal line names for each of Core's stable codes; an unknown code as it is. */
 const MISSING_WORDS: Readonly<Record<string, string>> = {
@@ -143,7 +167,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         postCredentials: Effect.fn("PersonLayoutPlatform.postCredentials")(
           function* (workspace, input) {
             const onBehalfOf = yield* clients.sealantUserId(input.onBehalfOf);
-            yield* call(() =>
+            yield* boundedCall("write", input.home, () =>
               workspace.credentials.put({
                 home: input.home,
                 onBehalfOf,
@@ -157,7 +181,9 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         ),
         deleteCredentials: Effect.fn("PersonLayoutPlatform.deleteCredentials")(
           function* (workspace, input) {
-            yield* call(() => workspace.credentials.release(input.home));
+            yield* boundedCall("release", input.home, () =>
+              workspace.credentials.release(input.home),
+            );
           },
         ),
         sealantUserOf: (accountId) => clients.sealantUserId(accountId),
