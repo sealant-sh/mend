@@ -657,6 +657,10 @@ export const makeHarnessLayoutSteps = (deps: {
     return (yield* repo.worktreeLayout(worktreeId)).layout === "person";
   });
 
+  // A standby boots before any worktree is known, as root and with no capture owner map; sealantd
+  // reads that map only at boot (sealant#333), so a standby can never become a person executor.
+  // Every launch that could be person (the flag on, a person worktree, the operator's person)
+  // skips standbys and launches cold.
   const standbyMayServe: HarnessLayoutSteps["standbyMayServe"] = Effect.fn(
     "HarnessLayoutSteps.standbyMayServe",
   )(function* (worktreeId) {

@@ -16,10 +16,12 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 - **Missing, blocking real per-person executors:** an owner-map option on `workspaces.create`. Core
   never sets `SEALANT_CAPTURE_OWNER_MAP` for sealantd, so no executor restores `people/<id>/` by
   owner or gives the worktree to group `mend`, and prepare refuses every `person` launch with the
-  owner-map line (ADR 0016 decision 8). Mend builds the map only once the platform can take it
-  (`PersonLayoutPlatform.withOwnerMap`, null today): `people/<account id>` → uid for every person
-  prepare may make, the change owner's uid for the worktree, gid 40000. A Core PR for the option is
-  in progress.
+  owner-map line (ADR 0016 decision 8). **In review as sealant#333:** `source.ownerMap` on a capture
+  source (`WorkspaceCaptureOwnerMap { gid, worktreeUid, people: [{ id, uid }] }`). Mend's
+  `CaptureOwnerMap` has that shape and `PersonLayoutPlatform.withOwnerMap` (null today) becomes a
+  one-line change once Mend pins the build. The map is read only at boot, so person launches never
+  claim a standby (one booted without the map); a standby booted with a map would need Core to take
+  the map at claim instead.
 - **Missing:** the dotfiles verb (apply a person's dotfiles as their user into their home, after
   create). Without it decision 1's fallback (a wrong `person` prediction on a fresh worktree) fails
   the launch when the launcher has dotfiles, and Delivery 15 cannot give a joiner theirs.

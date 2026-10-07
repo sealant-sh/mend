@@ -88,15 +88,18 @@ export interface HeldHome {
  * sealantd's capture owner map (docs/adr/0016, decision 8; `SEALANT_CAPTURE_OWNER_MAP`): who each
  * restored `people/<account id>` belongs to, and whose the worktree and its git directory are.
  * Without it sealantd restores everything as root, gives nobody sudo and restores no owners, so
- * prepare refuses the launch (`ownerMapRefusal`).
+ * prepare refuses the launch (`ownerMapRefusal`). Shaped as Core's `WorkspaceCaptureOwnerMap`
+ * (`@sealant/api-contracts/capture-owner-map`, sealant#333), which a capture create carries as
+ * `source.ownerMap`; uids are 40001–49999. sealantd reads it only at boot, so an executor keeps
+ * the map it booted with: a person launch never claims a standby (`standbyMayServe`).
  */
 export interface CaptureOwnerMap {
-  /** Each person prepare may make: their saved directory is theirs. */
-  readonly people: ReadonlyArray<{ readonly accountId: string; readonly uid: number }>;
+  /** The shared group, `mend` (40000). */
+  readonly gid: number;
   /** The change's owner (the owner of the worktree's first session): the worktree is theirs. */
   readonly worktreeUid: number;
-  /** The shared group, `mend`. */
-  readonly gid: number;
+  /** Each person prepare may make, by account id: their saved directory is theirs. */
+  readonly people: ReadonlyArray<{ readonly id: string; readonly uid: number }>;
 }
 
 /**
@@ -113,11 +116,11 @@ export class PersonLayoutPlatform extends Context.Service<
     /** Sessions and exec can start a process as a given user (`ProcessUserOption`). */
     readonly processUser: boolean;
     /**
-     * Hands a person launch's capture owner map to the create (`CaptureOwnerMap`), or null while
-     * the SDK has no option for it: Core does not pass `SEALANT_CAPTURE_OWNER_MAP` to sealantd
-     * yet, so no real executor restores per person until a Core release adds the option to
-     * `workspaces.create` (PLATFORM-FEEDBACK.md, 2026-10-07). Null costs nothing: Mend builds no
-     * map and reads nothing for one.
+     * Hands a person launch's capture owner map to the create (`CaptureOwnerMap`, as
+     * `source.ownerMap` of a capture source), or null while the SDK has no option for it: Core
+     * does not pass `SEALANT_CAPTURE_OWNER_MAP` to sealantd until sealant#333 ships, so no real
+     * executor restores per person before Mend pins that build (PLATFORM-FEEDBACK.md,
+     * 2026-10-07). Null costs nothing: Mend builds no map and reads nothing for one.
      */
     readonly withOwnerMap: ((options: CreateOptions, map: CaptureOwnerMap) => CreateOptions) | null;
     /**

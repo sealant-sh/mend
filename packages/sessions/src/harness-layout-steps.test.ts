@@ -377,6 +377,34 @@ const needsReconnect = (provider: string) =>
     cause: null,
   });
 
+describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
+  it("a launch that could be person never claims a standby: its owner map is read only at boot", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const flagOn = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
+        const personWorktree = makeHarnessLayoutsMemoryState();
+        personWorktree.worktrees.set(WorktreeId.make("wt-1"), {
+          layout: "person",
+          requested: null,
+        });
+        const recorded = yield* stepsWith("shared", personWorktree);
+        const asked = makeHarnessLayoutsMemoryState();
+        asked.worktrees.set(WorktreeId.make("wt-1"), { layout: null, requested: "person" });
+        const operator = yield* stepsWith("shared", asked);
+        const off = yield* stepsWith("shared", makeHarnessLayoutsMemoryState());
+        const wt = WorktreeId.make("wt-1");
+        return [
+          yield* flagOn.steps.standbyMayServe(wt),
+          yield* recorded.steps.standbyMayServe(wt),
+          yield* operator.steps.standbyMayServe(wt),
+          yield* off.steps.standbyMayServe(wt),
+        ];
+      }),
+    );
+    expect(result).toEqual([false, false, false, true]);
+  });
+});
+
 describe("logins per person (docs/adr/0016, decision 5)", () => {
   /** Alice's person launch, prepared; then whatever `then` does with its steps. */
   const withPersonExecutor = <A, E>(

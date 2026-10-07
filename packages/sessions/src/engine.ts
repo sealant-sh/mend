@@ -15635,9 +15635,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 .ensureIdentity(first.ownerUserId)
                 .pipe(Effect.orElseSucceed(() => layout.launcher))));
         return {
-          people: people.map((person) => ({ accountId: person.accountId, uid: person.uid })),
-          worktreeUid: owner.uid,
           gid: MEND_GROUP.gid,
+          worktreeUid: owner.uid,
+          people: people.map((person) => ({ id: person.accountId, uid: person.uid })),
         } satisfies CaptureOwnerMap;
       });
 
