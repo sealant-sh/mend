@@ -7,9 +7,10 @@ export const DesktopPilotRequest = Schema.Struct({
   goal: Schema.String,
 });
 
-/** An observed desktop pilot and its artifacts, belonging to one session when launched there. */
+/** A desktop interaction recorded by the terminal agent or a separate pilot. */
 export const DesktopPilotRun = Schema.Struct({
   id: Schema.String,
+  source: Schema.optionalKey(Schema.Literals(["terminal", "pilot"])),
   sessionId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   harness: Schema.Literals(["claude", "codex"]),
   mode: Schema.Literals(["actions", "code"]),

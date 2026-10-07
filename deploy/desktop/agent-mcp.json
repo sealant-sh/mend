@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "desktop": { "command": "node", "args": ["/opt/mend-desktop/mcp.mjs", "--session", "claude"] }
+  }
+}

@@ -1,9 +1,9 @@
 # Desktop pilot experiment
 
-This branch prototypes a dedicated computer-use agent sharing an X11 desktop with a human. It is a
-development experiment, not part of the current release. The normal Mend server does not create
-containers through Docker: session desktops start as Services through the public Sealant SDK. The
-standalone Docker fixture below is for local acceptance testing only.
+This branch prototypes coding agents and optional desktop pilots sharing an X11 desktop with a
+human. It is a development experiment, not part of the current release. The normal Mend server does
+not create containers through Docker: session desktops start as Services through the public Sealant
+SDK. The standalone Docker fixture below is for local acceptance testing only.
 
 ## Run locally
 
@@ -40,7 +40,7 @@ Stop only this fixture with `node scripts/desktop-preview.mjs stop`.
 Build the amd64 image on the Sealant Docker executor:
 
 ```sh
-docker build --platform linux/amd64 -f deploy/desktop/Dockerfile -t mend-desktop:pilot-v2 .
+docker build --platform linux/amd64 -f deploy/desktop/Dockerfile -t mend-desktop:pilot-v4 .
 ```
 
 In a project's **Setup → Environment**, choose **Use desktop image** and save. Start a normal Claude
@@ -72,11 +72,16 @@ finishes; the controller's transcript and observations remain captured.
 
 ## Limits before a release
 
-The pilot is a separate CLI conversation. Its service launch is in Mend's record and its artifacts
-are in the session's capture, but the parent coding agent does not automatically call or receive its
-computer-use tools. The pilot's temporary copy of its login is not written back into Core. Automatic
-desktop start and parent/pilot handoff remain follow-up work. Only the owner can view or steer the
-desktop; shared control does not grant arbitrary command or terminal access.
+Claude and Codex terminal sessions receive the image's desktop MCP tools at launch, including
+recording controls and both execution styles. The image's skill is linked from Mend's managed
+workspace note. A first tool call starts the desktop through `mend service run`; recording and
+manual takeover work through the same controller as the optional separate pilot. Takeover ends
+terminal-driven recording and aborts desktop code; the coding agent stays running.
+
+The optional pilot remains a separate CLI conversation. Its temporary login copy is not written back
+into Core. Terminal tools use the coding agent's own login and conversation. Only the owner can view
+or steer the desktop. One desktop service can own the display in a workspace at a time. An
+already-running native agent must be relaunched to load newly registered MCP tools.
 
 Human view-only mode is a viewer convention. The authorized owner can send VNC input directly. Code
 mode is not a JavaScript security sandbox; Codex's tool restriction is a prompt instruction. The
@@ -88,6 +93,13 @@ workspace build uses the new revision. Setup commands run after provisioning and
 compiled custom base. The preset verifies the pilot home module before launch.
 
 ## Checks
+
+Terminal acceptance also used real Claude and Codex PTY sessions. Codex created and served its page,
+then used its own desktop MCP tools to reach Count: 5 / Hello, Mend! in three calls. Claude used
+seven screenshot actions on the bundled demo, reached Count: 2 and reported that its greeting
+omitted the expected exclamation mark. Both finished recording in the same native coding
+conversation. Manual takeover aborted an active terminal desktop code worker and left the primary
+coding process alive.
 
 Local acceptance used the built web app and a real captured session. The coding agent created a
 counter page in its worktree. Codex code mode reached Count: 5 / Hello, Mend! in four calls; Claude

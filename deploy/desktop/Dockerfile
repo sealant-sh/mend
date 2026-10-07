@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # The standalone acceptance fixture needs harnesses too. Keep versions reproducible.
 RUN npm install -g @anthropic-ai/claude-code@2.1.292 @openai/codex@0.160.1 pnpm@10.32.1
 COPY deploy/desktop /opt/mend-desktop
-RUN chmod +x /opt/mend-desktop/start
+RUN chmod +x /opt/mend-desktop/start /opt/mend-desktop/bin/codex /opt/mend-desktop/bin/claude
 ENV DISPLAY=:1 LIBGL_ALWAYS_SOFTWARE=1 DISABLE_AUTOUPDATER=1
 # Sealant's custom-base builder installs its daemon and selected harness as root.
 # The acceptance fixture explicitly starts this image as node instead.

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node /opt/mend-desktop/launch.mjs claude "$@"

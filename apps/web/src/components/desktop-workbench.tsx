@@ -59,7 +59,7 @@ export function DesktopWorkbench({
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs">
               {active
-                ? `${active.harness} · ${active.mode} · ${active.actions} calls`
+                ? `${active.harness} · ${active.source === "terminal" ? "terminal" : active.mode} · ${active.actions} calls`
                 : observed?.humanControl
                   ? "You control input"
                   : observed?.live === false
@@ -75,7 +75,9 @@ export function DesktopWorkbench({
               {observed?.humanControl
                 ? "Release control"
                 : active
-                  ? "Take control · stop pilot"
+                  ? active.source === "terminal"
+                    ? "Take control · pause desktop"
+                    : "Take control · stop pilot"
                   : "Take control"}
             </Button>
           </div>
@@ -105,7 +107,7 @@ export function DesktopWorkbench({
             void act("pilot");
           }}
         >
-          <h2 className="text-base font-medium">Pilot the desktop</h2>
+          <h2 className="text-base font-medium">Separate desktop pilot</h2>
           <div className="grid grid-cols-2 gap-3">
             <label className="space-y-1.5 text-xs text-muted-foreground">
               Agent
@@ -207,7 +209,8 @@ export function DesktopWorkbench({
             <article key={run.id} className="rounded-2xl bg-card p-5 shadow-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="font-mono text-xs text-muted-foreground">
-                  {run.harness} · {run.mode} · {run.actions} calls
+                  {run.harness} · {run.source === "terminal" ? "terminal" : run.mode} ·{" "}
+                  {run.actions} calls
                 </p>
                 <p
                   className={`font-mono text-xs ${run.status === "completed" ? "text-success" : run.status === "failed" ? "text-danger" : "text-muted-foreground"}`}

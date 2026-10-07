@@ -79,12 +79,15 @@ export const HARNESS_UPDATES_OFF_ENV: Readonly<Record<string, string>> = {
   PI_SKIP_VERSION_CHECK: "1",
 };
 
+// The image owns these optional wrappers; ordinary images keep their native PATH.
+const DESKTOP_IMAGE_PATH = `if [ -x /opt/mend-desktop/bin/codex ] && [ -x /opt/mend-desktop/bin/claude ]; then export PATH="/opt/mend-desktop/bin:$PATH"; fi; `;
+
 /**
  * Claude's seed. The workspace IS the sandbox: Claude Code refuses bypass-permissions as root
  * unless the environment says so, and it is telling the truth. Its self-updater is off
  * (`HARNESS_UPDATES_OFF_ENV`).
  */
-export const CLAUDE_ONBOARDING_SEED = `node -e '${CLAUDE_SEED_PROGRAM}' 2>/dev/null; export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; exec "$@"`;
+export const CLAUDE_ONBOARDING_SEED = `node -e '${CLAUDE_SEED_PROGRAM}' 2>/dev/null; export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; ${DESKTOP_IMAGE_PATH}exec "$@"`;
 
 /**
  * Codex's per-project trust prompt, pre-answered the same way: the user made the trust decision
@@ -96,6 +99,7 @@ export const CODEX_TRUST_SEED =
   `mkdir -p "$HOME/.codex"; ` +
   `grep -q 'workspace/repo' "$HOME/.codex/config.toml" 2>/dev/null || ` +
   `printf '\\n[projects."/workspace/repo"]\\ntrust_level = "trusted"\\n' >> "$HOME/.codex/config.toml"; ` +
+  DESKTOP_IMAGE_PATH +
   `exec "$@"`;
 
 /**

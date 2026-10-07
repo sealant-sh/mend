@@ -55,3 +55,32 @@ test("MCP exposes only the selected execution style over its real stdio entrypoi
     );
   }
 });
+
+test("terminal MCP exposes recording, screenshot actions and code without connecting provider logins", async () => {
+  const child = spawn(process.execPath, [
+    new URL("./mcp.mjs", import.meta.url).pathname,
+    "--session",
+    "codex",
+  ]);
+  let output = "";
+  child.stdout.on("data", (chunk) => {
+    output += chunk;
+  });
+  child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) + "\n");
+  await new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`exit ${code}`))));
+  });
+  const names = JSON.parse(output).result.tools.map((tool) => tool.name);
+  assert.deepEqual(names, [
+    "screenshot",
+    "click",
+    "type",
+    "key",
+    "scroll",
+    "open_browser",
+    "execute",
+    "begin_recording",
+    "finish_recording",
+  ]);
+});

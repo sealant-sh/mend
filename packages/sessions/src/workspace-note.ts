@@ -102,7 +102,10 @@ export const WORKSPACE_NOTE_PROGRAM = [
   `const L=${JSON.stringify(LEGACY_NOTE)};`,
   `const BEGIN=${JSON.stringify(WORKSPACE_NOTE_BEGIN)},END=${JSON.stringify(WORKSPACE_NOTE_END)},MARK=${JSON.stringify(LEGACY_NOTE_MARKER)};`,
   `const DECLARED=new RegExp(L.declared);`,
-  `const [block,...files]=process.argv.slice(1);`,
+  `let [block,...files]=process.argv.slice(1);`,
+  // A pointer to the image's skill, inside the managed block, disappears on non-desktop images.
+  `if(fs.existsSync("/opt/mend-desktop/bin/codex")){block=block.replace(${JSON.stringify(END_LINE)},"## Mend desktop\\n\\nWhen inspecting a page, testing a UI, or completing a browser task, read /opt/mend-desktop/SKILL.md and use the desktop MCP tools. The user watches the same display beside your terminal.\\n\\n"+${JSON.stringify(END_LINE)})}`,
+
   // Lines with their byte offsets; `end` includes the newline.
   `function lines(s){const out=[];let i=0;while(i<s.length){const j=s.indexOf("\\n",i);const e=j<0?s.length:j+1;out.push({start:i,end:e,text:s.slice(i,j<0?s.length:j)});i=e}return out}`,
   `function bullet(line){if(!line.startsWith("- /"))return false;let rest=line;for(const x of L.suffixes){if(rest.endsWith(x)){rest=rest.slice(0,-x.length);break}}return /^- \\/\\S+$/.test(rest)}`,

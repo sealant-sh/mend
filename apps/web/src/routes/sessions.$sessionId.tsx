@@ -229,7 +229,9 @@ function SessionPage() {
     session.workspaceImage?.mode === "custom" &&
     desktopWorkspaceImage.mode === "custom" &&
     (session.workspaceImage.baseImage === desktopWorkspaceImage.baseImage ||
-      session.workspaceImage.baseImage === "mend-desktop:local");
+      ["mend-desktop:local", "mend-desktop:pilot-v2", "mend-desktop:pilot-v3"].includes(
+        session.workspaceImage.baseImage,
+      ));
 
   return (
     <AppShell projectId={session.projectId}>

@@ -1,7 +1,16 @@
 import { spawn, execFile } from "node:child_process";
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, writeFile, rename, readdir, stat, appendFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  writeFile,
+  rename,
+  readdir,
+  stat,
+  appendFile,
+  unlink,
+} from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { join, dirname, resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +25,14 @@ const home = process.env.MEND_DESKTOP_HOME ?? join(process.env.HOME, ".mend/desk
 const runsRoot = join(home, "runs");
 await mkdir(runsRoot, { recursive: true });
 const pilotToken = randomBytes(32).toString("hex");
+// Ephemeral executor state, outside the captured harness home. Same-user MCP clients read it.
+const sessionTokenFile = `/tmp/mend-desktop-${process.getuid()}.token`;
+try {
+  await unlink(sessionTokenFile);
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
+await writeFile(sessionTokenFile, pilotToken, { mode: 0o600, flag: "wx" });
 let active = null;
 let starting = false;
 let humanControl = false;
@@ -112,10 +129,11 @@ async function finish(run, status, result) {
     /* Retain the recording and transcript if the display has gone. */
   }
   await stopRecorder(run.recorder);
-  await run.nativeHome.close();
+  await run.nativeHome?.close();
   run.state.status = status;
   run.state.finishedAt = new Date().toISOString();
   run.state.result = result;
+  if (run.lease) await writeFile(join(run.dir, "transcript.txt"), result + "\n");
   await persist(run);
   if (active === run) active = null;
 }
@@ -139,15 +157,15 @@ function parsePilot(value) {
     model: value.model.trim(),
   };
 }
-async function launchPilot(input) {
+async function createRun(input, nativeHome = null, lease = null) {
   if (active !== null) throw new Error("A pilot is already running");
   const id = randomUUID();
   const dir = join(runsRoot, id);
-  const nativeHome = await preparePilotHome(input.harness);
   await mkdir(dir);
   humanControl = false;
   const state = {
     id,
+    source: lease ? "terminal" : "pilot",
     ...input,
     sessionId: process.env.MEND_DESKTOP_SESSION_ID ?? null,
     status: "running",
@@ -195,6 +213,7 @@ async function launchPilot(input) {
     finishing: false,
     forcedStatus: null,
     nativeHome,
+    lease,
   };
   active = run;
   recorder.on("error", (error) => {
@@ -206,6 +225,18 @@ async function launchPilot(input) {
     void appendFile(join(dir, "recorder.txt"), chunk);
   });
   await persist(run);
+  return run;
+}
+async function launchPilot(input) {
+  const nativeHome = await preparePilotHome(input.harness);
+  let run;
+  try {
+    run = await createRun(input, nativeHome);
+  } catch (error) {
+    await nativeHome.close();
+    throw error;
+  }
+  const { state, dir } = run;
   const env = {
     ...process.env,
     ...nativeHome.env,
@@ -396,13 +427,67 @@ const server = createServer(async (request, response) => {
         runs: await history(),
         display: "1440×900 · X11 · CPU rendering",
       });
+    if (request.method === "POST" && url.pathname === "/session/begin") {
+      if (!tokenMatches(request.headers["x-mend-pilot"]))
+        return json(response, 403, { error: "Desktop session token refused" });
+      const value = await readJson(request);
+      if (value.sessionId !== process.env.MEND_DESKTOP_SESSION_ID)
+        return json(response, 409, { error: "Desktop belongs to another session" });
+      if (humanControl)
+        return json(response, 409, { error: "The user controls the desktop. Wait for release." });
+      const input = parsePilot(value);
+      if (typeof value.lease !== "string" || !/^[a-f0-9-]{36}$/.test(value.lease))
+        throw new Error("Invalid desktop client lease");
+      if (active?.lease === value.lease) return json(response, 200, active.state);
+      if (active !== null || starting)
+        return json(response, 409, { error: "Another agent owns desktop input" });
+      starting = true;
+      try {
+        const run = await createRun(input, null, value.lease);
+        run.timer = setTimeout(
+          () => {
+            killPilot(run);
+            void finish(
+              run,
+              "timed-out",
+              "Terminal desktop recording reached its five-minute limit.",
+            );
+          },
+          5 * 60 * 1000,
+        );
+        run.timer.unref();
+        return json(response, 202, run.state);
+      } finally {
+        starting = false;
+      }
+    }
+    if (request.method === "POST" && url.pathname === "/session/finish") {
+      if (!tokenMatches(request.headers["x-mend-pilot"]))
+        return json(response, 403, { error: "Desktop session token refused" });
+      const value = await readJson(request);
+      if (!active || active.lease !== value.lease)
+        return json(response, 409, { error: "This recording ended or desktop control changed" });
+      if (typeof value.result !== "string" || value.result.length > 8000)
+        throw new Error("Result must be under 8000 characters");
+      const run = active;
+      if (value.interrupted === true) killPilot(run);
+      await finish(run, value.interrupted === true ? "interrupted" : "completed", value.result);
+      return json(response, 200, run.state);
+    }
     if (request.method === "POST" && url.pathname === "/pilot")
       return json(response, 202, await startPilot(parsePilot(await readJson(request))));
     if (request.method === "POST" && (url.pathname === "/cancel" || url.pathname === "/takeover")) {
       humanControl = url.pathname === "/takeover";
       if (active) {
         active.forcedStatus = "cancelled";
-        killPilot(active);
+        const run = active;
+        killPilot(run);
+        if (run.lease)
+          await finish(
+            run,
+            "cancelled",
+            humanControl ? "The user took desktop control." : "The user stopped desktop recording.",
+          );
       }
       return json(response, 200, { humanControl });
     }
@@ -415,6 +500,7 @@ const server = createServer(async (request, response) => {
         !tokenMatches(request.headers["x-mend-pilot"]) ||
         !active ||
         active.finishing ||
+        (active.lease !== null && request.headers["x-mend-desktop-lease"] !== active.lease) ||
         humanControl
       )
         return json(response, 403, { error: "No active pilot owns desktop input" });
@@ -514,6 +600,7 @@ async function shutdown() {
     killPilot(run);
     await finish(run, "interrupted", "Desktop service stopped.");
   }
+  await unlink(sessionTokenFile).catch(() => {});
   server.close();
   process.exit(0);
 }
