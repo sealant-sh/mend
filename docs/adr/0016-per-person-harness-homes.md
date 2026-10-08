@@ -113,12 +113,15 @@ process uses, by default and by every path Mend controls.
     without them, and a workspace started next on that image (decided `shared` before create from
     the recorded answer) applies them at boot. This is paid once per image digest, inside the
     cold-launch budget. On a worktree already `person`, prepare refuses (decision 14).
-  - **The control plane must say it can.** Before anything else Mend reads Core's own report of what
-    it can do (its index's `features.processUser`, kept five minutes): without it no process can
-    start as a person, so a fresh worktree runs `shared` with the reason and a `person` worktree is
-    refused with it, before create. A Core that reports it carries every API this layout uses (the
-    dotfiles verb, partial puts, pi's and opencode's logins); Core 0.39.0-next.703 does not report
-    it yet.
+  - **The control plane and the workspace must say they can.** Before anything else Mend reads
+    Core's own report of what it can do (`sealant.features()`, kept five minutes): its as-user
+    routes (`processUserRoutes`), the dotfiles verb, partial puts, pi's and opencode's logins and
+    the capture owner map, every one of them, since a Core from before any reports it `false`.
+    Without them a fresh worktree runs `shared` with the reason and a `person` worktree is refused
+    with it, before create. At prepare the workspace's own answer (`workspace.processUser()`) must
+    be `supported`: `unsupported` (the image's sealantd) is recorded against the image like a
+    probe's finding; `unknown` is not a yes and is not held against it. Core 0.39.0-next.706 is the
+    first to report them all.
 - **The layout is sticky per worktree** (decision 14): once a worktree has had a `person` launch,
   every later launch of it is `person` or refused with the reason. The flag decides only worktrees
   with no layout yet. Every server-side rule that differs between layouts (the container token's
@@ -1321,4 +1324,8 @@ benchmark once more, before 0.36 is tagged.
   root) and writes the launcher's logins in one partial POST. Every login POST is partial; Core
   writes pi's and opencode's ChatGPT logins in `person` executors. The layout needs the control
   plane to report `features.processUser`, which 0.39.0-next.703 does not yet.
+- 2026-10-08, with Core 0.39.0-next.706 (sealant#342–#344): the person layout reads
+  `features().processUserRoutes` and the rest of the layout's features (never `processUser`, which
+  stays false for older SDKs) and each workspace's `processUser()`; a launch runs per person only
+  when both say yes. The session line says Core's launch phase while a workspace gets ready.
 - Open: gate B's history record.

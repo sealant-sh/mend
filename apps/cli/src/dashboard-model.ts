@@ -493,6 +493,10 @@ export const startingWordsOf = (session: SessionDto): string => {
         : "waiting for the previous session";
     case "booting":
       return "booting";
+    case "queued":
+      return "queued";
+    case "building":
+      return "building the image";
     case "preparing":
       return "preparing the workspace";
   }
@@ -509,6 +513,10 @@ export const startingExplanationOf = (session: SessionDto): string => {
         : phase.words;
     case "booting":
       return "the workspace is booting · the agent starts when it is up";
+    case "queued":
+      return "the launch waits for a worker · it starts when one takes it";
+    case "building":
+      return `${phase.words} · the agent starts once it is built and booted`;
     case "preparing":
       return "the workspace has no runtime yet · after an update, building its image takes about 8 minutes";
   }

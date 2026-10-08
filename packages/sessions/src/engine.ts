@@ -82,6 +82,8 @@ import type {
 import {
   LAUNCH_BOOTING,
   LAUNCH_PREPARING,
+  LAUNCH_QUEUED,
+  launchBuildingWords,
   leaseWaitWords,
   reservedSecretFileRoot,
   withoutLaunchPhase,
@@ -216,6 +218,7 @@ import type {
   WorkspaceCaptureSource,
   WorkspaceCredentialsOptions,
   WorkspaceExecResult,
+  WorkspacePhase,
 } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import {
@@ -853,6 +856,14 @@ const dotfilesRecordWith = (record: SessionDotfiles, reason: string): SessionDot
     ...(record.snapshotSha === null ? [] : [{ source: "snapshot" as const, reason }]),
   ],
 });
+
+/** Core's launch phase (sealant#342) as the session line says it. */
+export const launchPhaseWords = (phase: WorkspacePhase): string =>
+  phase.name === "queued"
+    ? LAUNCH_QUEUED
+    : phase.name === "image-build"
+      ? launchBuildingWords(phase.imageBuild ?? null)
+      : LAUNCH_BOOTING;
 
 /** What one memory delivery did, counted; a file it could not place is said by name. */
 const logAgentMemoryDelivered = (
@@ -16408,6 +16419,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* sayLaunchPhase(sessionId, LAUNCH_BOOTING);
             while (true) {
               yield* Effect.sleep(drainPolicy.createPhaseInterval);
+              // Core's own launch phase (sealant#342): queued, building the image (step N/M), or
+              // booting. One read; a platform that reports none answers null, and the executor
+              // read below says what was observed instead.
+              const phase = yield* Effect.tryPromise(() => workspace.phase()).pipe(
+                Effect.orElseSucceed(() => null),
+              );
+              if (phase !== null) {
+                yield* sayLaunchPhase(sessionId, launchPhaseWords(phase));
+                continue;
+              }
               const runtime = yield* Effect.tryPromise(() => workspace.runtime()).pipe(
                 Effect.option,
               );

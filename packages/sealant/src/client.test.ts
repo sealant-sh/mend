@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   captureDrainOf,
   captureStatusOf,
+  imageBuildFailure,
   platformErrorCode,
   runtimeDeadlineOf,
   toPlatformError,
@@ -17,6 +18,7 @@ import {
   workspaceStopAnswerOf,
   workspaceStopStateOf,
 } from "./client.ts";
+import { SealantPlatformError } from "./errors.ts";
 
 /**
  * The engine branches on the platform's STABLE codes (`workspace-docker-unsupported`,
@@ -367,5 +369,33 @@ describe("runChangesOf (sealant#313)", () => {
       available: true,
       unavailableReason: null,
     });
+  });
+});
+
+const failed = (code: string, message: string) =>
+  imageBuildFailure(new SealantPlatformError({ code, status: null, message, cause: null }));
+
+describe("an image build Core gave up on (sealant#342)", () => {
+  it("says it stalled or ran past its limit, with the SDK's words naming the step", () => {
+    const stalled = failed(
+      "workspace_image_build_stalled",
+      "The image build for workspace ws-1 reported no progress for 15 min; it was at step 3/12 (RUN apt-get update && …).",
+    );
+    expect(stalled.code).toBe("workspace_image_build_stalled");
+    expect(stalled.message).toBe(
+      "the workspace image build stopped making progress, so nothing was started: The image build for workspace ws-1 reported no progress for 15 min; it was at step 3/12 (RUN apt-get update && …).",
+    );
+    expect(failed("workspace_image_build_timeout", "past 45 min").message).toBe(
+      "the workspace image build ran past its time limit, so nothing was started: past 45 min",
+    );
+  });
+  it("leaves any other failure as it is", () => {
+    const other = new SealantPlatformError({
+      code: "workspace_ready_timeout",
+      status: null,
+      message: "x",
+      cause: null,
+    });
+    expect(imageBuildFailure(other)).toBe(other);
   });
 });

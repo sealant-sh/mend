@@ -5,6 +5,7 @@ import {
   type CreateOptions,
   SealantApiError,
   SealantError,
+  type SealantFeatures,
   type Workspace,
   type WorkspaceCredentialsPutOptions,
   type WorkspaceDotfilesApplyOptions,
@@ -17,14 +18,15 @@ import { describe, expect, it } from "vitest";
 import { SealantClients } from "./client.ts";
 import { SealantPlatformError } from "./errors.ts";
 import {
-  CONTROL_PLANE_NO_PROCESS_USER,
   CONTROL_PLANE_UNREADABLE,
+  controlPlaneObstacleOf,
   PersonLayoutPlatformLive,
   imageLayoutReportOf,
 } from "./person-layout-live.ts";
 import {
   PersonLayoutPlatform,
   PersonLayoutPlatformNone,
+  personProcessRefusal,
   type PersonExecOptions,
   UNKNOWN_IMAGE_REPORT,
   withProcessUser,
@@ -72,6 +74,8 @@ const workspaceRecording = (
     restart: never,
     expire: never,
     image: never,
+    processUser: never,
+    phase: never,
     dotfiles: {
       apply: async (options) => {
         calls.push(`dotfiles:${options.user}:${options.home}`);
@@ -151,11 +155,28 @@ const inspection = (
   personLayout: { status, missing: [...missing], unknown: [], runtime: "docker", acl: "supported" },
 });
 
+/** Core 0.39.0-next.706: every feature the person layout uses. */
+const EVERY_FEATURE: SealantFeatures = {
+  processUserRoutes: true,
+  dotfilesApply: true,
+  credentialsPartialPut: true,
+  credentialsPiOpencode: true,
+  captureOwnerMap: true,
+};
+/** A control plane from before any of them (an older Core reports every flag false). */
+const NO_FEATURE: SealantFeatures = {
+  processUserRoutes: false,
+  dotfilesApply: false,
+  credentialsPartialPut: false,
+  credentialsPiOpencode: false,
+  captureOwnerMap: false,
+};
+
 const clientsLayer = (
   inspections: Array<CreateOptions>,
   answer: WorkspaceImageInspection = inspection("supported"),
-  features: () => Effect.Effect<{ readonly processUser: boolean }, SealantPlatformError> = () =>
-    Effect.succeed({ processUser: true }),
+  features: () => Effect.Effect<SealantFeatures, SealantPlatformError> = () =>
+    Effect.succeed(EVERY_FEATURE),
 ) =>
   Layer.mock(SealantClients, {
     controlPlaneFeatures: features,
@@ -412,7 +433,7 @@ describe("the live platform (Core 0.39)", () => {
 describe("what the control plane says it can do (review of mend#569, P3-4)", () => {
   effectIt.effect("refuses the person layout by Core's own report, read once while it lasts", () =>
     Effect.gen(function* () {
-      const answers: Array<boolean | null> = [false, true, null];
+      const answers: Array<SealantFeatures | null> = [NO_FEATURE, EVERY_FEATURE, null];
       let asked = 0;
       const features = () =>
         Effect.suspend(() => {
@@ -421,7 +442,7 @@ describe("what the control plane says it can do (review of mend#569, P3-4)", () 
             ? Effect.fail(
                 new SealantPlatformError({ code: "x", status: 503, message: "down", cause: null }),
               )
-            : Effect.succeed({ processUser: answer });
+            : Effect.succeed(answer);
         });
       const platform = yield* PersonLayoutPlatform.pipe(
         Effect.provide(
@@ -430,9 +451,10 @@ describe("what the control plane says it can do (review of mend#569, P3-4)", () 
           ),
         ),
       );
-      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_NO_PROCESS_USER);
+      const older = controlPlaneObstacleOf(NO_FEATURE);
+      expect(yield* platform.controlPlaneObstacle).toBe(older);
       // Kept: asked once while the answer lasts.
-      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_NO_PROCESS_USER);
+      expect(yield* platform.controlPlaneObstacle).toBe(older);
       expect(asked).toBe(1);
       // An upgraded control plane is seen once it has passed.
       yield* TestClock.adjust("6 minutes");
@@ -443,6 +465,94 @@ describe("what the control plane says it can do (review of mend#569, P3-4)", () 
       expect(asked).toBe(3);
     }),
   );
+});
+
+const refused = (message: string) =>
+  personProcessRefusal(
+    new SealantPlatformError({ code: "user-unsupported", status: 409, message, cause: null }),
+  ).message;
+
+describe("the features the person layout needs, and the workspace's own answer (sealant#343)", () => {
+  it("names what a control plane does not report, its as-user routes first", () => {
+    expect(controlPlaneObstacleOf(EVERY_FEATURE)).toBeNull();
+    // An older Core: every flag false (it reports none of them, or only `processUser`).
+    expect(controlPlaneObstacleOf(NO_FEATURE)).toBe(
+      "the Sealant control plane does not run processes as a user (it does not report processUserRoutes, dotfilesApply, credentialsPartialPut, credentialsPiOpencode, captureOwnerMap)",
+    );
+    expect(controlPlaneObstacleOf({ ...EVERY_FEATURE, credentialsPiOpencode: false })).toBe(
+      "the Sealant control plane lacks what per-person users need (it does not report credentialsPiOpencode)",
+    );
+  });
+
+  it("reads the workspace's answer from its launch, else asks Core, and reads a failure as unknown", async () => {
+    const platform = await platformWith(
+      PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
+    );
+    const base = workspaceRecording([], []);
+    let asked = 0;
+    const launched: Workspace = {
+      ...base,
+      launch: { replayed: false, processUser: "supported" },
+      processUser: async () => {
+        asked++;
+        return "unsupported";
+      },
+    };
+    expect(await Effect.runPromise(platform.workspaceProcessUser(launched))).toBe("supported");
+    expect(asked).toBe(0);
+    const fetched: Workspace = {
+      ...base,
+      processUser: async () => {
+        asked++;
+        return "unsupported";
+      },
+    };
+    expect(await Effect.runPromise(platform.workspaceProcessUser(fetched))).toBe("unsupported");
+    const failing: Workspace = {
+      ...base,
+      processUser: async () => {
+        throw new Error("down");
+      },
+    };
+    expect(await Effect.runPromise(platform.workspaceProcessUser(failing))).toBe("unknown");
+  });
+
+  it("says why a process was refused as a person, by Core's reason, never running it as anyone else", () => {
+    expect(
+      refused(
+        "Workspace ws-1's sealantd doesn't run processes as another user (no exec.user), so nothing was started as 'm1'.",
+      ),
+    ).toBe(
+      "This workspace cannot start processes as each person (its sealantd or runtime does not), so nothing was started.",
+    );
+    expect(refused("User 'root' is not in range (uid 0): …. Nothing was started.")).toContain(
+      "outside the range",
+    );
+    expect(
+      refused("User 'm1' is not in workspace ws-1 (no passwd entry). Nothing was started."),
+    ).toBe(
+      "This person's user does not exist in the workspace yet, so nothing was started. Start the session again.",
+    );
+    expect(
+      refused("The workspace's executor did not answer whether 'm1' may run a process: x."),
+    ).toContain("did not answer");
+    expect(
+      refused(
+        "This control plane cannot start a process as the Linux user 'm1' (it does not report the feature, or could not be asked); nothing was sent.",
+      ),
+    ).toBe(
+      "This Sealant control plane cannot start processes as each person, so nothing was started.",
+    );
+    expect(refused("something new")).toBe("Nothing was started as this person: something new");
+    // Anything else as it is.
+    const other = new SealantPlatformError({
+      code: "x",
+      status: 500,
+      message: "boom",
+      cause: null,
+    });
+    expect(personProcessRefusal(other)).toBe(other);
+  });
 });
 
 describe("a credentials call Core never answers (review 2 of mend#564, P3-5)", () => {

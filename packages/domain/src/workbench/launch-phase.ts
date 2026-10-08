@@ -37,9 +37,28 @@ export const leaseWaitWords = (holder: {
   return `${LAUNCH_WAITING_PREFIX} is not answering`;
 };
 export const LAUNCH_BOOTING = "booting";
+/** The platform has the launch queued for a worker (Core's launch phase `queued`, sealant#342). */
+export const LAUNCH_QUEUED = "queued · waiting for a worker";
+/** The platform builds the workspace image (Core's launch phase `image-build`, sealant#342). */
+export const LAUNCH_BUILDING_PREFIX = "building the workspace image";
 /**
- * No executor yet, a while into the create. The platform reports no image build (SDK 0.38), so
- * this says what was observed and what it usually means, never that an image is being built.
+ * The image build as the builder reports it: `building the workspace image · step 3/12`, the step
+ * alone when the total is not known, the words alone when no step is.
+ */
+export const launchBuildingWords = (
+  progress: { readonly step?: number | undefined; readonly steps?: number | undefined } | null,
+): string => {
+  const step = progress?.step;
+  if (step === undefined) return LAUNCH_BUILDING_PREFIX;
+  const steps = progress?.steps;
+  return steps === undefined
+    ? `${LAUNCH_BUILDING_PREFIX} · step ${step}`
+    : `${LAUNCH_BUILDING_PREFIX} · step ${step}/${steps}`;
+};
+/**
+ * No executor yet, a while into the create, on a platform that reports no launch phase (before
+ * Core 0.39.0-next.706): what was observed and what it usually means, never that an image is
+ * being built.
  */
 export const LAUNCH_PREPARING =
   "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes";
@@ -49,8 +68,10 @@ const LAUNCH_BUILDING_IMAGE_LEGACY =
 const LAUNCH_PHASE_PREFIXES = [
   LAUNCH_WAITING_PREFIX,
   LAUNCH_BOOTING,
+  LAUNCH_QUEUED,
   LAUNCH_PREPARING,
   LAUNCH_BUILDING_IMAGE_LEGACY,
+  LAUNCH_BUILDING_PREFIX,
 ];
 
 /** The phase words at the end of a summary, and where they begin; null when it has none. */
@@ -75,7 +96,11 @@ export type LaunchPhase =
   /** The worktree's previous executor has not ended (saving, not answering, not confirmed). */
   | { readonly kind: "waiting-previous"; readonly words: string }
   | { readonly kind: "booting"; readonly words: string }
-  /** No runtime yet: the platform may be building the workspace image. */
+  /** The platform has the launch queued for a worker. */
+  | { readonly kind: "queued"; readonly words: string }
+  /** The platform builds the workspace image, with its step when the builder reports one. */
+  | { readonly kind: "building"; readonly words: string }
+  /** No runtime yet, on a platform that reports no phase: it may be building the image. */
   | { readonly kind: "preparing"; readonly words: string };
 
 /** The launch phase a starting session's summary names; null when it names none. */
@@ -87,5 +112,11 @@ export const launchPhaseOf = (summary: string | null): LaunchPhase | null => {
     return { kind: "waiting-previous", words: phase.words };
   }
   if (phase.words.startsWith(LAUNCH_BOOTING)) return { kind: "booting", words: phase.words };
+  if (phase.words.startsWith(LAUNCH_QUEUED)) return { kind: "queued", words: phase.words };
+  if (phase.words === LAUNCH_BUILDING_IMAGE_LEGACY)
+    return { kind: "preparing", words: phase.words };
+  if (phase.words.startsWith(LAUNCH_BUILDING_PREFIX)) {
+    return { kind: "building", words: phase.words };
+  }
   return { kind: "preparing", words: phase.words };
 };

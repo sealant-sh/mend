@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   LAUNCH_BOOTING,
   LAUNCH_PREPARING,
+  LAUNCH_QUEUED,
   LAUNCH_WAITING_SAVING,
+  launchBuildingWords,
   launchPhaseOf,
   leaseWaitWords,
   withoutLaunchPhase,
@@ -60,5 +62,29 @@ describe("launch phase words", () => {
     );
     // Every one of them still reads as the waiting phase.
     expect(launchPhaseOf(notFound)?.kind).toBe("waiting-previous");
+  });
+});
+
+describe("Core's launch phase on the line (sealant#342)", () => {
+  it("says the build's step when the builder reports one", () => {
+    expect(launchBuildingWords({ step: 3, steps: 12 })).toBe(
+      "building the workspace image · step 3/12",
+    );
+    expect(launchBuildingWords({ step: 3 })).toBe("building the workspace image · step 3");
+    expect(launchBuildingWords(null)).toBe("building the workspace image");
+  });
+
+  it("reads queued and building back, and takes the words off once the agent runs", () => {
+    expect(launchPhaseOf(LAUNCH_QUEUED)).toEqual({ kind: "queued", words: LAUNCH_QUEUED });
+    const building = launchBuildingWords({ step: 3, steps: 12 });
+    expect(launchPhaseOf(`dotfiles not applied · ${building}`)).toEqual({
+      kind: "building",
+      words: building,
+    });
+    expect(withoutLaunchPhase(`dotfiles not applied · ${building}`)).toBe("dotfiles not applied");
+    // What older servers said still reads as preparing.
+    expect(
+      launchPhaseOf("building the workspace image (first launch after an update, ~8 min)")?.kind,
+    ).toBe("preparing");
   });
 });

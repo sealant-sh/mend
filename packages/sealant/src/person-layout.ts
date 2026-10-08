@@ -8,6 +8,7 @@ import type {
   WorkspaceCredentialSkip,
   WorkspaceDotfilesManager,
   WorkspaceExecOptions,
+  WorkspaceProcessUserCapability,
 } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -158,12 +159,20 @@ export class PersonLayoutPlatform extends Context.Service<
     readonly processUser: boolean;
     /**
      * Why the control plane cannot run the person layout, in the words a refusal names, or null
-     * when it can: read from what Core itself reports (its index's `features.processUser`), never
-     * learned by a launch failing later. Only a Core that reports it can carry the person layout's
-     * every API (Core 0.39.0-next.703 still does not: its exec and sessions refuse a `user`), so
-     * the one capability is the floor. Read only when a launch could be person; kept a while.
+     * when it can: read from what Core itself reports (`sealant.features()`: its as-user routes,
+     * the dotfiles verb, partial puts, pi's and opencode's logins, the capture owner map; Core
+     * 0.39.0-next.706), never learned by a launch failing later. Read only when a launch could be
+     * person; kept a while.
      */
     readonly controlPlaneObstacle: Effect.Effect<string | null>;
+    /**
+     * The workspace's own answer to whether its processes can start as a person
+     * (`workspace.processUser()`, sealant#343): `supported` only when the sealantd of the image it
+     * booted reports `exec.user`. A person launch runs only on `supported` (decision 1).
+     */
+    readonly workspaceProcessUser: (
+      workspace: Workspace,
+    ) => Effect.Effect<WorkspaceProcessUserCapability>;
     /**
      * `applyDotfiles` works: a person's dotfiles can be applied as them into their home. Where it
      * is false, a person launch follows decision 1's fallback for dotfiles
@@ -268,6 +277,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
     processUser: false,
     dotfilesUser: false,
     controlPlaneObstacle: Effect.succeed(null),
+    workspaceProcessUser: () => Effect.succeed("unsupported"),
     withOwnerMap: (options) => options,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),
     postCredentials: () =>
@@ -290,6 +300,34 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
       ),
   },
 );
+
+/**
+ * Mend's line for a process Core or the SDK refused to start as a person (`user-unsupported`,
+ * sealant#343; docs/adr/0016 decision 13), by the reason Core's words give: nothing was started,
+ * and never as anyone else. Core gives the reason only in its message, so the lines read it there
+ * (PLATFORM-FEEDBACK.md, 2026-10-08); an unknown one keeps Core's words. Any other failure as it is.
+ */
+export const personProcessRefusal = (error: SealantPlatformError): SealantPlatformError => {
+  if (error.code !== "user-unsupported") return error;
+  const words = error.message;
+  const line = /doesn't run processes as another user|never starts a process as a user/.test(words)
+    ? "This workspace cannot start processes as each person (its sealantd or runtime does not), so nothing was started."
+    : /is not in range/.test(words)
+      ? "This person's user in the workspace is outside the range Sealant runs processes as, so nothing was started."
+      : /is not in workspace/.test(words)
+        ? "This person's user does not exist in the workspace yet, so nothing was started. Start the session again."
+        : /cannot be checked|did not answer|did not confirm|no way to reach/.test(words)
+          ? "The workspace did not answer whether this person may run a process, so nothing was started. Start the session again."
+          : /does not report the feature|could not be asked|answers 404/.test(words)
+            ? "This Sealant control plane cannot start processes as each person, so nothing was started."
+            : `Nothing was started as this person: ${words}`;
+  return new SealantPlatformError({
+    code: error.code,
+    status: error.status,
+    message: line,
+    cause: error,
+  });
+};
 
 /**
  * Runs `run` with the options as the SDK takes them: Mend's `ProcessUser` passed as its passwd

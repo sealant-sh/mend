@@ -13,6 +13,8 @@ import type {
   WorkspaceCredentialHome,
   WorkspaceImageInspection,
   WorkspaceImagePersonLayout,
+  SealantFeatures,
+  WorkspaceProcessUserCapability,
 } from "@sealant/sdk";
 import { Clock, Duration, Effect, Layer } from "effect";
 
@@ -111,9 +113,40 @@ const CONTROL_PLANE_ANSWER_MS = 5 * 60_000;
 /** How long an unreadable answer is kept before the control plane is asked again. */
 const CONTROL_PLANE_FAILURE_MS = 15_000;
 
-/** The control plane does not report running a process as a given user. */
-export const CONTROL_PLANE_NO_PROCESS_USER =
-  "the Sealant control plane does not run processes as a user (it does not report processUser)";
+/**
+ * The features the person layout uses, each one Core reports (`sealant.features()`, Core
+ * 0.39.0-next.706): a control plane from before any of them reports it false.
+ */
+const PERSON_LAYOUT_FEATURES = [
+  "processUserRoutes",
+  "dotfilesApply",
+  "credentialsPartialPut",
+  "credentialsPiOpencode",
+  "captureOwnerMap",
+] as const satisfies ReadonlyArray<keyof SealantFeatures>;
+
+/**
+ * Why a control plane cannot run the person layout, in the words a refusal names, or null when it
+ * reports every feature the layout uses. Its as-user routes first: without them no process starts
+ * as a person at all.
+ */
+export const controlPlaneObstacleOf = (features: SealantFeatures): string | null => {
+  const missing = PERSON_LAYOUT_FEATURES.filter((feature) => !features[feature]);
+  if (missing.length === 0) return null;
+  return missing.includes("processUserRoutes")
+    ? `the Sealant control plane does not run processes as a user (it does not report ${missing.join(", ")})`
+    : `the Sealant control plane lacks what per-person users need (it does not report ${missing.join(", ")})`;
+};
+
+/** The workspace's own answer (`workspace.processUser()`), as a prepare's missing words. */
+export const workspaceProcessUserObstacleOf = (
+  capability: WorkspaceProcessUserCapability,
+): string | null =>
+  capability === "supported"
+    ? null
+    : capability === "unsupported"
+      ? "its sealantd cannot run processes as a user"
+      : "Sealant could not say whether this workspace runs processes as a user";
 /** The control plane could not be asked: unknown is no, for a layout every process depends on. */
 export const CONTROL_PLANE_UNREADABLE =
   "the Sealant control plane could not be asked whether it runs processes as a user";
@@ -174,7 +207,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         if (controlPlane !== null && now < controlPlane.until) return controlPlane.obstacle;
         const answer = yield* clients.controlPlaneFeatures().pipe(
           Effect.map((features) => ({
-            obstacle: features.processUser ? null : CONTROL_PLANE_NO_PROCESS_USER,
+            obstacle: controlPlaneObstacleOf(features),
             until: now + CONTROL_PLANE_ANSWER_MS,
           })),
           Effect.catch((error) =>
@@ -194,6 +227,14 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
       return {
         processUser: true,
         controlPlaneObstacle,
+        // Filled in by `ready()` on the handle the create made; asked of Core otherwise (a handle
+        // from `get()`). Unreadable is unknown, which is not a yes.
+        workspaceProcessUser: (workspace) =>
+          workspace.launch?.processUser !== undefined
+            ? Effect.succeed(workspace.launch.processUser)
+            : call(() => workspace.processUser()).pipe(
+                Effect.orElseSucceed((): WorkspaceProcessUserCapability => "unknown"),
+              ),
         // Core 0.39.0-next.703 (sealant#334, sealantd 0.20.0-next.152): `workspace.dotfiles.apply`.
         dotfilesUser: true,
         // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, and Core passes

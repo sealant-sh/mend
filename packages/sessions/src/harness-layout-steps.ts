@@ -24,6 +24,7 @@ import {
   type ProcessUser,
   SealantPlatformError,
   type SealantClientShape,
+  workspaceProcessUserObstacleOf,
 } from "@mend/sealant";
 import type { Harness, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { Clock, Config, Deferred, Duration, Effect, Layer, Schedule } from "effect";
@@ -910,10 +911,24 @@ export const makeHarnessLayoutSteps = (deps: {
       yield* repo.confirm(input.launchId);
       return { layout: "shared", fallback: null };
     }
-    const report = parseLayoutReport(input.stdout);
+    const prepared = parseLayoutReport(input.stdout);
     // The restore, not the image: nothing is recorded against the image, and the launch is
     // refused whatever the worktree, since nobody could edit what came back.
-    if (report.unowned !== null) return yield* layoutRefused(ownerMapRefusal(report.unowned));
+    if (prepared.unowned !== null) return yield* layoutRefused(ownerMapRefusal(prepared.unowned));
+    // The workspace's own answer (sealant#343): a person launch runs only where its processes can
+    // start as a person. `unsupported` is the image's sealantd, recorded against it like a probe's
+    // finding; `unknown` is not a yes, and is not held against the image.
+    const capability = yield* platform.workspaceProcessUser(input.workspace);
+    const workspaceObstacle = workspaceProcessUserObstacleOf(capability);
+    const report =
+      workspaceObstacle === null || !prepared.ready
+        ? prepared
+        : {
+            ...prepared,
+            ready: false,
+            probed: capability === "unsupported",
+            missing: [workspaceObstacle],
+          };
     // A person could not be given their Mend identity: usually passing, never the image's fault,
     // so the launch is refused with words to try again and nothing is recorded against the image.
     const identityFailures = report.failed.filter((entry) => entry.includes(": identity: "));

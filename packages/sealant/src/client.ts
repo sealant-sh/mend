@@ -20,6 +20,7 @@ import type {
   WorkspaceForward,
   WorkspaceCaptureOwnerMap,
   WorkspaceImageInspection,
+  SealantFeatures,
 } from "@sealant/sdk";
 import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
 import type { Harness, SealantConfig } from "@sealant/sdk";
@@ -30,7 +31,6 @@ import {
   createRunOp,
   createSshKeyOp,
   expireWorkspaceOp,
-  getIndexOp,
   getSessionOutputOp,
   getSetupStateOp,
   inferenceRespondOp,
@@ -52,6 +52,7 @@ import { SealantIdentityStore } from "./identity.ts";
 import {
   type PersonExecOptions,
   type PersonSessionOptions,
+  personProcessRefusal,
   withProcessUser,
 } from "./person-layout.ts";
 import { SealantPrincipal } from "./principal.ts";
@@ -884,7 +885,11 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
                 ? {}
                 : { credentialsHome: launch.credentialsHome }),
             };
-      if (watch === undefined) return wrap(() => sealant.workspaces.create(keyed));
+      if (watch === undefined) {
+        return wrap(() => sealant.workspaces.create(keyed)).pipe(
+          Effect.mapError(imageBuildFailure),
+        );
+      }
       // The SDK's own `create` is exactly this: the create, then `ready()` on the handle it made
       // (whose readiness timeout still stops an abandoned launch). Split only so the handle can be
       // watched while it gets ready.
@@ -893,6 +898,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
           Effect.gen(function* () {
             const watcher = yield* Effect.forkChild(watch(workspace));
             return yield* wrap(() => workspace.ready()).pipe(
+              Effect.mapError(imageBuildFailure),
               Effect.ensuring(Fiber.interrupt(watcher)),
             );
           }),
@@ -934,7 +940,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       (workspace: Workspace, argv: ReadonlyArray<string>, options?: PersonSessionOptions) =>
         withProcessUser(options, (sdkOptions) =>
           wrap(() => workspace.sessions.open(argv, sdkOptions)),
-        ),
+        ).pipe(Effect.mapError(personProcessRefusal)),
     );
 
     const forward = Effect.fn("SealantClient.forward")(
@@ -1041,7 +1047,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       argv: readonly string[],
       options?: PersonExecOptions,
     ) => {
-      return withProcessUser(options, (sdkOptions) => wrap(() => workspace.exec(argv, sdkOptions)));
+      return withProcessUser(options, (sdkOptions) =>
+        wrap(() => workspace.exec(argv, sdkOptions)),
+      ).pipe(Effect.mapError(personProcessRefusal));
     });
     const bindWorkspace = Effect.fn("SealantClient.bindWorkspace")(
       (workspace: Workspace, options: WorkspaceBindOptions) =>
@@ -1296,13 +1304,11 @@ export class SealantClients extends Context.Service<
       options: CreateOptions,
     ) => Effect.Effect<WorkspaceImageInspection, SealantPlatformError>;
     /**
-     * What the control plane says it can do that an older one cannot (its index's `features`):
-     * `processUser`, a process run as a given Linux user. One call, nothing changed.
+     * What the control plane can do that an older one cannot (`sealant.features()`, Core
+     * 0.39.0-next.706): its as-user routes, the dotfiles verb, partial puts, pi's and opencode's
+     * logins and the capture owner map. Read once and kept five minutes by the SDK.
      */
-    readonly controlPlaneFeatures: () => Effect.Effect<
-      { readonly processUser: boolean },
-      SealantPlatformError
-    >;
+    readonly controlPlaneFeatures: () => Effect.Effect<SealantFeatures, SealantPlatformError>;
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -1536,11 +1542,7 @@ export const SealantClientsLive: Layer.Layer<
     });
 
     const controlPlaneFeatures = Effect.fn("SealantClients.controlPlaneFeatures")(function* () {
-      const index = yield* getIndexOp().pipe(
-        Effect.provideContext(adminContext),
-        Effect.mapError(toPlatformError),
-      );
-      return { processUser: index.features?.processUser === true };
+      return yield* wrap(() => admin.features());
     });
 
     return {
@@ -1695,6 +1697,27 @@ export const platformErrorCode = (cause: unknown): string =>
     : null) ??
   stableCodeOf(cause) ??
   (cause instanceof SealantError ? cause.code : (tagOf(cause) ?? "UNKNOWN"));
+
+/**
+ * A launch whose image build Core gave up on (sealant#342), in words a person can act on, with the
+ * SDK's own (which name the step it stopped on) after them. Any other failure as it is.
+ */
+export const imageBuildFailure = (error: SealantPlatformError): SealantPlatformError => {
+  const lead =
+    error.code === "workspace_image_build_stalled"
+      ? "the workspace image build stopped making progress, so nothing was started"
+      : error.code === "workspace_image_build_timeout"
+        ? "the workspace image build ran past its time limit, so nothing was started"
+        : null;
+  return lead === null
+    ? error
+    : new SealantPlatformError({
+        code: error.code,
+        status: error.status,
+        message: `${lead}: ${error.message}`,
+        cause: error,
+      });
+};
 
 export const toPlatformError = (cause: unknown) => {
   const provider = cause instanceof SealantApiError ? cause.provider : undefined;

@@ -7,11 +7,32 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-08 · 0.39.0-next.706 · Processes as a person, launch phases and image-build bounds: shipped
+
+- **Shipped (0.39.0-next.706, sealant#343) and used:** exec and sessions as a person on Core's
+  as-user routes, `sealant.features()` (`processUserRoutes`, `dotfilesApply`,
+  `credentialsPartialPut`, `credentialsPiOpencode`, `captureOwnerMap`) and each workspace's
+  `processUser()`. Mend runs a person launch only when the control plane reports every one of those
+  features (`controlPlaneObstacleOf`, before create) and the workspace answers `supported`
+  (`workspaceProcessUserObstacleOf`, at prepare); otherwise a fresh worktree runs as one person with
+  the reason and a person worktree is refused with it. `user-unsupported` becomes Mend's lines
+  (`personProcessRefusal`).
+- **Missing:** a stable reason for `user-unsupported`. Core words the reason (sealantd unsupported,
+  not in range, unknown user, unanswered) only in its message, so Mend reads it there; a body field
+  such as `reason: "sealantd-unsupported" | "not-in-range" | "unknown-user" | "check-unavailable"`
+  would remove that coupling, as `provider` did for refused accounts.
+- **Shipped (0.39.0-next.706, sealant#342) and used:** launch phases (`workspace.phase()`: queued,
+  image build with step N/M, boot), an image build that does not spend `ready()`'s bound, and
+  `workspace_image_build_stalled` / `workspace_image_build_timeout`. The session line says "queued ·
+  waiting for a worker", "building the workspace image · step 3/12", then "booting"; the two build
+  failures say the build stalled or ran past its limit, with the SDK's words naming the step. Mend
+  keeps `readyTimeoutMs` and `imageBuildTimeoutMs` at Core's defaults.
+
 ## 2026-10-08 · 0.39.0-next.703 · The person layout needs Core to say it runs processes as a user
 
-- **Missing, now load-bearing:** `features.processUser` on the control plane's index is `false` in
-  0.39.0-next.703 (`apps/api/src/routes/system/system.module.ts`), and exec and sessions refuse a
-  `user` (`user-unsupported`), so no process can start as a person even though sealantd
+- **Shipped in 0.39.0-next.706 (above).** `features.processUser` on the control plane's index is
+  `false` in 0.39.0-next.703 (`apps/api/src/routes/system/system.module.ts`), and exec and sessions
+  refuse a `user` (`user-unsupported`), so no process can start as a person even though sealantd
   0.20.0-next.152 can. Mend now reads that report before deciding a launch's layout
   (`PersonLayoutPlatform.controlPlaneObstacle`, `SealantClients.controlPlaneFeatures`): a fresh
   worktree runs `shared` with the reason and a `person` worktree is refused with it, before create.
