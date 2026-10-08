@@ -1,4 +1,5 @@
 import {
+  JOIN_SHARED_HOME_LINE,
   joinWorktreeLine,
   REPLACE_WORKSPACE_ACTION,
   SHARED_CONTROL_LINE,
@@ -8,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   confirmPlan,
+  hasPersonFacts,
   joinLineFor,
   launcherNameOf,
   othersLiveInWorktree,
@@ -17,6 +19,8 @@ import {
   sharedControlQuestion,
   workspaceLineList,
   workspaceReadsOf,
+  worktreeJoinLine,
+  worktreeListsPeople,
   wrapWords,
   type WorkspaceRetirementDto,
 } from "./shared-workspace.ts";
@@ -60,6 +64,42 @@ describe("who else is live in a worktree", () => {
   it("says the join line word for word, and nothing when nobody else runs there", () => {
     expect(joinLineFor(["Anna"])).toBe(joinWorktreeLine(["Anna"]));
     expect(joinLineFor([])).toBeNull();
+  });
+});
+
+describe("the join line by the workspace's layout", () => {
+  const live = { worktreeId: "wt-1", status: "running" };
+
+  it("says the per-person line, by name, where the worktree lists someone else live", () => {
+    const sessions = [{ ...live, ownerUserId: "anna", livePeople: [anna, bob] }];
+    expect(worktreeJoinLine(sessions, "wt-1", "bob")).toBe(joinWorktreeLine(["Anna"]));
+    expect(worktreeListsPeople(sessions, "wt-1")).toBe(true);
+  });
+
+  it("says the shared-home line where another person's session is live and nobody is listed", () => {
+    const sessions = [{ ...live, ownerUserId: "anna", livePeople: [] }];
+    expect(worktreeJoinLine(sessions, "wt-1", "bob")).toBe(JOIN_SHARED_HOME_LINE);
+    expect(worktreeListsPeople(sessions, "wt-1")).toBe(false);
+  });
+
+  it("says nothing for an unknown viewer, your own session, a settled one, or a listed executor", () => {
+    const annas = [{ ...live, ownerUserId: "anna", livePeople: [] }];
+    expect(worktreeJoinLine(annas, "wt-1", null)).toBeNull();
+    expect(worktreeJoinLine(annas, "wt-1", "anna")).toBeNull();
+    expect(worktreeJoinLine(annas, "wt-2", "bob")).toBeNull();
+    expect(
+      worktreeJoinLine([{ ...live, status: "completed", ownerUserId: "anna" }], "wt-1", "bob"),
+    ).toBeNull();
+    // A per-person executor where only you are live: nobody else's process runs there.
+    expect(
+      worktreeJoinLine([{ ...live, ownerUserId: "anna", livePeople: [bob] }], "wt-1", "bob"),
+    ).toBeNull();
+  });
+
+  it("finds something per-person to say only where a row lists someone live or a retirement", () => {
+    expect(hasPersonFacts([{ livePeople: [], workspaceRetirement: null }, {}])).toBe(false);
+    expect(hasPersonFacts([{ livePeople: [anna] }])).toBe(true);
+    expect(hasPersonFacts([{ workspaceRetirement: "retiring" }])).toBe(true);
   });
 });
 

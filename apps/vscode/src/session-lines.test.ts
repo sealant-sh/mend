@@ -1,19 +1,23 @@
-import { joinWorktreeLine } from "@mend/domain/workbench";
+import { JOIN_SHARED_HOME_LINE, joinWorktreeLine } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
   joinLine,
+  joinLineOf,
   launcherName,
+  liveSessionLines,
   othersInWorktree,
   parseLivePeople,
   parseMembers,
   parseRetirement,
   parseRetirementState,
   parseWaitLine,
+  readProjects,
   sessionLines,
-  withLiveFacts,
   workspaceReads,
+  worktreeJoinLine,
 } from "./session-lines.js";
+import type { Session } from "./types.js";
 
 const anna = { accountId: "anna", name: "Anna" };
 const bob = { accountId: "bob", name: "Bob" };
@@ -135,42 +139,142 @@ describe("which workspace reads are worth a request", () => {
       retirement: false,
     });
   });
-
-  it("lays the session list's retirement onto the project view's rows", () => {
-    const merged = withLiveFacts(
-      [
-        { id: "s1", livePeople: [], workspaceRetirement: null },
-        { id: "s2", livePeople: [], workspaceRetirement: null },
-      ],
-      [{ id: "s1", livePeople: [], workspaceRetirement: "marked" }],
-    );
-    expect(merged.map((session) => session.workspaceRetirement)).toEqual(["marked", null]);
-  });
 });
 
 describe("the join line", () => {
-  const sessions = [
-    { id: "s1", worktreeId: "wt-1", livePeople: [], workspaceRetirement: null },
-    { id: "s2", worktreeId: "wt-2", livePeople: [], workspaceRetirement: null },
-  ];
-  const listed = [{ id: "s1", livePeople: [anna, bob], workspaceRetirement: null }];
+  const row: Pick<Session, "worktreeId" | "status" | "ownerUserId" | "livePeople"> = {
+    worktreeId: "wt-1",
+    status: "running",
+    ownerUserId: "anna",
+    livePeople: [],
+  };
 
-  it("names the others live in the worktree, from the session list", () => {
-    const merged = withLiveFacts(sessions, listed);
-    expect(othersInWorktree(merged, "wt-1", "bob")).toEqual(["Anna"]);
-    expect(joinLine(othersInWorktree(merged, "wt-1", "bob"))).toBe(joinWorktreeLine(["Anna"]));
+  it("names the others live in the worktree, from the project view's rows", () => {
+    const sessions = [{ ...row, livePeople: [anna, bob] }];
+    expect(othersInWorktree(sessions, "wt-1", "bob")).toEqual(["Anna"]);
+    expect(worktreeJoinLine(sessions, "wt-1", "bob")).toBe(joinWorktreeLine(["Anna"]));
+    expect(joinLine([])).toBeNull();
   });
 
-  it("says nothing in a worktree where only you, or nobody, runs", () => {
-    const merged = withLiveFacts(sessions, listed);
-    expect(joinLine(othersInWorktree(merged, "wt-2", "bob"))).toBeNull();
-    expect(othersInWorktree(merged, "wt-1", null)).toEqual([]);
-    expect(
-      othersInWorktree(
-        withLiveFacts(sessions, [{ id: "s1", livePeople: [bob], workspaceRetirement: null }]),
-        "wt-1",
-        "bob",
-      ),
-    ).toEqual([]);
+  it("says the shared-home line where another person's session is live and nobody is listed", () => {
+    expect(worktreeJoinLine([row], "wt-1", "bob")).toBe(JOIN_SHARED_HOME_LINE);
+  });
+
+  it("says nothing for an unknown viewer, your own session, a settled one, or only you listed", () => {
+    expect(worktreeJoinLine([row], "wt-1", null)).toBeNull();
+    expect(worktreeJoinLine([row], "wt-1", "anna")).toBeNull();
+    expect(worktreeJoinLine([row], "wt-2", "bob")).toBeNull();
+    expect(worktreeJoinLine([{ ...row, status: "completed" }], "wt-1", "bob")).toBeNull();
+    expect(worktreeJoinLine([{ ...row, livePeople: [bob] }], "wt-1", "bob")).toBeNull();
+  });
+});
+
+/** A client that answers every read and records which it was asked for. */
+const countingClient = (viewer: string | null = "bob") => {
+  const asked: Array<string> = [];
+  return {
+    asked,
+    viewerId: async () => {
+      asked.push("/organization");
+      return viewer;
+    },
+    memberNames: async () => {
+      asked.push("/organization/members");
+      return [];
+    },
+    waitLine: async (id: string) => {
+      asked.push(`/sessions/${id}/waiting`);
+      return null;
+    },
+    workspaceRetirement: async (id: string) => {
+      asked.push(`/sessions/${id}/workspace-retirement`);
+      return null;
+    },
+  };
+};
+
+describe("with per-person homes off, no request beyond the project view", () => {
+  const project = {
+    id: "p1",
+    name: "auth",
+    originUrl: null,
+    storePath: "/store/auth",
+    defaultBranch: "main",
+  };
+  const session = (over: Partial<Session> = {}): Session => ({
+    id: "s1",
+    projectId: project.id,
+    worktreeId: "wt-1",
+    harness: "codex",
+    model: null,
+    label: null,
+    worktree: "fix-auth",
+    branch: "mend/fix-auth",
+    status: "running",
+    sealantWorkspaceId: null,
+    summary: null,
+    createdAt: "2026-10-08T12:00:00.000Z",
+    ownerUserId: "anna",
+    livePeople: [],
+    sharedControlEnabledAt: "2026-10-08T12:00:00.000Z",
+    workspaceRetirement: null,
+    ...over,
+  });
+  const reading = (sessions: ReadonlyArray<Session>) => {
+    const client = countingClient();
+    return {
+      ...client,
+      listProjects: async () => {
+        client.asked.push("/projects");
+        return [project];
+      },
+      projectDetail: async (id: string) => {
+        client.asked.push(`/projects/${id}`);
+        return { project, sessions };
+      },
+    };
+  };
+
+  it("reads the tree's projects without asking who reads them", async () => {
+    const client = reading([session()]);
+    expect((await readProjects(client)).viewer).toBeNull();
+    expect(client.asked).toEqual(["/projects", "/projects/p1"]);
+  });
+
+  it("asks who reads them once a row lists someone live or a retirement", async () => {
+    const live = reading([session({ livePeople: [anna] })]);
+    expect((await readProjects(live)).viewer).toBe("bob");
+    expect(live.asked).toContain("/organization");
+    const retiring = reading([session({ workspaceRetirement: "marked" })]);
+    await readProjects(retiring);
+    expect(retiring.asked).toContain("/organization");
+  });
+
+  it("says a live session's lines without a request", async () => {
+    const client = countingClient();
+    expect(await liveSessionLines(session(), client)).toEqual([]);
+    expect(client.asked).toEqual([]);
+  });
+
+  it("asks for the viewer and the waiting line only once the row lists people", async () => {
+    const client = countingClient();
+    await liveSessionLines(session({ livePeople: [anna, bob] }), client);
+    expect(client.asked).toEqual(["/organization", "/sessions/s1/waiting"]);
+  });
+
+  it("checks the join without asking who you are, and says the shared-home line only for a known viewer", async () => {
+    const client = countingClient();
+    expect(await joinLineOf([session()], "wt-1", null, client)).toBeNull();
+    expect(client.asked).toEqual([]);
+    expect(await joinLineOf([session()], "wt-1", "bob", client)).toBe(JOIN_SHARED_HOME_LINE);
+    expect(client.asked).toEqual([]);
+  });
+
+  it("asks who you are where the worktree lists someone live, then names them", async () => {
+    const client = countingClient();
+    expect(await joinLineOf([session({ livePeople: [anna] })], "wt-1", null, client)).toBe(
+      joinWorktreeLine(["Anna"]),
+    );
+    expect(client.asked).toEqual(["/organization"]);
   });
 });

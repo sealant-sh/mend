@@ -1,5 +1,6 @@
 import {
   retirementStopLines,
+  sharedControlConfirm,
   sharedControlLine,
   sharedWorkspaceLine,
   workspaceRetirementLine,
@@ -22,19 +23,46 @@ import {
  */
 
 /**
+ * The session view's `control.turnsOnSendersLogin` (docs/adr/0016, decision 13), or null until
+ * `GET /api/sessions/:id` has answered: a project list's row cannot say whose login a steered
+ * turn runs on, and neither wording is assumed in its place.
+ */
+export type TurnsOnSendersLogin = boolean | null;
+
+/** Beside the Shared control switch while turning it on waits for the session view. */
+export const SHARED_CONTROL_UNREAD = "session view not read yet";
+
+/**
  * Beside the Shared control switch: what turning it on lets others do, with the domain's line on
  * whose login a steered turn runs (docs/adr/0016, decision 13): its sender's where the worktree
- * runs each person as themselves (`turnsOnSendersLogin`), the owner's otherwise.
+ * runs each person as themselves (`turnsOnSendersLogin`), the owner's otherwise. Before the
+ * session view answers it says neither.
  */
-export const sharedControlSwitchTitle = (turnsOnSendersLogin: boolean): string =>
-  `On lets everyone who can see this project send turns, answer approvals and interrupt. ${sharedControlLine(turnsOnSendersLogin)} They can read the terminal; only you type in it. Every action is recorded with who sent it.`;
+export const sharedControlSwitchTitle = (turnsOnSendersLogin: TurnsOnSendersLogin): string =>
+  turnsOnSendersLogin === null
+    ? "On lets everyone who can see this project send turns, answer approvals and interrupt. It is offered once the session view says whose login a steered turn runs on."
+    : `On lets everyone who can see this project send turns, answer approvals and interrupt. ${sharedControlLine(turnsOnSendersLogin)} They can read the terminal; only you type in it. Every action is recorded with who sent it.`;
 
 /**
  * What pressing On or Off on the Shared control switch does: nothing on the side already chosen;
- * turning it on asks first, in both layouts (`sharedControlConfirm`); turning it off never asks.
+ * turning it on asks first, in both layouts (`sharedControlConfirm`), and waits (offers nothing)
+ * until the session view has said which layout it is; turning it off never asks.
  */
-export const sharedControlPress = (shared: boolean, enabled: boolean): "nothing" | "ask" | "set" =>
-  shared === enabled ? "nothing" : enabled ? "ask" : "set";
+export const sharedControlPress = (
+  shared: boolean,
+  enabled: boolean,
+  turnsOnSendersLogin: TurnsOnSendersLogin,
+): "nothing" | "wait" | "ask" | "set" =>
+  shared === enabled ? "nothing" : !enabled ? "set" : turnsOnSendersLogin === null ? "wait" : "ask";
+
+/**
+ * The confirmation for turning Shared control on, in the domain's words for the session's layout;
+ * null until the session view has answered, so neither wording is shown in its place.
+ */
+export const sharedControlConfirmOf = (
+  turnsOnSendersLogin: TurnsOnSendersLogin,
+): ReturnType<typeof sharedControlConfirm> | null =>
+  turnsOnSendersLogin === null ? null : sharedControlConfirm(turnsOnSendersLogin);
 
 /**
  * Whether the session's waiting line is worth reading (docs/adr/0016, decision 6): someone is live

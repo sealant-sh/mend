@@ -156,7 +156,8 @@ export function TerminalPane({
       : {
           ...sessionActions(session, viewer),
           toggleSharedControl: false,
-          // Until the session's own view says otherwise, a steered turn spends the owner's logins.
+          // Only the session's own view says whose login a steered turn runs on; the Shared
+          // control switch reads it from the detail alone and waits for it.
           turnsOnSendersLogin: false,
         });
   const [from, setFrom] = useState(() => takeReplayCursor(tab.sessionId));
@@ -395,7 +396,7 @@ export function TerminalPane({
             {session.ownerUserId !== null && control.own && (
               <SharedControlSwitch
                 session={session}
-                turnsOnSendersLogin={control.turnsOnSendersLogin}
+                turnsOnSendersLogin={detail.data?.control.turnsOnSendersLogin ?? null}
               />
             )}
             {servicesHold !== null && control.stop && (

@@ -23,6 +23,15 @@ export const joinWorktreeLine = (others: ReadonlyArray<string>): string =>
     : `${listed(others)}'s sessions are running in this worktree. You share its workspace: everything you run runs as you, on your own logins, but any of you can read the others' files, logins included.`;
 
 /**
+ * Where a person meets another person's session in a worktree whose live workspace shares one
+ * home (decision 14, a `shared` executor): what they start there runs as the person whose launch
+ * started the workspace, on that person's logins and Git identity, not their own. No names: who
+ * started it is not who else runs there.
+ */
+export const JOIN_SHARED_HOME_LINE =
+  "Another person's session is running in this worktree, in a workspace that shares one home: what you start there runs on the logins and Git identity of whoever started that workspace, not yours.";
+
+/**
  * On a session while another person's process is live in its executor: "Shared workspace with
  * Anna · each of you runs as yourself · either of you can read the other's files." The people are
  * the session view's `livePeople`; `viewer` is whoever reads it. Null when nobody else is live

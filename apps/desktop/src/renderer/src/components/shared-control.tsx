@@ -1,4 +1,3 @@
-import { sharedControlConfirm } from "@mend/domain/workbench";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,7 +14,13 @@ import { useState } from "react";
 
 import { setSharedControl, type SessionControlDto, type SessionDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
-import { sharedControlPress, sharedControlSwitchTitle } from "#/lib/shared-workspace";
+import {
+  SHARED_CONTROL_UNREAD,
+  sharedControlConfirmOf,
+  sharedControlPress,
+  sharedControlSwitchTitle,
+  type TurnsOnSendersLogin,
+} from "#/lib/shared-workspace";
 
 const useToggle = (session: SessionDto) =>
   useMutation({
@@ -34,20 +39,23 @@ const errorText = (error: unknown): string =>
  * the domain's words for the session's layout (`sharedControlConfirm`, docs/adr/0016, decision
  * 13): where each turn runs on its sender's login, the conversation so far becomes visible to
  * whoever steers and nobody's personal memory reaches the agent; elsewhere every steered turn
- * spends the owner's logins. Turning it off never asks.
+ * spends the owner's logins. Until the session view has said which (`turnsOnSendersLogin` is
+ * null), On is disabled with a note and no confirmation exists: neither wording is assumed.
+ * Turning it off never asks.
  */
 export function SharedControlSwitch({
   session,
   turnsOnSendersLogin,
 }: {
   readonly session: SessionDto;
-  /** The session view's `control.turnsOnSendersLogin`; false where it has not said. */
-  readonly turnsOnSendersLogin: boolean;
+  /** The session view's `control.turnsOnSendersLogin`; null until it has answered. */
+  readonly turnsOnSendersLogin: TurnsOnSendersLogin;
 }) {
   const toggle = useToggle(session);
   const [confirming, setConfirming] = useState(false);
   const shared = session.sharedControlEnabledAt !== null;
-  const confirm = sharedControlConfirm(turnsOnSendersLogin);
+  const confirm = sharedControlConfirmOf(turnsOnSendersLogin);
+  const unread = !shared && turnsOnSendersLogin === null;
   return (
     <span
       className="flex shrink-0 items-center gap-1.5"
@@ -58,6 +66,11 @@ export function SharedControlSwitch({
           {errorText(toggle.error)}
         </span>
       )}
+      {unread && (
+        <span className="font-mono text-[11.5px] text-muted-foreground">
+          {SHARED_CONTROL_UNREAD}
+        </span>
+      )}
       <span className="font-sans text-[12px] text-label">Shared control</span>
       <span role="group" aria-label="Shared control" className="flex rounded-md bg-wash p-0.5">
         {([false, true] as const).map((enabled) => (
@@ -65,9 +78,9 @@ export function SharedControlSwitch({
             key={String(enabled)}
             type="button"
             aria-pressed={shared === enabled}
-            disabled={toggle.isPending}
+            disabled={toggle.isPending || (enabled && unread)}
             onClick={() => {
-              const press = sharedControlPress(shared, enabled);
+              const press = sharedControlPress(shared, enabled, turnsOnSendersLogin);
               if (press === "ask") setConfirming(true);
               else if (press === "set") toggle.mutate(enabled);
             }}
@@ -82,25 +95,27 @@ export function SharedControlSwitch({
           </button>
         ))}
       </span>
-      <AlertDialog open={confirming} onOpenChange={setConfirming}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{confirm.title}</AlertDialogTitle>
-            <AlertDialogDescription>{confirm.body}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{confirm.cancel}</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setConfirming(false);
-                toggle.mutate(true);
-              }}
-            >
-              {confirm.confirm}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {confirm !== null && (
+        <AlertDialog open={confirming} onOpenChange={setConfirming}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{confirm.title}</AlertDialogTitle>
+              <AlertDialogDescription>{confirm.body}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{confirm.cancel}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setConfirming(false);
+                  toggle.mutate(true);
+                }}
+              >
+                {confirm.confirm}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </span>
   );
 }

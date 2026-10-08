@@ -1,4 +1,4 @@
-import { joinWorktreeLine } from "@mend/domain/workbench";
+import { JOIN_SHARED_HOME_LINE, joinWorktreeLine } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -37,6 +37,7 @@ import {
   stepColumn,
   verbForKey,
   verbHints,
+  viewerNeeded,
   workspaceFactRows,
   worktreeJoinRows,
   type BranchDto,
@@ -1156,31 +1157,52 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
   const anna = { accountId: "anna", name: "Anna" };
   const bob = { accountId: "bob", name: "Bob" };
 
-  it("fetchWorkbench puts the session view's live people and retirement on the project's rows", async () => {
-    const data = await fetchWorkbench({
-      api: fakeApi({
-        "/projects": [project],
-        "/services": [],
-        [`/projects/${project.id}`]: {
-          project,
-          sessions: [session({ id: "a", worktreeId: "wt-1", status: "running" })],
-          annotations: [],
-          worktrees: [worktree({ id: "wt-1" })],
-        },
-        "/sessions/a": {
-          session: session({
+  it("fetchWorkbench reads who is live from the project view, and asks for no viewer with nobody listed", async () => {
+    const asked: Array<string> = [];
+    const routes: Readonly<Record<string, unknown>> = {
+      "/projects": [project],
+      "/services": [],
+      [`/projects/${project.id}`]: {
+        project,
+        // Per-person homes off: the project view lists nobody and no retirement.
+        sessions: [
+          session({
             id: "a",
             worktreeId: "wt-1",
             status: "running",
-            livePeople: [anna, bob],
-            workspaceRetirement: "marked",
+            livePeople: [],
+            workspaceRetirement: null,
           }),
-          processes: [],
-        },
-      }),
-    });
-    expect(data.details.get(project.id)?.sessions[0]?.livePeople).toEqual([anna, bob]);
-    expect(data.details.get(project.id)?.sessions[0]?.workspaceRetirement).toBe("marked");
+        ],
+        annotations: [],
+        worktrees: [worktree({ id: "wt-1" })],
+      },
+      "/sessions/a": { session: session({ id: "a", status: "running" }), processes: [] },
+    };
+    const api = async <T>(method: string, route: string): Promise<T> => {
+      asked.push(route);
+      return fakeApi(routes)<T>(method, route);
+    };
+    const data = await fetchWorkbench({ api });
+    expect(viewerNeeded(data)).toBe(false);
+    expect(asked.filter((route) => route.startsWith("/organization"))).toEqual([]);
+    expect(asked.filter((route) => route === "/sessions")).toEqual([]);
+    expect(asked.filter((route) => route.endsWith("/waiting"))).toEqual([]);
+    expect(asked.filter((route) => route.endsWith("/workspace-retirement"))).toEqual([]);
+  });
+
+  it("asks for the viewer once a row lists someone live or a retirement", () => {
+    const withRow = (row: Partial<SessionDto>) =>
+      workbench({
+        project,
+        sessions: [session({ id: "a", worktreeId: "wt-1", status: "running", ...row })],
+        annotations: [],
+        worktrees: [worktree({ id: "wt-1" })],
+      });
+    expect(viewerNeeded(undefined)).toBe(false);
+    expect(viewerNeeded(withRow({ livePeople: [anna] }))).toBe(true);
+    expect(viewerNeeded(withRow({ workspaceRetirement: "marked" }))).toBe(true);
+    expect(viewerNeeded(withRow({ livePeople: [], workspaceRetirement: null }))).toBe(false);
   });
 
   it("says the join line where another person's session runs, wrapped to the modal", () => {
@@ -1196,6 +1218,29 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
     // Your own session is not another person's.
     expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, "anna", 60)).toEqual([]);
     expect(worktreeJoinRows(data, project.id, { name: "new-one" }, "bob", 60)).toEqual([]);
+  });
+
+  it("says the shared-home line where another person's session is live and nobody is listed", () => {
+    const data = workbench({
+      project,
+      sessions: [
+        session({
+          id: "a",
+          worktreeId: "wt-1",
+          status: "running",
+          ownerUserId: "anna",
+          livePeople: [],
+        }),
+      ],
+      annotations: [],
+      worktrees: [worktree({ id: "wt-1", name: "fix-auth" })],
+    });
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, "bob", 60).join(" ")).toBe(
+      JOIN_SHARED_HOME_LINE,
+    );
+    // Not without a known viewer, and not in your own session's worktree.
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, null, 60)).toEqual([]);
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, "anna", 60)).toEqual([]);
   });
 
   it("reads the waiting line and the retirement, and nothing from an older server", async () => {

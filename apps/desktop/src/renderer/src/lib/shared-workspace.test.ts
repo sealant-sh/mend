@@ -15,6 +15,8 @@ import {
   readsWaiting,
   retirementViewOf,
   sessionWaitingQuery,
+  SHARED_CONTROL_UNREAD,
+  sharedControlConfirmOf,
   sharedControlPress,
   sharedControlSwitchTitle,
   sharedWorkspaceLineOf,
@@ -202,13 +204,29 @@ describe("Replace this workspace now sends what the owner was shown", () => {
 
 describe("the Shared control switch", () => {
   it("asks before turning on, in both layouts, and never before turning off", () => {
-    expect(sharedControlPress(false, true)).toBe("ask");
-    expect(sharedControlPress(true, false)).toBe("set");
-    expect(sharedControlPress(true, true)).toBe("nothing");
-    expect(sharedControlPress(false, false)).toBe("nothing");
+    for (const layout of [true, false]) {
+      expect(sharedControlPress(false, true, layout)).toBe("ask");
+      expect(sharedControlPress(true, false, layout)).toBe("set");
+      expect(sharedControlPress(true, true, layout)).toBe("nothing");
+      expect(sharedControlPress(false, false, layout)).toBe("nothing");
+    }
     // The dialog's words, true to each layout.
-    expect(sharedControlConfirm(true).body).toBe(SHARED_CONTROL_LINE);
-    expect(sharedControlConfirm(false).body).toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
+    expect(sharedControlConfirmOf(true)).toEqual(sharedControlConfirm(true));
+    expect(sharedControlConfirmOf(true)?.body).toBe(SHARED_CONTROL_LINE);
+    expect(sharedControlConfirmOf(false)?.body).toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
+  });
+
+  it("offers no confirmation before the session view answers, in either wording", () => {
+    // Turning on waits; the dialog has no words to show; the title names neither login.
+    expect(sharedControlPress(false, true, null)).toBe("wait");
+    expect(sharedControlConfirmOf(null)).toBeNull();
+    expect(sharedControlSwitchTitle(null)).not.toContain(SHARED_CONTROL_LINE);
+    expect(sharedControlSwitchTitle(null)).not.toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
+    expect(SHARED_CONTROL_UNREAD).toBe("session view not read yet");
+    // Turning off stays as it is: it never asks, whether or not the view has answered.
+    expect(sharedControlPress(true, false, null)).toBe("set");
+    expect(sharedControlPress(true, true, null)).toBe("nothing");
+    expect(sharedControlPress(false, false, null)).toBe("nothing");
   });
 
   it("says a steered turn runs on its sender's login where the session view says so", () => {

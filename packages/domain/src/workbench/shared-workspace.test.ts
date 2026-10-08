@@ -6,6 +6,7 @@ import {
   WorkspaceRetirementStop,
 } from "./harness-layout.ts";
 import {
+  JOIN_SHARED_HOME_LINE,
   joinWorktreeLine,
   preReleaseMemoryLine,
   retirementStopLines,
@@ -26,6 +27,14 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
       "Anna's session is running in this worktree. You share its workspace: everything you run runs as you, on your own logins, but either of you can read the other's files, logins included.",
     );
     expect(joinWorktreeLine(["Anna", "Cleo"])).toContain("Anna and Cleo's sessions are running");
+    // A workspace that shares one home: the joiner runs on whoever started it, not as themselves.
+    expect(JOIN_SHARED_HOME_LINE).toBe(
+      "Another person's session is running in this worktree, in a workspace that shares one home: what you start there runs on the logins and Git identity of whoever started that workspace, not yours.",
+    );
+    // A workspace that shares one home: the joiner runs on whoever started it, not as themselves.
+    expect(JOIN_SHARED_HOME_LINE).toBe(
+      "Another person's session is running in this worktree, in a workspace that shares one home: what you start there runs on the logins and Git identity of whoever started that workspace, not yours.",
+    );
   });
 
   it("names the others on a session while someone else's process is live", () => {

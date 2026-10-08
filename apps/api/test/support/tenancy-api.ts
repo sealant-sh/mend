@@ -330,6 +330,7 @@ export const createTenancyApi = async (
           preReleaseMemory: () => Effect.succeed(null),
           workspaceRetirement: () => Effect.succeed(null),
           steersPerPerson: () => Effect.succeed(false),
+          personLayoutPossible: () => Effect.succeed(false),
           ...options.implement?.engine,
         },
         calls,

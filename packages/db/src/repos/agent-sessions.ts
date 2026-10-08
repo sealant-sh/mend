@@ -290,6 +290,8 @@ export class SessionsRepo extends Context.Service<
     readonly listActiveView: () => Effect.Effect<ReadonlyArray<Session>>;
     /** `byId` as the API's session view reads it: with its executor's live people, in one query. */
     readonly viewById: (id: SessionId) => Effect.Effect<Session, SessionNotFoundError>;
+    /** `listForProject` as the API's project view reads it: with each executor's live people. */
+    readonly listForProjectView: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions to re-attach to after a crash/restart. */
     readonly listUnsettled: () => Effect.Effect<ReadonlyArray<Session>>;
     /** One account's sessions that have not settled, starting ones included: what removal stops. */
@@ -854,6 +856,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .select(sessionViewColumns)
           .from(agentSessions)
           .where(inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]))
+          .orderBy(desc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSessionView);
+      });
+
+      const listForProjectView = Effect.fn("SessionsRepo.listForProjectView")(function* (
+        projectId: ProjectId,
+      ) {
+        const rows = yield* db
+          .select(sessionViewColumns)
+          .from(agentSessions)
+          .where(eq(agentSessions.projectId, projectId))
           .orderBy(desc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSessionView);
@@ -2152,6 +2166,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         byId,
         viewById,
         listActiveView,
+        listForProjectView,
         listForProject,
         recentOwnersForProject,
         listUnsettledForOwner,

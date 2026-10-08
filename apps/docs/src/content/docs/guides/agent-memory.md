@@ -106,8 +106,9 @@ its captures. Mend credits it on the server, never during a launch, to:
 1. the person Mend's record for that home names, when that record is settled (no hand-over to
    someone else waiting to be saved) and is for the workspace that wrote the reading;
 2. else, when every session the worktree ever had was one person's, that person. Mend keeps who had
-   sessions in a worktree even after a session is deleted, but only from 0.36 on: for an older
-   worktree it cannot know, and this rule credits nobody;
+   sessions in a worktree even after a session is deleted, but only from 0.36 on. For an older
+   worktree it cannot know, so this rule applies there only when the organization has a single
+   member who owns every session the worktree kept;
 3. else nobody. The session view then shows `memory from before 0.36, not credited · <n> files`.
 
 Nothing is deleted. The reading that counts is the final save of the worktree's last shared-home

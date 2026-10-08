@@ -46,18 +46,19 @@ export interface Session {
   /** What the session line says after its status (`building the workspace image …`); older servers omit it. */
   readonly summary: string | null;
   readonly createdAt: string;
+  /** Who started the session; null on older rows and from older servers. */
+  readonly ownerUserId: string | null;
   /**
    * The people with a process live in its executor (docs/adr/0016, decision 13). Filled by the
-   * session list and view only; empty from the project view, in a shared executor and from
-   * older servers.
+   * project view, the session list and the session view when per-person homes are possible;
+   * empty otherwise, in a shared executor and from older servers.
    */
   readonly livePeople: ReadonlyArray<LivePerson>;
   /** When shared control was turned on; null while it is off and from older servers. */
   readonly sharedControlEnabledAt: string | null;
   /**
    * The executor waits to be replaced (docs/adr/0016, decision 14): `marked` or `retiring`. Read
-   * with `livePeople` by the session list and view; null from the project view, otherwise and
-   * from older servers.
+   * with `livePeople`, when per-person homes are possible; null otherwise and from older servers.
    */
   readonly workspaceRetirement: "marked" | "retiring" | null;
 }

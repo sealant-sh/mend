@@ -422,6 +422,7 @@ and no one's personal memory or instructions. Turn it off and on again to see th
 Memory saved in a shared home before 0.36 goes to nobody, and is listed as not credited, when Mend
 cannot say whose it is: two people had sessions there, a hand-over to another person was not saved,
 or the worktree is older than Mend's record of who had sessions in it (a deleted session would not
-be in that record).
+be in that record) and its organization has more than one member. In an organization with a single
+member who owns every session the worktree kept, that member is credited.
 
 See [Workspaces started before 0.36](/operate/per-person-workspaces/#workspaces-started-before-036).

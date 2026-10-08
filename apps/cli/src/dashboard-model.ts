@@ -1,10 +1,10 @@
 import { launchPhaseOf, servicesHoldLine } from "@mend/domain/workbench";
 
 import {
-  joinLineFor,
-  othersLiveInWorktree,
+  hasPersonFacts,
   sessionWorkspaceLines,
   workspaceLineList,
+  worktreeJoinLine,
   wrapWords,
   type ConversationWaitDto,
   type LivePersonDto,
@@ -61,16 +61,18 @@ export interface SessionDto extends SessionCaptureLike {
   readonly createdAt: string;
   /** When the session ended and its workspace went; absent on older servers. */
   readonly settledAt?: string | null;
+  /** Who started the session; absent on older servers. */
+  readonly ownerUserId?: string | null;
   /**
-   * The people with a process live in its executor (docs/adr/0016, decision 13), from the session
-   * view; absent on settled rows and older servers.
+   * The people with a process live in its executor (docs/adr/0016, decision 13), from the project
+   * view when per-person homes are possible; empty otherwise, absent on older servers.
    */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
   /** When shared control was turned on; null while it is off. Absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
   /**
-   * The executor waits to be replaced (docs/adr/0016, decision 14), from the session view with
-   * `livePeople`; absent on settled rows and older servers.
+   * The executor waits to be replaced (docs/adr/0016, decision 14), from the project view with
+   * `livePeople`; null otherwise, absent on older servers.
    */
   readonly workspaceRetirement?: "marked" | "retiring" | null;
 }
@@ -200,35 +202,16 @@ export const fetchWorkbench = async (ctx: { readonly api: WorkbenchApi }): Promi
     }),
   );
   const processesBySession = new Map<string, ReadonlyArray<SessionProcessDto>>();
-  const viewFactsBySession = new Map<
-    string,
-    Pick<SessionDto, "livePeople" | "workspaceRetirement">
-  >();
   for (const detail of detailed) {
     if (detail === null) continue;
     processesBySession.set(
       detail.session.id,
       detail.processes.filter((process) => process.exitedAt === null && process.kind !== "service"),
     );
-    viewFactsBySession.set(detail.session.id, {
-      ...(detail.session.livePeople === undefined ? {} : { livePeople: detail.session.livePeople }),
-      ...(detail.session.workspaceRetirement === undefined
-        ? {}
-        : { workspaceRetirement: detail.session.workspaceRetirement }),
-    });
   }
-  // The project view lists nobody live and no retirement; the session view does, read in the
-  // same pass.
-  const withPeople = fetched.map((detail) => ({
-    ...detail,
-    sessions: detail.sessions.map((session) => {
-      const viewFacts = viewFactsBySession.get(session.id);
-      return viewFacts === undefined ? session : { ...session, ...viewFacts };
-    }),
-  }));
   return {
     projects,
-    details: new Map(withPeople.map((detail) => [detail.project.id, detail])),
+    details: new Map(fetched.map((detail) => [detail.project.id, detail])),
     servicesBySession,
     processesBySession,
   };
@@ -1114,7 +1097,19 @@ export interface Viewer {
 
 export const VIEWER_KEY = ["viewer"];
 
-/** Read once per dashboard; a server before organizations answers with nobody. */
+/**
+ * Whether the workbench's rows have anything per-person to say (someone live in an executor, a
+ * retirement under way): only then is the viewer worth a request. With per-person homes off the
+ * project view lists nobody and no retirement, and the dashboard asks for nothing more.
+ */
+export const viewerNeeded = (data: Workbench | undefined): boolean =>
+  data !== undefined &&
+  [...data.details.values()].some((detail) => hasPersonFacts(detail.sessions));
+
+/**
+ * Read once per dashboard, and only once `viewerNeeded`; a server before organizations answers
+ * with nobody.
+ */
 export const fetchViewer = async (ctx: { readonly api: WorkbenchApi }): Promise<Viewer> => {
   const [view, members] = await Promise.all([
     ctx.api<{ readonly userId: string }>("GET", "/organization").catch(() => null),
@@ -1188,6 +1183,8 @@ export const workspaceFactRows = (
 /**
  * The join line where a new session would start in an existing worktree (by id, or by the name
  * the creation modal was given), wrapped to `width`; empty when nobody else's session runs there.
+ * The per-person line names the others live there; the shared-home line needs the viewer, so it
+ * is said only once the viewer was read for something else (`viewerNeeded`).
  */
 export const worktreeJoinRows = (
   data: Workbench | undefined,
@@ -1202,7 +1199,7 @@ export const worktreeJoinRows = (
       ? worktree.id
       : detail?.worktrees?.find((candidate) => candidate.name === worktree.name)?.id;
   if (detail === undefined || id === undefined) return [];
-  const line = joinLineFor(othersLiveInWorktree(detail.sessions, id, viewerId));
+  const line = worktreeJoinLine(detail.sessions, id, viewerId);
   return line === null ? [] : wrapWords(line, width);
 };
 

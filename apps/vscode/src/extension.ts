@@ -12,13 +12,7 @@ import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
 import { modelPickRows } from "./model-picks.js";
-import {
-  joinLine,
-  othersInWorktree,
-  sessionLines,
-  withLiveFacts,
-  workspaceReads,
-} from "./session-lines.js";
+import { joinLineOf, liveSessionLines } from "./session-lines.js";
 import {
   agentModeLabel,
   continueCommand,
@@ -192,30 +186,11 @@ class WorkspaceScope implements vscode.Disposable {
   }
 
   /**
-   * What this window's live session says about its workspace (docs/adr/0016). The session view
-   * says which reads are worth a request (`workspaceReads`); the project view lists neither who
-   * is live nor a retirement, so it alone asks for nothing more.
+   * What this window's live session says about its workspace (docs/adr/0016), from its project
+   * view row: the row says which reads are worth a request (`liveSessionLines`).
    */
   private async workspaceLines(session: Session): Promise<ReadonlyArray<string>> {
-    const [detail, viewer] = await Promise.all([
-      this.client.sessionDetail(session.id).catch(() => null),
-      this.client.viewerId(),
-    ]);
-    const viewed = detail?.session ?? session;
-    const reads = workspaceReads(viewed);
-    const [waitLine, retirement] = await Promise.all([
-      reads.waiting ? this.client.waitLine(session.id) : null,
-      reads.retirement ? this.client.workspaceRetirement(session.id) : null,
-    ]);
-    const members =
-      retirement === null || retirement.launcher === null ? [] : await this.client.memberNames();
-    return sessionLines({
-      session: viewed,
-      viewer,
-      waitLine,
-      retirement,
-      members,
-    });
+    return liveSessionLines(session, this.client);
   }
 
   private clear(): void {
@@ -595,13 +570,12 @@ class MendCommands {
   private async sayWhoElseRunsThere(location: SessionLocation): Promise<boolean> {
     const worktreeId = location.session.worktreeId;
     if (worktreeId === undefined) return true;
-    const [detail, live, viewer] = await Promise.all([
-      this.client.projectDetail(location.project.id),
-      this.client.activeSessions().catch(() => []),
-      this.client.viewerId(),
-    ]);
-    const line = joinLine(
-      othersInWorktree(withLiveFacts(detail.sessions, live), worktreeId, viewer),
+    const detail = await this.client.projectDetail(location.project.id);
+    const line = await joinLineOf(
+      detail.sessions,
+      worktreeId,
+      this.tree.knownViewer(),
+      this.client,
     );
     if (line === null) return true;
     const answer = await vscode.window.showInformationMessage(line, { modal: true }, "New session");

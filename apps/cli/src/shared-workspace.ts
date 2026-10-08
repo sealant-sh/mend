@@ -1,4 +1,5 @@
 import {
+  JOIN_SHARED_HOME_LINE,
   joinWorktreeLine,
   REPLACE_WORKSPACE_ACTION,
   retirementStopLines,
@@ -7,6 +8,8 @@ import {
   workspaceRetirementLine,
   type WorkspaceRetirementStopKind,
 } from "@mend/domain/workbench";
+
+import { LIVE_STATUSES } from "./shared.ts";
 
 /**
  * What the terminal says about people sharing a workspace (docs/adr/0016-per-person-harness-homes.md,
@@ -61,8 +64,7 @@ export const retirementEvidenceLines = (
   retirementStopLines({ stops: retirement.stops, checkedAt: checkedAtOf(retirement) });
 
 /**
- * Which of a session's workspace reads are worth a request, from what the session list already
- * says: the waiting line only where another person is live and shared control is on (only then
+ * Which of a session's workspace reads are worth a request, from what the row already says: the waiting line only where another person is live and shared control is on (only then
  * can a turn wait on someone else's work), the retirement only where one is under way. Absent
  * fields (an older server) read as nothing to ask.
  */
@@ -89,11 +91,37 @@ export interface MemberNameDto {
   readonly name: string;
 }
 
-/** A session as the join check reads it: its worktree, its status and who is live in it. */
+/** A session as the join check reads it: its worktree, its status, its owner and who is live. */
 export interface JoinCandidate {
   readonly worktreeId?: string;
+  readonly status?: string;
+  /** Who started the session; absent on older servers. */
+  readonly ownerUserId?: string | null;
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  readonly workspaceRetirement?: "marked" | "retiring" | null;
 }
+
+/**
+ * Whether rows the client already holds have anything per-person to say: someone live in an
+ * executor, or a retirement under way. Only then is the viewer (`GET /organization`) worth a
+ * request; with per-person homes off the server lists nobody and no retirement, so a client
+ * asks for nothing more.
+ */
+export const hasPersonFacts = (sessions: ReadonlyArray<JoinCandidate>): boolean =>
+  sessions.some(
+    (session) =>
+      (session.livePeople ?? []).length > 0 ||
+      (session.workspaceRetirement !== undefined && session.workspaceRetirement !== null),
+  );
+
+/** Whether any session of the worktree lists someone live: the join line then needs the viewer. */
+export const worktreeListsPeople = (
+  sessions: ReadonlyArray<JoinCandidate>,
+  worktreeId: string,
+): boolean =>
+  sessions.some(
+    (session) => session.worktreeId === worktreeId && (session.livePeople ?? []).length > 0,
+  );
 
 /**
  * The other people live in a worktree's workspace, by name, once each: everyone `livePeople`
@@ -119,6 +147,33 @@ export const othersLiveInWorktree = (
 /** The join line, or null when nobody else's session runs in the worktree. */
 export const joinLineFor = (others: ReadonlyArray<string>): string | null =>
   others.length === 0 ? null : joinWorktreeLine(others);
+
+/**
+ * The join line by the workspace's layout (docs/adr/0016, decision 13): the per-person line,
+ * by name, where the worktree's sessions list someone other than the viewer live; the
+ * shared-home line where another person's session is live there and nobody is listed (a
+ * workspace that shares one home lists nobody). Null when the viewer is unknown, or nobody
+ * else's session runs there.
+ */
+export const worktreeJoinLine = (
+  sessions: ReadonlyArray<JoinCandidate>,
+  worktreeId: string,
+  viewer: string | null,
+): string | null => {
+  const others = othersLiveInWorktree(sessions, worktreeId, viewer);
+  if (others.length > 0) return joinWorktreeLine(others);
+  if (viewer === null || worktreeListsPeople(sessions, worktreeId)) return null;
+  const anotherLive = sessions.some(
+    (session) =>
+      session.worktreeId === worktreeId &&
+      session.status !== undefined &&
+      LIVE_STATUSES.has(session.status) &&
+      session.ownerUserId !== undefined &&
+      session.ownerUserId !== null &&
+      session.ownerUserId !== viewer,
+  );
+  return anotherLive ? JOIN_SHARED_HOME_LINE : null;
+};
 
 /**
  * Whose workspace a retiring executor is, by name: a live person first, then the roster. With

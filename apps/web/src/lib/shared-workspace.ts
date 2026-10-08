@@ -1,4 +1,5 @@
 import {
+  JOIN_SHARED_HOME_LINE,
   joinWorktreeLine,
   retirementStopLines,
   workspaceRetirementLine,
@@ -18,7 +19,10 @@ import { LIVE_STATES } from "./workbench-menus.ts";
 
 type Names = ReadonlyMap<string, string>;
 
-/** The organization's roster as id → name; empty while loading or for an account in none. */
+/**
+ * The organization's roster as id → name; empty while loading or for an account in none. Only the
+ * session page reads it (it holds the roster already); the join line never does.
+ */
 export const useMemberNames = (): Names => {
   const trpc = useTRPC();
   const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));
@@ -28,63 +32,78 @@ export const useMemberNames = (): Names => {
 type JoinFacts = Pick<SessionDto, "worktreeId" | "ownerUserId" | "status" | "livePeople">;
 
 /**
- * The people other than the viewer whose sessions run in a worktree: the owners of its live
- * sessions and anyone the session view lists as live in its executor, each once, by name. A name
- * the roster does not know is left out (the line then says "Another person").
+ * Who the viewer would meet in a worktree, as the executor actually runs (decisions 13 and 14):
+ * - `per-person`: the live sessions list people in their executor (`livePeople`, only ever filled
+ *   where per-person homes are possible), so each runs as themselves; `names` are the listed
+ *   people other than the viewer, empty when another person's session is live but not listed.
+ * - `shared-home`: another person's session is live and nobody is listed: one home, the launcher's.
+ * - `none`: nobody else's session is live there.
  */
-export const worktreeOthers = (
+export type WorktreeJoin =
+  | { readonly kind: "none" }
+  | { readonly kind: "per-person"; readonly names: ReadonlyArray<string> }
+  | { readonly kind: "shared-home" };
+
+export const worktreeJoin = (
   sessions: ReadonlyArray<JoinFacts>,
   worktreeId: string,
   viewerId: string,
-  names: Names,
-): { readonly count: number; readonly names: ReadonlyArray<string> } => {
-  const others = new Map<string, string | null>();
+): WorktreeJoin => {
+  const listedOthers = new Map<string, string>();
+  let listed = false;
+  let otherOwner = false;
   for (const session of sessions) {
     if (session.worktreeId !== worktreeId || !LIVE_STATES.has(session.status)) continue;
     const owner = session.ownerUserId;
-    if (owner !== null && owner !== viewerId && !others.has(owner)) {
-      const listed = session.livePeople.find((person) => person.accountId === owner)?.name;
-      others.set(owner, names.get(owner) ?? listed ?? null);
-    }
+    if (owner !== null && owner !== viewerId) otherOwner = true;
     for (const person of session.livePeople) {
-      if (person.accountId === viewerId) continue;
-      if ((others.get(person.accountId) ?? null) === null) {
-        others.set(person.accountId, person.name);
+      listed = true;
+      if (person.accountId !== viewerId && !listedOthers.has(person.accountId)) {
+        listedOthers.set(person.accountId, person.name);
       }
     }
   }
-  const named = [...others.values()].filter((name): name is string => name !== null);
-  return { count: others.size, names: named };
+  if (listedOthers.size > 0) return { kind: "per-person", names: [...listedOthers.values()] };
+  if (!otherOwner) return { kind: "none" };
+  return listed ? { kind: "per-person", names: [] } : { kind: "shared-home" };
 };
 
 /**
- * "Anna's session is running in this worktree. You share its workspace: …", said before the viewer
- * starts a session where someone else's runs; null when nobody else's does, or the viewer is not
+ * What the viewer reads before starting a session where someone else's runs: "Anna's session is
+ * running in this worktree. You share its workspace: …" in a per-person executor, the shared-home
+ * line where it runs everyone on one home; null when nobody else's runs there, or the viewer is not
  * known yet (a solo person would otherwise read their own sessions as someone else's).
  */
 export const worktreeJoinLine = (
   sessions: ReadonlyArray<JoinFacts>,
   worktreeId: string,
   viewerId: string | null,
-  names: Names,
 ): string | null => {
   if (viewerId === null) return null;
-  const others = worktreeOthers(sessions, worktreeId, viewerId, names);
-  if (others.count === 0) return null;
-  // Everyone named, or nobody: a partial list would undercount the people it speaks of.
-  return joinWorktreeLine(others.names.length === others.count ? others.names : []);
+  const join = worktreeJoin(sessions, worktreeId, viewerId);
+  switch (join.kind) {
+    case "none":
+      return null;
+    case "per-person":
+      return joinWorktreeLine(join.names);
+    case "shared-home":
+      return JOIN_SHARED_HOME_LINE;
+  }
 };
 
-/** The join line for one worktree, for the viewer, from the sessions the page already holds. */
+/**
+ * The join line for one worktree, for the viewer, from the sessions the page already holds. The
+ * viewer is the page's own (`organization.current`, cached); names come from `livePeople`, so
+ * nothing more is asked.
+ */
 export const useWorktreeJoinLine = (
   worktreeId: string | null,
   sessions: ReadonlyArray<JoinFacts>,
 ): string | null => {
   const viewer = useViewer();
-  const names = useMemberNames();
   return worktreeId === null
     ? null
-    : worktreeJoinLine(sessions, worktreeId, viewer?.userId ?? null, names);
+    : worktreeJoinLine(sessions, worktreeId, viewer?.userId ?? null);
 };
 
 // ─── What the session page reads, and only where it can matter ─────────────────

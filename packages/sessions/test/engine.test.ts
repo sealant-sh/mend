@@ -2206,6 +2206,7 @@ const sessionsLayer = (world: World) => {
       Effect.succeed([...world.sessions.values()].filter((s) => s.worktreeId === worktreeId)),
     listActive: () => Effect.succeed([]),
     listActiveView: () => Effect.die("not in test"),
+    listForProjectView: () => Effect.die("not in test"),
     viewById: () => Effect.die("not in test"),
     listUnsettled: () =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),

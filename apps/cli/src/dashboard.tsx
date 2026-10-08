@@ -58,6 +58,7 @@ import {
   verbForKey,
   verbHints,
   VIEWER_KEY,
+  viewerNeeded,
   WORKBENCH_KEY,
   WORKSPACE_FACTS_KEY,
   workspaceFactRows,
@@ -840,10 +841,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     refetchInterval: previewLive ? 8000 : false,
     retry: 1,
   });
-  // Who reads the dashboard: the shared workspace and join lines name everyone else.
+  // Who reads the dashboard: the shared workspace and join lines name everyone else. Asked for
+  // only once a row has something per-person to say; with per-person homes off, never.
   const viewer = useQuery({
     queryKey: VIEWER_KEY,
     queryFn: () => fetchViewer(ctx),
+    enabled: viewerNeeded(data),
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
   });

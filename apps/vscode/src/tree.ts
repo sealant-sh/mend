@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
-import { sessionLines, withLiveFacts, workspaceReads } from "./session-lines.js";
+import { readProjects, sessionLines, workspaceReads } from "./session-lines.js";
 import type { Project, ProjectDetail, Session } from "./types.js";
 
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -103,6 +103,11 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
     this.changed.fire();
   }
 
+  /** The viewer the last snapshot read, without a request; null when it read none. */
+  knownViewer(): string | null {
+    return this.current?.viewer ?? null;
+  }
+
   async snapshot(): Promise<Snapshot> {
     if (this.current !== null) return this.current;
     if (this.loading !== null) return this.loading;
@@ -117,24 +122,14 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
 
   private async load(): Promise<Snapshot> {
     try {
-      const projects = await this.client.listProjects();
-      const [details, live, viewer] = await Promise.all([
-        Promise.all(projects.map((project) => this.client.projectDetail(project.id))),
-        // The project view lists nobody live and no retirement; the session list does
-        // (docs/adr/0016).
-        this.client.activeSessions().catch(() => []),
-        this.client.viewerId(),
-      ]);
+      // The project view carries who is live and the retirement's state (docs/adr/0016); the
+      // viewer is asked for only when a row has something per-person to say.
+      const { projects, details, viewer } = await readProjects(this.client);
       this.error = null;
       await vscode.commands.executeCommand("setContext", "mend.hasProjects", projects.length > 0);
       return {
         projects,
-        details: new Map(
-          details.map((detail) => [
-            detail.project.id,
-            { ...detail, sessions: withLiveFacts(detail.sessions, live) },
-          ]),
-        ),
+        details: new Map(details.map((detail) => [detail.project.id, detail])),
         viewer,
       };
     } catch (cause) {

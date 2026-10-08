@@ -1,6 +1,9 @@
-import { WorktreeId } from "@mend/domain";
+import { OrganizationView } from "@mend/api-contracts";
+import { OrganizationId, WorktreeId } from "@mend/domain";
 import {
+  JOIN_SHARED_HOME_LINE,
   joinWorktreeLine,
+  Organization,
   retirementStopLines,
   SHARED_CONTROL_LINE,
   SHARED_CONTROL_LINE_OWNER_LOGINS,
@@ -9,6 +12,8 @@ import {
   WorkspaceRetirement,
   WorkspaceRetirementStop,
 } from "@mend/domain/workbench";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -21,9 +26,11 @@ import {
   WAIT_POLL_MS,
   waitingLineQuery,
   waitingLineRelevant,
+  useWorktreeJoinLine,
+  worktreeJoin,
   worktreeJoinLine,
-  worktreeOthers,
 } from "./shared-workspace.ts";
+import { makeTrpcProxy, TRPCProvider, trpcClient } from "./trpc.ts";
 
 const here = WorktreeId.make("worktree-1");
 const elsewhere = WorktreeId.make("worktree-2");
@@ -33,45 +40,117 @@ const names = new Map([
   ["carol", "Carol"],
 ]);
 
-type Row = Parameters<typeof worktreeOthers>[0][number];
+type Row = Parameters<typeof worktreeJoin>[0][number];
 const row = (
   ownerUserId: string | null,
   status: Row["status"] = "running",
   worktreeId: Row["worktreeId"] = here,
   livePeople: Row["livePeople"] = [],
 ): Row => ({ worktreeId, ownerUserId, status, livePeople });
+const alice = { accountId: "alice", name: "Alice" };
+const bob = { accountId: "bob", name: "Bob" };
+const dana = { accountId: "dana", name: "Dana" };
 
-describe("the join line", () => {
-  it("names the people whose live sessions run in the chosen worktree, never the viewer", () => {
-    const sessions = [row("alice"), row("bob"), row("alice", "idle")];
-    expect(worktreeJoinLine(sessions, here, "bob", names)).toBe(joinWorktreeLine(["Alice"]));
-    expect(worktreeJoinLine(sessions, here, "carol", names)).toBe(
-      joinWorktreeLine(["Alice", "Bob"]),
-    );
+describe("the join line in a per-person executor", () => {
+  it("names the people the live sessions list in their executor, never the viewer", () => {
+    const sessions = [
+      row("alice", "running", here, [alice]),
+      row("bob", "idle", here, [alice, bob]),
+    ];
+    expect(worktreeJoinLine(sessions, here, "bob")).toBe(joinWorktreeLine(["Alice"]));
+    expect(worktreeJoinLine(sessions, here, "carol")).toBe(joinWorktreeLine(["Alice", "Bob"]));
   });
 
-  it("says nothing for the viewer's own sessions, settled ones, another worktree, or no viewer", () => {
-    expect(worktreeJoinLine([row("bob")], here, "bob", names)).toBeNull();
-    expect(worktreeJoinLine([row("alice", "completed")], here, "bob", names)).toBeNull();
-    expect(worktreeJoinLine([row("alice", "running", elsewhere)], here, "bob", names)).toBeNull();
-    expect(worktreeJoinLine([row("alice")], here, null, names)).toBeNull();
+  it("names someone listed live in the viewer's own session (a steerer)", () => {
+    const steered = row("bob", "running", here, [bob, dana]);
+    expect(worktreeJoin([steered], here, "bob")).toEqual({ kind: "per-person", names: ["Dana"] });
+    expect(worktreeJoinLine([steered], here, "bob")).toBe(joinWorktreeLine(["Dana"]));
   });
 
-  it("counts the people the session view lists as live in the executor", () => {
-    const steered = row("bob", "running", here, [
-      { accountId: "bob", name: "Bob" },
-      { accountId: "dana", name: "Dana" },
-    ]);
-    expect(worktreeOthers([steered], here, "bob", names)).toEqual({ count: 1, names: ["Dana"] });
-    expect(worktreeJoinLine([steered], here, "carol", names)).toBe(
-      joinWorktreeLine(["Bob", "Dana"]),
-    );
+  it("says another person when someone else's session is live but only the viewer is listed", () => {
+    const sessions = [row("alice"), row("bob", "running", here, [bob])];
+    expect(worktreeJoinLine(sessions, here, "bob")).toBe(joinWorktreeLine([]));
+  });
+});
+
+describe("the join line in a shared executor", () => {
+  it("says the workspace shares one home when another person's session runs and nobody is listed", () => {
+    expect(worktreeJoin([row("alice")], here, "bob")).toEqual({ kind: "shared-home" });
+    expect(worktreeJoinLine([row("alice"), row("bob")], here, "bob")).toBe(JOIN_SHARED_HOME_LINE);
   });
 
-  it("says another person when the roster does not name everyone", () => {
-    expect(worktreeJoinLine([row("erin"), row("alice")], here, "bob", names)).toBe(
-      joinWorktreeLine([]),
+  it("never names anyone there", () => {
+    const line = worktreeJoinLine([row("alice"), row("carol")], here, "bob");
+    expect(line).toBe(JOIN_SHARED_HOME_LINE);
+    expect(line).not.toContain("Alice");
+  });
+});
+
+describe("the join line says nothing", () => {
+  it("for the viewer's own sessions, settled ones, another worktree, or no viewer", () => {
+    expect(worktreeJoinLine([row("bob")], here, "bob")).toBeNull();
+    expect(worktreeJoinLine([row("bob", "running", here, [bob])], here, "bob")).toBeNull();
+    expect(worktreeJoinLine([row("alice", "completed", here, [alice])], here, "bob")).toBeNull();
+    expect(worktreeJoinLine([row("alice", "completed")], here, "bob")).toBeNull();
+    expect(worktreeJoinLine([row("alice", "running", elsewhere, [alice])], here, "bob")).toBeNull();
+    expect(worktreeJoinLine([row("alice", "running", elsewhere)], here, "bob")).toBeNull();
+    expect(worktreeJoinLine([row("alice")], here, null)).toBeNull();
+  });
+});
+
+const checkedAtForViewer = new Date("2026-10-08T09:00:00Z");
+
+describe("what the join line asks for", () => {
+  const viewerView = new OrganizationView({
+    organization: new Organization({
+      id: OrganizationId.make("org-1"),
+      name: "Sealant",
+      createdByUserId: null,
+      createdAt: checkedAtForViewer,
+      updatedAt: checkedAtForViewer,
+    }),
+    userId: "bob",
+    role: "member",
+    memberCount: 2,
+    operator: false,
+    tenancy: "single",
+    mountDelivery: "bind",
+  });
+
+  const render = (sessions: ReadonlyArray<Row>) => {
+    const queryClient = new QueryClient();
+    const trpc = makeTrpcProxy(queryClient);
+    // The page has already read who is looking.
+    queryClient.setQueryData(trpc.organization.current.queryKey(), viewerView);
+    const Probe = () => <p>{useWorktreeJoinLine(here, sessions) ?? "nothing"}</p>;
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={queryClient}>
+        <TRPCProvider trpcClient={trpcClient} queryClient={queryClient}>
+          <Probe />
+        </TRPCProvider>
+      </QueryClientProvider>,
     );
+    const asked = queryClient
+      .getQueryCache()
+      .getAll()
+      .map((query) => JSON.stringify(query.queryKey));
+    return { markup, asked, trpc };
+  };
+
+  it("reads only the viewer the page holds: never the organization's members", () => {
+    for (const sessions of [[row("alice", "running", here, [alice])], [row("alice")], []]) {
+      const { asked, trpc } = render(sessions);
+      expect(asked).toEqual([JSON.stringify(trpc.organization.current.queryKey())]);
+      expect(asked.join()).not.toContain("members");
+    }
+  });
+
+  it("says the line from the cached viewer and the sessions' own names", () => {
+    expect(render([row("alice", "running", here, [alice])]).markup).toContain(
+      "Alice&#x27;s session",
+    );
+    expect(render([row("alice")]).markup).toContain("shares one home");
+    expect(render([]).markup).toBe("<p>nothing</p>");
   });
 });
 
@@ -159,7 +238,6 @@ describe("a replacement", () => {
 });
 
 describe("what the session page asks for", () => {
-  const alice = { accountId: "alice", name: "Alice" };
   const on = new Date("2026-10-08T09:00:00Z");
 
   it("asks for the waiting line only where people run and control is shared", () => {

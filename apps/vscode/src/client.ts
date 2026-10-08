@@ -82,6 +82,7 @@ const parseSession = (value: unknown): Session => {
       typeof value["sealantWorkspaceId"] === "string" ? value["sealantWorkspaceId"] : null,
     summary: typeof value["summary"] === "string" ? value["summary"] : null,
     createdAt: stringField(value, "createdAt"),
+    ownerUserId: typeof value["ownerUserId"] === "string" ? value["ownerUserId"] : null,
     livePeople: parseLivePeople(value["livePeople"]),
     sharedControlEnabledAt:
       typeof value["sharedControlEnabledAt"] === "string" ? value["sharedControlEnabledAt"] : null,
@@ -273,11 +274,6 @@ export class MendClient {
         name,
       }),
     );
-  }
-
-  /** Live sessions, each with the people live in its executor (docs/adr/0016, decision 13). */
-  async activeSessions(): Promise<ReadonlyArray<Session>> {
-    return parseArray(await this.request("/sessions"), parseSession, "sessions");
   }
 
   /** The signed-in account's id; null from a server before organizations. */

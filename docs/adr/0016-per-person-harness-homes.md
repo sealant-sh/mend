@@ -1362,11 +1362,15 @@ benchmark once more, before 0.36 is tagged.
   (`@mend/domain/workbench`, `shared-workspace.ts`) every client draws from. The live people are the
   distinct `runs_as` of live processes in the session's executor, so a `shared` executor lists
   nobody, and the executor's retirement state comes with them: correlated subqueries on the viewed
-  session rows, in the API's session list and view query (measured +4 ms on a 300-session list where
-  every executor has two people, +0.2 ms on a view). A person with no name reads "a member". Clients
-  ask for the waiting line only with people live and shared control on, and for the retirement only
-  when the session says there is one, so the flag off adds no request. The Shared control switch
-  asks before it turns on in both layouts, in words true to each
-  (`SessionControlView.turnsOnSendersLogin`, from the executor's own launch layout, or the
-  worktree's record when none is live; unknown reads as the owner's logins).
+  session rows in the API's session list, session view and project view, run only while per-person
+  homes are possible (the flag on, or a layout recorded); otherwise the plain reads, at no cost
+  (measured with the flag on: +4 ms on a 300-session list where every executor has two people, +0.2
+  ms on a view). A person with no name reads "a member". Clients ask for the waiting line only with
+  people live and shared control on, and for the retirement only when the session says there is one,
+  so the flag off adds no request. Where two people meet in a worktree, the join line says what is
+  true of its live executor: per person, the decision's line; sharing one home, that what the joiner
+  starts runs on the identity of whoever started it. The Shared control switch asks before it turns
+  on in both layouts, in words true to each (`SessionControlView.turnsOnSendersLogin`, from the live
+  executor's launch layout, or the worktree's record when none is live; unknown reads as the owner's
+  logins), and only once the session view has said which.
 - Open: gate B's history record.

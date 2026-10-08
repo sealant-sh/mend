@@ -567,8 +567,13 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const viewer = yield* access.viewer();
         // A settled session with no transcript cannot be resumed or handed off: hidden by
         // default, listed only on request (`mend sessions --all`). Its worktree still lists.
+        // With per-person homes possible, each session with the people live in its executor and
+        // its retirement (docs/adr/0016, decision 13); otherwise the plain read, at no cost.
+        const engine = yield* SessionEngine;
         const sessionVisibility = projectSessionVisibility(
-          yield* sessions.listForProject(params.id),
+          (yield* engine.personLayoutPossible())
+            ? yield* sessions.listForProjectView(params.id)
+            : yield* sessions.listForProject(params.id),
           query.deadEnds === "include",
         );
         const projectSessions = sessionVisibility.sessions;
@@ -2287,8 +2292,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
         const access = yield* ProjectAccess;
-        // With the people live in each executor (docs/adr/0016, decision 13), in the same query.
-        const active = yield* access.filterByProject(yield* sessions.listActiveView());
+        // With the people live in each executor (docs/adr/0016, decision 13), in the same query,
+        // when per-person homes are possible at all; otherwise the plain read, at no cost.
+        const active = yield* access.filterByProject(
+          (yield* (yield* SessionEngine).personLayoutPossible())
+            ? yield* sessions.listActiveView()
+            : yield* sessions.listActive(),
+        );
         if (query.retained === undefined) return active;
 
         const ids = new Set(active.map((session) => session.id));
@@ -2334,7 +2344,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
         const landings = yield* ChangeLandingsRepo;
-        const session = yield* (yield* ProjectAccess).sessionView(params.id);
+        const session = (yield* (yield* SessionEngine).personLayoutPossible())
+          ? yield* (yield* ProjectAccess).sessionView(params.id)
+          : yield* (yield* ProjectAccess).session(params.id);
         // Someone is looking: read the running executor's capture status (throttled, in the
         // background) so a failing snap shows now, not at the reaper's next read. The answer
         // reaches the view as a session event.
