@@ -165,11 +165,19 @@ mend session share 3f2a on
 mend session share 3f2a off
 ```
 
-A prefix of the session id is enough. Turning it on asks first:
+A prefix of the session id is enough. Turning it on asks first, in words true to the session's
+workspace. In a [per-person workspace](/operate/per-person-workspaces/):
 
 ```text
 Turn on shared control?
 Each turn runs on its sender's login. From now until this session ends, the agent uses no one's personal memory or instructions. The conversation so far, including what your agent loaded before, becomes visible to whoever steers.
+```
+
+In a workspace that shares one home:
+
+```text
+Turn on shared control?
+Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it.
 ```
 
 **Turn on** or **Keep it off**. `mend session share <session> on --yes` answers for a script.

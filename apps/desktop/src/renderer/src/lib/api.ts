@@ -626,11 +626,15 @@ export const setSharedControl = (id: string, enabled: boolean) =>
 
 /**
  * "Replace this workspace now": the change's owner; the executor goes after a saved final flush,
- * and the worktree's next launch runs each person as themselves. A refusal (409) carries the
- * server's own sentence (`refusalWords`).
+ * and the worktree's next launch runs each person as themselves. `seen` is the `fingerprint` of
+ * the retirement the owner was shown: when more would stop now, Mend refuses. A refusal (409)
+ * carries the server's own sentence (`refusalWords`).
  */
-export const replaceWorkspace = (sessionId: string) =>
-  call("POST", "/api/sessions/:id/workspace-retirement/replace", { params: { id: sessionId } });
+export const replaceWorkspace = (sessionId: string, seen: string) =>
+  call("POST", "/api/sessions/:id/workspace-retirement/replace", {
+    params: { id: sessionId },
+    body: { seen },
+  });
 
 /**
  * Settled sessions only — a live one answers 409. Removes the conversation

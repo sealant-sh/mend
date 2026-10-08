@@ -10,6 +10,7 @@ import {
   type LivePersonDto,
   type MemberNameDto,
   type WorkspaceRetirementDto,
+  type WorkspaceReads,
 } from "./shared-workspace.ts";
 import {
   agentIsLive,
@@ -65,6 +66,13 @@ export interface SessionDto extends SessionCaptureLike {
    * view; absent on settled rows and older servers.
    */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  /** When shared control was turned on; null while it is off. Absent on older servers. */
+  readonly sharedControlEnabledAt?: string | null;
+  /**
+   * The executor waits to be replaced (docs/adr/0016, decision 14), from the session view with
+   * `livePeople`; absent on settled rows and older servers.
+   */
+  readonly workspaceRetirement?: "marked" | "retiring" | null;
 }
 
 export interface WorktreeDto {
@@ -192,23 +200,30 @@ export const fetchWorkbench = async (ctx: { readonly api: WorkbenchApi }): Promi
     }),
   );
   const processesBySession = new Map<string, ReadonlyArray<SessionProcessDto>>();
-  const livePeopleBySession = new Map<string, ReadonlyArray<LivePersonDto>>();
+  const viewFactsBySession = new Map<
+    string,
+    Pick<SessionDto, "livePeople" | "workspaceRetirement">
+  >();
   for (const detail of detailed) {
     if (detail === null) continue;
     processesBySession.set(
       detail.session.id,
       detail.processes.filter((process) => process.exitedAt === null && process.kind !== "service"),
     );
-    if (detail.session.livePeople !== undefined) {
-      livePeopleBySession.set(detail.session.id, detail.session.livePeople);
-    }
+    viewFactsBySession.set(detail.session.id, {
+      ...(detail.session.livePeople === undefined ? {} : { livePeople: detail.session.livePeople }),
+      ...(detail.session.workspaceRetirement === undefined
+        ? {}
+        : { workspaceRetirement: detail.session.workspaceRetirement }),
+    });
   }
-  // The project view lists nobody live; the session view does, read in the same pass.
+  // The project view lists nobody live and no retirement; the session view does, read in the
+  // same pass.
   const withPeople = fetched.map((detail) => ({
     ...detail,
     sessions: detail.sessions.map((session) => {
-      const livePeople = livePeopleBySession.get(session.id);
-      return livePeople === undefined ? session : { ...session, livePeople };
+      const viewFacts = viewFactsBySession.get(session.id);
+      return viewFacts === undefined ? session : { ...session, ...viewFacts };
     }),
   }));
   return {
@@ -1114,18 +1129,32 @@ export interface WorkspaceFacts {
   readonly retirement: WorkspaceRetirementDto | null;
 }
 
-export const WORKSPACE_FACTS_KEY = (sessionId: string) => ["workspace-facts", sessionId];
+export const WORKSPACE_FACTS_KEY = (sessionId: string, reads: WorkspaceReads) => [
+  "workspace-facts",
+  sessionId,
+  reads.waiting,
+  reads.retirement,
+];
 
-/** Both reads at once; an older server's 404 reads as nothing to say. */
+/**
+ * The reads the session row says are worth a request (`workspaceReadsOf`), at once; one not
+ * worth it is nothing to say, and an older server's 404 reads as nothing to say.
+ */
 export const fetchWorkspaceFacts = async (
   api: WorkbenchApi,
   sessionId: string,
+  reads: WorkspaceReads,
 ): Promise<WorkspaceFacts> => {
   const [wait, retirement] = await Promise.all([
-    api<ConversationWaitDto | null>("GET", `/sessions/${sessionId}/waiting`).catch(() => null),
-    api<WorkspaceRetirementDto | null>("GET", `/sessions/${sessionId}/workspace-retirement`).catch(
-      () => null,
-    ),
+    reads.waiting
+      ? api<ConversationWaitDto | null>("GET", `/sessions/${sessionId}/waiting`).catch(() => null)
+      : null,
+    reads.retirement
+      ? api<WorkspaceRetirementDto | null>(
+          "GET",
+          `/sessions/${sessionId}/workspace-retirement`,
+        ).catch(() => null)
+      : null,
   ]);
   return { wait, retirement };
 };

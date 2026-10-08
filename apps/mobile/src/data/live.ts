@@ -23,6 +23,7 @@ import type { CheckpointDto } from "@/data/review-state";
 import type {
   ConversationWaitDto,
   LivePersonDto,
+  ReplaceWorkspaceBody,
   WorkspaceRetirementDto,
 } from "@/data/shared-workspace";
 
@@ -224,6 +225,13 @@ export interface SessionDto {
    * session's own view only; empty in a project's list, absent on older servers.
    */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  /** When its owner turned shared control on; null while off, absent on older servers. */
+  readonly sharedControlEnabledAt?: string | null;
+  /**
+   * Its executor waits to be replaced (docs/adr/0016, decision 14): the phone reads the
+   * retirement's detail only then. Null otherwise, absent on older servers.
+   */
+  readonly workspaceRetirement?: "marked" | "retiring" | null;
 }
 
 /**
@@ -693,27 +701,32 @@ export const useViewerId = (): string | null =>
 
 /**
  * What holds the next sender's turn in a shared conversation, as both people see it (docs/adr/
- * 0016, decision 6). Under the conversation's key, so a turn sent or answered re-reads it. A server
- * from before shared steering answers 404: no line.
+ * 0016, decision 6). Under the conversation's key, so a turn sent or answered re-reads it. Read
+ * only while `enabled` (`readsWaiting`: someone live in the executor, control shared); re-read on a
+ * timer while the composer is live as well. A server from before shared steering answers 404: no
+ * line.
  */
-export const useConversationWait = (sessionId: string, live: boolean) =>
+export const useConversationWait = (sessionId: string, live: boolean, enabled: boolean) =>
   useQuery({
     queryKey: ["session", sessionId, "conversation", "waiting"],
     queryFn: () => api<ConversationWaitDto | null>("GET", `/sessions/${sessionId}/waiting`),
-    refetchInterval: live ? 4_000 : false,
+    enabled,
+    refetchInterval: live && enabled ? 4_000 : false,
     retry: false,
   });
 
 /**
  * The session's executor, started before per-person homes, waiting to be replaced (docs/adr/0016,
- * decision 14); null while none of that is under way. A server from before answers 404: no line.
+ * decision 14). Read only while `enabled` (`readsRetirement`: the session's own view says so). A
+ * server from before answers 404: no line.
  */
-export const useWorkspaceRetirement = (sessionId: string) =>
+export const useWorkspaceRetirement = (sessionId: string, enabled: boolean) =>
   useQuery({
     queryKey: ["session", sessionId, "workspace-retirement"],
     queryFn: () =>
       api<WorkspaceRetirementDto | null>("GET", `/sessions/${sessionId}/workspace-retirement`),
-    refetchInterval: 10_000,
+    enabled,
+    refetchInterval: enabled ? 10_000 : false,
     retry: false,
   });
 
@@ -941,11 +954,12 @@ export const useSessionActions = () => {
       api<SessionProcessDto>("POST", `/sessions/${sessionId}/shell`, {}),
     onSettled: invalidate,
   });
-  // "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner. A refusal
-  // (409) carries the server's own sentence, which `failureMessage` keeps as it is.
+  // "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner, with the
+  // fingerprint of the list they were shown (`seen`). A refusal (409) carries the server's own
+  // sentence, which `failureMessage` keeps as it is.
   const replaceWorkspace = useMutation({
-    mutationFn: (sessionId: string) =>
-      apiNoContent("POST", `/sessions/${sessionId}/workspace-retirement/replace`, {}),
+    mutationFn: (input: { readonly sessionId: string; readonly body: ReplaceWorkspaceBody }) =>
+      apiNoContent("POST", `/sessions/${input.sessionId}/workspace-retirement/replace`, input.body),
     onSettled: invalidate,
   });
   const stopShell = useMutation({

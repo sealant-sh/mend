@@ -2,7 +2,7 @@ import {
   joinWorktreeLine,
   REPLACE_WORKSPACE_ACTION,
   retirementStopLines,
-  SHARED_CONTROL_CONFIRM,
+  sharedControlConfirm,
   sharedWorkspaceLine,
   workspaceRetirementLine,
   type WorkspaceRetirementStopKind,
@@ -37,8 +37,51 @@ export interface WorkspaceRetirementDto {
     readonly label: string;
   }>;
   readonly reason: string | null;
+  /**
+   * When what runs in the executor was last checked beyond Mend's own records, as the wire
+   * carries it (ISO); null when only Mend's records were read.
+   */
+  readonly checkedAt: string | null;
+  /** What the viewer was shown, as one token: the replacement sends it back as `seen`. */
+  readonly fingerprint: string;
   readonly canReplace: boolean;
 }
+
+/** The wire's `checkedAt` as a time; unreadable reads as Mend's records only. */
+const checkedAtOf = (retirement: WorkspaceRetirementDto): Date | null => {
+  if (retirement.checkedAt === null) return null;
+  const at = new Date(retirement.checkedAt);
+  return Number.isNaN(at.getTime()) ? null : at;
+};
+
+/** What was checked and what would stop, one line each, in `@mend/domain`'s words. */
+export const retirementEvidenceLines = (
+  retirement: WorkspaceRetirementDto,
+): ReadonlyArray<string> =>
+  retirementStopLines({ stops: retirement.stops, checkedAt: checkedAtOf(retirement) });
+
+/**
+ * Which of a session's workspace reads are worth a request, from what the session list already
+ * says: the waiting line only where another person is live and shared control is on (only then
+ * can a turn wait on someone else's work), the retirement only where one is under way. Absent
+ * fields (an older server) read as nothing to ask.
+ */
+export interface WorkspaceReads {
+  readonly waiting: boolean;
+  readonly retirement: boolean;
+}
+
+export const workspaceReadsOf = (session: {
+  readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  readonly sharedControlEnabledAt?: string | null;
+  readonly workspaceRetirement?: "marked" | "retiring" | null;
+}): WorkspaceReads => ({
+  waiting:
+    (session.livePeople ?? []).length > 0 &&
+    session.sharedControlEnabledAt !== undefined &&
+    session.sharedControlEnabledAt !== null,
+  retirement: session.workspaceRetirement !== undefined && session.workspaceRetirement !== null,
+});
 
 /** A member of the organization by id and name (`GET /api/organization/members`). */
 export interface MemberNameDto {
@@ -133,7 +176,7 @@ export const sessionWorkspaceLines = (facts: {
         : {
             action: REPLACE_WORKSPACE_ACTION,
             command: `mend workspace replace ${facts.sessionId.slice(0, 8)}`,
-            stops: retirementStopLines(retirement),
+            stops: retirementEvidenceLines(retirement),
           },
   };
 };
@@ -186,16 +229,28 @@ export type ConfirmPlan = "ask" | "confirmed" | "refuse";
 export const confirmPlan = (args: ReadonlyArray<string>, interactive: boolean): ConfirmPlan =>
   args.includes("--yes") || args.includes("-y") ? "confirmed" : interactive ? "ask" : "refuse";
 
-/** What `mend session share <s> on` prints before it asks. */
-export const sharedControlConfirmLines = (): ReadonlyArray<string> => [
-  SHARED_CONTROL_CONFIRM.title,
-  SHARED_CONTROL_CONFIRM.body,
-];
+/**
+ * What `mend session share <s> on` prints before it asks, in both layouts: the words true to
+ * whose login a steered turn runs on.
+ */
+export const sharedControlConfirmLines = (turnsOnSendersLogin: boolean): ReadonlyArray<string> => {
+  const confirm = sharedControlConfirm(turnsOnSendersLogin);
+  return [confirm.title, confirm.body];
+};
 
-/** What `mend workspace replace` prints before it asks: the action and what would stop. */
+/** The `[y/N]` question after it: "turn on? (n: keep it off)". */
+export const sharedControlQuestion = (turnsOnSendersLogin: boolean): string => {
+  const confirm = sharedControlConfirm(turnsOnSendersLogin);
+  return `${confirm.confirm.toLowerCase()}? (n: ${confirm.cancel.toLowerCase()})`;
+};
+
+/**
+ * What `mend workspace replace` prints before it asks: the action, what was checked and what
+ * would stop.
+ */
 export const replaceConfirmLines = (retirement: WorkspaceRetirementDto): ReadonlyArray<string> => [
   `${REPLACE_WORKSPACE_ACTION}?`,
-  ...retirementStopLines(retirement).map((stop) => `  ${stop}`),
+  ...retirementEvidenceLines(retirement).map((stop) => `  ${stop}`),
 ];
 
 /** One `[y/N]` question on the terminal; anything but y or yes is no. */

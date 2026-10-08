@@ -1359,11 +1359,14 @@ benchmark once more, before 0.36 is tagged.
   final flush was sent stays `retiring` while its drain asks again, and the Services it starts again
   are kept with the row for a restart.
 - 2026-10-08, Delivery 20 as built: the lines of decision 13 are one module
-  (`@mend/domain/workbench`, `shared-workspace.ts`) every client draws from; the live people are the
+  (`@mend/domain/workbench`, `shared-workspace.ts`) every client draws from. The live people are the
   distinct `runs_as` of live processes in the session's executor, so a `shared` executor lists
-  nobody, aggregated once per workspace and joined to the session rows in the API's session list and
-  view query (measured +3 ms on a 300-session list where every executor has two people). The Shared
-  control switch says the sender's-login line, and asks before it turns on, only where the session's
-  worktree runs each person as themselves (`SessionControlView.turnsOnSendersLogin`); elsewhere it
-  says the owner's logins are spent, as before.
+  nobody, and the executor's retirement state comes with them: correlated subqueries on the viewed
+  session rows, in the API's session list and view query (measured +4 ms on a 300-session list where
+  every executor has two people, +0.2 ms on a view). A person with no name reads "a member". Clients
+  ask for the waiting line only with people live and shared control on, and for the retirement only
+  when the session says there is one, so the flag off adds no request. The Shared control switch
+  asks before it turns on in both layouts, in words true to each
+  (`SessionControlView.turnsOnSendersLogin`, from the executor's own launch layout, or the
+  worktree's record when none is live; unknown reads as the owner's logins).
 - Open: gate B's history record.

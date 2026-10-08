@@ -29961,6 +29961,24 @@ describe("pre-release executors and the migration of their shared home (docs/adr
   );
 
   it(
+    "says a steered turn spends the owner's logins in a shared executor with the flag on, and runs on its sender's once the executor is per person (review of mend#576, P1-2)",
+    { timeout: 30_000 },
+    async () => {
+      const answers: Array<boolean> = [];
+      await retiringWorld((engine, world, { session }) =>
+        Effect.gen(function* () {
+          answers.push(yield* engine.steersPerPerson(session));
+          yield* engine.sweepRetirements();
+          const relaunched = world.sessions.get(session.id);
+          if (relaunched === undefined) return yield* Effect.die("no session");
+          answers.push(yield* engine.steersPerPerson(relaunched));
+        }),
+      );
+      expect(answers).toEqual([false, true]);
+    },
+  );
+
+  it(
     "keeps the executor when its final flush is not saved, and says why: nothing is lost",
     { timeout: 30_000 },
     async () => {

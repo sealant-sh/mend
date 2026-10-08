@@ -10,6 +10,7 @@ import {
   sessionWaiting,
   sessionWorkspaceRetirement,
   type LivePersonDto,
+  type SessionDto,
   type WorkspaceRetirementDto,
 } from "#/lib/api";
 
@@ -28,29 +29,53 @@ import {
 export const sharedControlSwitchTitle = (turnsOnSendersLogin: boolean): string =>
   `On lets everyone who can see this project send turns, answer approvals and interrupt. ${sharedControlLine(turnsOnSendersLogin)} They can read the terminal; only you type in it. Every action is recorded with who sent it.`;
 
-/** How often a live conversation re-reads what holds its next turn, between stream pointers. */
-const WAITING_POLL_MS = 4_000;
+/**
+ * What pressing On or Off on the Shared control switch does: nothing on the side already chosen;
+ * turning it on asks first, in both layouts (`sharedControlConfirm`); turning it off never asks.
+ */
+export const sharedControlPress = (shared: boolean, enabled: boolean): "nothing" | "ask" | "set" =>
+  shared === enabled ? "nothing" : enabled ? "ask" : "set";
+
+/**
+ * Whether the session's waiting line is worth reading (docs/adr/0016, decision 6): someone is live
+ * in its executor and its owner shares control. Otherwise nobody else's turn can wait, and nothing
+ * is read (with `MEND_HARNESS_LAYOUT` off, `livePeople` is always empty: no extra work at all).
+ */
+export const readsWaiting = (
+  session: Pick<SessionDto, "livePeople" | "sharedControlEnabledAt"> | null | undefined,
+): boolean =>
+  session !== null &&
+  session !== undefined &&
+  session.livePeople.length > 0 &&
+  session.sharedControlEnabledAt !== null;
+
+/** Whether the session's executor waits to be replaced, as the session's own view says. */
+export const readsRetirement = (
+  session: Pick<SessionDto, "workspaceRetirement"> | null | undefined,
+): boolean => session !== null && session !== undefined && session.workspaceRetirement !== null;
 
 /**
  * Under the conversation's key, so the stream's `agent-conversation` pointer re-reads it with the
- * turns (`refreshConversation`). A server from before shared steering answers 404: no line.
+ * turns (`refreshConversation`), and a `session` pointer with the session: no timer of its own.
+ * Read only while `readsWaiting`. A server from before shared steering answers 404: no line.
  */
-export const sessionWaitingQuery = (sessionId: string, live: boolean) =>
+export const sessionWaitingQuery = (sessionId: string, enabled: boolean) =>
   queryOptions({
     queryKey: ["session", sessionId, "conversation", "waiting"] as const,
     queryFn: () => sessionWaiting(sessionId),
-    refetchInterval: live ? WAITING_POLL_MS : false,
+    enabled,
     retry: false,
   });
 
 /**
- * Under the session's key, so a `session` pointer re-reads it. A server from before per-person
- * homes answers 404: no line.
+ * Under the session's key, so a `session` pointer re-reads it. Read only while `readsRetirement`.
+ * A server from before per-person homes answers 404: no line.
  */
-export const workspaceRetirementQuery = (sessionId: string) =>
+export const workspaceRetirementQuery = (sessionId: string, enabled: boolean) =>
   queryOptions({
     queryKey: ["session", sessionId, "workspace-retirement"] as const,
     queryFn: () => sessionWorkspaceRetirement(sessionId),
+    enabled,
     retry: false,
   });
 
@@ -74,6 +99,11 @@ export interface RetirementView {
   readonly stops: ReadonlyArray<string>;
   /** The viewer owns the change and no agent turn is in flight. */
   readonly canReplace: boolean;
+  /**
+   * The `fingerprint` of the read these lines came from: "Replace this workspace now" sends it
+   * (`seen`), so Mend ends nothing that was not listed here.
+   */
+  readonly seen: string;
 }
 
 /**
@@ -88,7 +118,28 @@ export const retirementViewOf = (
   const launcher = retirement.launcher === null ? null : (names.get(retirement.launcher) ?? null);
   return {
     line: workspaceRetirementLine(retirement, launcher ?? "its launcher"),
-    stops: retirement.canReplace ? retirementStopLines(retirement) : [],
+    stops: retirement.canReplace
+      ? retirementStopLines({
+          stops: retirement.stops,
+          checkedAt: retirement.checkedAt === null ? null : new Date(retirement.checkedAt),
+        })
+      : [],
     canReplace: retirement.canReplace,
+    seen: retirement.fingerprint,
   };
+};
+
+/**
+ * Lines with keys that stay unique when two lines read alike (two processes whose names are not
+ * the viewer's both read "process Mend did not start").
+ */
+export const keyedLines = (
+  lines: ReadonlyArray<string>,
+): ReadonlyArray<{ readonly key: string; readonly line: string }> => {
+  const seen = new Map<string, number>();
+  return lines.map((line) => {
+    const count = (seen.get(line) ?? 0) + 1;
+    seen.set(line, count);
+    return { key: `${line}#${count}`, line };
+  });
 };

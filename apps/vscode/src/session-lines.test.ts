@@ -8,9 +8,11 @@ import {
   parseLivePeople,
   parseMembers,
   parseRetirement,
+  parseRetirementState,
   parseWaitLine,
   sessionLines,
-  withLivePeople,
+  withLiveFacts,
+  workspaceReads,
 } from "./session-lines.js";
 
 const anna = { accountId: "anna", name: "Anna" };
@@ -39,6 +41,7 @@ describe("parsing what the server says", () => {
         canReplace: false,
         stops: [
           { kind: "shell", label: "shell 1" },
+          { kind: "unchecked", label: "" },
           { kind: "later", label: "?" },
         ],
       }),
@@ -47,10 +50,20 @@ describe("parsing what the server says", () => {
       preRelease: true,
       launcher: "anna",
       reason: null,
-      stops: [{ kind: "shell", label: "shell 1" }],
+      stops: [
+        { kind: "shell", label: "shell 1" },
+        { kind: "unchecked", label: "" },
+      ],
     });
     expect(parseRetirement(null)).toBeNull();
     expect(parseRetirement({ state: "gone" })).toBeNull();
+  });
+
+  it("reads a session's retirement state, and none from an older server", () => {
+    expect(parseRetirementState("marked")).toBe("marked");
+    expect(parseRetirementState("retiring")).toBe("retiring");
+    expect(parseRetirementState(undefined)).toBeNull();
+    expect(parseRetirementState("gone")).toBeNull();
   });
 
   it("reads the roster by id and name", () => {
@@ -101,25 +114,63 @@ describe("a session's lines (docs/adr/0016, decisions 13 and 14)", () => {
   });
 });
 
+describe("which workspace reads are worth a request", () => {
+  const row: Parameters<typeof workspaceReads>[0] = {
+    livePeople: [anna],
+    sharedControlEnabledAt: "2026-10-08T12:00:00.000Z",
+    workspaceRetirement: null,
+  };
+
+  it("asks for the waiting line only with someone live and shared control on", () => {
+    expect(workspaceReads(row)).toEqual({ waiting: true, retirement: false });
+    expect(workspaceReads({ ...row, livePeople: [] }).waiting).toBe(false);
+    expect(workspaceReads({ ...row, sharedControlEnabledAt: null }).waiting).toBe(false);
+  });
+
+  it("asks for the retirement only while one is under way", () => {
+    expect(workspaceReads({ ...row, workspaceRetirement: "marked" }).retirement).toBe(true);
+    expect(workspaceReads({ ...row, workspaceRetirement: "retiring" }).retirement).toBe(true);
+    expect(workspaceReads({ ...row, livePeople: [], sharedControlEnabledAt: null })).toEqual({
+      waiting: false,
+      retirement: false,
+    });
+  });
+
+  it("lays the session list's retirement onto the project view's rows", () => {
+    const merged = withLiveFacts(
+      [
+        { id: "s1", livePeople: [], workspaceRetirement: null },
+        { id: "s2", livePeople: [], workspaceRetirement: null },
+      ],
+      [{ id: "s1", livePeople: [], workspaceRetirement: "marked" }],
+    );
+    expect(merged.map((session) => session.workspaceRetirement)).toEqual(["marked", null]);
+  });
+});
+
 describe("the join line", () => {
   const sessions = [
-    { id: "s1", worktreeId: "wt-1", livePeople: [] },
-    { id: "s2", worktreeId: "wt-2", livePeople: [] },
+    { id: "s1", worktreeId: "wt-1", livePeople: [], workspaceRetirement: null },
+    { id: "s2", worktreeId: "wt-2", livePeople: [], workspaceRetirement: null },
   ];
-  const listed = [{ id: "s1", livePeople: [anna, bob] }];
+  const listed = [{ id: "s1", livePeople: [anna, bob], workspaceRetirement: null }];
 
   it("names the others live in the worktree, from the session list", () => {
-    const merged = withLivePeople(sessions, listed);
+    const merged = withLiveFacts(sessions, listed);
     expect(othersInWorktree(merged, "wt-1", "bob")).toEqual(["Anna"]);
     expect(joinLine(othersInWorktree(merged, "wt-1", "bob"))).toBe(joinWorktreeLine(["Anna"]));
   });
 
   it("says nothing in a worktree where only you, or nobody, runs", () => {
-    const merged = withLivePeople(sessions, listed);
+    const merged = withLiveFacts(sessions, listed);
     expect(joinLine(othersInWorktree(merged, "wt-2", "bob"))).toBeNull();
     expect(othersInWorktree(merged, "wt-1", null)).toEqual([]);
     expect(
-      othersInWorktree(withLivePeople(sessions, [{ id: "s1", livePeople: [bob] }]), "wt-1", "bob"),
+      othersInWorktree(
+        withLiveFacts(sessions, [{ id: "s1", livePeople: [bob], workspaceRetirement: null }]),
+        "wt-1",
+        "bob",
+      ),
     ).toEqual([]);
   });
 });

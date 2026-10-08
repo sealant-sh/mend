@@ -113,6 +113,7 @@ import {
   othersLiveInWorktree,
   sessionWorkspaceLines,
   workspaceLineList,
+  workspaceReadsOf,
   type ConversationWaitDto,
   type LivePersonDto,
   type MemberNameDto,
@@ -268,6 +269,13 @@ interface SessionDto extends SessionCaptureLike {
    * `GET /sessions` and the session view only; absent on older servers.
    */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  /** When shared control was turned on; null while it is off. Absent on older servers. */
+  readonly sharedControlEnabledAt?: string | null;
+  /**
+   * The executor waits to be replaced (docs/adr/0016, decision 14): read with `livePeople`, so
+   * the retirement's detail is asked for only when there is one. Absent on older servers.
+   */
+  readonly workspaceRetirement?: "marked" | "retiring" | null;
 }
 
 /** The DB-cheap review facts the server decorates a project's sessions with. */
@@ -803,7 +811,9 @@ const liveSessionsOf = (config: CliConfig): Promise<ReadonlyArray<SessionDto>> =
 /**
  * What each live session says about its workspace (docs/adr/0016, decisions 13 and 14): the
  * shared workspace line, the waiting line, the retirement line and, for the change's owner, how
- * to replace it. Two reads per live session; an older server's 404 reads as nothing to say.
+ * to replace it. The session list says which reads are worth a request (`workspaceReadsOf`): the
+ * waiting line only where someone else is live with shared control on, the retirement only where
+ * one is under way. An older server's 404 reads as nothing to say.
  */
 const workspaceLinesOf = async (
   config: CliConfig,
@@ -812,18 +822,27 @@ const workspaceLinesOf = async (
   const live = sessions.filter((session) => LIVE_STATUSES.has(session.status));
   if (live.length === 0) return new Map();
   const [viewer, listed] = await Promise.all([viewerIdOf(config), liveSessionsOf(config)]);
-  const peopleById = new Map(listed.map((session) => [session.id, session.livePeople ?? []]));
+  const listedById = new Map(listed.map((session) => [session.id, session]));
   const facts = await Promise.all(
-    live.map(async (session) => {
+    live.map(async (row) => {
+      // The session list carries the view's facts (live people, the retirement's state).
+      const session = listedById.get(row.id) ?? row;
+      const reads = workspaceReadsOf(session);
       const [wait, retirement] = await Promise.all([
-        request<ConversationWaitDto | null>(config, "GET", `/sessions/${session.id}/waiting`).catch(
-          () => null,
-        ),
-        request<WorkspaceRetirementDto | null>(
-          config,
-          "GET",
-          `/sessions/${session.id}/workspace-retirement`,
-        ).catch(() => null),
+        reads.waiting
+          ? request<ConversationWaitDto | null>(
+              config,
+              "GET",
+              `/sessions/${session.id}/waiting`,
+            ).catch(() => null)
+          : null,
+        reads.retirement
+          ? request<WorkspaceRetirementDto | null>(
+              config,
+              "GET",
+              `/sessions/${session.id}/workspace-retirement`,
+            ).catch(() => null)
+          : null,
       ]);
       return { session, wait, retirement };
     }),
@@ -839,7 +858,7 @@ const workspaceLinesOf = async (
       workspaceLineList(
         sessionWorkspaceLines({
           sessionId: session.id,
-          livePeople: peopleById.get(session.id) ?? session.livePeople ?? [],
+          livePeople: session.livePeople ?? [],
           viewer,
           wait,
           retirement,

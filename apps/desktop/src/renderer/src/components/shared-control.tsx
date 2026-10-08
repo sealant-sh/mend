@@ -1,4 +1,4 @@
-import { SHARED_CONTROL_CONFIRM } from "@mend/domain/workbench";
+import { sharedControlConfirm } from "@mend/domain/workbench";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,7 +15,7 @@ import { useState } from "react";
 
 import { setSharedControl, type SessionControlDto, type SessionDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
-import { sharedControlSwitchTitle } from "#/lib/shared-workspace";
+import { sharedControlPress, sharedControlSwitchTitle } from "#/lib/shared-workspace";
 
 const useToggle = (session: SessionDto) =>
   useMutation({
@@ -30,11 +30,11 @@ const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : "shared control did not change";
 
 /**
- * The owner's switch, sized for the terminal's header strip. Where each turn runs on its sender's
- * login, turning it on makes the conversation so far visible to whoever steers and takes
- * everyone's personal memory out of the agent, so it asks first, in the domain's words
- * (docs/adr/0016, decision 13). Elsewhere a steered turn spends the owner's logins, as the line
- * beside the switch says, and it turns on at once.
+ * The owner's switch, sized for the terminal's header strip. Turning it on always asks first, in
+ * the domain's words for the session's layout (`sharedControlConfirm`, docs/adr/0016, decision
+ * 13): where each turn runs on its sender's login, the conversation so far becomes visible to
+ * whoever steers and nobody's personal memory reaches the agent; elsewhere every steered turn
+ * spends the owner's logins. Turning it off never asks.
  */
 export function SharedControlSwitch({
   session,
@@ -47,6 +47,7 @@ export function SharedControlSwitch({
   const toggle = useToggle(session);
   const [confirming, setConfirming] = useState(false);
   const shared = session.sharedControlEnabledAt !== null;
+  const confirm = sharedControlConfirm(turnsOnSendersLogin);
   return (
     <span
       className="flex shrink-0 items-center gap-1.5"
@@ -66,9 +67,9 @@ export function SharedControlSwitch({
             aria-pressed={shared === enabled}
             disabled={toggle.isPending}
             onClick={() => {
-              if (shared === enabled) return;
-              if (enabled && turnsOnSendersLogin) setConfirming(true);
-              else toggle.mutate(enabled);
+              const press = sharedControlPress(shared, enabled);
+              if (press === "ask") setConfirming(true);
+              else if (press === "set") toggle.mutate(enabled);
             }}
             className={cn(
               "rounded-[5px] px-2 py-px font-sans text-[11.5px] font-medium transition-colors disabled:opacity-50",
@@ -84,18 +85,18 @@ export function SharedControlSwitch({
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{SHARED_CONTROL_CONFIRM.title}</AlertDialogTitle>
-            <AlertDialogDescription>{SHARED_CONTROL_CONFIRM.body}</AlertDialogDescription>
+            <AlertDialogTitle>{confirm.title}</AlertDialogTitle>
+            <AlertDialogDescription>{confirm.body}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>{SHARED_CONTROL_CONFIRM.cancel}</AlertDialogCancel>
+            <AlertDialogCancel>{confirm.cancel}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 setConfirming(false);
                 toggle.mutate(true);
               }}
             >
-              {SHARED_CONTROL_CONFIRM.confirm}
+              {confirm.confirm}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

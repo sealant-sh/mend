@@ -44,7 +44,13 @@ import {
   useViewerId,
   useWorkspaceRetirement,
 } from "@/data/live";
-import { retirementViewOf, sharedWorkspaceLineOf } from "@/data/shared-workspace";
+import {
+  keyedLines,
+  readsRetirement,
+  replaceConfirmationOf,
+  retirementViewOf,
+  sharedWorkspaceLineOf,
+} from "@/data/shared-workspace";
 import { usePosture } from "@/data/use-posture";
 
 /** What a wide layout shows beside the conversation. */
@@ -110,11 +116,15 @@ export function SessionPane({
   const viewerId = useViewerId();
   const members = useOrganizationMembers().data ?? [];
   const sharedLine = sharedWorkspaceLineOf(session?.livePeople, viewerId);
-  const retirementRead = useWorkspaceRetirement(sessionId);
-  const retirement = retirementViewOf(
-    retirementRead.data,
-    new Map(members.map((member) => [member.userId, member.name])),
-  );
+  // Read only while the session's own view says its executor waits to be replaced.
+  const retiring = readsRetirement(session);
+  const retirementRead = useWorkspaceRetirement(sessionId, retiring);
+  const retirement = retiring
+    ? retirementViewOf(
+        retirementRead.data,
+        new Map(members.map((member) => [member.userId, member.name])),
+      )
+    : null;
   const replaceError =
     replaceWorkspace.error === null
       ? null
@@ -316,15 +326,18 @@ export function SessionPane({
       disabled: replaceWorkspace.isPending,
       // It ends what the list names: asked first, with that list.
       menuOnly: true,
-      onPress: () =>
-        Alert.alert(`${REPLACE_WORKSPACE_ACTION}?`, retirement.stops.join("\n"), [
+      // The list asked about and the fingerprint sent come from the same read.
+      onPress: () => {
+        const ask = replaceConfirmationOf(retirement);
+        Alert.alert(ask.title, ask.message, [
           { text: "Cancel", style: "cancel" },
           {
             text: REPLACE_WORKSPACE_ACTION,
             style: "destructive",
-            onPress: () => replaceWorkspace.mutate(session.id),
+            onPress: () => replaceWorkspace.mutate({ sessionId: session.id, body: ask.body }),
           },
-        ]),
+        ]);
+      },
     });
   }
 
@@ -375,8 +388,8 @@ export function SessionPane({
               <UiText tone="ink2" size={12} numberOfLines={4}>
                 {retirement.line}
               </UiText>
-              {retirement.stops.map((line) => (
-                <MonoText key={line} tone="faint" size={10.5} numberOfLines={1}>
+              {keyedLines(retirement.stops).map(({ key, line }) => (
+                <MonoText key={key} tone="faint" size={10.5} numberOfLines={1}>
                   {line}
                 </MonoText>
               ))}

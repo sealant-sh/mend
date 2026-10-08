@@ -81,6 +81,7 @@ export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => (
   sharedControlEnabledAt: null,
   sharedControlEverAt: null,
   livePeople: [],
+  workspaceRetirement: null,
   hasTranscript: null,
   idleStoppedAt: null,
   capturePending: null,
@@ -177,6 +178,7 @@ export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDet
   processes: [],
   currentAgent: null,
   liveServices: 0,
+  preReleaseMemory: null,
   ...patch,
 });
 

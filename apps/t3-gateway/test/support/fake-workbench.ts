@@ -125,8 +125,16 @@ export class FakeWorkbench {
   readonly livePeople = new Map<string, ReadonlyArray<{ accountId: string; name: string }>>();
   /** Session id → what `GET /api/sessions/:id/waiting` answers (`ConversationWait`). */
   readonly waits = new Map<string, unknown>();
-  /** Session id → what `GET /api/sessions/:id/workspace-retirement` answers. */
-  readonly retirements = new Map<string, unknown>();
+  /**
+   * Session id → what `GET /api/sessions/:id/workspace-retirement` answers; `GET /api/sessions`
+   * says its `state` as the session's `workspaceRetirement`.
+   */
+  readonly retirements = new Map<
+    string,
+    { readonly state: "marked" | "retiring"; readonly [field: string]: unknown }
+  >();
+  /** Session id → when its owner shared control (`sharedControlEnabledAt` in `GET /api/sessions`). */
+  readonly sharedControl = new Map<string, string>();
   readonly calls: Array<FakeCall> = [];
   private readonly streams = new Set<ServerResponse>();
   private seq = 0;
@@ -435,6 +443,8 @@ export class FakeWorkbench {
         Array.from(this.sessions.values(), (session) => ({
           ...session,
           livePeople: this.livePeople.get(session.id) ?? [],
+          sharedControlEnabledAt: this.sharedControl.get(session.id) ?? null,
+          workspaceRetirement: this.retirements.get(session.id)?.state ?? null,
         })),
       );
     }

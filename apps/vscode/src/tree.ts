@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import type { MendClient } from "./client.js";
-import { sessionLines, withLivePeople } from "./session-lines.js";
+import { sessionLines, withLiveFacts, workspaceReads } from "./session-lines.js";
 import type { Project, ProjectDetail, Session } from "./types.js";
 
 const LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -120,7 +120,8 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
       const projects = await this.client.listProjects();
       const [details, live, viewer] = await Promise.all([
         Promise.all(projects.map((project) => this.client.projectDetail(project.id))),
-        // The project view lists nobody live; the session list does (docs/adr/0016).
+        // The project view lists nobody live and no retirement; the session list does
+        // (docs/adr/0016).
         this.client.activeSessions().catch(() => []),
         this.client.viewerId(),
       ]);
@@ -131,7 +132,7 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
         details: new Map(
           details.map((detail) => [
             detail.project.id,
-            { ...detail, sessions: withLivePeople(detail.sessions, live) },
+            { ...detail, sessions: withLiveFacts(detail.sessions, live) },
           ]),
         ),
         viewer,
@@ -204,13 +205,15 @@ export class MendTreeProvider implements vscode.TreeDataProvider<MendNode> {
 
   /**
    * A live session's tooltip, read when it is hovered: the waiting line and the retirement line
-   * cost a request each, so the tree does not read them for every row on every refresh.
+   * cost a request each, so the tree does not read them for every row on every refresh, and
+   * asks only for those the row says are worth it (`workspaceReads`).
    */
   async resolveTreeItem(item: vscode.TreeItem, element: MendNode): Promise<vscode.TreeItem> {
     if (element.kind !== "session" || !LIVE_STATUSES.has(element.session.status)) return item;
+    const reads = workspaceReads(element.session);
     const [waitLine, retirement] = await Promise.all([
-      this.client.waitLine(element.session.id),
-      this.client.workspaceRetirement(element.session.id),
+      reads.waiting ? this.client.waitLine(element.session.id) : null,
+      reads.retirement ? this.client.workspaceRetirement(element.session.id) : null,
     ]);
     const members =
       retirement === null || retirement.launcher === null ? [] : await this.client.memberNames();

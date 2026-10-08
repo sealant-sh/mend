@@ -14623,6 +14623,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      /**
+       * Whether a steered turn in this session runs as its sender (decisions 6 and 13), as the
+       * worktree's executors actually run: its live executor is a person one, or, with none live,
+       * the worktree is recorded person (its next launch is). A shared executor, the flag on or not,
+       * spends the owner's logins. Unknown reads as the owner's logins. With the flag off and
+       * nothing recorded, false with no read.
+       */
+      const steersPerPerson = Effect.fn("SessionEngine.steersPerPerson")(function* (
+        session: Session,
+      ) {
+        if (capture === null || !layoutSteps.personPossible()) return false;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (lease !== null && lease.live && session.sealantWorkspaceId !== null) {
+          const launchId = yield* executorLaunchIdOf(session, session.sealantWorkspaceId);
+          return launchId !== null && (yield* layoutSteps.layoutOfLaunch(launchId)) === "person";
+        }
+        return (yield* harnessLayouts.worktreeLayout(session.worktreeId)).layout === "person";
+      });
+
       const preReleaseMemory = Effect.fn("SessionEngine.preReleaseMemory")(function* (
         worktreeId: WorktreeId,
       ) {
@@ -21908,10 +21927,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         reapCaptureLeases: captureReaper,
         migratePreReleaseMemory,
         preReleaseMemory,
-        steersPerPerson: (session) =>
-          capture === null || !layoutSteps.personPossible()
-            ? Effect.succeed(false)
-            : layoutSteps.mayRunPerson(session.worktreeId),
+        steersPerPerson,
         sweepRetirements: () => sweepRetirements(false),
         workspaceRetirement,
         replaceWorkspaceNow,

@@ -9,6 +9,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import type {
+  MendActiveSession,
   MendConversationWait,
   MendProcess,
   MendProject,
@@ -17,6 +18,8 @@ import type {
 } from "../src/mend-workbench.ts";
 import {
   NO_NOTICES,
+  readsRetirement,
+  readsWaiting,
   sharedWorkspaceLine,
   threadNoticesOf,
   workspaceRetirementLine,
@@ -172,6 +175,31 @@ const notices = (
     item.type === "system_notice" ? [[item.message, item.runId, item.ordinal] as const] : [],
   );
 
+const activeRow = (patch: Partial<MendActiveSession> = {}): MendActiveSession => ({
+  id: "session-1",
+  ...patch,
+});
+
+describe("what is read, and only when it applies", () => {
+  it("reads the waiting line only while someone is live in the executor and control is shared", () => {
+    const shared = "2026-10-04T09:00:10.000Z";
+    assert.isTrue(readsWaiting(activeRow({ livePeople: [anna], sharedControlEnabledAt: shared })));
+    assert.isFalse(readsWaiting(activeRow({ livePeople: [], sharedControlEnabledAt: shared })));
+    assert.isFalse(readsWaiting(activeRow({ livePeople: [anna], sharedControlEnabledAt: null })));
+    // A server from before per-person homes says neither; a session not in the list, nothing.
+    assert.isFalse(readsWaiting(activeRow()));
+    assert.isFalse(readsWaiting(undefined));
+  });
+
+  it("reads the retirement only while the session's row says its executor waits to be replaced", () => {
+    assert.isTrue(readsRetirement(activeRow({ workspaceRetirement: "marked" })));
+    assert.isTrue(readsRetirement(activeRow({ workspaceRetirement: "retiring" })));
+    assert.isFalse(readsRetirement(activeRow({ workspaceRetirement: null })));
+    assert.isFalse(readsRetirement(activeRow()));
+    assert.isFalse(readsRetirement(undefined));
+  });
+});
+
 describe("a thread's notices", () => {
   it("says the waiting line after the waiting turn's input, and the others where it stands", () => {
     const projection = threadProjectionOf(
@@ -230,6 +258,11 @@ const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) 
 type ShellItem = OrchestrationV2ShellStreamItem;
 type ThreadItem = OrchestrationV2ThreadStreamItem;
 
+/** A thread snapshot that carries the waiting line. */
+const hasWaiting = (item: ThreadItem): boolean =>
+  item.kind === "snapshot" &&
+  item.projection.turnItems.some((entry) => entry.id.startsWith("notice:waiting:"));
+
 describe("the lines, from Mend to a t3code client", () => {
   it.live("follows who is live, what a turn waits for, and the workspace's retirement", () =>
     withGateway((mend) =>
@@ -243,6 +276,7 @@ describe("the lines, from Mend to a t3code client", () => {
           { accountId: PERSON.id, name: PERSON.name },
           { accountId: "anna", name: "Anna" },
         ]);
+        workbench.sharedControl.set("session-1", "2026-10-04T09:00:10.000Z");
         workbench.waits.set("session-1", {
           sessionId: "session-1",
           turnId: waiting.id,
@@ -257,8 +291,13 @@ describe("the lines, from Mend to a t3code client", () => {
           state: "marked",
           preRelease: true,
           launcher: "anna",
-          stops: [{ kind: "shell", label: "shell 1" }],
+          stops: [
+            { kind: "shell", label: "shell 1" },
+            { kind: "unchecked", label: "" },
+          ],
           reason: null,
+          checkedAt: null,
+          fingerprint: "fp-1",
           canReplace: false,
         });
 
@@ -315,6 +354,110 @@ describe("the lines, from Mend to a t3code client", () => {
             (item.thread.pendingBackgroundTasks ?? []).length === 0,
         );
         assert.strictEqual(cleared.thread.id, "session-1");
+      }),
+    ),
+  );
+
+  it.live("reads neither the waiting line nor the retirement when they cannot apply", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { workbench } = mend;
+        workbench.addProject("project-1", "mend");
+        workbench.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
+        workbench.addTurn("session-1", "Run the suite", "completed");
+        // Someone else is live, but control is not shared: no turn of theirs can wait.
+        workbench.livePeople.set("session-1", [
+          { accountId: PERSON.id, name: PERSON.name },
+          { accountId: "anna", name: "Anna" },
+        ]);
+
+        const { rpc } = yield* pairAndConnect(mend, "NO-READS");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        const opened = yield* thread.next(
+          (item): item is Extract<ThreadItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        assert.deepStrictEqual(notices(opened.projection.turnItems), [
+          [
+            "Shared workspace with Anna · each of you runs as yourself · either of you can read the other's files.",
+            null,
+            2 * TURN_ORDINAL_STRIDE,
+          ],
+        ]);
+        const asked = workbench.calls
+          .map((call) => call.path)
+          .filter((path) => path.endsWith("/waiting") || path.endsWith("/workspace-retirement"));
+        assert.deepStrictEqual(asked, []);
+      }),
+    ),
+  );
+
+  it.live("reads the waiting line once control is shared, and drops it once it is not", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { workbench } = mend;
+        workbench.addProject("project-1", "mend");
+        workbench.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
+        workbench.addTurn("session-1", "Run the suite", "completed");
+        const waiting = workbench.addTurn("session-1", "Now fix it", "queued");
+        workbench.livePeople.set("session-1", [
+          { accountId: PERSON.id, name: PERSON.name },
+          { accountId: "anna", name: "Anna" },
+        ]);
+        workbench.waits.set("session-1", {
+          sessionId: "session-1",
+          turnId: waiting.id,
+          runsAs: "anna",
+          sender: PERSON.id,
+          openTurn: false,
+          work: [{ kind: "task", id: "bash-1", description: "npm test", endable: true }],
+          line: `Waits for Anna's background task before ${PERSON.name}'s turn starts.`,
+          since: "2026-10-04T09:00:30.000Z",
+        });
+
+        const { rpc } = yield* pairAndConnect(mend, "SHARE-ON");
+        const shell = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({ requestCompletionMarker: true }),
+        );
+        const { snapshot } = yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        assert.deepStrictEqual(snapshot.threads[0]?.pendingBackgroundTasks, []);
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        const opened = yield* thread.next(
+          (item): item is Extract<ThreadItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        assert.isFalse(hasWaiting(opened));
+
+        // The owner shares control: the session's pointer re-reads its row, and the line is read.
+        workbench.sharedControl.set("session-1", "2026-10-04T09:00:40.000Z");
+        workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
+        const waits = yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "thread.updated" }> =>
+            item.kind === "thread.updated" &&
+            (item.thread.pendingBackgroundTasks ?? []).length === 1,
+        );
+        assert.strictEqual(waits.thread.id, "session-1");
+
+        // And turns it off: no turn of anyone else's waits, and the line goes without a read.
+        const before = workbench.calls.filter((call) => call.path.endsWith("/waiting")).length;
+        workbench.sharedControl.delete("session-1");
+        workbench.emit({ type: "session", sessionId: "session-1", projectId: "project-1" });
+        yield* thread.next(
+          (item): item is Extract<ThreadItem, { kind: "snapshot" }> =>
+            item.kind === "snapshot" && !hasWaiting(item),
+        );
+        assert.strictEqual(
+          workbench.calls.filter((call) => call.path.endsWith("/waiting")).length,
+          before,
+        );
       }),
     ),
   );

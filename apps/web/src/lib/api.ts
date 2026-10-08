@@ -75,7 +75,7 @@ export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;
 export type ConversationWaitDto = NonNullable<Outputs["sessions"]["conversationWait"]>;
 export type ConversationWaitWorkDto = ConversationWaitDto["work"][number];
 export type WorkspaceRetirementDto = NonNullable<Outputs["sessions"]["workspaceRetirement"]>;
-export type PreReleaseMemoryDto = NonNullable<Outputs["worktrees"]["detail"]["preReleaseMemory"]>;
+export type PreReleaseMemoryDto = NonNullable<SessionDetailDto["preReleaseMemory"]>;
 
 export type ChangeDiffDto = Outputs["changes"]["diff"];
 export type ChangedFileDto = ChangeDiffDto["files"][number];
@@ -385,11 +385,12 @@ export const stopSessionServices = (id: string) =>
 export const setSharedControl = (id: string, enabled: boolean) =>
   orLogin(trpcClient.sessions.setSharedControl.mutate({ id, enabled }));
 /**
- * "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner; refused in words
- * (`WorkspaceReplaceRefused`) while an agent's turn is in flight.
+ * "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner, naming the
+ * retirement they were shown (`seen`, its fingerprint); refused in words (`WorkspaceReplaceRefused`)
+ * while an agent's turn is in flight or when more would stop than was listed.
  */
-export const replaceWorkspace = (id: string) =>
-  orLogin(trpcClient.sessions.replaceWorkspace.mutate({ id }));
+export const replaceWorkspace = (id: string, request: { readonly seen: string }) =>
+  orLogin(trpcClient.sessions.replaceWorkspace.mutate({ id, seen: request.seen }));
 /** End one piece of the previous sender's background work from the waiting line (decision 6). */
 export const endBackgroundWork = (id: string, work: Pick<ConversationWaitWorkDto, "kind" | "id">) =>
   orLogin(

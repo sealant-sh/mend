@@ -87,10 +87,69 @@ export const useWorktreeJoinLine = (
     : worktreeJoinLine(sessions, worktreeId, viewer?.userId ?? null, names);
 };
 
+// ─── What the session page reads, and only where it can matter ─────────────────
+
+/** How often the waiting line is re-read while it can show: background work ends without an event. */
+export const WAIT_POLL_MS = 5_000;
+
+type WaitFacts = Pick<SessionDto, "livePeople" | "sharedControlEnabledAt">;
+
+/**
+ * Whether the waiting line (decision 6) can show at all: another sender's turn waits only where
+ * people run in the executor (`livePeople`, empty for a shared executor and with
+ * `MEND_HARNESS_LAYOUT` off) and the owner shares control. Otherwise the page asks nothing.
+ */
+export const waitingLineRelevant = (session: WaitFacts): boolean =>
+  session.livePeople.length > 0 && session.sharedControlEnabledAt !== null;
+
+/**
+ * How the waiting line is read: not at all where it cannot show; while it can, re-read on a short
+ * poll as long as the session is live (nothing announces background work ending), once otherwise.
+ * Turns and the session's own changes refresh it through the event stream either way.
+ */
+export const waitingLineQuery = (
+  session: WaitFacts,
+  live: boolean,
+): { readonly enabled: boolean; readonly refetchInterval: number | false } => {
+  const enabled = waitingLineRelevant(session);
+  return { enabled, refetchInterval: enabled && live ? WAIT_POLL_MS : false };
+};
+
+/**
+ * Who may end the work a turn waits for: the session's owner, or the person the conversation's
+ * process runs as while they can still steer (shared control turned off takes that from them).
+ */
+export const canEndWaitingWork = (facts: {
+  readonly viewerId: string | null;
+  readonly ownerUserId: string | null;
+  readonly runsAs: string | null;
+  readonly steer: boolean;
+}): boolean =>
+  facts.viewerId !== null &&
+  (facts.viewerId === facts.ownerUserId || (facts.viewerId === facts.runsAs && facts.steer));
+
+/**
+ * Whether the page asks for the executor's retirement (decision 14): only when the session says
+ * one is under way. The session's own events refresh it; nothing polls.
+ */
+export const retirementRelevant = (session: Pick<SessionDto, "workspaceRetirement">): boolean =>
+  session.workspaceRetirement !== null;
+
+/**
+ * "Replace this workspace now" names what the owner was shown, so Mend ends nothing that was not
+ * listed: the retirement's `fingerprint`, as the API asks.
+ */
+export const replaceWorkspaceBody = (
+  retirement: Pick<WorkspaceRetirementDto, "fingerprint">,
+): { readonly seen: string } => ({ seen: retirement.fingerprint });
+
 /** What the session page draws for an executor waiting to be replaced (decision 14). */
 export interface RetirementView {
   readonly line: string;
-  /** What would stop if it were replaced now, one line each; empty unless it can be. */
+  /**
+   * What was checked and what would stop if it were replaced now, one line each, as evidence;
+   * empty once it is being replaced. A process's or container's name is the owner's to read.
+   */
   readonly stops: ReadonlyArray<string>;
   readonly canReplace: boolean;
 }
@@ -107,12 +166,12 @@ export const retirementView = (
       : (names.get(launcher) ??
         livePeople.find((person) => person.accountId === launcher)?.name ??
         "its launcher");
-  // The change's owner sees the action with what it would stop; everyone else reads the line.
-  const canReplace = retirement.state === "marked" && retirement.canReplace;
+  // Everyone reads what would stop; the change's owner also gets the action.
+  const marked = retirement.state === "marked";
   return {
     line: workspaceRetirementLine(retirement, launcherName),
-    stops: canReplace ? retirementStopLines(retirement) : [],
-    canReplace,
+    stops: marked ? retirementStopLines(retirement) : [],
+    canReplace: marked && retirement.canReplace,
   };
 };
 
@@ -129,11 +188,8 @@ export const replaceRefusalWords = (cause: unknown): string => {
 };
 
 /**
- * What a click on the Shared control switch does: turning it on asks `SHARED_CONTROL_CONFIRM` first
- * where each turn runs on its sender's login (decision 13); turning it on where turns run on the
- * owner's logins, and turning it off, act at once.
+ * What a click on the Shared control switch does: turning it on asks first, in both layouts, in
+ * words true to each (`sharedControlConfirm`); turning it off acts at once.
  */
-export const sharedControlClick = (
-  enabled: boolean,
-  turnsOnSendersLogin: boolean,
-): "confirm" | "toggle" => (enabled && turnsOnSendersLogin ? "confirm" : "toggle");
+export const sharedControlClick = (enabled: boolean): "confirm" | "toggle" =>
+  enabled ? "confirm" : "toggle";

@@ -59,6 +59,7 @@ const detail = (
   processes: agent === null ? [] : [agent],
   currentAgent: agent,
   liveServices: 0,
+  preReleaseMemory: null,
 });
 
 describe("afterUnopenedClose", () => {

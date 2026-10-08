@@ -501,7 +501,7 @@ export function TerminalPane({
       {session !== null && tab.kind !== "logs" && (
         <WorkspaceFacts
           sessionId={tab.sessionId}
-          livePeople={detail.data?.session.livePeople}
+          session={detail.data?.session}
           viewerId={viewer?.userId ?? null}
         />
       )}

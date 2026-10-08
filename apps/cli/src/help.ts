@@ -1,8 +1,4 @@
-import {
-  REPLACE_WORKSPACE_ACTION,
-  SHARED_CONTROL_LINE,
-  SHARED_CONTROL_LINE_OWNER_LOGINS,
-} from "@mend/domain/workbench";
+import { REPLACE_WORKSPACE_ACTION, sharedControlConfirm } from "@mend/domain/workbench";
 
 /**
  * The command catalog: one record per command, and every help surface renders
@@ -448,7 +444,8 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["<session> [--yes]"],
     description: [
       `${REPLACE_WORKSPACE_ACTION}, from a terminal. A workspace that shares one home, as every workspace started before Mend 0.36 does, takes only its launcher's sessions and turns once its worktree runs each person as themselves, until it is replaced. Mend replaces it on its own when nothing would stop; otherwise the change's owner does, here or on the web.`,
-      "It prints what would stop, one line each: terminal sessions (they end resumable), shells, Services started by hand, processes Mend did not start and running containers. Services from mend.toml start again. An agent turn in flight is never stopped: the server refuses, and its words are printed as they are. The workspace goes once its last save is done.",
+      "It prints what was checked, and when: Mend's records, and the processes in the workspace and its running containers once they have been checked. Then what would stop, one line each: terminal sessions (they end resumable), shells, Services started by hand, processes Mend did not start, running containers and anything that could not be checked. Mend starts the launching session's mend.toml Services again.",
+      "The replacement names what it showed you: when more would stop by the time you answer, the server refuses, nothing is stopped, and its words are printed as they are; run it again to look at the list again. An agent turn in flight is never stopped: the server refuses the same way. The workspace goes once its last save is done.",
       "A prefix of the session id is enough. mend sessions shows which sessions wait for this.",
     ],
     options: [{ flag: "--yes", text: "replace without asking; required without a terminal" }],
@@ -998,13 +995,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["<session> on|off [--yes]"],
     description: [
       "The session's owner turns shared control on or off; an organization owner may turn it off. While it is on, anyone who can see the project sends turns, answers approvals and interrupts. They can read the terminal; only the owner types in it, opens a shell or starts a Service. Every act is recorded with who did it. A prefix of the session id is enough.",
-      `In a worktree that runs each person as themselves: ${SHARED_CONTROL_LINE} Turning it on there asks first; --yes answers for a script, and is required without a terminal.`,
-      `Otherwise: ${SHARED_CONTROL_LINE_OWNER_LOGINS}`,
+      "Turning it on asks first, in every worktree, in the words true to it; --yes answers for a script, and is required without a terminal. Turning it off asks nothing.",
+      `In a worktree that runs each person as themselves, it asks: ${sharedControlConfirm(true).body}`,
+      `Otherwise it asks: ${sharedControlConfirm(false).body}`,
     ],
     options: [
       {
         flag: "--yes",
-        text: "turn it on without asking where it asks; required there without a terminal",
+        text: "turn it on without asking; required without a terminal",
       },
     ],
     examples: [{ command: "mend session share 3f2a on", text: "" }],

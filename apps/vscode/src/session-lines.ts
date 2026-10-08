@@ -24,6 +24,7 @@ const STOP_KINDS: ReadonlyArray<WorkspaceRetirementStopKind> = [
   "turn",
   "process",
   "container",
+  "unchecked",
 ];
 
 /** `livePeople` off a session; absent or malformed reads as nobody. */
@@ -37,6 +38,22 @@ export const parseLivePeople = (value: unknown): ReadonlyArray<LivePerson> =>
           : [],
       )
     : [];
+
+/** `workspaceRetirement` off a session; absent or anything else reads as none under way. */
+export const parseRetirementState = (value: unknown): "marked" | "retiring" | null =>
+  value === "marked" || value === "retiring" ? value : null;
+
+/**
+ * Which of a session's workspace reads are worth a request, from what the session row already
+ * says: the waiting line only where another person is live and shared control is on (only then
+ * can a turn wait on someone else's work), the retirement only where one is under way.
+ */
+export const workspaceReads = (
+  session: Pick<Session, "livePeople" | "sharedControlEnabledAt" | "workspaceRetirement">,
+): { readonly waiting: boolean; readonly retirement: boolean } => ({
+  waiting: session.livePeople.length > 0 && session.sharedControlEnabledAt !== null,
+  retirement: session.workspaceRetirement !== null,
+});
 
 /** `GET /sessions/:id/waiting` → the waiting line, or null when nothing waits. */
 export const parseWaitLine = (value: unknown): string | null =>
@@ -147,16 +164,19 @@ export const othersInWorktree = (
 export const joinLine = (others: ReadonlyArray<string>): string | null =>
   others.length === 0 ? null : joinWorktreeLine(others);
 
-/** Live people from the session list, laid onto sessions the project view lists without them. */
-export const withLivePeople = <S extends Pick<Session, "id" | "livePeople">>(
+/**
+ * The session list's view facts, live people and the retirement's state, laid onto sessions the
+ * project view lists without them.
+ */
+export const withLiveFacts = <S extends Pick<Session, "id" | "livePeople" | "workspaceRetirement">>(
   sessions: ReadonlyArray<S>,
-  listed: ReadonlyArray<Pick<Session, "id" | "livePeople">>,
+  listed: ReadonlyArray<Pick<Session, "id" | "livePeople" | "workspaceRetirement">>,
 ): ReadonlyArray<S> => {
-  const byId = new Map(listed.map((session) => [session.id, session.livePeople]));
+  const byId = new Map(listed.map((session) => [session.id, session]));
   return sessions.map((session) => {
-    const livePeople = byId.get(session.id);
-    return livePeople === undefined || livePeople.length === 0
+    const view = byId.get(session.id);
+    return view === undefined || (view.livePeople.length === 0 && view.workspaceRetirement === null)
       ? session
-      : { ...session, livePeople };
+      : { ...session, livePeople: view.livePeople, workspaceRetirement: view.workspaceRetirement };
   });
 };

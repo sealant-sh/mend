@@ -69,6 +69,7 @@ const session = (
   sharedControlEnabledAt: null,
   sharedControlEverAt: null,
   livePeople: [],
+  workspaceRetirement: null,
   hasTranscript: null,
   idleStoppedAt: null,
   capturePending: null,

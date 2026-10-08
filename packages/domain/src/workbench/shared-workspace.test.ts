@@ -10,6 +10,7 @@ import {
   preReleaseMemoryLine,
   retirementStopLines,
   SHARED_CONTROL_LINE,
+  sharedControlConfirm,
   sharedControlLine,
   sharedWorkspaceLine,
   workspaceRetirementLine,
@@ -51,15 +52,31 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
       launcher: "anna",
       stops: [new WorkspaceRetirementStop({ kind: "shell", label: "auth · shell 1" })],
       reason: "not replaced · 1 shell",
+      checkedAt: new Date("2026-10-08T12:05:00Z"),
+      fingerprint: "f1",
       canReplace: true,
     });
     expect(workspaceRetirementLine(retirement, "Anna")).toBe(
       "This workspace started before Mend 0.36 and shares one home · it takes only Anna's sessions and turns until it is replaced · not replaced · 1 shell",
     );
     expect(retirementStopLines(retirement)).toEqual([
+      "Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
       "shell · auth · shell 1",
-      "mend.toml Services start again.",
+      "Mend starts the launching session's mend.toml Services again.",
     ]);
+    // Never "nothing would stop": what was checked, and what was found.
+    expect(retirementStopLines({ stops: [], checkedAt: null })).toEqual([
+      "Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
+      "Found nothing that would stop.",
+      "Mend starts the launching session's mend.toml Services again.",
+    ]);
+    // Anyone but the change's owner reads a process's kind, not its name.
+    expect(
+      retirementStopLines({
+        stops: [new WorkspaceRetirementStop({ kind: "process", label: "" })],
+        checkedAt: null,
+      })[1],
+    ).toBe("process Mend did not start");
   });
 
   it("lists memory credited to nobody on the worktree", () => {
@@ -72,6 +89,16 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
     });
     expect(preReleaseMemoryLine(memory)).toBe("memory from before 0.36, not credited · 1 file");
     expect(preReleaseMemoryLine(null)).toBeNull();
+  });
+
+  it("confirms in both layouts, in words true to each", () => {
+    expect(sharedControlConfirm(true).body).toBe(SHARED_CONTROL_LINE);
+    expect(sharedControlConfirm(false)).toEqual({
+      title: "Turn on shared control?",
+      body: "Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it.",
+      confirm: "Turn on",
+      cancel: "Keep it off",
+    });
   });
 
   it("says beside Shared control whose login a steered turn runs on", () => {

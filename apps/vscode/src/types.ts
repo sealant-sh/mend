@@ -52,6 +52,14 @@ export interface Session {
    * older servers.
    */
   readonly livePeople: ReadonlyArray<LivePerson>;
+  /** When shared control was turned on; null while it is off and from older servers. */
+  readonly sharedControlEnabledAt: string | null;
+  /**
+   * The executor waits to be replaced (docs/adr/0016, decision 14): `marked` or `retiring`. Read
+   * with `livePeople` by the session list and view; null from the project view, otherwise and
+   * from older servers.
+   */
+  readonly workspaceRetirement: "marked" | "retiring" | null;
 }
 
 /** A person with a process live in a session's executor, as the server names them. */

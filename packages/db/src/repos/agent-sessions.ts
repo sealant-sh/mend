@@ -54,7 +54,6 @@ import {
   executorCaptureEvidence,
   executorEvidenceFences,
   projects,
-  sessionProcesses,
   type StoredUnsavedAnswer,
 } from "../schema/workbench.ts";
 import { agentConversationLockKey } from "./agent-conversation.ts";
@@ -677,10 +676,17 @@ const toSession = (row: typeof agentSessions.$inferSelect): Session =>
  */
 const decodeLivePeople = Schema.decodeUnknownSync(Schema.Array(LivePerson));
 
+const decodeRetirementState = Schema.decodeUnknownSync(
+  Schema.NullOr(Schema.Literals(["marked", "retiring"])),
+);
+
 const toSessionView = (
-  row: typeof agentSessions.$inferSelect & { readonly livePeople: unknown },
+  row: typeof agentSessions.$inferSelect & {
+    readonly livePeople: unknown;
+    readonly workspaceRetirement: unknown;
+  },
 ): Session => {
-  const { livePeople, ...session } = row;
+  const { livePeople, workspaceRetirement, ...session } = row;
   return new Session({
     ...session,
     workspaceImage:
@@ -689,6 +695,8 @@ const toSessionView = (
     // Nobody live is the common case: no decode at all.
     livePeople:
       Array.isArray(livePeople) && livePeople.length === 0 ? [] : decodeLivePeople(livePeople),
+    workspaceRetirement:
+      workspaceRetirement === null ? null : decodeRetirementState(workspaceRetirement),
   });
 };
 
@@ -721,10 +729,11 @@ type SessionBookkeepingColumns =
   | "executorResourceId"
   | "executorCreateKey"
   | "executorLaunchId";
-// `livePeople` is read with the API's session list and view (`sessionViewColumns`), not a column.
+// `livePeople` and `workspaceRetirement` are read with the API's session list and view
+// (`sessionViewColumns`), not columns.
 const sessionSeamIntact: ExactKeys<
   Omit<SessionRow, SessionBookkeepingColumns>,
-  Omit<Session, "livePeople">
+  Omit<Session, "livePeople" | "workspaceRetirement">
 > = true;
 void sessionSeamIntact;
 
@@ -820,41 +829,30 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       });
 
       /**
-       * The people with a process live in each executor as their own user (docs/adr/0016,
-       * decision 13), aggregated once per workspace on the live-process index and joined to the
-       * session rows by workspace, in the same statement: `runs_as` is recorded only in a
-       * per-person executor, so a shared one lists nobody.
+       * The people with a process live in the session's executor as their own user (docs/adr/0016,
+       * decision 13), and its retirement's state (decision 14): correlated subqueries on the viewed
+       * session rows only (the live-process index, `executor_retirements`' key), in the same
+       * statement. `runs_as` is recorded only in a per-person executor, so a shared one lists
+       * nobody. A person with no name reads "a member": their email is not shown.
        */
-      const liveRuns = db
-        .selectDistinct({
-          ws: sessionProcesses.sealantWorkspaceId,
-          runsAs: sessionProcesses.runsAs,
-        })
-        .from(sessionProcesses)
-        .where(and(isNull(sessionProcesses.exitedAt), isNotNull(sessionProcesses.runsAs)))
-        .as("live_runs");
-      const livePeople = db
-        .select({
-          ws: liveRuns.ws,
-          people: sql<unknown>`json_agg(json_build_object(
-              'accountId', ${liveRuns.runsAs},
-              'name', coalesce((select coalesce(nullif(u.name, ''), u.email) from "user" u
-                                where u.id = ${liveRuns.runsAs}), ${liveRuns.runsAs}))
-            order by ${liveRuns.runsAs})`.as("people"),
-        })
-        .from(liveRuns)
-        .groupBy(liveRuns.ws)
-        .as("live_people");
       const sessionViewColumns = {
         ...getTableColumns(agentSessions),
-        livePeople: sql<unknown>`coalesce(${livePeople.people}, '[]'::json)`,
+        livePeople: sql<unknown>`coalesce((
+          select json_agg(json_build_object(
+                   'accountId', p.runs_as,
+                   'name', coalesce(nullif((select u.name from "user" u where u.id = p.runs_as), ''),
+                                    'a member')) order by p.runs_as)
+          from (select distinct sp.runs_as from session_processes sp
+                where sp.sealant_workspace_id = "agent_sessions"."sealant_workspace_id"
+                  and sp.exited_at is null and sp.runs_as is not null) p), '[]'::json)`,
+        workspaceRetirement: sql<unknown>`(select r.state from executor_retirements r
+          where r.workspace_id = "agent_sessions"."sealant_workspace_id")`,
       };
 
       const listActiveView = Effect.fn("SessionsRepo.listActiveView")(function* () {
         const rows = yield* db
           .select(sessionViewColumns)
           .from(agentSessions)
-          .leftJoin(livePeople, eq(livePeople.ws, agentSessions.sealantWorkspaceId))
           .where(inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]))
           .orderBy(desc(agentSessions.createdAt))
           .pipe(Effect.orDie);
@@ -865,7 +863,6 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const [row] = yield* db
           .select(sessionViewColumns)
           .from(agentSessions)
-          .leftJoin(livePeople, eq(livePeople.ws, agentSessions.sealantWorkspaceId))
           .where(eq(agentSessions.id, id))
           .limit(1)
           .pipe(Effect.orDie);

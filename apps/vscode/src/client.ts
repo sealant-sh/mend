@@ -6,6 +6,7 @@ import type { ConnectionStore, MendConnection } from "./config.js";
 import { requestMend } from "./mend-http.js";
 import {
   parseLivePeople,
+  parseRetirementState,
   parseMembers,
   parseRetirement,
   parseWaitLine,
@@ -82,6 +83,9 @@ const parseSession = (value: unknown): Session => {
     summary: typeof value["summary"] === "string" ? value["summary"] : null,
     createdAt: stringField(value, "createdAt"),
     livePeople: parseLivePeople(value["livePeople"]),
+    sharedControlEnabledAt:
+      typeof value["sharedControlEnabledAt"] === "string" ? value["sharedControlEnabledAt"] : null,
+    workspaceRetirement: parseRetirementState(value["workspaceRetirement"]),
   };
 };
 

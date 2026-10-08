@@ -1,7 +1,7 @@
 import {
   preReleaseMemoryLine,
   REPLACE_WORKSPACE_ACTION,
-  SHARED_CONTROL_CONFIRM,
+  sharedControlConfirm,
 } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import {
@@ -18,27 +18,28 @@ import {
   type ConversationWaitDto,
   type ConversationWaitWorkDto,
   endBackgroundWork,
+  type PreReleaseMemoryDto,
   replaceWorkspace,
   type SessionDto,
 } from "#/lib/api";
 import {
+  canEndWaitingWork,
   replaceRefusalWords,
+  retirementRelevant,
+  replaceWorkspaceBody,
   retirementView,
   type RetirementView,
   useMemberNames,
+  waitingLineQuery,
 } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
 
 /**
  * What the session page says where people share a workspace (docs/adr/0016-per-person-harness-homes.md,
  * decisions 6, 13 and 14), in the domain's words. Each view here is pure and takes its facts; the
- * wrappers below read them through the API.
+ * wrappers below read them through the API, and only where the session says they can show: with
+ * `MEND_HARNESS_LAYOUT` off the page asks for nothing more than before.
  */
-
-/** How often a live session re-reads what can change without an event: the waiting line. */
-const WAIT_POLL_MS = 5_000;
-/** And its executor's retirement, which a replacement attempt moves on its own. */
-const RETIREMENT_POLL_MS = 10_000;
 
 // ─── The waiting line (decision 6) ─────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ export function WaitingLineView({
   onEnd,
 }: {
   readonly wait: ConversationWaitDto;
-  /** The viewer is the person the work runs as, or the session's owner. */
+  /** `canEndWaitingWork`: the session's owner, or the person the work runs as while they steer. */
   readonly canEnd: boolean;
   /** The work being ended, by its harness id. */
   readonly pending: string | null;
@@ -96,29 +97,35 @@ export function WaitingLineView({
   );
 }
 
-/** The waiting line wherever the session's turns show; nothing while no turn waits. */
+/**
+ * The waiting line wherever the session's turns show; nothing while no turn waits, and not asked
+ * for at all unless people run in the executor and the owner shares control (`waitingLineQuery`).
+ */
 export function WaitingLine({
-  sessionId,
+  session,
   live,
   viewerId,
-  ownerUserId,
+  steer,
 }: {
-  readonly sessionId: string;
+  readonly session: Pick<
+    SessionDto,
+    "id" | "ownerUserId" | "livePeople" | "sharedControlEnabledAt"
+  >;
   readonly live: boolean;
   readonly viewerId: string | null;
-  readonly ownerUserId: string | null;
+  /** The viewer may steer the session now (`control.steer`). */
+  readonly steer: boolean;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const sessionId = session.id;
+  const reading = waitingLineQuery(session, live);
   const wait = useQuery(
-    trpc.sessions.conversationWait.queryOptions(
-      { id: sessionId },
-      { refetchInterval: live ? WAIT_POLL_MS : false, retry: false },
-    ),
+    trpc.sessions.conversationWait.queryOptions({ id: sessionId }, { ...reading, retry: false }),
   ).data;
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  if (wait === undefined || wait === null) return null;
+  if (!reading.enabled || wait === undefined || wait === null) return null;
   const end = (work: ConversationWaitWorkDto) => {
     setPending(work.id);
     setError(null);
@@ -134,7 +141,12 @@ export function WaitingLine({
   return (
     <WaitingLineView
       wait={wait}
-      canEnd={viewerId !== null && (viewerId === wait.runsAs || viewerId === ownerUserId)}
+      canEnd={canEndWaitingWork({
+        viewerId,
+        ownerUserId: session.ownerUserId,
+        runsAs: wait.runsAs,
+        steer,
+      })}
       pending={pending}
       error={error}
       onEnd={end}
@@ -144,7 +156,10 @@ export function WaitingLine({
 
 // ─── An executor waiting to be replaced (decision 14) ─────────────────────────
 
-/** The retirement line, what would stop, and "Replace this workspace now" for the change's owner. */
+/**
+ * The retirement line and what would stop, as evidence, for everyone; "Replace this workspace now"
+ * for the change's owner.
+ */
 export function WorkspaceRetirementView({
   view,
   pending,
@@ -160,24 +175,24 @@ export function WorkspaceRetirementView({
   return (
     <div className="mt-4 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3">
       <p className="text-[13px] leading-relaxed text-ink-2">{view.line}</p>
+      {view.stops.length > 0 && (
+        <ul aria-label="What would stop" className="mt-2 space-y-0.5">
+          {view.stops.map((stop, index) => (
+            <li key={`${index}:${stop}`} className="font-mono text-[11.5px] break-words text-faint">
+              {stop}
+            </li>
+          ))}
+        </ul>
+      )}
       {view.canReplace && (
-        <>
-          <ul aria-label="What would stop" className="mt-2 space-y-0.5">
-            {view.stops.map((stop) => (
-              <li key={stop} className="font-mono text-[11.5px] text-faint">
-                {stop}
-              </li>
-            ))}
-          </ul>
-          <button
-            type="button"
-            disabled={pending}
-            onClick={onReplace}
-            className="mt-3 rounded-xl border border-border bg-card px-4 py-2 font-sans text-sm font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-          >
-            {pending ? "Replacing…" : REPLACE_WORKSPACE_ACTION}
-          </button>
-        </>
+        <button
+          type="button"
+          disabled={pending}
+          onClick={onReplace}
+          className="mt-3 rounded-xl border border-border bg-card px-4 py-2 font-sans text-sm font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+        >
+          {pending ? "Replacing…" : REPLACE_WORKSPACE_ACTION}
+        </button>
       )}
       {refusal === null ? null : (
         <p
@@ -191,39 +206,46 @@ export function WorkspaceRetirementView({
   );
 }
 
-/** The session's executor retirement, as the API reports it; nothing while none is under way. */
+/**
+ * The session's executor retirement, as the API reports it: asked for only while the session says
+ * one is under way (`retirementRelevant`), and refreshed by the session's events, never a timer.
+ */
 export function WorkspaceRetirementNote({
-  sessionId,
-  live,
-  livePeople,
+  session,
 }: {
-  readonly sessionId: string;
-  readonly live: boolean;
-  readonly livePeople: SessionDto["livePeople"];
+  readonly session: Pick<SessionDto, "id" | "livePeople" | "workspaceRetirement">;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const names = useMemberNames();
+  const sessionId = session.id;
+  const relevant = retirementRelevant(session);
   const retirement = useQuery(
     trpc.sessions.workspaceRetirement.queryOptions(
       { id: sessionId },
-      { refetchInterval: live ? RETIREMENT_POLL_MS : false, retry: false },
+      { enabled: relevant, retry: false },
     ),
   ).data;
   const [pending, setPending] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
-  if (retirement === undefined || retirement === null) return null;
+  if (!relevant || retirement === undefined || retirement === null) return null;
   const replace = () => {
     setPending(true);
     setRefusal(null);
-    void replaceWorkspace(sessionId)
+    void replaceWorkspace(sessionId, replaceWorkspaceBody(retirement))
       .then(() => queryClient.invalidateQueries(trpc.sessions.pathFilter()))
-      .catch((cause: unknown) => setRefusal(replaceRefusalWords(cause)))
+      .catch((cause: unknown) => {
+        setRefusal(replaceRefusalWords(cause));
+        // A refusal can mean the list moved since it was read: show the one Mend sees now.
+        return queryClient.invalidateQueries(
+          trpc.sessions.workspaceRetirement.queryFilter({ id: sessionId }),
+        );
+      })
       .finally(() => setPending(false));
   };
   return (
     <WorkspaceRetirementView
-      view={retirementView(retirement, names, livePeople)}
+      view={retirementView(retirement, names, session.livePeople)}
       pending={pending}
       refusal={refusal}
       onReplace={replace}
@@ -233,14 +255,13 @@ export function WorkspaceRetirementNote({
 
 // ─── Memory from before per-person homes (decision 14) ────────────────────────
 
-/** "memory from before 0.36, not credited · 2 files", with the paths on hover; null otherwise. */
-export function PreReleaseMemoryNote({ worktreeId }: { readonly worktreeId: string }) {
-  const trpc = useTRPC();
-  const memory = useQuery(
-    trpc.worktrees.detail.queryOptions({ id: worktreeId }, { retry: false, staleTime: 60_000 }),
-  ).data?.preReleaseMemory;
-  const line = preReleaseMemoryLine(memory ?? null);
-  if (line === null || memory === undefined || memory === null) return null;
+/**
+ * "memory from before 0.36, not credited · 2 files", with the paths on hover; nothing otherwise.
+ * The session view carries it (`preReleaseMemory`), so nothing more is asked.
+ */
+export function PreReleaseMemoryNote({ memory }: { readonly memory: PreReleaseMemoryDto | null }) {
+  const line = preReleaseMemoryLine(memory);
+  if (line === null || memory === null) return null;
   return (
     <p
       className="mt-1 font-mono text-xs break-words text-faint"
@@ -253,23 +274,30 @@ export function PreReleaseMemoryNote({ worktreeId }: { readonly worktreeId: stri
 
 // ─── Shared control's confirmation (decision 13) ──────────────────────────────
 
-/** What the switch asks before shared control goes on. Pure: the switch owns the state. */
+/**
+ * What the switch asks before shared control goes on, in both layouts, in words true to each.
+ * Pure: the switch owns the state.
+ */
 export function SharedControlConfirmBody({
+  turnsOnSendersLogin,
   pending,
   onConfirm,
   onCancel,
 }: {
+  /** `control.turnsOnSendersLogin`: whose login a steered turn runs on. */
+  readonly turnsOnSendersLogin: boolean;
   readonly pending: boolean;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }) {
+  const words = sharedControlConfirm(turnsOnSendersLogin);
   return (
     <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
       <Button type="button" variant="outline" disabled={pending} onClick={onCancel}>
-        {SHARED_CONTROL_CONFIRM.cancel}
+        {words.cancel}
       </Button>
       <Button type="button" disabled={pending} onClick={onConfirm} className="min-w-24">
-        {pending ? "Turning on…" : SHARED_CONTROL_CONFIRM.confirm}
+        {pending ? "Turning on…" : words.confirm}
       </Button>
     </div>
   );
@@ -277,15 +305,18 @@ export function SharedControlConfirmBody({
 
 export function SharedControlConfirmDialog({
   open,
+  turnsOnSendersLogin,
   pending,
   onConfirm,
   onCancel,
 }: {
   readonly open: boolean;
+  readonly turnsOnSendersLogin: boolean;
   readonly pending: boolean;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }) {
+  const words = sharedControlConfirm(turnsOnSendersLogin);
   return (
     <Dialog
       open={open}
@@ -297,10 +328,15 @@ export function SharedControlConfirmDialog({
       {open && (
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{SHARED_CONTROL_CONFIRM.title}</DialogTitle>
-            <DialogDescription>{SHARED_CONTROL_CONFIRM.body}</DialogDescription>
+            <DialogTitle>{words.title}</DialogTitle>
+            <DialogDescription>{words.body}</DialogDescription>
           </DialogHeader>
-          <SharedControlConfirmBody pending={pending} onConfirm={onConfirm} onCancel={onCancel} />
+          <SharedControlConfirmBody
+            turnsOnSendersLogin={turnsOnSendersLogin}
+            pending={pending}
+            onConfirm={onConfirm}
+            onCancel={onCancel}
+          />
         </DialogContent>
       )}
     </Dialog>

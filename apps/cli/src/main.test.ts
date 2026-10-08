@@ -531,9 +531,15 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
     createdAt: new Date(0).toISOString(),
   };
   const annas = { ...session, id: "annas-session", worktreeId: worktree.id, baseRef: "main" };
-  const people = (handle: (route: string, response: ServerResponse) => boolean): HttpHandler => {
+  const people = (
+    handle: (route: string, response: ServerResponse) => boolean,
+    /** What the session list says beyond who is live: shared control, the retirement's state. */
+    view: Readonly<Record<string, unknown>> = {},
+    routes: Array<string> = [],
+  ): HttpHandler => {
     return (request, response) => {
       const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+      routes.push(route);
       if (handle(route, response)) return;
       if (route === "GET /api/projects") json(response, [project]);
       else if (route === `GET /api/projects/${project.id}`) {
@@ -541,7 +547,7 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
       } else if (route === "GET /api/organization") json(response, { userId: "bob" });
       else if (route === "GET /api/organization/members") json(response, []);
       else if (route === "GET /api/sessions")
-        json(response, [{ ...annas, livePeople: [anna, bob] }]);
+        json(response, [{ ...annas, livePeople: [anna, bob], ...view }]);
       else response.writeHead(404).end();
     };
   };
@@ -578,21 +584,28 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
 
   it("mend sessions says the shared workspace, waiting and retirement lines under a live row", async () => {
     const fake = await startFakeMend(
-      people((route, response) => {
-        if (route === `GET /api/sessions/${annas.id}/waiting`) {
-          json(response, { line: "Waits for Anna's background task before Bob's turn starts." });
-        } else if (route === `GET /api/sessions/${annas.id}/workspace-retirement`) {
-          json(response, {
-            state: "marked",
-            preRelease: true,
-            launcher: "anna",
-            stops: [],
-            reason: null,
-            canReplace: false,
-          });
-        } else return false;
-        return true;
-      }),
+      people(
+        (route, response) => {
+          if (route === `GET /api/sessions/${annas.id}/waiting`) {
+            json(response, {
+              line: "Waits for Anna's background task before Bob's turn starts.",
+            });
+          } else if (route === `GET /api/sessions/${annas.id}/workspace-retirement`) {
+            json(response, {
+              state: "marked",
+              preRelease: true,
+              launcher: "anna",
+              stops: [],
+              reason: null,
+              checkedAt: null,
+              fingerprint: "fp-1",
+              canReplace: false,
+            });
+          } else return false;
+          return true;
+        },
+        { sharedControlEnabledAt: new Date(0).toISOString(), workspaceRetirement: "marked" },
+      ),
     );
     const cli = startCli(fake.url, ["sessions"]);
     try {
@@ -607,6 +620,26 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
       );
       // Not the change's owner: no action offered.
       expect(out).not.toContain("Replace this workspace now");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("mend sessions asks for no waiting line without shared control, and no retirement without one", async () => {
+    const routes: Array<string> = [];
+    const fake = await startFakeMend(
+      people(() => false, { sharedControlEnabledAt: null, workspaceRetirement: null }, routes),
+    );
+    const cli = startCli(fake.url, ["sessions"]);
+    try {
+      await cli.exited;
+      expect(cli.stdout(), cli.stderr()).toContain(
+        "Shared workspace with Anna · each of you runs as yourself · either of you can read the other's files.",
+      );
+      expect(routes).toContain("GET /api/sessions");
+      expect(routes.filter((route) => route.endsWith("/waiting"))).toEqual([]);
+      expect(routes.filter((route) => route.endsWith("/workspace-retirement"))).toEqual([]);
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();

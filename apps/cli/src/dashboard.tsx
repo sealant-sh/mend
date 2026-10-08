@@ -87,6 +87,7 @@ import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
 import { mayStillBeWorking } from "./server-request.ts";
 import type { OpenTunnel, ServiceTunnels } from "./service-tunnels.ts";
+import { workspaceReadsOf } from "./shared-workspace.ts";
 import {
   captureLineOf,
   cwdFacts,
@@ -846,10 +847,20 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     staleTime: Number.POSITIVE_INFINITY,
     retry: false,
   });
+  // Only the reads the row says are worth a request: the waiting line where someone else is
+  // live with shared control on, the retirement where one is under way.
+  const workspaceReads =
+    selectedSession === null
+      ? { waiting: false, retirement: false }
+      : workspaceReadsOf(selectedSession);
   const workspaceFacts = useQuery({
-    queryKey: WORKSPACE_FACTS_KEY(previewSessionId ?? "none"),
-    queryFn: () => fetchWorkspaceFacts(ctx.api, previewSessionId ?? ""),
-    enabled: previewSessionId !== null && previewLive && detailWidth > 0,
+    queryKey: WORKSPACE_FACTS_KEY(previewSessionId ?? "none", workspaceReads),
+    queryFn: () => fetchWorkspaceFacts(ctx.api, previewSessionId ?? "", workspaceReads),
+    enabled:
+      previewSessionId !== null &&
+      previewLive &&
+      detailWidth > 0 &&
+      (workspaceReads.waiting || workspaceReads.retirement),
     staleTime: 3000,
     refetchInterval: previewLive ? 8000 : false,
     retry: 1,

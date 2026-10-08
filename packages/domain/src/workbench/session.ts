@@ -207,6 +207,15 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed([])),
   ),
   /**
+   * The session's executor waits to be replaced (docs/adr/0016, decision 14): `marked` or
+   * `retiring`; null otherwise. Read with `livePeople`, in the same query, so a client asks for the
+   * retirement's detail only when there is one. Null everywhere else and from older servers.
+   */
+  workspaceRetirement: Schema.NullOr(Schema.Literals(["marked", "retiring"])).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
    * Whether the harness left a conversation behind — a transcript Mend captured at settle or
    * found in the live harness home. False is a dead end: nothing to resume, nothing to hand
    * off, so the dashboard hides such settled sessions. Null until settle (or for rows the

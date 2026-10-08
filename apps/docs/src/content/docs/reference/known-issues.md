@@ -412,7 +412,16 @@ This worktree's workspace started before Mend 0.36 and shares one home; it takes
 opencode conversations saved in such a workspace cannot be resumed per person:
 
 ```text
-This opencode conversation was saved in a workspace that shared one home, and it cannot be carried into your own opencode data. It can be resumed only in that workspace, which has been replaced. Start a new opencode session.
+This opencode conversation was saved in a workspace that shared one home, and it cannot be carried into your own opencode data. It could be resumed only in that workspace, which has ended. Start a new opencode session.
 ```
+
+A session whose shared control was turned on while its workspace shared one home keeps it on when
+its worktree first runs per person, where it means something else: each turn on its sender's login,
+and no one's personal memory or instructions. Turn it off and on again to see that confirmation.
+
+Memory saved in a shared home before 0.36 goes to nobody, and is listed as not credited, when Mend
+cannot say whose it is: two people had sessions there, a hand-over to another person was not saved,
+or the worktree is older than Mend's record of who had sessions in it (a deleted session would not
+be in that record).
 
 See [Workspaces started before 0.36](/operate/per-person-workspaces/#workspaces-started-before-036).

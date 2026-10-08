@@ -214,9 +214,10 @@ session when there is something to say about its workspace: who else is live in 
 (`Shared workspace with Anna · each of you runs as yourself · either of you can read the other's files.`),
 the waiting line while a turn waits for another person's work, and the line of a workspace that
 waits to be replaced. `mend workspace replace` is **Replace this workspace now** from a terminal: it
-lists what would stop (terminal sessions, shells, Services started by hand, processes Mend did not
-start, running containers), asks, and replaces the workspace once its last save is done. An agent
-turn in flight is never stopped; the server refuses.
+says when Mend last checked and lists what would stop (terminal sessions, shells, Services started
+by hand, processes Mend did not start, running containers, anything it could not check), asks, and
+replaces the workspace once its last save is done. It ends nothing that was not on that list: if
+more would stop by then, the server refuses. An agent turn in flight is never stopped.
 
 Deleting a session removes only the conversation record; the worktree, with its change and
 checkpoints, remains. Removing a worktree is its own explicit act (`mend worktrees rm <name>`,

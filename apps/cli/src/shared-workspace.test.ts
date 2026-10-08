@@ -1,8 +1,8 @@
 import {
   joinWorktreeLine,
   REPLACE_WORKSPACE_ACTION,
-  SHARED_CONTROL_CONFIRM,
   SHARED_CONTROL_LINE,
+  SHARED_CONTROL_LINE_OWNER_LOGINS,
 } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
@@ -14,7 +14,9 @@ import {
   replaceConfirmLines,
   sessionWorkspaceLines,
   sharedControlConfirmLines,
+  sharedControlQuestion,
   workspaceLineList,
+  workspaceReadsOf,
   wrapWords,
   type WorkspaceRetirementDto,
 } from "./shared-workspace.ts";
@@ -29,6 +31,8 @@ const retirement = (over: Partial<WorkspaceRetirementDto> = {}): WorkspaceRetire
   launcher: "anna",
   stops: [{ kind: "shell", label: "auth · shell 1" }],
   reason: null,
+  checkedAt: null,
+  fingerprint: "fp-1",
   canReplace: true,
   ...over,
 });
@@ -80,8 +84,9 @@ describe("what a session says about its workspace", () => {
       "Waits for Anna's 2 background tasks before Bob's turn starts.",
       "This workspace started before Mend 0.36 and shares one home · it takes only Anna's sessions and turns until it is replaced",
       `${REPLACE_WORKSPACE_ACTION} · mend workspace replace 3f2a0001`,
+      "  Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
       "  shell · auth · shell 1",
-      "  mend.toml Services start again.",
+      "  Mend starts the launching session's mend.toml Services again.",
     ]);
   });
 
@@ -123,17 +128,59 @@ describe("the confirmations", () => {
     expect(confirmPlan([], false)).toBe("refuse");
   });
 
-  it("says the shared control confirmation word for word", () => {
-    expect(sharedControlConfirmLines()).toEqual([
-      SHARED_CONTROL_CONFIRM.title,
+  it("says the shared control confirmation word for word, in both layouts", () => {
+    expect(sharedControlConfirmLines(true)).toEqual([
+      "Turn on shared control?",
       SHARED_CONTROL_LINE,
     ]);
+    const [title, body] = sharedControlConfirmLines(false);
+    expect(title).toBe("Turn on shared control?");
+    expect(body).toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
+    expect(body).not.toContain(SHARED_CONTROL_LINE);
+    expect(sharedControlQuestion(false)).toBe("turn on? (n: keep it off)");
   });
 
-  it("lists what would stop before a replacement", () => {
+  it("lists what was checked and what would stop before a replacement", () => {
     expect(replaceConfirmLines(retirement({ stops: [] }))).toEqual([
       `${REPLACE_WORKSPACE_ACTION}?`,
-      "  Nothing would stop. mend.toml Services start again.",
+      "  Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
+      "  Found nothing that would stop.",
+      "  Mend starts the launching session's mend.toml Services again.",
     ]);
+    expect(
+      replaceConfirmLines(
+        retirement({
+          checkedAt: "2026-10-08T12:05:30.000Z",
+          stops: [
+            { kind: "process", label: "" },
+            { kind: "unchecked", label: "running containers" },
+          ],
+        }),
+      ),
+    ).toEqual([
+      `${REPLACE_WORKSPACE_ACTION}?`,
+      "  Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
+      "  process Mend did not start",
+      "  could not check · running containers",
+      "  Mend starts the launching session's mend.toml Services again.",
+    ]);
+  });
+});
+
+describe("which workspace reads are worth a request", () => {
+  it("asks for the waiting line only with someone live and shared control on", () => {
+    const on = "2026-10-08T12:00:00.000Z";
+    expect(workspaceReadsOf({ livePeople: [anna], sharedControlEnabledAt: on }).waiting).toBe(true);
+    expect(workspaceReadsOf({ livePeople: [], sharedControlEnabledAt: on }).waiting).toBe(false);
+    expect(workspaceReadsOf({ livePeople: [anna], sharedControlEnabledAt: null }).waiting).toBe(
+      false,
+    );
+  });
+
+  it("asks for the retirement only while one is under way, and nothing from an older server", () => {
+    expect(workspaceReadsOf({ workspaceRetirement: "marked" }).retirement).toBe(true);
+    expect(workspaceReadsOf({ workspaceRetirement: "retiring" }).retirement).toBe(true);
+    expect(workspaceReadsOf({ workspaceRetirement: null }).retirement).toBe(false);
+    expect(workspaceReadsOf({})).toEqual({ waiting: false, retirement: false });
   });
 });

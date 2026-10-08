@@ -1,13 +1,21 @@
-import { SHARED_CONTROL_LINE, SHARED_CONTROL_LINE_OWNER_LOGINS } from "@mend/domain/workbench";
+import {
+  SHARED_CONTROL_LINE,
+  SHARED_CONTROL_LINE_OWNER_LOGINS,
+  sharedControlConfirm,
+} from "@mend/domain/workbench";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { replaceWorkspace, refusalWords, type WorkspaceRetirementDto } from "#/lib/api";
 import { refreshConversation } from "#/lib/conversation";
-import { bridgeFixture } from "#/lib/fixtures";
+import { bridgeFixture, sessionFixture } from "#/lib/fixtures";
 import { queryClient } from "#/lib/queries";
 import {
+  keyedLines,
+  readsRetirement,
+  readsWaiting,
   retirementViewOf,
   sessionWaitingQuery,
+  sharedControlPress,
   sharedControlSwitchTitle,
   sharedWorkspaceLineOf,
   workspaceRetirementQuery,
@@ -22,6 +30,8 @@ const retirement = (patch: Partial<WorkspaceRetirementDto> = {}): WorkspaceRetir
   launcher: "anna",
   stops: [{ kind: "shell", label: "auth · shell 1" }],
   reason: null,
+  checkedAt: "2026-10-08T12:05:41.000Z",
+  fingerprint: "fp-1",
   canReplace: true,
   ...patch,
 });
@@ -47,8 +57,33 @@ describe("the retirement line (docs/adr/0016, decision 14)", () => {
     expect(view?.line).toBe(
       "This workspace started before Mend 0.36 and shares one home · it takes only Anna's sessions and turns until it is replaced",
     );
-    expect(view?.stops).toEqual(["shell · auth · shell 1", "mend.toml Services start again."]);
+    expect(view?.stops).toEqual([
+      "Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
+      "shell · auth · shell 1",
+      "Mend starts the launching session's mend.toml Services again.",
+    ]);
     expect(view?.canReplace).toBe(true);
+    // The replacement sends the fingerprint of the read these lines came from.
+    expect(view?.seen).toBe("fp-1");
+  });
+
+  it("says when only Mend's records were read, and a kind alone where the label is not the viewer's", () => {
+    const view = retirementViewOf(
+      retirement({
+        checkedAt: null,
+        stops: [
+          { kind: "process", label: "" },
+          { kind: "unchecked", label: "" },
+        ],
+      }),
+      names,
+    );
+    expect(view?.stops).toEqual([
+      "Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
+      "process Mend did not start",
+      "could not check",
+      "Mend starts the launching session's mend.toml Services again.",
+    ]);
   });
 
   it("lists nothing to stop for someone who cannot replace it", () => {
@@ -71,9 +106,39 @@ describe("the reads behind the lines", () => {
     queryClient.clear();
   });
 
+  it("reads the waiting line only while someone is live in the executor and control is shared", () => {
+    const shared = "2026-10-08T12:00:00.000Z";
+    expect(
+      readsWaiting(sessionFixture({ livePeople: [anna], sharedControlEnabledAt: shared })),
+    ).toBe(true);
+    expect(readsWaiting(sessionFixture({ livePeople: [], sharedControlEnabledAt: shared }))).toBe(
+      false,
+    );
+    expect(readsWaiting(sessionFixture({ livePeople: [anna], sharedControlEnabledAt: null }))).toBe(
+      false,
+    );
+    expect(readsWaiting(undefined)).toBe(false);
+  });
+
+  it("reads the retirement only while the session's view says its executor waits to be replaced", () => {
+    expect(readsRetirement(sessionFixture({ workspaceRetirement: "marked" }))).toBe(true);
+    expect(readsRetirement(sessionFixture({ workspaceRetirement: "retiring" }))).toBe(true);
+    expect(readsRetirement(sessionFixture())).toBe(false);
+    expect(readsRetirement(undefined)).toBe(false);
+  });
+
+  it("keeps no timer: the stream's pointers re-read both, and only while they are read", () => {
+    const waiting = sessionWaitingQuery("session-1", false);
+    const retiring = workspaceRetirementQuery("session-1", false);
+    expect(waiting.enabled).toBe(false);
+    expect(retiring.enabled).toBe(false);
+    expect(sessionWaitingQuery("session-1", true).refetchInterval).toBeUndefined();
+    expect(workspaceRetirementQuery("session-1", true).refetchInterval).toBeUndefined();
+  });
+
   it("re-reads the waiting line with the conversation, and the retirement with the session", async () => {
     const waiting = sessionWaitingQuery("session-1", true).queryKey;
-    const retiring = workspaceRetirementQuery("session-1").queryKey;
+    const retiring = workspaceRetirementQuery("session-1", true).queryKey;
     queryClient.setQueryData(waiting, null);
     queryClient.setQueryData(retiring, null);
 
@@ -101,7 +166,7 @@ describe("Replace this workspace now", () => {
         body: { _tag: "WorkspaceReplaceRefused", sessionId: "session-1", message },
       })),
     });
-    const refused = await replaceWorkspace("session-1").then(
+    const refused = await replaceWorkspace("session-1", "fp-1").then(
       () => null,
       (error: unknown) => error,
     );
@@ -109,7 +174,43 @@ describe("Replace this workspace now", () => {
   });
 });
 
+describe("Replace this workspace now sends what the owner was shown", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, "mend");
+  });
+
+  it("posts the fingerprint of the retirement it listed", async () => {
+    const sent: Array<unknown> = [];
+    Object.defineProperty(window, "mend", {
+      configurable: true,
+      value: bridgeFixture(async (request) => {
+        sent.push(request);
+        return { status: 204, ok: true, body: null };
+      }),
+    });
+    const view = retirementViewOf(retirement({ fingerprint: "fp-shown" }), new Map());
+    await replaceWorkspace("session-1", view?.seen ?? "");
+    expect(sent).toEqual([
+      {
+        method: "POST",
+        path: "/api/sessions/session-1/workspace-retirement/replace",
+        body: { seen: "fp-shown" },
+      },
+    ]);
+  });
+});
+
 describe("the Shared control switch", () => {
+  it("asks before turning on, in both layouts, and never before turning off", () => {
+    expect(sharedControlPress(false, true)).toBe("ask");
+    expect(sharedControlPress(true, false)).toBe("set");
+    expect(sharedControlPress(true, true)).toBe("nothing");
+    expect(sharedControlPress(false, false)).toBe("nothing");
+    // The dialog's words, true to each layout.
+    expect(sharedControlConfirm(true).body).toBe(SHARED_CONTROL_LINE);
+    expect(sharedControlConfirm(false).body).toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
+  });
+
   it("says a steered turn runs on its sender's login where the session view says so", () => {
     expect(sharedControlSwitchTitle(true)).toContain(SHARED_CONTROL_LINE);
     expect(sharedControlSwitchTitle(true)).not.toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
@@ -118,5 +219,13 @@ describe("the Shared control switch", () => {
   it("says it spends the owner's logins otherwise", () => {
     expect(sharedControlSwitchTitle(false)).toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
     expect(sharedControlSwitchTitle(false)).not.toContain(SHARED_CONTROL_LINE);
+  });
+});
+
+describe("the stop lines' keys", () => {
+  it("stay unique when two lines read alike", () => {
+    expect(
+      keyedLines(["could not check", "could not check", "shell"]).map((row) => row.key),
+    ).toEqual(["could not check#1", "could not check#2", "shell#1"]);
   });
 });

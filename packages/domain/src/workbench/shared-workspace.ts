@@ -58,13 +58,26 @@ export const SHARED_CONTROL_LINE_OWNER_LOGINS =
 export const sharedControlLine = (turnsOnSendersLogin: boolean): string =>
   turnsOnSendersLogin ? SHARED_CONTROL_LINE : SHARED_CONTROL_LINE_OWNER_LOGINS;
 
-/** The confirmation the switch asks before it turns shared control on. */
-export const SHARED_CONTROL_CONFIRM = {
+/**
+ * The confirmation the switch asks before it turns shared control on, in both layouts, in words
+ * true to each: where a steered turn runs on its sender's login, `SHARED_CONTROL_LINE`; where it
+ * spends the owner's logins, that.
+ */
+export const sharedControlConfirm = (
+  turnsOnSendersLogin: boolean,
+): {
+  readonly title: string;
+  readonly body: string;
+  readonly confirm: string;
+  readonly cancel: string;
+} => ({
   title: "Turn on shared control?",
-  body: SHARED_CONTROL_LINE,
+  body: turnsOnSendersLogin
+    ? SHARED_CONTROL_LINE
+    : `Everyone who can see this project can send turns, answer approvals and interrupt. ${SHARED_CONTROL_LINE_OWNER_LOGINS}`,
   confirm: "Turn on",
   cancel: "Keep it off",
-} as const;
+});
 
 /**
  * What a session says while its executor waits to be replaced (decision 14), as observed: whose
@@ -91,21 +104,35 @@ const STOP_WORDS: Readonly<Record<WorkspaceRetirement["stops"][number]["kind"], 
   turn: "agent turn in flight",
   process: "process Mend did not start",
   container: "running container",
+  unchecked: "could not check",
 };
 
 /** "Replace this workspace now" and what would stop, one line each. */
 export const REPLACE_WORKSPACE_ACTION = "Replace this workspace now";
 
-/** What would stop if the workspace were replaced now, one line per item. */
+/** `HH:MM` UTC, as a line says when something was checked. */
+const timeOf = (at: Date): string => `${at.toISOString().slice(11, 16)} UTC`;
+
+/**
+ * What would stop if the workspace were replaced now, one line per item, and what was checked:
+ * evidence, never "nothing would stop". A process's or a container's name is the change's owner's
+ * to read; anyone else gets its kind (an empty label).
+ */
 export const retirementStopLines = (
-  retirement: Pick<WorkspaceRetirement, "stops">,
-): ReadonlyArray<string> =>
-  retirement.stops.length === 0
-    ? ["Nothing would stop. mend.toml Services start again."]
-    : [
-        ...retirement.stops.map((stop) => `${STOP_WORDS[stop.kind]} · ${stop.label}`),
-        "mend.toml Services start again.",
-      ];
+  retirement: Pick<WorkspaceRetirement, "stops" | "checkedAt">,
+): ReadonlyArray<string> => {
+  const checked =
+    retirement.checkedAt === null
+      ? "Checked: Mend's records only · processes Mend did not start and running containers not checked yet"
+      : `Checked at ${timeOf(retirement.checkedAt)}: Mend's records, the processes in the workspace and its running containers`;
+  const found =
+    retirement.stops.length === 0
+      ? ["Found nothing that would stop."]
+      : retirement.stops.map((stop) =>
+          stop.label === "" ? STOP_WORDS[stop.kind] : `${STOP_WORDS[stop.kind]} · ${stop.label}`,
+        );
+  return [checked, ...found, "Mend starts the launching session's mend.toml Services again."];
+};
 
 /**
  * The worktree's line about memory from before per-person homes (decision 14); null when the

@@ -1,4 +1,5 @@
 import type {
+  MendActiveSession,
   MendConversationWait,
   MendLivePerson,
   MendWorkspaceRetirement,
@@ -23,6 +24,22 @@ export interface ThreadNotices {
 }
 
 export const NO_NOTICES: ThreadNotices = { sharedWorkspace: null, waiting: null, retirement: null };
+
+/**
+ * Whether a session's waiting line is worth reading (`GET /api/sessions/:id/waiting`, decision
+ * 6): someone is live in its executor and its owner shares control, as `GET /api/sessions` says.
+ * Otherwise nobody else's turn can wait, and nothing is read: with `MEND_HARNESS_LAYOUT` off,
+ * `livePeople` is always empty, and the gateway does no extra work at all.
+ */
+export const readsWaiting = (session: MendActiveSession | undefined): boolean =>
+  (session?.livePeople?.length ?? 0) > 0 && (session?.sharedControlEnabledAt ?? null) !== null;
+
+/**
+ * Whether a session's retirement is worth reading (`GET /api/sessions/:id/workspace-retirement`,
+ * decision 14): `GET /api/sessions` says its executor waits to be replaced.
+ */
+export const readsRetirement = (session: MendActiveSession | undefined): boolean =>
+  (session?.workspaceRetirement ?? null) !== null;
 
 /** "a", "a and b", "a, b and c". Mirrors `listed` in @mend/domain's shared-workspace.ts. */
 const listed = (names: ReadonlyArray<string>): string =>

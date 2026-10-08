@@ -14,8 +14,9 @@ import {
 /**
  * `mend workspace replace <session>` (docs/adr/0016-per-person-harness-homes.md, decision 14):
  * "Replace this workspace now" from a terminal. The change's owner replaces an executor that
- * started before per-person homes, after it says what would stop; the server decides, and a
- * refusal is printed in its own words.
+ * started before per-person homes, after it says what was checked and what would stop; the
+ * replacement names that read (`seen`), the server decides, and a refusal is printed in its own
+ * words.
  */
 
 const paint = (code: string) => (text: string) =>
@@ -89,7 +90,12 @@ export const workspaceCommand = async (
       return;
     }
   }
-  await api("POST", `/sessions/${session.id}/workspace-retirement/replace`);
+  // The fingerprint of the very read it showed: the server ends nothing that was not listed,
+  // and refuses in its own words when more would stop now. Without a read there is nothing it
+  // showed, and the server says why in its own words.
+  await api("POST", `/sessions/${session.id}/workspace-retirement/replace`, {
+    seen: retirement?.fingerprint ?? "",
+  });
   say(
     `${green("✓")} ${workspaceRetirementLine({ state: "retiring", preRelease: retirement?.preRelease ?? true, reason: null }, "")} ${dim(`· ${session.harness} ${session.id.slice(0, 8)}`)}`,
   );

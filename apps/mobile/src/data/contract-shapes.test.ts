@@ -7,6 +7,7 @@
 import type {
   ChangeLandingsView,
   OpenReviewResult,
+  ReplaceWorkspaceRequest,
   ReviewDiffView,
   SessionAnnotation,
   SessionDetail,
@@ -25,7 +26,11 @@ import type { NotificationSettingsDto } from "./notification-settings";
 import type { ChangeLandingDto, SessionLandingsDto } from "./pull-requests";
 import type { OpenReviewDto, ReviewCommentDto, ReviewDiffDto } from "./review";
 import type { CheckpointDto } from "./review-state";
-import type { ConversationWaitDto, WorkspaceRetirementDto } from "./shared-workspace";
+import type {
+  ConversationWaitDto,
+  ReplaceWorkspaceBody,
+  WorkspaceRetirementDto,
+} from "./shared-workspace";
 
 /** A schema's encoded side as JSON carries it: dates and bigints travel as strings. */
 type Wire<T> = T extends Date
@@ -67,13 +72,21 @@ const pins: {
   readonly annotation: Fits<Wire<typeof SessionAnnotation.Encoded>, SessionAnnotationDto>;
   /** The lines of people sharing a workspace (docs/adr/0016, decisions 6, 13 and 14). */
   readonly livePeople: Fits<
-    Pick<Wire<typeof SessionDetail.Encoded>["session"], "livePeople">,
-    Pick<SessionDto, "livePeople">
+    Pick<
+      Wire<typeof SessionDetail.Encoded>["session"],
+      "livePeople" | "sharedControlEnabledAt" | "workspaceRetirement"
+    >,
+    Pick<SessionDto, "livePeople" | "sharedControlEnabledAt" | "workspaceRetirement">
   >;
   readonly conversationWait: Fits<Wire<typeof ConversationWait.Encoded>, ConversationWaitDto>;
   readonly workspaceRetirement: Fits<
     Wire<typeof WorkspaceRetirement.Encoded>,
     WorkspaceRetirementDto
+  >;
+  /** The other way: what the phone sends must fit what the server decodes. */
+  readonly replaceWorkspace: Fits<
+    ReplaceWorkspaceBody,
+    Wire<typeof ReplaceWorkspaceRequest.Encoded>
   >;
 } = {
   open: true,
@@ -89,6 +102,7 @@ const pins: {
   livePeople: true,
   conversationWait: true,
   workspaceRetirement: true,
+  replaceWorkspace: true,
 };
 
 describe("review and settings payloads", () => {

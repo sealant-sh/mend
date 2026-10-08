@@ -172,17 +172,48 @@ describe.skipIf(!reachable)("the people live in a session's executor, in Postgre
     expect(people).toEqual({
       "s-alice": [
         ["alice", "Alice"],
-        ["maria", "maria@example.com"],
+        ["maria", "a member"],
       ],
       "s-maria": [
         ["alice", "Alice"],
-        ["maria", "maria@example.com"],
+        ["maria", "a member"],
       ],
       "s-carol": [],
     });
     expect(result.view.livePeople.map((person) => person.accountId)).toEqual(["alice", "maria"]);
+    // A person with no name is "a member": their email is not shown to whoever reads the list.
+    expect(
+      result.listed.flatMap((session) => session.livePeople.map((person) => person.name)),
+    ).not.toContain("maria@example.com");
+    // Nothing retires: no state, in the list or the view.
+    expect(result.listed.every((session) => session.workspaceRetirement === null)).toBe(true);
     // Every other read leaves it empty.
     expect(result.plain.livePeople).toEqual([]);
+  });
+
+  it("says a session's executor waits to be replaced, in the same query", async () => {
+    const state = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          INSERT INTO executor_retirements (workspace_id, worktree_id, session_id, pre_release, state)
+          VALUES ('ws-shared', ${OTHER}, 's-carol', true, 'marked')`;
+        const sessions = yield* SessionsRepo;
+        const view = yield* sessions.viewById(SessionId.make("s-carol"));
+        const listed = yield* sessions.listActiveView();
+        yield* sql`DELETE FROM executor_retirements WHERE workspace_id = 'ws-shared'`;
+        return {
+          view: view.workspaceRetirement,
+          listed: listed.map((session) => [session.id, session.workspaceRetirement]),
+        };
+      }),
+    );
+    expect(state.view).toBe("marked");
+    expect(Object.fromEntries(state.listed)).toEqual({
+      "s-alice": null,
+      "s-maria": null,
+      "s-carol": "marked",
+    });
   });
 
   it("reads the list and the view within the budget of the plain reads (+5% or +20 ms)", async () => {

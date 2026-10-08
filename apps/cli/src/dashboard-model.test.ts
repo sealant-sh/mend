@@ -1156,7 +1156,7 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
   const anna = { accountId: "anna", name: "Anna" };
   const bob = { accountId: "bob", name: "Bob" };
 
-  it("fetchWorkbench puts the session view's live people on the project's rows", async () => {
+  it("fetchWorkbench puts the session view's live people and retirement on the project's rows", async () => {
     const data = await fetchWorkbench({
       api: fakeApi({
         "/projects": [project],
@@ -1173,12 +1173,14 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
             worktreeId: "wt-1",
             status: "running",
             livePeople: [anna, bob],
+            workspaceRetirement: "marked",
           }),
           processes: [],
         },
       }),
     });
     expect(data.details.get(project.id)?.sessions[0]?.livePeople).toEqual([anna, bob]);
+    expect(data.details.get(project.id)?.sessions[0]?.workspaceRetirement).toBe("marked");
   });
 
   it("says the join line where another person's session runs, wrapped to the modal", () => {
@@ -1197,7 +1199,11 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
   });
 
   it("reads the waiting line and the retirement, and nothing from an older server", async () => {
-    expect(await fetchWorkspaceFacts(fakeApi({}), "a")).toEqual({ wait: null, retirement: null });
+    const both = { waiting: true, retirement: true };
+    expect(await fetchWorkspaceFacts(fakeApi({}), "a", both)).toEqual({
+      wait: null,
+      retirement: null,
+    });
     const facts = await fetchWorkspaceFacts(
       fakeApi({
         "/sessions/a/waiting": {
@@ -1206,8 +1212,23 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
         "/sessions/a/workspace-retirement": null,
       }),
       "a",
+      both,
     );
     expect(facts.wait?.line).toBe("Waits for Anna's background task before Bob's turn starts.");
+  });
+
+  it("asks only for the reads the row says are worth a request", async () => {
+    const asked: Array<string> = [];
+    const api = async <T>(_method: string, route: string): Promise<T> => {
+      asked.push(route);
+      return JSON.parse("null");
+    };
+    await fetchWorkspaceFacts(api, "a", { waiting: false, retirement: false });
+    expect(asked).toEqual([]);
+    await fetchWorkspaceFacts(api, "a", { waiting: false, retirement: true });
+    expect(asked).toEqual(["/sessions/a/workspace-retirement"]);
+    await fetchWorkspaceFacts(api, "b", { waiting: true, retirement: false });
+    expect(asked).toEqual(["/sessions/a/workspace-retirement", "/sessions/b/waiting"]);
   });
 
   it("wraps the session's workspace lines to the pane, stop lines indented", () => {
@@ -1222,6 +1243,8 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
           launcher: "anna",
           stops: [{ kind: "service", label: "storybook started by hand in the workspace" }],
           reason: null,
+          checkedAt: "2026-10-08T12:05:00.000Z",
+          fingerprint: "fp-1",
           canReplace: true,
         },
       },

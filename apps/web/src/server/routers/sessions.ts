@@ -5,6 +5,7 @@ import {
   LaunchRequest,
   NewWorkbenchSession,
   PastedImageUpload,
+  ReplaceWorkspaceRequest,
   ResumeRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
@@ -128,11 +129,17 @@ export const sessionsRouter = router({
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.workspaceRetirement({ params: { id: i.id } })),
     ),
-  // "Replace this workspace now": refused in words (`WorkspaceReplaceRefused`) the page shows.
+  // "Replace this workspace now", naming the retirement the owner was shown (`seen`): refused in
+  // words (`WorkspaceReplaceRefused`) the page shows.
   replaceWorkspace: procedure
-    .input(byId)
+    .input(input(Schema.Struct({ id: SessionId, seen: Schema.String })))
     .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessions.replaceWorkspace({ params: { id: i.id } })),
+      run(ctx, (api) =>
+        api.sessions.replaceWorkspace({
+          params: { id: i.id },
+          payload: new ReplaceWorkspaceRequest({ seen: i.seen }),
+        }),
+      ),
     ),
   pendingFollowUp: procedure
     .input(byId)

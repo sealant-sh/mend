@@ -120,23 +120,46 @@ This worktree's workspace started before Mend 0.36 and shares one home; it takes
 The session line says the same, with the reason the last replacement did not go ahead, for example
 `not replaced · 1 shell, 2 processes Mend did not start`.
 
-**Mend replaces it on its own** when nothing would stop: no terminal agent or shell, protocol agents
-idle, no Service started by hand, no process Mend did not start, no running container in the
-workspace's Docker. It marks the workspace as being replaced, refusing every new start, the
-launcher's included:
+**What Mend checks.** Once a minute it reads what it recorded (terminal agents, shells, Services,
+agent turns) and checks inside the workspace, as root:
+
+- **Processes Mend did not start.** sealantd runs as PID 1 and adopts every orphan, so a process's
+  parent says nothing. A process counts as Mend's only in the session of a process Mend recorded (by
+  the pid sealantd reported when it started it) or of sealantd itself. Everything else is listed: a
+  `nohup` job a closed shell left, a `setsid` or `tmux new -d` job, a daemon, a `docker exec`. A
+  process is named by its command name and pid only, never its arguments, and only to the change's
+  owner; anyone else sees how many there are.
+- **Running containers** of the workspace's Docker sidecar (`docker ps`, with the daemon address of
+  the workspace's own environment). If `docker ps` cannot answer (no `docker` command, no daemon
+  address, the daemon not answering, a timeout), Mend lists it as something it could not check. It
+  never reads as "no containers".
+
+**Mend replaces it on its own** only when all of that finds nothing: no terminal agent or shell,
+protocol agents idle, no Service started by hand, no process Mend did not start, no running
+container, nothing it could not check. It marks the workspace as being replaced, refusing every new
+start, the launcher's included:
 
 ```text
 This worktree's workspace is being replaced so that each person runs as themselves. Nothing was started; start again once it has been replaced.
 ```
 
-Then it saves a final capture and replaces the workspace only once that save stands. A failed check
-or save unmarks it and says why. Mend looks for workspaces to retire only while
-`MEND_HARNESS_LAYOUT=person` is set, once a minute per workspace.
+Then it checks again, saves a final capture and replaces the workspace only once that save stands. A
+failed check or save unmarks it and says why. A replacement that a crash or a restart interrupts is
+unmarked at the next start, after ten minutes on the regular sweep, or when the owner asks again.
+Mend looks for workspaces to retire only while `MEND_HARNESS_LAYOUT=person` is set.
 
-**Otherwise the change's owner chooses.** The owner sees **Replace this workspace now** and, one
-line each, what would stop: terminal sessions (they end resumable), shells, Services started by
-hand, running containers, processes Mend did not start. `mend.toml` Services start again. Mend never
-stops an agent's turn: while one or background work is in flight, the action is refused:
+**Otherwise the change's owner chooses.** The owner sees **Replace this workspace now**, when Mend
+last checked and what it checked, and one line each for what would stop: terminal sessions (they end
+resumable), shells, Services started by hand, processes Mend did not start, running containers, and
+anything it could not check. Mend starts the launching session's `mend.toml` Services again. The
+replacement checks once more and ends nothing that was not on the list the owner saw; if more would
+stop now, it is refused and nothing is stopped:
+
+```text
+What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.
+```
+
+Mend never stops an agent's turn: while one or background work is in flight, the action is refused:
 
 ```text
 An agent's turn or background work is in flight in this workspace. Replace it once that has finished.

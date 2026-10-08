@@ -56,6 +56,7 @@ import {
   withPullRequests,
   type ConversationRowWithPullRequests as Row,
 } from "@/data/pull-requests";
+import { readsWaiting } from "@/data/shared-workspace";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
 /**
@@ -458,10 +459,14 @@ export function ProtocolConversation({
     () => buildAgentConversation(conversation.data ?? EMPTY_CONVERSATION),
     [conversation.data],
   );
+  const sessionRead = useSession(sessionId).data;
   // What holds the next sender's turn, as both people see it (docs/adr/0016, decision 6): shown
-  // to every reader, steering or not; re-read on a timer while this phone's composer is live.
-  const waiting = useConversationWait(sessionId, active).data ?? null;
-  const landings = useSession(sessionId).data?.landings;
+  // to every reader, steering or not; read only while someone is live in the executor and
+  // control is shared, and re-read on a timer while this phone's composer is live.
+  const readsWait = readsWaiting(sessionRead?.session);
+  const waitRead = useConversationWait(sessionId, active, readsWait).data ?? null;
+  const waiting = readsWait ? waitRead : null;
+  const landings = sessionRead?.landings;
   const cards = useMemo(() => pullRequestCards(landings ?? []), [landings]);
   const rows = useMemo(
     () => withPullRequests(reconcileConversation(entries, sender.pending), cards),

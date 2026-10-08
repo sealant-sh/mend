@@ -54,10 +54,13 @@ with one of the person's device tokens, and re-reads what each pointer names thr
 `project`, `session`, `session-process`, `worktree` and `session-change` re-read the project
 (`GET /api/projects/:id`), `agent-conversation` re-reads the session's turns and requests, and
 `organization`, `user` and `resync` re-read everything. A project read also re-reads
-`GET /api/sessions` for the people live in each executor, and a turns read also reads what holds the
-next sender's turn (`GET /api/sessions/:id/waiting`); a server without either reads as nobody live
-and nothing waiting. A burst of pointers for one thing is one read. After the stream drops, the hub
-reconnects with backoff and reads everything again.
+`GET /api/sessions` for the people live in each executor, whether control is shared and whether the
+executor waits to be replaced. A turns read also reads what holds the next sender's turn
+(`GET /api/sessions/:id/waiting`), but only while someone is live there and control is shared, and
+the retirement is read only while the session says one is under way: with neither, the gateway asks
+Mend nothing more. A server without these fields reads as nobody live and nothing waiting. A burst
+of pointers for one thing is one read. After the stream drops, the hub reconnects with backoff and
+reads everything again.
 
 Each read rebuilds the t3code entities (`src/shell.ts`), encodes them through the vendored schemas,
 and sends only what changed, each change stamped with the hub's next sequence. A fresh snapshot is

@@ -166,13 +166,17 @@ export const MendLivePerson = Schema.Struct({
 export type MendLivePerson = typeof MendLivePerson.Type;
 
 /**
- * One row of `GET /api/sessions` (`Session` in @mend/domain/workbench), read only for the people
- * live in its executor (docs/adr/0016, decision 13): the project read's sessions carry none.
- * Servers before per-person homes omit the field.
+ * One row of `GET /api/sessions` (`Session` in @mend/domain/workbench), read only for what is
+ * said about sharing its workspace (docs/adr/0016, decisions 6, 13 and 14): the people live in its
+ * executor, whether its owner shares control, and whether its executor waits to be replaced. They
+ * decide whether the waiting line and the retirement are read at all; the project read's sessions
+ * carry none of them. Servers before per-person homes omit the fields.
  */
 export const MendActiveSession = Schema.Struct({
   id: Schema.String,
   livePeople: Schema.optional(Schema.Array(MendLivePerson)),
+  sharedControlEnabledAt: Schema.optional(Schema.NullOr(Schema.String)),
+  workspaceRetirement: Schema.optional(Schema.NullOr(Schema.Literals(["marked", "retiring"]))),
 });
 export type MendActiveSession = typeof MendActiveSession.Type;
 
@@ -206,11 +210,23 @@ export const MendWorkspaceRetirement = Schema.Struct({
   launcher: Schema.NullOr(Schema.String),
   stops: Schema.Array(
     Schema.Struct({
-      kind: Schema.Literals(["terminal", "shell", "service", "turn", "process", "container"]),
+      kind: Schema.Literals([
+        "terminal",
+        "shell",
+        "service",
+        "turn",
+        "process",
+        "container",
+        "unchecked",
+      ]),
       label: Schema.String,
     }),
   ),
   reason: Schema.NullOr(Schema.String),
+  /** When what runs was checked beyond Mend's records; null when only those were read. */
+  checkedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  /** What the viewer was shown, as one token; the gateway replaces nothing, so it only carries it. */
+  fingerprint: Schema.optional(Schema.String),
   canReplace: Schema.Boolean,
 });
 export type MendWorkspaceRetirement = typeof MendWorkspaceRetirement.Type;

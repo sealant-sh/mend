@@ -2384,6 +2384,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           currentAgent: currentAgentProcess(rows),
           liveServices:
             (yield* (yield* ServicesRepo).liveCountsForSessions([session.id])).get(session.id) ?? 0,
+          preReleaseMemory: yield* (yield* SessionEngine).preReleaseMemory(session.worktreeId),
         });
       }),
     )
