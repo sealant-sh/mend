@@ -121,6 +121,20 @@ export class FakeWorkbench {
       readonly files: ReadonlyArray<{ path: string; additions: number; deletions: number }>;
     }
   >();
+  /** Session id → the people live in its executor, as `GET /api/sessions` lists them. */
+  readonly livePeople = new Map<string, ReadonlyArray<{ accountId: string; name: string }>>();
+  /** Session id → what `GET /api/sessions/:id/waiting` answers (`ConversationWait`). */
+  readonly waits = new Map<string, unknown>();
+  /**
+   * Session id → what `GET /api/sessions/:id/workspace-retirement` answers; `GET /api/sessions`
+   * says its `state` as the session's `workspaceRetirement`.
+   */
+  readonly retirements = new Map<
+    string,
+    { readonly state: "marked" | "retiring"; readonly [field: string]: unknown }
+  >();
+  /** Session id → when its owner shared control (`sharedControlEnabledAt` in `GET /api/sessions`). */
+  readonly sharedControl = new Map<string, string>();
   readonly calls: Array<FakeCall> = [];
   private readonly streams = new Set<ServerResponse>();
   private seq = 0;
@@ -387,6 +401,7 @@ export class FakeWorkbench {
     };
     const known =
       path === "/api/projects" ||
+      path === "/api/sessions" ||
       path === "/api/events" ||
       /^\/api\/(projects|sessions|turns|requests|changes)\//.test(path);
     if (!known) return false;
@@ -420,6 +435,17 @@ export class FakeWorkbench {
       return json(
         200,
         Array.from(this.projects.values(), (project) => this.projectView(project.id)),
+      );
+    }
+    if (method === "GET" && path === "/api/sessions") {
+      return json(
+        200,
+        Array.from(this.sessions.values(), (session) => ({
+          ...session,
+          livePeople: this.livePeople.get(session.id) ?? [],
+          sharedControlEnabledAt: this.sharedControl.get(session.id) ?? null,
+          workspaceRetirement: this.retirements.get(session.id)?.state ?? null,
+        })),
       );
     }
     const segments = path.split("/").slice(2);
@@ -481,6 +507,10 @@ export class FakeWorkbench {
         });
       }
       if (method === "GET" && sub === "turns") return json(200, this.turns.get(id) ?? []);
+      if (method === "GET" && sub === "waiting") return json(200, this.waits.get(id) ?? null);
+      if (method === "GET" && sub === "workspace-retirement") {
+        return json(200, this.retirements.get(id) ?? null);
+      }
       if (method === "GET" && sub === "requests") {
         const answer = this.requests.get(id) ?? [];
         if (this.requestsDelayMs === 0) return json(200, answer);

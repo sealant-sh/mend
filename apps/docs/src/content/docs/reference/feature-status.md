@@ -42,6 +42,7 @@ following a guide.
 | Kubernetes                | Helm chart 0.3.0: an API tier and a stateless web tier, the capture store in an S3-compatible bucket, an opt-in Ingress to the web tier with TLS, a network session channel, and cluster workspaces via the Sealant chart                                      |
 | Self-hosted server        | `mend server setup` runs the Mend application, Postgres and Garage containers on local Docker; status, logs, start, stop, restart, explicit `upgrade --version` with a private pre-migration database dump, and `mend uninstall`                               |
 | Diagnostics               | `mend doctor` checklist; `mend doctor --bundle` writes one redacted archive for a bug report                                                                                                                                                                   |
+| Per-person workspaces     | Behind `MEND_HARNESS_LAYOUT=person`, off by default: each person runs as their own Linux user, on their own logins, with passwordless `sudo` for everyone; see [Per-person workspaces](/operate/per-person-workspaces/)                                        |
 | Desktop app               | Source in `apps/desktop`; build it from source. There is no published release                                                                                                                                                                                  |
 
 Some implemented paths still need release-level acceptance tests. The operational guides state known

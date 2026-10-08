@@ -53,8 +53,14 @@ kept two minutes after the last one closes. It holds one `GET /api/events` strea
 with one of the person's device tokens, and re-reads what each pointer names through Mend's API:
 `project`, `session`, `session-process`, `worktree` and `session-change` re-read the project
 (`GET /api/projects/:id`), `agent-conversation` re-reads the session's turns and requests, and
-`organization`, `user` and `resync` re-read everything. A burst of pointers for one thing is one
-read. After the stream drops, the hub reconnects with backoff and reads everything again.
+`organization`, `user` and `resync` re-read everything. A project read also re-reads
+`GET /api/sessions` for the people live in each executor, whether control is shared and whether the
+executor waits to be replaced. A turns read also reads what holds the next sender's turn
+(`GET /api/sessions/:id/waiting`), but only while someone is live there and control is shared, and
+the retirement is read only while the session says one is under way: with neither, the gateway asks
+Mend nothing more. A server without these fields reads as nobody live and nothing waiting. A burst
+of pointers for one thing is one read. After the stream drops, the hub reconnects with backoff and
+reads everything again.
 
 Each read rebuilds the t3code entities (`src/shell.ts`), encodes them through the vendored schemas,
 and sends only what changed, each change stamped with the hub's next sequence. A fresh snapshot is
@@ -67,6 +73,7 @@ always a legal reset for a t3code client, so a restarted gateway starts its sequ
 | thread                                                         | the session; title from its label, else its first message; `worktreePath` is the worktree beside the store      |
 | run                                                            | one per turn; a running turn whose agent asked something is `waiting`                                           |
 | shell status                                                   | the latest run's status, else `idle`; the newest pending request; message bodies stay out, as in t3code's shell |
+| pending background tasks                                       | what a waiting turn waits for: the previous sender's own work (ADR 0016, decision 6)                            |
 
 PTY and shell sessions, and harnesses t3code has no driver for, are not threads.
 
@@ -81,16 +88,17 @@ changed is one upsert event (`run.updated`, `turn-item.updated`, `message.update
 longer a thread sends `thread.deleted`. A subscription always opens with a full snapshot, whatever
 sequence the client resumes after: replay after a sequence is phase 2.
 
-| t3code                                     | From Mend                                                                                                   |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| user message                               | the turn's input; a turn the agent opened on its own is a system message                                    |
-| assistant message, reasoning               | `assistant-message` and `reasoning` items, `streaming` while in progress                                    |
-| command, file change, web search           | read from the harness's own item in `data` (codex app-server items, claude `tool_use` blocks)               |
-| other tool calls, plans, background tasks  | a tool row named by the harness                                                                             |
-| error                                      | `error` items, and a failed turn's error after everything it did                                            |
-| runtime request, approval or question item | the agent's request; answered through Mend while its agent is live                                          |
-| ordinals                                   | each turn owns a block of 100 000, its input first, then items and requests in the order Mend recorded them |
-| `GET …/threads/:id/bounded`                | the whole thread as one window: no cursor, nothing older                                                    |
+| t3code                                     | From Mend                                                                                                                                                                                                                                                 |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| user message                               | the turn's input; a turn the agent opened on its own is a system message                                                                                                                                                                                  |
+| assistant message, reasoning               | `assistant-message` and `reasoning` items, `streaming` while in progress                                                                                                                                                                                  |
+| command, file change, web search           | read from the harness's own item in `data` (codex app-server items, claude `tool_use` blocks)                                                                                                                                                             |
+| other tool calls, plans, background tasks  | a tool row named by the harness                                                                                                                                                                                                                           |
+| error                                      | `error` items, and a failed turn's error after everything it did                                                                                                                                                                                          |
+| runtime request, approval or question item | the agent's request; answered through Mend while its agent is live                                                                                                                                                                                        |
+| system notices                             | ADR 0016's lines, word for word (`src/notices.ts`): the waiting line after the waiting turn's input; the shared-workspace line and, while the thread is watched, the retirement line (`GET /api/sessions/:id/workspace-retirement`) after everything else |
+| ordinals                                   | each turn owns a block of 100 000, its input first, then items and requests in the order Mend recorded them                                                                                                                                               |
+| `GET …/threads/:id/bounded`                | the whole thread as one window: no cursor, nothing older                                                                                                                                                                                                  |
 
 ### Commands
 

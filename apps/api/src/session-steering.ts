@@ -51,6 +51,8 @@ const refuse = (session: Session) =>
 export const sessionControlView = (
   session: SteeringFacts,
   viewer: Pick<Viewer, "userId" | "role"> | null,
+  /** The session's worktree runs each person as themselves (`SessionEngine.steersPerPerson`). */
+  turnsOnSendersLogin = false,
 ): SessionControlView => {
   const steer = viewer !== null && canSteerSession(session, viewer.userId);
   return new SessionControlView({
@@ -61,6 +63,7 @@ export const sessionControlView = (
       viewer !== null &&
       canToggleSharedControl(session, viewer, session.sharedControlEnabledAt === null),
     terminalInput: viewer !== null && canTypeInTerminal(session, viewer.userId),
+    turnsOnSendersLogin,
   });
 };
 

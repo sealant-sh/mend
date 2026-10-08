@@ -43,6 +43,8 @@ import {
   type MendUnavailable,
 } from "./mend-client.ts";
 import type {
+  MendActiveSession,
+  MendConversationWait,
   MendEventPointer,
   MendItem,
   MendProject,
@@ -50,7 +52,9 @@ import type {
   MendSession,
   MendSessionAnnotation,
   MendTurn,
+  MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
+import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
 import {
   isProjectable,
@@ -222,6 +226,8 @@ interface ProjectEntry {
 interface Conversation {
   readonly turns: ReadonlyArray<MendTurn>;
   readonly requests: ReadonlyArray<MendRequest>;
+  /** What holds the next sender's turn (docs/adr/0016, decision 6); null when nothing waits. */
+  readonly wait: MendConversationWait | null;
 }
 
 interface Printed<A> {
@@ -260,7 +266,7 @@ const reasonOf = (error: { readonly _tag: string; readonly message: string }) =>
 /** How many items one `GET /api/sessions/:id/items` page asks for. */
 const ITEM_PAGE = 500;
 
-const EMPTY_CONVERSATION: Conversation = { turns: [], requests: [] };
+const EMPTY_CONVERSATION: Conversation = { turns: [], requests: [], wait: null };
 const NO_IDS: ReadonlyMap<string, string> = new Map();
 
 /** Encodes through the vendored schema, so a mapping bug is caught here and never sent. */
@@ -437,6 +443,23 @@ const entryOf = (detail: {
   annotations: new Map(detail.annotations.map((annotation) => [annotation.sessionId, annotation])),
 });
 
+/**
+ * A read that only adds a line (docs/adr/0016, decisions 6 and 13): a server from before it
+ * answers 404, and a failed read leaves the line out rather than the thread. A refused device
+ * still fails it.
+ */
+const optionalRead = <A>(
+  read: Effect.Effect<A, MendDeviceRefused | MendNotFound | MendUnavailable>,
+): Effect.Effect<A | null, MendDeviceRefused> =>
+  read.pipe(
+    Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+    Effect.catchTag("MendUnavailable", (error) =>
+      Effect.logWarning("t3 gateway could not read a line from Mend", {
+        cause: error.message,
+      }).pipe(Effect.as(null)),
+    ),
+  );
+
 const mergeItems = (watch: Watch, read: ReadonlyArray<MendItem>) => {
   for (const item of read) {
     const known = watch.items.get(item.id);
@@ -448,6 +471,11 @@ const mergeItems = (watch: Watch, read: ReadonlyArray<MendItem>) => {
 export const makePersonHub = (input: {
   /** The only way the hub reaches Mend (`device-gate.ts`). */
   readonly mend: GatedMend;
+  /**
+   * The person the hub reads for: the shared-workspace line names everyone else live in an
+   * executor (docs/adr/0016, decision 13). Null reads as someone who runs nothing there.
+   */
+  readonly viewer: { readonly id: string; readonly name: string } | null;
   readonly state: GatewayState["Service"];
   readonly tokens: PersonTokens;
   /** Lets go of the hub in the registry, once it has torn itself down. */
@@ -497,6 +525,18 @@ export const makePersonHub = (input: {
 
     const projects = new Map<string, ProjectEntry>();
     const conversations = new Map<string, Conversation>();
+    /**
+     * Session id → its row of `GET /api/sessions` (docs/adr/0016, decisions 6, 13 and 14): the
+     * people live in its executor, whether control is shared, whether its executor waits to be
+     * replaced. The project read's sessions carry none of it. What it says decides whether the
+     * waiting line and the retirement are read at all (`readsWaiting`, `readsRetirement`).
+     */
+    let active = new Map<string, MendActiveSession>();
+    /**
+     * Session id → its executor's retirement (decision 14), read only for watched threads whose
+     * row says one is under way: only the full thread has a place to say it.
+     */
+    const retirements = new Map<string, MendWorkspaceRetirement | null>();
     let sequence = 0;
     let shellProjects = new Map<string, Printed<OrchestrationProjectShell>>();
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
@@ -533,8 +573,19 @@ export const makePersonHub = (input: {
 
     // ─── Building ──────────────────────────────────────────────────────────
 
+    /** Account id → name: the person who paired, and everyone live anywhere they can see. */
+    const knownNames = (): ReadonlyMap<string, string> => {
+      const names = new Map<string, string>();
+      for (const session of active.values()) {
+        for (const person of session.livePeople ?? []) names.set(person.accountId, person.name);
+      }
+      if (input.viewer !== null) names.set(input.viewer.id, input.viewer.name);
+      return names;
+    };
+
     const threadSources = (): ReadonlyArray<ThreadSource> => {
       const sources: Array<ThreadSource> = [];
+      const names = knownNames();
       for (const entry of projects.values()) {
         for (const session of entry.sessions) {
           const annotation = entry.annotations.get(session.id);
@@ -561,6 +612,13 @@ export const makePersonHub = (input: {
               error: queued.error,
             })),
             queueHeld: queue?.held ?? false,
+            notices: threadNoticesOf({
+              livePeople: active.get(session.id)?.livePeople ?? [],
+              viewerId: input.viewer?.id ?? null,
+              wait: conversation.wait,
+              retirement: retirements.get(session.id) ?? null,
+              names,
+            }),
           });
         }
       }
@@ -771,28 +829,87 @@ export const makePersonHub = (input: {
         ),
       );
 
-    const readConversation = (sessionId: string) =>
+    /**
+     * What holds the session's next turn; read only while `readsWaiting` (someone live in its
+     * executor, control shared), null otherwise without asking Mend.
+     */
+    const readWait = (sessionId: string, facts: ReadonlyMap<string, MendActiveSession>) =>
+      readsWaiting(facts.get(sessionId))
+        ? optionalRead(asPerson((token) => mend.conversationWait(token, sessionId)))
+        : Effect.succeed(null);
+
+    const readConversation = (sessionId: string, facts: ReadonlyMap<string, MendActiveSession>) =>
       Effect.all(
         {
           turns: asPerson((token) => mend.listTurns(token, sessionId)),
           requests: asPerson((token) => mend.listRequests(token, sessionId)),
+          wait: readWait(sessionId, facts),
         },
-        { concurrency: 2 },
+        { concurrency: 3 },
       ).pipe(
         Effect.map((conversation): Conversation | null => conversation),
         // The session went between the list and this read; the next project read drops it.
         Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
       );
 
-    const readConversations = (sessionIds: ReadonlyArray<string>) =>
+    const readConversations = (
+      sessionIds: ReadonlyArray<string>,
+      facts: ReadonlyMap<string, MendActiveSession>,
+    ) =>
       Effect.forEach(
         sessionIds,
         (sessionId) =>
-          readConversation(sessionId).pipe(
+          readConversation(sessionId, facts).pipe(
             Effect.map((conversation) => [sessionId, conversation] as const),
           ),
         { concurrency: 4 },
       );
+
+    /**
+     * Each live session's row (`GET /api/sessions`): who is live in its executor, whether control
+     * is shared, whether its executor waits to be replaced. Null when Mend did not say.
+     */
+    const readActive = optionalRead(asPerson((token) => mend.listActiveSessions(token))).pipe(
+      Effect.map((sessions) =>
+        sessions === null
+          ? null
+          : new Map(sessions.map((session) => [session.id, session] as const)),
+      ),
+    );
+
+    /**
+     * The retirement of each watched thread among `sessionIds`: read only where its row says one is
+     * under way (`readsRetirement`), null elsewhere without asking Mend; undefined where Mend did
+     * not say.
+     */
+    const readRetirements = (
+      sessionIds: ReadonlyArray<string>,
+      facts: ReadonlyMap<string, MendActiveSession>,
+    ) =>
+      Effect.forEach(
+        sessionIds.filter((sessionId) => watches.has(sessionId)),
+        (sessionId) =>
+          (readsRetirement(facts.get(sessionId))
+            ? asPerson((token) => mend.workspaceRetirement(token, sessionId)).pipe(
+                Effect.map((retirement): MendWorkspaceRetirement | null | undefined => retirement),
+                Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+                Effect.catchTag("MendUnavailable", () => Effect.succeed(undefined)),
+              )
+            : Effect.succeed(null)
+          ).pipe(Effect.map((retirement) => [sessionId, retirement] as const)),
+        { concurrency: 4 },
+      );
+
+    const applyRetirements = (
+      read: ReadonlyArray<readonly [string, MendWorkspaceRetirement | null | undefined]>,
+    ) => {
+      for (const [sessionId, retirement] of read) {
+        if (retirement !== undefined) retirements.set(sessionId, retirement);
+      }
+      for (const sessionId of retirements.keys()) {
+        if (!watches.has(sessionId)) retirements.delete(sessionId);
+      }
+    };
 
     /** Everything again: every project the person sees, and every thread's turns and requests. */
     const refreshAll: Effect.Effect<void, HubReadError> = Effect.gen(function* () {
@@ -802,17 +919,28 @@ export const makePersonHub = (input: {
           (): Effect.Effect<ReadonlyArray<MendProject>> => Effect.succeed([]),
         ),
       );
-      const details = yield* Effect.forEach(
-        listed,
-        (project) =>
-          asPerson((token) => mend.projectDetail(token, project.id)).pipe(
-            Effect.map(entryOf),
-            Effect.catchTag("MendNotFound", (_: MendNotFound) => Effect.succeed(null)),
+      const [details, people] = yield* Effect.all(
+        [
+          Effect.forEach(
+            listed,
+            (project) =>
+              asPerson((token) => mend.projectDetail(token, project.id)).pipe(
+                Effect.map(entryOf),
+                Effect.catchTag("MendNotFound", (_: MendNotFound) => Effect.succeed(null)),
+              ),
+            { concurrency: 4 },
           ),
-        { concurrency: 4 },
+          readActive,
+        ],
+        { concurrency: 2 },
       );
+      const facts = people ?? active;
       const entries = details.filter((entry): entry is ProjectEntry => entry !== null);
-      const read = yield* readConversations(entries.flatMap(projectableSessionIds));
+      const sessionIds = entries.flatMap(projectableSessionIds);
+      const [read, retired] = yield* Effect.all(
+        [readConversations(sessionIds, facts), readRetirements(sessionIds, facts)],
+        { concurrency: 2 },
+      );
       // A watched thread's items that moved while pointers could be missed (a reconnect).
       const caughtUp = yield* Effect.forEach(
         Array.from(watches, ([sessionId, watch]) => [sessionId, watch.cursor] as const),
@@ -826,6 +954,8 @@ export const makePersonHub = (input: {
         Effect.gen(function* () {
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
+          active = facts;
+          applyRetirements(retired);
           conversations.clear();
           for (const [sessionId, conversation] of read) {
             if (conversation !== null) conversations.set(sessionId, conversation);
@@ -845,15 +975,41 @@ export const makePersonHub = (input: {
     /** One project again, and the turns of any thread that is new in it. */
     const refreshProject = (projectId: string): Effect.Effect<void, HubReadError> =>
       Effect.gen(function* () {
-        const entry = yield* asPerson((token) => mend.projectDetail(token, projectId)).pipe(
-          Effect.map(entryOf),
-          Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+        // A process starting or ending re-reads the project: who is live in each executor with it.
+        const [entry, people] = yield* Effect.all(
+          [
+            asPerson((token) => mend.projectDetail(token, projectId)).pipe(
+              Effect.map(entryOf),
+              Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+            ),
+            readActive,
+          ],
+          { concurrency: 2 },
         );
-        const fresh =
-          entry === null
-            ? []
-            : projectableSessionIds(entry).filter((sessionId) => !conversations.has(sessionId));
-        const read = yield* readConversations(fresh);
+        const facts = people ?? active;
+        const sessionIds = entry === null ? [] : projectableSessionIds(entry);
+        const fresh = sessionIds.filter((sessionId) => !conversations.has(sessionId));
+        // A thread already read whose owner just shared control with someone live: its waiting
+        // line, now worth reading (later ones come with its conversation's pointers).
+        const waitStarts = sessionIds.filter(
+          (sessionId) =>
+            conversations.has(sessionId) &&
+            readsWaiting(facts.get(sessionId)) &&
+            !readsWaiting(active.get(sessionId)),
+        );
+        const [read, retired, waits] = yield* Effect.all(
+          [
+            readConversations(fresh, facts),
+            readRetirements(sessionIds, facts),
+            Effect.forEach(
+              waitStarts,
+              (sessionId) =>
+                readWait(sessionId, facts).pipe(Effect.map((wait) => [sessionId, wait] as const)),
+              { concurrency: 4 },
+            ),
+          ],
+          { concurrency: 3 },
+        );
         yield* locked(
           Effect.gen(function* () {
             const previous = projects.get(projectId);
@@ -869,6 +1025,24 @@ export const makePersonHub = (input: {
             for (const [sessionId, conversation] of read) {
               if (conversation !== null) conversations.set(sessionId, conversation);
             }
+            for (const [sessionId, wait] of waits) {
+              const conversation = conversations.get(sessionId);
+              if (conversation !== undefined)
+                conversations.set(sessionId, { ...conversation, wait });
+            }
+            // Control no longer shared, or nobody live: no turn waits, and the line goes.
+            for (const sessionId of sessionIds) {
+              const conversation = conversations.get(sessionId);
+              if (
+                conversation !== undefined &&
+                conversation.wait !== null &&
+                !readsWaiting(facts.get(sessionId))
+              ) {
+                conversations.set(sessionId, { ...conversation, wait: null });
+              }
+            }
+            active = facts;
+            applyRetirements(retired);
             for (const session of entry?.sessions ?? []) sawSession(session.id);
             yield* publishAll;
           }),
@@ -890,7 +1064,7 @@ export const makePersonHub = (input: {
         const watch = watches.get(sessionId);
         const [conversation, items] = yield* Effect.all(
           [
-            readConversation(sessionId),
+            readConversation(sessionId, active),
             watch === undefined ? Effect.succeed([]) : readItemsAfter(sessionId, watch.cursor),
           ],
           { concurrency: 2 },
@@ -1479,13 +1653,17 @@ export const makePersonHub = (input: {
               if (held.count === 0 && watches.get(threadId) === held) watches.delete(threadId);
             }),
         );
-        const read = yield* readItemsAfter(threadId, watch.cursor);
+        const [read, retired] = yield* Effect.all(
+          [readItemsAfter(threadId, watch.cursor), readRetirements([threadId], active)],
+          { concurrency: 2 },
+        );
         // Subscribed before the snapshot is taken: nothing published after it is missed.
         // Only this thread's changes are buffered for it.
         const published = yield* threadChanges.subscribe((change) => change.threadId === threadId);
         const projection = yield* locked(
           Effect.gen(function* () {
             mergeItems(watch, read);
+            applyRetirements(retired);
             return yield* publishThread(threadId);
           }),
         );
@@ -1554,6 +1732,8 @@ export const ProjectionsLive: Layer.Layer<
     const config = yield* GatewayConfig;
     /** Mend user id → the device tokens of theirs the gateway holds, in pairing order. */
     const known = new Map<string, Set<string>>();
+    /** Mend user id → who they are, as their pairing recorded it: whom a hub reads for. */
+    const viewers = new Map<string, { readonly id: string; readonly name: string }>();
     /** Device token → completed once Mend refuses it. */
     const refusals = new Map<string, Deferred.Deferred<void>>();
     const refusalOf = (token: string) => {
@@ -1635,6 +1815,7 @@ export const ProjectionsLive: Layer.Layer<
         return makePersonHub({
           // Every call the hub makes with a device token goes through the gate.
           mend: gateDeviceCalls(mend, tokens.refuse),
+          viewer: viewers.get(userId) ?? null,
           state,
           tokens,
           retain: retainFor(userId),
@@ -1648,6 +1829,7 @@ export const ProjectionsLive: Layer.Layer<
     const hub = (session: BearerSession) =>
       Effect.suspend(() => {
         const userId = session.mendUser.id;
+        viewers.set(userId, { id: userId, name: session.mendUser.name });
         const tokens = known.get(userId) ?? new Set<string>();
         tokens.add(session.deviceToken);
         known.set(userId, tokens);

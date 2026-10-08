@@ -49,13 +49,14 @@ import {
 import { findLastMatching } from "@/data/collections";
 import { composerReadiness, readinessHint, storedImages, type Attachment } from "@/data/composer";
 import { useComposerAttachments } from "@/data/image-attach";
-import { useOrganizationMembers, useSession } from "@/data/live";
+import { useConversationWait, useOrganizationMembers, useSession } from "@/data/live";
 import { hasUnrecordedSend, reconcileConversation, type TurnView } from "@/data/pending-turns";
 import {
   pullRequestCards,
   withPullRequests,
   type ConversationRowWithPullRequests as Row,
 } from "@/data/pull-requests";
+import { readsWaiting } from "@/data/shared-workspace";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
 /**
@@ -458,7 +459,14 @@ export function ProtocolConversation({
     () => buildAgentConversation(conversation.data ?? EMPTY_CONVERSATION),
     [conversation.data],
   );
-  const landings = useSession(sessionId).data?.landings;
+  const sessionRead = useSession(sessionId).data;
+  // What holds the next sender's turn, as both people see it (docs/adr/0016, decision 6): shown
+  // to every reader, steering or not; read only while someone is live in the executor and
+  // control is shared, and re-read on a timer while this phone's composer is live.
+  const readsWait = readsWaiting(sessionRead?.session);
+  const waitRead = useConversationWait(sessionId, active, readsWait).data ?? null;
+  const waiting = readsWait ? waitRead : null;
+  const landings = sessionRead?.landings;
   const cards = useMemo(() => pullRequestCards(landings ?? []), [landings]);
   const rows = useMemo(
     () => withPullRequests(reconcileConversation(entries, sender.pending), cards),
@@ -594,11 +602,20 @@ export function ProtocolConversation({
           gap: 10,
         }}
         ListFooterComponent={
-          active && activity !== null ? (
-            <MonoText tone="faint" size={11.5} style={{ paddingHorizontal: 2, paddingTop: 4 }}>
-              {activity === "waiting" ? "waiting for your answer" : "working…"}
-            </MonoText>
-          ) : null
+          waiting === null && !(active && activity !== null) ? null : (
+            <View style={{ paddingHorizontal: 2, paddingTop: 4, gap: 4 }}>
+              {waiting === null ? null : (
+                <MonoText tone="ink2" size={11.5}>
+                  {waiting.line}
+                </MonoText>
+              )}
+              {active && activity !== null ? (
+                <MonoText tone="faint" size={11.5}>
+                  {activity === "waiting" ? "waiting for your answer" : "working…"}
+                </MonoText>
+              ) : null}
+            </View>
+          )
         }
         ListEmptyComponent={
           emptyMessage === null ? null : <MonoText tone="faint">{emptyMessage}</MonoText>

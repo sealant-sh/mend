@@ -2318,6 +2318,18 @@ export class SessionEngine extends Context.Service<
      * nothing. Runs on its own heartbeat; exposed for deterministic ticks.
      */
     readonly sweepRetirements: () => Effect.Effect<void>;
+    /**
+     * Whether a steered turn in this session runs as its sender, on their own login, in the
+     * neutral context (docs/adr/0016, decisions 6 and 13): its worktree runs each person as
+     * themselves. With the flag off and nothing recorded, false with no read.
+     */
+    readonly steersPerPerson: (session: Session) => Effect.Effect<boolean>;
+    /**
+     * Whether any worktree may run per person (the flag on, or a layout recorded), from memory:
+     * false means the API reads sessions without the per-person columns (live people, the
+     * retirement), at no cost.
+     */
+    readonly personLayoutPossible: () => Effect.Effect<boolean>;
     /** What the migration of the worktree's old shared home recorded; null when it never ran. */
     readonly preReleaseMemory: (worktreeId: WorktreeId) => Effect.Effect<PreReleaseMemory | null>;
     /** The session's executor's retirement, as `viewer` may act on it; null when none. */
@@ -14617,6 +14629,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      /**
+       * Whether a steered turn in this session runs as its sender (decisions 6 and 13), as the
+       * worktree's executors actually run: its live executor is a person one, or, with none live,
+       * the worktree is recorded person (its next launch is). A shared executor, the flag on or not,
+       * spends the owner's logins. Unknown reads as the owner's logins. With the flag off and
+       * nothing recorded, false with no read.
+       */
+      const steersPerPerson = Effect.fn("SessionEngine.steersPerPerson")(function* (
+        session: Session,
+      ) {
+        if (capture === null || !layoutSteps.personPossible()) return false;
+        // The worktree's live executor is the lease holder's, whatever this session's row names.
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (lease !== null && lease.live && lease.executorId !== null) {
+          const holder =
+            lease.executorId === session.id
+              ? session
+              : yield* sessions
+                  .byId(SessionId.make(lease.executorId))
+                  .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (holder !== null && holder.sealantWorkspaceId !== null) {
+            const launchId = yield* executorLaunchIdOf(holder, holder.sealantWorkspaceId);
+            return launchId !== null && (yield* layoutSteps.layoutOfLaunch(launchId)) === "person";
+          }
+          return false;
+        }
+        return (yield* harnessLayouts.worktreeLayout(session.worktreeId)).layout === "person";
+      });
+
       const preReleaseMemory = Effect.fn("SessionEngine.preReleaseMemory")(function* (
         worktreeId: WorktreeId,
       ) {
@@ -21902,6 +21943,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         reapCaptureLeases: captureReaper,
         migratePreReleaseMemory,
         preReleaseMemory,
+        steersPerPerson,
+        personLayoutPossible: () =>
+          Effect.sync(() => capture !== null && layoutSteps.personPossible()),
         sweepRetirements: () => sweepRetirements(false),
         workspaceRetirement,
         replaceWorkspaceNow,

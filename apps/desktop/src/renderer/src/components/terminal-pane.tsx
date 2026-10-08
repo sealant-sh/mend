@@ -18,6 +18,7 @@ import { ReplayScrubber } from "#/components/replay-scrubber";
 import { SharedControlFact, SharedControlSwitch } from "#/components/shared-control";
 import { StatusDot } from "#/components/status-dot";
 import { TtyTerminal } from "#/components/tty-terminal";
+import { WorkspaceFacts } from "#/components/workspace-facts";
 import {
   agentIsLive,
   agentRunsAsConversation,
@@ -152,7 +153,13 @@ export function TerminalPane({
     detail.data?.control ??
     (session === null || viewer === null
       ? NO_CONTROL
-      : { ...sessionActions(session, viewer), toggleSharedControl: false });
+      : {
+          ...sessionActions(session, viewer),
+          toggleSharedControl: false,
+          // Only the session's own view says whose login a steered turn runs on; the Shared
+          // control switch reads it from the detail alone and waits for it.
+          turnsOnSendersLogin: false,
+        });
   const [from, setFrom] = useState(() => takeReplayCursor(tab.sessionId));
   const [recordFace, setRecordFace] = useState<"replay" | "transcript">("replay");
   const mark = useMutation({
@@ -387,7 +394,10 @@ export function TerminalPane({
               </Quiet>
             )}
             {session.ownerUserId !== null && control.own && (
-              <SharedControlSwitch session={session} />
+              <SharedControlSwitch
+                session={session}
+                turnsOnSendersLogin={detail.data?.control.turnsOnSendersLogin ?? null}
+              />
             )}
             {servicesHold !== null && control.stop && (
               <Quiet
@@ -488,6 +498,13 @@ export function TerminalPane({
 
       {session !== null && tab.kind !== "logs" && (
         <SharedControlFact session={session} control={control} ownerName={ownerName} />
+      )}
+      {session !== null && tab.kind !== "logs" && (
+        <WorkspaceFacts
+          sessionId={tab.sessionId}
+          session={detail.data?.session}
+          viewerId={viewer?.userId ?? null}
+        />
       )}
       {(readsTerminal || ownerResumes) && (
         <div className="flex h-7 shrink-0 items-center border-b border-rule-faint bg-background px-3">

@@ -23,6 +23,7 @@ import {
   ProjectSecretsSnapshot,
   ServiceBrowserScheme,
   ServiceRecipe,
+  PreReleaseMemory,
   Session,
   SessionProcess,
   SessionRepository,
@@ -366,6 +367,13 @@ export class SessionControlView extends Schema.Class<SessionControlView>("Sessio
    * accept every steerer's keys.
    */
   terminalInput: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  /**
+   * A steered turn runs as its sender, on their own login, in the neutral context (docs/adr/0016,
+   * decisions 6 and 13): the session's worktree runs each person as themselves. False, a steered
+   * turn spends the owner's logins, as before; the Shared control switch says which. Older servers
+   * omit it.
+   */
+  turnsOnSendersLogin: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 }) {}
 
 /**
@@ -411,6 +419,15 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
    * running (docs/SESSION-SERVICES.md). Older servers omit it.
    */
   liveServices: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  /**
+   * What the migration of the session's worktree's shared home from before per-person homes did
+   * with its memory (docs/adr/0016, decision 14): what it credited to nobody. Null when it never
+   * ran, and with `MEND_HARNESS_LAYOUT` off and nothing recorded (nothing read). Older servers omit
+   * it.
+   */
+  preReleaseMemory: Schema.NullOr(PreReleaseMemory).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 }) {}
 
 /** What Stop services did: the session as it reads after, and how many Services it stopped. */

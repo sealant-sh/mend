@@ -5,6 +5,7 @@
 
 import {
   canRelaunchSession,
+  REPLACE_WORKSPACE_ACTION,
   terminalOwnerOnlyLine,
   terminalReadOnlyLine,
 } from "@mend/domain/workbench";
@@ -14,6 +15,7 @@ import {
   CircleStop,
   FileDiff,
   Play,
+  RefreshCw,
   Send,
   SquareTerminal,
 } from "lucide-react-native";
@@ -26,7 +28,7 @@ import { ProtocolConversation } from "@/components/protocol-conversation";
 import { PtyConversation } from "@/components/pty-conversation";
 import { SessionHeader, type HeaderAction } from "@/components/session-header";
 import { StatusWord } from "@/components/status";
-import { MonoText } from "@/components/typography";
+import { MonoText, UiText } from "@/components/typography";
 import { findLastMatching } from "@/data/collections";
 import {
   agentIsActive,
@@ -34,11 +36,21 @@ import {
   statusLineOf,
   terminalInputOf,
   toneOf,
+  useOrganizationMembers,
   useOwnerName,
   usePendingFollowUp,
   useSession,
   useSessionActions,
+  useViewerId,
+  useWorkspaceRetirement,
 } from "@/data/live";
+import {
+  keyedLines,
+  readsRetirement,
+  replaceConfirmationOf,
+  retirementViewOf,
+  sharedWorkspaceLineOf,
+} from "@/data/shared-workspace";
 import { usePosture } from "@/data/use-posture";
 
 /** What a wide layout shows beside the conversation. */
@@ -97,7 +109,28 @@ export function SessionPane({
   const protocol =
     currentAgent === null ? mode === "protocol" : currentAgent.kind === "agent-protocol";
   const followUp = usePendingFollowUp(sessionId).data ?? null;
-  const { resume, stop, openShell, deliverFollowUp, handoff } = useSessionActions();
+  const { resume, stop, openShell, deliverFollowUp, handoff, replaceWorkspace } =
+    useSessionActions();
+  // Who else is live in the workspace, and an executor from before per-person homes waiting to be
+  // replaced (docs/adr/0016, decisions 13 and 14), in the domain's words.
+  const viewerId = useViewerId();
+  const members = useOrganizationMembers().data ?? [];
+  const sharedLine = sharedWorkspaceLineOf(session?.livePeople, viewerId);
+  // Read only while the session's own view says its executor waits to be replaced.
+  const retiring = readsRetirement(session);
+  const retirementRead = useWorkspaceRetirement(sessionId, retiring);
+  const retirement = retiring
+    ? retirementViewOf(
+        retirementRead.data,
+        new Map(members.map((member) => [member.userId, member.name])),
+      )
+    : null;
+  const replaceError =
+    replaceWorkspace.error === null
+      ? null
+      : replaceWorkspace.error instanceof Error
+        ? replaceWorkspace.error.message
+        : String(replaceWorkspace.error);
   const [shellError, setShellError] = useState<string | null>(null);
   // Cross-mode pickup: claude and codex sessions continue here in structured
   // mode; other harnesses keep the raw terminal composer.
@@ -284,6 +317,30 @@ export function SessionPane({
     });
   }
 
+  if (session !== undefined && retirement !== null && retirement.canReplace) {
+    actions.push({
+      key: "replace-workspace",
+      label: replaceWorkspace.isPending ? "Replacing…" : REPLACE_WORKSPACE_ACTION,
+      icon: RefreshCw,
+      tone: "danger",
+      disabled: replaceWorkspace.isPending,
+      // It ends what the list names: asked first, with that list.
+      menuOnly: true,
+      // The list asked about and the fingerprint sent come from the same read.
+      onPress: () => {
+        const ask = replaceConfirmationOf(retirement);
+        Alert.alert(ask.title, ask.message, [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: REPLACE_WORKSPACE_ACTION,
+            style: "destructive",
+            onPress: () => replaceWorkspace.mutate({ sessionId: session.id, body: ask.body }),
+          },
+        ]);
+      },
+    });
+  }
+
   const worktree =
     session === undefined
       ? null
@@ -316,8 +373,33 @@ export function SessionPane({
       {steer &&
       !(detail.isError && session !== undefined) &&
       shellError === null &&
-      resumeError === null ? null : (
+      resumeError === null &&
+      sharedLine === null &&
+      retirement === null &&
+      replaceError === null ? null : (
         <View style={{ paddingHorizontal: 16, paddingVertical: 6, gap: 4 }}>
+          {sharedLine === null ? null : (
+            <UiText tone="ink2" size={12} numberOfLines={3}>
+              {sharedLine}
+            </UiText>
+          )}
+          {retirement === null ? null : (
+            <View style={{ gap: 2 }}>
+              <UiText tone="ink2" size={12} numberOfLines={4}>
+                {retirement.line}
+              </UiText>
+              {keyedLines(retirement.stops).map(({ key, line }) => (
+                <MonoText key={key} tone="faint" size={10.5} numberOfLines={1}>
+                  {line}
+                </MonoText>
+              ))}
+            </View>
+          )}
+          {replaceError === null ? null : (
+            <MonoText tone="danger" size={11} numberOfLines={3}>
+              {replaceError}
+            </MonoText>
+          )}
           {steer ? null : (
             <MonoText tone="faint" size={11} numberOfLines={2}>
               only the owner steers this session · you can read it and review the change

@@ -17,6 +17,7 @@ import {
   type ProjectTenancy,
   type CapturePosition,
   type EffortLevel,
+  LivePerson,
   Session,
   SessionDotfiles,
   type NativeIngestCursor,
@@ -26,7 +27,21 @@ import {
   type SessionStatus,
   withUnsavedAnswer,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -268,6 +283,15 @@ export class SessionsRepo extends Context.Service<
     readonly listForWorktree: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions in a live state, across projects — the Now inbox reads this. */
     readonly listActive: () => Effect.Effect<ReadonlyArray<Session>>;
+    /**
+     * `listActive` as the API's session list reads it: each session with the people live in its
+     * executor as their own user (docs/adr/0016, decision 13), in the same query.
+     */
+    readonly listActiveView: () => Effect.Effect<ReadonlyArray<Session>>;
+    /** `byId` as the API's session view reads it: with its executor's live people, in one query. */
+    readonly viewById: (id: SessionId) => Effect.Effect<Session, SessionNotFoundError>;
+    /** `listForProject` as the API's project view reads it: with each executor's live people. */
+    readonly listForProjectView: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions to re-attach to after a crash/restart. */
     readonly listUnsettled: () => Effect.Effect<ReadonlyArray<Session>>;
     /** One account's sessions that have not settled, starting ones included: what removal stops. */
@@ -646,6 +670,38 @@ const toSession = (row: typeof agentSessions.$inferSelect): Session =>
     dotfiles: row.dotfiles === null ? null : decodeSessionDotfiles(row.dotfiles),
   });
 
+/**
+ * The people with a process live in a session's executor as their own user (docs/adr/0016,
+ * decision 13): `runs_as` is recorded only in a per-person executor, so a shared one lists nobody.
+ * One correlated subquery on the live-process index (`session_processes_live_idx`), read in the
+ * same statement as the session row.
+ */
+const decodeLivePeople = Schema.decodeUnknownSync(Schema.Array(LivePerson));
+
+const decodeRetirementState = Schema.decodeUnknownSync(
+  Schema.NullOr(Schema.Literals(["marked", "retiring"])),
+);
+
+const toSessionView = (
+  row: typeof agentSessions.$inferSelect & {
+    readonly livePeople: unknown;
+    readonly workspaceRetirement: unknown;
+  },
+): Session => {
+  const { livePeople, workspaceRetirement, ...session } = row;
+  return new Session({
+    ...session,
+    workspaceImage:
+      session.workspaceImage === null ? null : decodeWorkspaceImage(session.workspaceImage),
+    dotfiles: session.dotfiles === null ? null : decodeSessionDotfiles(session.dotfiles),
+    // Nobody live is the common case: no decode at all.
+    livePeople:
+      Array.isArray(livePeople) && livePeople.length === 0 ? [] : decodeLivePeople(livePeople),
+    workspaceRetirement:
+      workspaceRetirement === null ? null : decodeRetirementState(workspaceRetirement),
+  });
+};
+
 // Compile-time seam tripwire: the `...row` spread above silently ignores any
 // column the Session schema doesn't know, so a column added to (or renamed in)
 // agent_sessions MUST land in @mend/domain's Session in the same change — and
@@ -675,7 +731,12 @@ type SessionBookkeepingColumns =
   | "executorResourceId"
   | "executorCreateKey"
   | "executorLaunchId";
-const sessionSeamIntact: ExactKeys<Omit<SessionRow, SessionBookkeepingColumns>, Session> = true;
+// `livePeople` and `workspaceRetirement` are read with the API's session list and view
+// (`sessionViewColumns`), not columns.
+const sessionSeamIntact: ExactKeys<
+  Omit<SessionRow, SessionBookkeepingColumns>,
+  Omit<Session, "livePeople" | "workspaceRetirement">
+> = true;
 void sessionSeamIntact;
 
 export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClient.PgClient> =
@@ -767,6 +828,60 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .orderBy(desc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
+      });
+
+      /**
+       * The people with a process live in the session's executor as their own user (docs/adr/0016,
+       * decision 13), and its retirement's state (decision 14): correlated subqueries on the viewed
+       * session rows only (the live-process index, `executor_retirements`' key), in the same
+       * statement. `runs_as` is recorded only in a per-person executor, so a shared one lists
+       * nobody. A person with no name reads "a member": their email is not shown.
+       */
+      const sessionViewColumns = {
+        ...getTableColumns(agentSessions),
+        livePeople: sql<unknown>`coalesce((
+          select json_agg(json_build_object(
+                   'accountId', p.runs_as,
+                   'name', coalesce(nullif((select u.name from "user" u where u.id = p.runs_as), ''),
+                                    'a member')) order by p.runs_as)
+          from (select distinct sp.runs_as from session_processes sp
+                where sp.sealant_workspace_id = "agent_sessions"."sealant_workspace_id"
+                  and sp.exited_at is null and sp.runs_as is not null) p), '[]'::json)`,
+        workspaceRetirement: sql<unknown>`(select r.state from executor_retirements r
+          where r.workspace_id = "agent_sessions"."sealant_workspace_id")`,
+      };
+
+      const listActiveView = Effect.fn("SessionsRepo.listActiveView")(function* () {
+        const rows = yield* db
+          .select(sessionViewColumns)
+          .from(agentSessions)
+          .where(inArray(agentSessions.status, ["starting", "running", "waiting", "idle"]))
+          .orderBy(desc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSessionView);
+      });
+
+      const listForProjectView = Effect.fn("SessionsRepo.listForProjectView")(function* (
+        projectId: ProjectId,
+      ) {
+        const rows = yield* db
+          .select(sessionViewColumns)
+          .from(agentSessions)
+          .where(eq(agentSessions.projectId, projectId))
+          .orderBy(desc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSessionView);
+      });
+
+      const viewById = Effect.fn("SessionsRepo.viewById")(function* (id: SessionId) {
+        const [row] = yield* db
+          .select(sessionViewColumns)
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new SessionNotFoundError({ sessionId: id });
+        return toSessionView(row);
       });
 
       const listUnsettled = Effect.fn("SessionsRepo.listUnsettled")(function* () {
@@ -2049,6 +2164,9 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       return {
         create,
         byId,
+        viewById,
+        listActiveView,
+        listForProjectView,
         listForProject,
         recentOwnersForProject,
         listUnsettledForOwner,

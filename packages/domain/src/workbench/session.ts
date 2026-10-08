@@ -99,6 +99,16 @@ export type NativeIngestCursor = typeof NativeIngestCursor.Type;
  * resume starts another Sealant run; SessionRun owns the ordered membership and per-run cursors.
  * The recording stays in Sealant and evidence addresses it by `(sealantRunId, sequence)`.
  */
+/**
+ * A person with a process live in a session's executor (docs/adr/0016, decision 13): read with the
+ * session in the API's session list and view, so every client draws the same line.
+ */
+export class LivePerson extends Schema.Class<LivePerson>("LivePerson")({
+  accountId: Schema.String,
+  /** Their name as the instance knows it. */
+  name: Schema.String,
+}) {}
+
 export class Session extends Schema.Class<Session>("Session")({
   id: SessionId,
   projectId: ProjectId,
@@ -184,6 +194,24 @@ export class Session extends Schema.Class<Session>("Session")({
    * decision 9): a session once shared runs on no one's memory and credits nobody until it ends.
    */
   sharedControlEverAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * The people with a process live in the session's executor as their own user, in a per-person
+   * executor (docs/adr/0016, decision 13): filled by the API's session list and view only, in the
+   * same query; empty everywhere else, in a shared executor, and from older servers.
+   */
+  livePeople: Schema.Array(LivePerson).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
+  ),
+  /**
+   * The session's executor waits to be replaced (docs/adr/0016, decision 14): `marked` or
+   * `retiring`; null otherwise. Read with `livePeople`, in the same query, so a client asks for the
+   * retirement's detail only when there is one. Null everywhere else and from older servers.
+   */
+  workspaceRetirement: Schema.NullOr(Schema.Literals(["marked", "retiring"])).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),

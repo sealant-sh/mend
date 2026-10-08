@@ -13,6 +13,7 @@ import {
   type ModelSelection,
   type OrchestrationProjectShell,
   type OrchestrationV2AppThread,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2PendingRuntimeRequestSummary,
   type OrchestrationV2Run,
   type OrchestrationV2RunStatus,
@@ -31,6 +32,7 @@ import type {
   MendSession,
   MendTurn,
 } from "./mend-workbench.ts";
+import type { ThreadNotices } from "./notices.ts";
 import { harnessProvider } from "./server-config.ts";
 
 /**
@@ -79,6 +81,11 @@ export interface ThreadSource {
   readonly pending: ReadonlyArray<PendingRun>;
   /** An interrupt held the queue; nothing queued is sent until the client resumes it. */
   readonly queueHeld: boolean;
+  /**
+   * What Mend says about people sharing the session's workspace (docs/adr/0016, decisions 6, 13
+   * and 14): the full thread shows each as a notice, the shell the waiting line's work.
+   */
+  readonly notices: ThreadNotices;
 }
 
 /**
@@ -404,6 +411,38 @@ const pendingRequestSummaryOf = (
       };
 };
 
+/** Mend's kinds of background work in t3code's (`ConversationWaitWork` in @mend/domain). */
+const backgroundKindOf = (kind: string): OrchestrationV2PendingBackgroundTask["kind"] => {
+  switch (kind) {
+    case "sub-agent":
+      return "subagent";
+    case "terminal":
+      return "command";
+    case "monitor":
+      return "monitor";
+    default:
+      return "background_task";
+  }
+};
+
+/**
+ * What a waiting turn waits for (docs/adr/0016, decision 6), as t3code's "Waiting" roster: the
+ * previous sender's own background work, each named as the harness named it. Empty when nothing
+ * waits.
+ */
+export const waitingTasksOf = (
+  notices: ThreadNotices,
+): ReadonlyArray<OrchestrationV2PendingBackgroundTask> =>
+  (notices.waiting?.work ?? []).map((work, index) => {
+    const description = work.description?.trim() ?? "";
+    const taskId = work.id.trim();
+    return {
+      taskId: taskId.length > 0 ? taskId : `${work.kind}:${index}`,
+      kind: backgroundKindOf(work.kind),
+      ...(description.length === 0 ? {} : { description }),
+    };
+  });
+
 /**
  * The shell row: the thread and the state of its latest run, as t3code's own server derives it
  * (`latestRun.status ?? "idle"`, the newest active run, the newest pending request). Message
@@ -454,7 +493,7 @@ export const threadShellOf = (
     latestVisibleMessage: null,
     latestUserMessageAt: latestUserTurn === undefined ? null : utc(latestUserTurn.createdAt),
     hasActionableProposedPlan: false,
-    pendingBackgroundTasks: [],
+    pendingBackgroundTasks: waitingTasksOf(source.notices),
     providerInstanceHistory: [thread.providerInstanceId],
     itemCount: counts.itemCount,
     visibleItemCount: counts.visibleItemCount,

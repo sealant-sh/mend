@@ -2,6 +2,8 @@ import {
   agentStartingFacts,
   canRelaunchSession,
   sessionModelLine,
+  sharedControlLine,
+  sharedWorkspaceLine,
   terminalOwnerOnlyLine,
   terminalReadOnlyLine,
 } from "@mend/domain/workbench";
@@ -13,6 +15,12 @@ import { ProjectCrumbs } from "#/components/breadcrumb";
 import { FollowUpBanner } from "#/components/follow-up";
 import { SessionLandingLineView } from "#/components/land-panel";
 import { ServicesCard } from "#/components/services-card";
+import {
+  PreReleaseMemoryNote,
+  SharedControlConfirmDialog,
+  WaitingLine,
+  WorkspaceRetirementNote,
+} from "#/components/shared-workspace";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot, StatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
@@ -32,6 +40,7 @@ import {
   type TranscriptEventDto,
 } from "#/lib/api";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
+import { sharedControlClick } from "#/lib/shared-workspace";
 import { useResolvedDark } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
 import { runsAsLine, useViewer } from "#/lib/viewer";
@@ -126,6 +135,7 @@ function SessionPage() {
     processes,
     control,
     liveServices,
+    preReleaseMemory,
   } = useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
   // Steering is the owner's unless they share control (docs/adr/0003); the API says what this
   // viewer may do, and the roster names whose credentials the session runs on.
@@ -143,6 +153,8 @@ function SessionPage() {
   const servicesHold = sessionServicesHold(session, currentAgent, liveServices);
   // A stop drains the executor before its workspace goes (docs/adr/0002): what it still holds.
   const captureLine = sessionCaptureLine(session);
+  // Another person's process live in this executor (docs/adr/0016, decision 13).
+  const sharedLine = sharedWorkspaceLine(session.livePeople, viewer?.userId ?? null);
   const followUp = useSuspenseQuery(
     trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
@@ -295,6 +307,10 @@ function SessionPage() {
             : ` · started ${new Date(session.startedAt).toLocaleTimeString()}`}
           {runsAs === null ? "" : ` · ${runsAs}`}
         </p>
+        {sharedLine === null ? null : (
+          <p className="mt-1 font-mono text-xs break-words text-ink-2">{sharedLine}</p>
+        )}
+        <PreReleaseMemoryNote memory={preReleaseMemory} />
         {sessionDotfilesLines(session.dotfiles).map((line) => (
           <p
             key={line.text}
@@ -320,11 +336,13 @@ function SessionPage() {
           </p>
         )}
         {control.steer ? <FollowUpBanner sessionId={sessionId} followUp={followUp} /> : null}
+        <WorkspaceRetirementNote session={session} />
         <SharedControl
           sessionId={sessionId}
           ownerSteers={viewer !== null && viewer.userId === session.ownerUserId}
           shared={session.sharedControlEnabledAt !== null}
           canToggle={control.toggleSharedControl}
+          turnsOnSendersLogin={control.turnsOnSendersLogin}
           steer={control.steer}
           ownerName={ownerName}
         />
@@ -433,6 +451,13 @@ function SessionPage() {
 
         <div className="mt-9 grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
           <section className="min-w-0">
+            {/* The waiting line, wherever a turn shows (docs/adr/0016, decision 6). */}
+            <WaitingLine
+              session={session}
+              live={ACTIVE.has(session.status)}
+              viewerId={viewer?.userId ?? null}
+              steer={control.steer}
+            />
             {agentPty === null && agentLive ? (
               <>
                 <p className="text-xs font-medium text-label">Terminal</p>
@@ -662,8 +687,10 @@ function SessionLanding({
 }
 
 /**
- * Shared control (docs/adr/0003): the owner lends their credentials so everyone who can see the
- * project may steer; an organization owner may take it back. Everyone else is told who steers.
+ * Shared control (docs/adr/0003): the owner lets everyone who can see the project steer. Turning it
+ * on asks first, in words true to whose login a steered turn runs on (docs/adr/0016, decisions 6
+ * and 13): its sender's, or the owner's. An organization owner may take it back. Everyone else is
+ * told who steers.
  */
 export function SharedControl({
   sessionId,
@@ -672,6 +699,7 @@ export function SharedControl({
   canToggle,
   steer,
   ownerName,
+  turnsOnSendersLogin,
 }: {
   readonly sessionId: string;
   /** The viewer owns the session. */
@@ -680,11 +708,16 @@ export function SharedControl({
   readonly canToggle: boolean;
   readonly steer: boolean;
   readonly ownerName: string | null;
+  /** A steered turn runs on its sender's login (docs/adr/0016, decision 6), not the owner's. */
+  readonly turnsOnSendersLogin: boolean;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Turning it on asks first, in both layouts (docs/adr/0016, decision 13); turning it off never
+  // does.
+  const [confirming, setConfirming] = useState(false);
 
   const toggle = (enabled: boolean) => {
     setPending(true);
@@ -692,7 +725,10 @@ export function SharedControl({
     void setSharedControl(sessionId, enabled)
       .then(() => queryClient.invalidateQueries(trpc.sessions.pathFilter()))
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
-      .finally(() => setPending(false));
+      .finally(() => {
+        setPending(false);
+        setConfirming(false);
+      });
   };
 
   if (!ownerSteers && !canToggle) {
@@ -717,7 +753,10 @@ export function SharedControl({
                 aria-pressed={shared === enabled}
                 disabled={pending}
                 onClick={() => {
-                  if (shared !== enabled) toggle(enabled);
+                  if (shared === enabled) return;
+                  if (sharedControlClick(enabled) === "confirm") {
+                    setConfirming(true);
+                  } else toggle(enabled);
                 }}
                 className={`rounded-md px-2.5 py-1 font-sans text-xs font-medium transition-colors ${
                   shared === enabled
@@ -730,10 +769,17 @@ export function SharedControl({
             ))}
           </div>
           <p className="basis-full text-[12.5px] leading-relaxed text-muted-foreground">
-            On lets everyone who can see this project send turns, answer approvals and interrupt,
-            using your provider logins and Git access. They can read the terminal; only you type in
+            On lets everyone who can see this project send turns, answer approvals and interrupt.{" "}
+            {sharedControlLine(turnsOnSendersLogin)} They can read the terminal; only you type in
             it. Every action is recorded with who sent it.
           </p>
+          <SharedControlConfirmDialog
+            open={confirming}
+            turnsOnSendersLogin={turnsOnSendersLogin}
+            pending={pending}
+            onConfirm={() => toggle(true)}
+            onCancel={() => setConfirming(false)}
+          />
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">

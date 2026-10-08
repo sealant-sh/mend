@@ -329,6 +329,8 @@ export const createTenancyApi = async (
           // No migration of a pre-release shared home and no retiring executor (docs/adr/0016).
           preReleaseMemory: () => Effect.succeed(null),
           workspaceRetirement: () => Effect.succeed(null),
+          steersPerPerson: () => Effect.succeed(false),
+          personLayoutPossible: () => Effect.succeed(false),
           ...options.implement?.engine,
         },
         calls,

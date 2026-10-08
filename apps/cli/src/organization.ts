@@ -1,7 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { sharedControlLine } from "@mend/domain/workbench";
+
 import type { ApiCall } from "./pair.ts";
+import {
+  askYesNo,
+  confirmPlan,
+  sharedControlConfirmLines,
+  sharedControlQuestion,
+} from "./shared-workspace.ts";
 
 /**
  * The organization from a terminal (docs/adr/0003-organizations-and-tenancy.md): `mend invite`,
@@ -249,10 +257,20 @@ export const folderCommand = async (api: ApiCall, args: ReadonlyArray<string>) =
 
 // ─── session share ──────────────────────────────────────────────────────────
 
-export const sessionShareCommand = async (api: ApiCall, args: ReadonlyArray<string>) => {
-  const [prefix, state] = args.filter((arg) => !arg.startsWith("--"));
+export const sessionShareCommand = async (
+  api: ApiCall,
+  args: ReadonlyArray<string>,
+  io: {
+    readonly interactive: boolean;
+    readonly ask: (question: string) => Promise<boolean>;
+  } = {
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    ask: askYesNo,
+  },
+) => {
+  const [prefix, state] = args.filter((arg) => !arg.startsWith("-"));
   if (prefix === undefined || (state !== "on" && state !== "off")) {
-    return fail("usage: mend session share <session> on|off");
+    return fail("usage: mend session share <session> on|off [--yes]");
   }
   const sessions = await api<ReadonlyArray<{ readonly id: string; readonly harness: string }>>(
     "GET",
@@ -264,12 +282,32 @@ export const sessionShareCommand = async (api: ApiCall, args: ReadonlyArray<stri
     return fail(`"${prefix}" matches ${matches.length} sessions; type more of the id`);
   const [session] = matches;
   if (session === undefined) return fail(`no live session starts with "${prefix}"`);
-  await api("PUT", `/sessions/${session.id}/shared-control`, { enabled: state === "on" });
-  say(
-    state === "on"
-      ? `${green("✓")} shared control on · ${session.harness} ${dim(session.id.slice(0, 8))} · everyone who can see the project steers it on your credentials`
-      : `${green("✓")} shared control off · ${session.harness} ${dim(session.id.slice(0, 8))}`,
+  if (state === "off") {
+    // Turning it off asks nothing, and reads nothing first.
+    await api("PUT", `/sessions/${session.id}/shared-control`, { enabled: false });
+    say(`${green("✓")} shared control off · ${session.harness} ${dim(session.id.slice(0, 8))}`);
+    return;
+  }
+  // The switch asks before it turns shared control on, in both layouts, in the words true to each.
+  const plan = confirmPlan(args, io.interactive);
+  if (plan === "refuse") return fail("non-interactive · pass --yes to turn shared control on");
+  // Whose login a steered turn runs on: the sender's in a per-person workspace, else the owner's
+  // (docs/adr/0016, decision 13). An older server omits it: the owner's, as before.
+  const detail = await api<{ readonly control?: { readonly turnsOnSendersLogin?: boolean } }>(
+    "GET",
+    `/sessions/${session.id}`,
   );
+  const turnsOnSendersLogin = detail.control?.turnsOnSendersLogin === true;
+  if (plan === "ask") {
+    for (const line of sharedControlConfirmLines(turnsOnSendersLogin)) say(line);
+    if (!(await io.ask(sharedControlQuestion(turnsOnSendersLogin)))) {
+      say(dim("shared control stays off"));
+      return;
+    }
+  }
+  await api("PUT", `/sessions/${session.id}/shared-control`, { enabled: true });
+  say(`${green("✓")} shared control on · ${session.harness} ${dim(session.id.slice(0, 8))}`);
+  say(dim(sharedControlLine(turnsOnSendersLogin)));
 };
 
 // ─── operator ───────────────────────────────────────────────────────────────

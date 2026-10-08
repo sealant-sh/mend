@@ -1,3 +1,4 @@
+import { JOIN_SHARED_HOME_LINE, joinWorktreeLine } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +9,8 @@ import {
   deriveProjects,
   deriveWorktrees,
   elapsedWords,
+  fetchWorkbench,
+  fetchWorkspaceFacts,
   filterBranches,
   foldGroupStatus,
   fitHints,
@@ -34,6 +37,9 @@ import {
   stepColumn,
   verbForKey,
   verbHints,
+  viewerNeeded,
+  workspaceFactRows,
+  worktreeJoinRows,
   type BranchDto,
   type Column,
   type CreatingState,
@@ -1136,5 +1142,173 @@ describe("dashboard status stories", () => {
     expect(elapsedWords(minutesAgo(61), NOW)).toBe("1h");
     expect(elapsedWords(minutesAgo(60 * 49), NOW)).toBe("2d");
     expect(elapsedWords(new Date(NOW + 60_000).toISOString(), NOW)).toBeNull();
+  });
+});
+
+/** A fake server through JSON, as the wire carries it; a route it lacks answers 404. */
+const fakeApi =
+  (routes: Readonly<Record<string, unknown>>) =>
+  async <T>(_method: string, route: string): Promise<T> => {
+    if (!(route in routes)) throw new Error(`GET ${route} → 404`);
+    return JSON.parse(JSON.stringify(routes[route]));
+  };
+
+describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
+  const anna = { accountId: "anna", name: "Anna" };
+  const bob = { accountId: "bob", name: "Bob" };
+
+  it("fetchWorkbench reads who is live from the project view, and asks for no viewer with nobody listed", async () => {
+    const asked: Array<string> = [];
+    const routes: Readonly<Record<string, unknown>> = {
+      "/projects": [project],
+      "/services": [],
+      [`/projects/${project.id}`]: {
+        project,
+        // Per-person homes off: the project view lists nobody and no retirement.
+        sessions: [
+          session({
+            id: "a",
+            worktreeId: "wt-1",
+            status: "running",
+            livePeople: [],
+            workspaceRetirement: null,
+          }),
+        ],
+        annotations: [],
+        worktrees: [worktree({ id: "wt-1" })],
+      },
+      "/sessions/a": { session: session({ id: "a", status: "running" }), processes: [] },
+    };
+    const api = async <T>(method: string, route: string): Promise<T> => {
+      asked.push(route);
+      return fakeApi(routes)<T>(method, route);
+    };
+    const data = await fetchWorkbench({ api });
+    expect(viewerNeeded(data)).toBe(false);
+    expect(asked.filter((route) => route.startsWith("/organization"))).toEqual([]);
+    expect(asked.filter((route) => route === "/sessions")).toEqual([]);
+    expect(asked.filter((route) => route.endsWith("/waiting"))).toEqual([]);
+    expect(asked.filter((route) => route.endsWith("/workspace-retirement"))).toEqual([]);
+  });
+
+  it("asks for the viewer once a row lists someone live or a retirement", () => {
+    const withRow = (row: Partial<SessionDto>) =>
+      workbench({
+        project,
+        sessions: [session({ id: "a", worktreeId: "wt-1", status: "running", ...row })],
+        annotations: [],
+        worktrees: [worktree({ id: "wt-1" })],
+      });
+    expect(viewerNeeded(undefined)).toBe(false);
+    expect(viewerNeeded(withRow({ livePeople: [anna] }))).toBe(true);
+    expect(viewerNeeded(withRow({ workspaceRetirement: "marked" }))).toBe(true);
+    expect(viewerNeeded(withRow({ livePeople: [], workspaceRetirement: null }))).toBe(false);
+  });
+
+  it("says the join line where another person's session runs, wrapped to the modal", () => {
+    const data = workbench({
+      project,
+      sessions: [session({ id: "a", worktreeId: "wt-1", status: "running", livePeople: [anna] })],
+      annotations: [],
+      worktrees: [worktree({ id: "wt-1", name: "fix-auth" })],
+    });
+    const byId = worktreeJoinRows(data, project.id, { id: "wt-1" }, "bob", 60);
+    expect(byId.join(" ")).toBe(joinWorktreeLine(["Anna"]));
+    expect(worktreeJoinRows(data, project.id, { name: "fix-auth" }, "bob", 60)).toEqual(byId);
+    // Your own session is not another person's.
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, "anna", 60)).toEqual([]);
+    expect(worktreeJoinRows(data, project.id, { name: "new-one" }, "bob", 60)).toEqual([]);
+  });
+
+  it("says the shared-home line where another person's session is live and nobody is listed", () => {
+    const data = workbench({
+      project,
+      sessions: [
+        session({
+          id: "a",
+          worktreeId: "wt-1",
+          status: "running",
+          ownerUserId: "anna",
+          livePeople: [],
+        }),
+      ],
+      annotations: [],
+      worktrees: [worktree({ id: "wt-1", name: "fix-auth" })],
+    });
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, "bob", 60).join(" ")).toBe(
+      JOIN_SHARED_HOME_LINE,
+    );
+    // Not without a known viewer, and not in your own session's worktree.
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, null, 60)).toEqual([]);
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, "anna", 60)).toEqual([]);
+  });
+
+  it("reads the waiting line and the retirement, and nothing from an older server", async () => {
+    const both = { waiting: true, retirement: true };
+    expect(await fetchWorkspaceFacts(fakeApi({}), "a", both)).toEqual({
+      wait: null,
+      retirement: null,
+    });
+    const facts = await fetchWorkspaceFacts(
+      fakeApi({
+        "/sessions/a/waiting": {
+          line: "Waits for Anna's background task before Bob's turn starts.",
+        },
+        "/sessions/a/workspace-retirement": null,
+      }),
+      "a",
+      both,
+    );
+    expect(facts.wait?.line).toBe("Waits for Anna's background task before Bob's turn starts.");
+  });
+
+  it("asks only for the reads the row says are worth a request", async () => {
+    const asked: Array<string> = [];
+    const api = async <T>(_method: string, route: string): Promise<T> => {
+      asked.push(route);
+      return JSON.parse("null");
+    };
+    await fetchWorkspaceFacts(api, "a", { waiting: false, retirement: false });
+    expect(asked).toEqual([]);
+    await fetchWorkspaceFacts(api, "a", { waiting: false, retirement: true });
+    expect(asked).toEqual(["/sessions/a/workspace-retirement"]);
+    await fetchWorkspaceFacts(api, "b", { waiting: true, retirement: false });
+    expect(asked).toEqual(["/sessions/a/workspace-retirement", "/sessions/b/waiting"]);
+  });
+
+  it("wraps the session's workspace lines to the pane, stop lines indented", () => {
+    const rows = workspaceFactRows(
+      { id: "3f2a0001", livePeople: [anna, bob] },
+      { userId: "bob", members: [] },
+      {
+        wait: null,
+        retirement: {
+          state: "marked",
+          preRelease: true,
+          launcher: "anna",
+          stops: [{ kind: "service", label: "storybook started by hand in the workspace" }],
+          reason: null,
+          checkedAt: "2026-10-08T12:05:00.000Z",
+          fingerprint: "fp-1",
+          canReplace: true,
+        },
+      },
+      40,
+    );
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(40);
+    expect(rows[0]).toBe("Shared workspace with Anna · each of you");
+    expect(rows.some((row) => row.startsWith("  Service started by hand"))).toBe(true);
+    expect(rows.join(" ")).toContain("mend workspace replace 3f2a0001");
+  });
+
+  it("says nothing with one person live and nothing waiting", () => {
+    expect(
+      workspaceFactRows(
+        { id: "a", livePeople: [bob] },
+        { userId: "bob", members: [] },
+        undefined,
+        80,
+      ),
+    ).toEqual([]);
   });
 });

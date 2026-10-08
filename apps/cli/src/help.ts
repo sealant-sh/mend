@@ -1,3 +1,5 @@
+import { REPLACE_WORKSPACE_ACTION, sharedControlConfirm } from "@mend/domain/workbench";
+
 /**
  * The command catalog: one record per command, and every help surface renders
  * from it. `mend help` is the index, `mend help <command>` (or `<command>
@@ -101,6 +103,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Sessions run on the platform, so the platform needs your provider login. It is stored under your own user and used only for your work. Nothing is shared with other users.",
       "Claude and Codex get a login of Mend's own. Both rotate their refresh token, so two copies of one login fight and the one that refreshes second is signed out, and Mend's server refreshes on a schedule. So this logs in through the provider's own flow and your own login stays as it is: Claude in the browser, Codex with a device code, both sent and not kept here. Run it again whenever Mend says a login needs reconnecting. GitHub sends gh's token.",
+      "In a per-person workspace each person's processes use their own GitHub login, in their own home: git over HTTPS to GitHub reads it through Mend's credential helper, and no GITHUB_TOKEN is set in the environment. A command that needs the token takes it for itself: GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>.",
     ],
     options: [
       {
@@ -169,6 +172,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "mend codex, mend claude, mend opencode and mend pi are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
       "The worktree's name is asked first. --name skips the ask; an existing name joins that worktree as a new session. --worktree joins only and fails if the name is unknown. A quoted prompt becomes the first message.",
+      "When another person's session is running in the worktree you join, the launch says so before the session starts: you share its workspace, everything you run runs as you, on your own logins, and either of you can read the other's files, logins included.",
       "Detach with Ctrl+] and the session keeps running. Reattach from any terminal with mend attach, or from the phone.",
       tunnelText,
       "Ctrl+V with an image on this machine's clipboard sends the image to the session and pastes its path; codex and claude read it. Needs wl-paste on Wayland, xclip on X11, nothing extra on macOS.",
@@ -394,6 +398,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--all] [--project <p>] [--json | --json=v2]"],
     description: [
       "One line per session: harness, worktree, status, and what the review found. Live sessions by default.",
+      "Under a live session, a line each when there is something to say about its workspace: who else is live in it (Shared workspace with Anna), the waiting line while a turn waits for another person's work, and the line of a workspace that started before Mend 0.36 and waits to be replaced. The change's owner also reads how to replace it, and what would stop.",
       "The JSON is stable for integrations. --json is the v1 flat list; --json=v2 groups sessions by worktree, the same shape mend worktrees prints.",
     ],
     options: [
@@ -431,6 +436,21 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { command: "mend worktrees rm fix-login --force", text: "remove it anyway" },
     ],
     see: ["worktrees", "land", "stop"],
+  },
+  {
+    name: "workspace replace",
+    section: "sessions",
+    summary: "replace a workspace that started before Mend 0.36",
+    synopsis: ["<session> [--yes]"],
+    description: [
+      `${REPLACE_WORKSPACE_ACTION}, from a terminal. A workspace that shares one home, as every workspace started before Mend 0.36 does, takes only its launcher's sessions and turns once its worktree runs each person as themselves, until it is replaced. Mend replaces it on its own when nothing would stop; otherwise the change's owner does, here or on the web.`,
+      "It prints what was checked, and when: Mend's records, and the processes in the workspace and its running containers once they have been checked. Then what would stop, one line each: terminal sessions (they end resumable), shells, Services started by hand, processes Mend did not start, running containers and anything that could not be checked. Mend starts the launching session's mend.toml Services again.",
+      "The replacement names what it showed you: when more would stop by the time you answer, the server refuses, nothing is stopped, and its words are printed as they are; run it again to look at the list again. An agent turn in flight is never stopped: the server refuses the same way. The workspace goes once its last save is done.",
+      "A prefix of the session id is enough. mend sessions shows which sessions wait for this.",
+    ],
+    options: [{ flag: "--yes", text: "replace without asking; required without a terminal" }],
+    examples: [{ command: "mend workspace replace 3f2a", text: "" }],
+    see: ["sessions", "stop"],
   },
   {
     name: "projects",
@@ -972,9 +992,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "session share",
     section: "organization",
     summary: "let everyone who can see a session steer it, or stop",
-    synopsis: ["<session> on|off"],
+    synopsis: ["<session> on|off [--yes]"],
     description: [
-      "The session's owner turns shared control on or off; an organization owner may turn it off. While it is on, anyone who can see the project sends turns, answers approvals and interrupts, using your provider logins and Git access. They can read the terminal; only the owner types in it, opens a shell or starts a Service. Every act is recorded with who did it. A prefix of the session id is enough.",
+      "The session's owner turns shared control on or off; an organization owner may turn it off. While it is on, anyone who can see the project sends turns, answers approvals and interrupts. They can read the terminal; only the owner types in it, opens a shell or starts a Service. Every act is recorded with who did it. A prefix of the session id is enough.",
+      "Turning it on asks first, in every worktree, in the words true to it; --yes answers for a script, and is required without a terminal. Turning it off asks nothing.",
+      `In a worktree that runs each person as themselves, it asks: ${sharedControlConfirm(true).body}`,
+      `Otherwise it asks: ${sharedControlConfirm(false).body}`,
+    ],
+    options: [
+      {
+        flag: "--yes",
+        text: "turn it on without asking; required without a terminal",
+      },
     ],
     examples: [{ command: "mend session share 3f2a on", text: "" }],
     see: ["sessions"],

@@ -48,12 +48,13 @@ export const useOwnerName = (session: SessionDto | null): string | null => {
  * What a session row offers this viewer, by the rules the API enforces: delete is the owner's
  * even while control is shared; steering is the owner's, or everyone's while shared; stop is
  * also an organization owner's; typing in a terminal and opening a shell are the owner's alone
- * (docs/adr/0013). An unknown viewer gets a read-only row.
+ * (docs/adr/0013). An unknown viewer gets a read-only row. Whose login a steered turn runs on is
+ * the session view's answer alone (`turnsOnSendersLogin`): a list cannot say.
  */
 export const sessionActions = (
   session: SessionDto,
   viewer: Viewer | null,
-): Omit<SessionControlDto, "toggleSharedControl"> => {
+): Omit<SessionControlDto, "toggleSharedControl" | "turnsOnSendersLogin"> => {
   if (viewer === null) return { own: false, steer: false, stop: false, terminalInput: false };
   const steer = canSteerSession(
     {
@@ -78,4 +79,5 @@ export const NO_CONTROL: SessionControlDto = {
   stop: false,
   toggleSharedControl: false,
   terminalInput: false,
+  turnsOnSendersLogin: false,
 };

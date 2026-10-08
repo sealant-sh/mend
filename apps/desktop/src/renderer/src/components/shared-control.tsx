@@ -1,12 +1,26 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@mend/ui/components/ui/alert-dialog";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation } from "@tanstack/react-query";
+import { useState } from "react";
 
 import { setSharedControl, type SessionControlDto, type SessionDto } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
-
-/** The web app's words for what turning shared control on lends (docs/adr/0003). */
-export const SHARED_CONTROL_LENDS =
-  "On lets everyone who can see this project send turns, answer approvals and interrupt, using your provider logins and Git access. They can read the terminal; only you type in it. Every action is recorded with who sent it.";
+import {
+  SHARED_CONTROL_UNREAD,
+  sharedControlConfirmOf,
+  sharedControlPress,
+  sharedControlSwitchTitle,
+  type TurnsOnSendersLogin,
+} from "#/lib/shared-workspace";
 
 const useToggle = (session: SessionDto) =>
   useMutation({
@@ -21,17 +35,40 @@ const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : "shared control did not change";
 
 /**
- * The owner's switch, sized for the terminal's header strip. Turning it on lends the owner's
- * credentials, so it confirms with the sentence the web app shows beside the same switch.
+ * The owner's switch, sized for the terminal's header strip. Turning it on always asks first, in
+ * the domain's words for the session's layout (`sharedControlConfirm`, docs/adr/0016, decision
+ * 13): where each turn runs on its sender's login, the conversation so far becomes visible to
+ * whoever steers and nobody's personal memory reaches the agent; elsewhere every steered turn
+ * spends the owner's logins. Until the session view has said which (`turnsOnSendersLogin` is
+ * null), On is disabled with a note and no confirmation exists: neither wording is assumed.
+ * Turning it off never asks.
  */
-export function SharedControlSwitch({ session }: { readonly session: SessionDto }) {
+export function SharedControlSwitch({
+  session,
+  turnsOnSendersLogin,
+}: {
+  readonly session: SessionDto;
+  /** The session view's `control.turnsOnSendersLogin`; null until it has answered. */
+  readonly turnsOnSendersLogin: TurnsOnSendersLogin;
+}) {
   const toggle = useToggle(session);
+  const [confirming, setConfirming] = useState(false);
   const shared = session.sharedControlEnabledAt !== null;
+  const confirm = sharedControlConfirmOf(turnsOnSendersLogin);
+  const unread = !shared && turnsOnSendersLogin === null;
   return (
-    <span className="flex shrink-0 items-center gap-1.5" title={SHARED_CONTROL_LENDS}>
+    <span
+      className="flex shrink-0 items-center gap-1.5"
+      title={sharedControlSwitchTitle(turnsOnSendersLogin)}
+    >
       {toggle.isError && (
         <span className="max-w-64 truncate font-mono text-[11.5px] text-danger">
           {errorText(toggle.error)}
+        </span>
+      )}
+      {unread && (
+        <span className="font-mono text-[11.5px] text-muted-foreground">
+          {SHARED_CONTROL_UNREAD}
         </span>
       )}
       <span className="font-sans text-[12px] text-label">Shared control</span>
@@ -41,11 +78,11 @@ export function SharedControlSwitch({ session }: { readonly session: SessionDto 
             key={String(enabled)}
             type="button"
             aria-pressed={shared === enabled}
-            disabled={toggle.isPending}
+            disabled={toggle.isPending || (enabled && unread)}
             onClick={() => {
-              if (shared === enabled) return;
-              if (enabled && !window.confirm(SHARED_CONTROL_LENDS)) return;
-              toggle.mutate(enabled);
+              const press = sharedControlPress(shared, enabled, turnsOnSendersLogin);
+              if (press === "ask") setConfirming(true);
+              else if (press === "set") toggle.mutate(enabled);
             }}
             className={cn(
               "rounded-[5px] px-2 py-px font-sans text-[11.5px] font-medium transition-colors disabled:opacity-50",
@@ -58,6 +95,27 @@ export function SharedControlSwitch({ session }: { readonly session: SessionDto 
           </button>
         ))}
       </span>
+      {confirm !== null && (
+        <AlertDialog open={confirming} onOpenChange={setConfirming}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{confirm.title}</AlertDialogTitle>
+              <AlertDialogDescription>{confirm.body}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{confirm.cancel}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  setConfirming(false);
+                  toggle.mutate(true);
+                }}
+              >
+                {confirm.confirm}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </span>
   );
 }

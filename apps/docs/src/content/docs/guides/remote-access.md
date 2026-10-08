@@ -110,8 +110,10 @@ detach key. Attaching takes back a session that was picked up on the phone. Read
 
 Only a session's owner steers it: sends turns, answers approvals, interrupts, and types in its
 terminal. Others who can see the project follow it read-only unless the owner turns on shared
-control, which lets them steer with the owner's provider logins and Git access. Read
-[Organizations](/organizations/overview/).
+control, which lets them steer. In a workspace that shares one home their turns run on the owner's
+provider logins and Git access; in a [per-person workspace](/operate/per-person-workspaces/) each
+turn runs on its sender's login. Read
+[Organizations](/organizations/overview/#who-steers-a-session).
 
 ## Browser and desktop
 

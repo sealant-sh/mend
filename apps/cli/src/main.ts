@@ -109,6 +109,18 @@ import {
   type ServiceTunnels,
 } from "./service-tunnels.ts";
 import {
+  hasPersonFacts,
+  sessionWorkspaceLines,
+  workspaceLineList,
+  workspaceReadsOf,
+  worktreeJoinLine,
+  worktreeListsPeople,
+  type ConversationWaitDto,
+  type LivePersonDto,
+  type MemberNameDto,
+  type WorkspaceRetirementDto,
+} from "./shared-workspace.ts";
+import {
   agentIsLive,
   agentOutcome,
   type AgentProcessLike,
@@ -152,6 +164,7 @@ import {
   upgradeUrl,
 } from "./upgrade-url.ts";
 import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
+import { workspaceCommand } from "./workspace-replace.ts";
 import { worktreesRmCommand } from "./worktree-remove.ts";
 
 /**
@@ -252,6 +265,18 @@ interface SessionDto extends SessionCaptureLike {
   /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
+  /**
+   * The people with a process live in its executor (docs/adr/0016, decision 13): filled by
+   * `GET /sessions` and the session view only; absent on older servers.
+   */
+  readonly livePeople?: ReadonlyArray<LivePersonDto>;
+  /** When shared control was turned on; null while it is off. Absent on older servers. */
+  readonly sharedControlEnabledAt?: string | null;
+  /**
+   * The executor waits to be replaced (docs/adr/0016, decision 14): read with `livePeople`, so
+   * the retirement's detail is asked for only when there is one. Absent on older servers.
+   */
+  readonly workspaceRetirement?: "marked" | "retiring" | null;
 }
 
 /** The DB-cheap review facts the server decorates a project's sessions with. */
@@ -419,6 +444,8 @@ const request = async <T>(
     }
     throw new MendRequestError("http", message, response.status);
   }
+  // A route with nothing to return answers 204 with no body (`mend workspace replace`).
+  if (text === "") return JSON.parse("null");
   try {
     return JSON.parse(text) as T;
   } catch {
@@ -771,6 +798,76 @@ const askWorktreeName = async (): Promise<string | null> => {
   }
 };
 
+/** The signed-in account's id, or null from a server that cannot say (before organizations). */
+const viewerIdOf = (config: CliConfig): Promise<string | null> =>
+  request<{ readonly userId: string }>(config, "GET", "/organization").then(
+    (view) => view.userId,
+    () => null,
+  );
+
+/**
+ * What each live session says about its workspace (docs/adr/0016, decisions 13 and 14): the
+ * shared workspace line, the waiting line, the retirement line and, for the change's owner, how
+ * to replace it. Read from the rows already fetched (the project view carries who is live and the
+ * retirement's state when per-person homes are possible): the viewer only where someone is
+ * listed live, the waiting line only where someone else is live with shared control on, the
+ * retirement only where one is under way. With per-person homes off the rows list nobody and no
+ * retirement, so nothing more is asked. An older server's 404 reads as nothing to say.
+ */
+const workspaceLinesOf = async (
+  config: CliConfig,
+  sessions: ReadonlyArray<SessionDto>,
+): Promise<ReadonlyMap<string, ReadonlyArray<string>>> => {
+  const live = sessions.filter((session) => LIVE_STATUSES.has(session.status));
+  if (!hasPersonFacts(live)) return new Map();
+  const viewerRead = live.some((session) => (session.livePeople ?? []).length > 0)
+    ? viewerIdOf(config)
+    : Promise.resolve(null);
+  const facts = await Promise.all(
+    live.map(async (session) => {
+      const reads = workspaceReadsOf(session);
+      const [wait, retirement] = await Promise.all([
+        reads.waiting
+          ? request<ConversationWaitDto | null>(
+              config,
+              "GET",
+              `/sessions/${session.id}/waiting`,
+            ).catch(() => null)
+          : null,
+        reads.retirement
+          ? request<WorkspaceRetirementDto | null>(
+              config,
+              "GET",
+              `/sessions/${session.id}/workspace-retirement`,
+            ).catch(() => null)
+          : null,
+      ]);
+      return { session, wait, retirement };
+    }),
+  );
+  const viewer = await viewerRead;
+  const members = facts.some((fact) => fact.retirement !== null)
+    ? await request<ReadonlyArray<MemberNameDto>>(config, "GET", "/organization/members").catch(
+        () => [],
+      )
+    : [];
+  return new Map(
+    facts.map(({ session, wait, retirement }) => [
+      session.id,
+      workspaceLineList(
+        sessionWorkspaceLines({
+          sessionId: session.id,
+          livePeople: session.livePeople ?? [],
+          viewer,
+          wait,
+          retirement,
+          members,
+        }),
+      ),
+    ]),
+  );
+};
+
 const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<string>) => {
   const parsed = parseLaunchArgs(args);
   if (parsed.error !== null) return fail(parsed.error);
@@ -808,8 +905,11 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   // identity every list leads with. `mend run` stays scriptable: flag only.
   // `--worktree` insists on joining: the name must already exist here.
   let worktreeName: string | null;
+  // The project view, read once: the join check below reads the same rows.
+  let projectView: ProjectDetailDto | null = null;
   if (parsed.worktree !== null) {
     const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
+    projectView = detail;
     const existing = detail.worktrees ?? [];
     if (detail.worktrees === undefined) {
       return fail("this server predates shared worktrees — use --name instead");
@@ -832,9 +932,9 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   // Say when the name joins an existing worktree — a join is a fact worth
   // stating before the session exists, not a surprise in the tree later.
   if (worktreeName !== null) {
-    const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`).catch(
-      () => null,
-    );
+    const detail =
+      projectView ??
+      (await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`).catch(() => null));
     const joined = detail?.worktrees?.find((worktree) => worktree.name === worktreeName);
     if (joined !== undefined) {
       const members = (detail?.sessions ?? []).filter(
@@ -843,6 +943,14 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
       say(
         `${green("✓")} joins worktree ${joined.name} ${dim(`· ${members} session${members === 1 ? "" : "s"} · branch ${joined.branch}`)}`,
       );
+      // Where two people meet (docs/adr/0016, decision 13): said before the session starts,
+      // from the project view's rows. The viewer is asked for only where the worktree lists
+      // someone live; the CLI keeps no account id, so the shared-home line (which needs the
+      // viewer where nobody is listed) is not said here.
+      const rows = detail?.sessions ?? [];
+      const viewer = worktreeListsPeople(rows, joined.id) ? await viewerIdOf(config) : null;
+      const joinLine = worktreeJoinLine(rows, joined.id, viewer);
+      if (joinLine !== null) say(`${amber("·")} ${joinLine}`);
     }
   }
   const lifecycle: "detach" | LifecycleMode =
@@ -4324,7 +4432,7 @@ const rowHold = (row: SessionRow): string | null =>
     ? null
     : servicesHoldOf(row.session, row.annotation.currentAgent, row.annotation.liveServices ?? 0));
 
-const printSessionRow = (row: SessionRow) => {
+const printSessionRow = (row: SessionRow, workspaceLines: ReadonlyArray<string> = []) => {
   const { session, annotation } = row;
   const live = ACTIVE_STATUSES.has(session.status);
   const status = session.status.padEnd(9);
@@ -4347,6 +4455,8 @@ const printSessionRow = (row: SessionRow) => {
   say(
     `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(`${session.branch} · base ${base}${model}`)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
   );
+  // What the session says about its workspace, one line each under the row.
+  for (const line of workspaceLines) say(`          ${dim(line)}`);
 };
 
 /** `mend models`: what the server lists per harness, the default marked (docs/models-audit.md). */
@@ -4478,7 +4588,11 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
     say(JSON.stringify(payload, null, 2));
     return;
   }
-  for (const row of rows) printSessionRow(row);
+  const workspaceLines = await workspaceLinesOf(
+    config,
+    rows.map((row) => row.session),
+  );
+  for (const row of rows) printSessionRow(row, workspaceLines.get(row.session.id));
 };
 
 interface WorktreeJsonSession {
@@ -4873,6 +4987,12 @@ const main = async () => {
     case "session":
       if (rest[0] === "share") return sessionShareCommand(boundApi(config), rest.slice(1));
       return fail(`unknown session command "${rest[0] ?? ""}" · mend help session share`);
+    case "workspace":
+      return workspaceCommand(
+        boundApi(config),
+        (method, route, body) => request(config, method, route, body),
+        rest,
+      );
     // Hidden in the catalog: the installer renders its own QR through this.
     case "qr":
       return qrCommand(rest);

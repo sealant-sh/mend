@@ -31,6 +31,10 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/sessions/:id/label"],
   ["POST", "/sessions/:id/handoff"],
   ["POST", "/sessions/:id/images"],
+  ["GET", "/sessions/:id/waiting"],
+  ["GET", "/sessions/:id/workspace-retirement"],
+  ["POST", "/sessions/:id/workspace-retirement/replace"],
+  ["GET", "/organization"],
   ["GET", "/sessions/:id/items"],
   ["GET", "/sessions/:id/turns"],
   ["POST", "/sessions/:id/turns"],
@@ -73,6 +77,7 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
  */
 const NO_CONTENT_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/turns/:id/interrupt"],
+  ["POST", "/sessions/:id/workspace-retirement/replace"],
 ];
 
 /** Reached with a raw fetch that reads the body itself, not with `api`. */

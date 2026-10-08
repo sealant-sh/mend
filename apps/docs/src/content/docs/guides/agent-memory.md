@@ -14,10 +14,11 @@ agent learned is saved back when it ends. A session started on Monday knows what
 learned.
 
 Your memory is yours. Other people's sessions on the same project never receive it, and yours never
-receive theirs. When someone steers your session under shared control, what the agent learns goes
-into your memory, as it runs on your login. On a server, sharing a worktree with someone has
-exceptions: see
+receive theirs. On a server, a workspace that shares one home has exceptions: a session that joins
+someone else's workspace uses their memory, and a turn someone steers under shared control writes
+the owner's. See
 [Known issues](/reference/known-issues/#a-session-that-joins-someone-elses-executor-uses-their-memory).
+[Per-person workspaces](#per-person-workspaces) have none of those exceptions.
 
 ## Bring what your machine already knows
 
@@ -78,6 +79,42 @@ server keeps its last version.
   replaces or deletes is kept on the server, the last twenty per file.
 
 A conversation that stays open for days saves its memory when it ends, not before.
+
+## Per-person workspaces
+
+In a [per-person workspace](/operate/per-person-workspaces/) each person runs as their own Linux
+user, and memory follows the person a process runs as:
+
+- **Delivered per person.** Each of your processes receives your memory in your own home, joins
+  included. Someone else's process in the same workspace receives theirs.
+- **Read back per process.** When a process ends, Mend reads back the memory it wrote for the person
+  it ran as, and for nobody else. Codex builds memory only from your own conversations.
+- **A once-shared session credits nobody.** From the moment shared control is turned on, the agent
+  runs with no one's personal memory or instructions, only the project's, and nothing it writes is
+  read back into anyone's memory. That holds after shared control is turned off, until the session
+  ends (it is archived or deleted; a Stop does not end it). Start a new session to work from your
+  memory again.
+
+With `sudo`, anyone working in the workspace can still read your memory files there. See
+[What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).
+
+### Memory from before 0.36
+
+A worktree that ran with one shared home before it first ran per person has that home's memory in
+its captures. Mend credits it on the server, never during a launch, to:
+
+1. the person Mend's record for that home names, when that record is settled (no hand-over to
+   someone else waiting to be saved) and is for the workspace that wrote the reading;
+2. else, when every session the worktree ever had was one person's, that person. Mend keeps who had
+   sessions in a worktree even after a session is deleted, but only from 0.36 on. For an older
+   worktree it cannot know, so this rule applies there only when the organization has a single
+   member who owns every session the worktree kept;
+3. else nobody. The session view then shows `memory from before 0.36, not credited · <n> files`.
+
+Nothing is deleted. The reading that counts is the final save of the worktree's last shared-home
+workspace. A reading taken before that is provisional: the worktree's line adds
+`· read again when this worktree runs each person as themselves`, and Mend reads again when the
+worktree first runs per person, crediting only what it had not credited before.
 
 ## Codex
 

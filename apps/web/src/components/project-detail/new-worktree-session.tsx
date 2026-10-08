@@ -10,8 +10,9 @@ import { useNavigate } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 
-import type { WorktreeDto } from "#/lib/api";
+import type { SessionDto, WorktreeDto } from "#/lib/api";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
+import { useWorktreeJoinLine } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -32,19 +33,25 @@ const WORKTREE_HARNESSES: ReadonlyArray<Harness> = HARNESSES.filter(
  *
  * `worktreeName` only names the button for screen readers — several of these
  * sit on one page, and "New session" alone does not say where.
+ *
+ * `sessions` are the worktree's sessions the page holds: when someone else's runs there, the menu
+ * says so before the viewer joins its workspace (docs/adr/0016, decision 13).
  */
 export function NewWorktreeSession({
   worktreeId,
   worktreeName,
+  sessions = [],
 }: {
   readonly worktreeId: WorktreeDto["id"];
   readonly worktreeName?: string;
+  readonly sessions?: ReadonlyArray<SessionDto>;
 }) {
   const navigate = useNavigate();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const joinLine = useWorktreeJoinLine(worktreeId, sessions);
 
   const start = (harness: Harness) => {
     if (pending) return;
@@ -77,7 +84,10 @@ export function NewWorktreeSession({
               tells them apart, without repeating it in the visible row. */}
           {worktreeName !== undefined && <span className="sr-only"> in {worktreeName}</span>}
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-40">
+        <DropdownMenuContent align="end" className={joinLine === null ? "w-40" : "w-80"}>
+          {joinLine === null ? null : (
+            <p className="px-2 pt-1.5 pb-2 text-[12px] leading-relaxed text-ink-2">{joinLine}</p>
+          )}
           {WORKTREE_HARNESSES.map((harness) => (
             <DropdownMenuItem
               key={harness}

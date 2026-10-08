@@ -821,7 +821,9 @@ const PROVIDERS: ReadonlyArray<{
   {
     provider: "github",
     label: "GitHub",
-    detail: "Gives `gh` inside every session a GH_TOKEN. Paste the output of `gh auth token`.",
+    // docs/adr/0016, decisions 4 and 5, and Known limits: written per person, no token in the env.
+    detail:
+      "In a per-person workspace, your processes use your own GitHub login, written into your own home (~/.config/gh/hosts.yml) and never into anyone else's. There is no GITHUB_TOKEN in the environment there: a command that needs one uses GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token). In a shared workspace, `gh` reads it as GH_TOKEN. Paste the output of `gh auth token`.",
     placeholder: "gho_…",
     multiline: false,
   },

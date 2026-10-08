@@ -148,8 +148,9 @@ unique within an organization, not across the instance.
 ## Who steers a session
 
 A session runs as its owner, the account that started it: that account's provider logins, Git access
-and dotfiles. Anyone who can see the project can see the session, read its record, review its change
-and draft review comments.
+and dotfiles. In a [per-person workspace](/operate/per-person-workspaces/) each process runs as the
+person who started it, as their own Linux user, so a steered turn runs as its sender. Anyone who can
+see the project can see the session, read its record, review its change and draft review comments.
 
 Steering means sending turns, answering approvals, interrupting, and sending review comments back to
 it. By default only the session's owner steers. Other viewers see
@@ -164,10 +165,61 @@ mend session share 3f2a on
 mend session share 3f2a off
 ```
 
-A prefix of the session id is enough. While shared control is on, everyone who can see the project
-steers the session, and every act spends the owner's provider logins and Git access. The session
-line reads `runs as <owner> · shared control on` for everyone else. Every turn, approval, interrupt,
+A prefix of the session id is enough. Turning it on asks first, in words true to the session's
+workspace. In a [per-person workspace](/operate/per-person-workspaces/):
+
+```text
+Turn on shared control?
+Each turn runs on its sender's login. From now until this session ends, the agent uses no one's personal memory or instructions. The conversation so far, including what your agent loaded before, becomes visible to whoever steers.
+```
+
+In a workspace that shares one home:
+
+```text
+Turn on shared control?
+Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it.
+```
+
+**Turn on** or **Keep it off**. `mend session share <session> on --yes` answers for a script.
+
+While shared control is on, everyone who can see the project steers the session. The session line
+reads `runs as <owner> · shared control on` for everyone else. Every turn, approval, interrupt,
 terminal attach and stop is recorded with the account that did it.
+
+Whose login a steered turn spends depends on the workspace:
+
+- **In a workspace that shares one home** (the default), every act spends the owner's provider
+  logins and Git access, and the agent keeps the owner's memory and instructions.
+- **In a [per-person workspace](/operate/per-person-workspaces/)**, each turn runs on its sender's
+  login, as the switch says. A sender with no login for the session's provider is refused
+  (`Connect Claude to steer this session.`).
+
+### Steering in a per-person workspace
+
+The conversation stays one thread that everyone drives. When the next turn's sender is not the
+person the agent runs as, Mend hands the conversation to an agent process of the sender's user, on
+their login.
+
+- **Neutral context.** From the moment shared control is turned on, the agent runs with neither
+  person's personal memory nor personal instructions, only the project's: its `CLAUDE.md` or
+  `AGENTS.md`, its `.claude/` or `.codex/` settings and `.mcp.json`. Nothing it learns is saved to
+  anyone's memory. A session once shared stays that way after shared control is turned off, until
+  the session ends. What the owner's agent loaded before sharing stays in the history steerers read.
+- **A new sender waits.** Before the hand-over, Mend waits for the previous sender's turn and
+  background work to finish, and stops nothing. Everyone sees the waiting line:
+  `Waits for Alice's 2 background tasks, 1 sub-agent and a goal to finish before Bob's turn starts.`
+  The person the agent runs as, and the session's owner, can end that work from the waiting line.
+  The sender or the owner can withdraw the waiting turn. Turns keep their order.
+- **Questions go to the person the agent runs as.** A permission prompt or a question from the agent
+  is answered only by them, since the answer continues a turn on their login. Anyone else reads
+  `Only Alice can answer this; send a turn instead.`
+- **Turning it off** cancels the steerers' queued turns:
+  `Shared control was turned off, so this turn was not sent.`
+- **Automatic landing** follows the owner's own turns only.
+- **opencode sessions are one person's.** Shared control is refused for them:
+  `opencode sessions are one person's. Shared control is not available for them; start your own session in this worktree.`
+
+The limits are in [Known issues](/reference/known-issues/#shared-control).
 
 Only the session's owner turns shared control on. The owner or an organization owner turns it off.
 Deleting, renaming or handing off the session stays with its owner even while control is shared.
@@ -175,10 +227,11 @@ Deleting, renaming or handing off the session stays with its owner even while co
 ### Terminals stay with the owner
 
 Only the owner types in a session's terminal, opens a shell or runs a command in its workspace, even
-while control is shared. A terminal runs on whatever provider login its workspace holds, and
-keystrokes have no turn boundary at which Mend could switch that login to someone else's. The same
-holds for a command, so starting a Service is the owner's too; a steerer can restart and stop the
-Services already running.
+while control is shared. A terminal runs on one provider login, and keystrokes have no turn boundary
+at which Mend could switch it to someone else's. In a per-person workspace the Shared control switch
+on a terminal session changes nothing in it: its agent keeps running as the owner, with the owner's
+memory and instructions. The same holds for a command, so starting a Service is the owner's too; a
+steerer can restart and stop the Services already running.
 
 Under shared control, anyone else who can see the project attaches to the terminal to read it. Mend
 streams the output to them and drops their keystrokes and resizes. The control log records their

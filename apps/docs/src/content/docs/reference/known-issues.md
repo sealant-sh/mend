@@ -111,7 +111,8 @@ opencode's database is saved with the session as its conversation, and in a remo
 next session in the worktree, anyone's, opens it. A login you make inside opencode to the opencode
 console or to one of its integrations is kept in that database, so it travels with it. The logins
 Mend gives opencode (your ChatGPT login) never go there. Sign in to the console or integrations only
-in a worktree nobody else uses.
+in a worktree nobody else uses. In a [per-person workspace](#per-person-workspaces) opencode's
+database is its owner's alone, and Mend deletes such a login when opencode exits.
 
 In a remote workspace, opencode keeps the logins of the MCP servers it signs in to in a file Mend
 keeps out of what the session saves, when Mend starts opencode:
@@ -170,12 +171,13 @@ own profile.
 
 ## A pi that joins another person's running pi runs on their profile
 
-pi reads one profile per harness home, and in a remote workspace a worktree's harness home is shared
-by its sessions. Until per-person harness homes (ADR 0016) are on, a pi session that joins a
-workspace where another person's pi is running runs on that person's profile: their extensions,
-settings, packages and MCP servers, with any header or token their `mcp.json` holds. Mend starts it
-anyway and changes nothing there, so the other person's pi keeps running as it was. A pi session
-that starts once no pi is running there gets its own profile.
+pi reads one profile per harness home, and in a workspace that shares one home a worktree's harness
+home is shared by its sessions. There, a pi session that joins a workspace where another person's pi
+is running runs on that person's profile: their extensions, settings, packages and MCP servers, with
+any header or token their `mcp.json` holds. Mend starts it anyway and changes nothing there, so the
+other person's pi keeps running as it was. A pi session that starts once no pi is running there gets
+its own profile. In a [per-person workspace](#per-person-workspaces) each pi runs on its own
+person's profile.
 
 ## Agent memory is saved when the agent ends
 
@@ -188,6 +190,9 @@ When two of your sessions changed the same memory file, both sides' lines are ke
 of them wrote can appear twice. The agent tidies its memory as it goes.
 
 ## A session that joins someone else's executor uses their memory
+
+Applies to workspaces that share one home. In a [per-person workspace](#per-person-workspaces) each
+person's agent reads and saves their own memory.
 
 On a server, a worktree has one executor. A session you start in a worktree where another person's
 session is already running joins their executor, and its agent shares their harness home. It reads
@@ -205,8 +210,9 @@ ends up kept beside it. Start your session in a worktree of your own to work fro
 
 ## A session that joins someone else's executor runs on their logins
 
-Applies until per-person harness homes (ADR 0016, `MEND_HARNESS_LAYOUT=person`) are on, which is the
-default today.
+Applies to workspaces that share one home: every worktree while `MEND_HARNESS_LAYOUT` is `shared`,
+the default in 0.36. In a [per-person workspace](#per-person-workspaces) each person's processes run
+as their own user, on their own logins.
 
 On a server a worktree has one executor, started by whoever launched first. Every process in it runs
 as root in that person's harness home, whoever started the process. A session you start in a
@@ -230,6 +236,8 @@ your session in a worktree of your own to run on your own logins.
 
 ## A worktree someone else used before you
 
+Applies to workspaces that share one home.
+
 A session you start in a worktree someone else used, once their executor has ended, starts from your
 memory. Mend first saves theirs for them, then moves it to `~/.mend/agent-memory-kept/` in that
 worktree's executors, where it stays: anyone working in the worktree, and their agent, can read it
@@ -241,6 +249,8 @@ sessions were removed), nobody is credited and it is only moved.
 An executor started before this release is judged by who started it until it ends.
 
 ## A `codex` you run yourself in a shared worktree
+
+Applies to workspaces that share one home.
 
 Your Codex sessions on a server never build memory from another person's conversations. A `codex`
 you type in a shell session, or one your agent runs in a Claude, opencode or pi session, is not a
@@ -281,3 +291,138 @@ conversations are not imported: a conversation needs its paths rewritten to resu
 
 `mend memory`, `mend memory show` and `mend memory rm` list, print and remove your memory for a
 project. The web app and the phone do not show it yet.
+
+## Per-person workspaces
+
+Applies to workspaces where each person runs as their own Linux user: worktrees launched with
+`MEND_HARNESS_LAYOUT=person`, and every worktree that has run that way once. See
+[Per-person workspaces](/operate/per-person-workspaces/).
+
+Everyone in a per-person workspace has passwordless sudo, which runs as root: anyone working there,
+and their agents, can read and change each other's files, logins included.
+
+### People in one worktree can read each other's files
+
+Each person's processes run as their own user, on their own logins, and use nothing of anyone else's
+by default. With `sudo`, and with the `CAP_FOWNER` capability every person's process holds there,
+anyone can read and change anyone's files. A person's saved conversations and memory are restored
+into every workspace of the worktree. It is not a boundary between people.
+
+Personal configuration inside the worktree is shared by design: `.claude/settings.local.json`,
+`CLAUDE.local.md`, `.env`, a repository `.npmrc`, the `env` in `.mcp.json`, and the worktree's
+`.git/config` and hooks. A remote URL with a token, or a `credential.helper` an agent writes there,
+is used by the other person's `git push`.
+
+### Files and permissions
+
+- Restored worktree files belong to root and the `mend` group. A rewrite (`git checkout`, an
+  editor's save by rename) makes a file its writer's. `npm i -g` lands in `/opt/npm-global`.
+- A file another person's tool created with an explicit mode (`install -m 644`, `tar x`) is repaired
+  in the worktree when someone else's process starts there. Elsewhere it needs a `chmod` or `sudo`
+  until the next restore. A toolchain one person unpacked can be extended by another only after such
+  a `chmod`.
+- Sockets and files a tool leaves to the umask are reachable by the group outside each person's
+  private `TMPDIR` and `XDG_RUNTIME_DIR`.
+- A pnpm tree installed while the worktree shared one home is reinstalled once
+  (`pnpm install --force --prefer-offline`) when the worktree first runs per person.
+- A removed member's saved directory stays in the worktree's captures, owned by root, and no user is
+  made for them.
+
+### Logins and identity
+
+- **No `GITHUB_TOKEN` in the environment.** Git over HTTPS to GitHub uses Mend's credential helper,
+  which reads your GitHub login from your own home. A repository `.npmrc` with `${GITHUB_TOKEN}`
+  fails until you run `export GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token)`. A
+  `gh auth login` of your own is overwritten by the platform's next refresh of your connected GitHub
+  login.
+- **`docker exec` runs as root, with no login.** So does anything else Mend did not start, such as a
+  custom image's own entrypoint work: no person's login, no Mend token, and what it writes under
+  `/root` is not saved.
+- **VS Code Remote-SSH reaches only workspaces you launched,** as your user. You cannot open
+  Remote-SSH into a workspace someone else launched.
+- Settings edited by hand in a workspace last until it ends.
+
+### Images
+
+- **nix images take one person.** They run with one shared home.
+- An image without `sudo`, `useradd` or ACL support takes one person.
+- A custom image that installs toolchains under `/root` keeps them root's: they run for everyone,
+  and each person's own installs land in their home.
+
+### There is no way back from per-person
+
+A worktree that has run per person always runs per person. Turning `MEND_HARNESS_LAYOUT` off changes
+nothing for it, and an image that cannot run it (nix, no `sudo`, a uid clash) is refused for that
+worktree:
+
+```text
+This worktree's sessions are saved per person, and its image cannot run per-person users (no sudo). Pick an image that can, or start a new worktree.
+```
+
+A new worktree can use that image. A Mend older than 0.36 cannot resume the worktree's sessions.
+
+### Shared control
+
+- A session once shared stays neutral: after shared control is turned off, its agent still runs
+  without the owner's personal memory and instructions until the session ends. A new session has
+  them.
+- While control is shared, no personal memory, instructions, skills or MCP servers apply, and
+  scheduled prompts are off. What the owner's agent loaded before sharing stays in the history.
+- A change of sender waits for the previous sender's background work and holds the turns behind it.
+  It restarts the agent process, which ends "accept for session" approvals and MCP sign-ins made in
+  the previous process.
+- In a shared Codex conversation, a goal, a queued prompt and the prompt history end at a change of
+  sender.
+- Full tool outputs Claude recorded before the session was shared are not re-readable by path; the
+  conversation keeps what it showed the model.
+- If a provider refuses reasoning made on another person's account, the turn fails and nothing is
+  retried:
+  `Bob's turn failed: OpenAI refused reasoning made on Alice's account. Alice can continue the conversation.`
+- Only the change owner's own Claude processes have scheduled prompts; anyone else's have no
+  `CronCreate` there.
+- A conversation you resume by hand while Mend's process for it runs gets two writers.
+
+### Harnesses
+
+- **opencode is one person's.** Shared control is refused for opencode sessions:
+  `opencode sessions are one person's. Shared control is not available for them; start your own session in this worktree.`
+- **A login made inside opencode** (`opencode console login`, its integrations) is saved in the
+  captures taken while that opencode process ran, in your own directory, where anyone working in the
+  worktree can read it. Mend deletes it when opencode exits.
+- **Claude's `/rewind` history is never saved.** It ends with the workspace, and in a shared session
+  at the next change of sender, so `/rewind` cannot restore edits made before a move to another
+  workspace.
+
+### Dotfiles
+
+A joiner's `install.sh` runs beside their agent, so the agent does not see what the script installs
+or changes after it starts. The session line says `install.sh running`, then
+`install.sh finished after the agent started`. Turn on **Start my agents after install.sh** to make
+your joins wait for it. See [Dotfiles](/guides/dotfiles/#per-person-workspaces).
+
+### Workspaces started before 0.36
+
+A workspace that shares one home keeps it until it is replaced. Until then it takes only its
+launcher's sessions and turns; anyone else is refused:
+
+```text
+This worktree's workspace started before Mend 0.36 and shares one home; it takes another person once it is replaced.
+```
+
+opencode conversations saved in such a workspace cannot be resumed per person:
+
+```text
+This opencode conversation was saved in a workspace that shared one home, and it cannot be carried into your own opencode data. It could be resumed only in that workspace, which has ended. Start a new opencode session.
+```
+
+A session whose shared control was turned on while its workspace shared one home keeps it on when
+its worktree first runs per person, where it means something else: each turn on its sender's login,
+and no one's personal memory or instructions. Turn it off and on again to see that confirmation.
+
+Memory saved in a shared home before 0.36 goes to nobody, and is listed as not credited, when Mend
+cannot say whose it is: two people had sessions there, a hand-over to another person was not saved,
+or the worktree is older than Mend's record of who had sessions in it (a deleted session would not
+be in that record) and its organization has more than one member. In an organization with a single
+member who owns every session the worktree kept, that member is credited.
+
+See [Workspaces started before 0.36](/operate/per-person-workspaces/#workspaces-started-before-036).

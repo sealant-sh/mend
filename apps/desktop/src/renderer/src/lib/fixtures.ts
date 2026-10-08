@@ -80,6 +80,8 @@ export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => (
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
   sharedControlEverAt: null,
+  livePeople: [],
+  workspaceRetirement: null,
   hasTranscript: null,
   idleStoppedAt: null,
   capturePending: null,
@@ -163,6 +165,7 @@ export const OWNER_CONTROL: SessionControlDto = {
   stop: true,
   toggleSharedControl: true,
   terminalInput: true,
+  turnsOnSendersLogin: false,
 };
 
 export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDetailDto => ({
@@ -175,6 +178,7 @@ export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDet
   processes: [],
   currentAgent: null,
   liveServices: 0,
+  preReleaseMemory: null,
   ...patch,
 });
 

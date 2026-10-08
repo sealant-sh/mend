@@ -72,6 +72,10 @@ export type CheckpointDto = SessionDetailDto["checkpoints"][number];
 export type SessionRepositoryDto = SessionDetailDto["repositories"][number];
 export type SessionChangeDto = NonNullable<SessionDetailDto["change"]>;
 export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;
+export type ConversationWaitDto = NonNullable<Outputs["sessions"]["conversationWait"]>;
+export type ConversationWaitWorkDto = ConversationWaitDto["work"][number];
+export type WorkspaceRetirementDto = NonNullable<Outputs["sessions"]["workspaceRetirement"]>;
+export type PreReleaseMemoryDto = NonNullable<SessionDetailDto["preReleaseMemory"]>;
 
 export type ChangeDiffDto = Outputs["changes"]["diff"];
 export type ChangedFileDto = ChangeDiffDto["files"][number];
@@ -380,6 +384,18 @@ export const stopSessionServices = (id: string) =>
   orLogin(trpcClient.sessions.stopServices.mutate({ id }));
 export const setSharedControl = (id: string, enabled: boolean) =>
   orLogin(trpcClient.sessions.setSharedControl.mutate({ id, enabled }));
+/**
+ * "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner, naming the
+ * retirement they were shown (`seen`, its fingerprint); refused in words (`WorkspaceReplaceRefused`)
+ * while an agent's turn is in flight or when more would stop than was listed.
+ */
+export const replaceWorkspace = (id: string, request: { readonly seen: string }) =>
+  orLogin(trpcClient.sessions.replaceWorkspace.mutate({ id, seen: request.seen }));
+/** End one piece of the previous sender's background work from the waiting line (decision 6). */
+export const endBackgroundWork = (id: string, work: Pick<ConversationWaitWorkDto, "kind" | "id">) =>
+  orLogin(
+    trpcClient.sessions.endBackgroundWork.mutate({ id, work: { kind: work.kind, id: work.id } }),
+  );
 /** Store a pasted image beside the session; the reply is the workspace path to paste. */
 export const pasteSessionImage = (id: string, contentsBase64: string) =>
   orLogin(trpcClient.sessions.pasteImage.mutate({ id, upload: { contentsBase64 } }));

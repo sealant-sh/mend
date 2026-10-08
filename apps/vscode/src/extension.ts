@@ -12,6 +12,7 @@ import { MendApiError, MendClient, normalizeProjectName } from "./client.js";
 import { ConnectionStore } from "./config.js";
 import { currentBranch, pathContains, repositoryFacts, worktreePath } from "./git.js";
 import { modelPickRows } from "./model-picks.js";
+import { joinLineOf, liveSessionLines } from "./session-lines.js";
 import {
   agentModeLabel,
   continueCommand,
@@ -174,11 +175,22 @@ class WorkspaceScope implements vscode.Disposable {
       this.status.tooltip =
         session === undefined
           ? "Open this project's Mend sessions"
-          : `${session.branch} · ${session.status} · open session actions`;
+          : [
+              `${session.branch} · ${session.status} · open session actions`,
+              ...(liveStatuses.has(session.status) ? await this.workspaceLines(session) : []),
+            ].join("\n");
       this.status.show();
     } catch {
       this.clear();
     }
+  }
+
+  /**
+   * What this window's live session says about its workspace (docs/adr/0016), from its project
+   * view row: the row says which reads are worth a request (`liveSessionLines`).
+   */
+  private async workspaceLines(session: Session): Promise<ReadonlyArray<string>> {
+    return liveSessionLines(session, this.client);
   }
 
   private clear(): void {
@@ -542,12 +554,32 @@ class MendCommands {
         );
         return;
       }
+      if (!(await this.sayWhoElseRunsThere(location))) return;
       await this.newSession({ kind: "project", project: location.project } satisfies ProjectNode, {
         name,
       });
     } catch (cause) {
       void vscode.window.showErrorMessage(errorMessage(cause));
     }
+  }
+
+  /**
+   * Where two people meet in a worktree (docs/adr/0016, decision 13): before a session starts
+   * where another person's session runs, say so. False when the person turns back.
+   */
+  private async sayWhoElseRunsThere(location: SessionLocation): Promise<boolean> {
+    const worktreeId = location.session.worktreeId;
+    if (worktreeId === undefined) return true;
+    const detail = await this.client.projectDetail(location.project.id);
+    const line = await joinLineOf(
+      detail.sessions,
+      worktreeId,
+      this.tree.knownViewer(),
+      this.client,
+    );
+    if (line === null) return true;
+    const answer = await vscode.window.showInformationMessage(line, { modal: true }, "New session");
+    return answer === "New session";
   }
 
   /** The joinable name of the session's worktree; null on a pre-worktree server. */

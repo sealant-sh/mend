@@ -5,6 +5,15 @@ import * as vscode from "vscode";
 import type { ConnectionStore, MendConnection } from "./config.js";
 import { requestMend } from "./mend-http.js";
 import {
+  parseLivePeople,
+  parseRetirementState,
+  parseMembers,
+  parseRetirement,
+  parseWaitLine,
+  type MemberName,
+  type RetirementView,
+} from "./session-lines.js";
+import {
   SESSION_STATUSES,
   type Effort,
   type HarnessModelCatalog,
@@ -73,6 +82,11 @@ const parseSession = (value: unknown): Session => {
       typeof value["sealantWorkspaceId"] === "string" ? value["sealantWorkspaceId"] : null,
     summary: typeof value["summary"] === "string" ? value["summary"] : null,
     createdAt: stringField(value, "createdAt"),
+    ownerUserId: typeof value["ownerUserId"] === "string" ? value["ownerUserId"] : null,
+    livePeople: parseLivePeople(value["livePeople"]),
+    sharedControlEnabledAt:
+      typeof value["sharedControlEnabledAt"] === "string" ? value["sharedControlEnabledAt"] : null,
+    workspaceRetirement: parseRetirementState(value["workspaceRetirement"]),
   };
 };
 
@@ -260,6 +274,47 @@ export class MendClient {
         name,
       }),
     );
+  }
+
+  /** The signed-in account's id; null from a server before organizations. */
+  async viewerId(): Promise<string | null> {
+    try {
+      const view = await this.request("/organization");
+      return isRecord(view) && typeof view["userId"] === "string" ? view["userId"] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The organization's roster by id and name; empty when the server cannot say. */
+  async memberNames(): Promise<ReadonlyArray<MemberName>> {
+    try {
+      return parseMembers(await this.request("/organization/members"));
+    } catch {
+      return [];
+    }
+  }
+
+  /** The waiting line while a turn waits for another person's work; null otherwise. */
+  async waitLine(sessionId: string): Promise<string | null> {
+    try {
+      return parseWaitLine(
+        await this.request(`/sessions/${encodeURIComponent(sessionId)}/waiting`),
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /** The session's executor waiting to be replaced (docs/adr/0016, decision 14); null otherwise. */
+  async workspaceRetirement(sessionId: string): Promise<RetirementView | null> {
+    try {
+      return parseRetirement(
+        await this.request(`/sessions/${encodeURIComponent(sessionId)}/workspace-retirement`),
+      );
+    } catch {
+      return null;
+    }
   }
 
   /** The session with every process it has held — agents, shells, Services. */

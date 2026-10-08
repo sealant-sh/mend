@@ -13,6 +13,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
 import type { MendItem, MendProcess, MendProject, MendSession } from "../src/mend-workbench.ts";
+import { NO_NOTICES } from "../src/notices.ts";
 import { threadProjectionOf, TURN_ORDINAL_STRIDE } from "../src/thread-projection.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -376,6 +377,7 @@ describe("Mend's items as turn items", () => {
         messageIds: new Map(),
         pending: [],
         queueHeld: false,
+        notices: NO_NOTICES,
       },
       items,
     );
@@ -486,6 +488,7 @@ describe("Mend's items as turn items", () => {
         messageIds: new Map(),
         pending: [],
         queueHeld: false,
+        notices: NO_NOTICES,
       },
       [],
     );

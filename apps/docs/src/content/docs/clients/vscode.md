@@ -66,6 +66,10 @@ Opening a live session opens its workspace. Opening a settled session asks wheth
 workbench shell. The shell starts a fresh workspace over the same worktree and keeps it up while the
 editor is attached. No agent is launched.
 
+In a [per-person workspace](/operate/per-person-workspaces/) the editor connects as the workspace's
+launcher, as their own Linux user, on their logins. You can open only workspaces you launched; a
+workspace someone else launched in a worktree you share is theirs to open.
+
 ### Workspace SSH setup
 
 The first open asks **Set up workspace SSH?**. Setup registers this machine's SSH public key with

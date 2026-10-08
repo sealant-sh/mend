@@ -81,8 +81,11 @@ git push
 ```
 
 The shim carries the SSH transport over the session socket. The Mend server resolves the project's
-current authentication mode, signs as the session's owner, and opens the remote connection. No SSH
-credential enters the container. The socket carries Git's own remote commands only
+current authentication mode, signs as the session's owner, and opens the remote connection. In a
+[per-person workspace](/operate/per-person-workspaces/) it signs as the person whose process runs
+`git`, with their Mend key or their own bridge, so a joiner's push is the joiner's. Git over HTTPS
+to GitHub there uses Mend's credential helper, which answers with the GitHub login in that person's
+own home. No SSH credential enters the container. The socket carries Git's own remote commands only
 (`git-upload-pack`, `git-receive-pack`, `git-upload-archive`).
 
 The shim signs only for the project's own origin host. A fetch or push to another host is refused
@@ -114,6 +117,10 @@ returns to your account's name and email.
 Mend writes the author into each workspace as system Git config before the agent starts. A `user`
 section in your [dotfiles](/guides/dotfiles/) `.gitconfig` or in a repository's own config still
 decides. Sessions launched after a change commit as the new author.
+
+In a per-person workspace each person commits as themselves: Mend writes your author into your own
+home (`~/.mend/git-author`, included at the top of `~/.config/git/config`) when your user is given
+its identity, so a changed author applies from your next start there.
 
 ## Where Mend's own Git may reach
 
