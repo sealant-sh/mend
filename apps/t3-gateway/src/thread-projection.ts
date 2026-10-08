@@ -679,6 +679,74 @@ const pendingEntries = (
   return out;
 };
 
+/**
+ * What Mend says about people sharing the session's workspace (docs/adr/0016, decisions 6, 13 and
+ * 14), as system notices: the waiting line right after the input of the turn that waits (it has
+ * done nothing yet), and the shared-workspace and retirement lines after everything else, where
+ * the thread stands now. A notice that no longer applies goes, and the client gets a snapshot.
+ */
+const noticeItems = (
+  source: ThreadSource,
+  turns: ReadonlyArray<MendTurn>,
+): ReadonlyArray<OrchestrationV2TurnItem> => {
+  const { notices } = source;
+  const threadId = threadIdOf(source.session);
+  const providerThreadId = providerThreadIdOf(source.session);
+  // The block after every turn and every queued message.
+  const endBase = (turns.length + source.pending.length + 1) * TURN_ORDINAL_STRIDE;
+  const notice = (
+    key: string,
+    message: string,
+    runId: RunId | null,
+    ordinal: number,
+    when: DateTime.Utc,
+  ): OrchestrationV2TurnItem => ({
+    id: TurnItemId.make(`notice:${key}:${source.session.id}`),
+    threadId,
+    runId,
+    nodeId: null,
+    providerThreadId,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal,
+    status: "completed",
+    title: null,
+    startedAt: when,
+    completedAt: when,
+    updatedAt: when,
+    type: "system_notice",
+    message,
+  });
+  const out: Array<OrchestrationV2TurnItem> = [];
+  const sessionAt = utc(source.session.updatedAt);
+  if (notices.sharedWorkspace !== null) {
+    out.push(notice("shared-workspace", notices.sharedWorkspace, null, endBase, sessionAt));
+  }
+  if (notices.retirement !== null) {
+    out.push(notice("workspace-retirement", notices.retirement, null, endBase + 1, sessionAt));
+  }
+  const { waiting } = notices;
+  if (waiting !== null) {
+    const index = turns.findIndex((turn) => turn.id === waiting.turnId);
+    const turn = turns[index];
+    out.push(
+      turn === undefined
+        ? notice("waiting", waiting.line, null, endBase + 2, utc(waiting.since))
+        : notice(
+            "waiting",
+            waiting.line,
+            runIdOf(source, turn),
+            // The last ordinal of the waiting turn's block: after its input, before anything
+            // the turn does once it starts (by then the line is gone).
+            (index + 2) * TURN_ORDINAL_STRIDE - 1,
+            utc(waiting.since),
+          ),
+    );
+  }
+  return out;
+};
+
 const providerSessionOf = (
   source: ThreadSource,
   runs: ReadonlyArray<OrchestrationV2Run>,
@@ -789,7 +857,8 @@ export const threadProjectionOf = (
   }
   const turnItems: Array<OrchestrationV2TurnItem> = [];
   const messages: Array<OrchestrationV2ConversationMessage> = [];
-  source.turns.toSorted(byOrdinal).forEach((turn, index) => {
+  const turns = source.turns.toSorted(byOrdinal);
+  turns.forEach((turn, index) => {
     const entries = turnEntries(
       source,
       turn,
@@ -805,6 +874,7 @@ export const threadProjectionOf = (
     turnItems.push(...entries.items);
     messages.push(...entries.messages);
   });
+  turnItems.push(...noticeItems(source, turns));
   const thread = appThreadOf(source);
   const latestItem = items.reduce<DateTime.Utc>((latest, item) => {
     const updated = utc(item.updatedAt);

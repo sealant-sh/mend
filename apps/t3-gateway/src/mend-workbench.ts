@@ -158,6 +158,63 @@ export const MendSessionDetail = Schema.Struct({
 });
 export type MendSessionDetail = typeof MendSessionDetail.Type;
 
+/** `LivePerson` in @mend/domain/workbench: a person with a process live in a session's executor. */
+export const MendLivePerson = Schema.Struct({
+  accountId: Schema.String,
+  name: Schema.String,
+});
+export type MendLivePerson = typeof MendLivePerson.Type;
+
+/**
+ * One row of `GET /api/sessions` (`Session` in @mend/domain/workbench), read only for the people
+ * live in its executor (docs/adr/0016, decision 13): the project read's sessions carry none.
+ * Servers before per-person homes omit the field.
+ */
+export const MendActiveSession = Schema.Struct({
+  id: Schema.String,
+  livePeople: Schema.optional(Schema.Array(MendLivePerson)),
+});
+export type MendActiveSession = typeof MendActiveSession.Type;
+
+/**
+ * `ConversationWait` in @mend/domain/workbench, from `GET /api/sessions/:id/waiting` (docs/adr/0016,
+ * decision 6): the turn that waits for the previous sender's own work, and the waiting line.
+ */
+export const MendConversationWait = Schema.Struct({
+  turnId: Schema.String,
+  /** "Waits for Alice's 2 background tasks … before Bob's turn starts." */
+  line: Schema.String,
+  /** When the turn started waiting. */
+  since: Schema.String,
+  work: Schema.Array(
+    Schema.Struct({
+      kind: Schema.String,
+      id: Schema.String,
+      description: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type MendConversationWait = typeof MendConversationWait.Type;
+
+/**
+ * `WorkspaceRetirement` in @mend/domain/workbench, from `GET /api/sessions/:id/workspace-retirement`
+ * (docs/adr/0016, decision 14): an executor started before per-person homes, waiting to be replaced.
+ */
+export const MendWorkspaceRetirement = Schema.Struct({
+  state: Schema.Literals(["marked", "retiring"]),
+  preRelease: Schema.Boolean,
+  launcher: Schema.NullOr(Schema.String),
+  stops: Schema.Array(
+    Schema.Struct({
+      kind: Schema.Literals(["terminal", "shell", "service", "turn", "process", "container"]),
+      label: Schema.String,
+    }),
+  ),
+  reason: Schema.NullOr(Schema.String),
+  canReplace: Schema.Boolean,
+});
+export type MendWorkspaceRetirement = typeof MendWorkspaceRetirement.Type;
+
 /** `ChangeDiff` in @mend/api-contracts, from `GET /api/changes/:id/diff`: git's live answer. */
 export const MendChangeDiff = Schema.Struct({
   change: Schema.Struct({

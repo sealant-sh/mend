@@ -57,6 +57,11 @@ export class ProjectAccess extends Context.Service<
     readonly worktree: (id: WorktreeId) => Effect.Effect<Worktree, NotFound, CurrentUser>;
     readonly change: (id: ChangeId) => Effect.Effect<Change, NotFound, CurrentUser>;
     readonly session: (id: SessionId) => Effect.Effect<Session, NotFound, CurrentUser>;
+    /**
+     * `session` as the session view reads it: the row with the people live in its executor
+     * (docs/adr/0016, decision 13), in the same query.
+     */
+    readonly sessionView: (id: SessionId) => Effect.Effect<Session, NotFound, CurrentUser>;
     readonly sessionAs: (userId: string, id: SessionId) => Effect.Effect<Session, NotFound>;
     readonly process: (
       id: SessionProcessId,
@@ -193,6 +198,13 @@ export const ProjectAccessLive: Layer.Layer<
       return yield* sessionAs(yield* callerId, id);
     });
 
+    const sessionView = Effect.fn("ProjectAccess.sessionView")(function* (id: SessionId) {
+      const userId = yield* callerId;
+      const row = yield* sessions.viewById(id).pipe(Effect.mapError(() => new NotFound({ id })));
+      yield* guarded(userId, row.projectId, id, canSeeProject);
+      return row;
+    });
+
     const process = Effect.fn("ProjectAccess.process")(function* (id: SessionProcessId) {
       const row = yield* processes.byId(id);
       if (row === null) return yield* new NotFound({ id });
@@ -252,6 +264,7 @@ export const ProjectAccessLive: Layer.Layer<
       worktree,
       change,
       session,
+      sessionView,
       sessionAs,
       process,
       service,

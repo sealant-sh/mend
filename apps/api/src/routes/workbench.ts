@@ -2287,7 +2287,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
         const access = yield* ProjectAccess;
-        const active = yield* access.filterByProject(yield* sessions.listActive());
+        // With the people live in each executor (docs/adr/0016, decision 13), in the same query.
+        const active = yield* access.filterByProject(yield* sessions.listActiveView());
         if (query.retained === undefined) return active;
 
         const ids = new Set(active.map((session) => session.id));
@@ -2333,7 +2334,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
         const landings = yield* ChangeLandingsRepo;
-        const session = yield* (yield* ProjectAccess).session(params.id);
+        const session = yield* (yield* ProjectAccess).sessionView(params.id);
         // Someone is looking: read the running executor's capture status (throttled, in the
         // background) so a failing snap shows now, not at the reaper's next read. The answer
         // reaches the view as a session event.
@@ -2370,7 +2371,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
         return new SessionDetail({
           session: asLaunching((yield* SessionEngine).launchUnderWay)(session),
-          control: sessionControlView(session, viewer),
+          control: sessionControlView(
+            session,
+            viewer,
+            yield* (yield* SessionEngine).steersPerPerson(session),
+          ),
           checkpoints: sessionCheckpoints,
           change,
           repositories,

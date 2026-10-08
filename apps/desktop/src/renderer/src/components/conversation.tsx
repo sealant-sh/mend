@@ -35,6 +35,7 @@ import {
   type ConversationEntry,
 } from "#/lib/conversation";
 import { sessionDetailQuery } from "#/lib/queries";
+import { sessionWaitingQuery } from "#/lib/shared-workspace";
 import { membersQuery } from "#/lib/viewer";
 
 /**
@@ -295,6 +296,8 @@ export function ProtocolConversation({
   const control = useQuery(controlEventsQuery(sessionId));
   const members = useQuery(membersQuery);
   const detail = useQuery(sessionDetailQuery(sessionId));
+  // What holds the next sender's turn, as both people see it (docs/adr/0016, decision 6).
+  const waiting = useQuery(sessionWaitingQuery(sessionId, live)).data ?? null;
   const { submit, respond, interrupt } = useConversationActions(sessionId);
   const [draft, setDraft] = useState("");
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -386,6 +389,9 @@ export function ProtocolConversation({
         <div className="mx-auto flex max-w-[820px] flex-col gap-3.5 px-6 py-5">
           {empty !== null && <p className="font-mono text-[12px] text-faint">{empty}</p>}
           {entries.map(row)}
+          {waiting !== null && (
+            <p className="font-mono text-[11.5px] whitespace-pre-wrap text-ink-2">{waiting.line}</p>
+          )}
           {activityLine !== null && (
             <p className="font-mono text-[11.5px] text-faint">{activityLine}</p>
           )}

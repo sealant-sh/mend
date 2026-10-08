@@ -86,10 +86,12 @@ When any of this cannot be done, the session does not start, and it says why
 (`PI_PROFILE_NOT_DELIVERED`). A `settings.json` or delivery record that does not parse is one such
 case: it is left as it is, and the session says which file to fix.
 
-A pi session that joins a workspace where a pi is already running runs on the profile already there,
-since pi reads one profile per harness home. When that pi is another person's, yours runs on their
-profile: see
+In a workspace that shares one home, a pi session that joins a workspace where a pi is already
+running runs on the profile already there, since pi reads one profile per harness home. When that pi
+is another person's, yours runs on their profile: see
 [known issues](/reference/known-issues/#a-pi-that-joins-another-persons-running-pi-runs-on-their-profile).
+In a [per-person workspace](/operate/per-person-workspaces/) each pi runs on its own person's
+profile, in their own home.
 
 ## Packages that build native code
 

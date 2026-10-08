@@ -88,6 +88,7 @@ export default defineConfig({
             { label: "Deploy on a VPS", slug: "operate/deploy-vps" },
             { label: "Deploy on Kubernetes", slug: "operate/deploy-kubernetes" },
             { label: "Exposure and the public gate", slug: "operate/exposure" },
+            { label: "Per-person workspaces", slug: "operate/per-person-workspaces" },
             { label: "Troubleshooting", slug: "operate/troubleshooting" },
           ],
         },
@@ -103,6 +104,7 @@ export default defineConfig({
           items: [
             { label: "Feature status", slug: "reference/feature-status" },
             { label: "Known issues", slug: "reference/known-issues" },
+            { label: "Release notes", slug: "reference/release-notes" },
             { label: "CLI", slug: "reference/cli" },
             { label: "Server environment", slug: "reference/server-environment" },
             { label: "Product language", slug: "reference/product-language" },

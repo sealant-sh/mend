@@ -18,6 +18,7 @@ import { ReplayScrubber } from "#/components/replay-scrubber";
 import { SharedControlFact, SharedControlSwitch } from "#/components/shared-control";
 import { StatusDot } from "#/components/status-dot";
 import { TtyTerminal } from "#/components/tty-terminal";
+import { WorkspaceFacts } from "#/components/workspace-facts";
 import {
   agentIsLive,
   agentRunsAsConversation,
@@ -152,7 +153,12 @@ export function TerminalPane({
     detail.data?.control ??
     (session === null || viewer === null
       ? NO_CONTROL
-      : { ...sessionActions(session, viewer), toggleSharedControl: false });
+      : {
+          ...sessionActions(session, viewer),
+          toggleSharedControl: false,
+          // Until the session's own view says otherwise, a steered turn spends the owner's logins.
+          turnsOnSendersLogin: false,
+        });
   const [from, setFrom] = useState(() => takeReplayCursor(tab.sessionId));
   const [recordFace, setRecordFace] = useState<"replay" | "transcript">("replay");
   const mark = useMutation({
@@ -387,7 +393,10 @@ export function TerminalPane({
               </Quiet>
             )}
             {session.ownerUserId !== null && control.own && (
-              <SharedControlSwitch session={session} />
+              <SharedControlSwitch
+                session={session}
+                turnsOnSendersLogin={control.turnsOnSendersLogin}
+              />
             )}
             {servicesHold !== null && control.stop && (
               <Quiet
@@ -488,6 +497,13 @@ export function TerminalPane({
 
       {session !== null && tab.kind !== "logs" && (
         <SharedControlFact session={session} control={control} ownerName={ownerName} />
+      )}
+      {session !== null && tab.kind !== "logs" && (
+        <WorkspaceFacts
+          sessionId={tab.sessionId}
+          livePeople={detail.data?.session.livePeople}
+          viewerId={viewer?.userId ?? null}
+        />
       )}
       {(readsTerminal || ownerResumes) && (
         <div className="flex h-7 shrink-0 items-center border-b border-rule-faint bg-background px-3">

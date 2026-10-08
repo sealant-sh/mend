@@ -1,6 +1,7 @@
 import {
   CheckpointRequest,
   DeliverFollowUpRequest,
+  EndBackgroundWorkRequest,
   LaunchRequest,
   NewWorkbenchSession,
   PastedImageUpload,
@@ -108,6 +109,30 @@ export const sessionsRouter = router({
     .input(byId)
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.listRecipes({ params: { id: i.id } })),
+    ),
+  // docs/adr/0016, decision 6: what holds the next sender's turn; null when nothing waits.
+  conversationWait: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.conversationWait({ params: { id: i.id } })),
+    ),
+  // The waiting line's action: end one piece of the previous sender's background work.
+  endBackgroundWork: procedure
+    .input(input(Schema.Struct({ id: SessionId, work: EndBackgroundWorkRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.endBackgroundWork({ params: { id: i.id }, payload: i.work })),
+    ),
+  // docs/adr/0016, decision 14: the executor's retirement; null while none is under way.
+  workspaceRetirement: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.workspaceRetirement({ params: { id: i.id } })),
+    ),
+  // "Replace this workspace now": refused in words (`WorkspaceReplaceRefused`) the page shows.
+  replaceWorkspace: procedure
+    .input(byId)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.replaceWorkspace({ params: { id: i.id } })),
     ),
   pendingFollowUp: procedure
     .input(byId)

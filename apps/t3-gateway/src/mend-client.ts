@@ -10,7 +10,9 @@ import type * as HttpClientResponse from "effect/unstable/http/HttpClientRespons
 
 import { GatewayConfig } from "./config.ts";
 import {
+  MendActiveSession,
   MendChangeDiff,
+  MendConversationWait,
   MendEventPointer,
   MendItem,
   MendProject,
@@ -19,6 +21,7 @@ import {
   MendSession,
   MendSessionDetail,
   MendTurn,
+  MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
 
 /**
@@ -207,6 +210,26 @@ export class MendClient extends Context.Service<
     ) => MendRead<ReadonlyArray<MendRequest>>;
     /** `GET /api/sessions/:id`: the session, what the caller may do with it, and its change. */
     readonly sessionDetail: (deviceToken: string, sessionId: string) => MendRead<MendSessionDetail>;
+    /**
+     * `GET /api/sessions`: the person's live sessions, each with the people live in its executor
+     * (docs/adr/0016, decision 13).
+     */
+    readonly listActiveSessions: (
+      deviceToken: string,
+    ) => MendRead<ReadonlyArray<MendActiveSession>>;
+    /** `GET /api/sessions/:id/waiting`: what holds the next sender's turn; null when nothing. */
+    readonly conversationWait: (
+      deviceToken: string,
+      sessionId: string,
+    ) => MendRead<MendConversationWait | null>;
+    /**
+     * `GET /api/sessions/:id/workspace-retirement`: the session's executor waiting to be replaced;
+     * null while none of that is under way.
+     */
+    readonly workspaceRetirement: (
+      deviceToken: string,
+      sessionId: string,
+    ) => MendRead<MendWorkspaceRetirement | null>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
     readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
     /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
@@ -250,6 +273,11 @@ const decodeRequests = Schema.decodeUnknownEffect(Schema.Array(MendRequest));
 const decodeItems = Schema.decodeUnknownEffect(Schema.Array(MendItem));
 const decodeSessionDetail = Schema.decodeUnknownEffect(MendSessionDetail);
 const decodeChangeDiff = Schema.decodeUnknownEffect(MendChangeDiff);
+const decodeActiveSessions = Schema.decodeUnknownEffect(Schema.Array(MendActiveSession));
+const decodeConversationWait = Schema.decodeUnknownEffect(Schema.NullOr(MendConversationWait));
+const decodeWorkspaceRetirement = Schema.decodeUnknownEffect(
+  Schema.NullOr(MendWorkspaceRetirement),
+);
 const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
@@ -468,6 +496,25 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeSessionDetail,
         );
 
+      const listActiveSessions = (deviceToken: string) =>
+        read("GET /api/sessions", "/api/sessions", deviceToken, decodeActiveSessions);
+
+      const conversationWait = (deviceToken: string, sessionId: string) =>
+        read(
+          "GET /api/sessions/:id/waiting",
+          `/api/sessions/${encodeURIComponent(sessionId)}/waiting`,
+          deviceToken,
+          decodeConversationWait,
+        );
+
+      const workspaceRetirement = (deviceToken: string, sessionId: string) =>
+        read(
+          "GET /api/sessions/:id/workspace-retirement",
+          `/api/sessions/${encodeURIComponent(sessionId)}/workspace-retirement`,
+          deviceToken,
+          decodeWorkspaceRetirement,
+        );
+
       const changeDiff = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/diff",
@@ -604,6 +651,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         listItems,
         listRequests,
         sessionDetail,
+        listActiveSessions,
+        conversationWait,
+        workspaceRetirement,
         changeDiff,
         submitTurn,
         launchProtocol,

@@ -1,3 +1,4 @@
+import { joinWorktreeLine } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +9,8 @@ import {
   deriveProjects,
   deriveWorktrees,
   elapsedWords,
+  fetchWorkbench,
+  fetchWorkspaceFacts,
   filterBranches,
   foldGroupStatus,
   fitHints,
@@ -34,6 +37,8 @@ import {
   stepColumn,
   verbForKey,
   verbHints,
+  workspaceFactRows,
+  worktreeJoinRows,
   type BranchDto,
   type Column,
   type CreatingState,
@@ -1136,5 +1141,106 @@ describe("dashboard status stories", () => {
     expect(elapsedWords(minutesAgo(61), NOW)).toBe("1h");
     expect(elapsedWords(minutesAgo(60 * 49), NOW)).toBe("2d");
     expect(elapsedWords(new Date(NOW + 60_000).toISOString(), NOW)).toBeNull();
+  });
+});
+
+/** A fake server through JSON, as the wire carries it; a route it lacks answers 404. */
+const fakeApi =
+  (routes: Readonly<Record<string, unknown>>) =>
+  async <T>(_method: string, route: string): Promise<T> => {
+    if (!(route in routes)) throw new Error(`GET ${route} → 404`);
+    return JSON.parse(JSON.stringify(routes[route]));
+  };
+
+describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", () => {
+  const anna = { accountId: "anna", name: "Anna" };
+  const bob = { accountId: "bob", name: "Bob" };
+
+  it("fetchWorkbench puts the session view's live people on the project's rows", async () => {
+    const data = await fetchWorkbench({
+      api: fakeApi({
+        "/projects": [project],
+        "/services": [],
+        [`/projects/${project.id}`]: {
+          project,
+          sessions: [session({ id: "a", worktreeId: "wt-1", status: "running" })],
+          annotations: [],
+          worktrees: [worktree({ id: "wt-1" })],
+        },
+        "/sessions/a": {
+          session: session({
+            id: "a",
+            worktreeId: "wt-1",
+            status: "running",
+            livePeople: [anna, bob],
+          }),
+          processes: [],
+        },
+      }),
+    });
+    expect(data.details.get(project.id)?.sessions[0]?.livePeople).toEqual([anna, bob]);
+  });
+
+  it("says the join line where another person's session runs, wrapped to the modal", () => {
+    const data = workbench({
+      project,
+      sessions: [session({ id: "a", worktreeId: "wt-1", status: "running", livePeople: [anna] })],
+      annotations: [],
+      worktrees: [worktree({ id: "wt-1", name: "fix-auth" })],
+    });
+    const byId = worktreeJoinRows(data, project.id, { id: "wt-1" }, "bob", 60);
+    expect(byId.join(" ")).toBe(joinWorktreeLine(["Anna"]));
+    expect(worktreeJoinRows(data, project.id, { name: "fix-auth" }, "bob", 60)).toEqual(byId);
+    // Your own session is not another person's.
+    expect(worktreeJoinRows(data, project.id, { id: "wt-1" }, "anna", 60)).toEqual([]);
+    expect(worktreeJoinRows(data, project.id, { name: "new-one" }, "bob", 60)).toEqual([]);
+  });
+
+  it("reads the waiting line and the retirement, and nothing from an older server", async () => {
+    expect(await fetchWorkspaceFacts(fakeApi({}), "a")).toEqual({ wait: null, retirement: null });
+    const facts = await fetchWorkspaceFacts(
+      fakeApi({
+        "/sessions/a/waiting": {
+          line: "Waits for Anna's background task before Bob's turn starts.",
+        },
+        "/sessions/a/workspace-retirement": null,
+      }),
+      "a",
+    );
+    expect(facts.wait?.line).toBe("Waits for Anna's background task before Bob's turn starts.");
+  });
+
+  it("wraps the session's workspace lines to the pane, stop lines indented", () => {
+    const rows = workspaceFactRows(
+      { id: "3f2a0001", livePeople: [anna, bob] },
+      { userId: "bob", members: [] },
+      {
+        wait: null,
+        retirement: {
+          state: "marked",
+          preRelease: true,
+          launcher: "anna",
+          stops: [{ kind: "service", label: "storybook started by hand in the workspace" }],
+          reason: null,
+          canReplace: true,
+        },
+      },
+      40,
+    );
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(40);
+    expect(rows[0]).toBe("Shared workspace with Anna · each of you");
+    expect(rows.some((row) => row.startsWith("  Service started by hand"))).toBe(true);
+    expect(rows.join(" ")).toContain("mend workspace replace 3f2a0001");
+  });
+
+  it("says nothing with one person live and nothing waiting", () => {
+    expect(
+      workspaceFactRows(
+        { id: "a", livePeople: [bob] },
+        { userId: "bob", members: [] },
+        undefined,
+        80,
+      ),
+    ).toEqual([]);
   });
 });

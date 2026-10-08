@@ -169,7 +169,10 @@ the person who made the request can switch.
 
 - `@mend <request>` in a thread that has a session is a follow-up turn for the thread's most recent
   session. The session's owner can always send one; anyone else only while the owner has
-  [shared control](/organizations/overview/#who-steers-a-session) on.
+  [shared control](/organizations/overview/#who-steers-a-session) on. In a workspace that shares one
+  home such a turn runs on the owner's provider logins; in a
+  [per-person workspace](/operate/per-person-workspaces/) it runs on the sender's own, and a sender
+  with no login for the session's provider is refused.
 - When the agent has asked a question, the owner's next mention answers it instead of starting a
   turn.
 - `@mend new <request>` starts another session in the same thread. So does a mention that names a

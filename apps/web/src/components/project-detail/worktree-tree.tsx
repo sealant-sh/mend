@@ -204,7 +204,11 @@ function WorktreeNode({
             <PullRequestLink pullRequest={group.annotation.pullRequest} className="max-w-[16rem]" />
           )}
           <ReviewLink group={group} />
-          <NewWorktreeSession worktreeId={group.worktree.id} worktreeName={name} />
+          <NewWorktreeSession
+            worktreeId={group.worktree.id}
+            worktreeName={name}
+            sessions={group.members}
+          />
         </div>
       </div>
       <ul id={listId} hidden={!open} className="list-none pb-2.5 pl-7">

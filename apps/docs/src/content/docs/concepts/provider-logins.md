@@ -50,9 +50,18 @@ Your login belongs to your Mend account and is used for your work:
 Nobody else can read your credential, see its value, or choose it for their own sessions. Mend never
 spends one person's login on another person's session or request.
 
-One setting spends your subscription on someone else's action, and only when you turn it on:
-**shared control** lets other members of your organization steer a session you own. The session
-keeps running on your login, and the setting says so where you turn it on.
+In a workspace that shares one home, the default, one setting spends your subscription on someone
+else's action, and only when you turn it on: **shared control** lets other members of your
+organization steer a session you own, and the session keeps running on your login. Someone who joins
+your worktree there runs on your logins too: see
+[Known issues](/reference/known-issues/#a-session-that-joins-someone-elses-executor-runs-on-their-logins).
+
+In a [per-person workspace](/operate/per-person-workspaces/) no person runs on anyone else's login.
+Each person's logins are written into their own home in the workspace, owned by their own Linux
+user, and kept fresh there. A joiner's processes run on the joiner's logins, and under shared
+control each turn runs on its sender's login. A start whose provider is not connected is refused
+(`Connect Claude to start a session here.`). With `sudo`, anyone working in the workspace can still
+read those files: see [What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).
 
 ## Where copies go, and why they cannot break your login
 
@@ -84,9 +93,10 @@ refresh is one tiny exchange. Codex refreshes without a model request.
 
 pi and opencode run on your ChatGPT subscription through the Codex login you connected: there is no
 separate login to connect. When either starts, Mend writes that login into the tool's own
-`auth.json` in its own format, as the same copy that cannot refresh. A login you make inside the
-session with `/login` is yours and is never replaced, and neither tool's login file is kept with the
-session.
+`auth.json` in its own format, as the same copy that cannot refresh. In a per-person workspace the
+platform writes them into your home and refreshes them as it does the others. A login you make
+inside the session with `/login` is yours and is never replaced, and neither tool's login file is
+kept with the session.
 
 A Claude subscription cannot be used this way: Anthropic does not allow a Claude Pro or Max login in
 third-party agents. Use an Anthropic API key with pi or opencode instead.

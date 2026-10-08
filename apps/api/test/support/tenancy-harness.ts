@@ -151,6 +151,7 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "projects.byId",
   "projects.listForOrganization",
   "sessions.byId",
+  "sessions.viewById",
   // The session budgets count before anything is created; a count is a read, not an effect.
   "sessions.countUnsettledForOrganization",
   "sessions.listUnsettledForOwner",
@@ -705,6 +706,8 @@ export const createTenancyWorld = async (
         listForWorktree: (worktreeId) =>
           Effect.succeed([...sessions.values()].filter((row) => row.worktreeId === worktreeId)),
         listActive: () => Effect.succeed([...sessions.values()]),
+        listActiveView: () => Effect.succeed([...sessions.values()]),
+        viewById: (id) => found(sessions, id, () => new SessionNotFoundError({ sessionId: id })),
         listUnsettled: () => Effect.succeed([...sessions.values()]),
         // What the session budgets count (docs/adr/0004): every session in the world is unsettled.
         countUnsettledForOrganization: (organizationId) =>

@@ -518,6 +518,102 @@ const withBody = (request: IncomingMessage, reply: (body: unknown) => void): voi
   void bodyOf(request).then(reply);
 };
 
+describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning, () => {
+  const anna = { accountId: "anna", name: "Anna" };
+  const bob = { accountId: "bob", name: "Bob" };
+  const worktree = {
+    id: "wt-1",
+    name: "fix-auth",
+    directory: "fix-auth",
+    branch: "mend/fix-auth",
+    baseSha: "abc123",
+    baseRef: "main",
+    createdAt: new Date(0).toISOString(),
+  };
+  const annas = { ...session, id: "annas-session", worktreeId: worktree.id, baseRef: "main" };
+  const people = (handle: (route: string, response: ServerResponse) => boolean): HttpHandler => {
+    return (request, response) => {
+      const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+      if (handle(route, response)) return;
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === `GET /api/projects/${project.id}`) {
+        json(response, { project, sessions: [annas], annotations: [], worktrees: [worktree] });
+      } else if (route === "GET /api/organization") json(response, { userId: "bob" });
+      else if (route === "GET /api/organization/members") json(response, []);
+      else if (route === "GET /api/sessions")
+        json(response, [{ ...annas, livePeople: [anna, bob] }]);
+      else response.writeHead(404).end();
+    };
+  };
+
+  it("says the join line before a session starts where another person's session runs", async () => {
+    const fake = await startFakeMend(
+      people((route, response) => {
+        if (route === `POST /api/projects/${project.id}/sessions`) json(response, session);
+        else if (route === `POST /api/sessions/${session.id}/launch`) json(response, session);
+        else return false;
+        return true;
+      }),
+    );
+    const cli = startCli(fake.url, [
+      "codex",
+      "--project",
+      project.name,
+      "--worktree",
+      "fix-auth",
+      "-d",
+    ]);
+    try {
+      await cli.exited;
+      const out = cli.stdout();
+      expect(out, cli.stderr()).toContain(
+        "Anna's session is running in this worktree. You share its workspace: everything you run runs as you, on your own logins, but either of you can read the other's files, logins included.",
+      );
+      expect(out.indexOf("Anna's session is running")).toBeLessThan(out.indexOf("✓ worktree"));
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("mend sessions says the shared workspace, waiting and retirement lines under a live row", async () => {
+    const fake = await startFakeMend(
+      people((route, response) => {
+        if (route === `GET /api/sessions/${annas.id}/waiting`) {
+          json(response, { line: "Waits for Anna's background task before Bob's turn starts." });
+        } else if (route === `GET /api/sessions/${annas.id}/workspace-retirement`) {
+          json(response, {
+            state: "marked",
+            preRelease: true,
+            launcher: "anna",
+            stops: [],
+            reason: null,
+            canReplace: false,
+          });
+        } else return false;
+        return true;
+      }),
+    );
+    const cli = startCli(fake.url, ["sessions"]);
+    try {
+      await cli.exited;
+      const out = cli.stdout();
+      expect(out, cli.stderr()).toContain(
+        "Shared workspace with Anna · each of you runs as yourself · either of you can read the other's files.",
+      );
+      expect(out).toContain("Waits for Anna's background task before Bob's turn starts.");
+      expect(out).toContain(
+        "This workspace started before Mend 0.36 and shares one home · it takes only Anna's sessions and turns until it is replaced",
+      );
+      // Not the change's owner: no action offered.
+      expect(out).not.toContain("Replace this workspace now");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+});
+
 describe("mend codex --land", spawning, () => {
   it("sends the session's own override and says what it did", async () => {
     const bodies: Array<unknown> = [];

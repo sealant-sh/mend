@@ -366,6 +366,13 @@ export class SessionControlView extends Schema.Class<SessionControlView>("Sessio
    * accept every steerer's keys.
    */
   terminalInput: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  /**
+   * A steered turn runs as its sender, on their own login, in the neutral context (docs/adr/0016,
+   * decisions 6 and 13): the session's worktree runs each person as themselves. False, a steered
+   * turn spends the owner's logins, as before; the Shared control switch says which. Older servers
+   * omit it.
+   */
+  turnsOnSendersLogin: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 }) {}
 
 /**

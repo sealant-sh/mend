@@ -182,6 +182,11 @@ Mend writes your [Git author](/guides/git-access/#git-author) into each workspac
 config before the agent starts. System config has the lowest precedence, so a `user` section in your
 dotfiles' `.gitconfig`, or in a repository's own config, still decides who commits.
 
+In a per-person workspace Mend writes no system Git config for you. It writes your author into
+`~/.mend/git-author` in your own home and includes that file at the very top of your
+`~/.config/git/config`, so every `user` setting your dotfiles make comes after it and wins. Your
+`~/.gitconfig` wins over both, as global config does.
+
 ## Launch timing
 
 Dotfiles resolve at workspace creation. A running workspace does not change when you sync another
@@ -195,6 +200,28 @@ source that was not applied and the reason, for example
 
 Each session receives the dotfiles of its owner. A collaborator reading or controlling that session
 does not replace them with another user's files.
+
+## Per-person workspaces
+
+In a [per-person workspace](/operate/per-person-workspaces/) each person has their own Linux user
+and home, and dotfiles apply for every person, as that person:
+
+- The platform's dotfiles verb applies your repository and snapshot into your own home, as your
+  user, scripts included: `./install.sh` runs as you when it is on. The launcher's apply the same
+  way; nothing personal is applied to `/root`.
+- They apply once your user is made in the workspace: at its start when you launched it, at your
+  first process when you join. Mend's own files in your home are placed after them.
+- **The launcher's agent starts after their `install.sh` ends.**
+- **A joiner's `install.sh` runs beside their agent,** so a join stays fast. The agent starts once
+  the files are applied, and the session line says `install.sh running`, then
+  `install.sh finished after the agent started` (with its exit code when it failed). An agent
+  started that way does not see what the script installs or changes later.
+- **Start my agents after install.sh** is a per-person setting, off by default. Turn it on to make
+  your joins wait for your `install.sh` before the agent starts. A start waits at most 15 minutes,
+  then starts and says the script is still running.
+
+A script can `sudo`, and with `sudo` anyone in the workspace can read your home: see
+[What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).
 
 ## Keep secrets out
 

@@ -102,6 +102,7 @@ Workspaces reach their session over a mounted Unix socket by default, or over a 
 | `MEND_SERVICE_HOSTS`             | `127.0.0.1` | Comma-separated literal IP addresses supervised Service listeners bind. Wildcard and public addresses are refused. Anything but loopback opens a multi mode gate item.                                                                                       |
 | `MEND_SERVICE_PORT_MIN`          | `43100`     | The lowest port a Service listener takes.                                                                                                                                                                                                                    |
 | `MEND_SERVICE_PORT_MAX`          | `43999`     | The highest port a Service listener takes.                                                                                                                                                                                                                   |
+| `MEND_HARNESS_LAYOUT`            | `shared`    | `person` gives each person their own Linux user and home in a workspace, for worktrees with no layout yet. A worktree that has run `person` stays `person`. See [Per-person workspaces](/operate/per-person-workspaces/).                                    |
 
 ## Exposure
 

@@ -101,8 +101,13 @@ gh auth token | mend connect github --from-stdin
 ```
 
 The GitHub account supplies `GH_TOKEN` and `GITHUB_TOKEN` to the workspace so `gh` and compatible
-tools can authenticate without placing the token in the worktree. Repository clone, fetch, and push
-authentication are separate. Read [Configure Git access](/guides/git-access/).
+tools can authenticate without placing the token in the worktree. In a
+[per-person workspace](/operate/per-person-workspaces/) there is no token in the environment: your
+login is written as `~/.config/gh/hosts.yml` in your own home, which `gh` reads, and Git over HTTPS
+to GitHub uses Mend's credential helper, which reads the same file. A command that needs the token
+gets it with `GH_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>`. Repository clone,
+fetch, and push authentication over SSH are separate. Read
+[Configure Git access](/guides/git-access/).
 
 Landing a change opens its pull request with the GitHub account of the change's owner. Without a
 connected GitHub account, the push can still happen and the pull request step fails with that
@@ -129,11 +134,28 @@ remove an account that is not connected.
 
 ## Where the account is used
 
-Connected accounts belong to your Mend user, not the machine-wide settings document. Mend resolves
-them when it creates a workspace for a session you own. Other users must connect their own accounts.
-When you turn on shared control for a session, others who can see the project steer it with your
-provider logins and Git access; every act is recorded with who did it. Read
-[Organizations](/organizations/overview/).
+Connected accounts belong to your Mend user, not the machine-wide settings document. Other users
+must connect their own accounts.
+
+In a workspace that shares one home, the default, Mend resolves them when it creates a workspace for
+a session you own, and every process in that workspace runs on them, including the processes of
+someone who joins your worktree. When you turn on shared control there, others who can see the
+project steer the session with your provider logins and Git access.
+
+In a [per-person workspace](/operate/per-person-workspaces/) each person's processes run on their
+own logins, written into their own home in the workspace:
+
+- **Your sessions, and your joins.** A session you start in a worktree where someone else's session
+  runs gets your logins, in your home, never theirs.
+- **Your steered turns.** Under shared control each turn runs on its sender's login: when you send a
+  turn to someone else's session, Mend runs it in an agent process of your user, on your login.
+- **Refused, not borrowed.** When the harness's provider is not connected, the start is refused
+  before anything runs, with `Connect Claude to start a session here.` (or Codex). A login that
+  needs reconnecting says
+  `Your Claude login needs reconnecting. Reconnect Claude to start a session here.` A steered turn
+  says `Connect Claude to steer this session.` Nobody else's login is used instead.
+
+Every act is recorded with who did it. Read [Organizations](/organizations/overview/).
 
 Mend's own reads of a change (a tour, "Read this change", "Suggest fixes") run on the Claude account
 of the person who asked for them, or their Codex account when they have no Claude account, never on

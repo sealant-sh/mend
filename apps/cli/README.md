@@ -171,6 +171,8 @@ mend refresh [project]                fetch origin's branches into the store
 mend land <session> [--branch b] [--no-pr] [--title t] | --check
                                       push the change to origin, open or update its pull request
 mend pull <session> [--force]         fetch the change into this clone as mend/<name>
+mend workspace replace <session> [--yes]
+                                      replace a workspace that started before Mend 0.36
 
 services
 mend service run|add|connect|list|logs|restart|stop|init
@@ -193,7 +195,8 @@ mend members                          who belongs to your organization, and thei
 mend invite [--role member|owner] [--email <address>] [--days <n>]
                                       print a one-time invitation link
 mend folder list|create|push|rm       your organization's folders
-mend session share <session> on|off   shared control: let everyone who can see a session steer it
+mend session share <session> on|off [--yes]
+                                      shared control: each turn runs on its sender's login
 
 this machine
 mend operator org list|create|rename|invite-owner

@@ -44,11 +44,20 @@ Sessions launched after a change receive the new set. A running session keeps wh
 next run in the same workspace, which receives the files you added or replaced and no longer has the
 ones you removed.
 
-One exception: on the captured session store a worktree has one workspace, so a session you start in
-a worktree where someone else's session is live runs in their workspace. It receives none of your
-secret files there, on that run or any later one in their workspace, and the session line names the
-files not written:
+On the captured session store a worktree has one workspace, so a session you start in a worktree
+where someone else's session is live runs in their workspace. What happens then depends on the
+workspace.
+
+**A workspace that shares one home** (the default) receives none of your secret files, on that run
+or any later one in their workspace, and the session line names the files not written:
 `secret files · 1 not written · this workspace is another person's · ~/.aws/credentials`.
+
+**A [per-person workspace](/operate/per-person-workspaces/)** gives each person their own Linux user
+and home. Your secret files are written into your own home, as your user, joins included, and a turn
+you send under shared control runs with your files. The record of what was written is per person, so
+a later delivery removes only your files you no longer keep. With `sudo`, anyone working in the
+workspace can still read them: see
+[What sudo means here](/operate/per-person-workspaces/#what-sudo-means-here).
 
 ## Never captured
 

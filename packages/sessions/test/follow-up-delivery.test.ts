@@ -457,6 +457,8 @@ const testLayer = (world: TestWorld) => {
     listForProject: () => Effect.die("not in test"),
     listForWorktree: () => Effect.die("not in test"),
     listActive: () => Effect.die("not in test"),
+    listActiveView: () => Effect.die("not in test"),
+    viewById: () => Effect.die("not in test"),
     listUnsettled: () => Effect.die("not in test"),
     setSharedControl: () => Effect.die("not in test"),
     disableSharedControlForOwner: () => Effect.succeed([]),

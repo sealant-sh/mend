@@ -46,6 +46,18 @@ export interface Session {
   /** What the session line says after its status (`building the workspace image …`); older servers omit it. */
   readonly summary: string | null;
   readonly createdAt: string;
+  /**
+   * The people with a process live in its executor (docs/adr/0016, decision 13). Filled by the
+   * session list and view only; empty from the project view, in a shared executor and from
+   * older servers.
+   */
+  readonly livePeople: ReadonlyArray<LivePerson>;
+}
+
+/** A person with a process live in a session's executor, as the server names them. */
+export interface LivePerson {
+  readonly accountId: string;
+  readonly name: string;
 }
 
 export interface ProjectDetail {

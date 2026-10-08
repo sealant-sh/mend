@@ -20,6 +20,7 @@ import {
 import { useHarnessCatalogs } from "#/lib/harness-models";
 import { autoLandItems } from "#/lib/landing";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
+import { useWorktreeJoinLine } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
 import { useInheritedSettings } from "#/lib/viewer";
 
@@ -64,6 +65,13 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
     (row) => row.projectId === projectId,
   );
   const worktree = worktrees.find((row) => row.id === pickedWorktreeId);
+  // Whose sessions already run in the chosen worktree (docs/adr/0016, decision 13): the Now page
+  // has loaded every project's detail, so this reads the cache.
+  const projectSessions = useQuery({
+    ...trpc.projects.detail.queryOptions({ id: projectId ?? "" }),
+    enabled: projectId !== undefined,
+  }).data?.sessions;
+  const joinLine = useWorktreeJoinLine(worktree?.id ?? null, projectSessions ?? []);
 
   if (projectId === undefined || project === undefined) return null;
 
@@ -184,6 +192,9 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
             }}
           />
         </div>
+        {joinLine === null ? null : (
+          <p className="px-5 pt-2 text-[12.5px] leading-relaxed text-ink-2">{joinLine}</p>
+        )}
         <textarea
           disabled={busy}
           value={prompt}

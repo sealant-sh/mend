@@ -27,6 +27,9 @@ class GatedMendClient {
   readonly listItems: DeviceCalls["listItems"];
   readonly listRequests: DeviceCalls["listRequests"];
   readonly sessionDetail: DeviceCalls["sessionDetail"];
+  readonly listActiveSessions: DeviceCalls["listActiveSessions"];
+  readonly conversationWait: DeviceCalls["conversationWait"];
+  readonly workspaceRetirement: DeviceCalls["workspaceRetirement"];
   readonly changeDiff: DeviceCalls["changeDiff"];
   readonly submitTurn: DeviceCalls["submitTurn"];
   readonly launchProtocol: DeviceCalls["launchProtocol"];
@@ -43,6 +46,9 @@ class GatedMendClient {
     this.listItems = calls.listItems;
     this.listRequests = calls.listRequests;
     this.sessionDetail = calls.sessionDetail;
+    this.listActiveSessions = calls.listActiveSessions;
+    this.conversationWait = calls.conversationWait;
+    this.workspaceRetirement = calls.workspaceRetirement;
     this.changeDiff = calls.changeDiff;
     this.submitTurn = calls.submitTurn;
     this.launchProtocol = calls.launchProtocol;
@@ -84,6 +90,10 @@ export const gateDeviceCalls = (
       guard(token, mend.listItems(token, sessionId, after, limit)),
     listRequests: (token, sessionId) => guard(token, mend.listRequests(token, sessionId)),
     sessionDetail: (token, sessionId) => guard(token, mend.sessionDetail(token, sessionId)),
+    listActiveSessions: (token) => guard(token, mend.listActiveSessions(token)),
+    conversationWait: (token, sessionId) => guard(token, mend.conversationWait(token, sessionId)),
+    workspaceRetirement: (token, sessionId) =>
+      guard(token, mend.workspaceRetirement(token, sessionId)),
     changeDiff: (token, changeId) => guard(token, mend.changeDiff(token, changeId)),
     submitTurn: (token, sessionId, input) => guard(token, mend.submitTurn(token, sessionId, input)),
     launchProtocol: (token, sessionId, prompt) =>

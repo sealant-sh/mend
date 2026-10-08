@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SHARED_CONTROL_LINE, SHARED_CONTROL_LINE_OWNER_LOGINS } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -195,8 +196,9 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
     }
   });
 
-  it("session share turns shared control on for the one session the prefix names", async () => {
-    const fake = await startFakeMend((request) =>
+  /** A fake server listing two sessions; the session view says whose login a turn runs on. */
+  const sharing = (turnsOnSendersLogin: boolean | undefined) =>
+    startFakeMend((request) =>
       request.url.startsWith("/api/sessions?")
         ? {
             status: 200,
@@ -205,16 +207,56 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
               { id: "9b000002", harness: "claude" },
             ],
           }
-        : { status: 200, body: {} },
+        : request.method === "GET" && request.url === "/api/sessions/3f2a0001"
+          ? {
+              status: 200,
+              body: {
+                session: { id: "3f2a0001" },
+                control: turnsOnSendersLogin === undefined ? {} : { turnsOnSendersLogin },
+              },
+            }
+          : { status: 200, body: {} },
     );
+
+  it("session share turns shared control on without asking where turns spend the owner's logins", async () => {
+    // An older server says nothing: the owner's logins, as before.
+    for (const turnsOnSendersLogin of [false, undefined]) {
+      const fake = await sharing(turnsOnSendersLogin);
+      try {
+        const result = await runCli(fake.url, ["session", "share", "3f2a", "on"]);
+        expect(result.code, result.stderr).toBe(0);
+        expect(fake.recorded.at(-1)).toEqual({
+          method: "PUT",
+          url: "/api/sessions/3f2a0001/shared-control",
+          body: { enabled: true },
+        });
+        expect(result.stdout).toContain(SHARED_CONTROL_LINE_OWNER_LOGINS);
+        expect(result.stdout).not.toContain(SHARED_CONTROL_LINE);
+      } finally {
+        await fake.close();
+      }
+    }
+  });
+
+  it("session share asks first where each turn runs on its sender's login, so a script passes --yes", async () => {
+    const fake = await sharing(true);
     try {
-      const result = await runCli(fake.url, ["session", "share", "3f2a", "on"]);
-      expect(result.code).toBe(0);
-      expect(fake.recorded.at(-1)).toEqual({
-        method: "PUT",
-        url: "/api/sessions/3f2a0001/shared-control",
-        body: { enabled: true },
-      });
+      const refused = await runCli(fake.url, ["session", "share", "3f2a", "on"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("pass --yes to turn shared control on");
+      expect(fake.recorded.some((entry) => entry.method === "PUT")).toBe(false);
+
+      const confirmed = await runCli(fake.url, ["session", "share", "3f2a", "on", "--yes"]);
+      expect(confirmed.code, confirmed.stderr).toBe(0);
+      expect(fake.recorded.at(-1)?.body).toEqual({ enabled: true });
+      // docs/adr/0016, decision 13: what shared control means where each person runs as themselves.
+      expect(confirmed.stdout).toContain(SHARED_CONTROL_LINE);
+      expect(confirmed.stdout).not.toContain("your credentials");
+
+      // Turning it off asks nothing.
+      const off = await runCli(fake.url, ["session", "share", "3f2a", "off"]);
+      expect(off.code).toBe(0);
+      expect(fake.recorded.at(-1)?.body).toEqual({ enabled: false });
     } finally {
       await fake.close();
     }

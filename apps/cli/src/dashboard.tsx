@@ -24,7 +24,9 @@ import {
   deriveHarnesses,
   deriveProjects,
   deriveWorktrees,
+  fetchViewer,
   fetchWorkbench,
+  fetchWorkspaceFacts,
   filterBranches,
   fitHints,
   elapsedWords,
@@ -55,7 +57,11 @@ import {
   stepColumn,
   verbForKey,
   verbHints,
+  VIEWER_KEY,
   WORKBENCH_KEY,
+  WORKSPACE_FACTS_KEY,
+  workspaceFactRows,
+  worktreeJoinRows,
   type BranchDto,
   type Column,
   type CreatingState,
@@ -475,12 +481,15 @@ const SessionFacts = ({
   item,
   rows,
   tunnels,
+  workspaceRows,
 }: {
   readonly group: WorktreeGroup | null;
   readonly item: SessionItem;
   readonly rows: number;
   /** Tunnels open on this machine; a tunneled Service shows where it opens here. */
   readonly tunnels: ReadonlyArray<OpenTunnel>;
+  /** What the session says about its workspace (docs/adr/0016), already wrapped to the pane. */
+  readonly workspaceRows: ReadonlyArray<string>;
 }) => {
   const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
@@ -520,6 +529,18 @@ const SessionFacts = ({
         {session.baseSha === "" ? "" : ` vs ${session.baseRef ?? session.baseSha.slice(0, 12)}`}
       </span>
     </text>,
+    // Who else is live here, what a turn waits for, a workspace waiting to be replaced: right
+    // under the status, before the facts a short pane may drop.
+    ...workspaceRows.map((row, index) => (
+      <text
+        key={`workspace-${index}`}
+        height={1}
+        bg="transparent"
+        fg={row.startsWith("  ") ? MUTED : INK_2}
+      >
+        {`  ${row}`}
+      </text>
+    )),
     <text key="started" height={1} bg="transparent" fg={FAINT}>
       {[
         ...(timeAgo(session.createdAt) === "" ? [] : [`created ${timeAgo(session.createdAt)}`]),
@@ -818,6 +839,30 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     refetchInterval: previewLive ? 8000 : false,
     retry: 1,
   });
+  // Who reads the dashboard: the shared workspace and join lines name everyone else.
+  const viewer = useQuery({
+    queryKey: VIEWER_KEY,
+    queryFn: () => fetchViewer(ctx),
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
+  });
+  const workspaceFacts = useQuery({
+    queryKey: WORKSPACE_FACTS_KEY(previewSessionId ?? "none"),
+    queryFn: () => fetchWorkspaceFacts(ctx.api, previewSessionId ?? ""),
+    enabled: previewSessionId !== null && previewLive && detailWidth > 0,
+    staleTime: 3000,
+    refetchInterval: previewLive ? 8000 : false,
+    retry: 1,
+  });
+  const workspaceRows =
+    selectedSession === null || !previewLive || detailWidth === 0
+      ? []
+      : workspaceFactRows(
+          selectedSession,
+          viewer.data,
+          workspaceFacts.data,
+          Math.max(16, detailWidth - 4),
+        );
   const preview = useMemo(
     () =>
       transcript.data === undefined
@@ -839,7 +884,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   // Slicing to exactly what fits is what keeps the newest line on screen — an
   // over-count would push it under the bottom border. A pane too short for the
   // facts drops them from the end rather than pushing the record out.
-  const factRows = Math.max(0, Math.min(SESSION_FACT_ROWS, layout.detailRows - 2));
+  const factRows = Math.max(
+    0,
+    Math.min(SESSION_FACT_ROWS + workspaceRows.length, layout.detailRows - 2),
+  );
   const showFactRule = factRows > 0 && layout.detailRows - factRows > 1;
   // A session that is still starting has no record to show. The image builds, then the session
   // boots; a first build on a new setup takes about seven minutes. Snake fills the wait.
@@ -2016,6 +2064,30 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           ? "new session · pick a harness"
           : `resume ${sessionDisplayName(picker.session)} · pick a harness`
         : `new session in ${picker.worktree.name} · pick a harness`;
+  // Where two people meet (docs/adr/0016, decision 13): said before the session starts.
+  const modalWidth = Math.min(74, terminalCols - 4);
+  const pickerJoinRows =
+    picker?.worktree?.id == null || selectedProject === null
+      ? []
+      : worktreeJoinRows(
+          data,
+          selectedProject.project.id,
+          { id: picker.worktree.id },
+          viewer.data?.userId ?? null,
+          modalWidth - 4,
+        );
+  const pickerJoinHeight = pickerJoinRows.length === 0 ? 0 : pickerJoinRows.length + 1;
+  // A join has no base to pick: its branch slots say who else runs there instead.
+  const creatingJoinRows =
+    creating === null || !creating.joins
+      ? []
+      : worktreeJoinRows(
+          data,
+          creating.projectId,
+          { name: creating.name },
+          viewer.data?.userId ?? null,
+          modalWidth - 7,
+        );
   // One big fixed-size modal: every step visible at once, nothing shifts as
   // focus moves through name → base → harness.
   const creatingHeight = 2 + 1 + 1 + 6 + 1 + deriveHarnesses(null).length;
@@ -2215,6 +2287,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             item={selectedItem}
             rows={factRows}
             tunnels={openTunnels}
+            workspaceRows={workspaceRows}
           />
           {showFactRule ? (
             <text height={1} bg="transparent" fg={FAINT}>
@@ -2360,9 +2433,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           position="absolute"
           zIndex={12}
           left={Math.max(1, Math.floor((terminalCols - Math.min(74, terminalCols - 4)) / 2))}
-          top={Math.max(1, Math.floor((terminalRows - (2 + pickerItems.length)) / 2))}
+          top={Math.max(
+            1,
+            Math.floor((terminalRows - (2 + pickerItems.length + pickerJoinHeight)) / 2),
+          )}
           width={Math.min(74, terminalCols - 4)}
-          height={2 + pickerItems.length}
+          height={2 + pickerItems.length + pickerJoinHeight}
           border
           borderStyle="rounded"
           borderColor={ACCENT}
@@ -2371,6 +2447,16 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           backgroundColor={SURFACE}
           flexDirection="column"
         >
+          {pickerJoinRows.map((row, index) => (
+            <text key={`join-${index}`} height={1} bg={SURFACE} fg={INK_2}>
+              {`  ${row}`}
+            </text>
+          ))}
+          {pickerJoinRows.length === 0 ? null : (
+            <text height={1} bg={SURFACE}>
+              {" "}
+            </text>
+          )}
           {pickerItems.map((item, index) => (
             <HarnessRow
               key={String(item.harness)}
@@ -2549,6 +2635,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                 : filterBranches(creating.branches, creating.query)[index];
             const active = creating.step === "base";
             if (branch === undefined) {
+              const joinRow = creatingJoinRows[index];
+              if (joinRow !== undefined) {
+                return (
+                  <text key={`slot-${index}`} height={1} bg={SURFACE} fg={INK_2}>
+                    {`     ${joinRow}`}
+                  </text>
+                );
+              }
               // The list's own state — loading, the error that stopped it, or
               // genuine emptiness — is stated on the first empty slot.
               const notice = creating.joins ? null : baseStepNotice(creating);

@@ -140,6 +140,17 @@ export type LandRequestDto = Payload<"POST", "/api/sessions/:id/land">;
 export type PullRequestCheckDto = Answer<"POST", "/api/changes/:id/pull-request/check">;
 /** A composed start — the server turns this into the harness's own argv. */
 export type LaunchStartDto = Omit<Payload<"POST", "/api/sessions/:id/launch">, "argv">;
+/**
+ * What holds the next sender's turn in a shared conversation (docs/adr/0016, decision 6): the
+ * waiting line both people see wherever the turn shows.
+ */
+export type ConversationWaitDto = NonNullable<Answer<"GET", "/api/sessions/:id/waiting">>;
+/** The session's executor waiting to be replaced (docs/adr/0016, decision 14). */
+export type WorkspaceRetirementDto = NonNullable<
+  Answer<"GET", "/api/sessions/:id/workspace-retirement">
+>;
+/** A person with a process live in the session's executor (docs/adr/0016, decision 13). */
+export type LivePersonDto = SessionDto["livePeople"][number];
 
 // ─── what the wire says about liveness ──────────────────────────────────────
 
@@ -251,10 +262,18 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The server's own sentence, when its refusal carried one: what a client shows as is. */
+    readonly detail: string | null = null,
   ) {
     super(message);
   }
 }
+
+/** A refusal in the server's own words when it gave any, else the request and its status. */
+export const refusalWords = (error: unknown, fallback: string): string => {
+  if (error instanceof ApiError) return error.detail ?? error.message;
+  return error instanceof Error ? error.message : fallback;
+};
 
 export const isUnauthorized = (error: unknown): boolean =>
   error instanceof ApiError && error.status === 401;
@@ -304,6 +323,7 @@ const call = async <M extends Method, P extends PathOf<M>>(
         ? (detail ?? "the Mend server did not answer")
         : `${method} ${filled} responded ${response.status}${detail === null ? "" : ` — ${detail}`}`,
       response.status,
+      detail,
     );
   }
   // The bridge hands back the parsed JSON; its shape is the contract's promise (lib/contract.ts).
@@ -420,6 +440,20 @@ export const listAgentItems = (sessionId: string, after: number, limit: number) 
 
 export const listAgentRequests = (sessionId: string) =>
   call("GET", "/api/sessions/:id/requests", { params: { id: sessionId } });
+
+/**
+ * What holds the next sender's turn in a shared conversation, as both people see it; null when
+ * nothing waits (docs/adr/0016, decision 6).
+ */
+export const sessionWaiting = (sessionId: string) =>
+  call("GET", "/api/sessions/:id/waiting", { params: { id: sessionId } });
+
+/**
+ * The session's executor, started before per-person homes, waiting to be replaced: what it says,
+ * and what would stop if it were replaced now. Null while none of that is under way.
+ */
+export const sessionWorkspaceRetirement = (sessionId: string) =>
+  call("GET", "/api/sessions/:id/workspace-retirement", { params: { id: sessionId } });
 
 /** Oldest first: who interrupted, attached, opened a shell, stopped or shared control. */
 export const sessionControlEvents = (sessionId: string) =>
@@ -589,6 +623,14 @@ export const stopSessionServices = (id: string) =>
  */
 export const setSharedControl = (id: string, enabled: boolean) =>
   call("PUT", "/api/sessions/:id/shared-control", { params: { id }, body: { enabled } });
+
+/**
+ * "Replace this workspace now": the change's owner; the executor goes after a saved final flush,
+ * and the worktree's next launch runs each person as themselves. A refusal (409) carries the
+ * server's own sentence (`refusalWords`).
+ */
+export const replaceWorkspace = (sessionId: string) =>
+  call("POST", "/api/sessions/:id/workspace-retirement/replace", { params: { id: sessionId } });
 
 /**
  * Settled sessions only — a live one answers 409. Removes the conversation

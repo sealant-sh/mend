@@ -134,6 +134,10 @@ front. The CLI creates or joins the worktree, says so when a name joins an exist
 the workspace and process, then attaches the current terminal. Requesting a `--base` that differs
 from an existing worktree's base is refused rather than silently re-basing it.
 
+In a per-person workspace, joining a worktree where another person's session runs says so before the
+session starts:
+`Anna's session is running in this worktree. You share its workspace: everything you run runs as you, on your own logins, but either of you can read the other's files, logins included.`
+
 ### Background sessions
 
 Sessions run in the background: closing the terminal, losing the network, or the CLI dying leaves
@@ -173,22 +177,23 @@ list does not know is passed through as given; the harness decides whether it ex
 
 ## Session commands
 
-| Command                                                        | Purpose                                                                                      |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `mend` or `mend ui [--no-tunnel]`                              | Open the terminal dashboard of projects, worktrees and sessions                              |
-| `mend snake`                                                   | Open the dashboard with a game of snake over it; `Esc` or `q` closes the game                |
-| `mend worktrees [--project <name>] [--json]`                   | List worktrees and the sessions inside them                                                  |
-| `mend worktrees rm <name> [--force] [--project <name>]`        | Remove a worktree, its sessions and its change, with `--force` when its change is not landed |
-| `mend sessions [--all] [--project <name>] [--json\|--json=v2]` | List live sessions, or include settled sessions with `--all`                                 |
-| `mend status`                                                  | Alias for `mend sessions`                                                                    |
-| `mend attach [session-id-prefix] [--no-tunnel]`                | Reattach to a running session; a session picked up on the phone moves to this terminal       |
-| `mend stop [session-id-prefix]`                                | Stop the agent; the worktree, record and review remain                                       |
-| `mend stop --all [--project <name>]`                           | Stop every live session, or every live session in one project                                |
-| `mend stop --services [session-id-prefix]`                     | Stop the session's Services instead of its agent                                             |
-| `mend shell [session-id-prefix]`                               | Open a shell in a live session workspace                                                     |
-| `mend continue [session-id]`                                   | Resume a session with its pending review follow-up                                           |
-| `mend resume [session-id] [--with <harness>]`                  | Restore provider state and resume a settled session                                          |
-| `mend rejoin [session-id] [--harness <harness>] [--no-tunnel]` | Attach when live, otherwise resume                                                           |
+| Command                                                        | Purpose                                                                                             |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `mend` or `mend ui [--no-tunnel]`                              | Open the terminal dashboard of projects, worktrees and sessions                                     |
+| `mend snake`                                                   | Open the dashboard with a game of snake over it; `Esc` or `q` closes the game                       |
+| `mend worktrees [--project <name>] [--json]`                   | List worktrees and the sessions inside them                                                         |
+| `mend worktrees rm <name> [--force] [--project <name>]`        | Remove a worktree, its sessions and its change, with `--force` when its change is not landed        |
+| `mend sessions [--all] [--project <name>] [--json\|--json=v2]` | List live sessions, or include settled sessions with `--all`                                        |
+| `mend status`                                                  | Alias for `mend sessions`                                                                           |
+| `mend attach [session-id-prefix] [--no-tunnel]`                | Reattach to a running session; a session picked up on the phone moves to this terminal              |
+| `mend stop [session-id-prefix]`                                | Stop the agent; the worktree, record and review remain                                              |
+| `mend stop --all [--project <name>]`                           | Stop every live session, or every live session in one project                                       |
+| `mend stop --services [session-id-prefix]`                     | Stop the session's Services instead of its agent                                                    |
+| `mend shell [session-id-prefix]`                               | Open a shell in a live session workspace                                                            |
+| `mend continue [session-id]`                                   | Resume a session with its pending review follow-up                                                  |
+| `mend resume [session-id] [--with <harness>]`                  | Restore provider state and resume a settled session                                                 |
+| `mend rejoin [session-id] [--harness <harness>] [--no-tunnel]` | Attach when live, otherwise resume                                                                  |
+| `mend workspace replace <session> [--yes]`                     | The change's owner replaces a workspace that started before Mend 0.36; prints what would stop first |
 
 With no session ID, `attach`, `stop` and `shell` take the one live session; with several, a picker
 opens. A prefix of the ID is enough. Other commands narrow candidates by the current project and
@@ -203,6 +208,15 @@ change shape. `mend sessions --json=v2` and `mend worktrees --json` emit the wor
 envelope (`"version": 2`); against an older server every session appears as its own worktree with
 `"id": null`, so the shape is stable either way. Human-readable rows may change as the interface
 improves.
+
+In a [per-person workspace](/operate/per-person-workspaces/), `mend sessions` adds a line under a
+session when there is something to say about its workspace: who else is live in it
+(`Shared workspace with Anna · each of you runs as yourself · either of you can read the other's files.`),
+the waiting line while a turn waits for another person's work, and the line of a workspace that
+waits to be replaced. `mend workspace replace` is **Replace this workspace now** from a terminal: it
+lists what would stop (terminal sessions, shells, Services started by hand, processes Mend did not
+start, running containers), asks, and replaces the workspace once its last save is done. An agent
+turn in flight is never stopped; the server refuses.
 
 Deleting a session removes only the conversation record; the worktree, with its change and
 checkpoints, remains. Removing a worktree is its own explicit act (`mend worktrees rm <name>`,
@@ -362,10 +376,10 @@ The server takes one signer at a time; a newer share replaces the older one. The
 reachable local SSH agent, and signing happens on the machine holding the key. See
 [Git access](/guides/git-access/).
 
-The Git author is set as system Git config in each workspace before the agent starts, so a `user`
-section in your dotfiles' `.gitconfig` or in a repository's own config still decides. Until you set
-one, it is the name and email you registered with. Sessions launched after a change commit as the
-new author.
+The Git author is set as system Git config in each workspace before the agent starts (in a
+per-person workspace, in your own home's Git config), so a `user` section in your dotfiles'
+`.gitconfig` or in a repository's own config still decides. Until you set one, it is the name and
+email you registered with. Sessions launched after a change commit as the new author.
 
 ## Workspace SSH commands
 
@@ -434,15 +448,15 @@ and how it is saved.
 
 ## Organization commands
 
-| Command                                                               | Purpose                                                                                            |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `mend members`                                                        | Print the organization's name and one row per member: name, email, role and the day they joined    |
-| `mend invite [--role member\|owner] [--email <address>] [--days <n>]` | Owners only. Print a single-use invitation link; default role `member`, default 7 days, at most 30 |
-| `mend folder list`                                                    | List the organization's folders                                                                    |
-| `mend folder create <name>`                                           | Owners only. Create a folder; names use lowercase letters, digits, dots, underscores and dashes    |
-| `mend folder push <name> <dir> [--replace]`                           | Owners only. Upload a local directory into a folder; `--replace` empties the folder first          |
-| `mend folder rm <name>`                                               | Owners only. Remove a folder; refused while a project still selects it                             |
-| `mend session share <session> on\|off`                                | Turn shared control on or off for a session                                                        |
+| Command                                                               | Purpose                                                                                             |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `mend members`                                                        | Print the organization's name and one row per member: name, email, role and the day they joined     |
+| `mend invite [--role member\|owner] [--email <address>] [--days <n>]` | Owners only. Print a single-use invitation link; default role `member`, default 7 days, at most 30  |
+| `mend folder list`                                                    | List the organization's folders                                                                     |
+| `mend folder create <name>`                                           | Owners only. Create a folder; names use lowercase letters, digits, dots, underscores and dashes     |
+| `mend folder push <name> <dir> [--replace]`                           | Owners only. Upload a local directory into a folder; `--replace` empties the folder first           |
+| `mend folder rm <name>`                                               | Owners only. Remove a folder; refused while a project still selects it                              |
+| `mend session share <session> on\|off [--yes]`                        | Turn shared control on or off for a session; turning it on asks first, `--yes` answers for a script |
 
 Mend sends no email: you share the invitation link yourself. With `--email`, only an account with
 that address can accept it. Owners change roles and remove members in Settings on the web.
@@ -453,10 +467,11 @@ directories, symlinks, and files over 1 MiB, and counts what it skipped. See
 [Folders](/organizations/folders/).
 
 Only the session's owner turns shared control on; the owner or an organization owner turns it off.
-While it is on, anyone who can see the project sends turns, answers approvals and interrupts, using
-the owner's provider logins and Git access. They can attach to the terminal to read it; only the
-owner types in it, opens a shell or starts a Service. Every act is recorded with who did it. See
-[Organizations](/organizations/overview/).
+While it is on, anyone who can see the project sends turns, answers approvals and interrupts. In a
+workspace that shares one home they do so on the owner's provider logins and Git access; in a
+[per-person workspace](/operate/per-person-workspaces/) each turn runs on its sender's login. They
+can attach to the terminal to read it; only the owner types in it, opens a shell or starts a
+Service. Every act is recorded with who did it. See [Organizations](/organizations/overview/).
 
 ## Operator commands
 

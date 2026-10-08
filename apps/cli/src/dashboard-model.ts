@@ -1,6 +1,17 @@
 import { launchPhaseOf, servicesHoldLine } from "@mend/domain/workbench";
 
 import {
+  joinLineFor,
+  othersLiveInWorktree,
+  sessionWorkspaceLines,
+  workspaceLineList,
+  wrapWords,
+  type ConversationWaitDto,
+  type LivePersonDto,
+  type MemberNameDto,
+  type WorkspaceRetirementDto,
+} from "./shared-workspace.ts";
+import {
   agentIsLive,
   agentOutcome,
   captureLineOf,
@@ -49,6 +60,11 @@ export interface SessionDto extends SessionCaptureLike {
   readonly createdAt: string;
   /** When the session ended and its workspace went; absent on older servers. */
   readonly settledAt?: string | null;
+  /**
+   * The people with a process live in its executor (docs/adr/0016, decision 13), from the session
+   * view; absent on settled rows and older servers.
+   */
+  readonly livePeople?: ReadonlyArray<LivePersonDto>;
 }
 
 export interface WorktreeDto {
@@ -176,16 +192,28 @@ export const fetchWorkbench = async (ctx: { readonly api: WorkbenchApi }): Promi
     }),
   );
   const processesBySession = new Map<string, ReadonlyArray<SessionProcessDto>>();
+  const livePeopleBySession = new Map<string, ReadonlyArray<LivePersonDto>>();
   for (const detail of detailed) {
     if (detail === null) continue;
     processesBySession.set(
       detail.session.id,
       detail.processes.filter((process) => process.exitedAt === null && process.kind !== "service"),
     );
+    if (detail.session.livePeople !== undefined) {
+      livePeopleBySession.set(detail.session.id, detail.session.livePeople);
+    }
   }
+  // The project view lists nobody live; the session view does, read in the same pass.
+  const withPeople = fetched.map((detail) => ({
+    ...detail,
+    sessions: detail.sessions.map((session) => {
+      const livePeople = livePeopleBySession.get(session.id);
+      return livePeople === undefined ? session : { ...session, livePeople };
+    }),
+  }));
   return {
     projects,
-    details: new Map(fetched.map((detail) => [detail.project.id, detail])),
+    details: new Map(withPeople.map((detail) => [detail.project.id, detail])),
     servicesBySession,
     processesBySession,
   };
@@ -1060,6 +1088,94 @@ export const fitHints = (hints: ReadonlyArray<string>, width: number): string =>
 /** Keep a list index inside its list after the list itself changed under it. */
 export const clampIndex = (length: number, index: number): number =>
   length === 0 ? 0 : Math.max(0, Math.min(length - 1, index));
+
+// ─── people in a workspace (docs/adr/0016, decisions 13 and 14) ─────────────
+
+/** Who reads the dashboard, and the roster that names a retiring workspace's launcher. */
+export interface Viewer {
+  readonly userId: string | null;
+  readonly members: ReadonlyArray<MemberNameDto>;
+}
+
+export const VIEWER_KEY = ["viewer"];
+
+/** Read once per dashboard; a server before organizations answers with nobody. */
+export const fetchViewer = async (ctx: { readonly api: WorkbenchApi }): Promise<Viewer> => {
+  const [view, members] = await Promise.all([
+    ctx.api<{ readonly userId: string }>("GET", "/organization").catch(() => null),
+    ctx.api<ReadonlyArray<MemberNameDto>>("GET", "/organization/members").catch(() => []),
+  ]);
+  return { userId: view?.userId ?? null, members };
+};
+
+/** The selected session's waiting line and retirement, read while it is live. */
+export interface WorkspaceFacts {
+  readonly wait: ConversationWaitDto | null;
+  readonly retirement: WorkspaceRetirementDto | null;
+}
+
+export const WORKSPACE_FACTS_KEY = (sessionId: string) => ["workspace-facts", sessionId];
+
+/** Both reads at once; an older server's 404 reads as nothing to say. */
+export const fetchWorkspaceFacts = async (
+  api: WorkbenchApi,
+  sessionId: string,
+): Promise<WorkspaceFacts> => {
+  const [wait, retirement] = await Promise.all([
+    api<ConversationWaitDto | null>("GET", `/sessions/${sessionId}/waiting`).catch(() => null),
+    api<WorkspaceRetirementDto | null>("GET", `/sessions/${sessionId}/workspace-retirement`).catch(
+      () => null,
+    ),
+  ]);
+  return { wait, retirement };
+};
+
+/**
+ * The session pane's workspace lines, wrapped to the pane: the shared workspace line, the
+ * waiting line, the retirement line and, for the change's owner, how to replace it and what
+ * would stop. Every word is kept; a line too long for one row takes the next.
+ */
+export const workspaceFactRows = (
+  session: Pick<SessionDto, "id" | "livePeople">,
+  viewer: Viewer | undefined,
+  facts: WorkspaceFacts | undefined,
+  width: number,
+): ReadonlyArray<string> =>
+  workspaceLineList(
+    sessionWorkspaceLines({
+      sessionId: session.id,
+      livePeople: session.livePeople ?? [],
+      viewer: viewer?.userId ?? null,
+      wait: facts?.wait ?? null,
+      retirement: facts?.retirement ?? null,
+      members: viewer?.members ?? [],
+    }),
+  ).flatMap((line) => {
+    // A stop line keeps its indent on every row it wraps to.
+    const indent = line.startsWith("  ") ? "  " : "";
+    return wrapWords(line, width - indent.length).map((row) => `${indent}${row}`);
+  });
+
+/**
+ * The join line where a new session would start in an existing worktree (by id, or by the name
+ * the creation modal was given), wrapped to `width`; empty when nobody else's session runs there.
+ */
+export const worktreeJoinRows = (
+  data: Workbench | undefined,
+  projectId: string,
+  worktree: { readonly id: string } | { readonly name: string },
+  viewerId: string | null,
+  width: number,
+): ReadonlyArray<string> => {
+  const detail = data?.details.get(projectId);
+  const id =
+    "id" in worktree
+      ? worktree.id
+      : detail?.worktrees?.find((candidate) => candidate.name === worktree.name)?.id;
+  if (detail === undefined || id === undefined) return [];
+  const line = joinLineFor(othersLiveInWorktree(detail.sessions, id, viewerId));
+  return line === null ? [] : wrapWords(line, width);
+};
 
 // ─── the keymap: one table, so the footer cannot drift from the handler ─────
 

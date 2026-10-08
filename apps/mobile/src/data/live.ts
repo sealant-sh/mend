@@ -20,6 +20,11 @@ import { harnessName } from "@/data/harness-name";
 import type { LaunchOptions } from "@/data/harness-options";
 import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
 import type { CheckpointDto } from "@/data/review-state";
+import type {
+  ConversationWaitDto,
+  LivePersonDto,
+  WorkspaceRetirementDto,
+} from "@/data/shared-workspace";
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
@@ -214,6 +219,11 @@ export interface SessionDto {
   readonly captureDiscardedBy?: string | null;
   /** Who started the session; null for one from before organizations, absent on older servers. */
   readonly ownerUserId?: string | null;
+  /**
+   * The people with a process live in its executor (docs/adr/0016, decision 13): filled by the
+   * session's own view only; empty in a project's list, absent on older servers.
+   */
+  readonly livePeople?: ReadonlyArray<LivePersonDto>;
 }
 
 /**
@@ -672,6 +682,41 @@ export const useOwnerName = (session: SessionDto | undefined): string => {
   return members.find((member) => member.userId === ownerUserId)?.name ?? "its owner";
 };
 
+/** Who is looking: their account id, for the lines that name everyone else. */
+export const useViewerId = (): string | null =>
+  useQuery({
+    queryKey: ["organization"],
+    queryFn: () => api<{ readonly userId: string }>("GET", "/organization"),
+    staleTime: 60_000,
+    retry: false,
+  }).data?.userId ?? null;
+
+/**
+ * What holds the next sender's turn in a shared conversation, as both people see it (docs/adr/
+ * 0016, decision 6). Under the conversation's key, so a turn sent or answered re-reads it. A server
+ * from before shared steering answers 404: no line.
+ */
+export const useConversationWait = (sessionId: string, live: boolean) =>
+  useQuery({
+    queryKey: ["session", sessionId, "conversation", "waiting"],
+    queryFn: () => api<ConversationWaitDto | null>("GET", `/sessions/${sessionId}/waiting`),
+    refetchInterval: live ? 4_000 : false,
+    retry: false,
+  });
+
+/**
+ * The session's executor, started before per-person homes, waiting to be replaced (docs/adr/0016,
+ * decision 14); null while none of that is under way. A server from before answers 404: no line.
+ */
+export const useWorkspaceRetirement = (sessionId: string) =>
+  useQuery({
+    queryKey: ["session", sessionId, "workspace-retirement"],
+    queryFn: () =>
+      api<WorkspaceRetirementDto | null>("GET", `/sessions/${sessionId}/workspace-retirement`),
+    refetchInterval: 10_000,
+    retry: false,
+  });
+
 export interface TranscriptEventDto {
   readonly kind: string;
   readonly text: string | null;
@@ -896,6 +941,13 @@ export const useSessionActions = () => {
       api<SessionProcessDto>("POST", `/sessions/${sessionId}/shell`, {}),
     onSettled: invalidate,
   });
+  // "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner. A refusal
+  // (409) carries the server's own sentence, which `failureMessage` keeps as it is.
+  const replaceWorkspace = useMutation({
+    mutationFn: (sessionId: string) =>
+      apiNoContent("POST", `/sessions/${sessionId}/workspace-retirement/replace`, {}),
+    onSettled: invalidate,
+  });
   const stopShell = useMutation({
     mutationFn: (processId: string) =>
       api<SessionProcessDto>("POST", `/processes/${processId}/stop`, {}),
@@ -938,5 +990,6 @@ export const useSessionActions = () => {
     openShell,
     stopShell,
     deliverFollowUp,
+    replaceWorkspace,
   };
 };

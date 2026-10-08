@@ -1358,4 +1358,12 @@ benchmark once more, before 0.36 is tagged.
   owns every session it kept (owner decision 2026-10-08); otherwise nobody. A replacement whose
   final flush was sent stays `retiring` while its drain asks again, and the Services it starts again
   are kept with the row for a restart.
+- 2026-10-08, Delivery 20 as built: the lines of decision 13 are one module
+  (`@mend/domain/workbench`, `shared-workspace.ts`) every client draws from; the live people are the
+  distinct `runs_as` of live processes in the session's executor, so a `shared` executor lists
+  nobody, aggregated once per workspace and joined to the session rows in the API's session list and
+  view query (measured +3 ms on a 300-session list where every executor has two people). The Shared
+  control switch says the sender's-login line, and asks before it turns on, only where the session's
+  worktree runs each person as themselves (`SessionControlView.turnsOnSendersLogin`); elsewhere it
+  says the owner's logins are spent, as before.
 - Open: gate B's history record.

@@ -109,6 +109,16 @@ import {
   type ServiceTunnels,
 } from "./service-tunnels.ts";
 import {
+  joinLineFor,
+  othersLiveInWorktree,
+  sessionWorkspaceLines,
+  workspaceLineList,
+  type ConversationWaitDto,
+  type LivePersonDto,
+  type MemberNameDto,
+  type WorkspaceRetirementDto,
+} from "./shared-workspace.ts";
+import {
   agentIsLive,
   agentOutcome,
   type AgentProcessLike,
@@ -152,6 +162,7 @@ import {
   upgradeUrl,
 } from "./upgrade-url.ts";
 import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
+import { workspaceCommand } from "./workspace-replace.ts";
 import { worktreesRmCommand } from "./worktree-remove.ts";
 
 /**
@@ -252,6 +263,11 @@ interface SessionDto extends SessionCaptureLike {
   /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
+  /**
+   * The people with a process live in its executor (docs/adr/0016, decision 13): filled by
+   * `GET /sessions` and the session view only; absent on older servers.
+   */
+  readonly livePeople?: ReadonlyArray<LivePersonDto>;
 }
 
 /** The DB-cheap review facts the server decorates a project's sessions with. */
@@ -419,6 +435,8 @@ const request = async <T>(
     }
     throw new MendRequestError("http", message, response.status);
   }
+  // A route with nothing to return answers 204 with no body (`mend workspace replace`).
+  if (text === "") return JSON.parse("null");
   try {
     return JSON.parse(text) as T;
   } catch {
@@ -771,6 +789,67 @@ const askWorktreeName = async (): Promise<string | null> => {
   }
 };
 
+/** The signed-in account's id, or null from a server that cannot say (before organizations). */
+const viewerIdOf = (config: CliConfig): Promise<string | null> =>
+  request<{ readonly userId: string }>(config, "GET", "/organization").then(
+    (view) => view.userId,
+    () => null,
+  );
+
+/** Live sessions with the people live in their executors; nothing from a server that fails. */
+const liveSessionsOf = (config: CliConfig): Promise<ReadonlyArray<SessionDto>> =>
+  request<ReadonlyArray<SessionDto>>(config, "GET", "/sessions").catch(() => []);
+
+/**
+ * What each live session says about its workspace (docs/adr/0016, decisions 13 and 14): the
+ * shared workspace line, the waiting line, the retirement line and, for the change's owner, how
+ * to replace it. Two reads per live session; an older server's 404 reads as nothing to say.
+ */
+const workspaceLinesOf = async (
+  config: CliConfig,
+  sessions: ReadonlyArray<SessionDto>,
+): Promise<ReadonlyMap<string, ReadonlyArray<string>>> => {
+  const live = sessions.filter((session) => LIVE_STATUSES.has(session.status));
+  if (live.length === 0) return new Map();
+  const [viewer, listed] = await Promise.all([viewerIdOf(config), liveSessionsOf(config)]);
+  const peopleById = new Map(listed.map((session) => [session.id, session.livePeople ?? []]));
+  const facts = await Promise.all(
+    live.map(async (session) => {
+      const [wait, retirement] = await Promise.all([
+        request<ConversationWaitDto | null>(config, "GET", `/sessions/${session.id}/waiting`).catch(
+          () => null,
+        ),
+        request<WorkspaceRetirementDto | null>(
+          config,
+          "GET",
+          `/sessions/${session.id}/workspace-retirement`,
+        ).catch(() => null),
+      ]);
+      return { session, wait, retirement };
+    }),
+  );
+  const members = facts.some((fact) => fact.retirement !== null)
+    ? await request<ReadonlyArray<MemberNameDto>>(config, "GET", "/organization/members").catch(
+        () => [],
+      )
+    : [];
+  return new Map(
+    facts.map(({ session, wait, retirement }) => [
+      session.id,
+      workspaceLineList(
+        sessionWorkspaceLines({
+          sessionId: session.id,
+          livePeople: peopleById.get(session.id) ?? session.livePeople ?? [],
+          viewer,
+          wait,
+          retirement,
+          members,
+        }),
+      ),
+    ]),
+  );
+};
+
 const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<string>) => {
   const parsed = parseLaunchArgs(args);
   if (parsed.error !== null) return fail(parsed.error);
@@ -843,6 +922,10 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
       say(
         `${green("✓")} joins worktree ${joined.name} ${dim(`· ${members} session${members === 1 ? "" : "s"} · branch ${joined.branch}`)}`,
       );
+      // Where two people meet (docs/adr/0016, decision 13): said before the session starts.
+      const [viewer, live] = await Promise.all([viewerIdOf(config), liveSessionsOf(config)]);
+      const joinLine = joinLineFor(othersLiveInWorktree(live, joined.id, viewer));
+      if (joinLine !== null) say(`${amber("·")} ${joinLine}`);
     }
   }
   const lifecycle: "detach" | LifecycleMode =
@@ -4324,7 +4407,7 @@ const rowHold = (row: SessionRow): string | null =>
     ? null
     : servicesHoldOf(row.session, row.annotation.currentAgent, row.annotation.liveServices ?? 0));
 
-const printSessionRow = (row: SessionRow) => {
+const printSessionRow = (row: SessionRow, workspaceLines: ReadonlyArray<string> = []) => {
   const { session, annotation } = row;
   const live = ACTIVE_STATUSES.has(session.status);
   const status = session.status.padEnd(9);
@@ -4347,6 +4430,8 @@ const printSessionRow = (row: SessionRow) => {
   say(
     `${session.harness.padEnd(8)}  ${dim(session.id.slice(0, 8))}  ${live ? green(status) : dim(status)}  ${row.projectName}  ${dim(`${session.branch} · base ${base}${model}`)}${facts.length > 0 ? `  ${facts.join(dim(" · "))}` : ""}`,
   );
+  // What the session says about its workspace, one line each under the row.
+  for (const line of workspaceLines) say(`          ${dim(line)}`);
 };
 
 /** `mend models`: what the server lists per harness, the default marked (docs/models-audit.md). */
@@ -4478,7 +4563,11 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
     say(JSON.stringify(payload, null, 2));
     return;
   }
-  for (const row of rows) printSessionRow(row);
+  const workspaceLines = await workspaceLinesOf(
+    config,
+    rows.map((row) => row.session),
+  );
+  for (const row of rows) printSessionRow(row, workspaceLines.get(row.session.id));
 };
 
 interface WorktreeJsonSession {
@@ -4873,6 +4962,12 @@ const main = async () => {
     case "session":
       if (rest[0] === "share") return sessionShareCommand(boundApi(config), rest.slice(1));
       return fail(`unknown session command "${rest[0] ?? ""}" · mend help session share`);
+    case "workspace":
+      return workspaceCommand(
+        boundApi(config),
+        (method, route, body) => request(config, method, route, body),
+        rest,
+      );
     // Hidden in the catalog: the installer renders its own QR through this.
     case "qr":
       return qrCommand(rest);

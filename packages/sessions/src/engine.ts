@@ -2318,6 +2318,12 @@ export class SessionEngine extends Context.Service<
      * nothing. Runs on its own heartbeat; exposed for deterministic ticks.
      */
     readonly sweepRetirements: () => Effect.Effect<void>;
+    /**
+     * Whether a steered turn in this session runs as its sender, on their own login, in the
+     * neutral context (docs/adr/0016, decisions 6 and 13): its worktree runs each person as
+     * themselves. With the flag off and nothing recorded, false with no read.
+     */
+    readonly steersPerPerson: (session: Session) => Effect.Effect<boolean>;
     /** What the migration of the worktree's old shared home recorded; null when it never ran. */
     readonly preReleaseMemory: (worktreeId: WorktreeId) => Effect.Effect<PreReleaseMemory | null>;
     /** The session's executor's retirement, as `viewer` may act on it; null when none. */
@@ -21902,6 +21908,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         reapCaptureLeases: captureReaper,
         migratePreReleaseMemory,
         preReleaseMemory,
+        steersPerPerson: (session) =>
+          capture === null || !layoutSteps.personPossible()
+            ? Effect.succeed(false)
+            : layoutSteps.mayRunPerson(session.worktreeId),
         sweepRetirements: () => sweepRetirements(false),
         workspaceRetirement,
         replaceWorkspaceNow,
