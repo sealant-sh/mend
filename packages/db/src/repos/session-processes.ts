@@ -48,6 +48,11 @@ export interface NewSessionProcess {
   readonly hostPort?: number | null;
   /** Declared transport for Services; defaults to tcp. */
   readonly protocol?: "tcp" | "udp";
+  /**
+   * The account whose Linux user the process runs as in a person-layout executor (docs/adr/0016,
+   * decision 1); absent or null: root.
+   */
+  readonly runsAs?: string | null;
 }
 
 /**
@@ -151,6 +156,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
           attemptOrdinal: input.attemptOrdinal ?? null,
           protocolOptions: input.protocolOptions ?? null,
           status: input.status ?? "running",
+          runsAs: input.runsAs ?? null,
         })
         .returning()
         .pipe(Effect.orDie);

@@ -28286,3 +28286,227 @@ describe("readers per person (docs/adr/0016, Delivery 16)", () => {
     },
   );
 });
+
+const isStage = (argv: ReadonlyArray<string>) => (argv[2] ?? "").includes("leftover()");
+const isExchange = (argv: ReadonlyArray<string>) =>
+  (argv[2] ?? "").includes("nothing is staged for this conversation");
+
+/** A protocol host that records what each attached process resumes by. */
+const resumingHost = (
+  attached: Array<{ readonly process: SessionProcess; readonly resumePath: string | null }>,
+) =>
+  Layer.succeed(ProtocolHost, {
+    attach: (input) =>
+      Effect.sync(() => {
+        attached.push({ process: input.process, resumePath: input.resumePath ?? null });
+      }),
+    rehydrate: () => Effect.void,
+    submitTurn: () => Effect.die("not in test"),
+    interruptTurn: () => Effect.void,
+    respondRequest: () => Effect.die("not in test"),
+    detach: () => Effect.void,
+    has: () => Effect.succeed(false),
+  });
+
+describe("the conversation home of a shared conversation (docs/adr/0016, Delivery 17)", () => {
+  const scenario = async (options: {
+    readonly harness: "claude" | "codex";
+    readonly shared: boolean;
+    readonly mode: "protocol" | "pty";
+  }) => {
+    const created: Array<CreateOptions> = [];
+    const spawned: Array<ReadonlyArray<string>> = [];
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const calls: Array<string> = [];
+    const attached: Array<{
+      readonly process: SessionProcess;
+      readonly resumePath: string | null;
+    }> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const provider =
+      options.harness === "claude"
+        ? "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11"
+        : "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+    let sessionId: SessionId | null = null;
+    let afterFirst: { readonly execs: number; readonly calls: number } = { execs: 0, calls: 0 };
+    const exec = (argv: ReadonlyArray<string>) => {
+      if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
+      const script = argv[2] ?? "";
+      if (isStage(argv)) {
+        const home = `/run/mend/conv/${sessionId ?? ""}`;
+        const resume = !script.includes(provider)
+          ? ""
+          : options.harness === "claude"
+            ? `mend-conv resume ${home}/.claude/projects/-workspace-repo/${provider}.jsonl\n`
+            : `mend-conv resume ${home}/.codex/sessions/2026/10/07/rollout-2026-10-07T10-00-00-${provider}.jsonl\n`;
+        const moved = script.includes("moved=0") ? "mend-conv moved 2\n" : "";
+        return { exitCode: 0, stdout: `${moved}${resume}mend-conv empty\n`, stderr: "" };
+      }
+      if (isExchange(argv)) {
+        return { exitCode: 0, stdout: "mend-conv exchanged renameat2\n", stderr: "" };
+      }
+      return undefined;
+    };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: options.harness,
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          sessionId = session.id;
+          if (options.shared) {
+            const row = world.sessions.get(session.id);
+            if (row === undefined) return yield* Effect.die("no session");
+            world.sessions.set(
+              session.id,
+              new Session({ ...row, sharedControlEnabledAt: now(), sharedControlEverAt: now() }),
+            );
+          }
+          if (options.mode === "pty") {
+            yield* engine.launch(session.id, [options.harness]);
+            return;
+          }
+          yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+          afterFirst = { execs: execCalls.length, calls: calls.length };
+          // The conversation has a provider id now, as its first process's harvest leaves it.
+          const first = [...world.processes.values()].findLast(
+            (process) => process.sessionId === session.id && process.kind === "agent-protocol",
+          );
+          if (first === undefined) return yield* Effect.die("no protocol process");
+          world.processes.set(
+            first.id,
+            new SessionProcess({ ...first, providerSessionId: provider }),
+          );
+          yield* engine.stop(session.id);
+          yield* Effect.sleep("50 millis");
+          yield* engine.resumeSession(session.id, null);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          execCalls,
+          undefined,
+          { exec },
+        ),
+        protocolHostLayer: resumingHost(attached),
+        harnessLayout: { flag: "person", state, platform: personPlatform(calls, { person: true }) },
+      },
+    );
+    if (sessionId === null) throw new Error("no session");
+    return { sessionId, spawned, opened, execCalls, calls, attached, state, afterFirst, provider };
+  };
+
+  it("a shared Claude conversation moves into C once and runs in its home as its sender, in the neutral context", async () => {
+    const run = await scenario({ harness: "claude", shared: true, mode: "protocol" });
+    const home = `/run/mend/conv/${run.sessionId}`;
+    // First start: the move, as the owner, then the exchange; Core writes the owner's login into H.
+    const firstExecs = run.execCalls.slice(0, run.afterFirst.execs);
+    const stages = firstExecs.filter(isStage);
+    expect(stages).toHaveLength(1);
+    expect(stages[0]?.[2]).toContain("moved=0");
+    expect(firstExecs.filter(isExchange)).toHaveLength(1);
+    expect(run.calls.slice(0, run.afterFirst.calls)).toContain(`post:user-fixture:${home}`);
+    expect(run.state.sharedConversations.get(run.sessionId)?.owner).toBe("user-fixture");
+    // Started directly, with the neutral settings file: no seed, no shell profile.
+    const agentArgv = run.spawned.filter((argv) => argv.includes("stream-json"));
+    expect(agentArgv[0]?.[0]).toBe("claude");
+    expect(agentArgv[0]?.slice(-2)).toEqual([
+      "--settings",
+      JSON.stringify({
+        autoMemoryEnabled: false,
+        env: {
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          CLAUDE_CODE_DISABLE_ORG_MEMORY: "1",
+          CLAUDE_CODE_DISABLE_CRON: "1",
+          CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+        },
+      }),
+    ]);
+    const agentOptions = run.opened.filter(
+      (options) => "env" in options && options.env?.["CLAUDE_CONFIG_DIR"] !== undefined,
+    );
+    expect(agentOptions[0]?.env?.["CLAUDE_CONFIG_DIR"]).toBe(`${home}/.claude`);
+    expect(agentOptions[0]?.env?.["CLAUDE_CODE_DISABLE_AUTO_MEMORY"]).toBe("1");
+    expect(agentOptions[0]?.env?.["CLAUDE_CODE_DISABLE_CRON"]).toBe("1");
+    // The process says whose user it runs as.
+    expect(run.attached[0]?.process.runsAs).toBe("user-fixture");
+    // Stopped: the conversation is free and H's login released.
+    expect(run.calls).toContain(`delete:${home}`);
+    // Resumed: no move again, and Claude resumes by the full path of its transcript in C, via H.
+    const resumeStages = run.execCalls.slice(run.afterFirst.execs).filter(isStage);
+    expect(resumeStages).toHaveLength(1);
+    expect(resumeStages[0]?.[2]).not.toContain("moved=0");
+    const resumed = agentArgv.at(-1) ?? [];
+    expect(resumed[resumed.indexOf("--resume") + 1]).toBe(
+      `${home}/.claude/projects/-workspace-repo/${run.provider}.jsonl`,
+    );
+    // One live process per conversation: the resumed one holds it now.
+    const last = run.attached.at(-1)?.process;
+    expect(run.state.conversationHolders.get(run.sessionId)?.processId).toBe(last?.id);
+  }, 30_000);
+
+  it("a shared Codex conversation runs with HOME and its index at H, and resumes by its rollout's path", async () => {
+    const run = await scenario({ harness: "codex", shared: true, mode: "protocol" });
+    const home = `/run/mend/conv/${run.sessionId}`;
+    const agentOptions = run.opened.filter(
+      (options) => "env" in options && options.env?.["CODEX_HOME"] !== undefined,
+    );
+    expect(agentOptions[0]?.env?.["HOME"]).toBe(home);
+    expect(agentOptions[0]?.env?.["CODEX_SQLITE_HOME"]).toBe(`${home}/.codex`);
+    const agentArgv = run.spawned.filter((argv) => argv.includes("app-server"));
+    expect(agentArgv[0]).toEqual([
+      "codex",
+      "-c",
+      "features.memories=false",
+      "-c",
+      "features.plugins=false",
+      "-c",
+      "features.daemon_auto_start=false",
+      "-c",
+      "features.shell_snapshot=false",
+      "app-server",
+    ]);
+    expect(run.attached.at(-1)?.resumePath).toBe(
+      `${home}/.codex/sessions/2026/10/07/rollout-2026-10-07T10-00-00-${run.provider}.jsonl`,
+    );
+    expect(run.calls.filter((call) => call === `post:user-fixture:${home}`)).toHaveLength(2);
+  }, 30_000);
+
+  it("a conversation never shared runs in its owner's own home, as before", async () => {
+    const run = await scenario({ harness: "claude", shared: false, mode: "protocol" });
+    expect(run.execCalls.filter(isStage)).toHaveLength(0);
+    expect(run.calls.some((call) => call.includes("/run/mend/conv/"))).toBe(false);
+    expect(run.state.sharedConversations.size).toBe(0);
+    // Still one live process per conversation.
+    expect(run.state.conversationHolders.size).toBe(0);
+  }, 30_000);
+
+  it("Shared control on a terminal session changes nothing: no move, no conversation home, the owner's own context", async () => {
+    const run = await scenario({ harness: "claude", shared: true, mode: "pty" });
+    expect(run.execCalls.filter(isStage)).toHaveLength(0);
+    expect(run.execCalls.filter(isExchange)).toHaveLength(0);
+    expect(run.calls.some((call) => call.includes("/run/mend/conv/"))).toBe(false);
+    expect(run.state.sharedConversations.size).toBe(0);
+    for (const options of run.opened) {
+      if ("env" in options) expect(options.env?.["CLAUDE_CONFIG_DIR"]).toBeUndefined();
+    }
+  }, 30_000);
+});

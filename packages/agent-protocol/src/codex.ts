@@ -550,7 +550,14 @@ export const CodexAdapter: AgentAdapter = {
       );
 
       if (rehydrate === undefined) {
-        yield* request("initialize", { clientInfo: { name: "mend", version: "0.0.0" } });
+        // `experimentalApi`: `thread/resume { path }` is behind it (docs/adr/0016, decision 6);
+        // asked for only where a conversation home's process resumes by path.
+        yield* request("initialize", {
+          clientInfo: { name: "mend", version: "0.0.0" },
+          ...(options.providerSessionPath === undefined
+            ? {}
+            : { capabilities: { experimentalApi: true } }),
+        });
         yield* send({ method: "initialized" });
 
         const threadParams = {
@@ -569,6 +576,9 @@ export const CodexAdapter: AgentAdapter = {
             : yield* request("thread/resume", {
                 ...threadParams,
                 threadId: options.providerSessionId,
+                ...(options.providerSessionPath === undefined
+                  ? {}
+                  : { path: options.providerSessionPath }),
               }).pipe(
                 Effect.mapError((error) =>
                   isCodexThreadNotFound(error.message)

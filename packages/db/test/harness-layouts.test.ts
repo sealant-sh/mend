@@ -240,3 +240,143 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
     expect(await run(Effect.flatMap(HarnessLayoutsRepo, (repo) => repo.anyRecorded()))).toBe(true);
   });
 });
+
+describe.skipIf(!reachable)(
+  "one live agent process per conversation, in Postgres (Delivery 17)",
+  () => {
+    const db = `mend_conversations_test_${process.pid}_${Date.now()}`;
+    const url = (() => {
+      const parsed = new URL(ADMIN_URL);
+      parsed.pathname = `/${db}`;
+      return parsed.toString();
+    })();
+    const layer = HarnessLayoutsRepoLive.pipe(
+      Layer.provideMerge(PgClient.layer({ url: Redacted.make(url) })),
+    );
+    const inDb = <A, E>(effect: Effect.Effect<A, E, HarnessLayoutsRepo | SqlClient.SqlClient>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+    beforeAll(async () => {
+      await withAdmin(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(`CREATE DATABASE ${db}`);
+        }),
+      );
+      await inDb(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+          yield* Effect.forEach(ordered, ([, migration]) => migration, { discard: true });
+          yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'p', '/store/p-1/repo.git', 'main', (SELECT id FROM organizations LIMIT 1))`;
+          yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'auth', 'auth', 'mend/auth', 'abc')`;
+          yield* sql`
+          INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'auth', 'mend/auth', 'abc', 'alice'),
+                 ('s-2', 'p-1', 'wt-1', 'codex', 'auth', 'mend/auth', 'abc', 'alice')`;
+        }),
+      );
+    });
+
+    afterAll(async () => {
+      await withAdmin(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`);
+        }),
+      );
+    });
+
+    it("takes once: a second start is held off until the platform reports the process exited", async () => {
+      await inDb(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const repo = yield* HarnessLayoutsRepo;
+          const first = yield* repo.takeConversation("s-1", "launch-a");
+          expect(first).toEqual({ taken: true, fence: 1 });
+          // A second start, anywhere: held, even before the first bound its process.
+          expect(yield* repo.takeConversation("s-1", "launch-b")).toEqual({
+            taken: false,
+            launchId: "launch-a",
+            processId: null,
+          });
+          yield* sql`
+          INSERT INTO session_processes (id, session_id, sealant_workspace_id, sealant_session_id, kind, status, runs_as)
+          VALUES ('proc-1', 's-1', 'ws-1', 'pty-1', 'agent-protocol', 'running', 'bob')`;
+          expect(yield* repo.bindConversation("s-1", 1, "proc-1")).toBe(true);
+          // A process the platform has not reported exited is the conversation's: an unreachable
+          // executor means wait, never a second process.
+          expect(yield* repo.takeConversation("s-1", "launch-b")).toEqual({
+            taken: false,
+            launchId: "launch-a",
+            processId: "proc-1",
+          });
+          // Reported exited (and a release that never came, say Mend restarted): taken again.
+          yield* sql`UPDATE session_processes SET exited_at = now() WHERE id = 'proc-1'`;
+          const next = yield* repo.takeConversation("s-1", "launch-b");
+          expect(next).toEqual({ taken: true, fence: 2 });
+          // The older start can no longer bind: fenced out.
+          expect(yield* repo.bindConversation("s-1", 1, "proc-late")).toBe(false);
+          const rows = yield* sql<{ readonly runsAs: string | null }>`
+          SELECT runs_as AS "runsAs" FROM session_processes WHERE id = 'proc-1'`;
+          expect(rows[0]?.runsAs).toBe("bob");
+        }),
+      );
+    });
+
+    it("releases by process and by an unbound start's fence, never a newer take; a hand-over takes from the process it replaces", async () => {
+      await inDb(
+        Effect.gen(function* () {
+          const repo = yield* HarnessLayoutsRepo;
+          const take = yield* repo.takeConversation("s-2", "launch-a");
+          if (!take.taken) throw new Error("not taken");
+          // A start that failed before its process existed releases by its fence.
+          yield* repo.releaseConversation("s-2", { fence: take.fence });
+          expect((yield* repo.conversationHolder("s-2"))?.launchId).toBeNull();
+          const again = yield* repo.takeConversation("s-2", "launch-a");
+          if (!again.taken) throw new Error("not taken");
+          yield* repo.bindConversation("s-2", again.fence, "proc-2");
+          // An older start's fence releases nothing of the newer take.
+          yield* repo.releaseConversation("s-2", { fence: take.fence });
+          expect((yield* repo.conversationHolder("s-2"))?.processId).toBe("proc-2");
+          // A start that replaces the live process (a hand-over) takes it from that process, and
+          // only from that one; anyone else is held off.
+          expect(yield* repo.takeConversation("s-2", "launch-b", "proc-other")).toMatchObject({
+            taken: false,
+          });
+          expect(yield* repo.takeConversation("s-2", "launch-a", "proc-2")).toEqual({
+            taken: true,
+            fence: again.fence + 1,
+          });
+          // While its start runs, a second start is held off, even one naming the old process.
+          expect(yield* repo.takeConversation("s-2", "launch-a", "proc-2")).toEqual({
+            taken: false,
+            launchId: "launch-a",
+            processId: null,
+          });
+          // The replaced process's exit releases nothing of the newer take.
+          yield* repo.releaseConversation("s-2", { processId: "proc-2" });
+          expect((yield* repo.conversationHolder("s-2"))?.launchId).toBe("launch-a");
+        }),
+      );
+    });
+
+    it("records a conversation's move into C once: the first move's owner and time stay", async () => {
+      await inDb(
+        Effect.gen(function* () {
+          const repo = yield* HarnessLayoutsRepo;
+          expect(yield* repo.sharedConversationOf("s-1")).toBeNull();
+          yield* repo.markConversationShared("s-1", "alice");
+          const first = yield* repo.sharedConversationOf("s-1");
+          yield* repo.markConversationShared("s-1", "someone-else");
+          expect(yield* repo.sharedConversationOf("s-1")).toEqual(first);
+          expect(first?.owner).toBe("alice");
+        }),
+      );
+    });
+  },
+);

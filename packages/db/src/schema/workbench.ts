@@ -1553,6 +1553,8 @@ export const sessionProcesses = pgTable(
     firstOutputAt: timestamp({ mode: "date", withTimezone: true }),
     exitedAt: timestamp({ mode: "date", withTimezone: true }),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** The account whose Linux user the process runs as (docs/adr/0016); null: root (0117). */
+    runsAs: text(),
   },
   (table) => [
     index("session_processes_session_idx").on(table.sessionId, table.createdAt),
