@@ -322,7 +322,12 @@ export const createTenancyApi = async (
       recording(
         SessionEngine,
         "engine",
-        { launchUnderWay: () => false, ...options.implement?.engine },
+        {
+          launchUnderWay: () => false,
+          // Turning shared control off cancels the turns others queued (docs/adr/0016).
+          cancelSteeredTurns: () => Effect.succeed(0),
+          ...options.implement?.engine,
+        },
         calls,
       ),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),

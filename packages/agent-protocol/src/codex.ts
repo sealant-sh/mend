@@ -15,6 +15,8 @@ import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
   type AgentAdapter,
+  type AgentBackgroundWork,
+  type AgentQuiescence,
   type AgentSession,
   type AgentStartOptions,
   type AgentTransport,
@@ -32,6 +34,9 @@ interface PendingServerRequest {
   readonly id: JsonRpcId;
   readonly kind: "approval" | "input";
 }
+
+/** An app-server method this Codex does not offer: what it would have said is not known. */
+const REFUSED = Symbol("refused");
 
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -63,6 +68,19 @@ const requestKey = (id: JsonRpcId): string => `${typeof id === "number" ? "n" : 
 
 const protocolError = (operation: string, message: string, cause: unknown): AgentProtocolError =>
   new AgentProtocolError({ adapter: "codex", operation, message, cause });
+
+/**
+ * Prefix of a turn Codex opened itself (a goal continuing, a queued prompt, the mailbox): the rest
+ * is Codex's own turn id.
+ */
+export const CODEX_HARNESS_TURN_REASON = "Codex started a turn on its own";
+
+/**
+ * Codex counts as settled this long after its last `turn/completed` or `item/completed` with no
+ * `turn/started` since: goals, the mailbox and queued prompts start turns on their own after one
+ * (docs/adr/0016, decision 6).
+ */
+export const CODEX_SETTLE_MS = 1_000;
 
 /** What a resume that cannot find its thread says: the turn fails, and nothing was sent. */
 export const CODEX_THREAD_NOT_FOUND =
@@ -255,6 +273,13 @@ export const CodexAdapter: AgentAdapter = {
         rpcIdPrefix === null ? nextId++ : `${rpcIdPrefix}:${nextId++}`;
       let threadId: string | null = null;
       let currentTurnId: string | null = null;
+      // What a new sender's turn waits for (docs/adr/0016, decision 6): turns on the threads this
+      // one spawned (sub-agents, reported as `turn/*` for their own thread ids), and when Codex
+      // last finished something, for the settle.
+      const childTurns = new Map<string, string>();
+      let sendInFlight = false;
+      let lastFinishedAt: number | null = null;
+      let lastStartedAt: number | null = null;
       let latestUsage: AgentTurnUsage | null = null;
       let transportFailure: AgentProtocolError | null = null;
       const readTransportFailure = (): AgentProtocolError | null => transportFailure;
@@ -414,15 +439,42 @@ export const CodexAdapter: AgentAdapter = {
         });
       };
 
+      /** A notification about a thread other than this conversation's own: one it spawned. */
+      const childThreadOf = (params: JsonObject): string | null => {
+        const about = stringField(params, "threadId");
+        return about !== null && threadId !== null && about !== threadId ? about : null;
+      };
+
       const handleNotification = (method: string, params: JsonObject): Effect.Effect<void> => {
         switch (method) {
           case "turn/started": {
+            lastStartedAt = Date.now();
+            const child = childThreadOf(params);
+            if (child !== null) {
+              const childTurn = turnIdFrom(params, null);
+              if (childTurn !== null) childTurns.set(child, childTurn);
+              return Effect.void;
+            }
             const providerTurnId = turnIdFrom(params, currentTurnId);
             if (providerTurnId === null) return Effect.void;
+            // A turn Mend did not send: a goal continuing, a queued prompt, the mailbox.
+            const ownTurn = !sendInFlight && currentTurnId === null && rehydrate === undefined;
             currentTurnId = providerTurnId;
-            return publish({ _tag: "turn.started", providerTurnId });
+            return ownTurn
+              ? publish({
+                  _tag: "harness-turn.started",
+                  providerTurnId,
+                  reason: CODEX_HARNESS_TURN_REASON,
+                })
+              : publish({ _tag: "turn.started", providerTurnId });
           }
           case "turn/completed": {
+            lastFinishedAt = Date.now();
+            const child = childThreadOf(params);
+            if (child !== null) {
+              childTurns.delete(child);
+              return Effect.void;
+            }
             const turn = objectField(params, "turn");
             const providerTurnId = stringField(turn, "id") ?? currentTurnId;
             if (providerTurnId === null) return Effect.void;
@@ -440,6 +492,7 @@ export const CodexAdapter: AgentAdapter = {
           case "item/started":
             return lifecycleItem(params, "in-progress");
           case "item/completed":
+            lastFinishedAt = Date.now();
             return lifecycleItem(params, "completed");
           case "item/agentMessage/delta":
           case "item/reasoning/textDelta":
@@ -550,13 +603,13 @@ export const CodexAdapter: AgentAdapter = {
       );
 
       if (rehydrate === undefined) {
-        // `experimentalApi`: `thread/resume { path }` is behind it (docs/adr/0016, decision 6);
-        // asked for only where a conversation home's process resumes by path.
+        // `experimentalApi`: `thread/resume { path }`, background terminals and goals are behind
+        // it (docs/adr/0016, decision 6); asked for only where a person's process needs them.
         yield* request("initialize", {
           clientInfo: { name: "mend", version: "0.0.0" },
-          ...(options.providerSessionPath === undefined
-            ? {}
-            : { capabilities: { experimentalApi: true } }),
+          ...(options.steering === true || options.providerSessionPath !== undefined
+            ? { capabilities: { experimentalApi: true } }
+            : {}),
         });
         yield* send({ method: "initialized" });
 
@@ -613,12 +666,13 @@ export const CodexAdapter: AgentAdapter = {
         if (threadId === null) {
           return yield* protocolError("turn/start", "Codex thread is not ready.", null);
         }
+        sendInFlight = true;
         const result = yield* request("turn/start", {
           threadId,
           input: [{ type: "text", text: input }],
           ...(options.model === undefined ? {} : { model: options.model }),
           ...(options.effort === undefined ? {} : { effort: options.effort }),
-        });
+        }).pipe(Effect.ensuring(Effect.sync(() => (sendInFlight = false))));
         const providerTurnId = stringField(objectField(result, "turn"), "id");
         if (providerTurnId === null) {
           return yield* protocolError("turn/start", "Codex did not return a turn id.", result);
@@ -666,6 +720,135 @@ export const CodexAdapter: AgentAdapter = {
         pendingServer.delete(providerRequestId);
       });
 
+      /**
+       * An app-server request that an older Codex may not offer (the experimental API): what it
+       * answers, or `refused` when it refuses the method. A refusal is "cannot tell", never "no
+       * work" (review of mend#572, P3-3).
+       */
+      const optional = (method: string, params: JsonObject) =>
+        request(method, params).pipe(
+          Effect.map((result): unknown => result),
+          Effect.catch((error) =>
+            /method not found|unknown (?:variant|method)|experimental/i.test(error.message)
+              ? Effect.succeed(REFUSED)
+              : Effect.fail(error),
+          ),
+        );
+
+      /**
+       * Codex is quiescent (docs/adr/0016, decision 6) with no running turn on its thread or on
+       * any thread it spawned, no background terminal (`thread/backgroundTerminals/list`), no
+       * active goal (`thread/goal/get`), and 1 s since it last finished something.
+       */
+      const quiescence = Effect.fn("CodexAdapter.quiescence")(function* () {
+        const work: Array<AgentBackgroundWork> = [];
+        for (const child of childTurns.keys()) {
+          work.push({ kind: "sub-agent", id: child, description: null, endable: false });
+        }
+        if (threadId !== null) {
+          const terminals = yield* optional("thread/backgroundTerminals/list", { threadId });
+          if (terminals === REFUSED) {
+            work.push({
+              kind: "unknown",
+              id: "thread/backgroundTerminals/list",
+              description: "Codex did not say whether background terminals run",
+              endable: false,
+            });
+          }
+          const listed = isObject(terminals) ? terminals["data"] : null;
+          if (Array.isArray(listed)) {
+            for (const terminal of listed) {
+              const processId = stringField(terminal, "processId");
+              if (processId === null) continue;
+              work.push({
+                kind: "terminal",
+                id: processId,
+                description: stringField(terminal, "command"),
+                endable: true,
+              });
+            }
+          }
+          const goalAnswer = yield* optional("thread/goal/get", { threadId });
+          if (goalAnswer === REFUSED) {
+            work.push({
+              kind: "unknown",
+              id: "thread/goal/get",
+              description: "Codex did not say whether a goal is active",
+              endable: false,
+            });
+          }
+          const goal = objectField(goalAnswer, "goal");
+          if (goal !== null && stringField(goal, "status") === "active") {
+            work.push({
+              kind: "goal",
+              id: threadId,
+              description: stringField(goal, "objective"),
+              endable: true,
+            });
+          }
+        }
+        const openTurn = currentTurnId !== null;
+        const settleMs =
+          lastFinishedAt === null || (lastStartedAt !== null && lastStartedAt > lastFinishedAt)
+            ? 0
+            : Math.max(0, CODEX_SETTLE_MS - (Date.now() - lastFinishedAt));
+        return {
+          quiescent: !openTurn && work.length === 0 && settleMs === 0,
+          openTurn,
+          work,
+          settleMs,
+        } satisfies AgentQuiescence;
+      });
+
+      /**
+       * Whether this app-server reports its background terminals and goals: known when this
+       * adapter initialized it (with `experimentalApi` or without); asked once, by listing the
+       * terminals, when it took over one another Mend process initialized (a rehydrate). A Codex
+       * that refuses, or cannot be asked, does not (review 2 of mend#572, P2-1).
+       */
+      let reports: boolean | null =
+        rehydrate === undefined
+          ? options.steering === true || options.providerSessionPath !== undefined
+          : null;
+      const reportsBackgroundWork = (): Effect.Effect<boolean> =>
+        Effect.suspend(() => {
+          if (reports !== null) return Effect.succeed(reports);
+          if (threadId === null) return Effect.succeed(false);
+          return optional("thread/backgroundTerminals/list", { threadId }).pipe(
+            Effect.map((answer) => {
+              reports = answer !== REFUSED;
+              return reports;
+            }),
+            // Not answered this time: not known, so not trusted; asked again next time.
+            Effect.catch(() => Effect.succeed(false)),
+          );
+        });
+
+      /** Background work ended from the waiting line: a terminal terminated, a goal cleared. */
+      const endWork = Effect.fn("CodexAdapter.endWork")(function* (
+        work: Pick<AgentBackgroundWork, "kind" | "id">,
+      ) {
+        if (threadId === null) {
+          return yield* protocolError("endWork", "Codex thread is not ready.", null);
+        }
+        if (work.kind === "terminal") {
+          yield* request("thread/backgroundTerminals/terminate", {
+            threadId,
+            processId: work.id,
+          });
+          return;
+        }
+        if (work.kind === "goal") {
+          yield* request("thread/goal/clear", { threadId, origin: "user" });
+          return;
+        }
+        return yield* protocolError(
+          "endWork",
+          `Codex ends a ${work.kind} on its own; Mend cannot stop it.`,
+          null,
+        );
+      });
+
       const close = Effect.fn("CodexAdapter.close")(function* () {
         if (closed) return;
         closed = true;
@@ -691,6 +874,9 @@ export const CodexAdapter: AgentAdapter = {
         respond,
         respondInput,
         events: Stream.fromPubSub(events),
+        quiescence,
+        reportsBackgroundWork,
+        endWork,
         close,
       } satisfies AgentSession;
     }),

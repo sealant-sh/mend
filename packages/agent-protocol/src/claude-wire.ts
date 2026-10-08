@@ -24,7 +24,11 @@ export interface ClaudeControlRequest {
         readonly input: Readonly<Record<string, unknown>>;
         readonly permission_suggestions?: ReadonlyArray<unknown>;
       }
-    | { readonly subtype: "interrupt" };
+    | { readonly subtype: "interrupt" }
+    /** Stop one background task (`SDKControlStopTaskRequest`). */
+    | { readonly subtype: "stop_task"; readonly task_id: string }
+    /** A repeated `initialize` is answered with the live background tasks. */
+    | { readonly subtype: "initialize" };
 }
 
 /** Private CLI response envelope for a control request. */

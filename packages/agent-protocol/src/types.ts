@@ -65,10 +65,60 @@ export interface AgentStartOptions {
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";
+  /**
+   * The process runs as a person in a shared conversation's workspace (docs/adr/0016, decision 6):
+   * Codex asks for the experimental API (`thread/resume { path }`, background terminals, goals),
+   * and a Claude rehydrated after a restart is asked for its live background tasks again.
+   */
+  readonly steering?: boolean | undefined;
   /** Synchronous event projection hook; completion means the event is durable. */
   readonly onEvent?: ((event: AgentEvent) => Effect.Effect<void>) | undefined;
   /** Present only when re-attaching to a surviving pipe after a Mend restart. */
   readonly rehydrate?: AgentRehydrateOptions | undefined;
+}
+
+/**
+ * One piece of work a protocol agent still has in flight outside a turn (docs/adr/0016, decision
+ * 6): what a new sender's turn waits for, and nothing is killed.
+ */
+export interface AgentBackgroundWork {
+  readonly kind:
+    | "task"
+    | "paused-task"
+    | "sub-agent"
+    | "terminal"
+    | "goal"
+    | "wakeup"
+    | "monitor"
+    | "cron"
+    /** The harness would not say (an older Codex refusing a method): waited for, bounded. */
+    | "unknown";
+  /** The harness's own id: a task id, a thread id, a terminal's process id, a tool use id. */
+  readonly id: string;
+  readonly description: string | null;
+  /**
+   * The person the process runs as, or the session's owner, can end it from the waiting line:
+   * Claude's task stop (a monitor's too), Codex's `thread/backgroundTerminals/terminate` and
+   * `thread/goal/clear`. A wakeup ends on its own; a session cron and what the harness would not
+   * say are waited for, bounded (`CONVERSATION_WAIT_BOUNDS_MS`).
+   */
+  readonly endable: boolean;
+}
+
+/** Whether a protocol agent may be stopped for another sender's process (decision 6). */
+export interface AgentQuiescence {
+  /** No open turn, nothing in the background, and settled. */
+  readonly quiescent: boolean;
+  /** A turn runs: one Mend sent, or one the harness opened on its own. */
+  readonly openTurn: boolean;
+  readonly work: ReadonlyArray<AgentBackgroundWork>;
+  /**
+   * How long, in milliseconds, until the agent counts as settled once nothing else holds it: none
+   * for Claude once it reported `session_state_changed: idle`; 1 s after Codex's last
+   * `turn/completed` or `item/completed`, since goals, the mailbox and queued prompts start turns
+   * on their own after one.
+   */
+  readonly settleMs: number;
 }
 
 /** One live provider conversation over a byte transport. */
@@ -86,6 +136,19 @@ export interface AgentSession {
     answers: AgentInputAnswers,
   ) => Effect.Effect<void, AgentProtocolError>;
   readonly events: Stream.Stream<AgentEvent>;
+  /** What the agent has in flight now (decision 6); Codex asks the app-server. */
+  readonly quiescence: () => Effect.Effect<AgentQuiescence, AgentProtocolError>;
+  /**
+   * Whether the agent can say what it runs in the background (decision 6). Claude always can; a
+   * Codex app-server only when it was initialized with `experimentalApi`, which a process started
+   * before shared steering was not. One that cannot takes its owner's turns only until it restarts
+   * (review 2 of mend#572, P2-1).
+   */
+  readonly reportsBackgroundWork: () => Effect.Effect<boolean>;
+  /** End one piece of background work the waiting line offers (`endable`). */
+  readonly endWork: (
+    work: Pick<AgentBackgroundWork, "kind" | "id">,
+  ) => Effect.Effect<void, AgentProtocolError>;
   readonly close: () => Effect.Effect<void>;
 }
 

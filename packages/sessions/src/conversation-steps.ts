@@ -41,6 +41,9 @@ export const conversationMissingWords = (harness: ConversationHarness): string =
     : "Claude could not find this conversation's transcript. Nothing was sent.";
 
 /** A hand-over that could not finish: nothing started, and the conversation is untouched. */
+/** A hand-over that found, at the stop, that it should not happen yet: the turn keeps waiting. */
+export const HAND_OVER_NOT_NOW = "hand_over_not_now";
+
 export const handOverFailed = (code: string, message: string, cause: unknown = null) =>
   new SealantPlatformError({ code, status: null, message, cause });
 
@@ -72,6 +75,14 @@ export interface HandOverInput {
   readonly take?: Effect.Effect<number, SealantPlatformError>;
   /** Give a take back when the hand-over fails after it. */
   readonly untake?: (fence: number) => Effect.Effect<void>;
+  /**
+   * Asked once the take is held and right before the stop and the staging, after every other
+   * preparation: false and nothing is stopped, staged or written, and the take goes back to the
+   * process it was taken from (`keep`) (review 2 of mend#572, P2-2).
+   */
+  readonly beforeStop?: Effect.Effect<boolean>;
+  /** The take given back to the replaced process, still running, when nothing was stopped. */
+  readonly keep?: (fence: number) => Effect.Effect<void>;
 }
 
 export interface HandedOver {
@@ -173,6 +184,15 @@ export const makeConversationSteps = (deps: {
           const untake = Effect.suspend(() =>
             fence === null || input.untake === undefined ? Effect.void : input.untake(fence),
           );
+          if (input.beforeStop !== undefined && !(yield* input.beforeStop)) {
+            if (fence !== null) {
+              yield* input.keep === undefined ? untake : input.keep(fence);
+            }
+            return yield* handOverFailed(
+              HAND_OVER_NOT_NOW,
+              "The conversation's agent is busy again, or the turn no longer waits; nothing was stopped.",
+            );
+          }
           // From here the old process no longer owns `H`: its exit releases nothing.
           state.process = null;
           return yield* Effect.gen(function* () {

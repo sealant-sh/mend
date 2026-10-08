@@ -13,6 +13,8 @@ import {
   AgentRequest,
   AgentTurn,
   Checkpoint,
+  ConversationWait,
+  ConversationWaitWork,
   FollowUp,
   ReviewSlice,
   ServiceBrowserScheme,
@@ -135,6 +137,17 @@ export class SharedControlRequest extends Schema.Class<SharedControlRequest>(
   enabled: Schema.Boolean,
 }) {}
 
+/**
+ * End one piece of the previous sender's background work from the waiting line
+ * (docs/adr/0016, decision 6): its `kind` and the harness's own `id`, as the line lists it.
+ */
+export class EndBackgroundWorkRequest extends Schema.Class<EndBackgroundWorkRequest>(
+  "EndBackgroundWorkRequest",
+)({
+  kind: ConversationWaitWork.fields.kind,
+  id: Schema.String,
+}) {}
+
 export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.get("listActive", "/sessions", {
@@ -173,6 +186,25 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       success: PastedImage,
       // SessionNotLive: capture mode places the image in the live workspace, and there is none.
       error: [NotFound, SessionNotSteerable, StoreFailure, PastedImageRejected, SessionNotLive],
+    }),
+  )
+  .add(
+    // docs/adr/0016, decision 6: what holds the next sender's turn in a shared conversation,
+    // as both people see it; null when nothing waits.
+    HttpApiEndpoint.get("conversationWait", "/sessions/:id/waiting", {
+      params: { id: SessionId },
+      success: Schema.NullOr(ConversationWait),
+      error: NotFound,
+    }),
+  )
+  .add(
+    // The waiting line's action: the person whose process runs the work, or the session's
+    // owner, ends one piece of it (Claude's task stop, Codex's terminal terminate, goal clear).
+    // The sender or the owner withdraws the waiting turn with `interruptTurn`.
+    HttpApiEndpoint.post("endBackgroundWork", "/sessions/:id/waiting/end", {
+      params: { id: SessionId },
+      payload: EndBackgroundWorkRequest,
+      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive],
     }),
   )
   .add(

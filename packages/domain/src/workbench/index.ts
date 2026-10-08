@@ -67,6 +67,7 @@ export * from "./session-control.ts";
 export * from "./session-run.ts";
 export * from "./skill.ts";
 export * from "./slack.ts";
+export * from "./steering.ts";
 export * from "./tour.ts";
 export * from "./worktree.ts";
 export * from "./worktree-removal.ts";

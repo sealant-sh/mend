@@ -128,6 +128,7 @@ import {
   canChangeVisibility,
   canManageProject,
   canToggleSharedControl,
+  OPENCODE_NOT_STEERABLE,
   captureDiscardAuditData,
   captureStatusLine,
   type SessionControlKind,
@@ -2383,9 +2384,22 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("submitTurn", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
-        const engine = yield* SessionEngine;
+        const session = yield* steering.session(params.id);
         const caller = yield* CurrentUser;
+        // opencode is one person's harness (docs/adr/0016, decision 6), whatever the layout: an
+        // opencode session whose shared control was on before this release takes its owner's
+        // turns only. A field compare on the session already read (review of mend#572, P3-4).
+        if (
+          session.harness === "opencode" &&
+          session.ownerUserId !== null &&
+          caller.user.id !== session.ownerUserId
+        ) {
+          return yield* new SessionNotSteerable({
+            sessionId: session.id,
+            message: OPENCODE_NOT_STEERABLE,
+          });
+        }
+        const engine = yield* SessionEngine;
         return yield* engine.submitTurn(params.id, payload.input, caller.user.id).pipe(
           Effect.catchTag("ProtocolHostNotLiveError", (error) =>
             Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
@@ -2434,10 +2448,50 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
+    .handle("conversationWait", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        return yield* (yield* SessionEngine).conversationWait(params.id);
+      }),
+    )
+    .handle("endBackgroundWork", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        const session = yield* steering.session(params.id);
+        const caller = yield* CurrentUser;
+        yield* (yield* SessionEngine)
+          .endBackgroundWork(session.id, caller.user.id, { kind: payload.kind, id: payload.id })
+          .pipe(
+            Effect.catchTags({
+              SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+              ProtocolHostNotLiveError: (error) =>
+                Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+              SessionTurnRefusedError: (error) =>
+                Effect.fail(
+                  new SessionNotSteerable({ sessionId: params.id, message: error.message }),
+                ),
+            }),
+          );
+      }),
+    )
     .handle("interruptTurn", ({ params }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        const { session } = yield* steering.turn(params.id);
+        const { session, turn } = yield* steering.turn(params.id);
+        // A waiting turn is withdrawn by its sender or the session's owner (docs/adr/0016,
+        // decision 6); a running turn is interrupted by anyone who steers.
+        const caller = yield* CurrentUser;
+        if (
+          turn.status === "queued" &&
+          turn.author !== null &&
+          caller.user.id !== turn.author &&
+          caller.user.id !== session.ownerUserId
+        ) {
+          return yield* new SessionNotSteerable({
+            sessionId: session.id,
+            message: "Only the person who sent this turn, or the session's owner, withdraws it.",
+          });
+        }
         const engine = yield* SessionEngine;
         yield* engine
           .interruptTurn(params.id)
@@ -2478,7 +2532,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("respondAgentRequest", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.agentRequest(params.id);
+        const asked = yield* steering.agentRequest(params.id);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
         return yield* engine.respondRequest(params.id, payload, caller.user.id).pipe(
@@ -2490,6 +2544,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           ),
           Effect.catchTag("AgentRequestAlreadyResolvedError", () =>
             Effect.fail(new AgentRequestResolved({ requestId: params.id })),
+          ),
+          // Only a person's process's own person answers its questions (docs/adr/0016).
+          Effect.catchTag("SessionTurnRefusedError", (error) =>
+            Effect.fail(
+              new SessionNotSteerable({ sessionId: asked.session.id, message: error.message }),
+            ),
           ),
         );
       }),
@@ -2975,10 +3035,19 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             message: "only the session owner can share control of this session",
           });
         }
+        // opencode is one person's harness (docs/adr/0016, decision 6).
+        if (payload.enabled && session.harness === "opencode") {
+          return yield* new SessionNotSteerable({
+            sessionId: session.id,
+            message: OPENCODE_NOT_STEERABLE,
+          });
+        }
         const sessions = yield* SessionsRepo;
         const updated = yield* sessions
           .setSharedControl(params.id, payload.enabled ? viewer.userId : null)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Turned off: the turns other people queued are not sent (decision 6).
+        if (!payload.enabled) yield* (yield* SessionEngine).cancelSteeredTurns(params.id);
         yield* recordControl(
           params.id,
           payload.enabled ? "shared-control-on" : "shared-control-off",

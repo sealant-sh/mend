@@ -227,6 +227,23 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             );
           },
         ),
+        loginOf: (accountId, provider) =>
+          clients
+            .connectedAccounts(accountId)
+            .list()
+            .pipe(
+              Effect.map((accounts) => {
+                const account = accounts.find(
+                  (candidate) =>
+                    candidate.provider === provider &&
+                    candidate.name === "default" &&
+                    candidate.status !== "archived",
+                );
+                if (account === undefined) return "missing" as const;
+                return account.status === "active" ? ("active" as const) : ("invalid" as const);
+              }),
+              Effect.orElseSucceed(() => "unknown" as const),
+            ),
         sealantUserOf: (accountId) => clients.sealantUserId(accountId),
         listCredentials: Effect.fn("PersonLayoutPlatform.listCredentials")(function* (workspace) {
           const homes = yield* call(() => workspace.credentials.list());

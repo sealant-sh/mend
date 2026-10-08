@@ -734,3 +734,374 @@ describe("regression: reviewer findings", () => {
     ),
   );
 });
+
+/** The adapter has read every line pushed so far: its output fiber runs on its own. */
+const drained = Effect.sleep("25 millis");
+
+const kinds = (work: ReadonlyArray<{ readonly kind: string; readonly id: string }>) =>
+  work.map((entry) => `${entry.kind}:${entry.id}`);
+
+describe("quiescence (docs/adr/0016, decision 6)", () => {
+  it.live("Claude: an open turn, then idle once it says so, with nothing in the background", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => undefined);
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          providerSessionId: "11111111-1111-4111-8111-111111111111",
+          permissionMode: "bypass",
+        });
+        expect((yield* session.quiescence()).quiescent).toBe(true);
+        yield* session.sendTurn("go");
+        fake.push({ type: "system", subtype: "session_state_changed", state: "running" });
+        yield* drained;
+        expect((yield* session.quiescence()).openTurn).toBe(true);
+        fake.push({ type: "result", subtype: "success" });
+        yield* drained;
+        // The result is in, but Claude still says it runs: it may flush a held result, or go on
+        // with a background agent's answer. Only its `idle` ends the turn for a new sender.
+        const after = yield* session.quiescence();
+        expect(after.openTurn).toBe(true);
+        expect(after.quiescent).toBe(false);
+        expect(after.settleMs).toBeGreaterThan(0);
+        fake.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        yield* drained;
+        expect(yield* session.quiescence()).toEqual({
+          quiescent: true,
+          openTurn: false,
+          work: [],
+          settleMs: 0,
+        });
+      }),
+    ),
+  );
+
+  it.live(
+    "Claude: background tasks as a level, paused tasks, monitors, wakeups and session crons",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fake = yield* makeTransport(() => undefined);
+          const session = yield* ClaudeAdapter.start(fake.transport, {
+            cwd: "/workspace/repo",
+            providerSessionId: "11111111-1111-4111-8111-111111111111",
+            permissionMode: "bypass",
+          });
+          const turn = yield* session.sendTurn("start the background work");
+          fake.push({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [
+              { task_id: "agent-1", task_type: "local_agent", description: "Agent A" },
+              { task_id: "bash-1", task_type: "local_bash", description: "npm test" },
+              {
+                task_id: "watcher",
+                task_type: "local_bash",
+                description: "ambient",
+                ambient: true,
+              },
+              {
+                task_id: "monitor-1",
+                task_type: "local_bash",
+                description: "watch the build",
+                ambient: true,
+              },
+            ],
+          });
+          // A Monitor's task, a wakeup and two crons, one durable (the worktree's, not the session's).
+          fake.push({
+            type: "assistant",
+            message: {
+              id: "m1",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "tu-monitor",
+                  name: "Monitor",
+                  input: { description: "watch the build", timeout_ms: 60000 },
+                },
+                {
+                  type: "tool_use",
+                  id: "tu-wake",
+                  name: "ScheduleWakeup",
+                  input: { delaySeconds: 600 },
+                },
+                {
+                  type: "tool_use",
+                  id: "tu-cron",
+                  name: "CronCreate",
+                  input: { cron: "*/5 * * * *", prompt: "check" },
+                },
+                {
+                  type: "tool_use",
+                  id: "tu-durable",
+                  name: "CronCreate",
+                  input: { cron: "0 9 * * *", prompt: "standup", durable: true },
+                },
+              ],
+            },
+          });
+          const result = (id: string, output: unknown) =>
+            fake.push({
+              type: "user",
+              message: {
+                role: "user",
+                content: [{ type: "tool_result", tool_use_id: id, content: "ok" }],
+              },
+              tool_use_result: output,
+            });
+          result("tu-monitor", { taskId: "monitor-1", timeoutMs: 60000, persistent: false });
+          result("tu-wake", {
+            scheduledFor: Date.now() + 600_000,
+            clampedDelaySeconds: 600,
+            wasClamped: false,
+          });
+          result("tu-cron", { id: "cron-1", humanSchedule: "every 5 minutes", recurring: true });
+          result("tu-durable", {
+            id: "cron-2",
+            humanSchedule: "daily",
+            recurring: true,
+            durable: true,
+          });
+          fake.push({
+            type: "system",
+            subtype: "task_updated",
+            task_id: "bash-2",
+            patch: { status: "paused" },
+          });
+          fake.push({ type: "result", subtype: "success" });
+          fake.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+          yield* drained;
+          const busy = yield* session.quiescence();
+          expect(busy.quiescent).toBe(false);
+          expect(kinds(busy.work).toSorted()).toEqual([
+            "cron:cron-1",
+            "monitor:monitor-1",
+            "paused-task:bash-2",
+            "sub-agent:agent-1",
+            "task:bash-1",
+            "wakeup:tu-wake",
+          ]);
+          expect(
+            busy.work
+              .filter((entry) => entry.endable)
+              .map((entry) => entry.id)
+              .toSorted(),
+          ).toEqual(["agent-1", "bash-1", "bash-2", "monitor-1"]);
+          // A task stopped from the waiting line: Claude's stop_task.
+          yield* session.endWork({ kind: "task", id: "bash-1" });
+          expect(fake.sent.at(-1)).toMatchObject({
+            type: "control_request",
+            request: { subtype: "stop_task", task_id: "bash-1" },
+          });
+          // A monitor is a task: stop_task ends it, a persistent one included (review of
+          // mend#572, P3-2).
+          yield* session.endWork({ kind: "monitor", id: "monitor-1" });
+          expect(fake.sent.at(-1)).toMatchObject({
+            type: "control_request",
+            request: { subtype: "stop_task", task_id: "monitor-1" },
+          });
+          // What ends on its own, or is waited for with a bound, is not Mend's to stop.
+          const refused = yield* session.endWork({ kind: "cron", id: "cron-1" }).pipe(Effect.flip);
+          expect(refused.message).toContain("Claude ends a cron on its own");
+          // A task first reported outside any turn sits on the last turn the conversation ran.
+          const reported = yield* firstEvent(session.events, "item.updated").pipe(Effect.forkChild);
+          fake.push({
+            type: "system",
+            subtype: "task_started",
+            task_id: "late-1",
+            task_type: "local_bash",
+            description: "late",
+          });
+          expect(Option.getOrThrow(yield* Fiber.join(reported)).item.providerTurnId).toBe(turn);
+          // Everything ends: the level empties, the monitor and the paused task report their end, the
+          // cron is deleted, and the wakeup fires as a turn of Claude's own.
+          fake.push({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+          fake.push({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "monitor-1",
+            status: "completed",
+          });
+          fake.push({
+            type: "system",
+            subtype: "task_updated",
+            task_id: "bash-2",
+            patch: { status: "completed" },
+          });
+          fake.push({
+            type: "assistant",
+            message: {
+              id: "m2",
+              content: [
+                { type: "tool_use", id: "tu-del", name: "CronDelete", input: { id: "cron-1" } },
+              ],
+            },
+          });
+          result("tu-del", { id: "cron-1" });
+          yield* drained;
+          expect(kinds((yield* session.quiescence()).work)).toEqual(["wakeup:tu-wake"]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "Claude rehydrated for a person's process asks again for its live background tasks",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fake = yield* makeTransport(() => undefined);
+          yield* ClaudeAdapter.start(fake.transport, {
+            cwd: "/workspace/repo",
+            providerSessionId: "11111111-1111-4111-8111-111111111111",
+            permissionMode: "bypass",
+            steering: true,
+            rehydrate: { replayProviderTurnIds: [], resolvedProviderRequestIds: new Set() },
+          });
+          // A repeated `initialize` is answered with the current set; nothing else is sent.
+          expect(fake.sent).toEqual([
+            {
+              type: "control_request",
+              request_id: expect.any(String),
+              request: { subtype: "initialize" },
+            },
+          ]);
+        }),
+      ),
+  );
+
+  it.live(
+    "Codex: sub-agent threads, background terminals, an active goal, and the 1 s settle",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const state = {
+            terminals: [{ processId: "42", command: "npm run dev", itemId: "i", cwd: "/" }],
+            goal: "active" as string | null,
+          };
+          const fake = yield* makeTransport((message, push) => {
+            const id = message["id"];
+            const method = message["method"];
+            if (typeof id !== "number") return;
+            if (method === "initialize") push({ id, result: {} });
+            if (method === "thread/start") push({ id, result: { thread: { id: "thread-1" } } });
+            if (method === "turn/start") push({ id, result: { turn: { id: "turn-1" } } });
+            if (method === "thread/backgroundTerminals/list")
+              push({ id, result: { data: state.terminals, nextCursor: null } });
+            if (method === "thread/backgroundTerminals/terminate") {
+              state.terminals = [];
+              push({ id, result: { terminated: true } });
+            }
+            if (method === "thread/goal/get") {
+              push({
+                id,
+                result: {
+                  goal:
+                    state.goal === null
+                      ? null
+                      : { threadId: "thread-1", objective: "ship it", status: state.goal },
+                },
+              });
+            }
+            if (method === "thread/goal/clear") {
+              state.goal = null;
+              push({ id, result: {} });
+            }
+          });
+          const session = yield* CodexAdapter.start(fake.transport, {
+            cwd: "/workspace/repo",
+            permissionMode: "bypass",
+            steering: true,
+          });
+          fake.push({
+            method: "turn/started",
+            params: { threadId: "child-1", turn: { id: "child-turn" } },
+          });
+          yield* drained;
+          const busy = yield* session.quiescence();
+          expect(kinds(busy.work)).toEqual(["sub-agent:child-1", "terminal:42", "goal:thread-1"]);
+          yield* session.endWork({ kind: "terminal", id: "42" });
+          yield* session.endWork({ kind: "goal", id: "thread-1" });
+          expect(fake.sent.map((message) => message["method"])).toContain(
+            "thread/backgroundTerminals/terminate",
+          );
+          expect(
+            fake.sent.find((message) => message["method"] === "thread/goal/clear")?.["params"],
+          ).toEqual({
+            threadId: "thread-1",
+            origin: "user",
+          });
+          // The child's turn ends: settled only 1 s later.
+          fake.push({
+            method: "turn/completed",
+            params: { threadId: "child-1", turn: { id: "child-turn", status: "completed" } },
+          });
+          yield* drained;
+          const settling = yield* session.quiescence();
+          expect(settling.work).toEqual([]);
+          expect(settling.quiescent).toBe(false);
+          expect(settling.settleMs).toBeGreaterThan(500);
+          yield* Effect.sleep("1 second");
+          expect((yield* session.quiescence()).quiescent).toBe(true);
+        }),
+      ),
+  );
+
+  it.live('Codex: a method it refuses is "cannot tell", never "no work"', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport((message, push) => {
+          const id = message["id"];
+          const method = message["method"];
+          if (typeof id !== "number") return;
+          if (method === "initialize") push({ id, result: {} });
+          if (method === "thread/start") push({ id, result: { thread: { id: "thread-1" } } });
+          if (method === "thread/backgroundTerminals/list" || method === "thread/goal/get") {
+            push({ id, error: { code: -32601, message: `Method not found: ${method}` } });
+          }
+        });
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          steering: true,
+        });
+        yield* drained;
+        // An older Codex that refuses both: running terminals would read as none, and the
+        // staging would kill them after 10 s (review of mend#572, P3-3). It is waited for.
+        const looked = yield* session.quiescence();
+        expect(looked.quiescent).toBe(false);
+        expect(kinds(looked.work)).toEqual([
+          "unknown:thread/backgroundTerminals/list",
+          "unknown:thread/goal/get",
+        ]);
+        expect(looked.work.every((work) => !work.endable)).toBe(true);
+      }),
+    ),
+  );
+
+  it.live("Codex: a turn it starts on its own is the harness's, never a turn Mend sent", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* codexTransport;
+        const events: Array<AgentEvent> = [];
+        yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          onEvent: (event) => Effect.sync(() => events.push(event)),
+        });
+        fake.push({
+          method: "turn/started",
+          params: { threadId: "thread-1", turn: { id: "goal-turn" } },
+        });
+        yield* drained;
+        expect(events.filter((event) => event._tag === "harness-turn.started")).toEqual([
+          {
+            _tag: "harness-turn.started",
+            providerTurnId: "goal-turn",
+            reason: "Codex started a turn on its own",
+          },
+        ]);
+      }),
+    ),
+  );
+});

@@ -489,6 +489,10 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("steer", "POST", "/turns", { input: "Continue" })("sessions.submitTurn"),
   session("steer", "POST", "/images", { contentsBase64: "iVBORw0KGgo=" })("sessions.pasteImage"),
   child("steer", "turn", "POST", "/api/turns", "/interrupt")("sessions.interruptTurn"),
+  session("project-read", "GET", "/waiting")("sessions.conversationWait"),
+  session("steer", "POST", "/waiting/end", { kind: "task", id: "task-1" })(
+    "sessions.endBackgroundWork",
+  ),
   session("project-read", "GET", "/turns")("sessions.listTurns"),
   session("project-read", "GET", "/items")("sessions.listItems"),
   session("project-read", "GET", "/requests")("sessions.listAgentRequests"),

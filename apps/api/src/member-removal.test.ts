@@ -12,7 +12,7 @@ import {
   UsersRepo,
 } from "@mend/db";
 import { OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
-import { Organization } from "@mend/domain/workbench";
+import { Organization, Session } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { Deferred, Effect, Exit, Layer, Queue, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -83,6 +83,20 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
                 userId,
               ),
             ]),
+          // Every session of the organization's projects: Alice's shared one, which Carol steered.
+          listForProject: (projectId) =>
+            Effect.succeed([
+              new Session({
+                ...makeSession(
+                  SessionId.make("session-shared"),
+                  projectId,
+                  WorktreeId.make("worktree-acme"),
+                  "alice",
+                ),
+                status: "running",
+                settledAt: null,
+              }),
+            ]),
         }),
         Layer.mock(ProjectsRepo, {
           listForOrganization: (organizationId) =>
@@ -112,6 +126,8 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
         }),
         Layer.mock(SessionEngine, {
           launchUnderWay: () => false,
+          cancelQueuedTurnsBy: (userId, sessionIds) =>
+            note(`engine.cancelQueuedTurnsBy:${userId}:${sessionIds.length}`).pipe(Effect.as(0)),
           windDownPerson: (userId) =>
             note(`engine.windDownPerson:${userId}`).pipe(
               Effect.as({ stopped: 1, retired: [], remaining: 0 }),
@@ -149,6 +165,8 @@ describe("member removal (docs/adr/0003)", () => {
       "organizations.removeMember:carol",
       "sessions.disableSharedControlForOwner:carol",
       "controlEvents.record:shared-control-off:session-shared",
+      // Carol's turns queued in anyone's session go (docs/adr/0016, decision 6).
+      "engine.cancelQueuedTurnsBy:carol:1",
       "users.deactivate:carol",
       "users.revokeAuthSessions:carol",
       "devices.revokeAllForUser:carol",
