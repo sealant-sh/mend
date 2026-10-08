@@ -128,4 +128,17 @@ describe.skipIf(!reachable)("an agent process's first output, in Postgres", () =
       first.getTime(),
     ]);
   });
+
+  it("records the session's owner as someone who had a session in its worktree, durably", async () => {
+    const owners = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* (yield* SessionsRepo).remove(SESSION);
+        return yield* sql<{ readonly userId: string }>`
+          SELECT user_id AS "userId" FROM worktree_session_owners WHERE worktree_id = ${WORKTREE}`;
+      }),
+    );
+    // Kept after the session is deleted (docs/adr/0016, decision 14).
+    expect(owners.map((row) => row.userId)).toEqual(["alice"]);
+  });
 });

@@ -121,6 +121,18 @@ and two engines over one database would disagree about it:
   made, so under ownership (A2) they stay valid. Without ownership, a pickup minted by one pod and
   redeemed through another is refused, and a launch's layout read by a pod that never decided it
   costs one store read.
+- **Replacing pre-release executors and migrating their homes (Delivery 19).** The guards that keep
+  one replacement or one migration at a time are in process memory: `replacing` and `drains` (one
+  replacement or drain per executor), `migrating` (one memory migration per worktree),
+  `turnsBeingQueued` (a turn admitted before an executor turned `retiring`), the launch gate that
+  marks a start under way, and `retirementLooks`. `beginRetiring` is a compare-and-set in Postgres,
+  so two engines never both start one replacement; but an engine cannot see another's start under
+  way or turn being queued, so its check could miss them, and its recovery could take back a
+  `retiring` row another engine is still checking (only after ten minutes untouched, or at its own
+  boot). Two engines migrating one worktree at once could both credit the same new file (the
+  read-back merge makes the second a no-op, but versions are kept twice). Under ownership these are
+  per-owner and stay valid; without it, the sweep, the migration and the recovery should take a
+  Postgres advisory lock per worktree.
 
 ### What does not change
 

@@ -23,6 +23,7 @@ import {
   Session,
   SessionControlEvent,
   SessionProcess,
+  WorkspaceRetirement,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
 import { Schema } from "effect";
@@ -148,6 +149,30 @@ export class EndBackgroundWorkRequest extends Schema.Class<EndBackgroundWorkRequ
   id: Schema.String,
 }) {}
 
+/**
+ * "Replace this workspace now" refused (docs/adr/0016, decision 14): not the change's owner, no
+ * replacement waiting, or an agent's turn in flight, which is never stopped.
+ */
+export class WorkspaceReplaceRefused extends Schema.TaggedErrorClass<WorkspaceReplaceRefused>()(
+  "WorkspaceReplaceRefused",
+  {
+    sessionId: SessionId,
+    /** Why, in words a client can show as they are. */
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+/**
+ * "Replace this workspace now": the `fingerprint` of the retirement the owner was shown. Mend ends
+ * nothing that was not listed there: when more would stop now, the replacement is refused.
+ */
+export class ReplaceWorkspaceRequest extends Schema.Class<ReplaceWorkspaceRequest>(
+  "ReplaceWorkspaceRequest",
+)({
+  seen: Schema.String,
+}) {}
+
 export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.get("listActive", "/sessions", {
@@ -195,6 +220,25 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: Schema.NullOr(ConversationWait),
       error: NotFound,
+    }),
+  )
+  .add(
+    // docs/adr/0016, decision 14: the session's executor started before per-person homes and its
+    // worktree's next launch runs each person as themselves: marked to retire, or being replaced,
+    // with what would stop if it were replaced now. Null when none of that is under way.
+    HttpApiEndpoint.get("workspaceRetirement", "/sessions/:id/workspace-retirement", {
+      params: { id: SessionId },
+      success: Schema.NullOr(WorkspaceRetirement),
+      error: NotFound,
+    }),
+  )
+  .add(
+    // "Replace this workspace now": the change's owner; the executor goes after a saved final
+    // flush, and the worktree's next launch runs each person as themselves.
+    HttpApiEndpoint.post("replaceWorkspace", "/sessions/:id/workspace-retirement/replace", {
+      params: { id: SessionId },
+      payload: ReplaceWorkspaceRequest,
+      error: [NotFound, WorkspaceReplaceRefused],
     }),
   )
   .add(

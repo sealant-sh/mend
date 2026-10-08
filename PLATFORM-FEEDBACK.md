@@ -7,6 +7,25 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-08 · 0.39.0-next.706 · Replacing a pre-release executor (ADR 0016 Delivery 19): what runs in it that the platform did not start
+
+Before Mend replaces a worktree's `shared` executor on its own (decision 14), it must know that
+nothing runs in it that anyone would miss. What Mend started it knows from its own records; the rest
+it reads with one root exec, built on what the SDK has today, and none of it blocks the build.
+
+- **Missing:** what runs in an executor that sealantd did not start. Mend's check walks `/proc` and
+  lists every process whose parent chain does not reach a `sealantd` (a `docker exec`, an image's
+  own entrypoint work, a daemon reparented to an init that is not sealantd). sealantd knows its own
+  process groups exactly; a `runtime.foreignProcesses()` (pid, command line, start time) would
+  replace the walk and its heuristics.
+- **Missing:** the running containers of an executor's Docker sidecar. Mend runs `docker ps` inside
+  the executor when the image has a `docker` CLI; an image without one hides the sidecar's
+  containers from the check. A `runtime.sidecarContainers()` would answer for every image.
+- **Suggested:** a final flush that refuses while such processes run
+  (`final: { refuseIfForeign: true }`), so the check and the flush cannot race. Today Mend marks the
+  executor `retiring` (refusing every new start of its own) and checks again right before the flush,
+  which closes the window for what Mend starts but not for a `docker exec`.
+
 ## 2026-10-08 · 0.39.0-next.706 · Processes as a person, launch phases and image-build bounds: shipped
 
 - **Shipped (0.39.0-next.706, sealant#343) and used:** exec and sessions as a person on Core's

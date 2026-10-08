@@ -132,11 +132,13 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           if (list === undefined) bySession.set(row.sessionId, [row]);
           else list.push(row);
         }
+        const preReleaseMemory = yield* (yield* SessionEngine).preReleaseMemory(worktree.id);
         return new WorktreeDetail({
           worktree,
           change,
           checkpoints: chain,
           sessions: members,
+          preReleaseMemory,
           sessionAnnotations: annotations
             .filter((annotation) => memberIds.has(annotation.sessionId))
             .map(

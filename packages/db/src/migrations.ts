@@ -3231,6 +3231,73 @@ const conversationHomesMigration = Effect.gen(function* () {
         WHERE l.sealant_workspace_id = p.sealant_workspace_id AND e.layout = 'person')`;
 });
 
+/**
+ * 0118 (docs/adr/0016, decision 14, Delivery 19): pre-release executors and the migration of an
+ * old shared home.
+ *
+ * - `pre_release_migrations`: the server-side job's completion per worktree. It names the capture
+ *   it read (`capture_id`, `capture_n`); `final` once that is the worktree's last `shared`-layout
+ *   capture, which a worktree that runs per person never writes after. `credited` keeps every
+ *   memory path and digest credited by any run, so a re-run credits only what the earlier ones
+ *   did not; `not_credited` the paths credited to nobody.
+ * - `executor_retirements`: a worktree's live `shared` executor whose next launch would be
+ *   `person`: `marked` (joins and turns from anyone but its launcher refused) or `retiring`
+ *   (every new start refused while it is checked, flushed and replaced), what would stop if it
+ *   were replaced now (`checked_at`: when what runs in it was last checked, beyond Mend's own
+ *   records), and why the last automatic replacement did not go ahead.
+ * - `worktree_session_owners`: every account that ever had a session in a worktree, kept when the
+ *   session is deleted, so the migration's "only person" rule reads a durable record.
+ *   `worktree_owner_gaps` names the worktrees that existed before it, whose deleted sessions it
+ *   cannot know: their memory goes to nobody but by the home's own record.
+ */
+const preReleaseExecutorsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE pre_release_migrations (
+      worktree_id text PRIMARY KEY REFERENCES worktrees(id) ON DELETE CASCADE,
+      capture_id text NOT NULL,
+      capture_n integer NOT NULL,
+      final boolean NOT NULL,
+      credited_to text,
+      decided_by text NOT NULL
+        CHECK (decided_by IN ('home-record', 'only-person', 'nobody', 'nothing')),
+      credited jsonb NOT NULL DEFAULT '{}'::jsonb,
+      not_credited jsonb NOT NULL DEFAULT '[]'::jsonb,
+      ran_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE TABLE executor_retirements (
+      workspace_id text PRIMARY KEY,
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      session_id text NOT NULL,
+      launcher text,
+      pre_release boolean NOT NULL,
+      state text NOT NULL CHECK (state IN ('marked', 'retiring')),
+      stops jsonb NOT NULL DEFAULT '[]'::jsonb,
+      reason text,
+      checked_at timestamptz,
+      restart_services jsonb NOT NULL DEFAULT '[]'::jsonb,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX executor_retirements_worktree_idx ON executor_retirements (worktree_id)`;
+  yield* sql`
+    CREATE TABLE worktree_session_owners (
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      user_id text NOT NULL,
+      PRIMARY KEY (worktree_id, user_id)
+    )`;
+  yield* sql`
+    INSERT INTO worktree_session_owners (worktree_id, user_id)
+    SELECT DISTINCT worktree_id, owner_user_id FROM agent_sessions
+    WHERE owner_user_id IS NOT NULL
+    ON CONFLICT DO NOTHING`;
+  yield* sql`
+    CREATE TABLE worktree_owner_gaps (
+      worktree_id text PRIMARY KEY REFERENCES worktrees(id) ON DELETE CASCADE
+    )`;
+  yield* sql`INSERT INTO worktree_owner_gaps (worktree_id) SELECT id FROM worktrees`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3349,4 +3416,5 @@ export const migrations = {
   "0115_start_agents_after_install": startAgentsAfterInstallMigration,
   "0116_shared_control_ever": sharedControlEverMigration,
   "0117_conversation_homes": conversationHomesMigration,
+  "0118_pre_release_executors": preReleaseExecutorsMigration,
 };

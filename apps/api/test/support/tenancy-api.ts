@@ -326,6 +326,9 @@ export const createTenancyApi = async (
           launchUnderWay: () => false,
           // Turning shared control off cancels the turns others queued (docs/adr/0016).
           cancelSteeredTurns: () => Effect.succeed(0),
+          // No migration of a pre-release shared home and no retiring executor (docs/adr/0016).
+          preReleaseMemory: () => Effect.succeed(null),
+          workspaceRetirement: () => Effect.succeed(null),
           ...options.implement?.engine,
         },
         calls,

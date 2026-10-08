@@ -3,6 +3,7 @@ import {
   AgentLaunchMode,
   Change as SessionChange,
   Checkpoint,
+  PreReleaseMemory,
   Session,
   Worktree,
 } from "@mend/domain/workbench";
@@ -79,6 +80,14 @@ export class WorktreeDetail extends Schema.Class<WorktreeDetail>("WorktreeDetail
   sessions: Schema.Array(Session),
   /** Per-session facts so clients fold status without N detail calls. */
   sessionAnnotations: Schema.Array(SessionAnnotation),
+  /**
+   * What the migration of the worktree's shared home from before per-person homes did with its
+   * memory (docs/adr/0016, decision 14), including what it credited to nobody ("memory from
+   * before 0.36, not credited"). Null when it never ran; older servers omit it.
+   */
+  preReleaseMemory: Schema.NullOr(PreReleaseMemory).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 }) {}
 
 export const worktreesGroup = HttpApiGroup.make("worktrees")

@@ -8,6 +8,8 @@ import {
   LINUX_UID_FIRST,
   LINUX_UID_RANGE,
   LinuxIdentity,
+  WorkspaceRetirementState,
+  WorkspaceRetirementStopKind,
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -157,6 +159,92 @@ const holderOf = (row: unknown): ConversationHolder => {
   return { launchId: decoded.launchId, processId: decoded.processId, fence: Number(decoded.fence) };
 };
 
+/**
+ * The server-side migration of a worktree's old shared home (docs/adr/0016, decision 14): the
+ * capture its last run read, and what every run credited.
+ */
+export interface PreReleaseMigrationRecord {
+  readonly worktreeId: WorktreeId;
+  readonly captureId: string;
+  readonly captureN: number;
+  /** The capture read was the worktree's last `shared`-layout capture: nothing comes after it. */
+  readonly final: boolean;
+  readonly creditedTo: string | null;
+  readonly decidedBy: "home-record" | "only-person" | "nobody" | "nothing";
+  /** Every memory path any run credited, with the digest it credited: never credited twice. */
+  readonly credited: Readonly<Record<string, string>>;
+  /** Memory paths read and credited to nobody. */
+  readonly notCredited: ReadonlyArray<string>;
+}
+
+const MigrationRow = Schema.Struct({
+  worktreeId: WorktreeId,
+  captureId: Schema.String,
+  captureN: Schema.Number,
+  final: Schema.Boolean,
+  creditedTo: Schema.NullOr(Schema.String),
+  decidedBy: Schema.Literals(["home-record", "only-person", "nobody", "nothing"]),
+  credited: Schema.Record(Schema.String, Schema.String),
+  notCredited: Schema.Array(Schema.String),
+});
+const decodeMigrationRow = Schema.decodeUnknownSync(MigrationRow);
+
+/** One thing that would stop if a retiring executor were replaced now. */
+export interface RetirementStopRecord {
+  readonly kind: WorkspaceRetirementStopKind;
+  readonly label: string;
+}
+
+/** A live `shared` executor whose worktree's next launch would be `person` (decision 14). */
+export interface ExecutorRetirementRecord {
+  readonly workspaceId: string;
+  readonly worktreeId: WorktreeId;
+  /** The lease holder: the session whose launch made the executor. */
+  readonly sessionId: string;
+  /** Its owner, the only person whose joins and turns the executor takes until replaced. */
+  readonly launcher: string | null;
+  /** Launched before Mend 0.36: no layout recorded for its launch. */
+  readonly preRelease: boolean;
+  readonly state: WorkspaceRetirementState;
+  readonly stops: ReadonlyArray<RetirementStopRecord>;
+  /** Why the last automatic replacement did not go ahead; null when none was tried. */
+  readonly reason: string | null;
+  /**
+   * When what runs in the executor was last checked beyond Mend's own records (processes Mend did
+   * not start, the sidecar's containers); null while only the records were read.
+   */
+  readonly checkedAt: Date | null;
+  /**
+   * The holder's `mend.toml` Services a replacement under way starts again once the holder runs
+   * per person, kept so a replacement taken up after a restart starts them too.
+   */
+  readonly restart: ReadonlyArray<string>;
+  /** When the row last changed: a `retiring` row not moved for long was left by a crash. */
+  readonly updatedAt: Date;
+}
+
+/** Every account that ever had a session in a worktree, and whether that record is complete. */
+export interface WorktreeSessionOwners {
+  readonly owners: ReadonlyArray<string>;
+  /** False for a worktree from before the record: sessions deleted then are not in it. */
+  readonly complete: boolean;
+}
+
+const RetirementRow = Schema.Struct({
+  workspaceId: Schema.String,
+  worktreeId: WorktreeId,
+  sessionId: Schema.String,
+  launcher: Schema.NullOr(Schema.String),
+  preRelease: Schema.Boolean,
+  state: WorkspaceRetirementState,
+  stops: Schema.Array(Schema.Struct({ kind: WorkspaceRetirementStopKind, label: Schema.String })),
+  reason: Schema.NullOr(Schema.String),
+  checkedAt: Schema.NullOr(Schema.Date),
+  restart: Schema.Array(Schema.String),
+  updatedAt: Schema.Date,
+});
+const decodeRetirementRow = Schema.decodeUnknownSync(RetirementRow);
+
 export class LinuxIdentityExhaustedError extends Schema.TaggedErrorClass<LinuxIdentityExhaustedError>()(
   "LinuxIdentityExhaustedError",
   { accountId: Schema.String, message: Schema.String },
@@ -259,6 +347,50 @@ export class HarnessLayoutsRepo extends Context.Service<
       by: { readonly processId: string } | { readonly fence: number },
     ) => Effect.Effect<void>;
     readonly conversationHolder: (sessionId: string) => Effect.Effect<ConversationHolder | null>;
+    /** The migration of the worktree's old shared home, as its last run recorded it. */
+    readonly preReleaseMigrationOf: (
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<PreReleaseMigrationRecord | null>;
+    /** A run of that migration, recorded in place of the last one. */
+    readonly recordPreReleaseMigration: (record: PreReleaseMigrationRecord) => Effect.Effect<void>;
+    /**
+     * Worktrees that run per person and whose migration has no final run yet: the job's catch-up
+     * after a restart.
+     */
+    readonly worktreesAwaitingMigration: () => Effect.Effect<ReadonlyArray<WorktreeId>>;
+    readonly retirementOf: (workspaceId: string) => Effect.Effect<ExecutorRetirementRecord | null>;
+    /** Every executor marked to retire: what the sweep picks up after a restart. */
+    readonly listRetirements: () => Effect.Effect<ReadonlyArray<ExecutorRetirementRecord>>;
+    /** Mark (or update) an executor's retirement; a `retiring` one keeps its state. */
+    readonly markRetirement: (
+      record: Omit<ExecutorRetirementRecord, "state" | "updatedAt" | "restart">,
+    ) => Effect.Effect<ExecutorRetirementRecord>;
+    /** `marked` to `retiring`: false when it was not marked (another attempt holds it). */
+    readonly beginRetiring: (workspaceId: string) => Effect.Effect<boolean>;
+    /**
+     * Back to `marked`, with what was found and when it was checked (null: nothing was checked
+     * this time, and no earlier check's time is kept for it).
+     */
+    readonly unmarkRetiring: (
+      workspaceId: string,
+      found: {
+        readonly stops: ReadonlyArray<RetirementStopRecord>;
+        readonly reason: string;
+        readonly checkedAt: Date | null;
+      },
+    ) => Effect.Effect<void>;
+    /**
+     * A `retiring` row stays `retiring`, with why (a final flush not saved yet, which its drain
+     * asks again) or the Services its replacement starts again.
+     */
+    readonly noteRetiring: (
+      workspaceId: string,
+      note: { readonly reason?: string; readonly restart?: ReadonlyArray<string> },
+    ) => Effect.Effect<void>;
+    /** The executor was replaced or ended: its retirement is over. */
+    readonly clearRetirement: (workspaceId: string) => Effect.Effect<void>;
+    /** Every account that ever had a session in the worktree (`worktree_session_owners`). */
+    readonly sessionOwnersOf: (worktreeId: WorktreeId) => Effect.Effect<WorktreeSessionOwners>;
   }
 >()("@mend/db/HarnessLayoutsRepo") {}
 
@@ -543,6 +675,153 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         );
       });
 
+      const preReleaseMigrationOf = Effect.fn("HarnessLayoutsRepo.preReleaseMigrationOf")(
+        function* (worktreeId: WorktreeId) {
+          const rows = yield* sql`
+            SELECT worktree_id AS "worktreeId", capture_id AS "captureId", capture_n AS "captureN",
+                   final, credited_to AS "creditedTo", decided_by AS "decidedBy", credited,
+                   not_credited AS "notCredited"
+            FROM pre_release_migrations WHERE worktree_id = ${worktreeId}`.pipe(Effect.orDie);
+          return rows[0] === undefined ? null : decodeMigrationRow(rows[0]);
+        },
+      );
+
+      const recordPreReleaseMigration = Effect.fn("HarnessLayoutsRepo.recordPreReleaseMigration")(
+        function* (record: PreReleaseMigrationRecord) {
+          yield* sql`
+            INSERT INTO pre_release_migrations
+              (worktree_id, capture_id, capture_n, final, credited_to, decided_by, credited,
+               not_credited)
+            VALUES (${record.worktreeId}, ${record.captureId}, ${record.captureN}, ${record.final},
+                    ${record.creditedTo}, ${record.decidedBy},
+                    ${JSON.stringify(record.credited)}::jsonb,
+                    ${JSON.stringify(record.notCredited)}::jsonb)
+            ON CONFLICT (worktree_id) DO UPDATE
+              SET capture_id = excluded.capture_id, capture_n = excluded.capture_n,
+                  final = excluded.final, credited_to = excluded.credited_to,
+                  decided_by = excluded.decided_by, credited = excluded.credited,
+                  not_credited = excluded.not_credited, ran_at = now()`.pipe(Effect.orDie);
+        },
+      );
+
+      const worktreesAwaitingMigration = Effect.fn("HarnessLayoutsRepo.worktreesAwaitingMigration")(
+        function* () {
+          const rows = yield* sql<{ readonly id: string }>`
+            SELECT w.id FROM worktrees w
+            WHERE w.harness_layout = 'person'
+              AND NOT EXISTS (SELECT 1 FROM pre_release_migrations m
+                              WHERE m.worktree_id = w.id AND m.final)`.pipe(Effect.orDie);
+          return rows.map((row) => WorktreeId.make(row.id));
+        },
+      );
+
+      const retirementOf = Effect.fn("HarnessLayoutsRepo.retirementOf")(function* (
+        workspaceId: string,
+      ) {
+        const rows = yield* sql`
+          SELECT workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
+                 launcher, pre_release AS "preRelease", state, stops, reason,
+                 checked_at AS "checkedAt", restart_services AS "restart",
+                 updated_at AS "updatedAt"
+          FROM executor_retirements
+          WHERE workspace_id = ${workspaceId}`.pipe(Effect.orDie);
+        return rows[0] === undefined ? null : decodeRetirementRow(rows[0]);
+      });
+
+      const listRetirements = Effect.fn("HarnessLayoutsRepo.listRetirements")(function* () {
+        const rows = yield* sql`
+          SELECT workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
+                 launcher, pre_release AS "preRelease", state, stops, reason,
+                 checked_at AS "checkedAt", restart_services AS "restart",
+                 updated_at AS "updatedAt"
+          FROM executor_retirements ORDER BY updated_at`.pipe(Effect.orDie);
+        return rows.map((row) => decodeRetirementRow(row));
+      });
+
+      const markRetirement = Effect.fn("HarnessLayoutsRepo.markRetirement")(function* (
+        record: Omit<ExecutorRetirementRecord, "state" | "updatedAt" | "restart">,
+      ) {
+        // A retiring row is the replacement's: the sweep changes nothing of it, its time included.
+        const rows = yield* sql`
+          INSERT INTO executor_retirements
+            (workspace_id, worktree_id, session_id, launcher, pre_release, state, stops, reason,
+             checked_at)
+          VALUES (${record.workspaceId}, ${record.worktreeId}, ${record.sessionId},
+                  ${record.launcher}, ${record.preRelease}, 'marked',
+                  ${JSON.stringify(record.stops)}::jsonb, ${record.reason}, ${record.checkedAt})
+          ON CONFLICT (workspace_id) DO UPDATE
+            SET stops = CASE WHEN executor_retirements.state = 'retiring'
+                             THEN executor_retirements.stops ELSE excluded.stops END,
+                reason = CASE WHEN executor_retirements.state = 'retiring'
+                              THEN executor_retirements.reason ELSE excluded.reason END,
+                checked_at = CASE WHEN executor_retirements.state = 'retiring'
+                                  THEN executor_retirements.checked_at ELSE excluded.checked_at END,
+                updated_at = CASE WHEN executor_retirements.state = 'retiring'
+                                  THEN executor_retirements.updated_at ELSE now() END
+          RETURNING workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
+                 launcher, pre_release AS "preRelease", state, stops, reason,
+                 checked_at AS "checkedAt", restart_services AS "restart",
+                 updated_at AS "updatedAt"`.pipe(Effect.orDie);
+        return decodeRetirementRow(rows[0]);
+      });
+
+      const beginRetiring = Effect.fn("HarnessLayoutsRepo.beginRetiring")(function* (
+        workspaceId: string,
+      ) {
+        const rows = yield* sql`
+          UPDATE executor_retirements SET state = 'retiring', updated_at = now()
+          WHERE workspace_id = ${workspaceId} AND state = 'marked'
+          RETURNING workspace_id`.pipe(Effect.orDie);
+        return rows.length > 0;
+      });
+
+      const sessionOwnersOf = Effect.fn("HarnessLayoutsRepo.sessionOwnersOf")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        const owners = yield* sql<{ readonly userId: string }>`
+          SELECT user_id AS "userId" FROM worktree_session_owners
+          WHERE worktree_id = ${worktreeId} ORDER BY user_id`.pipe(Effect.orDie);
+        const gaps = yield* sql`
+          SELECT 1 FROM worktree_owner_gaps WHERE worktree_id = ${worktreeId}`.pipe(Effect.orDie);
+        return { owners: owners.map((row) => row.userId), complete: gaps.length === 0 };
+      });
+
+      const unmarkRetiring = Effect.fn("HarnessLayoutsRepo.unmarkRetiring")(function* (
+        workspaceId: string,
+        found: {
+          readonly stops: ReadonlyArray<RetirementStopRecord>;
+          readonly reason: string;
+          readonly checkedAt: Date | null;
+        },
+      ) {
+        yield* sql`
+          UPDATE executor_retirements
+             SET state = 'marked', stops = ${JSON.stringify(found.stops)}::jsonb,
+                 reason = ${found.reason}, checked_at = ${found.checkedAt},
+                 restart_services = '[]'::jsonb, updated_at = now()
+           WHERE workspace_id = ${workspaceId}`.pipe(Effect.orDie);
+      });
+
+      const noteRetiring = Effect.fn("HarnessLayoutsRepo.noteRetiring")(function* (
+        workspaceId: string,
+        note: { readonly reason?: string; readonly restart?: ReadonlyArray<string> },
+      ) {
+        yield* sql`
+          UPDATE executor_retirements
+             SET reason = COALESCE(${note.reason ?? null}, reason),
+                 restart_services = COALESCE(${note.restart === undefined ? null : JSON.stringify(note.restart)}::jsonb, restart_services),
+                 updated_at = now()
+           WHERE workspace_id = ${workspaceId} AND state = 'retiring'`.pipe(Effect.orDie);
+      });
+
+      const clearRetirement = Effect.fn("HarnessLayoutsRepo.clearRetirement")(function* (
+        workspaceId: string,
+      ) {
+        yield* sql`DELETE FROM executor_retirements WHERE workspace_id = ${workspaceId}`.pipe(
+          Effect.orDie,
+        );
+      });
+
       return {
         ensureIdentity,
         identitiesOf,
@@ -563,6 +842,17 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         bindConversation,
         releaseConversation,
         conversationHolder,
+        preReleaseMigrationOf,
+        recordPreReleaseMigration,
+        worktreesAwaitingMigration,
+        retirementOf,
+        listRetirements,
+        markRetirement,
+        beginRetiring,
+        unmarkRetiring,
+        noteRetiring,
+        clearRetirement,
+        sessionOwnersOf,
       };
     }),
   );
@@ -577,6 +867,9 @@ export interface HarnessLayoutsMemoryState {
   readonly conversationHolders: Map<string, ConversationHolder & { readonly takenAt: number }>;
   /** Processes the platform reported exited, as `session_processes.exited_at` would say. */
   readonly exitedProcesses: Set<string>;
+  readonly migrations: Map<string, PreReleaseMigrationRecord>;
+  readonly retirements: Map<string, ExecutorRetirementRecord>;
+  readonly sessionOwners: Map<string, WorktreeSessionOwners>;
 }
 
 export const makeHarnessLayoutsMemoryState = (): HarnessLayoutsMemoryState => ({
@@ -587,6 +880,9 @@ export const makeHarnessLayoutsMemoryState = (): HarnessLayoutsMemoryState => ({
   sharedConversations: new Map(),
   conversationHolders: new Map(),
   exitedProcesses: new Set(),
+  migrations: new Map(),
+  retirements: new Map(),
+  sessionOwners: new Map(),
 });
 
 /** In-memory implementation with the same contract, for tests. */
@@ -747,4 +1043,73 @@ export const harnessLayoutsRepoMemory = (
           ? null
           : { launchId: held.launchId, processId: held.processId, fence: held.fence };
       }),
+    preReleaseMigrationOf: (worktreeId) =>
+      Effect.sync(() => state.migrations.get(worktreeId) ?? null),
+    recordPreReleaseMigration: (record) =>
+      Effect.sync(() => {
+        state.migrations.set(record.worktreeId, record);
+      }),
+    worktreesAwaitingMigration: () =>
+      Effect.sync(() =>
+        [...state.worktrees.entries()]
+          .filter(
+            ([id, worktree]) =>
+              worktree.layout === "person" && state.migrations.get(id)?.final !== true,
+          )
+          .map(([id]) => WorktreeId.make(id)),
+      ),
+    retirementOf: (workspaceId) => Effect.sync(() => state.retirements.get(workspaceId) ?? null),
+    listRetirements: () => Effect.sync(() => [...state.retirements.values()]),
+    markRetirement: (record) =>
+      Effect.sync(() => {
+        const existing = state.retirements.get(record.workspaceId);
+        const next: ExecutorRetirementRecord =
+          existing?.state === "retiring"
+            ? existing
+            : { ...record, state: "marked", restart: [], updatedAt: new Date() };
+        state.retirements.set(record.workspaceId, next);
+        return next;
+      }),
+    beginRetiring: (workspaceId) =>
+      Effect.sync(() => {
+        const existing = state.retirements.get(workspaceId);
+        if (existing === undefined || existing.state !== "marked") return false;
+        state.retirements.set(workspaceId, {
+          ...existing,
+          state: "retiring",
+          updatedAt: new Date(),
+        });
+        return true;
+      }),
+    unmarkRetiring: (workspaceId, found) =>
+      Effect.sync(() => {
+        const existing = state.retirements.get(workspaceId);
+        if (existing === undefined) return;
+        state.retirements.set(workspaceId, {
+          ...existing,
+          state: "marked",
+          stops: found.stops,
+          reason: found.reason,
+          checkedAt: found.checkedAt,
+          restart: [],
+          updatedAt: new Date(),
+        });
+      }),
+    noteRetiring: (workspaceId, note) =>
+      Effect.sync(() => {
+        const existing = state.retirements.get(workspaceId);
+        if (existing === undefined || existing.state !== "retiring") return;
+        state.retirements.set(workspaceId, {
+          ...existing,
+          reason: note.reason ?? existing.reason,
+          restart: note.restart ?? existing.restart,
+          updatedAt: new Date(),
+        });
+      }),
+    clearRetirement: (workspaceId) =>
+      Effect.sync(() => {
+        state.retirements.delete(workspaceId);
+      }),
+    sessionOwnersOf: (worktreeId) =>
+      Effect.sync(() => state.sessionOwners.get(worktreeId) ?? { owners: [], complete: false }),
   });

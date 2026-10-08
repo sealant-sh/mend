@@ -1328,4 +1328,34 @@ benchmark once more, before 0.36 is tagged.
   `features().processUserRoutes` and the rest of the layout's features (never `processUser`, which
   stays false for older SDKs) and each workspace's `processUser()`; a launch runs per person only
   when both say yes. The session line says Core's launch phase while a workspace gets ready.
+- 2026-10-08, Delivery 19 as built: the migration's record (`pre_release_migrations`) keeps every
+  memory path and digest any run credited, so a re-run reads the old home again and credits only
+  files whose digest no run credited, read back against the digest an earlier run credited; it never
+  deletes from the store. A live `shared` executor is marked to retire (`executor_retirements`) by a
+  sweep that runs only with the flag on, once a minute per executor and first one interval after
+  boot. sealantd is PID 1 and adopts every orphan, so parentage says nothing: a process counts as
+  Mend's only in the session of a process Mend recorded, by the pid sealantd reported when it
+  started it (`processStarted` in its record), or in sealantd's own; everything else (a `nohup` job
+  of a shell that ended, a `setsid` or `tmux -d` job, a daemon, a `docker exec`) is listed, by
+  command name and pid only. A recorded pid counts only while its process started within two seconds
+  of the record (no reused pid hides a session); kernel threads (no command line, read by content
+  since procfs reports every size as 0) and zombies are skipped. Starts and turns admitted before
+  the executor turned `retiring` (a launch under way, a turn being queued or queued, an `install.sh`
+  running) would stop, so the check sees them. Containers are what `docker ps` lists with sealantd's
+  own `DOCKER_HOST`; a `docker ps` that cannot answer is "could not check", never "none"
+  (PLATFORM-FEEDBACK 2026-10-08). The check runs on every look, so the owner's "Replace this
+  workspace now" lists all of it; the request names what the owner was shown (the set of things, not
+  when it was checked), and Mend ends nothing more (it is refused when more would stop now, counted
+  as a multiset). The check exec is bounded (30 s), and error text reaches the change's owner only.
+  A `retiring` row nothing moves (a crash, a restart) goes back to `marked` at boot, on the sweep
+  after ten minutes, or when the owner asks again; every other way a replacement does not finish
+  takes it back at once, with why. A failed final flush leaves the executor's drain to ask again, as
+  every kept drain does. The holder's protocol agent and its own `mend.toml` Services start again; a
+  joiner's do not, and terminal sessions end resumable. Memory is credited by the home's record only
+  when nothing is pending and the record is the executor's that wrote the capture read, and by the
+  only-person rule only from `worktree_session_owners` (kept when a session is deleted) on a
+  worktree made after it began, or on an older one whose organization has exactly one member who
+  owns every session it kept (owner decision 2026-10-08); otherwise nobody. A replacement whose
+  final flush was sent stays `retiring` while its drain asks again, and the Services it starts again
+  are kept with the row for a restart.
 - Open: gate B's history record.
