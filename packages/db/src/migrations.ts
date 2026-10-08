@@ -3243,7 +3243,12 @@ const conversationHomesMigration = Effect.gen(function* () {
  * - `executor_retirements`: a worktree's live `shared` executor whose next launch would be
  *   `person`: `marked` (joins and turns from anyone but its launcher refused) or `retiring`
  *   (every new start refused while it is checked, flushed and replaced), what would stop if it
- *   were replaced now, and why the last automatic replacement did not go ahead.
+ *   were replaced now (`checked_at`: when what runs in it was last checked, beyond Mend's own
+ *   records), and why the last automatic replacement did not go ahead.
+ * - `worktree_session_owners`: every account that ever had a session in a worktree, kept when the
+ *   session is deleted, so the migration's "only person" rule reads a durable record.
+ *   `worktree_owner_gaps` names the worktrees that existed before it, whose deleted sessions it
+ *   cannot know: their memory goes to nobody but by the home's own record.
  */
 const preReleaseExecutorsMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -3270,9 +3275,26 @@ const preReleaseExecutorsMigration = Effect.gen(function* () {
       state text NOT NULL CHECK (state IN ('marked', 'retiring')),
       stops jsonb NOT NULL DEFAULT '[]'::jsonb,
       reason text,
+      checked_at timestamptz,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
   yield* sql`CREATE INDEX executor_retirements_worktree_idx ON executor_retirements (worktree_id)`;
+  yield* sql`
+    CREATE TABLE worktree_session_owners (
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      user_id text NOT NULL,
+      PRIMARY KEY (worktree_id, user_id)
+    )`;
+  yield* sql`
+    INSERT INTO worktree_session_owners (worktree_id, user_id)
+    SELECT DISTINCT worktree_id, owner_user_id FROM agent_sessions
+    WHERE owner_user_id IS NOT NULL
+    ON CONFLICT DO NOTHING`;
+  yield* sql`
+    CREATE TABLE worktree_owner_gaps (
+      worktree_id text PRIMARY KEY REFERENCES worktrees(id) ON DELETE CASCADE
+    )`;
+  yield* sql`INSERT INTO worktree_owner_gaps (worktree_id) SELECT id FROM worktrees`;
 });
 
 export const migrations = {

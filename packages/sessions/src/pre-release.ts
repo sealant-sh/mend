@@ -6,6 +6,8 @@
  * it replaces it on its own. Reached only behind `MEND_HARNESS_LAYOUT=person` or a worktree
  * already per person.
  */
+import { createHash } from "node:crypto";
+
 import type { RetirementStopRecord } from "@mend/db";
 import type { SessionProcess } from "@mend/domain/workbench";
 
@@ -27,10 +29,18 @@ export interface MemoryCreditor {
 export const memoryCreditorOf = (input: {
   /** The saved record's person: undefined with no record, null when it names nobody. */
   readonly homeRecord: string | null | undefined;
-  /** The owner of every session the worktree had; null for one with no owner. */
+  /**
+   * A record exists that the server's own read-backs would not take: a hand-over pending, or a
+   * settled home of another executor than the one that wrote the capture. Then nobody.
+   */
+  readonly unsettledRecord?: boolean;
+  /** The owner of every session the worktree ever had; null for one with no owner. */
   readonly owners: ReadonlyArray<string | null>;
+  /** The owners are every session's, deleted ones included; false: the rule cannot apply. */
+  readonly ownersComplete?: boolean;
   readonly isMember: (userId: string) => boolean;
 }): MemoryCreditor => {
+  if (input.unsettledRecord === true) return { creditedTo: null, decidedBy: "nobody" };
   if (typeof input.homeRecord === "string") {
     return input.isMember(input.homeRecord)
       ? { creditedTo: input.homeRecord, decidedBy: "home-record" }
@@ -38,7 +48,12 @@ export const memoryCreditorOf = (input: {
   }
   const people = new Set(input.owners);
   const [only] = [...people];
-  if (people.size === 1 && typeof only === "string" && input.isMember(only)) {
+  if (
+    input.ownersComplete !== false &&
+    people.size === 1 &&
+    typeof only === "string" &&
+    input.isMember(only)
+  ) {
     return { creditedTo: only, decidedBy: "only-person" };
   }
   return { creditedTo: null, decidedBy: "nobody" };
@@ -116,7 +131,7 @@ export const REPLACE_TURN_RUNNING =
  * anyone, and no released Mend could resume it, so nothing is copied.
  */
 export const OPENCODE_PRE_RELEASE_REFUSAL =
-  "This opencode conversation was saved in a workspace that shared one home, and it cannot be carried into your own opencode data. It can be resumed only in that workspace, which has been replaced. Start a new opencode session.";
+  "This opencode conversation was saved in a workspace that shared one home, and it cannot be carried into your own opencode data. It could be resumed only in that workspace, which has ended. Start a new opencode session.";
 
 /**
  * Whether an opencode conversation a person launch resumes was last held by a process that ran as
@@ -209,6 +224,7 @@ const STOP_NOUNS: Readonly<Record<RetirementStopRecord["kind"], readonly [string
   turn: ["agent turn in flight", "agent turns in flight"],
   process: ["process Mend did not start", "processes Mend did not start"],
   container: ["running container", "running containers"],
+  unchecked: ["thing Mend could not check", "things Mend could not check"],
 };
 
 /**
@@ -229,41 +245,84 @@ export const notReplacedWords = (stops: ReadonlyArray<RetirementStopRecord>): st
 export const RETIRE_LINE = "mend-retire";
 
 /**
- * The check Mend runs in a pre-release executor, as root, before it replaces it on its own
- * (decision 14): every process whose parent chain does not reach a `sealantd` (a `docker exec`,
- * whatever an image's own entrypoint started beside it, a daemon reparented to an init that is
- * not sealantd), and every running container of the executor's Docker sidecar (`docker ps`).
- * Kernel threads, init itself and the check's own processes are not listed. One line per finding
- * (`mend-retire process <command>`, `mend-retire container <name> (<image>)`), then
- * `mend-retire checked`. It reads and changes nothing else.
+ * The check Mend runs in a pre-release executor, as root, before it replaces it (decision 14).
+ *
+ * **Processes.** A process counts as Mend's only when it is in the session (`setsid`) of a process
+ * Mend recorded and is still running there: the pids sealantd reported when it started them
+ * (`processStarted` in each process's record, `known`), or sealantd's own (PID 1's session).
+ * Everything else is listed: sealantd is PID 1 and adopts every orphan, so parentage says nothing.
+ * A `nohup` job left by a shell that has ended, a `setsid` or `tmux new -d` job, a daemon, a
+ * `docker exec`: all are in sessions no live recorded process leads. Kernel threads and the
+ * check's own session are not listed. A process is named by its command name and pid only (never
+ * its arguments, which can hold a secret).
+ *
+ * **Containers.** When the executor has a Docker sidecar (the image's `services.docker`, or a
+ * `DOCKER_HOST` in sealantd's own environment, which is the container's), `docker ps` must answer:
+ * no `docker` command, no daemon address, a refusal or a timeout each prints
+ * `mend-retire unknown <why>`, which holds an automatic replacement and tells the owner why. It
+ * never reads as "no containers".
+ *
+ * One line per finding (`mend-retire process <pid> <name>`, `mend-retire container <name>
+ * (<image>)`, `mend-retire unknown <why>`), then `mend-retire checked`. It changes nothing.
  */
-export const retireCheckScript = (options: { readonly proc?: string } = {}): string => {
+export const retireCheckScript = (options: {
+  /** Pids sealantd reported for the executor's live recorded processes. */
+  readonly known: ReadonlyArray<number>;
+  /** The executor has a Docker sidecar, as its image says. */
+  readonly docker: boolean;
+  readonly proc?: string;
+  /** The `docker` command to run (a test's stand-in); `docker` on PATH otherwise. */
+  readonly dockerCommand?: string;
+  /** The daemon socket looked for without a `DOCKER_HOST`; `/var/run/docker.sock` otherwise. */
+  readonly dockerSocket?: string;
+  /** How long `docker ps` may take; 20 s otherwise. */
+  readonly dockerTimeoutSeconds?: number;
+}): string => {
   const proc = options.proc ?? "/proc";
+  const known = options.known.filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+  const docker = shellQuoteSafe(options.dockerCommand ?? "docker");
+  const socket = shellQuoteSafe(options.dockerSocket ?? "/var/run/docker.sock");
+  const socketUrl = `unix://${(options.dockerSocket ?? "/var/run/docker.sock").replace(/[^A-Za-z0-9._/-]/g, "")}`;
+  const seconds = Math.max(1, Math.floor(options.dockerTimeoutSeconds ?? 20));
   return [
-    `P=${proc}`,
-    `ppid() { awk '/^PPid:/ { print $2 }' "$P/$1/status" 2>/dev/null; }`,
-    // The daemons Mend starts everything through.
-    `sd=" "; for p in "$P"/[0-9]*; do [ "$(cat "$p/comm" 2>/dev/null)" = sealantd ] && sd="$sd\${p##*/} "; done`,
+    `P=${shellQuoteSafe(proc)}`,
+    // The session id: field 6 of stat, counted after the command name's closing parenthesis.
+    `sid_of() { sed 's/^.*) //' "$P/$1/stat" 2>/dev/null | awk '{ print $4 }'; }`,
+    `self=$(sid_of $$)`,
+    `known=" $(sid_of 1) "`,
+    `for k in ${known.join(" ")}; do s=$(sid_of "$k"); [ -n "$s" ] && known="$known$s "; done`,
     `for p in "$P"/[0-9]*; do`,
     `  pid=\${p##*/}; [ "$pid" = 1 ] && continue`,
-    // A kernel thread has no command line.
     `  [ -s "$p/cmdline" ] || continue`,
-    `  q=$pid; ours=0; n=0`,
-    `  while [ -n "$q" ] && [ "$q" -gt 0 ] 2>/dev/null && [ "$n" -lt 256 ]; do`,
-    `    case "$sd" in *" $q "*) ours=1; break ;; esac`,
-    `    [ "$q" = 1 ] && break; q=$(ppid "$q"); n=$((n + 1))`,
-    `  done`,
-    `  [ "$ours" = 1 ] && continue`,
-    `  c=$(tr '\\0' ' ' < "$p/cmdline" 2>/dev/null | cut -c1-160)`,
-    `  [ -n "$c" ] && printf '%s process %s\\n' ${RETIRE_LINE} "$c"`,
+    `  s=$(sid_of "$pid"); [ -n "$s" ] || continue`,
+    `  [ "$s" = "$self" ] && continue`,
+    `  case "$known" in *" $s "*) continue ;; esac`,
+    `  c=$(tr -d '\\n' < "$p/comm" 2>/dev/null | tr -c 'A-Za-z0-9._+-' '_' | cut -c1-32)`,
+    `  printf '%s process %s %s\\n' ${RETIRE_LINE} "$pid" "\${c:-unknown}"`,
     `done`,
-    `if command -v docker >/dev/null 2>&1; then docker ps --format '{{.Names}} ({{.Image}})' 2>/dev/null | ` +
-      `while IFS= read -r line; do [ -n "$line" ] && printf '%s container %s\\n' ${RETIRE_LINE} "$line"; done; fi`,
+    `unknown() { printf '%s unknown %s\\n' ${RETIRE_LINE} "$1"; }`,
+    `dh=$(tr '\\0' '\\n' < "$P/1/environ" 2>/dev/null | sed -n 's/^DOCKER_HOST=//p' | head -n 1)`,
+    `if [ ${options.docker ? "1" : "0"} = 1 ] || [ -n "$dh" ]; then`,
+    `  if ! command -v ${docker} >/dev/null 2>&1; then unknown "running containers: no docker command in this image";`,
+    `  elif [ -z "$dh" ] && [ ! -S ${socket} ]; then unknown "running containers: no Docker daemon address (DOCKER_HOST)";`,
+    `  else`,
+    `    t=; command -v timeout >/dev/null 2>&1 && t="timeout ${seconds}"`,
+    `    out=$(DOCKER_HOST="\${dh:-${socketUrl}}" $t ${docker} ps --format '{{.Names}} ({{.Image}})' 2>&1); st=$?`,
+    `    if [ "$st" != 0 ]; then unknown "running containers: docker ps failed ($(printf '%s' "$out" | tail -n 1 | tr -c 'A-Za-z0-9 .:/_()-' ' ' | cut -c1-120))";`,
+    `    else printf '%s\\n' "$out" | while IFS= read -r line; do [ -n "$line" ] && printf '%s container %s\\n' ${RETIRE_LINE} "$line"; done; fi`,
+    `  fi`,
+    `fi`,
     `printf '%s checked\\n' ${RETIRE_LINE}`,
   ].join("\n");
 };
 
-/** What the retire check found; `checked` false when it did not run to its end (then nothing goes). */
+/** A path that goes into the script as is: the tests' temporary directories and `/proc`. */
+const shellQuoteSafe = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+
+/**
+ * What the retire check found. `checked` false when it did not run to its end: then nothing it
+ * would have found is known, and an automatic replacement does not go ahead.
+ */
 export const parseRetireCheck = (
   stdout: string,
 ): { readonly checked: boolean; readonly stops: ReadonlyArray<RetirementStopRecord> } => {
@@ -274,10 +333,62 @@ export const parseRetireCheck = (
     const rest = line.slice(RETIRE_LINE.length + 1).trim();
     if (rest === "checked") checked = true;
     else if (rest.startsWith("process ")) {
-      stops.push({ kind: "process", label: rest.slice("process ".length).trim() });
+      const [pid, ...name] = rest.slice("process ".length).trim().split(" ");
+      stops.push({ kind: "process", label: `${name.join(" ") || "unknown"} (pid ${pid ?? "?"})` });
     } else if (rest.startsWith("container ")) {
       stops.push({ kind: "container", label: rest.slice("container ".length).trim() });
+    } else if (rest.startsWith("unknown ")) {
+      stops.push({ kind: "unchecked", label: rest.slice("unknown ".length).trim() });
     }
   }
   return { checked, stops };
 };
+
+/** Why a check found nothing it could read: one `unchecked` stop. */
+export const uncheckedStop = (why: string): RetirementStopRecord => ({
+  kind: "unchecked",
+  label: why,
+});
+
+/**
+ * One token for what a viewer was shown: the stops, in order, and when they were checked. The
+ * owner's "Replace this workspace now" names it, and Mend ends nothing that was not listed.
+ */
+export const retirementFingerprintOf = (input: {
+  readonly stops: ReadonlyArray<RetirementStopRecord>;
+  readonly checkedAt: Date | null;
+}): string =>
+  createHash("sha256")
+    .update(
+      JSON.stringify([
+        input.checkedAt?.toISOString() ?? null,
+        input.stops.map((stop) => [stop.kind, stop.label]),
+      ]),
+    )
+    .digest("base64url")
+    .slice(0, 22);
+
+/**
+ * Whether everything that would stop now was among what the owner was shown: a replacement goes
+ * ahead only then. A process is the same one only by its pid and name.
+ */
+export const stopsWithin = (
+  now: ReadonlyArray<RetirementStopRecord>,
+  shown: ReadonlyArray<RetirementStopRecord>,
+): boolean =>
+  now.every((stop) => shown.some((seen) => seen.kind === stop.kind && seen.label === stop.label));
+
+/** "Replace this workspace now" after what would stop changed since the owner looked. */
+export const REPLACE_STOPS_CHANGED =
+  "What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.";
+
+/** A process or container's label is the change's owner's to read: everyone else sees its kind. */
+export const stopsForViewer = (
+  stops: ReadonlyArray<RetirementStopRecord>,
+  isOwner: boolean,
+): ReadonlyArray<RetirementStopRecord> =>
+  isOwner
+    ? stops
+    : stops.map((stop) =>
+        stop.kind === "process" || stop.kind === "container" ? { ...stop, label: "" } : stop,
+      );

@@ -478,14 +478,29 @@ describe.skipIf(!reachable)(
             preRelease: true,
             stops: [{ kind: "shell", label: "shell 1" }],
             reason: null,
+            checkedAt: null,
           });
           expect(marked.state).toBe("marked");
+          const markedAt = marked.updatedAt;
           expect(yield* repo.beginRetiring("ws-old")).toBe(true);
           // A second attempt finds it held.
           expect(yield* repo.beginRetiring("ws-old")).toBe(false);
           // The sweep marking it again while it retires changes nothing.
-          const again = yield* repo.markRetirement({ ...marked, stops: [], reason: "later" });
-          expect(again).toMatchObject({ state: "retiring", stops: [{ kind: "shell" }] });
+          const retiring = yield* repo.retirementOf("ws-old");
+          const again = yield* repo.markRetirement({
+            ...marked,
+            stops: [],
+            reason: "later",
+            checkedAt: new Date(),
+          });
+          expect(again).toMatchObject({
+            state: "retiring",
+            stops: [{ kind: "shell" }],
+            checkedAt: null,
+          });
+          // Its time is the replacement's: a sweep's mark never makes a stale row look fresh.
+          expect(again.updatedAt).toEqual(retiring?.updatedAt);
+          expect(retiring?.updatedAt.getTime()).toBeGreaterThanOrEqual(markedAt.getTime());
           yield* repo.unmarkRetiring("ws-old", {
             stops: [{ kind: "process", label: "sleep 600" }],
             reason: "a process Mend did not start runs in it",
@@ -498,6 +513,30 @@ describe.skipIf(!reachable)(
           expect((yield* repo.listRetirements()).map((row) => row.workspaceId)).toEqual(["ws-old"]);
           yield* repo.clearRetirement("ws-old");
           expect(yield* repo.retirementOf("ws-old")).toBeNull();
+        }),
+      );
+    });
+
+    it("keeps every account that had a session in a worktree, and says which worktrees predate it", async () => {
+      await inDb(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const repo = yield* HarnessLayoutsRepo;
+          // Made after the record began: complete. One older than it is a gap, whatever it holds.
+          expect(yield* repo.sessionOwnersOf(worktree)).toEqual({ owners: [], complete: true });
+          yield* sql`INSERT INTO worktree_owner_gaps (worktree_id) VALUES (${worktree})`;
+          expect(yield* repo.sessionOwnersOf(worktree)).toEqual({ owners: [], complete: false });
+          yield* sql`
+            INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+            VALUES ('wt-new', 'p-1', 'new', 'new', 'mend/new', 'abc')`;
+          yield* sql`
+            INSERT INTO worktree_session_owners (worktree_id, user_id)
+            VALUES ('wt-new', 'alice'), ('wt-new', 'bob'), ('wt-new', 'alice')
+            ON CONFLICT DO NOTHING`;
+          expect(yield* repo.sessionOwnersOf(WorktreeId.make("wt-new"))).toEqual({
+            owners: ["alice", "bob"],
+            complete: true,
+          });
         }),
       );
     });

@@ -15,7 +15,10 @@ import {
   parseRetireCheck,
   refusesManualReplacement,
   retireCheckScript,
+  retirementFingerprintOf,
   retirementStopsOf,
+  stopsForViewer,
+  stopsWithin,
 } from "./pre-release.ts";
 
 const members =
@@ -77,6 +80,30 @@ describe("whom an old shared home's memory goes to (docs/adr/0016, decision 14)"
 });
 
 const file = (at: string, digest: string) => ({ path: at, digest, contents: digest });
+
+describe("when the server cannot say whose memory it is", () => {
+  it("credits nobody with a record its own read-backs would not take", () => {
+    expect(
+      memoryCreditorOf({
+        homeRecord: null,
+        unsettledRecord: true,
+        owners: ["alice"],
+        isMember: members("alice"),
+      }),
+    ).toEqual({ creditedTo: null, decidedBy: "nobody" });
+  });
+
+  it("applies the only-person rule only to a complete record of every session ever", () => {
+    expect(
+      memoryCreditorOf({
+        homeRecord: undefined,
+        owners: ["alice"],
+        ownersComplete: false,
+        isMember: members("alice"),
+      }),
+    ).toEqual({ creditedTo: null, decidedBy: "nobody" });
+  });
+});
 
 describe("what a run of the migration credits", () => {
   it("credits every file the first time, against what the old home says it was delivered", () => {
@@ -195,59 +222,239 @@ describe("what would stop if a pre-release executor were replaced now", () => {
   });
 });
 
-const procOf = (
-  processes: ReadonlyArray<{ pid: number; ppid: number; comm: string; cmdline: string }>,
-) => {
+interface FakeProcess {
+  readonly pid: number;
+  readonly ppid: number;
+  /** The session (setsid) the process is in. */
+  readonly sid: number;
+  readonly comm: string;
+  readonly cmdline: string;
+}
+
+/** A /proc with the fields the check reads: comm, cmdline, stat (session id) and PID 1's environ. */
+const procOf = (processes: ReadonlyArray<FakeProcess>, environ: Record<string, string> = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-proc-"));
   for (const process of processes) {
     const dir = path.join(root, String(process.pid));
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, "comm"), `${process.comm}\n`);
-    fs.writeFileSync(path.join(dir, "status"), `Name:\t${process.comm}\nPPid:\t${process.ppid}\n`);
+    fs.writeFileSync(
+      path.join(dir, "stat"),
+      `${process.pid} (${process.comm}) S ${process.ppid} ${process.sid} ${process.sid} 0 -1 4194560\n`,
+    );
     fs.writeFileSync(path.join(dir, "cmdline"), process.cmdline.split(" ").join("\0"));
+    if (process.pid === 1) {
+      fs.writeFileSync(
+        path.join(dir, "environ"),
+        Object.entries(environ)
+          .map(([key, value]) => `${key}=${value}`)
+          .join("\0"),
+      );
+    }
   }
   return root;
 };
 
-describe("the retire check, against a /proc", () => {
-  it("lists what does not descend from sealantd, and nothing that does", () => {
+/** A stand-in `docker` that prints `stdout`, `stderr` and exits with `code`, after `sleep` s. */
+const dockerOf = (options: {
+  readonly code: number;
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly sleep?: number;
+}) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-docker-"));
+  const command = path.join(dir, "docker");
+  fs.writeFileSync(path.join(dir, "out"), options.stdout ?? "");
+  fs.writeFileSync(path.join(dir, "err"), options.stderr ?? "");
+  fs.writeFileSync(
+    command,
+    [
+      "#!/bin/sh",
+      `[ -n "$DOCKER_HOST" ] || { echo "no DOCKER_HOST seen" >&2; exit 9; }`,
+      options.sleep === undefined ? ":" : `sleep ${options.sleep}`,
+      `cat '${dir}/out'`,
+      `cat '${dir}/err' >&2`,
+      `exit ${options.code}`,
+    ].join("\n"),
+  );
+  fs.chmodSync(command, 0o755);
+  return command;
+};
+
+const check = (proc: string, options: Partial<Parameters<typeof retireCheckScript>[0]> = {}) =>
+  parseRetireCheck(
+    execFileSync(
+      "sh",
+      [
+        "-c",
+        retireCheckScript({
+          proc,
+          known: [],
+          docker: false,
+          dockerSocket: path.join(os.tmpdir(), "mend-no-such-socket"),
+          ...options,
+        }),
+      ],
+      { encoding: "utf8" },
+    ),
+  );
+
+/** sealantd as PID 1 (as every executor image runs it), adopting every orphan. */
+const SEALANTD: FakeProcess = {
+  pid: 1,
+  ppid: 0,
+  sid: 1,
+  comm: "sealantd",
+  cmdline: "sealantd boot",
+};
+
+describe("the retire check, against a /proc with sealantd as PID 1", () => {
+  it("counts as Mend's only the sessions of the processes Mend recorded; detached jobs are listed", () => {
     const proc = procOf([
-      { pid: 1, ppid: 0, comm: "tini", cmdline: "tini -- sealantd" },
-      { pid: 7, ppid: 1, comm: "sealantd", cmdline: "sealantd serve" },
-      { pid: 20, ppid: 7, comm: "claude", cmdline: "claude --print" },
-      { pid: 21, ppid: 20, comm: "node", cmdline: "node server.js" },
-      // `docker exec` from outside: its parent is not in the container.
-      { pid: 30, ppid: 0, comm: "bash", cmdline: "bash" },
-      { pid: 31, ppid: 30, comm: "sleep", cmdline: "sleep 600" },
-      // A daemon reparented to an init that is not sealantd.
-      { pid: 40, ppid: 1, comm: "redis-server", cmdline: "redis-server *:6379" },
+      SEALANTD,
+      // A protocol agent Mend recorded (its pid from its record) and the tool it runs.
+      { pid: 20, ppid: 1, sid: 20, comm: "claude", cmdline: "claude --print" },
+      { pid: 21, ppid: 20, sid: 20, comm: "node", cmdline: "node tool.js" },
+      // A shell that ended left a nohup job: reparented to sealantd, its session's leader gone.
+      {
+        pid: 31,
+        ppid: 1,
+        sid: 30,
+        comm: "python",
+        cmdline: "nohup python train.py --token=s3cret",
+      },
+      // A setsid job and a tmux server: sessions of their own, children of sealantd.
+      { pid: 40, ppid: 1, sid: 40, comm: "node", cmdline: "node server.js" },
+      { pid: 50, ppid: 1, sid: 50, comm: "tmux: server", cmdline: "tmux new -d" },
+      // A docker exec from outside.
+      { pid: 60, ppid: 0, sid: 60, comm: "bash", cmdline: "bash" },
+      // A process naming itself sealantd hides nothing.
+      { pid: 70, ppid: 1, sid: 70, comm: "sealantd", cmdline: "/tmp/sealantd" },
       // A kernel thread.
-      { pid: 2, ppid: 0, comm: "kthreadd", cmdline: "" },
+      { pid: 2, ppid: 0, sid: 0, comm: "kthreadd", cmdline: "" },
     ]);
-    const stdout = execFileSync("sh", ["-c", retireCheckScript({ proc })], { encoding: "utf8" });
-    const found = parseRetireCheck(stdout);
+    const found = check(proc, { known: [20] });
     expect(found.checked).toBe(true);
-    expect(found.stops.filter((stop) => stop.kind === "process")).toEqual([
-      { kind: "process", label: "bash" },
-      { kind: "process", label: "sleep 600" },
-      { kind: "process", label: "redis-server *:6379" },
+    expect(found.stops).toEqual([
+      { kind: "process", label: "python (pid 31)" },
+      { kind: "process", label: "node (pid 40)" },
+      { kind: "process", label: "tmux__server (pid 50)" },
+      { kind: "process", label: "bash (pid 60)" },
+      { kind: "process", label: "sealantd (pid 70)" },
     ]);
+    // A process is named by its command name and pid: never its arguments.
+    expect(JSON.stringify(found.stops)).not.toContain("s3cret");
   });
 
-  it("finds nothing in an executor where everything runs under sealantd", () => {
+  it("finds nothing when everything runs in the sessions Mend recorded", () => {
     const proc = procOf([
-      { pid: 1, ppid: 0, comm: "sealantd", cmdline: "sealantd serve" },
-      { pid: 9, ppid: 1, comm: "codex", cmdline: "codex app-server" },
+      SEALANTD,
+      { pid: 9, ppid: 1, sid: 9, comm: "codex", cmdline: "codex app-server" },
+      { pid: 10, ppid: 9, sid: 9, comm: "git", cmdline: "git status" },
     ]);
-    const stdout = execFileSync("sh", ["-c", retireCheckScript({ proc })], { encoding: "utf8" });
-    expect(parseRetireCheck(stdout).stops.filter((stop) => stop.kind === "process")).toEqual([]);
+    expect(check(proc, { known: [9] })).toEqual({ checked: true, stops: [] });
   });
 
-  it("reads containers, and a check that did not finish counts as not checked", () => {
-    expect(
-      parseRetireCheck("mend-retire container pg (postgres:17)\nmend-retire checked\n"),
-    ).toEqual({ checked: true, stops: [{ kind: "container", label: "pg (postgres:17)" }] });
-    expect(parseRetireCheck("mend-retire process sleep 1\n").checked).toBe(false);
+  it("lists a recorded process's session once its leader is gone and nothing names it", () => {
+    const proc = procOf([
+      SEALANTD,
+      { pid: 12, ppid: 1, sid: 11, comm: "sleep", cmdline: "sleep 600" },
+    ]);
+    // pid 11, the recorded one, has exited: its session no longer counts.
+    expect(check(proc, { known: [11] }).stops).toEqual([
+      { kind: "process", label: "sleep (pid 12)" },
+    ]);
+  });
+});
+
+describe("the retire check's containers: anything but a docker ps that answers is unknown", () => {
+  const proc = (environ: Record<string, string> = { DOCKER_HOST: "tcp://docker:2375" }) =>
+    procOf([SEALANTD], environ);
+
+  it("lists the running containers when docker ps answers", () => {
+    const docker = dockerOf({ code: 0, stdout: "pg (postgres:17)\nredis (redis:7)\n" });
+    expect(check(proc(), { docker: true, dockerCommand: docker })).toEqual({
+      checked: true,
+      stops: [
+        { kind: "container", label: "pg (postgres:17)" },
+        { kind: "container", label: "redis (redis:7)" },
+      ],
+    });
+  });
+
+  it("reads an unreachable daemon as unknown, never as no containers", () => {
+    const docker = dockerOf({
+      code: 1,
+      stderr:
+        "Cannot connect to the Docker daemon at tcp://docker:2375. Is the docker daemon running?",
+    });
+    const found = check(proc(), { docker: true, dockerCommand: docker });
+    expect(found.stops).toHaveLength(1);
+    expect(found.stops[0]?.kind).toBe("unchecked");
+    expect(found.stops[0]?.label).toContain("running containers: docker ps failed (Cannot connect");
+  });
+
+  it("reads a missing docker command as unknown", () => {
+    expect(check(proc(), { docker: true, dockerCommand: "/nonexistent/docker" }).stops).toEqual([
+      { kind: "unchecked", label: "running containers: no docker command in this image" },
+    ]);
+  });
+
+  it("reads a sidecar with no DOCKER_HOST and no socket as unknown", () => {
+    const docker = dockerOf({ code: 0 });
+    expect(check(proc({}), { docker: true, dockerCommand: docker }).stops).toEqual([
+      { kind: "unchecked", label: "running containers: no Docker daemon address (DOCKER_HOST)" },
+    ]);
+  });
+
+  it("reads a docker ps that does not answer in time as unknown", () => {
+    const docker = dockerOf({ code: 0, stdout: "pg (postgres:17)\n", sleep: 3 });
+    const found = check(proc(), { docker: true, dockerCommand: docker, dockerTimeoutSeconds: 1 });
+    expect(found.stops.map((stop) => stop.kind)).toEqual(["unchecked"]);
+  });
+
+  it("checks a sidecar sealantd's environment names even when the image did not say so", () => {
+    const docker = dockerOf({ code: 0, stdout: "pg (postgres:17)\n" });
+    expect(check(proc(), { docker: false, dockerCommand: docker }).stops).toEqual([
+      { kind: "container", label: "pg (postgres:17)" },
+    ]);
+    // No sidecar at all: nothing to check.
+    expect(check(proc({}), { docker: false, dockerCommand: docker }).stops).toEqual([]);
+  });
+
+  it("counts a check that did not finish as not checked", () => {
+    expect(parseRetireCheck("mend-retire process 4 sleep\n").checked).toBe(false);
+  });
+});
+
+describe("what the owner was shown", () => {
+  const shown = [
+    { kind: "shell" as const, label: "auth · shell 1" },
+    { kind: "container" as const, label: "pg (postgres:17)" },
+  ];
+
+  it("replaces only when nothing more would stop now", () => {
+    expect(stopsWithin(shown.slice(0, 1), shown)).toBe(true);
+    expect(stopsWithin([...shown, { kind: "process", label: "node (pid 40)" }], shown)).toBe(false);
+    const at = new Date("2026-10-08T12:00:00Z");
+    expect(retirementFingerprintOf({ stops: shown, checkedAt: at })).toBe(
+      retirementFingerprintOf({ stops: shown, checkedAt: at }),
+    );
+    expect(retirementFingerprintOf({ stops: shown, checkedAt: at })).not.toBe(
+      retirementFingerprintOf({ stops: shown.slice(1), checkedAt: at }),
+    );
+  });
+
+  it("shows a process's or a container's label to the change's owner only", () => {
+    const stops = [
+      { kind: "process" as const, label: "psql (pid 7)" },
+      { kind: "shell" as const, label: "auth · shell 1" },
+    ];
+    expect(stopsForViewer(stops, false)).toEqual([
+      { kind: "process", label: "" },
+      { kind: "shell", label: "auth · shell 1" },
+    ]);
+    expect(stopsForViewer(stops, true)).toEqual(stops);
   });
 });
 

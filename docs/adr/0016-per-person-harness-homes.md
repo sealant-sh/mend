@@ -1333,10 +1333,21 @@ benchmark once more, before 0.36 is tagged.
   files whose digest no run credited, read back against the digest an earlier run credited; it never
   deletes from the store. A live `shared` executor is marked to retire (`executor_retirements`) by a
   sweep that runs only with the flag on, once a minute per executor and first one interval after
-  boot; "processes Mend did not start" are those whose parent chain does not reach a `sealantd`, and
-  the sidecar's containers are what `docker ps` lists inside the executor (PLATFORM-FEEDBACK
-  2026-10-08). A failed final flush leaves the executor's drain to ask again, as every kept drain
-  does, and the executor admits nothing new from its first final flush. `mend.toml` Services are
-  started again once their session is live after the replacement; the holder's protocol agent is
-  relaunched, and terminal sessions end resumable.
+  boot. sealantd is PID 1 and adopts every orphan, so parentage says nothing: a process counts as
+  Mend's only in the session of a process Mend recorded, by the pid sealantd reported when it
+  started it (`processStarted` in its record), or in sealantd's own; everything else (a `nohup` job
+  of a shell that ended, a `setsid` or `tmux -d` job, a daemon, a `docker exec`) is listed, by
+  command name and pid only. Containers are what `docker ps` lists with sealantd's own
+  `DOCKER_HOST`; a `docker ps` that cannot answer is "could not check", never "none"
+  (PLATFORM-FEEDBACK 2026-10-08). The check runs on every look, so the owner's "Replace this
+  workspace now" lists all of it; the request names what the owner was shown, and Mend ends nothing
+  more (it is refused when more would stop now). A `retiring` row nothing moves (a crash, a restart)
+  goes back to `marked` at boot, on the sweep after ten minutes, or when the owner asks again; every
+  other way a replacement does not finish takes it back at once, with why. A failed final flush
+  leaves the executor's drain to ask again, as every kept drain does. The holder's protocol agent
+  and its own `mend.toml` Services start again; a joiner's do not, and terminal sessions end
+  resumable. Memory is credited by the home's record only when nothing is pending and the record is
+  the executor's that wrote the capture read, and by the only-person rule only from
+  `worktree_session_owners` (kept when a session is deleted) on a worktree made after it began;
+  otherwise nobody.
 - Open: gate B's history record.

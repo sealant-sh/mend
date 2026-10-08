@@ -2547,7 +2547,19 @@ describe.skipIf(!reachable)("0118 pre-release executors", () => {
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status, owner_user_id)
+          VALUES ('s-a', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', 'alice'),
+                 ('s-b', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', 'alice'),
+                 ('s-c', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', NULL)`;
         yield* migrations["0118_pre_release_executors"];
+        // Who had sessions there, once each, and the worktree marked as older than the record.
+        const owners = yield* sql<{ readonly userId: string }>`
+          SELECT user_id AS "userId" FROM worktree_session_owners WHERE worktree_id = 'wt-1'`;
+        expect(owners.map((row) => row.userId)).toEqual(["alice"]);
+        const gaps = yield* sql`SELECT 1 FROM worktree_owner_gaps WHERE worktree_id = 'wt-1'`;
+        expect(gaps).toHaveLength(1);
         yield* sql`
           INSERT INTO pre_release_migrations (worktree_id, capture_id, capture_n, final, decided_by)
           VALUES ('wt-1', 'cap-1', 1, false, 'nothing')`;
@@ -2561,13 +2573,19 @@ describe.skipIf(!reachable)("0118 pre-release executors", () => {
           Effect.catch(() => Effect.succeed(true)),
         );
         expect(refused).toBe(true);
+        yield* sql`DELETE FROM agent_sessions WHERE worktree_id = 'wt-1'`;
         yield* sql`DELETE FROM worktrees WHERE id = 'wt-1'`;
-        const [counts] = yield* sql<{ readonly migrations: number; readonly retirements: number }>`
+        const [counts] = yield* sql<{
+          readonly migrations: number;
+          readonly retirements: number;
+          readonly owners: number;
+        }>`
           SELECT (SELECT count(*)::int FROM pre_release_migrations) AS migrations,
-                 (SELECT count(*)::int FROM executor_retirements) AS retirements`;
+                 (SELECT count(*)::int FROM executor_retirements) AS retirements,
+                 (SELECT count(*)::int FROM worktree_session_owners) AS owners`;
         return counts;
       }),
     );
-    expect(left).toEqual({ migrations: 0, retirements: 0 });
+    expect(left).toEqual({ migrations: 0, retirements: 0, owners: 0 });
   });
 });

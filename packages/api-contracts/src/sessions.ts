@@ -163,6 +163,16 @@ export class WorkspaceReplaceRefused extends Schema.TaggedErrorClass<WorkspaceRe
   { httpApiStatus: 409 },
 ) {}
 
+/**
+ * "Replace this workspace now": the `fingerprint` of the retirement the owner was shown. Mend ends
+ * nothing that was not listed there: when more would stop now, the replacement is refused.
+ */
+export class ReplaceWorkspaceRequest extends Schema.Class<ReplaceWorkspaceRequest>(
+  "ReplaceWorkspaceRequest",
+)({
+  seen: Schema.String,
+}) {}
+
 export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.get("listActive", "/sessions", {
@@ -227,6 +237,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     // flush, and the worktree's next launch runs each person as themselves.
     HttpApiEndpoint.post("replaceWorkspace", "/sessions/:id/workspace-retirement/replace", {
       params: { id: SessionId },
+      payload: ReplaceWorkspaceRequest,
       error: [NotFound, WorkspaceReplaceRefused],
     }),
   )

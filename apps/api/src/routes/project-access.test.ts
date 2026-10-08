@@ -493,7 +493,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   // docs/adr/0016, decision 14: anyone who sees the session reads it; the engine lets only the
   // change's owner replace the workspace.
   session("project-read", "GET", "/workspace-retirement")("sessions.workspaceRetirement"),
-  session("project-read", "POST", "/workspace-retirement/replace")("sessions.replaceWorkspace"),
+  session("project-read", "POST", "/workspace-retirement/replace", { seen: "f1" })(
+    "sessions.replaceWorkspace",
+  ),
   session("steer", "POST", "/waiting/end", { kind: "task", id: "task-1" })(
     "sessions.endBackgroundWork",
   ),

@@ -2462,19 +2462,21 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           );
       }),
     )
-    .handle("replaceWorkspace", ({ params }) =>
+    .handle("replaceWorkspace", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).session(params.id);
         const caller = yield* CurrentUser;
-        yield* (yield* SessionEngine).replaceWorkspaceNow(params.id, caller.user.id).pipe(
-          Effect.catchTags({
-            SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
-            WorkspaceReplaceRefusedError: (error) =>
-              Effect.fail(
-                new WorkspaceReplaceRefused({ sessionId: params.id, message: error.message }),
-              ),
-          }),
-        );
+        yield* (yield* SessionEngine)
+          .replaceWorkspaceNow(params.id, caller.user.id, payload.seen)
+          .pipe(
+            Effect.catchTags({
+              SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+              WorkspaceReplaceRefusedError: (error) =>
+                Effect.fail(
+                  new WorkspaceReplaceRefused({ sessionId: params.id, message: error.message }),
+                ),
+            }),
+          );
       }),
     )
     .handle("conversationWait", ({ params }) =>

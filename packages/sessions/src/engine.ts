@@ -48,6 +48,7 @@ import {
   UserGitAuthorRepo,
   SessionChannelTokensRepo,
   HarnessLayoutsRepo,
+  type ExecutorRetirementRecord,
   type PreReleaseMigrationRecord,
   type RetirementStopRecord,
 } from "@mend/db";
@@ -458,6 +459,7 @@ import {
   OPENCODE_PRE_RELEASE_REFUSAL,
   REPLACE_NOT_MARKED,
   REPLACE_NOT_OWNER,
+  REPLACE_STOPS_CHANGED,
   REPLACE_TURN_RUNNING,
   RETIRING_REFUSAL,
   memoryCreditorOf,
@@ -468,8 +470,12 @@ import {
   parseRetireCheck,
   refusesManualReplacement,
   retireCheckScript,
+  retirementFingerprintOf,
   retirementRefusalOf,
   retirementStopsOf,
+  stopsForViewer,
+  stopsWithin,
+  uncheckedStop,
 } from "./pre-release.ts";
 import {
   type ConversationWait as HostedConversationWait,
@@ -2327,6 +2333,8 @@ export class SessionEngine extends Context.Service<
     readonly replaceWorkspaceNow: (
       sessionId: SessionId,
       actor: string,
+      /** The `fingerprint` of the retirement the owner was shown: nothing else is ended. */
+      seen: string,
     ) => Effect.Effect<void, SessionNotFoundError | WorkspaceReplaceRefusedError>;
   }
 >()("@mend/sessions/SessionEngine") {}
@@ -6451,6 +6459,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           if (session.captureDrain === "replacement") {
             yield* replaceExecutor(session);
+            // A pre-release executor's replacement taken up after a restart: its retirement ends
+            // with it (docs/adr/0016, decision 14).
+            if (capture !== null && harnessLayoutConfig.flag === "person") {
+              const retirement = yield* harnessLayouts.retirementOf(workspaceId);
+              const after = yield* sessions
+                .byId(session.id)
+                .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+              if (retirement !== null && after?.sealantWorkspaceId !== workspaceId) {
+                yield* harnessLayouts.clearRetirement(workspaceId);
+              }
+            }
             return;
           }
           // A relaunch the owner's stop cancelled drains as a stop does: whatever runs in the
@@ -13902,14 +13921,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }));
           const worktree = yield* worktreesRepo.byId(worktreeId);
           const project = yield* projects.byId(worktree.projectId);
-          // Whose memory the home holds: the saved record, else the only person who had
-          // sessions there, else nobody (decision 14). Members only.
+          // Whose memory the home holds: the saved record, else the only person who ever had
+          // sessions there, else nobody (decision 14). Members only. The record counts only as
+          // the server's own read-backs take it (`homeOwnerOf`): settled, nothing pending, and for
+          // the executor that wrote the worktree's last shared capture; any other record means
+          // the server cannot say, and nobody is credited.
           const recorded = yield* recordedHomeOf(worktreeId);
+          const writer = yield* lastSharedExecutorOf(worktreeId);
+          const recordHolds =
+            recorded !== null &&
+            recorded.pendingWorkspaceId === null &&
+            recorded.settled !== null &&
+            writer !== null &&
+            recorded.settled.workspaceId === writer;
           const homeRecord =
-            recorded === null || recorded.settled === null ? undefined : recorded.settled.userId;
-          const owners = (yield* sessions.listForWorktree(worktreeId)).map(
-            (member) => member.ownerUserId,
-          );
+            recorded === null
+              ? undefined
+              : recordHolds && recorded.settled !== null
+                ? recorded.settled.userId
+                : null;
+          // Who ever had a session there, deleted sessions included (`worktree_session_owners`).
+          const ever = yield* harnessLayouts.sessionOwnersOf(worktreeId);
+          const owners = ever.owners;
           const candidates = new Set(
             [homeRecord, ...owners].filter((id): id is string => typeof id === "string"),
           );
@@ -13920,7 +13953,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const creditor = memoryCreditorOf({
             homeRecord,
+            unsettledRecord: recorded !== null && !recordHolds,
             owners,
+            ownersComplete: ever.complete,
             isMember: (userId) => members.has(userId),
           });
           const planned = memoryToCredit({
@@ -13957,8 +13992,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             captureId: source.row.id,
             captureN: source.row.n,
             final,
-            creditedTo: creditor.creditedTo ?? earlier?.creditedTo ?? null,
-            decidedBy: files.length === 0 ? (earlier?.decidedBy ?? "nothing") : creditor.decidedBy,
+            // This run's decision; what earlier runs credited stays in `credited`.
+            creditedTo: files.length === 0 ? null : creditor.creditedTo,
+            decidedBy: files.length === 0 ? "nothing" : creditor.decidedBy,
             credited: creditor.creditedTo === null ? (earlier?.credited ?? {}) : planned.credited,
             notCredited:
               creditor.creditedTo === null
@@ -13978,6 +14014,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
           Effect.ensuring(Effect.sync(() => migrating.delete(worktreeId))),
         );
+      });
+
+      /**
+       * The executor that wrote the worktree's last shared capture: the latest of its executors
+       * whose launch was not person and that started a process. Null when no session names one any
+       * more (its sessions were deleted, or relaunched since): then no home record is trusted.
+       */
+      const lastSharedExecutorOf = Effect.fn("SessionEngine.lastSharedExecutorOf")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        let latest: { readonly workspaceId: string; readonly at: number } | null = null;
+        for (const member of yield* sessions.listForWorktree(worktreeId)) {
+          const launch = yield* sessions.executorLaunchOf(member.id);
+          if (launch === null) continue;
+          if ((yield* harnessLayouts.launchLayout(launch.launchId))?.layout === "person") continue;
+          const ran = (yield* processes.listForSession(member.id)).some(
+            (process) => process.sealantWorkspaceId === launch.workspaceId,
+          );
+          if (!ran) continue;
+          const at = member.executorStartedAt?.getTime() ?? 0;
+          if (latest === null || at > latest.at) latest = { workspaceId: launch.workspaceId, at };
+        }
+        return latest?.workspaceId ?? null;
       });
 
       /** The migration, off every launch path: forked, and a failure only said. */
@@ -14013,9 +14072,53 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             );
 
-      /** What would stop if the executor were replaced now, from what Mend recorded of it. */
+      /**
+       * The pids sealantd reported when it started the executor's live recorded processes
+       * (`processStarted` in each one's record): what the retire check counts as Mend's. A process
+       * whose start cannot be read is something Mend cannot check.
+       */
+      const recordedPidsOf = Effect.fn("SessionEngine.recordedPidsOf")(function* (
+        live: ReadonlyArray<SessionProcess>,
+      ) {
+        const pids: Array<number> = [];
+        const unknown: Array<RetirementStopRecord> = [];
+        for (const row of live) {
+          // An adopted Service and an observed agent run no process of Mend's.
+          if (row.sealantRunId === null) continue;
+          const pid = yield* sealant.getRun(row.sealantRunId).pipe(
+            Effect.flatMap((run) =>
+              sealant.recordTimeline(run).pipe(
+                Stream.filterMap((entry) =>
+                  entry.kind === "processStarted"
+                    ? Result.succeed(entry.data.pid)
+                    : Result.fail(undefined),
+                ),
+                Stream.runHead,
+              ),
+            ),
+            Effect.timeout(RECORD_READ_TIMEOUT),
+            Effect.map(Option.getOrNull),
+            Effect.orElseSucceed(() => null),
+          );
+          if (pid === null) {
+            unknown.push(
+              uncheckedStop(`the start of ${row.label ?? row.kind} is not in its record`),
+            );
+          } else pids.push(pid);
+        }
+        return { pids, unknown };
+      });
+
+      /**
+       * What would stop if the executor were replaced now (decision 14): what Mend recorded
+       * (terminals, shells, hand-started Services, turns in flight), and, with `inside`, what runs
+       * in it that Mend did not start and the sidecar's containers, checked by one root exec. A
+       * check that cannot be made is an `unchecked` stop, never "nothing found".
+       */
       const retirementStopsFor = Effect.fn("SessionEngine.retirementStopsFor")(function* (
+        holder: Session,
         workspaceId: SealantWorkspaceId,
+        inside: boolean,
       ) {
         const live = yield* processes.listLiveForWorkspace(workspaceId);
         const serviceRows = new Map<
@@ -14039,32 +14142,110 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const quiescence = yield* protocolHost.quiescence(row.id);
           quiet.set(row.id, quiescence?.quiescent ?? null);
         }
-        return {
-          live,
-          stops: retirementStopsOf({
-            processes: live,
-            services: serviceRows,
-            sessionLabel: (sessionId) => labels.get(sessionId) ?? sessionId,
-            quiescent: (processId) => quiet.get(processId) ?? null,
-          }),
-        };
+        const recorded = retirementStopsOf({
+          processes: live,
+          services: serviceRows,
+          sessionLabel: (sessionId) => labels.get(sessionId) ?? sessionId,
+          quiescent: (processId) => quiet.get(processId) ?? null,
+        });
+        if (!inside) return { live, stops: recorded, checkedAt: null };
+        const { pids, unknown } = yield* recordedPidsOf(live);
+        const docker = holder.workspaceImage?.services.docker ?? true;
+        const found = yield* sealant.getWorkspace(workspaceId).pipe(
+          Effect.flatMap((workspace) =>
+            sealant.exec(workspace, ["sh", "-c", retireCheckScript({ known: pids, docker })]),
+          ),
+          Effect.map((result) => parseRetireCheck(result.stdout)),
+          Effect.catch((error) =>
+            Effect.succeed({
+              checked: false,
+              stops: [uncheckedStop(`what runs in it could not be checked (${error.message})`)],
+            }),
+          ),
+        );
+        const stops = [
+          ...recorded,
+          ...unknown,
+          ...found.stops,
+          ...(found.checked || found.stops.some((stop) => stop.kind === "unchecked")
+            ? []
+            : [uncheckedStop("what runs in it could not be checked: the check did not finish")]),
+        ];
+        return { live, stops, checkedAt: new Date() };
       });
 
       /**
-       * Replace a retiring executor (decision 14): marked `retiring` first (every new start
-       * refused, the launcher's included), then what Mend recorded is checked again, then (on its
-       * own, not for the owner's "Replace this workspace now") what runs in it that Mend did not
-       * start and the sidecar's containers. Then the final flush, and the executor goes only once
-       * it is saved (`drainThenTerminate`); the worktree's next launch runs per person. Anything
-       * that holds it back unmarks it, with what was found.
+       * The end of a replacement (decision 14): the final flush, and the executor goes only once it
+       * is saved (`drainThenTerminate`); then its retirement is over and the holder's protocol agent
+       * starts again, per person, with its `mend.toml` Services. Fails with why when it did not go.
+       */
+      const finishReplacement = Effect.fn("SessionEngine.finishReplacement")(function* (
+        holder: Session,
+        workspaceId: SealantWorkspaceId,
+        plan: {
+          readonly relaunch: boolean;
+          readonly restart: ReadonlyArray<string>;
+          readonly manual: boolean;
+        },
+      ) {
+        if (capture === null) return;
+        const outcome = yield* drainThenTerminate(holder.id, workspaceId, "replacement", true);
+        if (outcome !== "terminated" && outcome !== "stop-requested" && outcome !== "gone") {
+          // Kept, never lost: the drain's own intent asks again, and nothing new starts in it.
+          return yield* Effect.fail(
+            new Error(`not replaced yet · the final flush was not saved (${outcome})`),
+          );
+        }
+        yield* Effect.logInfo(
+          "session engine: pre-release executor · saved · replaced · the next launch runs each person as themselves",
+        ).pipe(Effect.annotateLogs({ sessionId: holder.id, workspaceId, manual: plan.manual }));
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline) {
+          const lease = yield* capture.repo.leaseOf(holder.worktreeId);
+          if (lease === null || !lease.live) break;
+          yield* Effect.sleep(Duration.seconds(2));
+        }
+        yield* harnessLayouts.clearRetirement(workspaceId);
+        if (plan.relaunch) {
+          yield* resumeSession(holder.id, null).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: the replacement's relaunch failed").pipe(
+                Effect.annotateLogs({ sessionId: holder.id, error: String(error) }),
+              ),
+            ),
+          );
+        }
+        for (const name of plan.restart) {
+          yield* runServiceRecipe(holder.id, name).pipe(
+            Effect.catch((error) =>
+              Effect.logInfo(
+                "session engine: a mend.toml Service was not started again after the replacement",
+              ).pipe(
+                Effect.annotateLogs({ sessionId: holder.id, service: name, why: error.message }),
+              ),
+            ),
+          );
+        }
+      });
+
+      /**
+       * Replace a retiring executor (decision 14). Marked `retiring` first (every new start
+       * refused, the launcher's included), then everything that would stop is checked again,
+       * what runs in it included. On its own it goes ahead only when nothing would; for the
+       * change's owner ("Replace this workspace now") only when nothing more would stop than they
+       * were shown, and never with a turn in flight. Every way it does not finish, a crash
+       * aside (the sweep recovers that), takes the executor back to `marked`, with why.
        */
       const replaceRetiring = Effect.fn("SessionEngine.replaceRetiring")(function* (
         holder: Session,
         workspaceId: SealantWorkspaceId,
-        manual: boolean,
-      ) {
-        if (capture === null) return;
-        if (!(yield* harnessLayouts.beginRetiring(workspaceId))) return;
+        manual: { readonly shown: ReadonlyArray<RetirementStopRecord> } | null,
+      ): Effect.fn.Return<"under-way" | "held", WorkspaceReplaceRefusedError> {
+        if (capture === null) return "held";
+        // One replacement per holder: another one, or a cap replacement, is already under way.
+        if (replacing.has(holder.id) || drains.has(workspaceId)) return "held";
+        if (!(yield* harnessLayouts.beginRetiring(workspaceId))) return "held";
+        replacing.add(holder.id);
         const unmark = (stops: ReadonlyArray<RetirementStopRecord>, reason: string) =>
           harnessLayouts
             .unmarkRetiring(workspaceId, { stops, reason })
@@ -14075,94 +14256,103 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
               ),
             );
-        const { live, stops } = yield* retirementStopsFor(workspaceId);
-        if (manual ? refusesManualReplacement(stops) : stops.length > 0) {
-          return yield* unmark(stops, notReplacedWords(stops));
+        const refuse = (message: string) =>
+          new WorkspaceReplaceRefusedError({ sessionId: holder.id, message });
+        const checked = yield* retirementStopsFor(holder, workspaceId, true).pipe(
+          Effect.catchCause((cause) =>
+            unmark(
+              [],
+              `not replaced · what would stop could not be read (${Cause.pretty(cause)})`,
+            ).pipe(
+              Effect.andThen(Effect.sync(() => replacing.delete(holder.id))),
+              Effect.andThen(Effect.succeed(null)),
+            ),
+          ),
+        );
+        if (checked === null) {
+          return manual === null
+            ? "held"
+            : yield* refuse("What would stop could not be read. Nothing was stopped; try again.");
         }
-        if (!manual) {
-          const workspace = yield* sealant.getWorkspace(workspaceId);
-          const checked = yield* sealant.exec(workspace, ["sh", "-c", retireCheckScript()]).pipe(
-            Effect.map((result) => parseRetireCheck(result.stdout)),
-            Effect.orElseSucceed(() => ({ checked: false, stops: [] })),
+        const { live, stops } = checked;
+        const holdsBack =
+          manual === null
+            ? stops.length > 0
+            : refusesManualReplacement(stops) || !stopsWithin(stops, manual.shown);
+        if (holdsBack) {
+          yield* unmark(stops, notReplacedWords(stops));
+          replacing.delete(holder.id);
+          if (manual === null) return "held";
+          return yield* refuse(
+            refusesManualReplacement(stops) ? REPLACE_TURN_RUNNING : REPLACE_STOPS_CHANGED,
           );
-          if (!checked.checked) {
-            return yield* unmark(stops, "not replaced · what runs in it could not be checked");
-          }
-          if (checked.stops.length > 0) {
-            return yield* unmark(checked.stops, notReplacedWords(checked.stops));
-          }
         }
-        // `mend.toml` Services restart once the session is live again.
-        const restart: Array<{ readonly sessionId: SessionId; readonly name: string }> = [];
+        // The holder's own `mend.toml` Services start again with it; a joiner's session is not
+        // relaunched, so its Services are not either (said in the log).
+        const restart: Array<string> = [];
         for (const row of live) {
           if (row.kind !== "service" || row.serviceId === null) continue;
           const service = yield* services.byId(row.serviceId);
           if (
-            service !== null &&
-            (service.declarationSource === "recipe-file" ||
-              service.declarationSource === "recipe-project")
+            service === null ||
+            (service.declarationSource !== "recipe-file" &&
+              service.declarationSource !== "recipe-project")
           ) {
-            restart.push({ sessionId: row.sessionId, name: service.name });
+            continue;
+          }
+          if (row.sessionId === holder.id) restart.push(service.name);
+          else {
+            yield* Effect.logInfo(
+              "session engine: a joiner's mend.toml Service ends with the replaced workspace",
+            ).pipe(Effect.annotateLogs({ sessionId: row.sessionId, service: service.name }));
           }
         }
         const relaunch = live.some(
           (row) => row.sessionId === holder.id && row.kind === "agent-protocol",
         );
-        if (replacing.has(holder.id)) return;
-        replacing.add(holder.id);
-        const outcome = yield* drainThenTerminate(holder.id, workspaceId, "replacement", true).pipe(
-          Effect.ensuring(Effect.sync(() => replacing.delete(holder.id))),
+        const finish = finishReplacement(holder, workspaceId, {
+          relaunch,
+          restart,
+          manual: manual !== null,
+        }).pipe(
+          Effect.onExit((exit) =>
+            Effect.suspend(() => {
+              replacing.delete(holder.id);
+              if (Exit.isSuccess(exit)) return Effect.void;
+              const why = Cause.squash(exit.cause);
+              return unmark(
+                [],
+                why instanceof Error && why.message.startsWith("not replaced")
+                  ? why.message
+                  : `not replaced · the replacement did not finish (${Cause.pretty(exit.cause)})`,
+              ).pipe(Effect.ignore);
+            }),
+          ),
+          Effect.catchCause(() => Effect.void),
         );
-        if (outcome !== "terminated" && outcome !== "stop-requested" && outcome !== "gone") {
-          // Kept, never lost: the drain's own intent asks again, and nothing new starts in it.
-          return yield* unmark([], `not replaced yet · the final flush was not saved (${outcome})`);
+        // The owner's answer comes once the replacement is under way; the drain runs on.
+        if (manual !== null) {
+          yield* finish.pipe(asSealantUser(holder.ownerUserId), Effect.forkIn(scope));
+          return "under-way";
         }
-        yield* Effect.logInfo(
-          "session engine: pre-release executor · saved · replaced · the next launch runs each person as themselves",
-        ).pipe(Effect.annotateLogs({ sessionId: holder.id, workspaceId, manual }));
-        const deadline = Date.now() + 60_000;
-        while (Date.now() < deadline) {
-          const lease = yield* capture.repo.leaseOf(holder.worktreeId);
-          if (lease === null || !lease.live) break;
-          yield* Effect.sleep(Duration.seconds(2));
-        }
-        yield* harnessLayouts.clearRetirement(workspaceId);
-        // The final run of the migration, over the capture that flush saved, once the worktree's
-        // next launch has made it person.
-        if (relaunch) {
-          yield* resumeSession(holder.id, null).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("session engine: the replacement's relaunch failed").pipe(
-                Effect.annotateLogs({ sessionId: holder.id, error: String(error) }),
-              ),
-            ),
-          );
-        }
-        for (const service of restart) {
-          yield* runServiceRecipe(service.sessionId, service.name).pipe(
-            Effect.catch((error) =>
-              Effect.logInfo(
-                "session engine: a mend.toml Service was not restarted after the replacement",
-              ).pipe(
-                Effect.annotateLogs({
-                  sessionId: service.sessionId,
-                  service: service.name,
-                  why: error.message,
-                }),
-              ),
-            ),
-          );
-        }
+        yield* finish;
+        return "under-way";
       });
+
+      /** How long the start of a recorded process is looked for in its record. */
+      const RECORD_READ_TIMEOUT = Duration.seconds(10);
 
       /** Executors the sweep looked at, and when: a `shared` one is looked at once a minute. */
       const retirementLooks = new Map<string, number>();
       const RETIREMENT_LOOK_MS = 60_000;
+      /** A `retiring` row nothing in this process moves is a crash's after this long. */
+      const RETIRING_STALE_MS = 10 * 60_000;
 
       /**
        * One live `shared` executor (decision 14): when its worktree's next launch would be
        * `person`, it is marked to retire, the provisional migration of its home runs the first
-       * time, and it is replaced on its own once nothing would stop that anyone would miss.
+       * time, what would stop is checked (what runs in it included, so the owner sees it all),
+       * and it is replaced on its own once nothing would stop.
        */
       const considerRetirement = Effect.fn("SessionEngine.considerRetirement")(function* (
         holder: Session,
@@ -14200,15 +14390,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           return;
         }
-        const { stops } = yield* retirementStopsFor(workspaceId);
-        const marked = yield* harnessLayouts.markRetirement({
+        if (existing?.state === "retiring") return;
+        const { stops, checkedAt } = yield* retirementStopsFor(holder, workspaceId, true);
+        yield* harnessLayouts.markRetirement({
           workspaceId,
           worktreeId: holder.worktreeId,
           sessionId: holder.id,
           launcher: owner,
           preRelease: launch === null,
           stops,
-          reason: existing?.reason ?? null,
+          reason: stops.length === 0 ? (existing?.reason ?? null) : notReplacedWords(stops),
+          checkedAt,
         });
         if (existing === null) {
           yield* Effect.logInfo(
@@ -14216,13 +14408,46 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(Effect.annotateLogs({ sessionId: holder.id, workspaceId }));
           yield* forkMigration(holder.worktreeId);
         }
-        if (marked.state !== "marked" || stops.length > 0) return;
-        yield* replaceRetiring(holder, workspaceId, false);
+        if (stops.length > 0) return;
+        yield* replaceRetiring(holder, workspaceId, null).pipe(Effect.ignore);
+      });
+
+      /**
+       * A `retiring` row nothing moves any more (decision 14): a crash or a restart between its
+       * start and its end. Under way means a replacement or a drain in this process, or a drain's
+       * durable intent on the holder (the reaper takes that up). Otherwise it goes back to
+       * `marked`, with why: at boot at once, on the sweep once it has not moved for
+       * `RETIRING_STALE_MS`; an executor that ended loses its row.
+       */
+      const recoverRetiring = Effect.fn("SessionEngine.recoverRetiring")(function* (
+        retirement: ExecutorRetirementRecord,
+        live: boolean,
+        atBoot: boolean,
+      ) {
+        if (replacing.has(SessionId.make(retirement.sessionId))) return;
+        if (drains.has(SealantWorkspaceId.make(retirement.workspaceId))) return;
+        const holder = yield* sessions
+          .byId(SessionId.make(retirement.sessionId))
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (holder !== null && holder.captureDrain !== null) return;
+        if (!live) {
+          yield* harnessLayouts.clearRetirement(retirement.workspaceId);
+          return;
+        }
+        if (!atBoot && Date.now() - retirement.updatedAt.getTime() < RETIRING_STALE_MS) return;
+        yield* harnessLayouts.unmarkRetiring(retirement.workspaceId, {
+          stops: retirement.stops,
+          reason: "not replaced · the replacement did not finish; looked at again",
+        });
+        yield* Effect.logWarning(
+          "session engine: pre-release executor · a replacement that did not finish · marked again",
+        ).pipe(Effect.annotateLogs({ workspaceId: retirement.workspaceId, atBoot }));
       });
 
       const sweepRetirements = Effect.fn("SessionEngine.sweepRetirements")(function* (
         /** The heartbeat looks at each executor once a minute; an asked-for pass looks at all. */
         throttled = false,
+        atBoot = false,
       ) {
         if (capture === null || harnessLayoutConfig.flag !== "person") return;
         const live = new Set<string>();
@@ -14233,6 +14458,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const lease = yield* capture.repo.leaseOf(session.worktreeId);
           if (lease === null || !lease.live || lease.executorId !== session.id) continue;
           live.add(workspaceId);
+          if (atBoot) continue;
           if (drains.has(workspaceId) || session.captureDrain !== null) continue;
           if (
             throttled &&
@@ -14251,11 +14477,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
-        // An executor that ended, by its replacement or otherwise, retires no more.
         for (const retirement of yield* harnessLayouts.listRetirements()) {
-          if (live.has(retirement.workspaceId) || retirement.state === "retiring") continue;
-          yield* harnessLayouts.clearRetirement(retirement.workspaceId);
-          retirementLooks.delete(retirement.workspaceId);
+          const isLive = live.has(retirement.workspaceId);
+          if (retirement.state === "retiring") {
+            yield* recoverRetiring(retirement, isLive, atBoot).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session engine: a retiring executor was not recovered").pipe(
+                  Effect.annotateLogs({
+                    workspaceId: retirement.workspaceId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              ),
+            );
+            continue;
+          }
+          // An executor that ended, by its replacement or otherwise, retires no more.
+          if (!isLive) {
+            yield* harnessLayouts.clearRetirement(retirement.workspaceId);
+            retirementLooks.delete(retirement.workspaceId);
+          }
         }
       });
 
@@ -14280,58 +14521,77 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         viewer: string,
       ) {
-        const session = yield* sessions.byId(sessionId);
+        // With the flag off there is no retirement, and nothing is read.
         if (capture === null || harnessLayoutConfig.flag !== "person") return null;
+        const session = yield* sessions.byId(sessionId);
         if (session.sealantWorkspaceId === null) return null;
         const retirement = yield* harnessLayouts.retirementOf(session.sealantWorkspaceId);
         if (retirement === null) return null;
-        const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+        const isOwner =
+          viewer === changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+        const stops = stopsForViewer(retirement.stops, isOwner);
         return new WorkspaceRetirement({
           state: retirement.state,
           preRelease: retirement.preRelease,
           launcher: retirement.launcher,
-          stops: retirement.stops.map((stop) => new WorkspaceRetirementStop(stop)),
+          stops: stops.map((stop) => new WorkspaceRetirementStop(stop)),
           reason: retirement.reason,
+          checkedAt: retirement.checkedAt,
+          fingerprint: retirementFingerprintOf(retirement),
           canReplace:
-            viewer === owner &&
-            retirement.state === "marked" &&
-            !refusesManualReplacement(retirement.stops),
+            isOwner && retirement.state === "marked" && !refusesManualReplacement(retirement.stops),
         });
       });
 
       const replaceWorkspaceNow = Effect.fn("SessionEngine.replaceWorkspaceNow")(function* (
         sessionId: SessionId,
         actor: string,
+        /** The `fingerprint` of the retirement the owner was shown. */
+        seen: string,
       ) {
-        const session = yield* sessions.byId(sessionId);
         const refuse = (message: string) =>
           new WorkspaceReplaceRefusedError({ sessionId, message });
-        const workspaceId = session.sealantWorkspaceId;
-        if (capture === null || harnessLayoutConfig.flag !== "person" || workspaceId === null) {
+        if (capture === null || harnessLayoutConfig.flag !== "person") {
           return yield* refuse(REPLACE_NOT_MARKED);
         }
-        const retirement = yield* harnessLayouts.retirementOf(workspaceId);
+        const session = yield* sessions.byId(sessionId);
+        const workspaceId =
+          session.sealantWorkspaceId === null
+            ? null
+            : SealantWorkspaceId.make(session.sealantWorkspaceId);
+        if (workspaceId === null) return yield* refuse(REPLACE_NOT_MARKED);
+        let retirement = yield* harnessLayouts.retirementOf(workspaceId);
         if (retirement === null) return yield* refuse(REPLACE_NOT_MARKED);
         if (actor !== changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId))) {
           return yield* refuse(REPLACE_NOT_OWNER);
         }
-        // Already under way: asked twice, it goes ahead once.
-        if (retirement.state === "retiring") return;
-        const { stops } = yield* retirementStopsFor(SealantWorkspaceId.make(workspaceId));
-        if (refusesManualReplacement(stops)) return yield* refuse(REPLACE_TURN_RUNNING);
+        if (retirement.state === "retiring") {
+          // Under way only when something here moves it; a row a crash left is taken back first.
+          if (replacing.has(SessionId.make(retirement.sessionId)) || drains.has(workspaceId)) {
+            return;
+          }
+          yield* recoverRetiring(retirement, true, true);
+          retirement = yield* harnessLayouts.retirementOf(workspaceId);
+          if (retirement === null || retirement.state !== "marked") {
+            return yield* refuse(REPLACE_NOT_MARKED);
+          }
+        }
+        if (seen !== retirementFingerprintOf(retirement)) {
+          return yield* refuse(REPLACE_STOPS_CHANGED);
+        }
+        if (refusesManualReplacement(retirement.stops)) return yield* refuse(REPLACE_TURN_RUNNING);
         const holder = yield* sessions.byId(SessionId.make(retirement.sessionId));
         yield* Effect.logInfo(
           "session engine: pre-release executor · replace now, asked by the change's owner",
-        ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stops: stops.length }));
-        yield* replaceRetiring(holder, SealantWorkspaceId.make(workspaceId), true).pipe(
-          asSealantUser(holder.ownerUserId),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("session engine: the replacement did not finish").pipe(
-              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
-            ),
-          ),
-          Effect.forkIn(scope),
-        );
+        ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stops: retirement.stops.length }));
+        const started = yield* replaceRetiring(holder, workspaceId, {
+          shown: retirement.stops,
+        }).pipe(asSealantUser(holder.ownerUserId));
+        if (started === "held") {
+          return yield* refuse(
+            "Another replacement of this workspace is under way, or it could not be started. Nothing more was stopped.",
+          );
+        }
       });
 
       /**
@@ -16770,31 +17030,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         input: string,
         author: string | null,
       ) {
-        // The owner's own turns ask nothing more; another person's turn is refused before it is
-        // queued when it could not run on their own login (docs/adr/0016, decision 6). With the
-        // flag off and nothing recorded, a turn reads nothing here.
-        // A turn in an executor marked to retire: only its launcher's, and nobody's while it is
-        // being replaced (decision 14). With the flag off, nothing is read.
-        if (author !== null && capture !== null && harnessLayoutConfig.flag === "person") {
+        // With the flag off and nothing recorded, a turn reads nothing here.
+        const retiringPossible = capture !== null && harnessLayoutConfig.flag === "person";
+        const steeringPossible = capture !== null && layoutSteps.personPossible();
+        if (author !== null && (retiringPossible || steeringPossible)) {
           const session = yield* sessions
             .byId(sessionId)
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          const retired =
-            session === null
-              ? null
-              : yield* retirementRefusalFor(session.sealantWorkspaceId, author);
-          if (retired !== null) {
-            return yield* new SessionTurnRefusedError({ sessionId, message: retired });
-          }
-        }
-        if (author !== null && capture !== null && layoutSteps.personPossible()) {
-          const session = yield* sessions
-            .byId(sessionId)
-            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if (session !== null && author !== session.ownerUserId) {
-            const refusal = yield* steeringRefusal(session, author);
-            if (refusal !== null) {
-              return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
+          if (session !== null) {
+            // A turn in an executor marked to retire: only its launcher's, and nobody's while it
+            // is being replaced (decision 14).
+            const retired = retiringPossible
+              ? yield* retirementRefusalFor(session.sealantWorkspaceId, author)
+              : null;
+            if (retired !== null) {
+              return yield* new SessionTurnRefusedError({ sessionId, message: retired });
+            }
+            // The owner's own turns ask nothing more; another person's turn is refused before it
+            // is queued when it could not run on their own login (decision 6).
+            if (steeringPossible && author !== session.ownerUserId) {
+              const refusal = yield* steeringRefusal(session, author);
+              if (refusal !== null) {
+                return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
+              }
             }
           }
         }
@@ -17801,6 +18059,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A reviewer's follow-up is their turn: refused, as at submit, when it could not run on
         // their own login (docs/adr/0016, decision 6; review of mend#572, P2-2).
         yield* refuseSteeringAt(session, author);
+        // An executor marked to retire takes a follow-up only from its launcher, and none while it
+        // is being replaced (decision 14).
+        const retired = yield* retirementRefusalFor(session.sealantWorkspaceId, author);
+        if (retired !== null) {
+          return yield* new SealantPlatformError({
+            code: "workspace_retiring",
+            status: 409,
+            message: retired,
+            cause: null,
+          });
+        }
         if (yield* agentIsLive(session)) {
           const liveProtocol = (yield* processes.listForSession(sessionId)).find(
             (process) => process.kind === "agent-protocol" && isLiveProcess(process),
@@ -21289,6 +21558,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // worktree's next launch would be person is marked to retire, and replaced once nothing
       // would stop that anyone would miss. With the flag off, nothing runs.
       if (capture !== null && harnessLayoutConfig.flag === "person") {
+        // A replacement a crash or a restart left `retiring` goes back to `marked` at once.
+        yield* Effect.forkIn(
+          sweepRetirements(false, true).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("session engine: retiring executors were not recovered").pipe(
+                Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+              ),
+            ),
+          ),
+          scope,
+        );
         // The first look one interval after boot: a launch resumed at boot is never raced.
         yield* Effect.forkIn(
           Effect.sleep(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS)).pipe(

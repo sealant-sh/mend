@@ -9,7 +9,8 @@ had sessions there, else to nobody, and the worktree lists what it credited to n
 worktree turns per person, it reads the old home's last capture once more and credits only what is
 new. A live workspace that shares one home is replaced on its own once nothing would stop that
 anyone would miss (no terminal session, shell, Service started by hand, agent turn, process Mend did
-not start or running container) and only after its final save; until then it takes joins and turns
-from its launcher only and says why. The change's owner can replace it sooner with "Replace this
-workspace now", which lists what would stop. An opencode conversation from that shared home cannot
-be resumed per person, and the session says so. With the flag off, nothing changes.
+not start or running container, and nothing it could not check) and only after its final save; until
+then it takes joins, turns and follow-ups from its launcher only and says why. The change's owner
+can replace it sooner with "Replace this workspace now", which lists everything that would stop and
+ends nothing that was not listed. An opencode conversation from that shared home cannot be resumed
+per person, and the session says so. With the flag off, nothing changes.

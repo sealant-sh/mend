@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import { Timestamp } from "../timestamp.ts";
+
 /**
  * How an executor's processes are people (docs/adr/0016-per-person-harness-homes.md).
  *
@@ -62,7 +64,9 @@ export const linuxHomeOf = (identity: { readonly name: string }): string =>
  * - `service`: a Service started by hand (`mend.toml` ones restart and are not listed);
  * - `turn`: a protocol agent with a turn or background work in flight;
  * - `process`: a process in the executor Mend did not start (`ps`);
- * - `container`: a running container of the executor's Docker sidecar (`docker ps`).
+ * - `container`: a running container of the executor's Docker sidecar (`docker ps`);
+ * - `unchecked`: something Mend could not check (`docker ps` failing, a process whose start is not
+ *   in its record): it holds an automatic replacement, and the owner sees why.
  */
 export const WorkspaceRetirementStopKind = Schema.Literals([
   "terminal",
@@ -71,6 +75,7 @@ export const WorkspaceRetirementStopKind = Schema.Literals([
   "turn",
   "process",
   "container",
+  "unchecked",
 ]);
 export type WorkspaceRetirementStopKind = typeof WorkspaceRetirementStopKind.Type;
 
@@ -78,7 +83,11 @@ export class WorkspaceRetirementStop extends Schema.Class<WorkspaceRetirementSto
   "WorkspaceRetirementStop",
 )({
   kind: WorkspaceRetirementStopKind,
-  /** What it is, as observed: a session's label, a Service's name, a process's command line. */
+  /**
+   * What it is, as observed: a session's label, a Service's name, a process's command name and
+   * pid, a container's name, or why something could not be checked. Empty for a process or a
+   * container when the viewer is not the change's owner: they see its kind only.
+   */
   label: Schema.String,
 }) {}
 
@@ -102,6 +111,16 @@ export class WorkspaceRetirement extends Schema.Class<WorkspaceRetirement>("Work
   stops: Schema.Array(WorkspaceRetirementStop),
   /** Why the last automatic replacement did not go ahead, as observed; null when none was tried. */
   reason: Schema.NullOr(Schema.String),
+  /**
+   * When what runs in the executor was last checked beyond Mend's own records (processes Mend did
+   * not start, the sidecar's containers); null when only Mend's records were read.
+   */
+  checkedAt: Schema.NullOr(Timestamp),
+  /**
+   * What the viewer was shown, as one token: "Replace this workspace now" names it, so Mend ends
+   * nothing that was not listed (the replacement is refused if more would stop now).
+   */
+  fingerprint: Schema.String,
   /** The viewer may replace it now: they own the change, and no agent turn is in flight. */
   canReplace: Schema.Boolean,
 }) {}

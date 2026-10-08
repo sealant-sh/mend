@@ -19,9 +19,9 @@ describe("a pre-release workspace's replacement", () => {
         implement: {
           engine: {
             launchUnderWay: () => false,
-            replaceWorkspaceNow: (sessionId, actor) =>
+            replaceWorkspaceNow: (sessionId, actor, seen) =>
               Effect.suspend(() => {
-                asked.push(actor);
+                asked.push(`${actor}:${seen}`);
                 return actor === "carol"
                   ? Effect.fail(
                       new WorkspaceReplaceRefusedError({
@@ -41,14 +41,15 @@ describe("a pre-release workspace's replacement", () => {
   });
 
   it("asks the engine for whoever sees the session, and says the engine's refusal as it is", async () => {
-    const alice = await api.request("alice", "POST", replace);
-    const carol = await api.request("carol", "POST", replace);
-    const bob = await api.request("bob", "POST", replace);
+    const alice = await api.request("alice", "POST", replace, { seen: "f1" });
+    const carol = await api.request("carol", "POST", replace, { seen: "f1" });
+    const bob = await api.request("bob", "POST", replace, { seen: "f1" });
     expect([alice.status, carol.status, bob.status]).toEqual([204, 409, 404]);
     expect(await carol.json()).toMatchObject({
       _tag: "WorkspaceReplaceRefused",
       message: "Only the change's owner replaces this worktree's workspace.",
     });
-    expect(asked).toEqual(["alice", "carol"]);
+    // The fingerprint of what the owner was shown reaches the engine as it was sent.
+    expect(asked).toEqual(["alice:f1", "carol:f1"]);
   });
 });

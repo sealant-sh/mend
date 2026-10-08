@@ -545,6 +545,11 @@ const sealantLaunchLayer = (
     readonly waitRun?: () => Effect.Effect<Run, SealantPlatformError>;
     /** Core's launch phase while the create gets ready (sealant#342); null: none reported. */
     readonly phase?: () => WorkspacePhase | null;
+    /**
+     * A run's full timeline (`recordTimeline`), by run id: what sealantd recorded, its
+     * `processStarted` pid included. Absent, a timeline never answers.
+     */
+    readonly timeline?: (runId: string) => ReadonlyArray<TimelineEntry>;
   },
 ) => {
   let nextPty = 0;
@@ -706,7 +711,12 @@ const sealantLaunchLayer = (
               }),
             )
           : Effect.succeed(workspace),
-    getRun: () => (captureOps?.record === undefined ? Effect.never : Effect.succeed(fakeExecRun)),
+    getRun: (runId) =>
+      captureOps?.timeline !== undefined
+        ? Effect.succeed({ ...fakeExecRun, id: runId })
+        : captureOps?.record === undefined
+          ? Effect.never
+          : Effect.succeed(fakeExecRun),
     sessionOutput: () => Effect.die("not in test"),
     recordCommands: () => Effect.die("not in test"),
     recordScrollback: () => Effect.die("not in test"),
@@ -868,7 +878,10 @@ const sealantLaunchLayer = (
     diffCommits: () => Effect.die("not in test"),
     inferenceRespond: () => Effect.die("not in test"),
     recordStream: () => captureOps?.record?.() ?? Stream.fromEffect(Effect.never),
-    recordTimeline: () => Stream.fromEffect(Effect.never),
+    recordTimeline: (run) =>
+      captureOps?.timeline === undefined
+        ? Stream.fromEffect(Effect.never)
+        : Stream.fromIterable(captureOps.timeline(run.id)),
     runChanges: () => Effect.die("not in test"),
     connectionCheck: () => Effect.die("not in test"),
     resolveWorkspacePackage: () => Effect.die("not in test"),
@@ -29735,6 +29748,16 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
 
 const isRetireCheck = (argv: ReadonlyArray<string>) => (argv[2] ?? "").includes("mend-retire");
 
+/** What the change's owner is shown, and its fingerprint. */
+const shownTo = (engine: SessionEngine["Service"], session: Session, viewer = "user-fixture") =>
+  engine
+    .workspaceRetirement(session.id, viewer)
+    .pipe(
+      Effect.flatMap((retirement) =>
+        retirement === null ? Effect.die("no retirement") : Effect.succeed(retirement),
+      ),
+    );
+
 describe("pre-release executors and the migration of their shared home (docs/adr/0016, Delivery 19)", () => {
   const IMAGE_KEY = "digest:sha256:img\u0000docker";
 
@@ -29798,6 +29821,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
     const created: Array<CreateOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
     const order: Array<string> = [];
+    const scripts: Array<string> = [];
     const flushKinds: Array<CaptureFlushKind> = [];
     const memory = makeMemoryCaptureStore();
     const state = options.state ?? makeHarnessLayoutsMemoryState();
@@ -29843,6 +29867,24 @@ describe("pre-release executors and the migration of their shared home (docs/adr
           undefined,
           {
             flushKinds,
+            // sealantd's record of each process: its pid, which the retire check counts as Mend's.
+            timeline: (runId) => [
+              {
+                sequence: 1n,
+                occurredAt: "2026-10-08T10:00:00Z",
+                summary: "started",
+                kind: "processStarted",
+                data: {
+                  pid: 100 + Number(runId.replace(/\D/g, "") || "0"),
+                  pgid: 100,
+                  pidfd: true,
+                  executable: "codex",
+                  args: [],
+                  cwd: "/workspace/repo",
+                  startedAt: "0",
+                },
+              },
+            ],
             flush: (target) =>
               Effect.sync(() => {
                 order.push(`flush:${target.id}`);
@@ -29859,6 +29901,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
             exec: (argv) => {
               if (isRetireCheck(argv)) {
                 order.push("check");
+                scripts.push(argv[2] ?? "");
                 return {
                   exitCode: 0,
                   stdout: options.retireCheck?.() ?? "mend-retire checked\n",
@@ -29880,25 +29923,23 @@ describe("pre-release executors and the migration of their shared home (docs/adr
         harnessLayout: { flag: "person", state, platform: personPlatform([], { person: null }) },
       },
     );
-    return { created, execCalls, order, flushKinds, state };
+    return { created, execCalls, order, flushKinds, state, scripts };
   };
 
   it(
     "replaces a shared executor on its own only after its final flush is saved, and the worktree's next launch runs per person",
     { timeout: 30_000 },
     async () => {
-      let retirement: WorkspaceRetirement | null = null;
       const run = await retiringWorld((engine, world, { session }) =>
         Effect.gen(function* () {
-          // Prepare probed the image: it can run per person, so the next launch would.
           expect(world.sessions.get(session.id)?.sealantWorkspaceId).not.toBeNull();
-          retirement = yield* engine.workspaceRetirement(session.id, "user-fixture");
-          expect(retirement).toBeNull();
+          expect(yield* engine.workspaceRetirement(session.id, "user-fixture")).toBeNull();
           yield* engine.sweepRetirements();
         }),
       );
       expect(run.state.capabilities.get(IMAGE_KEY)?.person).toBe(true);
-      // What runs in it was checked, then its final flush saved, and only then it was stopped.
+      // The check counted the agent's pid from its record (run-2, as the stand-in numbers it).
+      expect(run.scripts[0]).toContain("for k in 102;");
       const check = run.order.indexOf("check");
       const flush = run.order.findIndex((entry) => entry.startsWith("flush:"));
       const stop = run.order.indexOf("stop");
@@ -29906,7 +29947,6 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       expect(flush).toBeGreaterThan(check);
       expect(stop).toBeGreaterThan(flush);
       expect(run.flushKinds).toContain("final");
-      // The relaunch ran per person; the worktree is person for good, and nothing retires.
       expect(run.created).toHaveLength(2);
       expect([...run.state.worktrees.values()].map((worktree) => worktree.layout)).toContain(
         "person",
@@ -29919,20 +29959,15 @@ describe("pre-release executors and the migration of their shared home (docs/adr
     "keeps the executor when its final flush is not saved, and says why: nothing is lost",
     { timeout: 30_000 },
     async () => {
-      let saved = false;
       let reason: string | null = null;
       const run = await retiringWorld(
         (engine, _world, { session }) =>
           Effect.gen(function* () {
             yield* engine.sweepRetirements();
-            const workspaceId = session.sealantWorkspaceId ?? "";
-            reason =
-              (yield* engine.workspaceRetirement(session.id, "user-fixture"))?.reason ?? null;
-            expect(workspaceId).not.toBe("");
+            reason = (yield* shownTo(engine, session)).reason;
           }),
-        { saved: () => saved },
+        { saved: () => false },
       );
-      saved = true;
       expect(run.order.filter((entry) => entry === "stop")).toEqual([]);
       expect(run.created).toHaveLength(1);
       expect(reason).toBe("not replaced yet · the final flush was not saved (kept)");
@@ -29940,13 +29975,15 @@ describe("pre-release executors and the migration of their shared home (docs/adr
   );
 
   it(
-    "never replaces on its own an executor with a hand-started Service, and refuses others' joins and turns until it is replaced",
+    "never replaces on its own an executor with a hand-started Service, and refuses others' joins, turns and follow-ups until it is replaced",
     { timeout: 30_000 },
     async () => {
       const run_state = makeHarnessLayoutsMemoryState();
       let seen: WorkspaceRetirement | null = null;
+      let asMaria: WorkspaceRetirement | null = null;
       let joinRefusal = "";
       let turnRefusal = "";
+      let followUpRefusal = "";
       let ownTurn: string | null = null;
       const run = await retiringWorld(
         (engine, world, { session }) =>
@@ -29956,8 +29993,8 @@ describe("pre-release executors and the migration of their shared home (docs/adr
             const launch = world.executorLaunches.get(session.id)?.launchId;
             if (launch !== undefined) run_state.launches.delete(launch);
             yield* engine.sweepRetirements();
-            seen = yield* engine.workspaceRetirement(session.id, "user-fixture");
-            // Maria joins the worktree: refused, with the line.
+            seen = yield* shownTo(engine, session);
+            asMaria = yield* shownTo(engine, session, MARIA);
             const joined = yield* engine.provisionSessionIn(session.worktreeId, {
               harness: "claude",
               label: null,
@@ -29967,13 +30004,19 @@ describe("pre-release executors and the migration of their shared home (docs/adr
               Effect.flip,
               Effect.map((error) => (error instanceof SealantPlatformError ? error.message : "")),
             );
-            // Maria's turn in Alice's session is refused; Alice's own goes ahead.
             turnRefusal = yield* engine.submitTurn(session.id, "hello", MARIA).pipe(
               Effect.flip,
               Effect.map((error) =>
                 error instanceof SessionTurnRefusedError ? error.message : "",
               ),
             );
+            // A reviewer's follow-up is a turn too (review of mend#575, P2-1).
+            followUpRefusal = yield* engine
+              .launchFollowUp(session.id, "address the comments", "follow-up-1", MARIA)
+              .pipe(
+                Effect.flip,
+                Effect.map((error) => (error instanceof SealantPlatformError ? error.message : "")),
+              );
             ownTurn = (yield* engine.submitTurn(session.id, "go on", "user-fixture")).input;
             expect(world.sessions.get(joined.id)?.status).toBe("failed");
           }),
@@ -29986,28 +30029,34 @@ describe("pre-release executors and the migration of their shared home (docs/adr
         stops: [{ kind: "service", label: "auth · web" }],
         canReplace: true,
       });
-      // Nothing checked in it, nothing flushed for good, nothing stopped.
-      expect(run.order.filter((entry) => entry === "check" || entry === "stop")).toEqual([]);
+      expect(seen).not.toMatchObject({ checkedAt: null });
+      // Checked, never flushed for good, never stopped.
+      expect(run.order.filter((entry) => entry === "stop")).toEqual([]);
       expect(run.flushKinds).not.toContain("final");
+      expect(asMaria).toMatchObject({ canReplace: false });
       expect(joinRefusal).toBe(
         "This worktree's workspace started before Mend 0.36 and shares one home; it takes another person once it is replaced.",
       );
       expect(turnRefusal).toBe(joinRefusal);
+      expect(followUpRefusal).toBe(joinRefusal);
       expect(ownTurn).toBe("go on");
     },
   );
+
   it(
-    "says what runs in it that Mend did not start, and replaces it on its own only once that has gone",
+    "lists what runs in it that Mend did not start, and its containers, by name to the owner only; replaces on its own once they have gone",
     { timeout: 30_000 },
     async () => {
       let answer =
-        "mend-retire process sleep 600\nmend-retire container pg (postgres:17)\nmend-retire checked\n";
+        "mend-retire process 31 python\nmend-retire container pg (postgres:17)\nmend-retire checked\n";
       let first: WorkspaceRetirement | null = null;
+      let other: WorkspaceRetirement | null = null;
       const run = await retiringWorld(
         (engine, _world, { session }) =>
           Effect.gen(function* () {
             yield* engine.sweepRetirements();
-            first = yield* engine.workspaceRetirement(session.id, "user-fixture");
+            first = yield* shownTo(engine, session);
+            other = yield* shownTo(engine, session, MARIA);
             answer = "mend-retire checked\n";
             yield* engine.sweepRetirements();
           }),
@@ -30016,50 +30065,145 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       expect(first).toMatchObject({
         state: "marked",
         stops: [
-          { kind: "process", label: "sleep 600" },
+          { kind: "process", label: "python (pid 31)" },
           { kind: "container", label: "pg (postgres:17)" },
         ],
         reason: "not replaced · 1 process Mend did not start, 1 running container",
       });
-      expect(run.order.filter((entry) => entry === "check")).toHaveLength(2);
+      // Anyone else who sees the session sees what kind of thing would stop, not its name.
+      expect(other).toMatchObject({
+        stops: [
+          { kind: "process", label: "" },
+          { kind: "container", label: "" },
+        ],
+      });
       expect(run.order.at(-1)).toBe("stop");
     },
   );
 
   it(
-    "lets only the change's owner replace it now, never while a turn is in flight",
+    "holds an automatic replacement when the containers cannot be checked, and says why",
+    { timeout: 30_000 },
+    async () => {
+      let shown: WorkspaceRetirement | null = null;
+      const run = await retiringWorld(
+        (engine, _world, { session }) =>
+          Effect.gen(function* () {
+            yield* engine.sweepRetirements();
+            shown = yield* shownTo(engine, session);
+          }),
+        {
+          retireCheck: () =>
+            "mend-retire unknown running containers: docker ps failed (Cannot connect to the Docker daemon)\nmend-retire checked\n",
+        },
+      );
+      expect(shown).toMatchObject({
+        stops: [
+          {
+            kind: "unchecked",
+            label: "running containers: docker ps failed (Cannot connect to the Docker daemon)",
+          },
+        ],
+        reason: "not replaced · 1 thing Mend could not check",
+      });
+      expect(run.order.filter((entry) => entry === "stop")).toEqual([]);
+    },
+  );
+
+  it(
+    "lets only the change's owner replace it now, never with a turn in flight, and never ending more than they were shown",
     { timeout: 30_000 },
     async () => {
       let busy = false;
+      let answer = "mend-retire checked\n";
       const refusals: Array<string> = [];
       const run = await retiringWorld(
         (engine, _world, { session, order }) =>
           Effect.gen(function* () {
             yield* engine.runService(session.id, ["sh", "-c", "sleep 600"], 5173, "web", "tcp");
             yield* engine.sweepRetirements();
-            const refused = (actor: string) =>
-              engine.replaceWorkspaceNow(session.id, actor).pipe(
+            const refused = (actor: string, seen: string) =>
+              engine.replaceWorkspaceNow(session.id, actor, seen).pipe(
                 Effect.flip,
                 Effect.map((error) =>
                   error instanceof WorkspaceReplaceRefusedError ? error.message : "",
                 ),
               );
-            refusals.push(yield* refused(MARIA));
+            const shown = yield* shownTo(engine, session);
+            refusals.push(yield* refused(MARIA, shown.fingerprint));
+            // A turn starts after the owner looked.
             busy = true;
-            refusals.push(yield* refused("user-fixture"));
+            refusals.push(yield* refused("user-fixture", shown.fingerprint));
             busy = false;
-            yield* engine.replaceWorkspaceNow(session.id, "user-fixture");
+            // A detached job starts after the owner looked: nothing they were not shown ends.
+            yield* engine.sweepRetirements();
+            const again = yield* shownTo(engine, session);
+            answer = "mend-retire process 40 node\nmend-retire checked\n";
+            refusals.push(yield* refused("user-fixture", again.fingerprint));
+            expect(order.includes("stop")).toBe(false);
+            // Shown it, the owner replaces it.
+            yield* engine.sweepRetirements();
+            const latest = yield* shownTo(engine, session);
+            expect(latest.stops.map((stop) => stop.kind)).toEqual(["service", "process"]);
+            yield* engine.replaceWorkspaceNow(session.id, "user-fixture", latest.fingerprint);
             yield* until(() => order.includes("stop"), "the replacement");
           }),
-        { busy: () => busy },
+        { busy: () => busy, retireCheck: () => answer },
       );
       expect(refusals).toEqual([
         "Only the change's owner replaces this worktree's workspace.",
         "An agent's turn or background work is in flight in this workspace. Replace it once that has finished.",
+        "What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.",
       ]);
-      // The owner's replacement checks nothing it would list for them; it still waits for a
-      // saved final flush.
-      expect(run.order.includes("check")).toBe(false);
+      // The owner's replacement checked what runs in it again, and waited for a saved flush.
+      const lastCheck = run.order.lastIndexOf("check");
+      expect(lastCheck).toBeLessThan(run.order.indexOf("stop"));
+      expect(run.flushKinds).toContain("final");
+    },
+  );
+
+  it(
+    "takes a replacement a crash left retiring back to marked: on the sweep once stale, and when the owner asks again",
+    { timeout: 30_000 },
+    async () => {
+      const run_state = makeHarnessLayoutsMemoryState();
+      let afterSweep: string | null = null;
+      let ownTurn: string | null = null;
+      const run = await retiringWorld(
+        (engine, _world, { session, order }) =>
+          Effect.gen(function* () {
+            yield* engine.runService(session.id, ["sh", "-c", "sleep 600"], 5173, "web", "tcp");
+            yield* engine.sweepRetirements();
+            const workspaceId = session.sealantWorkspaceId ?? "";
+            const crashed = (minutesAgo: number) => {
+              const row = run_state.retirements.get(workspaceId);
+              if (row === undefined) throw new Error("not marked");
+              run_state.retirements.set(workspaceId, {
+                ...row,
+                state: "retiring",
+                updatedAt: new Date(Date.now() - minutesAgo * 60_000),
+              });
+            };
+            // A fresh one is left alone: a replacement in another process may still run it.
+            crashed(1);
+            yield* engine.sweepRetirements();
+            expect(run_state.retirements.get(workspaceId)?.state).toBe("retiring");
+            // Stale: back to marked, with why, and the launcher's turns go ahead again.
+            crashed(11);
+            yield* engine.sweepRetirements();
+            afterSweep = run_state.retirements.get(workspaceId)?.reason ?? null;
+            ownTurn = (yield* engine.submitTurn(session.id, "go on", "user-fixture")).input;
+            // A restart in the middle (nothing here moves it): the owner's ask takes it back first
+            // and goes ahead, never answering ok while doing nothing.
+            crashed(1);
+            const shown = yield* shownTo(engine, session);
+            yield* engine.replaceWorkspaceNow(session.id, "user-fixture", shown.fingerprint);
+            yield* until(() => order.includes("stop"), "the replacement");
+          }),
+        { state: run_state },
+      );
+      expect(afterSweep).toBe("not replaced · the replacement did not finish; looked at again");
+      expect(ownTurn).toBe("go on");
       expect(run.flushKinds).toContain("final");
     },
   );
@@ -30073,7 +30217,13 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
    * A worktree whose last executor ran `shared`: its home's memory written in two captures, the
    * migration run once between them (provisional) and twice after the worktree turned person.
    */
-  const migrateAcrossTheTurn = async (options: { readonly maria: boolean }) => {
+  const migrateAcrossTheTurn = async (options: {
+    readonly maria: boolean;
+    /** The owner record holds every session, deleted ones included; true unless said. */
+    readonly complete?: boolean;
+    /** Whose memory the home holds as the server recorded it, left in place of nothing. */
+    readonly homes?: (worktreeId: string) => AgentMemoryHomes;
+  }) => {
     const created: Array<CreateOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
     const memory = makeMemoryCaptureStore();
@@ -30099,6 +30249,11 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
             base: null,
           });
           yield* engine.launch(session.id, ["claude"]);
+          // Who ever had a session in the worktree, as the durable record keeps it.
+          state.sessionOwners.set(session.worktreeId, {
+            owners: options.maria ? ["user-fixture", MARIA] : ["user-fixture"],
+            complete: options.complete ?? true,
+          });
           if (options.maria) {
             // Maria joined the shared home before 0.36: whose lines are whose cannot be told.
             const joined = yield* engine.provisionSessionIn(session.worktreeId, {
@@ -30122,8 +30277,14 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
             request,
             executorRoot,
           );
-          // No record of whose memory the home holds: the sessions decide.
-          homes.clear();
+          // No record of whose memory the home holds: the sessions decide (unless a test says).
+          const recorded = () => {
+            homes.clear();
+            if (options.homes !== undefined) {
+              homes.set(session.worktreeId, options.homes(session.worktreeId));
+            }
+          };
+          recorded();
           records.push(yield* engine.migratePreReleaseMemory(session.worktreeId));
           // The shared executor goes on writing after the provisional run.
           writeUnder(home, MEMORY, "- first\n- second\n");
@@ -30136,7 +30297,7 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
             request,
             executorRoot,
           );
-          homes.clear();
+          recorded();
           // Its final flush was the last shared-layout capture: the worktree runs per person now.
           state.worktrees.set(session.worktreeId, { layout: "person", requested: null });
           const chain = memory.chains.get(session.worktreeId);
@@ -30237,6 +30398,66 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
         decidedBy: "nobody",
         notCredited: [NOTES, MEMORY].toSorted(),
       });
+    },
+  );
+
+  it(
+    "credits nobody while a hand-over is pending, or when the home's record names another executor",
+    { timeout: 30_000 },
+    async () => {
+      const pending = await migrateAcrossTheTurn({
+        maria: false,
+        homes: () => ({
+          settled: { userId: "user-fixture", sessionId: null, workspaceId: "workspace-1" },
+          pending: {
+            userId: MARIA,
+            sessionId: null,
+            workspaceId: "workspace-2",
+            epoch: 9,
+            n: null,
+          },
+        }),
+      });
+      expect(pending.readBacks).toEqual([]);
+      expect(pending.records[1]).toMatchObject({ creditedTo: null, decidedBy: "nobody" });
+      const elsewhere = await migrateAcrossTheTurn({
+        maria: false,
+        homes: () => ({
+          settled: { userId: "user-fixture", sessionId: null, workspaceId: "an-older-executor" },
+          pending: null,
+        }),
+      });
+      expect(elsewhere.readBacks).toEqual([]);
+      expect(elsewhere.records[1]).toMatchObject({ creditedTo: null, decidedBy: "nobody" });
+    },
+  );
+
+  it(
+    "credits the person a settled record names for the executor that wrote the capture",
+    { timeout: 30_000 },
+    async () => {
+      const run = await migrateAcrossTheTurn({
+        maria: true,
+        homes: () => ({
+          settled: { userId: "user-fixture", sessionId: null, workspaceId: "workspace-1" },
+          pending: null,
+        }),
+      });
+      expect(run.records[1]).toMatchObject({
+        creditedTo: "user-fixture",
+        decidedBy: "home-record",
+      });
+      expect(run.readBacks.map((input) => input.userId)).toEqual(["user-fixture", "user-fixture"]);
+    },
+  );
+
+  it(
+    "credits nobody by the only-person rule where sessions deleted before the owner record cannot be known",
+    { timeout: 30_000 },
+    async () => {
+      const run = await migrateAcrossTheTurn({ maria: false, complete: false });
+      expect(run.readBacks).toEqual([]);
+      expect(run.records[1]).toMatchObject({ creditedTo: null, decidedBy: "nobody" });
     },
   );
 
