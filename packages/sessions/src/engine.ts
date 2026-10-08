@@ -15273,13 +15273,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // so the newly created directory is the one provisioning mounts.
         const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
         // A failed provision settles the session — fire-and-forget launchers
-        // (the web) must never strand a row in "starting" with no error.
+        // (the web) must never strand a row in "starting" with no error. A defect too (a call
+        // that throws, as an SDK refusal of Mend's own options does): only an interruption (a
+        // shutdown) leaves the row for the next start.
         const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
           effect.pipe(
-            Effect.tapError((error) =>
-              settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
-                Effect.ignore,
-              ),
+            Effect.tapCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : settleSession(sessionId, "failed", `launch failed: ${causeWords(cause)}`).pipe(
+                    Effect.ignore,
+                  ),
             ),
           );
         // Everything runs as the OWNER: the account stamped at provision. A session with no owner

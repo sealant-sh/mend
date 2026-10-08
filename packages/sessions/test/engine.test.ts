@@ -24538,6 +24538,65 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(refused._tag).toBe("HarnessLayoutNotAppliedError");
   });
 
+  it("settles a launch whose layout decision throws: failed, its words on the session line, nothing created (box, 0.36.0-next.645)", async () => {
+    // The box's 500: the operator's person launch with the flag unset, and the SDK refusing the
+    // image question's options by throwing, so the decision died rather than failed.
+    const words =
+      "workspaces.create requires exactly one of `repository` (a git remote to clone) or `source` (a caller-owned mount).";
+    const throwing = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({
+        ...inner,
+        imageReport: () => Effect.die(new Error(words)),
+      })),
+    ).pipe(Layer.provide(personPlatform([], { person: true })));
+    const created: Array<CreateOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "pph",
+            ownerUserId: "user-fixture",
+            base: null,
+            harnessLayout: "person",
+          });
+          const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.exit);
+          expect(launched._tag).toBe("Failure");
+          const row = world.sessions.get(session.id);
+          expect(row?.status).toBe("failed");
+          expect(row?.summary).toBe(`launch failed: ${words}`);
+          expect(created).toHaveLength(0);
+          expect(execCalls).toHaveLength(0);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+        ),
+        harnessLayout: {
+          flag: "shared",
+          state: makeHarnessLayoutsMemoryState(),
+          platform: throwing,
+        },
+      },
+    );
+  });
+
   it("takes another person's turn onto the conversation in a person executor, on their own login (Delivery 18)", async () => {
     const authors: Array<string | null> = [];
     const submitted: Array<string> = [];
