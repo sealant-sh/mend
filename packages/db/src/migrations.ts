@@ -3276,6 +3276,7 @@ const preReleaseExecutorsMigration = Effect.gen(function* () {
       stops jsonb NOT NULL DEFAULT '[]'::jsonb,
       reason text,
       checked_at timestamptz,
+      restart_services jsonb NOT NULL DEFAULT '[]'::jsonb,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
   yield* sql`CREATE INDEX executor_retirements_worktree_idx ON executor_retirements (worktree_id)`;

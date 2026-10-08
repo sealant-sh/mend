@@ -13,6 +13,7 @@ import {
   notReplacedWords,
   opencodeFromSharedHomeOf,
   parseRetireCheck,
+  reasonForViewer,
   refusesManualReplacement,
   retireCheckScript,
   retirementFingerprintOf,
@@ -229,18 +230,25 @@ interface FakeProcess {
   readonly sid: number;
   readonly comm: string;
   readonly cmdline: string;
+  /** Clock ticks after boot (`starttime`); 0 unless a test says. */
+  readonly startTicks?: number;
+  readonly state?: string;
 }
+
+/** The fake machine's boot, in seconds: what `/proc/stat`'s `btime` says. */
+const BOOT = 1_759_900_000;
 
 /** A /proc with the fields the check reads: comm, cmdline, stat (session id) and PID 1's environ. */
 const procOf = (processes: ReadonlyArray<FakeProcess>, environ: Record<string, string> = {}) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-proc-"));
+  fs.writeFileSync(path.join(root, "stat"), `cpu 0 0 0 0\nbtime ${BOOT}\n`);
   for (const process of processes) {
     const dir = path.join(root, String(process.pid));
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, "comm"), `${process.comm}\n`);
     fs.writeFileSync(
       path.join(dir, "stat"),
-      `${process.pid} (${process.comm}) S ${process.ppid} ${process.sid} ${process.sid} 0 -1 4194560\n`,
+      `${process.pid} (${process.comm}) ${process.state ?? "S"} ${process.ppid} ${process.sid} ${process.sid} 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0 ${process.startTicks ?? 0}\n`,
     );
     fs.writeFileSync(path.join(dir, "cmdline"), process.cmdline.split(" ").join("\0"));
     if (process.pid === 1) {
@@ -333,7 +341,7 @@ describe("the retire check, against a /proc with sealantd as PID 1", () => {
       // A kernel thread.
       { pid: 2, ppid: 0, sid: 0, comm: "kthreadd", cmdline: "" },
     ]);
-    const found = check(proc, { known: [20] });
+    const found = check(proc, { known: [{ pid: 20, startedAt: null }] });
     expect(found.checked).toBe(true);
     expect(found.stops).toEqual([
       { kind: "process", label: "python (pid 31)" },
@@ -352,7 +360,10 @@ describe("the retire check, against a /proc with sealantd as PID 1", () => {
       { pid: 9, ppid: 1, sid: 9, comm: "codex", cmdline: "codex app-server" },
       { pid: 10, ppid: 9, sid: 9, comm: "git", cmdline: "git status" },
     ]);
-    expect(check(proc, { known: [9] })).toEqual({ checked: true, stops: [] });
+    expect(check(proc, { known: [{ pid: 9, startedAt: null }] })).toEqual({
+      checked: true,
+      stops: [],
+    });
   });
 
   it("lists a recorded process's session once its leader is gone and nothing names it", () => {
@@ -361,10 +372,106 @@ describe("the retire check, against a /proc with sealantd as PID 1", () => {
       { pid: 12, ppid: 1, sid: 11, comm: "sleep", cmdline: "sleep 600" },
     ]);
     // pid 11, the recorded one, has exited: its session no longer counts.
-    expect(check(proc, { known: [11] }).stops).toEqual([
+    expect(check(proc, { known: [{ pid: 11, startedAt: null }] }).stops).toEqual([
       { kind: "process", label: "sleep (pid 12)" },
     ]);
   });
+});
+
+describe("the retire check's recorded pids", () => {
+  it("counts a recorded pid only while it is the process that started then: a reused pid hides nothing", () => {
+    const proc = procOf([
+      SEALANTD,
+      // pid 9 started 40 s after boot (100 ticks a second): the recorded agent.
+      { pid: 9, ppid: 1, sid: 9, comm: "codex", cmdline: "codex app-server", startTicks: 4000 },
+      { pid: 10, ppid: 9, sid: 9, comm: "git", cmdline: "git status", startTicks: 4100 },
+    ]);
+    expect(check(proc, { known: [{ pid: 9, startedAt: BOOT + 40 }] }).stops).toEqual([]);
+    // The record says pid 9 started at another time: the pid was reused, its session is listed.
+    expect(check(proc, { known: [{ pid: 9, startedAt: BOOT + 900 }] }).stops).toEqual([
+      { kind: "process", label: "git (pid 10)" },
+      { kind: "process", label: "codex (pid 9)" },
+    ]);
+  });
+
+  it("lists no zombie", () => {
+    const proc = procOf([
+      SEALANTD,
+      { pid: 33, ppid: 1, sid: 30, comm: "sh", cmdline: "sh", state: "Z" },
+    ]);
+    expect(check(proc).stops).toEqual([]);
+  });
+});
+
+/** A small image to run the check against a real `/proc`; skipped without Docker. */
+const DOCKER_IMAGE = "alpine:3.20";
+const dockerReady = (() => {
+  try {
+    execFileSync("docker", ["image", "inspect", DOCKER_IMAGE], {
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+    return true;
+  } catch {
+    try {
+      execFileSync("docker", ["pull", "-q", DOCKER_IMAGE], { stdio: "ignore", timeout: 60_000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+})();
+
+const byLabel = (a: { readonly label: string }, b: { readonly label: string }) =>
+  a.label.localeCompare(b.label);
+
+const dockerRun = (...args: ReadonlyArray<string>) =>
+  execFileSync("docker", [...args], { encoding: "utf8", timeout: 30_000 });
+
+describe.skipIf(!dockerReady)("the retire check, against a real container's /proc", () => {
+  it(
+    "lists a setsid job and a nohup job an ended exec left, and nothing in the session of a recorded process",
+    { timeout: 60_000 },
+    () => {
+      const name = `mend-retire-check-${process.pid}-${Date.now()}`;
+      dockerRun("run", "-d", "--rm", "--name", name, DOCKER_IMAGE, "sleep", "300");
+      try {
+        // Execs that end leave a setsid job and a nohup job behind, reparented to PID 1.
+        dockerRun("exec", name, "sh", "-c", "setsid sleep 201 </dev/null >/dev/null 2>&1 &");
+        dockerRun("exec", name, "sh", "-c", "nohup sleep 202 </dev/null >/dev/null 2>&1 &");
+        // A process Mend recorded: its pid is known, and so its session is Mend's.
+        dockerRun("exec", "-d", name, "sh", "-c", "exec sleep 203");
+        const pidOf = (pattern: string) => {
+          for (let tries = 0; tries < 50; tries++) {
+            const pid = dockerRun(
+              "exec",
+              name,
+              "sh",
+              "-c",
+              `pgrep -f '${pattern}' | head -n 1`,
+            ).trim();
+            if (pid !== "") return pid;
+          }
+          throw new Error(`no process ${pattern}`);
+        };
+        const recorded = pidOf("sleep 203");
+        const script = retireCheckScript({
+          known: [{ pid: Number(recorded), startedAt: null }],
+          docker: false,
+        });
+        const found = parseRetireCheck(dockerRun("exec", name, "sh", "-c", script));
+        expect(found.checked).toBe(true);
+        expect(found.stops.toSorted(byLabel)).toEqual(
+          [
+            { kind: "process", label: `sleep (pid ${pidOf("sleep 201")})` },
+            { kind: "process", label: `sleep (pid ${pidOf("sleep 202")})` },
+          ].toSorted(byLabel),
+        );
+      } finally {
+        execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" });
+      }
+    },
+  );
 });
 
 describe("the retire check's containers: anything but a docker ps that answers is unknown", () => {
@@ -436,13 +543,31 @@ describe("what the owner was shown", () => {
   it("replaces only when nothing more would stop now", () => {
     expect(stopsWithin(shown.slice(0, 1), shown)).toBe(true);
     expect(stopsWithin([...shown, { kind: "process", label: "node (pid 40)" }], shown)).toBe(false);
-    const at = new Date("2026-10-08T12:00:00Z");
-    expect(retirementFingerprintOf({ stops: shown, checkedAt: at })).toBe(
-      retirementFingerprintOf({ stops: shown, checkedAt: at }),
+    // The same things, checked again later or listed in another order: the same fingerprint.
+    expect(retirementFingerprintOf({ stops: shown })).toBe(
+      retirementFingerprintOf({ stops: shown.toReversed() }),
     );
-    expect(retirementFingerprintOf({ stops: shown, checkedAt: at })).not.toBe(
-      retirementFingerprintOf({ stops: shown.slice(1), checkedAt: at }),
+    expect(retirementFingerprintOf({ stops: shown })).not.toBe(
+      retirementFingerprintOf({ stops: shown.slice(1) }),
     );
+    // Two things with one label are two: one shown does not cover both.
+    const shell = { kind: "shell" as const, label: "auth · shell 1" };
+    expect(stopsWithin([shell, shell], shown)).toBe(false);
+    expect(stopsWithin([shell, shell], [shell, shell])).toBe(true);
+  });
+
+  it("never shows an error's text to anyone but the change's owner", () => {
+    const stops = [
+      { kind: "unchecked" as const, label: "running containers: docker ps failed (x)" },
+    ];
+    expect(stopsForViewer(stops, false)).toEqual([{ kind: "unchecked", label: "" }]);
+    expect(
+      reasonForViewer("not replaced · the replacement did not finish (Error: boom)", [], false),
+    ).toBe("not replaced yet");
+    expect(reasonForViewer("not replaced · 1 shell", [{ kind: "shell", label: "a" }], false)).toBe(
+      "not replaced · 1 shell",
+    );
+    expect(reasonForViewer("x (Error: boom)", [], true)).toBe("x (Error: boom)");
   });
 
   it("shows a process's or a container's label to the change's owner only", () => {

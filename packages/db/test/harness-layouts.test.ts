@@ -501,14 +501,28 @@ describe.skipIf(!reachable)(
           // Its time is the replacement's: a sweep's mark never makes a stale row look fresh.
           expect(again.updatedAt).toEqual(retiring?.updatedAt);
           expect(retiring?.updatedAt.getTime()).toBeGreaterThanOrEqual(markedAt.getTime());
+          // Kept retiring while its drain asks again: the reason and the Services to start again.
+          yield* repo.noteRetiring("ws-old", {
+            reason: "not replaced yet · the final flush was not saved (kept)",
+            restart: ["web"],
+          });
+          expect(yield* repo.retirementOf("ws-old")).toMatchObject({
+            state: "retiring",
+            reason: "not replaced yet · the final flush was not saved (kept)",
+            restart: ["web"],
+          });
+          const checkedAt = new Date("2026-10-08T12:00:00Z");
           yield* repo.unmarkRetiring("ws-old", {
             stops: [{ kind: "process", label: "sleep 600" }],
             reason: "a process Mend did not start runs in it",
+            checkedAt,
           });
           expect(yield* repo.retirementOf("ws-old")).toMatchObject({
             state: "marked",
             stops: [{ kind: "process", label: "sleep 600" }],
             reason: "a process Mend did not start runs in it",
+            checkedAt,
+            restart: [],
           });
           expect((yield* repo.listRetirements()).map((row) => row.workspaceId)).toEqual(["ws-old"]);
           yield* repo.clearRetirement("ws-old");

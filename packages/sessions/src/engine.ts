@@ -467,6 +467,7 @@ import {
   migrationSessionIdOf,
   notReplacedWords,
   opencodeFromSharedHomeOf,
+  reasonForViewer,
   parseRetireCheck,
   refusesManualReplacement,
   retireCheckScript,
@@ -6458,7 +6459,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return;
           }
           if (session.captureDrain === "replacement") {
+            // A pre-release executor's replacement taken up after a restart starts the holder's
+            // `mend.toml` Services again, as one finished in this process does.
+            const retiring =
+              capture !== null && harnessLayoutConfig.flag === "person"
+                ? yield* harnessLayouts.retirementOf(workspaceId)
+                : null;
             yield* replaceExecutor(session);
+            for (const name of retiring?.sessionId === session.id ? retiring.restart : []) {
+              yield* runServiceRecipe(session.id, name).pipe(
+                Effect.catch((error) =>
+                  Effect.logInfo(
+                    "session engine: a mend.toml Service was not started again after the replacement",
+                  ).pipe(
+                    Effect.annotateLogs({
+                      sessionId: session.id,
+                      service: name,
+                      why: error.message,
+                    }),
+                  ),
+                ),
+              );
+            }
             // A pre-release executor's replacement taken up after a restart: its retirement ends
             // with it (docs/adr/0016, decision 14).
             if (capture !== null && harnessLayoutConfig.flag === "person") {
@@ -13951,11 +13973,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const membership = yield* organizations.membershipOf(candidate);
             if (membership?.organization.id === project.organizationId) members.add(candidate);
           }
+          // A worktree older than the owner record counts as complete when its organization has
+          // exactly one member and every session it kept is theirs: nobody else could have had
+          // one (owner decision 2026-10-08; there is no membership history to read).
+          const organizationMembers = ever.complete
+            ? []
+            : yield* organizations.members(project.organizationId);
+          const onlyMember =
+            organizationMembers.length === 1 ? (organizationMembers[0]?.userId ?? null) : null;
+          const ownersComplete =
+            ever.complete ||
+            (onlyMember !== null &&
+              owners.length > 0 &&
+              owners.every((owner) => owner === onlyMember));
           const creditor = memoryCreditorOf({
             homeRecord,
             unsettledRecord: recorded !== null && !recordHolds,
             owners,
-            ownersComplete: ever.complete,
+            ownersComplete,
             isMember: (userId) => members.has(userId),
           });
           const planned = memoryToCredit({
@@ -14003,8 +14038,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           };
           yield* harnessLayouts.recordPreReleaseMigration(record);
           if (creditor.creditedTo === null && freshPaths.size > 0) {
+            const why =
+              recorded !== null && !recordHolds
+                ? "the home's record is not settled for the workspace that wrote it"
+                : new Set(owners).size > 1
+                  ? "two or more people had sessions there"
+                  : !ownersComplete
+                    ? "sessions deleted before Mend kept who had them cannot be known"
+                    : "the person is not a member of the organization any more";
             yield* Effect.logInfo(
-              "session engine: memory from before per-person homes · not credited · two or more people's sessions shared the home",
+              `session engine: memory from before per-person homes · not credited · ${why}`,
             ).pipe(Effect.annotateLogs({ worktreeId, paths: [...freshPaths].join(", ") }));
           }
           return record;
@@ -14080,33 +14123,50 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const recordedPidsOf = Effect.fn("SessionEngine.recordedPidsOf")(function* (
         live: ReadonlyArray<SessionProcess>,
       ) {
-        const pids: Array<number> = [];
-        const unknown: Array<RetirementStopRecord> = [];
-        for (const row of live) {
-          // An adopted Service and an observed agent run no process of Mend's.
-          if (row.sealantRunId === null) continue;
-          const pid = yield* sealant.getRun(row.sealantRunId).pipe(
-            Effect.flatMap((run) =>
-              sealant.recordTimeline(run).pipe(
-                Stream.filterMap((entry) =>
-                  entry.kind === "processStarted"
-                    ? Result.succeed(entry.data.pid)
-                    : Result.fail(undefined),
-                ),
-                Stream.runHead,
-              ),
+        // An adopted Service and an observed agent run no process of Mend's.
+        const read = yield* Effect.forEach(
+          live.filter((row) => row.sealantRunId !== null),
+          (row) =>
+            (row.sealantRunId === null
+              ? Effect.succeed(Option.none())
+              : sealant.getRun(row.sealantRunId).pipe(
+                  Effect.flatMap((run) =>
+                    sealant.recordTimeline(run).pipe(
+                      Stream.filterMap((entry) =>
+                        entry.kind === "processStarted"
+                          ? Result.succeed(entry.data)
+                          : Result.fail(undefined),
+                      ),
+                      Stream.runHead,
+                    ),
+                  ),
+                )
+            ).pipe(
+              Effect.timeout(RECORD_READ_TIMEOUT),
+              Effect.map(Option.getOrNull),
+              Effect.orElseSucceed(() => null),
+              Effect.map((started) => ({ row, started })),
             ),
-            Effect.timeout(RECORD_READ_TIMEOUT),
-            Effect.map(Option.getOrNull),
-            Effect.orElseSucceed(() => null),
-          );
-          if (pid === null) {
+          { concurrency: 4 },
+        );
+        const known: Array<{ readonly pid: number; readonly startedAt: number | null }> = [];
+        const unknown: Array<RetirementStopRecord> = [];
+        for (const { row, started } of read) {
+          if (started === null) {
             unknown.push(
               uncheckedStop(`the start of ${row.label ?? row.kind} is not in its record`),
             );
-          } else pids.push(pid);
+            continue;
+          }
+          // Microseconds, as a decimal string: the second it started, for the pid-reuse guard.
+          const micros = Number(started.startedAt);
+          known.push({
+            pid: started.pid,
+            startedAt:
+              Number.isFinite(micros) && micros > 0 ? Math.floor(micros / 1_000_000) : null,
+          });
         }
-        return { pids, unknown };
+        return { known, unknown };
       });
 
       /**
@@ -14142,19 +14202,58 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const quiescence = yield* protocolHost.quiescence(row.id);
           quiet.set(row.id, quiescence?.quiescent ?? null);
         }
-        const recorded = retirementStopsOf({
-          processes: live,
-          services: serviceRows,
-          sessionLabel: (sessionId) => labels.get(sessionId) ?? sessionId,
-          quiescent: (processId) => quiet.get(processId) ?? null,
-        });
+        // Starts and turns admitted before the executor was marked `retiring` and not yet a
+        // process or a turn the agent reports: a launch under way for any session of the worktree,
+        // a turn being queued, a queued turn not yet sent, an `install.sh` still running.
+        const inFlight: Array<RetirementStopRecord> = [];
+        for (const member of yield* sessions.listForWorktree(holder.worktreeId)) {
+          const label = member.label ?? member.worktree;
+          if (launchGate.underWay(member.id) || creatingExecutors.has(member.id)) {
+            inFlight.push({ kind: "turn", label: `${label} · a start under way` });
+          }
+          if (member.sealantWorkspaceId === workspaceId) {
+            const queued = (turnsBeingQueued.get(member.id) ?? 0) > 0;
+            const open = live.some(
+              (row) => row.sessionId === member.id && row.kind === "agent-protocol",
+            )
+              ? (yield* conversations.openTurns(member.id)).length > 0
+              : false;
+            if (queued || open) inFlight.push({ kind: "turn", label: `${label} · a turn queued` });
+          }
+        }
+        for (const [key, bootstrap] of personBootstraps) {
+          if (key.startsWith(`${workspaceId}\u0000`) && bootstrap !== undefined) {
+            inFlight.push({ kind: "process", label: "install.sh (running)" });
+          }
+        }
+        const recorded = [
+          ...retirementStopsOf({
+            processes: live,
+            services: serviceRows,
+            sessionLabel: (sessionId) => labels.get(sessionId) ?? sessionId,
+            quiescent: (processId) => quiet.get(processId) ?? null,
+          }),
+          ...inFlight,
+        ];
         if (!inside) return { live, stops: recorded, checkedAt: null };
-        const { pids, unknown } = yield* recordedPidsOf(live);
+        const { known, unknown } = yield* recordedPidsOf(live);
         const docker = holder.workspaceImage?.services.docker ?? true;
         const found = yield* sealant.getWorkspace(workspaceId).pipe(
           Effect.flatMap((workspace) =>
-            sealant.exec(workspace, ["sh", "-c", retireCheckScript({ known: pids, docker })]),
+            sealant.exec(workspace, ["sh", "-c", retireCheckScript({ known, docker })]),
           ),
+          Effect.timeoutOrElse({
+            duration: RETIRE_CHECK_TIMEOUT,
+            orElse: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "retire_check_timeout",
+                  status: null,
+                  message: `it did not answer in ${Duration.format(RETIRE_CHECK_TIMEOUT)}`,
+                  cause: null,
+                }),
+              ),
+          }),
           Effect.map((result) => parseRetireCheck(result.stdout)),
           Effect.catch((error) =>
             Effect.succeed({
@@ -14246,9 +14345,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (replacing.has(holder.id) || drains.has(workspaceId)) return "held";
         if (!(yield* harnessLayouts.beginRetiring(workspaceId))) return "held";
         replacing.add(holder.id);
-        const unmark = (stops: ReadonlyArray<RetirementStopRecord>, reason: string) =>
+        const unmark = (
+          stops: ReadonlyArray<RetirementStopRecord>,
+          reason: string,
+          checkedAt: Date | null,
+        ) =>
           harnessLayouts
-            .unmarkRetiring(workspaceId, { stops, reason })
+            .unmarkRetiring(workspaceId, { stops, reason, checkedAt })
             .pipe(
               Effect.andThen(
                 Effect.logInfo(`session engine: pre-release executor · ${reason}`).pipe(
@@ -14263,6 +14366,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             unmark(
               [],
               `not replaced · what would stop could not be read (${Cause.pretty(cause)})`,
+              null,
             ).pipe(
               Effect.andThen(Effect.sync(() => replacing.delete(holder.id))),
               Effect.andThen(Effect.succeed(null)),
@@ -14280,7 +14384,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? stops.length > 0
             : refusesManualReplacement(stops) || !stopsWithin(stops, manual.shown);
         if (holdsBack) {
-          yield* unmark(stops, notReplacedWords(stops));
+          yield* unmark(stops, notReplacedWords(stops), checked.checkedAt);
           replacing.delete(holder.id);
           if (manual === null) return "held";
           return yield* refuse(
@@ -14310,6 +14414,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const relaunch = live.some(
           (row) => row.sessionId === holder.id && row.kind === "agent-protocol",
         );
+        // Kept with the row, so a replacement taken up after a restart starts them too.
+        yield* harnessLayouts.noteRetiring(workspaceId, { restart });
         const finish = finishReplacement(holder, workspaceId, {
           relaunch,
           restart,
@@ -14320,11 +14426,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               replacing.delete(holder.id);
               if (Exit.isSuccess(exit)) return Effect.void;
               const why = Cause.squash(exit.cause);
+              // Its final flush was sent: the executor admits nothing new and its drain asks
+              // again, so it stays `retiring`, with why, as it would after a restart.
+              if (why instanceof Error && why.message.startsWith("not replaced yet")) {
+                return harnessLayouts
+                  .noteRetiring(workspaceId, { reason: why.message })
+                  .pipe(Effect.ignore);
+              }
               return unmark(
                 [],
-                why instanceof Error && why.message.startsWith("not replaced")
-                  ? why.message
-                  : `not replaced · the replacement did not finish (${Cause.pretty(exit.cause)})`,
+                `not replaced · the replacement did not finish (${Cause.pretty(exit.cause)})`,
+                null,
               ).pipe(Effect.ignore);
             }),
           ),
@@ -14340,7 +14452,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** How long the start of a recorded process is looked for in its record. */
-      const RECORD_READ_TIMEOUT = Duration.seconds(10);
+      const RECORD_READ_TIMEOUT = Duration.seconds(5);
+      /** How long the retire check's exec may take before it counts as unchecked. */
+      const RETIRE_CHECK_TIMEOUT = Duration.seconds(30);
+      /** Turns being queued, by session: a check sees one between the refusal read and the queue. */
+      const turnsBeingQueued = new Map<string, number>();
 
       /** Executors the sweep looked at, and when: a `shared` one is looked at once a minute. */
       const retirementLooks = new Map<string, number>();
@@ -14438,6 +14554,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* harnessLayouts.unmarkRetiring(retirement.workspaceId, {
           stops: retirement.stops,
           reason: "not replaced · the replacement did not finish; looked at again",
+          checkedAt: retirement.checkedAt,
         });
         yield* Effect.logWarning(
           "session engine: pre-release executor · a replacement that did not finish · marked again",
@@ -14535,7 +14652,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           preRelease: retirement.preRelease,
           launcher: retirement.launcher,
           stops: stops.map((stop) => new WorkspaceRetirementStop(stop)),
-          reason: retirement.reason,
+          reason: reasonForViewer(retirement.reason, retirement.stops, isOwner),
           checkedAt: retirement.checkedAt,
           fingerprint: retirementFingerprintOf(retirement),
           canReplace:
@@ -17025,7 +17142,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
 
-      const submitTurn = Effect.fn("SessionEngine.submitTurn")(function* (
+      const submitTurnChecked = Effect.fn("SessionEngine.submitTurnChecked")(function* (
         sessionId: SessionId,
         input: string,
         author: string | null,
@@ -17058,6 +17175,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         return yield* protocolHost.submitTurn(sessionId, input, author);
       });
+
+      /**
+       * A turn, counted as being queued from before its refusal is read until it is queued, so a
+       * replacement's check that starts meanwhile sees it (review of mend#575, P2-B). With the flag
+       * off, nothing is counted.
+       */
+      const submitTurn = (sessionId: SessionId, input: string, author: string | null) =>
+        capture === null || harnessLayoutConfig.flag !== "person"
+          ? submitTurnChecked(sessionId, input, author)
+          : Effect.acquireUseRelease(
+              Effect.sync(() =>
+                turnsBeingQueued.set(sessionId, (turnsBeingQueued.get(sessionId) ?? 0) + 1),
+              ),
+              () => submitTurnChecked(sessionId, input, author),
+              () =>
+                Effect.sync(() => {
+                  const left = (turnsBeingQueued.get(sessionId) ?? 1) - 1;
+                  if (left <= 0) turnsBeingQueued.delete(sessionId);
+                  else turnsBeingQueued.set(sessionId, left);
+                }),
+            );
 
       /** The waiting line of a conversation (decision 6), as both people see it. */
       const conversationWait = (sessionId: SessionId) =>

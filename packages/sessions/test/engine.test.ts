@@ -29816,6 +29816,8 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       readonly saved?: () => boolean;
       readonly retireCheck?: () => string;
       readonly state?: HarnessLayoutsMemoryState;
+      /** Holds a PTY's open on the platform until it completes (a slow start). */
+      readonly aroundOpen?: () => Effect.Effect<void>;
     } = {},
   ) => {
     const created: Array<CreateOptions> = [];
@@ -29867,6 +29869,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
           undefined,
           {
             flushKinds,
+            ...(options.aroundOpen === undefined ? {} : { aroundOpen: options.aroundOpen }),
             // sealantd's record of each process: its pid, which the retire check counts as Mend's.
             timeline: (runId) => [
               {
@@ -29939,7 +29942,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       );
       expect(run.state.capabilities.get(IMAGE_KEY)?.person).toBe(true);
       // The check counted the agent's pid from its record (run-2, as the stand-in numbers it).
-      expect(run.scripts[0]).toContain("for k in 102;");
+      expect(run.scripts[0]).toContain("for e in 102:0;");
       const check = run.order.indexOf("check");
       const flush = run.order.findIndex((entry) => entry.startsWith("flush:"));
       const stop = run.order.indexOf("stop");
@@ -29959,18 +29962,24 @@ describe("pre-release executors and the migration of their shared home (docs/adr
     "keeps the executor when its final flush is not saved, and says why: nothing is lost",
     { timeout: 30_000 },
     async () => {
-      let reason: string | null = null;
+      let shown: { readonly state: string; readonly reason: string | null } | null = null;
       const run = await retiringWorld(
         (engine, _world, { session }) =>
           Effect.gen(function* () {
             yield* engine.sweepRetirements();
-            reason = (yield* shownTo(engine, session)).reason;
+            const retirement = yield* shownTo(engine, session);
+            shown = { state: retirement.state, reason: retirement.reason };
           }),
         { saved: () => false },
       );
       expect(run.order.filter((entry) => entry === "stop")).toEqual([]);
       expect(run.created).toHaveLength(1);
-      expect(reason).toBe("not replaced yet · the final flush was not saved (kept)");
+      // Its final flush was sent: it stays `retiring` while its drain asks again, as it would
+      // after a restart, and says why (review 2 of mend#575).
+      expect(shown).toEqual({
+        state: "retiring",
+        reason: "not replaced yet · the final flush was not saved (kept)",
+      });
     },
   );
 
@@ -30078,6 +30087,38 @@ describe("pre-release executors and the migration of their shared home (docs/adr
         ],
       });
       expect(run.order.at(-1)).toBe("stop");
+    },
+  );
+
+  it(
+    "sees a start the launcher began before the check: it would stop, so nothing is replaced (review 2 of mend#575, P2-B)",
+    { timeout: 30_000 },
+    async () => {
+      const open = Effect.runSync(Deferred.make<void>());
+      let holding = false;
+      let shown: ReadonlyArray<string> = [];
+      const run = await retiringWorld(
+        (engine, _world, { session }) =>
+          Effect.gen(function* () {
+            // The launcher's second session joins the executor; its start is under way.
+            const second = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: "second",
+              ownerUserId: "user-fixture",
+            });
+            holding = true;
+            const starting = yield* Effect.forkChild(engine.launch(second.id, ["claude"]));
+            yield* Effect.sleep("100 millis");
+            yield* engine.sweepRetirements();
+            shown = (yield* shownTo(engine, session)).stops.map((stop) => stop.label);
+            yield* Deferred.succeed(open, undefined);
+            yield* Fiber.join(starting).pipe(Effect.ignore);
+          }),
+        { aroundOpen: () => (holding ? Deferred.await(open) : Effect.void) },
+      );
+      expect(shown).toContain("second · a start under way");
+      expect(run.order.filter((entry) => entry === "stop")).toEqual([]);
+      expect(run.flushKinds).not.toContain("final");
     },
   );
 
@@ -30219,6 +30260,8 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
    */
   const migrateAcrossTheTurn = async (options: {
     readonly maria: boolean;
+    /** Maria is a member of the organization; true unless said. */
+    readonly mariaMember?: boolean;
     /** The owner record holds every session, deleted ones included; true unless said. */
     readonly complete?: boolean;
     /** Whose memory the home holds as the server recorded it, left in place of nothing. */
@@ -30312,7 +30355,10 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
         }),
       {
         captured: memory,
-        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        prepareWorld: (world) => {
+          if (options.mariaMember === false) world.members.delete(MARIA);
+          else world.members.set(MARIA, "member");
+        },
         agentMemoryLayer: agentMemoryLayerOf(
           {
             readBack: (input) =>
@@ -30458,6 +30504,18 @@ describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 
       const run = await migrateAcrossTheTurn({ maria: false, complete: false });
       expect(run.readBacks).toEqual([]);
       expect(run.records[1]).toMatchObject({ creditedTo: null, decidedBy: "nobody" });
+    },
+  );
+
+  it(
+    "credits the only member of an organization that never had a second one, on a worktree older than the owner record (owner decision 2026-10-08)",
+    { timeout: 30_000 },
+    async () => {
+      const run = await migrateAcrossTheTurn({ maria: false, complete: false, mariaMember: false });
+      expect(run.records[1]).toMatchObject({
+        creditedTo: "user-fixture",
+        decidedBy: "only-person",
+      });
     },
   );
 

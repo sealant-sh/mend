@@ -266,8 +266,12 @@ export const RETIRE_LINE = "mend-retire";
  * (<image>)`, `mend-retire unknown <why>`), then `mend-retire checked`. It changes nothing.
  */
 export const retireCheckScript = (options: {
-  /** Pids sealantd reported for the executor's live recorded processes. */
-  readonly known: ReadonlyArray<number>;
+  /**
+   * The executor's live recorded processes, as sealantd reported their start: the pid and, when
+   * known, the wall-clock second it started. A pid whose process started at another time is a
+   * reused one, and its session does not count as Mend's.
+   */
+  readonly known: ReadonlyArray<{ readonly pid: number; readonly startedAt: number | null }>;
   /** The executor has a Docker sidecar, as its image says. */
   readonly docker: boolean;
   readonly proc?: string;
@@ -279,22 +283,39 @@ export const retireCheckScript = (options: {
   readonly dockerTimeoutSeconds?: number;
 }): string => {
   const proc = options.proc ?? "/proc";
-  const known = options.known.filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+  const known = options.known
+    .filter(({ pid }) => Number.isSafeInteger(pid) && pid > 0)
+    .map(({ pid, startedAt }) =>
+      startedAt !== null && Number.isFinite(startedAt) && startedAt > 0
+        ? `${pid}:${Math.floor(startedAt)}`
+        : `${pid}:0`,
+    );
   const docker = shellQuoteSafe(options.dockerCommand ?? "docker");
   const socket = shellQuoteSafe(options.dockerSocket ?? "/var/run/docker.sock");
   const socketUrl = `unix://${(options.dockerSocket ?? "/var/run/docker.sock").replace(/[^A-Za-z0-9._/-]/g, "")}`;
   const seconds = Math.max(1, Math.floor(options.dockerTimeoutSeconds ?? 20));
   return [
     `P=${shellQuoteSafe(proc)}`,
-    // The session id: field 6 of stat, counted after the command name's closing parenthesis.
-    `sid_of() { sed 's/^.*) //' "$P/$1/stat" 2>/dev/null | awk '{ print $4 }'; }`,
+    // After the command name's closing parenthesis: state, ppid, pgrp, session … starttime (20th).
+    `fields_of() { sed 's/^.*) //' "$P/$1/stat" 2>/dev/null; }`,
+    `sid_of() { fields_of "$1" | awk '{ print $4 }'; }`,
+    `btime=$(awk '/^btime/ { print $2 }' "$P/stat" 2>/dev/null)`,
+    `hz=$(getconf CLK_TCK 2>/dev/null || echo 100)`,
     `self=$(sid_of $$)`,
     `known=" $(sid_of 1) "`,
-    `for k in ${known.join(" ")}; do s=$(sid_of "$k"); [ -n "$s" ] && known="$known$s "; done`,
+    // A recorded pid counts only while it is the same process: its start within 2 s of the record.
+    `for e in ${known.join(" ")}; do k=\${e%%:*}; t=\${e#*:}; s=$(sid_of "$k"); [ -n "$s" ] || continue;`,
+    `  if [ "$t" != 0 ] && [ -n "$btime" ]; then st=$(fields_of "$k" | awk '{ print $20 }');`,
+    `    [ -n "$st" ] || continue; d=$((btime + st / hz - t)); [ "$d" -lt 0 ] && d=$((0 - d)); [ "$d" -le 2 ] || continue; fi;`,
+    `  known="$known$s "; done`,
     `for p in "$P"/[0-9]*; do`,
     `  pid=\${p##*/}; [ "$pid" = 1 ] && continue`,
-    `  [ -s "$p/cmdline" ] || continue`,
-    `  s=$(sid_of "$pid"); [ -n "$s" ] || continue`,
+    // procfs reports every file's size as 0, so the content is read: a kernel thread has none.
+    `  [ -n "$(head -c 1 "$p/cmdline" 2>/dev/null | tr '\\0' x)" ] || continue`,
+    `  f=$(fields_of "$pid"); [ -n "$f" ] || continue`,
+    // A zombie runs nothing.
+    `  case "$f" in Z*) continue ;; esac`,
+    `  s=$(printf '%s' "$f" | awk '{ print $4 }')`,
     `  [ "$s" = "$self" ] && continue`,
     `  case "$known" in *" $s "*) continue ;; esac`,
     `  c=$(tr -d '\\n' < "$p/comm" 2>/dev/null | tr -c 'A-Za-z0-9._+-' '_' | cut -c1-32)`,
@@ -356,15 +377,9 @@ export const uncheckedStop = (why: string): RetirementStopRecord => ({
  */
 export const retirementFingerprintOf = (input: {
   readonly stops: ReadonlyArray<RetirementStopRecord>;
-  readonly checkedAt: Date | null;
 }): string =>
   createHash("sha256")
-    .update(
-      JSON.stringify([
-        input.checkedAt?.toISOString() ?? null,
-        input.stops.map((stop) => [stop.kind, stop.label]),
-      ]),
-    )
+    .update(JSON.stringify(input.stops.map((stop) => `${stop.kind}\u0000${stop.label}`).toSorted()))
     .digest("base64url")
     .slice(0, 22);
 
@@ -375,14 +390,30 @@ export const retirementFingerprintOf = (input: {
 export const stopsWithin = (
   now: ReadonlyArray<RetirementStopRecord>,
   shown: ReadonlyArray<RetirementStopRecord>,
-): boolean =>
-  now.every((stop) => shown.some((seen) => seen.kind === stop.kind && seen.label === stop.label));
+): boolean => {
+  // A multiset: two shells with one label are two things that would stop.
+  const left = new Map<string, number>();
+  for (const stop of shown) {
+    const key = `${stop.kind}\u0000${stop.label}`;
+    left.set(key, (left.get(key) ?? 0) + 1);
+  }
+  for (const stop of now) {
+    const key = `${stop.kind}\u0000${stop.label}`;
+    const count = left.get(key) ?? 0;
+    if (count === 0) return false;
+    left.set(key, count - 1);
+  }
+  return true;
+};
 
 /** "Replace this workspace now" after what would stop changed since the owner looked. */
 export const REPLACE_STOPS_CHANGED =
   "What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.";
 
-/** A process or container's label is the change's owner's to read: everyone else sees its kind. */
+/**
+ * A process's, a container's or an unchecked item's label is the change's owner's to read (it can
+ * carry an error's text): everyone else sees its kind.
+ */
 export const stopsForViewer = (
   stops: ReadonlyArray<RetirementStopRecord>,
   isOwner: boolean,
@@ -390,5 +421,22 @@ export const stopsForViewer = (
   isOwner
     ? stops
     : stops.map((stop) =>
-        stop.kind === "process" || stop.kind === "container" ? { ...stop, label: "" } : stop,
+        stop.kind === "process" || stop.kind === "container" || stop.kind === "unchecked"
+          ? { ...stop, label: "" }
+          : stop,
       );
+
+/**
+ * Why the last replacement did not go ahead, for anyone but the change's owner: what would stop,
+ * by kind, never an error's text.
+ */
+export const reasonForViewer = (
+  reason: string | null,
+  stops: ReadonlyArray<RetirementStopRecord>,
+  isOwner: boolean,
+): string | null =>
+  isOwner || reason === null
+    ? reason
+    : stops.length > 0
+      ? notReplacedWords(stops)
+      : "not replaced yet";

@@ -214,6 +214,11 @@ export interface ExecutorRetirementRecord {
    * not start, the sidecar's containers); null while only the records were read.
    */
   readonly checkedAt: Date | null;
+  /**
+   * The holder's `mend.toml` Services a replacement under way starts again once the holder runs
+   * per person, kept so a replacement taken up after a restart starts them too.
+   */
+  readonly restart: ReadonlyArray<string>;
   /** When the row last changed: a `retiring` row not moved for long was left by a crash. */
   readonly updatedAt: Date;
 }
@@ -235,6 +240,7 @@ const RetirementRow = Schema.Struct({
   stops: Schema.Array(Schema.Struct({ kind: WorkspaceRetirementStopKind, label: Schema.String })),
   reason: Schema.NullOr(Schema.String),
   checkedAt: Schema.NullOr(Schema.Date),
+  restart: Schema.Array(Schema.String),
   updatedAt: Schema.Date,
 });
 const decodeRetirementRow = Schema.decodeUnknownSync(RetirementRow);
@@ -357,14 +363,29 @@ export class HarnessLayoutsRepo extends Context.Service<
     readonly listRetirements: () => Effect.Effect<ReadonlyArray<ExecutorRetirementRecord>>;
     /** Mark (or update) an executor's retirement; a `retiring` one keeps its state. */
     readonly markRetirement: (
-      record: Omit<ExecutorRetirementRecord, "state" | "updatedAt">,
+      record: Omit<ExecutorRetirementRecord, "state" | "updatedAt" | "restart">,
     ) => Effect.Effect<ExecutorRetirementRecord>;
     /** `marked` to `retiring`: false when it was not marked (another attempt holds it). */
     readonly beginRetiring: (workspaceId: string) => Effect.Effect<boolean>;
-    /** Back to `marked`, with what was found. */
+    /**
+     * Back to `marked`, with what was found and when it was checked (null: nothing was checked
+     * this time, and no earlier check's time is kept for it).
+     */
     readonly unmarkRetiring: (
       workspaceId: string,
-      found: { readonly stops: ReadonlyArray<RetirementStopRecord>; readonly reason: string },
+      found: {
+        readonly stops: ReadonlyArray<RetirementStopRecord>;
+        readonly reason: string;
+        readonly checkedAt: Date | null;
+      },
+    ) => Effect.Effect<void>;
+    /**
+     * A `retiring` row stays `retiring`, with why (a final flush not saved yet, which its drain
+     * asks again) or the Services its replacement starts again.
+     */
+    readonly noteRetiring: (
+      workspaceId: string,
+      note: { readonly reason?: string; readonly restart?: ReadonlyArray<string> },
     ) => Effect.Effect<void>;
     /** The executor was replaced or ended: its retirement is over. */
     readonly clearRetirement: (workspaceId: string) => Effect.Effect<void>;
@@ -700,7 +721,8 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         const rows = yield* sql`
           SELECT workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
                  launcher, pre_release AS "preRelease", state, stops, reason,
-                 checked_at AS "checkedAt", updated_at AS "updatedAt"
+                 checked_at AS "checkedAt", restart_services AS "restart",
+                 updated_at AS "updatedAt"
           FROM executor_retirements
           WHERE workspace_id = ${workspaceId}`.pipe(Effect.orDie);
         return rows[0] === undefined ? null : decodeRetirementRow(rows[0]);
@@ -710,13 +732,14 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         const rows = yield* sql`
           SELECT workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
                  launcher, pre_release AS "preRelease", state, stops, reason,
-                 checked_at AS "checkedAt", updated_at AS "updatedAt"
+                 checked_at AS "checkedAt", restart_services AS "restart",
+                 updated_at AS "updatedAt"
           FROM executor_retirements ORDER BY updated_at`.pipe(Effect.orDie);
         return rows.map((row) => decodeRetirementRow(row));
       });
 
       const markRetirement = Effect.fn("HarnessLayoutsRepo.markRetirement")(function* (
-        record: Omit<ExecutorRetirementRecord, "state" | "updatedAt">,
+        record: Omit<ExecutorRetirementRecord, "state" | "updatedAt" | "restart">,
       ) {
         // A retiring row is the replacement's: the sweep changes nothing of it, its time included.
         const rows = yield* sql`
@@ -737,7 +760,8 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
                                   THEN executor_retirements.updated_at ELSE now() END
           RETURNING workspace_id AS "workspaceId", worktree_id AS "worktreeId", session_id AS "sessionId",
                  launcher, pre_release AS "preRelease", state, stops, reason,
-                 checked_at AS "checkedAt", updated_at AS "updatedAt"`.pipe(Effect.orDie);
+                 checked_at AS "checkedAt", restart_services AS "restart",
+                 updated_at AS "updatedAt"`.pipe(Effect.orDie);
         return decodeRetirementRow(rows[0]);
       });
 
@@ -764,13 +788,30 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
 
       const unmarkRetiring = Effect.fn("HarnessLayoutsRepo.unmarkRetiring")(function* (
         workspaceId: string,
-        found: { readonly stops: ReadonlyArray<RetirementStopRecord>; readonly reason: string },
+        found: {
+          readonly stops: ReadonlyArray<RetirementStopRecord>;
+          readonly reason: string;
+          readonly checkedAt: Date | null;
+        },
       ) {
         yield* sql`
           UPDATE executor_retirements
              SET state = 'marked', stops = ${JSON.stringify(found.stops)}::jsonb,
-                 reason = ${found.reason}, updated_at = now()
+                 reason = ${found.reason}, checked_at = ${found.checkedAt},
+                 restart_services = '[]'::jsonb, updated_at = now()
            WHERE workspace_id = ${workspaceId}`.pipe(Effect.orDie);
+      });
+
+      const noteRetiring = Effect.fn("HarnessLayoutsRepo.noteRetiring")(function* (
+        workspaceId: string,
+        note: { readonly reason?: string; readonly restart?: ReadonlyArray<string> },
+      ) {
+        yield* sql`
+          UPDATE executor_retirements
+             SET reason = COALESCE(${note.reason ?? null}, reason),
+                 restart_services = COALESCE(${note.restart === undefined ? null : JSON.stringify(note.restart)}::jsonb, restart_services),
+                 updated_at = now()
+           WHERE workspace_id = ${workspaceId} AND state = 'retiring'`.pipe(Effect.orDie);
       });
 
       const clearRetirement = Effect.fn("HarnessLayoutsRepo.clearRetirement")(function* (
@@ -809,6 +850,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         markRetirement,
         beginRetiring,
         unmarkRetiring,
+        noteRetiring,
         clearRetirement,
         sessionOwnersOf,
       };
@@ -1024,7 +1066,7 @@ export const harnessLayoutsRepoMemory = (
         const next: ExecutorRetirementRecord =
           existing?.state === "retiring"
             ? existing
-            : { ...record, state: "marked", updatedAt: new Date() };
+            : { ...record, state: "marked", restart: [], updatedAt: new Date() };
         state.retirements.set(record.workspaceId, next);
         return next;
       }),
@@ -1048,6 +1090,19 @@ export const harnessLayoutsRepoMemory = (
           state: "marked",
           stops: found.stops,
           reason: found.reason,
+          checkedAt: found.checkedAt,
+          restart: [],
+          updatedAt: new Date(),
+        });
+      }),
+    noteRetiring: (workspaceId, note) =>
+      Effect.sync(() => {
+        const existing = state.retirements.get(workspaceId);
+        if (existing === undefined || existing.state !== "retiring") return;
+        state.retirements.set(workspaceId, {
+          ...existing,
+          reason: note.reason ?? existing.reason,
+          restart: note.restart ?? existing.restart,
           updatedAt: new Date(),
         });
       }),
