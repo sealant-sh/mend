@@ -69,6 +69,7 @@ import {
   type ExecutorCaptureEvidence,
   piProfileDigest,
   type AgentMemoryHomes,
+  type PreReleaseMigrationRecord,
   agentMemoryDigest,
 } from "@mend/db";
 import {
@@ -99,6 +100,7 @@ import {
 import {
   AgentRequest,
   AgentTurn,
+  type WorkspaceRetirement,
   Change,
   Checkpoint,
   HotWorkspace,
@@ -198,6 +200,8 @@ import {
   SessionChannelRegistry,
   SessionChannelRegistryLive,
   SessionNotLiveError,
+  SessionTurnRefusedError,
+  WorkspaceReplaceRefusedError,
   type SessionSocketApi,
   SessionSocketHost,
   WORKSPACE_MEND_TOML,
@@ -3187,6 +3191,8 @@ const withEngine = <A, E>(
       readonly afterRequest?: Effect.Effect<void>;
       /** How long a start waits for a person's dotfiles apply; 120 s unless a test says. */
       readonly dotfilesApplyBound?: Duration.Duration;
+      /** Wraps the layouts repo the engine reads (Delivery 19's off-path test). */
+      readonly wrapRepo?: (inner: HarnessLayoutsRepo["Service"]) => HarnessLayoutsRepo["Service"];
     };
     /** Every session row read by id (`SessionsRepo.byId`), in order. */
     readonly sessionReads?: Array<string>;
@@ -3331,16 +3337,21 @@ const withEngine = <A, E>(
     ),
     Layer.provide(
       Layer.mergeAll(
-        options.harnessLayout?.launchLayoutReads === undefined &&
-          options.harnessLayout?.anyRecordedQueries === undefined &&
-          options.harnessLayout?.afterRequest === undefined
-          ? harnessLayoutsRepoMemory(options.harnessLayout?.state)
-          : countingLaunchLayoutReads(
-              options.harnessLayout?.launchLayoutReads ?? [],
-              options.harnessLayout?.state,
-              options.harnessLayout?.anyRecordedQueries,
-              options.harnessLayout?.afterRequest,
-            ),
+        options.harnessLayout?.wrapRepo !== undefined
+          ? Layer.effect(
+              HarnessLayoutsRepo,
+              Effect.map(HarnessLayoutsRepo, options.harnessLayout.wrapRepo),
+            ).pipe(Layer.provide(harnessLayoutsRepoMemory(options.harnessLayout.state)))
+          : options.harnessLayout?.launchLayoutReads === undefined &&
+              options.harnessLayout?.anyRecordedQueries === undefined &&
+              options.harnessLayout?.afterRequest === undefined
+            ? harnessLayoutsRepoMemory(options.harnessLayout?.state)
+            : countingLaunchLayoutReads(
+                options.harnessLayout?.launchLayoutReads ?? [],
+                options.harnessLayout?.state,
+                options.harnessLayout?.anyRecordedQueries,
+                options.harnessLayout?.afterRequest,
+              ),
         options.harnessLayout?.platform ?? PersonLayoutPlatformNone,
         Layer.succeed(HarnessLayoutConfig, {
           flag: options.harnessLayout?.flag ?? "shared",
@@ -29720,4 +29731,583 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       }),
     ]);
   }, 30_000);
+});
+
+const isRetireCheck = (argv: ReadonlyArray<string>) => (argv[2] ?? "").includes("mend-retire");
+
+describe("pre-release executors and the migration of their shared home (docs/adr/0016, Delivery 19)", () => {
+  const IMAGE_KEY = "digest:sha256:img\u0000docker";
+
+  /** A protocol host whose agents say they are quiescent, or have a turn in flight. */
+  const quiescentHost = (busy: () => boolean) =>
+    Layer.succeed(ProtocolHost, {
+      attach: () => Effect.void,
+      rehydrate: () => Effect.void,
+      submitTurn: (sessionId, input, author) =>
+        Effect.succeed(
+          new AgentTurn({
+            id: AgentTurnId.make(`turn-${crypto.randomUUID()}`),
+            sessionId,
+            processId: SessionProcessId.make("process"),
+            ordinal: 0,
+            author,
+            input,
+            status: "queued",
+            providerTurnId: null,
+            error: null,
+            usage: null,
+            createdAt: now(),
+            startedAt: null,
+            endedAt: null,
+          }),
+        ),
+      interruptTurn: () => Effect.void,
+      respondRequest: () => Effect.die("not in test"),
+      detach: () => Effect.void,
+      has: () => Effect.succeed(true),
+      quiescence: () =>
+        Effect.sync(() => ({
+          quiescent: !busy(),
+          openTurn: busy(),
+          work: [],
+          settleMs: 0,
+        })),
+      awaitQuiescent: () => Effect.void,
+      endWork: () => Effect.void,
+      detachForHandOver: () => Effect.void,
+    });
+
+  /**
+   * A worktree whose launch ran `shared` with the flag on (its image not yet known, so prepare
+   * probed it and found it can run per person): its next launch would be `person`. The first
+   * prepare answers the probe, every later one makes the launcher.
+   */
+  const retiringWorld = async (
+    run: (
+      engine: SessionEngine["Service"],
+      world: World,
+      ids: { readonly session: Session; readonly order: ReadonlyArray<string> },
+    ) => Effect.Effect<void, unknown, Store | WorktreesRepo | Scope.Scope | SessionEngine>,
+    options: {
+      readonly busy?: () => boolean;
+      readonly saved?: () => boolean;
+      readonly retireCheck?: () => string;
+      readonly state?: HarnessLayoutsMemoryState;
+    } = {},
+  ) => {
+    const created: Array<CreateOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const order: Array<string> = [];
+    const flushKinds: Array<CaptureFlushKind> = [];
+    const memory = makeMemoryCaptureStore();
+    const state = options.state ?? makeHarnessLayoutsMemoryState();
+    let prepares = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: "auth",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", prompt: "fix it", permissionMode: "bypass" },
+            "user-fixture",
+          );
+          const launched = world.sessions.get(session.id);
+          if (launched === undefined) return yield* Effect.die("no session");
+          yield* run(engine, world, { session: launched, order });
+        }),
+      {
+        captured: memory,
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        protocolHostLayer: quiescentHost(options.busy ?? (() => false)),
+        drainPolicy: { stallSeconds: 1 },
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            flushKinds,
+            flush: (target) =>
+              Effect.sync(() => {
+                order.push(`flush:${target.id}`);
+                const saved = options.saved?.() ?? true;
+                return captureAnswer({
+                  ...headReport(memory),
+                  ...(saved ? {} : { pending: 3, pendingBytes: 1024 }),
+                });
+              }),
+            stopAnswer: () => {
+              order.push("stop");
+              return "stopped";
+            },
+            exec: (argv) => {
+              if (isRetireCheck(argv)) {
+                order.push("check");
+                return {
+                  exitCode: 0,
+                  stdout: options.retireCheck?.() ?? "mend-retire checked\n",
+                  stderr: "",
+                };
+              }
+              if (argv[0] === "sh" && isPrepare(argv)) {
+                prepares += 1;
+                return {
+                  exitCode: 0,
+                  stdout: prepares === 1 ? "mend-layout probed\n" : LAYOUT_READY,
+                  stderr: "",
+                };
+              }
+              return undefined;
+            },
+          },
+        ),
+        harnessLayout: { flag: "person", state, platform: personPlatform([], { person: null }) },
+      },
+    );
+    return { created, execCalls, order, flushKinds, state };
+  };
+
+  it(
+    "replaces a shared executor on its own only after its final flush is saved, and the worktree's next launch runs per person",
+    { timeout: 30_000 },
+    async () => {
+      let retirement: WorkspaceRetirement | null = null;
+      const run = await retiringWorld((engine, world, { session }) =>
+        Effect.gen(function* () {
+          // Prepare probed the image: it can run per person, so the next launch would.
+          expect(world.sessions.get(session.id)?.sealantWorkspaceId).not.toBeNull();
+          retirement = yield* engine.workspaceRetirement(session.id, "user-fixture");
+          expect(retirement).toBeNull();
+          yield* engine.sweepRetirements();
+        }),
+      );
+      expect(run.state.capabilities.get(IMAGE_KEY)?.person).toBe(true);
+      // What runs in it was checked, then its final flush saved, and only then it was stopped.
+      const check = run.order.indexOf("check");
+      const flush = run.order.findIndex((entry) => entry.startsWith("flush:"));
+      const stop = run.order.indexOf("stop");
+      expect(check).toBeGreaterThanOrEqual(0);
+      expect(flush).toBeGreaterThan(check);
+      expect(stop).toBeGreaterThan(flush);
+      expect(run.flushKinds).toContain("final");
+      // The relaunch ran per person; the worktree is person for good, and nothing retires.
+      expect(run.created).toHaveLength(2);
+      expect([...run.state.worktrees.values()].map((worktree) => worktree.layout)).toContain(
+        "person",
+      );
+      expect([...run.state.retirements.values()]).toEqual([]);
+    },
+  );
+
+  it(
+    "keeps the executor when its final flush is not saved, and says why: nothing is lost",
+    { timeout: 30_000 },
+    async () => {
+      let saved = false;
+      let reason: string | null = null;
+      const run = await retiringWorld(
+        (engine, _world, { session }) =>
+          Effect.gen(function* () {
+            yield* engine.sweepRetirements();
+            const workspaceId = session.sealantWorkspaceId ?? "";
+            reason =
+              (yield* engine.workspaceRetirement(session.id, "user-fixture"))?.reason ?? null;
+            expect(workspaceId).not.toBe("");
+          }),
+        { saved: () => saved },
+      );
+      saved = true;
+      expect(run.order.filter((entry) => entry === "stop")).toEqual([]);
+      expect(run.created).toHaveLength(1);
+      expect(reason).toBe("not replaced yet · the final flush was not saved (kept)");
+    },
+  );
+
+  it(
+    "never replaces on its own an executor with a hand-started Service, and refuses others' joins and turns until it is replaced",
+    { timeout: 30_000 },
+    async () => {
+      const run_state = makeHarnessLayoutsMemoryState();
+      let seen: WorkspaceRetirement | null = null;
+      let joinRefusal = "";
+      let turnRefusal = "";
+      let ownTurn: string | null = null;
+      const run = await retiringWorld(
+        (engine, world, { session }) =>
+          Effect.gen(function* () {
+            yield* engine.runService(session.id, ["sh", "-c", "sleep 600"], 5173, "web", "tcp");
+            // The executor started before this release: no layout recorded for its launch.
+            const launch = world.executorLaunches.get(session.id)?.launchId;
+            if (launch !== undefined) run_state.launches.delete(launch);
+            yield* engine.sweepRetirements();
+            seen = yield* engine.workspaceRetirement(session.id, "user-fixture");
+            // Maria joins the worktree: refused, with the line.
+            const joined = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: MARIA,
+            });
+            joinRefusal = yield* engine.launch(joined.id, ["claude"]).pipe(
+              Effect.flip,
+              Effect.map((error) => (error instanceof SealantPlatformError ? error.message : "")),
+            );
+            // Maria's turn in Alice's session is refused; Alice's own goes ahead.
+            turnRefusal = yield* engine.submitTurn(session.id, "hello", MARIA).pipe(
+              Effect.flip,
+              Effect.map((error) =>
+                error instanceof SessionTurnRefusedError ? error.message : "",
+              ),
+            );
+            ownTurn = (yield* engine.submitTurn(session.id, "go on", "user-fixture")).input;
+            expect(world.sessions.get(joined.id)?.status).toBe("failed");
+          }),
+        { state: run_state },
+      );
+      expect(seen).toMatchObject({
+        state: "marked",
+        preRelease: true,
+        launcher: "user-fixture",
+        stops: [{ kind: "service", label: "auth · web" }],
+        canReplace: true,
+      });
+      // Nothing checked in it, nothing flushed for good, nothing stopped.
+      expect(run.order.filter((entry) => entry === "check" || entry === "stop")).toEqual([]);
+      expect(run.flushKinds).not.toContain("final");
+      expect(joinRefusal).toBe(
+        "This worktree's workspace started before Mend 0.36 and shares one home; it takes another person once it is replaced.",
+      );
+      expect(turnRefusal).toBe(joinRefusal);
+      expect(ownTurn).toBe("go on");
+    },
+  );
+  it(
+    "says what runs in it that Mend did not start, and replaces it on its own only once that has gone",
+    { timeout: 30_000 },
+    async () => {
+      let answer =
+        "mend-retire process sleep 600\nmend-retire container pg (postgres:17)\nmend-retire checked\n";
+      let first: WorkspaceRetirement | null = null;
+      const run = await retiringWorld(
+        (engine, _world, { session }) =>
+          Effect.gen(function* () {
+            yield* engine.sweepRetirements();
+            first = yield* engine.workspaceRetirement(session.id, "user-fixture");
+            answer = "mend-retire checked\n";
+            yield* engine.sweepRetirements();
+          }),
+        { retireCheck: () => answer },
+      );
+      expect(first).toMatchObject({
+        state: "marked",
+        stops: [
+          { kind: "process", label: "sleep 600" },
+          { kind: "container", label: "pg (postgres:17)" },
+        ],
+        reason: "not replaced · 1 process Mend did not start, 1 running container",
+      });
+      expect(run.order.filter((entry) => entry === "check")).toHaveLength(2);
+      expect(run.order.at(-1)).toBe("stop");
+    },
+  );
+
+  it(
+    "lets only the change's owner replace it now, never while a turn is in flight",
+    { timeout: 30_000 },
+    async () => {
+      let busy = false;
+      const refusals: Array<string> = [];
+      const run = await retiringWorld(
+        (engine, _world, { session, order }) =>
+          Effect.gen(function* () {
+            yield* engine.runService(session.id, ["sh", "-c", "sleep 600"], 5173, "web", "tcp");
+            yield* engine.sweepRetirements();
+            const refused = (actor: string) =>
+              engine.replaceWorkspaceNow(session.id, actor).pipe(
+                Effect.flip,
+                Effect.map((error) =>
+                  error instanceof WorkspaceReplaceRefusedError ? error.message : "",
+                ),
+              );
+            refusals.push(yield* refused(MARIA));
+            busy = true;
+            refusals.push(yield* refused("user-fixture"));
+            busy = false;
+            yield* engine.replaceWorkspaceNow(session.id, "user-fixture");
+            yield* until(() => order.includes("stop"), "the replacement");
+          }),
+        { busy: () => busy },
+      );
+      expect(refusals).toEqual([
+        "Only the change's owner replaces this worktree's workspace.",
+        "An agent's turn or background work is in flight in this workspace. Replace it once that has finished.",
+      ]);
+      // The owner's replacement checks nothing it would list for them; it still waits for a
+      // saved final flush.
+      expect(run.order.includes("check")).toBe(false);
+      expect(run.flushKinds).toContain("final");
+    },
+  );
+});
+
+describe("the migration of an old shared home's memory (docs/adr/0016, Delivery 19)", () => {
+  const MEMORY = `${PROJECT_DIR}/memory/MEMORY.md`;
+  const NOTES = ".codex/memories/notes.md";
+
+  /**
+   * A worktree whose last executor ran `shared`: its home's memory written in two captures, the
+   * migration run once between them (provisional) and twice after the worktree turned person.
+   */
+  const migrateAcrossTheTurn = async (options: { readonly maria: boolean }) => {
+    const created: Array<CreateOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const memory = makeMemoryCaptureStore();
+    const state = makeHarnessLayoutsMemoryState();
+    const homes = new Map<string, AgentMemoryHomes>();
+    const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
+    const records: Array<PreReleaseMigrationRecord | null> = [];
+    const chainBefore: Array<number> = [];
+    const chainAfter: Array<number> = [];
+    let execsBefore = 0;
+    let execsAfter = 0;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "before",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          if (options.maria) {
+            // Maria joined the shared home before 0.36: whose lines are whose cannot be told.
+            const joined = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: MARIA,
+            });
+            yield* engine.launch(joined.id, ["claude"]);
+          }
+          const request = created[0];
+          if (request === undefined) return yield* Effect.die("the launch made no executor");
+          const executorRoot = path.join(tmp, "shared-executor");
+          const home = configuredHarnessHomePath(request, executorRoot);
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          writeUnder(home, MEMORY, "- first\n");
+          yield* shipCapturedHarnessHome(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            request,
+            executorRoot,
+          );
+          // No record of whose memory the home holds: the sessions decide.
+          homes.clear();
+          records.push(yield* engine.migratePreReleaseMemory(session.worktreeId));
+          // The shared executor goes on writing after the provisional run.
+          writeUnder(home, MEMORY, "- first\n- second\n");
+          writeUnder(home, NOTES, "codex learned\n");
+          yield* shipCapturedHarnessHome(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            request,
+            executorRoot,
+          );
+          homes.clear();
+          // Its final flush was the last shared-layout capture: the worktree runs per person now.
+          state.worktrees.set(session.worktreeId, { layout: "person", requested: null });
+          const chain = memory.chains.get(session.worktreeId);
+          chainBefore.push(chain?.headN ?? -1);
+          execsBefore = execCalls.length;
+          records.push(yield* engine.migratePreReleaseMemory(session.worktreeId));
+          records.push(yield* engine.migratePreReleaseMemory(session.worktreeId));
+          execsAfter = execCalls
+            .slice(execsBefore)
+            .filter((argv) => argv.join(" ").includes("memor")).length;
+          chainAfter.push(memory.chains.get(session.worktreeId)?.headN ?? -1);
+        }),
+      {
+        captured: memory,
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        agentMemoryLayer: agentMemoryLayerOf(
+          {
+            readBack: (input) =>
+              Effect.sync(() => {
+                if (input.sessionId.startsWith("pre-release:")) readBacks.push(input);
+                return {
+                  saved: input.session.map((file) => file.path),
+                  merged: [],
+                  deleted: [],
+                  skipped: [],
+                };
+              }),
+          },
+          homes,
+        ),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          { flush: headFlush(memory) },
+        ),
+        harnessLayout: { flag: "shared", state },
+      },
+    );
+    return { readBacks, records, chainBefore, chainAfter, execsBefore, execsAfter };
+  };
+
+  it(
+    "credits what a shared executor wrote after a provisional run once the worktree turns person, and a re-run credits nothing twice",
+    { timeout: 30_000 },
+    async () => {
+      const run = await migrateAcrossTheTurn({ maria: false });
+      const [provisional, final, again] = run.records;
+      expect(provisional).toMatchObject({
+        final: false,
+        captureN: 1,
+        creditedTo: "user-fixture",
+        decidedBy: "only-person",
+        notCredited: [],
+      });
+      expect(final).toMatchObject({ final: true, captureN: 2, creditedTo: "user-fixture" });
+      expect(again).toEqual(final);
+      // The provisional run credited the first line; the final run only what came after it,
+      // read back against what the first run credited.
+      expect(run.readBacks.map((input) => input.userId)).toEqual(["user-fixture", "user-fixture"]);
+      expect(run.readBacks[0]?.session.map((file) => [file.path, file.contents])).toEqual([
+        [MEMORY, "- first\n"],
+      ]);
+      expect(
+        run.readBacks[1]?.session
+          .map((file) => [file.path, file.contents])
+          .toSorted(([a], [b]) => String(a).localeCompare(String(b))),
+      ).toEqual(
+        [
+          [NOTES, "codex learned\n"],
+          [MEMORY, "- first\n- second\n"],
+        ].toSorted(([a], [b]) => String(a).localeCompare(String(b))),
+      );
+      expect(Object.keys(run.readBacks[1]?.delivered ?? {})).toEqual([MEMORY]);
+      // It reads a capture and records: no exec touches memory, nothing added to the chain.
+      expect(run.execsAfter).toBe(0);
+      expect(run.chainAfter).toEqual(run.chainBefore);
+    },
+  );
+
+  it(
+    "credits nobody memory two people's sessions shared, and lists it on the worktree as not credited",
+    { timeout: 30_000 },
+    async () => {
+      const run = await migrateAcrossTheTurn({ maria: true });
+      expect(run.readBacks).toEqual([]);
+      expect(run.records[1]).toMatchObject({
+        final: true,
+        creditedTo: null,
+        decidedBy: "nobody",
+        notCredited: [NOTES, MEMORY].toSorted(),
+      });
+    },
+  );
+
+  it(
+    "runs off the launch path: a person launch never waits for the migration it starts",
+    { timeout: 30_000 },
+    async () => {
+      const release = Effect.runSync(Deferred.make<void>());
+      let entered = false;
+      let finished = false;
+      let launched = false;
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: "fresh",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["claude"]);
+            launched = true;
+            // The launch ran per person and returned; the migration it started is still waiting.
+            yield* until(() => entered, "the migration's start");
+            expect(finished).toBe(false);
+            yield* Deferred.succeed(release, undefined);
+            yield* until(() => finished, "the migration's end");
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            [],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            [],
+            undefined,
+            { flush: headFlush(memory), exec: answerLayout(LAYOUT_READY) },
+          ),
+          harnessLayout: {
+            flag: "person",
+            platform: personPlatform([], { person: true }),
+            wrapRepo: (inner) => ({
+              ...inner,
+              preReleaseMigrationOf: (worktreeId) =>
+                Effect.sync(() => {
+                  entered = true;
+                }).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.andThen(inner.preReleaseMigrationOf(worktreeId)),
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      finished = true;
+                    }),
+                  ),
+                ),
+            }),
+          },
+        },
+      );
+      expect(launched).toBe(true);
+    },
+  );
 });

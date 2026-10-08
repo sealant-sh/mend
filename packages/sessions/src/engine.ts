@@ -48,6 +48,8 @@ import {
   UserGitAuthorRepo,
   SessionChannelTokensRepo,
   HarnessLayoutsRepo,
+  type PreReleaseMigrationRecord,
+  type RetirementStopRecord,
 } from "@mend/db";
 import {
   type AgentRequestId,
@@ -168,6 +170,10 @@ import {
   type ConversationWaitWork,
   conversationWaitLine,
   OPENCODE_NOT_STEERABLE,
+  changeOwnerOf,
+  PreReleaseMemory,
+  WorkspaceRetirement,
+  WorkspaceRetirementStop,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -421,6 +427,7 @@ import {
   personSavedPathOf,
 } from "./person-deliveries.ts";
 import {
+  CAPTURED_HARNESS,
   type ConversationPlace,
   conversationFilesOf,
   conversationPlaceOf,
@@ -447,6 +454,23 @@ import {
   type PickupChannel,
   type PickupFile,
 } from "./pickup-tickets.ts";
+import {
+  OPENCODE_PRE_RELEASE_REFUSAL,
+  REPLACE_NOT_MARKED,
+  REPLACE_NOT_OWNER,
+  REPLACE_TURN_RUNNING,
+  RETIRING_REFUSAL,
+  memoryCreditorOf,
+  memoryToCredit,
+  migrationSessionIdOf,
+  notReplacedWords,
+  opencodeFromSharedHomeOf,
+  parseRetireCheck,
+  refusesManualReplacement,
+  retireCheckScript,
+  retirementRefusalOf,
+  retirementStopsOf,
+} from "./pre-release.ts";
 import {
   type ConversationWait as HostedConversationWait,
   type HandOverCheck,
@@ -1602,6 +1626,22 @@ export class HarnessLayoutNotAppliedError extends Schema.TaggedErrorClass<Harnes
  * person's turn to an opencode session, or one from a sender whose own login for the harness is
  * not connected or needs reconnecting. Mend never runs it on the owner's login instead.
  */
+/**
+ * "Replace this workspace now" refused (docs/adr/0016, decision 14): not the change's owner, no
+ * replacement waiting, or work in flight that is never stopped. In words a client shows as they
+ * are.
+ */
+export class WorkspaceReplaceRefusedError extends Schema.TaggedErrorClass<WorkspaceReplaceRefusedError>()(
+  "WorkspaceReplaceRefusedError",
+  { sessionId: Schema.String, message: Schema.String },
+) {}
+
+/** The migration of an old shared home could not read what it needed; nothing was recorded. */
+export class PreReleaseMigrationError extends Schema.TaggedErrorClass<PreReleaseMigrationError>()(
+  "PreReleaseMigrationError",
+  { worktreeId: Schema.String, message: Schema.String },
+) {}
+
 export class SessionTurnRefusedError extends Schema.TaggedErrorClass<SessionTurnRefusedError>()(
   "SessionTurnRefusedError",
   { sessionId: Schema.String, message: Schema.String },
@@ -2254,6 +2294,40 @@ export class SessionEngine extends Context.Service<
       },
       SessionNotFoundError
     >;
+    /**
+     * The migration of a worktree's old shared home (docs/adr/0016, decision 14): its memory
+     * credited server-side from the worktree's last `shared`-layout capture once the worktree runs
+     * per person (final), else from its head (provisional, run again later). Reads a capture and
+     * records; moves nothing and execs nothing. Runs off every launch path; exposed for
+     * deterministic runs. Null outside capture mode, or while another run of it is under way.
+     */
+    readonly migratePreReleaseMemory: (
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<PreReleaseMigrationRecord | null, PreReleaseMigrationError>;
+    /**
+     * One pass over every live `shared` executor (decision 14): marked to retire when its
+     * worktree's next launch would be `person`, and replaced on its own once nothing would stop
+     * that anyone would miss and its final flush is saved. With `MEND_HARNESS_LAYOUT` off it does
+     * nothing. Runs on its own heartbeat; exposed for deterministic ticks.
+     */
+    readonly sweepRetirements: () => Effect.Effect<void>;
+    /** What the migration of the worktree's old shared home recorded; null when it never ran. */
+    readonly preReleaseMemory: (worktreeId: WorktreeId) => Effect.Effect<PreReleaseMemory | null>;
+    /** The session's executor's retirement, as `viewer` may act on it; null when none. */
+    readonly workspaceRetirement: (
+      sessionId: SessionId,
+      viewer: string,
+    ) => Effect.Effect<WorkspaceRetirement | null, SessionNotFoundError>;
+    /**
+     * "Replace this workspace now" (decision 14): the change's owner ends the executor's terminal
+     * sessions (resumable), shells, Services, containers and processes Mend did not start, after a
+     * saved final flush, and the worktree's next launch runs per person. Refused while an agent's
+     * turn or background work is in flight. Returns once the replacement is under way.
+     */
+    readonly replaceWorkspaceNow: (
+      sessionId: SessionId,
+      actor: string,
+    ) => Effect.Effect<void, SessionNotFoundError | WorkspaceReplaceRefusedError>;
   }
 >()("@mend/sessions/SessionEngine") {}
 
@@ -10091,6 +10165,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
         const outcome = prepared ?? (yield* settleLayout(yield* installHelper));
+        // A person executor: the worktree runs per person from now on, so the migration of its
+        // old shared home reads its last shared-layout capture, off the launch path (decision
+        // 14). A worktree whose migration is final reads one row and stops there.
+        if (outcome.layout === "person" && input.layout !== undefined) {
+          yield* forkMigration(input.layout.worktreeId);
+        }
         return {
           setupSkippedFrom,
           layout: outcome.layout,
@@ -12351,6 +12431,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       }) {
         const { session, workspace, home } = input;
         const personal = input.conversation !== true;
+        // An opencode conversation from a prerelease's shared home is never opened per person
+        // (decision 14): its database was the shared home's.
+        if (
+          input.agent &&
+          input.harness === "opencode" &&
+          input.resumeId !== undefined &&
+          input.resumeId !== null &&
+          (yield* opencodeFromSharedHome(session, workspace.id, input.resumeId))
+        ) {
+          return yield* new SealantPlatformError({
+            code: "opencode_pre_release",
+            status: 409,
+            message: OPENCODE_PRE_RELEASE_REFUSAL,
+            cause: null,
+          });
+        }
         const project = yield* projects.byId(session.projectId).pipe(
           Effect.mapError(
             (error) =>
@@ -13384,6 +13480,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const manifest = yield* capture.blobs
           .get(head.manifestKey)
           .pipe(Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)));
+        return yield* agentMemoryFromManifest(manifest, place);
+      });
+
+      /**
+       * The memory in one capture, under `place`, and what was delivered there: what a read-back
+       * reads from the head, and what the migration of an old shared home reads from the
+       * worktree's last `shared`-layout capture (docs/adr/0016, decision 14).
+       */
+      const agentMemoryFromManifest = Effect.fn("SessionEngine.agentMemoryFromManifest")(function* (
+        manifest: Parameters<typeof listCaptureFiles>[0],
+        place: ConversationPlace,
+      ) {
+        if (capture === null) return null;
         const read = (relative: string) =>
           readCaptureFileBytes(manifest, "workspace", relative).pipe(
             Effect.provideService(BlobStore, capture.blobs),
@@ -13684,6 +13793,563 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const read = yield* inOneReadPass(agentMemoryFromCapture(session));
         if (read === null) return;
         yield* creditAgentMemory(session.ownerUserId, session.id, project.id, read);
+      });
+
+      // ─── Pre-release executors and the migration (docs/adr/0016, decision 14) ──────────────
+
+      /** Worktrees whose migration runs in this process now: one run at a time per worktree. */
+      const migrating = new Set<WorktreeId>();
+
+      /**
+       * The capture a migration of the worktree's old shared home reads (decision 14): once the
+       * worktree runs per person, its last `shared`-layout capture (the final flush of its last
+       * shared executor: the last one with no person's saved directory, found by one binary
+       * search, since a worktree is shared up to its first person executor and person ever
+       * after); before, its head. From there back, the first that holds any file of a shared
+       * home, so a capture that left the section out is skipped. Null with nothing past
+       * capture 0.
+       */
+      const sharedHomeCaptureOf = Effect.fn("SessionEngine.sharedHomeCaptureOf")(function* (
+        worktreeId: WorktreeId,
+        final: boolean,
+      ) {
+        if (capture === null) return null;
+        const blobs = capture.blobs;
+        const chain = [...(yield* capture.repo.listChain(worktreeId))]
+          .filter((row) => row.n > 0)
+          .toSorted((left, right) => left.n - right.n);
+        if (chain.length === 0) return null;
+        const manifestOf = (row: (typeof chain)[number]) =>
+          blobs
+            .get(row.manifestKey)
+            .pipe(Effect.flatMap((bytes) => decodeManifest(row.manifestKey, bytes)));
+        const listed = (row: (typeof chain)[number], under: string) =>
+          manifestOf(row).pipe(
+            Effect.flatMap((manifest) =>
+              listCaptureFiles(manifest, "workspace", under).pipe(
+                Effect.provideService(BlobStore, blobs),
+              ),
+            ),
+          );
+        const holdsPeople = (row: (typeof chain)[number]) =>
+          listed(row, `${CAPTURED_HARNESS}/${PEOPLE_DIR}`).pipe(
+            Effect.map((files) => files.length > 0),
+            // Unreadable reads as person: the search only moves earlier past it.
+            Effect.orElseSucceed(() => true),
+          );
+        const holdsHome = (row: (typeof chain)[number]) =>
+          listed(row, CAPTURED_HARNESS).pipe(
+            Effect.map((files) =>
+              files.some(
+                (file) =>
+                  file.entry.kind === "file" &&
+                  !file.path.startsWith(`${CAPTURED_HARNESS}/${PEOPLE_DIR}/`),
+              ),
+            ),
+            Effect.orElseSucceed(() => false),
+          );
+        let edge = chain.length - 1;
+        if (final) {
+          let low = 0;
+          let high = chain.length - 1;
+          edge = -1;
+          while (low <= high) {
+            const middle = Math.floor((low + high) / 2);
+            const row = chain[middle];
+            if (row === undefined) break;
+            if (yield* holdsPeople(row)) {
+              high = middle - 1;
+            } else {
+              edge = middle;
+              low = middle + 1;
+            }
+          }
+        }
+        for (let index = edge; index >= 0; index--) {
+          const row = chain[index];
+          if (row === undefined) break;
+          if (final && (yield* holdsPeople(row))) continue;
+          if (!(yield* holdsHome(row))) continue;
+          const manifest = yield* manifestOf(row).pipe(Effect.option);
+          if (Option.isNone(manifest)) continue;
+          return { row, manifest: manifest.value };
+        }
+        // Nothing of a shared home anywhere: the edge (or head) is what was read.
+        const row = chain[Math.max(edge, 0)];
+        return row === undefined ? null : { row, manifest: null };
+      });
+
+      const migratePreReleaseMemory = Effect.fn("SessionEngine.migratePreReleaseMemory")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        if (capture === null || migrating.has(worktreeId)) return null;
+        migrating.add(worktreeId);
+        return yield* Effect.gen(function* () {
+          const earlier = yield* harnessLayouts.preReleaseMigrationOf(worktreeId);
+          if (earlier?.final === true) return earlier;
+          const final = (yield* harnessLayouts.worktreeLayout(worktreeId)).layout === "person";
+          const source = yield* sharedHomeCaptureOf(worktreeId, final);
+          if (source === null) return earlier;
+          // The same capture as last time, still provisional: nothing new to read.
+          if (!final && earlier !== null && earlier.captureId === source.row.id) return earlier;
+          const read =
+            source.manifest === null
+              ? null
+              : yield* inOneReadPass(agentMemoryFromManifest(source.manifest, SHARED_PLACE));
+          const files = (read?.files ?? []).map((file) => ({
+            ...file,
+            digest: agentMemoryDigest(file),
+          }));
+          const worktree = yield* worktreesRepo.byId(worktreeId);
+          const project = yield* projects.byId(worktree.projectId);
+          // Whose memory the home holds: the saved record, else the only person who had
+          // sessions there, else nobody (decision 14). Members only.
+          const recorded = yield* recordedHomeOf(worktreeId);
+          const homeRecord =
+            recorded === null || recorded.settled === null ? undefined : recorded.settled.userId;
+          const owners = (yield* sessions.listForWorktree(worktreeId)).map(
+            (member) => member.ownerUserId,
+          );
+          const candidates = new Set(
+            [homeRecord, ...owners].filter((id): id is string => typeof id === "string"),
+          );
+          const members = new Set<string>();
+          for (const candidate of candidates) {
+            const membership = yield* organizations.membershipOf(candidate);
+            if (membership?.organization.id === project.organizationId) members.add(candidate);
+          }
+          const creditor = memoryCreditorOf({
+            homeRecord,
+            owners,
+            isMember: (userId) => members.has(userId),
+          });
+          const planned = memoryToCredit({
+            files,
+            credited: earlier?.credited ?? {},
+            homeDelivered: read?.delivered ?? {},
+          });
+          if (creditor.creditedTo !== null && planned.fresh.length > 0) {
+            const report = yield* agentMemory.readBack({
+              userId: creditor.creditedTo,
+              projectId: project.id,
+              sessionId: migrationSessionIdOf(worktreeId),
+              delivered: planned.base,
+              session: planned.fresh,
+              merge: mergeTextUnion,
+              holdsDatabase: codexDatabaseHolds,
+            });
+            yield* Effect.logInfo(
+              "session engine: memory from before per-person homes · credited",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                captureN: source.row.n,
+                final,
+                decidedBy: creditor.decidedBy,
+                saved: report.saved.length,
+                merged: report.merged.length,
+              }),
+            );
+          }
+          const freshPaths = new Set(planned.fresh.map((file) => file.path));
+          const record: PreReleaseMigrationRecord = {
+            worktreeId,
+            captureId: source.row.id,
+            captureN: source.row.n,
+            final,
+            creditedTo: creditor.creditedTo ?? earlier?.creditedTo ?? null,
+            decidedBy: files.length === 0 ? (earlier?.decidedBy ?? "nothing") : creditor.decidedBy,
+            credited: creditor.creditedTo === null ? (earlier?.credited ?? {}) : planned.credited,
+            notCredited:
+              creditor.creditedTo === null
+                ? [...new Set([...(earlier?.notCredited ?? []), ...freshPaths])].toSorted()
+                : (earlier?.notCredited ?? []).filter((entry) => !freshPaths.has(entry)),
+          };
+          yield* harnessLayouts.recordPreReleaseMigration(record);
+          if (creditor.creditedTo === null && freshPaths.size > 0) {
+            yield* Effect.logInfo(
+              "session engine: memory from before per-person homes · not credited · two or more people's sessions shared the home",
+            ).pipe(Effect.annotateLogs({ worktreeId, paths: [...freshPaths].join(", ") }));
+          }
+          return record;
+        }).pipe(
+          Effect.mapError(
+            (error) => new PreReleaseMigrationError({ worktreeId, message: error.message }),
+          ),
+          Effect.ensuring(Effect.sync(() => migrating.delete(worktreeId))),
+        );
+      });
+
+      /** The migration, off every launch path: forked, and a failure only said. */
+      const forkMigration = (worktreeId: WorktreeId): Effect.Effect<void> =>
+        migratePreReleaseMemory(worktreeId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: the migration of a shared home did not run").pipe(
+              Effect.annotateLogs({ worktreeId, cause: Cause.pretty(cause) }),
+            ),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
+
+      /**
+       * A join, a turn or any other start in an executor marked to retire (decision 14): while
+       * `retiring`, refused for everyone; while `marked`, for anyone but its launcher. With the
+       * flag off, nothing is read.
+       */
+      const retirementRefusalFor = (
+        workspaceId: SealantWorkspaceId | null,
+        actor: string | null,
+      ): Effect.Effect<string | null> =>
+        capture === null || harnessLayoutConfig.flag !== "person" || workspaceId === null
+          ? Effect.succeed(null)
+          : harnessLayouts.retirementOf(workspaceId).pipe(
+              Effect.map((retirement) => {
+                if (retirement === null) return null;
+                if (retirement.state === "retiring") return RETIRING_REFUSAL;
+                return actor !== null && actor !== retirement.launcher
+                  ? retirementRefusalOf(retirement.preRelease)
+                  : null;
+              }),
+            );
+
+      /** What would stop if the executor were replaced now, from what Mend recorded of it. */
+      const retirementStopsFor = Effect.fn("SessionEngine.retirementStopsFor")(function* (
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const live = yield* processes.listLiveForWorkspace(workspaceId);
+        const serviceRows = new Map<
+          string,
+          { readonly name: string; readonly declarationSource: string }
+        >();
+        for (const serviceId of new Set(live.flatMap((row) => row.serviceId ?? []))) {
+          const service = yield* services.byId(serviceId);
+          if (service !== null) serviceRows.set(serviceId, service);
+        }
+        const labels = new Map<string, string>();
+        for (const sessionId of new Set(live.map((row) => row.sessionId))) {
+          const member = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          labels.set(sessionId, member?.label ?? member?.worktree ?? sessionId);
+        }
+        const quiet = new Map<string, boolean | null>();
+        for (const row of live) {
+          if (row.kind !== "agent-protocol") continue;
+          const quiescence = yield* protocolHost.quiescence(row.id);
+          quiet.set(row.id, quiescence?.quiescent ?? null);
+        }
+        return {
+          live,
+          stops: retirementStopsOf({
+            processes: live,
+            services: serviceRows,
+            sessionLabel: (sessionId) => labels.get(sessionId) ?? sessionId,
+            quiescent: (processId) => quiet.get(processId) ?? null,
+          }),
+        };
+      });
+
+      /**
+       * Replace a retiring executor (decision 14): marked `retiring` first (every new start
+       * refused, the launcher's included), then what Mend recorded is checked again, then (on its
+       * own, not for the owner's "Replace this workspace now") what runs in it that Mend did not
+       * start and the sidecar's containers. Then the final flush, and the executor goes only once
+       * it is saved (`drainThenTerminate`); the worktree's next launch runs per person. Anything
+       * that holds it back unmarks it, with what was found.
+       */
+      const replaceRetiring = Effect.fn("SessionEngine.replaceRetiring")(function* (
+        holder: Session,
+        workspaceId: SealantWorkspaceId,
+        manual: boolean,
+      ) {
+        if (capture === null) return;
+        if (!(yield* harnessLayouts.beginRetiring(workspaceId))) return;
+        const unmark = (stops: ReadonlyArray<RetirementStopRecord>, reason: string) =>
+          harnessLayouts
+            .unmarkRetiring(workspaceId, { stops, reason })
+            .pipe(
+              Effect.andThen(
+                Effect.logInfo(`session engine: pre-release executor · ${reason}`).pipe(
+                  Effect.annotateLogs({ sessionId: holder.id, workspaceId }),
+                ),
+              ),
+            );
+        const { live, stops } = yield* retirementStopsFor(workspaceId);
+        if (manual ? refusesManualReplacement(stops) : stops.length > 0) {
+          return yield* unmark(stops, notReplacedWords(stops));
+        }
+        if (!manual) {
+          const workspace = yield* sealant.getWorkspace(workspaceId);
+          const checked = yield* sealant.exec(workspace, ["sh", "-c", retireCheckScript()]).pipe(
+            Effect.map((result) => parseRetireCheck(result.stdout)),
+            Effect.orElseSucceed(() => ({ checked: false, stops: [] })),
+          );
+          if (!checked.checked) {
+            return yield* unmark(stops, "not replaced · what runs in it could not be checked");
+          }
+          if (checked.stops.length > 0) {
+            return yield* unmark(checked.stops, notReplacedWords(checked.stops));
+          }
+        }
+        // `mend.toml` Services restart once the session is live again.
+        const restart: Array<{ readonly sessionId: SessionId; readonly name: string }> = [];
+        for (const row of live) {
+          if (row.kind !== "service" || row.serviceId === null) continue;
+          const service = yield* services.byId(row.serviceId);
+          if (
+            service !== null &&
+            (service.declarationSource === "recipe-file" ||
+              service.declarationSource === "recipe-project")
+          ) {
+            restart.push({ sessionId: row.sessionId, name: service.name });
+          }
+        }
+        const relaunch = live.some(
+          (row) => row.sessionId === holder.id && row.kind === "agent-protocol",
+        );
+        if (replacing.has(holder.id)) return;
+        replacing.add(holder.id);
+        const outcome = yield* drainThenTerminate(holder.id, workspaceId, "replacement", true).pipe(
+          Effect.ensuring(Effect.sync(() => replacing.delete(holder.id))),
+        );
+        if (outcome !== "terminated" && outcome !== "stop-requested" && outcome !== "gone") {
+          // Kept, never lost: the drain's own intent asks again, and nothing new starts in it.
+          return yield* unmark([], `not replaced yet · the final flush was not saved (${outcome})`);
+        }
+        yield* Effect.logInfo(
+          "session engine: pre-release executor · saved · replaced · the next launch runs each person as themselves",
+        ).pipe(Effect.annotateLogs({ sessionId: holder.id, workspaceId, manual }));
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline) {
+          const lease = yield* capture.repo.leaseOf(holder.worktreeId);
+          if (lease === null || !lease.live) break;
+          yield* Effect.sleep(Duration.seconds(2));
+        }
+        yield* harnessLayouts.clearRetirement(workspaceId);
+        // The final run of the migration, over the capture that flush saved, once the worktree's
+        // next launch has made it person.
+        if (relaunch) {
+          yield* resumeSession(holder.id, null).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: the replacement's relaunch failed").pipe(
+                Effect.annotateLogs({ sessionId: holder.id, error: String(error) }),
+              ),
+            ),
+          );
+        }
+        for (const service of restart) {
+          yield* runServiceRecipe(service.sessionId, service.name).pipe(
+            Effect.catch((error) =>
+              Effect.logInfo(
+                "session engine: a mend.toml Service was not restarted after the replacement",
+              ).pipe(
+                Effect.annotateLogs({
+                  sessionId: service.sessionId,
+                  service: service.name,
+                  why: error.message,
+                }),
+              ),
+            ),
+          );
+        }
+      });
+
+      /** Executors the sweep looked at, and when: a `shared` one is looked at once a minute. */
+      const retirementLooks = new Map<string, number>();
+      const RETIREMENT_LOOK_MS = 60_000;
+
+      /**
+       * One live `shared` executor (decision 14): when its worktree's next launch would be
+       * `person`, it is marked to retire, the provisional migration of its home runs the first
+       * time, and it is replaced on its own once nothing would stop that anyone would miss.
+       */
+      const considerRetirement = Effect.fn("SessionEngine.considerRetirement")(function* (
+        holder: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const owner = holder.ownerUserId;
+        if (owner === null) return;
+        const launchId = yield* executorLaunchIdOf(holder, workspaceId);
+        const launch = launchId === null ? null : yield* harnessLayouts.launchLayout(launchId);
+        if (launch?.layout === "person") return;
+        const project = yield* projects.byId(holder.projectId);
+        const image = Effect.suspend(() =>
+          project.workspaceImage === null
+            ? settingsRepo
+                .forOrganization(project.organizationId)
+                .pipe(Effect.map((settings) => settings.workspaceImage))
+            : Effect.succeed(project.workspaceImage),
+        );
+        const next = yield* layoutSteps
+          .nextLaunchPerson({
+            worktreeId: holder.worktreeId,
+            ownerUserId: owner,
+            image,
+            harness: platformShape(holder.harness).harness,
+            launcherHasDotfiles: image.pipe(
+              Effect.flatMap((resolved) => dotfilesNotPerPerson(project, resolved, owner)),
+              Effect.map((found) => found.notApplied.length > 0),
+            ),
+          })
+          .pipe(Effect.orElseSucceed(() => false));
+        const existing = yield* harnessLayouts.retirementOf(workspaceId);
+        if (!next) {
+          if (existing !== null && existing.state === "marked") {
+            yield* harnessLayouts.clearRetirement(workspaceId);
+          }
+          return;
+        }
+        const { stops } = yield* retirementStopsFor(workspaceId);
+        const marked = yield* harnessLayouts.markRetirement({
+          workspaceId,
+          worktreeId: holder.worktreeId,
+          sessionId: holder.id,
+          launcher: owner,
+          preRelease: launch === null,
+          stops,
+          reason: existing?.reason ?? null,
+        });
+        if (existing === null) {
+          yield* Effect.logInfo(
+            "session engine: a shared executor · marked to retire · its worktree's next launch runs each person as themselves",
+          ).pipe(Effect.annotateLogs({ sessionId: holder.id, workspaceId }));
+          yield* forkMigration(holder.worktreeId);
+        }
+        if (marked.state !== "marked" || stops.length > 0) return;
+        yield* replaceRetiring(holder, workspaceId, false);
+      });
+
+      const sweepRetirements = Effect.fn("SessionEngine.sweepRetirements")(function* (
+        /** The heartbeat looks at each executor once a minute; an asked-for pass looks at all. */
+        throttled = false,
+      ) {
+        if (capture === null || harnessLayoutConfig.flag !== "person") return;
+        const live = new Set<string>();
+        const now = Date.now();
+        for (const session of yield* sessions.listUnsettled()) {
+          const workspaceId = session.sealantWorkspaceId;
+          if (workspaceId === null || !ACTIVE_STATUSES.has(session.status)) continue;
+          const lease = yield* capture.repo.leaseOf(session.worktreeId);
+          if (lease === null || !lease.live || lease.executorId !== session.id) continue;
+          live.add(workspaceId);
+          if (drains.has(workspaceId) || session.captureDrain !== null) continue;
+          if (
+            throttled &&
+            now - (retirementLooks.get(workspaceId) ?? Number.NEGATIVE_INFINITY) <
+              RETIREMENT_LOOK_MS
+          ) {
+            continue;
+          }
+          retirementLooks.set(workspaceId, now);
+          yield* considerRetirement(session, workspaceId).pipe(
+            asSealantUser(session.ownerUserId),
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "session engine: a shared executor's retirement was not looked at",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id, cause: Cause.pretty(cause) })),
+            ),
+          );
+        }
+        // An executor that ended, by its replacement or otherwise, retires no more.
+        for (const retirement of yield* harnessLayouts.listRetirements()) {
+          if (live.has(retirement.workspaceId) || retirement.state === "retiring") continue;
+          yield* harnessLayouts.clearRetirement(retirement.workspaceId);
+          retirementLooks.delete(retirement.workspaceId);
+        }
+      });
+
+      const preReleaseMemory = Effect.fn("SessionEngine.preReleaseMemory")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        // With the flag off and nothing recorded, there is no migration and nothing is read.
+        if (capture === null || !layoutSteps.personPossible()) return null;
+        const record = yield* harnessLayouts.preReleaseMigrationOf(worktreeId);
+        return record === null
+          ? null
+          : new PreReleaseMemory({
+              captureN: record.captureN,
+              provisional: !record.final,
+              creditedTo: record.creditedTo,
+              decidedBy: record.decidedBy,
+              notCredited: record.notCredited,
+            });
+      });
+
+      const workspaceRetirement = Effect.fn("SessionEngine.workspaceRetirement")(function* (
+        sessionId: SessionId,
+        viewer: string,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (capture === null || harnessLayoutConfig.flag !== "person") return null;
+        if (session.sealantWorkspaceId === null) return null;
+        const retirement = yield* harnessLayouts.retirementOf(session.sealantWorkspaceId);
+        if (retirement === null) return null;
+        const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+        return new WorkspaceRetirement({
+          state: retirement.state,
+          preRelease: retirement.preRelease,
+          launcher: retirement.launcher,
+          stops: retirement.stops.map((stop) => new WorkspaceRetirementStop(stop)),
+          reason: retirement.reason,
+          canReplace:
+            viewer === owner &&
+            retirement.state === "marked" &&
+            !refusesManualReplacement(retirement.stops),
+        });
+      });
+
+      const replaceWorkspaceNow = Effect.fn("SessionEngine.replaceWorkspaceNow")(function* (
+        sessionId: SessionId,
+        actor: string,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const refuse = (message: string) =>
+          new WorkspaceReplaceRefusedError({ sessionId, message });
+        const workspaceId = session.sealantWorkspaceId;
+        if (capture === null || harnessLayoutConfig.flag !== "person" || workspaceId === null) {
+          return yield* refuse(REPLACE_NOT_MARKED);
+        }
+        const retirement = yield* harnessLayouts.retirementOf(workspaceId);
+        if (retirement === null) return yield* refuse(REPLACE_NOT_MARKED);
+        if (actor !== changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId))) {
+          return yield* refuse(REPLACE_NOT_OWNER);
+        }
+        // Already under way: asked twice, it goes ahead once.
+        if (retirement.state === "retiring") return;
+        const { stops } = yield* retirementStopsFor(SealantWorkspaceId.make(workspaceId));
+        if (refusesManualReplacement(stops)) return yield* refuse(REPLACE_TURN_RUNNING);
+        const holder = yield* sessions.byId(SessionId.make(retirement.sessionId));
+        yield* Effect.logInfo(
+          "session engine: pre-release executor · replace now, asked by the change's owner",
+        ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stops: stops.length }));
+        yield* replaceRetiring(holder, SealantWorkspaceId.make(workspaceId), true).pipe(
+          asSealantUser(holder.ownerUserId),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: the replacement did not finish").pipe(
+              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+            ),
+          ),
+          Effect.forkIn(scope),
+        );
+      });
+
+      /**
+       * An opencode conversation from a 0.36 prerelease, resumed in a person executor (decision
+       * 14): the process that last held it ran as nobody's user, in an executor that shared one
+       * home, whose database the person layout never opens. Refused; its owner could resume it
+       * only in that executor, before it was replaced.
+       */
+      const opencodeFromSharedHome = Effect.fn("SessionEngine.opencodeFromSharedHome")(function* (
+        session: Session,
+        workspaceId: string,
+        resumeId: string,
+      ) {
+        return opencodeFromSharedHomeOf(
+          yield* processes.listForSession(session.id),
+          workspaceId,
+          resumeId,
+        );
       });
 
       const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
@@ -16107,6 +16773,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The owner's own turns ask nothing more; another person's turn is refused before it is
         // queued when it could not run on their own login (docs/adr/0016, decision 6). With the
         // flag off and nothing recorded, a turn reads nothing here.
+        // A turn in an executor marked to retire: only its launcher's, and nobody's while it is
+        // being replaced (decision 14). With the flag off, nothing is read.
+        if (author !== null && capture !== null && harnessLayoutConfig.flag === "person") {
+          const session = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          const retired =
+            session === null
+              ? null
+              : yield* retirementRefusalFor(session.sealantWorkspaceId, author);
+          if (retired !== null) {
+            return yield* new SessionTurnRefusedError({ sessionId, message: retired });
+          }
+        }
         if (author !== null && capture !== null && layoutSteps.personPossible()) {
           const session = yield* sessions
             .byId(sessionId)
@@ -16587,6 +17267,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : session.ownerUserId);
           const settleUnlessHandedOver = (words: string) =>
             handOver === null ? settleSession(sessionId, "failed", words) : Effect.void;
+          // An executor marked to retire takes nobody but its launcher, and nobody while it is
+          // being replaced (docs/adr/0016, decision 14).
+          const retired = yield* retirementRefusalFor(
+            SealantWorkspaceId.make(workspace.id),
+            sender,
+          );
+          if (retired !== null) {
+            yield* settleUnlessHandedOver(retired);
+            return yield* new SealantPlatformError({
+              code: "workspace_retiring",
+              status: 409,
+              message: retired,
+              cause: null,
+            });
+          }
           const personStart = yield* startAsPerson(
             session,
             workspace,
@@ -17983,6 +18678,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
         const workspace = yield* workspaceForSupportingProcess(session);
+        // Nothing new starts in an executor being replaced; a shell is the launcher's or nobody's
+        // while it is marked (docs/adr/0016, decision 14).
+        const retired = yield* retirementRefusalFor(
+          SealantWorkspaceId.make(workspace.id),
+          openedBy ?? session.ownerUserId,
+        );
+        if (retired !== null) {
+          return yield* new SealantPlatformError({
+            code: "workspace_retiring",
+            status: 409,
+            message: retired,
+            cause: null,
+          });
+        }
         const existing = yield* processes.listForSession(sessionId);
         const shellNumber =
           existing.reduce((largest, process) => {
@@ -18651,6 +19360,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const workspaceId = SealantWorkspaceId.make(workspace.id);
         // A Service runs as the person who started it, across restarts (docs/adr/0016).
         const runsAs = startedBy ?? session.ownerUserId;
+        // Nothing new starts in an executor being replaced, and only its launcher's while it is
+        // marked to retire (decision 14).
+        const retired = yield* retirementRefusalFor(workspaceId, runsAs);
+        if (retired !== null) {
+          return yield* new SealantPlatformError({
+            code: "workspace_retiring",
+            status: 409,
+            message: retired,
+            cause: null,
+          });
+        }
         const label = name ?? argv[0] ?? "service";
         const service = yield* getOrCreateService(
           sessionId,
@@ -20555,6 +21275,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // has nothing live there is released. With the flag off and nothing recorded, nothing runs.
       if (capture !== null && layoutSteps.personPossible()) {
         yield* Effect.forkIn(reconcileLoginsAtStartup(), scope);
+        // The migration of old shared homes (decision 14): a worktree that runs per person and
+        // has no final run yet (a restart between its first person launch and the run) is
+        // migrated now, off every launch path.
+        yield* Effect.forkIn(
+          harnessLayouts
+            .worktreesAwaitingMigration()
+            .pipe(Effect.flatMap((worktreeIds) => Effect.forEach(worktreeIds, forkMigration))),
+          scope,
+        );
+      }
+      // Pre-release executors (decision 14): with the flag on, every live shared executor whose
+      // worktree's next launch would be person is marked to retire, and replaced once nothing
+      // would stop that anyone would miss. With the flag off, nothing runs.
+      if (capture !== null && harnessLayoutConfig.flag === "person") {
+        // The first look one interval after boot: a launch resumed at boot is never raced.
+        yield* Effect.forkIn(
+          Effect.sleep(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS)).pipe(
+            Effect.andThen(
+              sweepRetirements(true).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("session engine: the retirement sweep failed").pipe(
+                    Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+                  ),
+                ),
+                Effect.repeat(Schedule.spaced(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS))),
+              ),
+            ),
+          ),
+          scope,
+        );
       }
       let lastAccessReconcile = Number.NEGATIVE_INFINITY;
       // Capture mode: the lease reaper (expiry → confirmed platform termination → the session
@@ -20732,6 +21482,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           detached(owned(sessionId)(oneLaunch(sessionId)(handoff(sessionId, to, start, author)))),
         observeExternalAgents,
         reapCaptureLeases: captureReaper,
+        migratePreReleaseMemory,
+        preReleaseMemory,
+        sweepRetirements: () => sweepRetirements(false),
+        workspaceRetirement,
+        replaceWorkspaceNow,
         discardUnsavedAndStop: (sessionId, discardedBy) =>
           owned(sessionId)(discardUnsavedAndStop(sessionId, discardedBy)),
         refreshCaptureStatus,

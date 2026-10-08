@@ -1328,4 +1328,15 @@ benchmark once more, before 0.36 is tagged.
   `features().processUserRoutes` and the rest of the layout's features (never `processUser`, which
   stays false for older SDKs) and each workspace's `processUser()`; a launch runs per person only
   when both say yes. The session line says Core's launch phase while a workspace gets ready.
+- 2026-10-08, Delivery 19 as built: the migration's record (`pre_release_migrations`) keeps every
+  memory path and digest any run credited, so a re-run reads the old home again and credits only
+  files whose digest no run credited, read back against the digest an earlier run credited; it never
+  deletes from the store. A live `shared` executor is marked to retire (`executor_retirements`) by a
+  sweep that runs only with the flag on, once a minute per executor and first one interval after
+  boot; "processes Mend did not start" are those whose parent chain does not reach a `sealantd`, and
+  the sidecar's containers are what `docker ps` lists inside the executor (PLATFORM-FEEDBACK
+  2026-10-08). A failed final flush leaves the executor's drain to ask again, as every kept drain
+  does, and the executor admits nothing new from its first final flush. `mend.toml` Services are
+  started again once their session is live after the replacement; the holder's protocol agent is
+  relaunched, and terminal sessions end resumable.
 - Open: gate B's history record.

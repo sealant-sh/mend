@@ -326,6 +326,18 @@ export interface HarnessLayoutSteps {
    */
   readonly mayRunPerson: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
+   * Whether the worktree's next launch would run `person` (decision 14), asked of a worktree whose
+   * live executor is `shared`: the flag, the worktree's record and the image's capability, read as
+   * `decide` reads them, with nothing recorded. False with the flag off, with no read at all.
+   */
+  readonly nextLaunchPerson: (input: {
+    readonly worktreeId: WorktreeId;
+    readonly ownerUserId: string;
+    readonly image: Effect.Effect<WorkspaceImage>;
+    readonly harness: Harness;
+    readonly launcherHasDotfiles?: Effect.Effect<boolean>;
+  }) => Effect.Effect<boolean>;
+  /**
    * Whether any worktree may run the person layout at all: the flag on, or a layout recorded (at
    * startup, or since). Answered from memory. False means `mayRunPerson` answers false for every
    * worktree without a read, so a caller may skip the reads it would make to ask it.
@@ -878,6 +890,34 @@ export const makeHarnessLayoutSteps = (deps: {
     if (flag === "person") return true;
     if (nothingRecorded()) return false;
     return (yield* repo.worktreeLayout(worktreeId)).layout === "person";
+  });
+
+  const nextLaunchPerson: HarnessLayoutSteps["nextLaunchPerson"] = Effect.fn(
+    "HarnessLayoutSteps.nextLaunchPerson",
+  )(function* (input) {
+    if (flag !== "person") return false;
+    const worktree = yield* repo.worktreeLayout(input.worktreeId);
+    if (worktree.requested === "shared") return false;
+    const { capability } = yield* capabilityFor(
+      yield* input.image,
+      input.ownerUserId,
+      input.harness,
+    );
+    const dotfilesBlocked =
+      !platform.dotfilesUser &&
+      worktree.layout === null &&
+      worktree.requested === null &&
+      capability.person === true &&
+      input.launcherHasDotfiles !== undefined &&
+      (yield* input.launcherHasDotfiles);
+    const decision = decideHarnessLayout({
+      flag,
+      worktree,
+      headHasPeople: false,
+      capability,
+      dotfilesBlocked,
+    });
+    return decision.kind === "launch" && decision.layout === "person";
   });
 
   // A standby boots before any worktree is known, as root and with no capture owner map; sealantd
@@ -1646,6 +1686,7 @@ export const makeHarnessLayoutSteps = (deps: {
     flag,
     decide,
     mayRunPerson,
+    nextLaunchPerson,
     personPossible: () => !nothingRecorded(),
     noteRecorded: () => {
       layoutsRecorded = true;

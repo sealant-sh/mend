@@ -380,3 +380,126 @@ describe.skipIf(!reachable)(
     });
   },
 );
+
+describe.skipIf(!reachable)(
+  "pre-release executors and the old shared home's migration, in Postgres (Delivery 19)",
+  () => {
+    const db = `mend_pre_release_test_${process.pid}_${Date.now()}`;
+    const url = (() => {
+      const parsed = new URL(ADMIN_URL);
+      parsed.pathname = `/${db}`;
+      return parsed.toString();
+    })();
+    const layer = HarnessLayoutsRepoLive.pipe(
+      Layer.provideMerge(PgClient.layer({ url: Redacted.make(url) })),
+    );
+    const inDb = <A, E>(effect: Effect.Effect<A, E, HarnessLayoutsRepo | SqlClient.SqlClient>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+    const other = WorktreeId.make("wt-2");
+
+    beforeAll(async () => {
+      await withAdmin(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(`CREATE DATABASE ${db}`);
+        }),
+      );
+      await inDb(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+          yield* Effect.forEach(ordered, ([, migration]) => migration, { discard: true });
+          yield* sql`
+            INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+            VALUES ('p-1', 'p', '/store/p-1/repo.git', 'main', (SELECT id FROM organizations LIMIT 1))`;
+          yield* sql`
+            INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+            VALUES (${worktree}, 'p-1', 'auth', 'auth', 'mend/auth', 'abc'),
+                   (${other}, 'p-1', 'docs', 'docs', 'mend/docs', 'abc')`;
+        }),
+      );
+    });
+
+    afterAll(async () => {
+      await withAdmin(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql.unsafe(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`);
+        }),
+      );
+    });
+
+    it("records each run of the migration in place of the last, naming the capture it read", async () => {
+      await inDb(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const repo = yield* HarnessLayoutsRepo;
+          expect(yield* repo.preReleaseMigrationOf(worktree)).toBeNull();
+          const provisional = {
+            worktreeId: worktree,
+            captureId: "cap-3",
+            captureN: 3,
+            final: false,
+            creditedTo: "alice",
+            decidedBy: "only-person" as const,
+            credited: { ".claude/projects/-workspace-repo/memory/MEMORY.md": "d1" },
+            notCredited: [],
+          };
+          yield* repo.recordPreReleaseMigration(provisional);
+          expect(yield* repo.preReleaseMigrationOf(worktree)).toEqual(provisional);
+          // A person worktree whose only run was provisional still waits for its final one.
+          yield* sql`UPDATE worktrees SET harness_layout = 'person' WHERE id IN (${worktree}, ${other})`;
+          expect((yield* repo.worktreesAwaitingMigration()).toSorted()).toEqual(
+            [worktree, other].toSorted(),
+          );
+          const final = {
+            ...provisional,
+            captureId: "cap-5",
+            captureN: 5,
+            final: true,
+            credited: { ...provisional.credited, ".codex/memories/notes.md": "d2" },
+          };
+          yield* repo.recordPreReleaseMigration(final);
+          expect(yield* repo.preReleaseMigrationOf(worktree)).toEqual(final);
+          expect(yield* repo.worktreesAwaitingMigration()).toEqual([other]);
+        }),
+      );
+    });
+
+    it("marks an executor to retire, takes it to retiring once, and keeps what a retiring one found", async () => {
+      await inDb(
+        Effect.gen(function* () {
+          const repo = yield* HarnessLayoutsRepo;
+          const marked = yield* repo.markRetirement({
+            workspaceId: "ws-old",
+            worktreeId: worktree,
+            sessionId: "s-1",
+            launcher: "alice",
+            preRelease: true,
+            stops: [{ kind: "shell", label: "shell 1" }],
+            reason: null,
+          });
+          expect(marked.state).toBe("marked");
+          expect(yield* repo.beginRetiring("ws-old")).toBe(true);
+          // A second attempt finds it held.
+          expect(yield* repo.beginRetiring("ws-old")).toBe(false);
+          // The sweep marking it again while it retires changes nothing.
+          const again = yield* repo.markRetirement({ ...marked, stops: [], reason: "later" });
+          expect(again).toMatchObject({ state: "retiring", stops: [{ kind: "shell" }] });
+          yield* repo.unmarkRetiring("ws-old", {
+            stops: [{ kind: "process", label: "sleep 600" }],
+            reason: "a process Mend did not start runs in it",
+          });
+          expect(yield* repo.retirementOf("ws-old")).toMatchObject({
+            state: "marked",
+            stops: [{ kind: "process", label: "sleep 600" }],
+            reason: "a process Mend did not start runs in it",
+          });
+          expect((yield* repo.listRetirements()).map((row) => row.workspaceId)).toEqual(["ws-old"]);
+          yield* repo.clearRetirement("ws-old");
+          expect(yield* repo.retirementOf("ws-old")).toBeNull();
+        }),
+      );
+    });
+  },
+);
