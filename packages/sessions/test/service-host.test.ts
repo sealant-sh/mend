@@ -65,6 +65,8 @@ const fakeWorkspace: Workspace = {
   status: async () => "ready",
   runtimeDeadline: async () => null,
   runtime: async () => null,
+  processUser: async () => "supported",
+  phase: async () => null,
   launch: undefined,
   recover: async () => new Promise(() => {}),
   captureDrain: async () => null,

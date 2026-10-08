@@ -67,6 +67,8 @@ const workspace: Workspace = {
   status: async () => "ready",
   runtimeDeadline: async () => null,
   runtime: async () => null,
+  processUser: async () => "supported",
+  phase: async () => null,
   launch: undefined,
   recover: never,
   captureDrain: async () => null,
@@ -135,11 +137,16 @@ const coreCalls = (): CoreCalls => ({
 
 const platformOf = (
   core: CoreCalls,
-  can: { readonly dotfilesUser?: boolean; readonly controlPlaneObstacle?: string | null } = {},
+  can: {
+    readonly dotfilesUser?: boolean;
+    readonly controlPlaneObstacle?: string | null;
+    readonly workspaceProcessUser?: "supported" | "unsupported" | "unknown";
+  } = {},
 ) =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: can.dotfilesUser ?? true,
+    workspaceProcessUser: () => Effect.succeed(can.workspaceProcessUser ?? "supported"),
     controlPlaneObstacle: Effect.sync(() => {
       core.controlPlaneReads++;
       return can.controlPlaneObstacle ?? null;
@@ -445,6 +452,71 @@ const skipped = (
 ): ReadonlyArray<LoginSkip> => [{ provider, reason, message: `${provider}: ${reason}` }];
 const notConnected = (provider: LoginProvider) => skipped(provider, "connected-account-missing");
 const needsReconnect = (provider: LoginProvider) => skipped(provider, "connected-account-invalid");
+
+describe("the workspace's own answer at prepare (sealant#343)", () => {
+  const settleWith = (
+    workspaceProcessUser: "supported" | "unsupported" | "unknown",
+    worktree: "fresh" | "person",
+  ) => {
+    const core = coreCalls();
+    const state = makeHarnessLayoutsMemoryState();
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        if (worktree === "person") {
+          state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        }
+        const { steps, repo } = yield* stepsWith("person", state, {
+          platform: platformOf(core, { workspaceProcessUser }),
+        });
+        const layout = yield* steps.decide(decideInput("launch-ws"));
+        const alice = yield* repo.ensureIdentity("user-alice");
+        const settled = yield* steps
+          .settlePrepare({
+            layout,
+            ...settleInput(
+              "launch-ws",
+              `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
+            ),
+          })
+          .pipe(Effect.result);
+        return {
+          settled,
+          layout: yield* steps.layoutOfLaunch("launch-ws"),
+          recorded: [...state.capabilities.values()].map((record) => [
+            record.person,
+            record.missing,
+          ]),
+        };
+      }),
+    );
+  };
+
+  it("runs a person launch only where the workspace says it can", async () => {
+    const yes = await settleWith("supported", "fresh");
+    expect(yes.settled._tag === "Success" ? yes.settled.success.layout : null).toBe("person");
+  });
+
+  it("falls a fresh worktree back to one person on an image whose sealantd cannot, and records it", async () => {
+    const no = await settleWith("unsupported", "fresh");
+    expect(no.settled._tag === "Success" ? no.settled.success : null).toMatchObject({
+      layout: "shared",
+      fallback:
+        "this image cannot run per-person users (its sealantd cannot run processes as a user), so this workspace takes one person",
+    });
+    expect(no.layout).toBe("shared");
+    expect(no.recorded).toContainEqual([false, ["its sealantd cannot run processes as a user"]]);
+  });
+
+  it("takes unknown as no, without holding it against the image, and refuses a person worktree", async () => {
+    const unknown = await settleWith("unknown", "fresh");
+    expect(unknown.layout).toBe("shared");
+    expect(unknown.recorded.some(([person]) => person === false)).toBe(false);
+    const sticky = await settleWith("unsupported", "person");
+    expect(sticky.settled._tag === "Failure" ? sticky.settled.failure.message : null).toContain(
+      "its sealantd cannot run processes as a user",
+    );
+  });
+});
 
 describe("a control plane that cannot run the person layout (review of mend#569, P3-4)", () => {
   const obstacle =

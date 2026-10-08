@@ -247,6 +247,7 @@ import type {
   WorkspaceCaptureOwnerMap,
   WorkspaceCaptureReplanned,
   WorkspaceCaptureStatus,
+  WorkspacePhase,
   WorkspaceRuntimeInfo,
   WorkspaceStatus,
 } from "@sealant/sdk";
@@ -538,6 +539,8 @@ const sealantLaunchLayer = (
     readonly record?: () => Stream.Stream<TimelineEntry, SealantPlatformError>;
     /** The run as the platform settles it once its record ends. */
     readonly waitRun?: () => Effect.Effect<Run, SealantPlatformError>;
+    /** Core's launch phase while the create gets ready (sealant#342); null: none reported. */
+    readonly phase?: () => WorkspacePhase | null;
   },
 ) => {
   let nextPty = 0;
@@ -570,6 +573,8 @@ const sealantLaunchLayer = (
     // The engine reads the deadline, the executor and the drain through the fake client below.
     runtimeDeadline: async () => null,
     runtime: async () => null,
+    processUser: async () => "supported",
+    phase: async () => captureOps?.phase?.() ?? null,
     launch: undefined,
     recover: async () => {
       throw new Error("not in test");
@@ -4824,6 +4829,80 @@ describe("SessionEngine", () => {
           expect(world.sessions.get(session.id)?.summary ?? null).toBe(
             "codex is starting on the new machine",
           );
+        }),
+      { sealantLayer: watchedCreates },
+    );
+  });
+
+  it("a cold launch says Core's own launch phase: queued, building the image step by step, booting (sealant#342)", async () => {
+    const created: CreateOptions[] = [];
+    const answered = await Effect.runPromise(Deferred.make<void>());
+    let phase: WorkspacePhase | null = { name: "queued" };
+    let runtimeReads = 0;
+    const watchedCreates = Layer.effect(
+      SealantClient,
+      Effect.gen(function* () {
+        const client = yield* SealantClient;
+        return {
+          ...client,
+          createWorkspace: (options, launch, watch) =>
+            client.createWorkspace(options, launch).pipe(
+              Effect.tap((workspace) =>
+                Effect.gen(function* () {
+                  if (watch === undefined) return;
+                  const watcher = yield* Effect.forkChild(
+                    watch({
+                      ...workspace,
+                      phase: async () => phase,
+                      runtime: async () => {
+                        runtimeReads++;
+                        return null;
+                      },
+                    }),
+                  );
+                  yield* Deferred.await(answered);
+                  yield* Fiber.interrupt(watcher);
+                }),
+              ),
+            ),
+        };
+      }),
+    ).pipe(Layer.provide(lifecycleLayer(created)));
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launching = yield* engine
+            .launch(session.id, ["codex"])
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          const summary = () => world.sessions.get(session.id)?.summary;
+          yield* until(() => summary() === "queued · waiting for a worker", "queued");
+          phase = {
+            name: "image-build",
+            imageBuild: { step: 3, steps: 12, progressAt: new Date(0).toISOString() },
+          };
+          yield* until(
+            () => summary() === "building the workspace image · step 3/12",
+            "the build's step",
+          );
+          phase = { name: "image-build", imageBuild: { progressAt: new Date(0).toISOString() } };
+          yield* until(() => summary() === "building the workspace image", "a build with no step");
+          phase = { name: "boot" };
+          yield* until(() => summary() === LAUNCH_BOOTING, "booting");
+          // Core said where the launch stands: the executor was never read to guess it.
+          expect(runtimeReads).toBe(0);
+          yield* Deferred.succeed(answered, undefined);
+          const launched = yield* Fiber.join(launching);
+          expect(launched.status).toBe("running");
         }),
       { sealantLayer: watchedCreates },
     );
@@ -23531,6 +23610,7 @@ const personPlatform = (
     processUser: true,
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.succeed(null),
+    workspaceProcessUser: () => Effect.succeed("supported"),
     // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
       options.source?.kind === "capture"
