@@ -1292,9 +1292,10 @@ export class SealantClients extends Context.Service<
     readonly sshKeys: (userId: string) => SshKeysApi;
     /**
      * The key Core keeps an image's per-person capability under (`workspaces.imageKey`): computed
-     * from the create's image-shaping parts alone, with no call.
+     * from the create's image-shaping parts alone, with no call. The SDK builds the whole create
+     * request to compute it, so options it would refuse at create fail here too, with its words.
      */
-    readonly imageKey: (options: CreateOptions) => Effect.Effect<string>;
+    readonly imageKey: (options: CreateOptions) => Effect.Effect<string, SealantPlatformError>;
     /**
      * What `create(options)` would build for the Mend user, read before the create
      * (`workspaces.inspectImage`, docs/adr/0016 decision 1): one call, nothing created.
@@ -1531,7 +1532,7 @@ export const SealantClientsLive: Layer.Layer<
       });
 
     const imageKey = (options: CreateOptions) =>
-      Effect.sync(() => admin.workspaces.imageKey(options));
+      Effect.try({ try: () => admin.workspaces.imageKey(options), catch: toPlatformError });
 
     const inspectImage = Effect.fn("SealantClients.inspectImage")(function* (
       userId: string,

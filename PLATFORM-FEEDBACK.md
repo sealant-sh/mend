@@ -7,6 +7,30 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-08 · 0.39.0-next.706 · `workspaces.imageKey` and `inspectImage` need a source neither reads
+
+Mend asks about an image before a person launch's create (ADR 0016 decision 1), when the create's
+capture source does not exist yet: its token comes from the session channel later in the launch. On
+the box (Mend 0.36.0-next.645) every person launch failed there with a 500, because `imageKey` runs
+the whole create builder, which throws `workspaces.create requires exactly one of \`repository\` …
+or \`source\`` for options without a source.
+
+- **What exists today:** `imageKey(options)` and `inspectImage(options)` take the full
+  `CreateOptions` and build the whole request. The key leaves the sources out
+  (`IMAGE_SHAPING_KEYS`), and Core's plan reads only whether the source is a `mount` (its
+  `safe.directory` step), yet a source is required, a capture one with a non-empty token and a URL
+  endpoint. `imageKey` also throws synchronously, where every other SDK call rejects a promise.
+- **What Mend does:** it names a capture source (`IMAGE_QUESTION_SOURCE`, endpoint
+  `https://image-question.mend.invalid`, token `never-sent`), because a person create is
+  capture-sourced. The endpoint reaches Core in the inspected spec and is never dialled. The token
+  is never sent, since `inspectImage` sends the spec alone. A test runs the real SDK with the
+  options Mend passes and checks the key equals the key of the create the answer is about.
+- **Suggested:** an image-only options type for both (`harness`, `os`/`baseImage`, `shell`,
+  `packages`, `services`, plus `sourceKind?: "mount" | "other"` if the plan keeps reading it). The
+  alternative is accepting `CreateOptions` without a source, defaulting to the kind that plans the
+  same as git, capture and standby. Either way the SDK should say in words which source kinds plan
+  differently.
+
 ## 2026-10-08 · 0.39.0-next.706 · Replacing a pre-release executor (ADR 0016 Delivery 19): what runs in it that the platform did not start
 
 Before Mend replaces a worktree's `shared` executor on its own (decision 14), it must know that

@@ -16,7 +16,7 @@ import type {
   SealantFeatures,
   WorkspaceProcessUserCapability,
 } from "@sealant/sdk";
-import { Clock, Duration, Effect, Layer } from "effect";
+import { Clock, Duration, Effect, Layer, Option } from "effect";
 
 import { SealantClients, toPlatformError } from "./client.ts";
 import { SealantPlatformError } from "./errors.ts";
@@ -81,8 +81,27 @@ export const imageLayoutReportOf = (inspection: WorkspaceImageInspection): Image
   };
 };
 
-/** The image-shaping part of a create, as the engine's create asks for the same image. */
+/**
+ * The source an image question names. `workspaces.imageKey` and `workspaces.inspectImage` build
+ * the whole create request, which refuses options without exactly one source, though neither
+ * reads it: the key leaves the sources out, and Core's plan reads only whether the source is a
+ * mount (its `safe.directory` step). The layout is decided only for a capture-mode launch, whose
+ * create is capture-sourced, so the question names a capture source too. Its endpoint reaches
+ * Core in the inspected spec and is never dialled; its token never leaves this process
+ * (`inspectImage` sends the spec alone, never `captureToken`).
+ */
+export const IMAGE_QUESTION_SOURCE = {
+  kind: "capture",
+  endpoint: "https://image-question.mend.invalid",
+  token: "never-sent",
+} as const satisfies CreateOptions["source"];
+
+/**
+ * The image-shaping part of a create, as the engine's create asks for the same image, with the
+ * source an image question names (`IMAGE_QUESTION_SOURCE`).
+ */
 export const imageCreateOptionsOf = (image: WorkspaceImage, harness: Harness): CreateOptions => ({
+  source: IMAGE_QUESTION_SOURCE,
   harness,
   ...(image.mode === "custom" ? { baseImage: image.baseImage } : { os: image.os }),
   ...(image.mode === "family" && image.shell !== "bash" ? { shell: image.shell } : {}),
@@ -172,7 +191,18 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         readonly harness: Harness;
       }) {
         const options = imageCreateOptionsOf(input.image, input.harness);
-        const key = `${input.ownerUserId}\u0000${yield* clients.imageKey(options)}`;
+        // Options the SDK refuses are a fault of Mend's: said in the log, and the capability is
+        // unknown (as a question Core cannot answer is), never a launch that fails before create.
+        const imageKey = yield* clients.imageKey(options).pipe(
+          Effect.tapError((error) =>
+            Effect.logError("person layout: the image's key was not computed").pipe(
+              Effect.annotateLogs({ message: error.message }),
+            ),
+          ),
+          Effect.option,
+        );
+        if (Option.isNone(imageKey)) return UNKNOWN_IMAGE_REPORT;
+        const key = `${input.ownerUserId}\u0000${imageKey.value}`;
         const now = yield* Clock.currentTimeMillis;
         const known = answers.get(key);
         if (

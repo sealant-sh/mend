@@ -419,6 +419,44 @@ describe("the live platform (Core 0.39)", () => {
     expect(asked[0]?.harness.id).toBe(claudeCode().id);
   });
 
+  it("reads an image question the SDK refuses as unknown, and asks Core nothing", async () => {
+    const asked: Array<CreateOptions> = [];
+    const platform = await platformWith(
+      PersonLayoutPlatformLive.pipe(
+        Layer.provide(
+          Layer.mock(SealantClients, {
+            controlPlaneFeatures: () => Effect.succeed(EVERY_FEATURE),
+            connectedAccounts: () => ({ list: unused, connect: unused, disconnect: unused }),
+            sshKeys: () => ({ ensure: unused, list: unused }),
+            imageKey: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "invalid_create_options",
+                  status: null,
+                  message: "workspaces.create requires exactly one of `repository` or `source`.",
+                  cause: null,
+                }),
+              ),
+            inspectImage: (_userId, options) =>
+              Effect.sync(() => {
+                asked.push(options);
+                return inspection("supported");
+              }),
+          }),
+        ),
+      ),
+    );
+    const report = await Effect.runPromise(
+      platform.imageReport({
+        ownerUserId: "alice",
+        image: defaultWorkspaceImage,
+        harness: claudeCode(),
+      }),
+    );
+    expect(report).toEqual(UNKNOWN_IMAGE_REPORT);
+    expect(asked).toEqual([]);
+  });
+
   it("reads Core's unknown as unknown, never as a no", () => {
     expect(imageLayoutReportOf(inspection("unknown"))).toEqual({
       digest: null,
