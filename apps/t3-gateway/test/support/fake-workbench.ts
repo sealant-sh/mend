@@ -403,7 +403,7 @@ export class FakeWorkbench {
       path === "/api/projects" ||
       path === "/api/sessions" ||
       path === "/api/events" ||
-      /^\/api\/(projects|sessions|turns|requests|changes)\//.test(path);
+      /^\/api\/(projects|sessions|turns|requests|changes|worktrees)\//.test(path);
     if (!known) return false;
     if (!accepted) return json(401, { _tag: "Unauthorized" });
 
@@ -451,6 +451,36 @@ export class FakeWorkbench {
     const segments = path.split("/").slice(2);
     const [collection, id, sub] = segments;
     if (collection === undefined || id === undefined) return json(404, { _tag: "NotFound" });
+
+    if (method === "POST" && collection === "projects" && sub === "sessions") {
+      return body().then((value) => {
+        record(value);
+        if (!this.projects.has(id)) return json(404, { _tag: "NotFound", id });
+        const payload = typeof value === "object" && value !== null ? value : {};
+        const name = "name" in payload && typeof payload.name === "string" ? payload.name : null;
+        const base = "base" in payload && typeof payload.base === "string" ? payload.base : null;
+        if (base === "no-such-branch") {
+          return json(422, { _tag: "StoreFailure", message: "fatal: invalid reference" });
+        }
+        return json(200, this.createSession(id, payload, { name, base, worktreeId: null }));
+      });
+    }
+    if (method === "POST" && collection === "worktrees" && sub === "sessions") {
+      return body().then((value) => {
+        record(value);
+        const member = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+        if (member === undefined) return json(404, { _tag: "WorktreeNotFound", id });
+        const payload = typeof value === "object" && value !== null ? value : {};
+        return json(
+          200,
+          this.createSession(member.projectId, payload, {
+            name: null,
+            base: null,
+            worktreeId: member.worktreeId,
+          }),
+        );
+      });
+    }
 
     if (method === "GET" && collection === "projects" && sub === undefined) {
       const project = this.projectView(id);
@@ -658,8 +688,26 @@ export class FakeWorkbench {
       );
       return json(200, this.addTurn(session.id, input, open ? "queued" : "running"));
     }
-    // A launch answers at once; a new agent process comes up on the options the last one
-    // recorded, and only a prompt would open a turn.
+    // A launch answers at once; a new agent process comes up on the options the launch names,
+    // else those the last one recorded, and only a prompt would open a turn.
+    const named = (key: string): string | null => {
+      const found = Object.entries(payload).find(([name]) => name === key)?.[1];
+      return typeof found === "string" ? found : null;
+    };
+    if (this.agents.get(session.id) === undefined) {
+      const permissionMode = named("permissionMode") === "ask" ? "ask" : "bypass";
+      this.agents.set(session.id, {
+        id: this.nextId("process"),
+        kind: "agent-protocol",
+        harness: session.harness,
+        status: "exited",
+        providerSessionId: `provider-${session.id}`,
+        protocolOptions: { model: named("model"), effort: named("effort"), permissionMode },
+        createdAt: tick(),
+        exitedAt: tick(),
+      });
+    }
+    this.launches.push({ sessionId: session.id, body: payload });
     const refusal = this.launchRefusal;
     if (refusal !== null) {
       this.launchRefusal = null;
@@ -689,8 +737,19 @@ export class FakeWorkbench {
       setTimeout(() => {
         const previous = this.agents.get(session.id);
         if (previous === undefined) return;
+        const recorded = previous.protocolOptions;
+        const mode = named("permissionMode");
         this.agents.set(session.id, {
           ...previous,
+          protocolOptions:
+            recorded === null
+              ? null
+              : {
+                  model: named("model") ?? recorded.model,
+                  effort: named("effort") ?? recorded.effort,
+                  permissionMode:
+                    mode === "ask" || mode === "bypass" ? mode : recorded.permissionMode,
+                },
           id: this.nextId("process"),
           status: "running",
           exitedAt: null,
@@ -703,6 +762,59 @@ export class FakeWorkbench {
       }, this.launchLiveDelayMs);
     }
     return json(200, { ...session });
+  }
+
+  /** Every launch Mend took, with what it named. */
+  readonly launches: Array<{ readonly sessionId: string; readonly body: object }> = [];
+
+  /** A session the caller owns, in a new worktree or one it joins; no agent until it launches. */
+  private createSession(
+    projectId: string,
+    payload: object,
+    where: {
+      readonly name: string | null;
+      readonly base: string | null;
+      readonly worktreeId: string | null;
+    },
+  ): FakeSession {
+    const id = this.nextId("session");
+    const harness =
+      "harness" in payload && typeof payload.harness === "string" ? payload.harness : "codex";
+    const label = "label" in payload && typeof payload.label === "string" ? payload.label : null;
+    const createdAt = tick();
+    const joined =
+      where.worktreeId === null
+        ? undefined
+        : Array.from(this.sessions.values()).find((s) => s.worktreeId === where.worktreeId);
+    const directory = joined?.worktree ?? where.name ?? `wt-${id}`;
+    const session: FakeSession = {
+      id,
+      projectId,
+      worktreeId: joined?.worktreeId ?? `worktree-${id}`,
+      harness,
+      model: null,
+      label,
+      worktree: directory,
+      branch: joined?.branch ?? `mend/${directory}`,
+      baseSha: "6abd2ab9fee56f5a5fa3eaafa7bbad52ae65bdd4",
+      baseRef: joined?.baseRef ?? where.base ?? "main",
+      status: "idle",
+      ownerUserId: "user-1",
+      summary: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    this.sessions.set(id, session);
+    this.changes.set(
+      id,
+      joined === undefined ? `change-${id}` : (this.changes.get(joined.id) ?? ""),
+    );
+    this.control.set(id, true);
+    this.turns.set(id, []);
+    this.items.set(id, []);
+    this.requests.set(id, []);
+    this.emit({ type: "session", sessionId: id, projectId });
+    return session;
   }
 
   private projectView(id: string) {

@@ -30,6 +30,8 @@ export const unreachableMend: MendClient["Service"] = {
   conversationWait: () => unavailable("GET /api/sessions/:id/waiting"),
   workspaceRetirement: () => unavailable("GET /api/sessions/:id/workspace-retirement"),
   changeDiff: () => unavailable("GET /api/changes/:id/diff"),
+  createSession: () => unavailable("POST /api/projects/:id/sessions"),
+  joinWorktree: () => unavailable("POST /api/worktrees/:id/sessions"),
   submitTurn: () => unavailable("POST /api/sessions/:id/turns"),
   launchProtocol: () => unavailable("POST /api/sessions/:id/launch"),
   interruptTurn: () => unavailable("POST /api/turns/:id/interrupt"),
@@ -58,6 +60,7 @@ export const emptyHub: PersonHub = {
     cancelQueued: () => refused,
     resumeQueue: () => refused,
     respond: () => refused,
+    launch: () => refused,
   },
 };
 

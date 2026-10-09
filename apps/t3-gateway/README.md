@@ -159,6 +159,35 @@ expanding a hunk) come back only for files the patch holds whole, added or delet
 answers `VcsUnsupportedOperationError` until phase 3's worktree read. Whitespace is never ignored:
 Mend's change diff has no such option. Per-turn diffs are phase 3.
 
+## Phase 2: threads from t3code
+
+### Launching a thread
+
+`orchestration.launchThread` (`src/launch.ts`) is how t3code starts a thread with its first message.
+The gateway creates a Mend session as the person who paired, so Mend records them as its owner and
+origin `mend`, and its agent runs as them (docs/adr/0016).
+
+| t3code                                       | Mend                                                                                                                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree { baseRef, branch? }`              | `POST /api/projects/:id/sessions`: a new worktree from `baseRef`, named from the branch's last segment when Mend takes the name |
+| `existing_worktree { worktreePath }`         | `POST /api/worktrees/:id/sessions`: the worktree of the project's session at that path                                          |
+| `root`                                       | Refused: every Mend session has a worktree of its own                                                                           |
+| model, reasoning effort, `fast` service tier | named on every launch of the thread: a first launch that brought no agent up leaves Mend nothing to reuse                       |
+| `full-access`, `approval-required`           | `bypass`, `ask`; other runtime modes are refused                                                                                |
+| `title` with `generateTitle`                 | no label: the thread is named from its first message, as any unnamed Mend session                                               |
+| `initialMessage`                             | queued like a follow-up; the run is `preparing` while the session launches                                                      |
+
+The opening message goes through the queue: the queue launches the session
+(`POST /api/sessions/:id/launch`, no prompt) and sends the message with
+`POST /api/sessions/:id/turns` once Mend reports the agent running, so the run is the message's
+exact turn. The launch answers as soon as the session exists, and the thread is in the shell, by the
+client's own thread id, with its message in it: t3code's client opens a launched thread only once
+its shell shows one. Images in the opening message are refused until the gateway sends images.
+
+A launched thread keeps the id its client gave it: `thread_ids` in the state file maps it to its
+session, and every method that names a thread takes that id. A retry of the same `commandId` is the
+same thread (`resumed: true`), across a restart too.
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:
@@ -196,9 +225,11 @@ not as a wrong code. The code is not spent.
 ## State
 
 One `node:sqlite` file the gateway owns: the environment id, bearer sessions (the bearer's sha256
-and the Mend device token it stands for), and the id maps (`run_ids` and `message_ids`, filled by
-every turn a t3code client sends; `project_ids` and `thread_ids` stay empty until phase 2). Mend's
-database is never touched. Losing the file loses pairings and t3code-side ids, never Mend records.
+and the Mend device token it stands for), and the id maps: `run_ids` and `message_ids`, filled by
+every turn a t3code client sends, and `thread_ids`, every thread a t3code client launched (its id,
+its session, the launch command and what the launch named; no secrets). `project_ids` stays empty.
+Mend's database is never touched. Losing the file loses pairings and t3code-side ids, never Mend
+records.
 
 **The file holds every paired person's Mend device token in clear**, and the token acts as that
 person in Mend until the device is revoked. The gateway needs it usable: it calls Mend for a person

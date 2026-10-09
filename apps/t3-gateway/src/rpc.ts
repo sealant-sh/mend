@@ -19,7 +19,6 @@ import {
   OrchestrationSearchThreadsError,
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
-  OrchestrationV2ThreadLaunchError,
   PersistChatAttachmentsError,
   ProjectMutationError,
   ProviderSetupError,
@@ -49,6 +48,7 @@ import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import type { HubReadError, PersonHub } from "./hub.ts";
+import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
@@ -86,6 +86,7 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+  ORCHESTRATION_V2_WS_METHODS.launchThread,
   WS_METHODS.reviewGetDiffPreview,
   WS_METHODS.reviewGetDiffFileContents,
 ]);
@@ -346,14 +347,7 @@ export const makeGatewayRpcHandlers = ({ environment, session, hub }: GatewayRpc
     // ── Orchestration (phase 1 and later) ───────────────────────────────────
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
       dispatchCommand(hub, session, command),
-    [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
-      Effect.fail(
-        new OrchestrationV2ThreadLaunchError({
-          commandId: input.commandId,
-          projectId: input.projectId,
-          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.launchThread),
-        }),
-      ),
+    [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) => launchThread(hub, session, input),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session, READ);

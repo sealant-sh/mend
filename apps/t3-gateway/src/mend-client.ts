@@ -155,6 +155,28 @@ export type MendRequestResponse =
   | { readonly decision: "accept" | "accept-for-session" | "decline" | "cancel" }
   | { readonly answers: Readonly<Record<string, ReadonlyArray<string>>> };
 
+/**
+ * What a protocol launch may name (`LaunchRequest` in @mend/api-contracts). Anything left out is
+ * Mend's to choose: the request's, else what the session's last protocol agent recorded (mend#493),
+ * else the catalog's default.
+ */
+export interface MendLaunchOptions {
+  readonly model?: string | undefined;
+  readonly effort?: string | undefined;
+  readonly permissionMode?: "bypass" | "ask" | undefined;
+  readonly speed?: "standard" | "fast" | undefined;
+}
+
+/** A new session in a new worktree of a project (`NewWorkbenchSession` in @mend/api-contracts). */
+export interface MendNewSession {
+  readonly harness: string;
+  readonly label: string | null;
+  /** The new worktree's name; null lets Mend name it. */
+  readonly name: string | null;
+  /** The branch or sha the worktree starts from; null is the project's default branch. */
+  readonly base: string | null;
+}
+
 /** A read of the person's workbench: Mend's answer, or why there is none. */
 export type MendRead<A> = Effect.Effect<A, MendDeviceRefused | MendNotFound | MendUnavailable>;
 
@@ -232,6 +254,24 @@ export class MendClient extends Context.Service<
     ) => MendRead<MendWorkspaceRetirement | null>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
     readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
+    /**
+     * `POST /api/projects/:id/sessions`: a session owned by the caller, in a new worktree. Mend
+     * stamps origin `mend` and the caller as owner, so its agent runs as them (docs/adr/0016).
+     */
+    readonly createSession: (
+      deviceToken: string,
+      projectId: string,
+      input: MendNewSession,
+    ) => MendCommand<MendSession>;
+    /**
+     * `POST /api/worktrees/:id/sessions`: a session owned by the caller in an existing worktree
+     * (`NewWorktreeSession` in @mend/api-contracts), origin `mend`.
+     */
+    readonly joinWorktree: (
+      deviceToken: string,
+      worktreeId: string,
+      input: { readonly harness: string; readonly label: string | null },
+    ) => MendCommand<MendSession>;
     /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
     readonly submitTurn: (
       deviceToken: string,
@@ -240,13 +280,14 @@ export class MendClient extends Context.Service<
     ) => MendCommand<MendTurn>;
     /**
      * `POST /api/sessions/:id/launch` in protocol mode, with the prompt as its opening turn or, for
-     * an empty prompt, none. Naming no model, effort or permission mode, the launch runs on what
-     * the session's last protocol agent recorded (mend#493).
+     * an empty prompt, none. What the options leave out runs on what the session's last protocol
+     * agent recorded (mend#493).
      */
     readonly launchProtocol: (
       deviceToken: string,
       sessionId: string,
       prompt: string,
+      options?: MendLaunchOptions,
     ) => MendCommand<MendSession>;
     /** `POST /api/turns/:id/interrupt`. */
     readonly interruptTurn: (deviceToken: string, turnId: string) => MendCommand<void>;
@@ -535,17 +576,52 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/sessions/:id/turns",
         );
 
-      const launchProtocol = (deviceToken: string, sessionId: string, prompt: string) =>
+      const launchProtocol = (
+        deviceToken: string,
+        sessionId: string,
+        prompt: string,
+        options: MendLaunchOptions = {},
+      ) =>
         answered(
           command(
             "POST /api/sessions/:id/launch",
             `/api/sessions/${encodeURIComponent(sessionId)}/launch`,
             deviceToken,
             // No prompt is a launch that only brings the agent up (the gateway's relaunch).
-            prompt === "" ? { mode: "protocol" } : { mode: "protocol", prompt },
+            prompt === ""
+              ? { mode: "protocol", ...options }
+              : { mode: "protocol", prompt, ...options },
             decodeSession,
           ),
           "POST /api/sessions/:id/launch",
+        );
+
+      const createSession = (deviceToken: string, projectId: string, input: MendNewSession) =>
+        answered(
+          command(
+            "POST /api/projects/:id/sessions",
+            `/api/projects/${encodeURIComponent(projectId)}/sessions`,
+            deviceToken,
+            { ...input, mode: "protocol" },
+            decodeSession,
+          ),
+          "POST /api/projects/:id/sessions",
+        );
+
+      const joinWorktree = (
+        deviceToken: string,
+        worktreeId: string,
+        input: { readonly harness: string; readonly label: string | null },
+      ) =>
+        answered(
+          command(
+            "POST /api/worktrees/:id/sessions",
+            `/api/worktrees/${encodeURIComponent(worktreeId)}/sessions`,
+            deviceToken,
+            { ...input, mode: "protocol" },
+            decodeSession,
+          ),
+          "POST /api/worktrees/:id/sessions",
         );
 
       const interruptTurn = (deviceToken: string, turnId: string) =>
@@ -655,6 +731,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         conversationWait,
         workspaceRetirement,
         changeDiff,
+        createSession,
+        joinWorktree,
         submitTurn,
         launchProtocol,
         interruptTurn,
