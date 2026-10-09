@@ -299,6 +299,10 @@ branch for the project's root, both under Mend's visibility rules. Any other `cw
   the shallowest entries first. `kind` and `imageOnly` filter as t3code's own index does.
 - Directories are every directory above a listed file.
 - A listing answers for 15 seconds, so typing after `@` reads Mend once.
+- Mend lists at most 20,000 files, sorted, with no paging and no listing by directory. In a larger
+  tree a file past the cut cannot be found or browsed here, and every search or directory listing
+  over a cut list says `truncated`, even when nothing matched, so the composer never presents it as
+  complete.
 
 ## Run it
 

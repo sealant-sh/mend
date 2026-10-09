@@ -95,6 +95,41 @@ describe("project files for the composer", () => {
   );
 });
 
+describe("a listing Mend cut", () => {
+  it.live("never makes a search look complete: what lies past the cut is said to be missing", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.fileListingLimit = 3;
+        mend.workbench.files.set("session-1", ["a1.ts", "a2.ts", "a3.ts", "z/hidden.ts"]);
+        const { rpc } = yield* pairAndConnect(mend, "CUT");
+        const hidden = yield* rpc[WS_METHODS.projectsSearchEntries]({
+          cwd: WORKTREE,
+          query: "hidden",
+          limit: 80,
+        });
+        assert.deepStrictEqual(hidden, { entries: [], truncated: true });
+        const found = yield* rpc[WS_METHODS.projectsSearchEntries]({
+          cwd: WORKTREE,
+          query: "a1",
+          limit: 80,
+        });
+        assert.deepStrictEqual(
+          found.entries.map((entry) => entry.path),
+          ["a1.ts"],
+        );
+        assert.isTrue(found.truncated);
+        const tail = yield* rpc[WS_METHODS.projectsListEntries]({
+          cwd: WORKTREE,
+          directoryPath: "z",
+        });
+        assert.deepStrictEqual(tail, { entries: [], truncated: true });
+      }),
+    ),
+  );
+});
+
 describe("matching", () => {
   it("ranks the name's start, then the name, then the path, then the letters in order", () => {
     assert.strictEqual(matchScore("src/parser.ts", "pars"), 0);

@@ -21,6 +21,10 @@ import type { BearerSession } from "./state.ts";
  * Mend's `GET /api/projects/:id/files`, read as the person, which lists a session's worktree, or
  * the default branch for the project's root. A listing is kept for a few seconds, so a word typed
  * after `@` reads Mend once.
+ *
+ * Mend lists at most 20,000 files, sorted, and says when it cut the list; it has no paging and no
+ * directory-scoped listing. So the gateway answers from those files only, and every search or
+ * directory listing over a cut list says `truncated`: a file past the cut is not found here.
  */
 
 /** How long one listing answers the composer before Mend is read again. */
@@ -78,10 +82,15 @@ export const matchScore = (path: string, query: string): number | null => {
   return 3;
 };
 
-/** The entries a search answers, best first, at most `limit`. */
+/**
+ * The entries a search answers, best first, at most `limit`. A search over a listing Mend cut
+ * (`sourceTruncated`) is never complete: it says it was cut even when nothing matched, as a file
+ * past Mend's cut may match.
+ */
 export const searchEntries = (
   entries: ReadonlyArray<ProjectEntry>,
   input: Pick<ProjectSearchEntriesInput, "query" | "limit" | "kind" | "imageOnly">,
+  sourceTruncated = false,
 ): ProjectSearchEntriesResult => {
   const query = input.query.trim();
   const candidates = entries.filter(
@@ -109,7 +118,10 @@ export const searchEntries = (
               left.entry.path.localeCompare(right.entry.path),
           )
           .map((match) => match.entry);
-  return { entries: ranked.slice(0, input.limit), truncated: ranked.length > input.limit };
+  return {
+    entries: ranked.slice(0, input.limit),
+    truncated: sourceTruncated || ranked.length > input.limit,
+  };
 };
 
 /** A directory's own children; `""` is the root. Without one, every entry, as older clients ask. */
@@ -180,7 +192,7 @@ export const makeFileHandlers = (input: {
           ? Effect.fail(
               failed("workspace_root_not_found", "No Mend thread or project of yours is there."),
             )
-          : Effect.succeed(searchEntries(kept.entries, request)),
+          : Effect.succeed(searchEntries(kept.entries, request, kept.listing.truncated)),
       ),
     );
   };

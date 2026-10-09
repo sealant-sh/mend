@@ -520,13 +520,14 @@ export class FakeWorkbench {
       if (sessionId !== null && this.sessions.get(sessionId)?.projectId !== id) {
         return json(404, { _tag: "NotFound" });
       }
-      const files = this.files.get(sessionId ?? id) ?? [];
+      // Mend's own cap: the sorted list, cut at its limit.
+      const all = (this.files.get(sessionId ?? id) ?? []).toSorted();
       return json(200, {
         source: sessionId === null ? "branch" : "worktree",
         label: sessionId === null ? "main" : sessionId,
         rootPath: null,
-        files,
-        truncated: false,
+        files: all.slice(0, this.fileListingLimit),
+        truncated: all.length > this.fileListingLimit,
       });
     }
     if (method === "GET" && collection === "projects" && sub === undefined) {
@@ -888,6 +889,8 @@ export class FakeWorkbench {
    * branch's by project id.
    */
   readonly files = new Map<string, ReadonlyArray<string>>();
+  /** How many files `GET /api/projects/:id/files` lists before it cuts (Mend's is 20,000). */
+  fileListingLimit = 20_000;
   /** How many images were pasted into workspaces. */
   pastedImages = 0;
   /** The Mend account a request's bearer belongs to (set by the fake Mend that pairs devices). */
