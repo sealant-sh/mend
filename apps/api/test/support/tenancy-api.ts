@@ -187,6 +187,7 @@ export const createTenancyApi = async (
       readonly landingGit?: Layer.PartialEffectful<LandingGit["Service"]>;
       readonly gitOps?: Layer.PartialEffectful<SessionGitOpsRepo["Service"]>;
       readonly reads?: Layer.PartialEffectful<WorktreeReads["Service"]>;
+      readonly checkpoints?: Layer.PartialEffectful<CheckpointsRepo["Service"]>;
       readonly engine?: Layer.PartialEffectful<SessionEngine["Service"]>;
       readonly jobs?: Layer.PartialEffectful<JobRunner["Service"]>;
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
@@ -255,7 +256,7 @@ export const createTenancyApi = async (
       recording(LandingGit, "landingGit", options.implement?.landingGit ?? {}, calls),
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
       recording(ChangeToursRepo, "changeTours", {}, calls),
-      recording(CheckpointsRepo, "checkpoints", {}, calls),
+      recording(CheckpointsRepo, "checkpoints", options.implement?.checkpoints ?? {}, calls),
       recording(DevicesRepo, "devices", {}, calls),
       recording(FollowUpsRepo, "followUps", {}, calls),
       recording(HotWorkspacesRepo, "hotWorkspaces", {}, calls),

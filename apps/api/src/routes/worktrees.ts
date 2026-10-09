@@ -11,6 +11,8 @@ import {
   WorktreeListing,
   WorktreeNameTaken,
   WorktreeNotFound,
+  WorktreeRangeDiff,
+  WorktreeRangeFile,
 } from "@mend/api-contracts";
 import {
   ProjectsRepo,
@@ -24,14 +26,14 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
-import { captureHoldWords, SessionEngine } from "@mend/sessions";
+import { captureHoldWords, SessionEngine, WorktreeReads } from "@mend/sessions";
 import { Store } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
 import { unlandedWork } from "../landing-state.ts";
-import { LIVE_STATES, readFailure, withinCheckpointLimit } from "./workbench.ts";
+import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
 
 /**
  * The worktree container's own verbs (plan §5.5/§5.6): provision the durable
@@ -105,6 +107,47 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
               pullRequest: facts?.pullRequest ?? null,
             });
           }),
+        });
+      }),
+    )
+    .handle("diff", ({ params, query }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        const chain = yield* (yield* CheckpointsRepo).listForWorktree(worktree.id);
+        const to = chain.find((checkpoint) => checkpoint.id === query.to);
+        if (to === undefined) return yield* new NotFound({ id: query.to });
+        const from =
+          query.from === undefined
+            ? null
+            : (chain.find((checkpoint) => checkpoint.id === query.from) ?? null);
+        if (query.from !== undefined && from === null) {
+          return yield* new NotFound({ id: query.from });
+        }
+        if (from !== null && from.ordinal > to.ordinal) {
+          return yield* new StoreFailure({
+            message: `checkpoint ${from.ordinal} comes after checkpoint ${to.ordinal}; a slice runs forward`,
+          });
+        }
+        const fromSha = from?.sha ?? worktree.baseSha;
+        const reads = yield* WorktreeReads;
+        const options = query.whitespace === "ignore" ? { ignoreWhitespace: true } : {};
+        const [diff, facts] = yield* Effect.all(
+          [
+            reads.diffRange(worktree.projectId, worktree.id, fromSha, to.sha, options),
+            reads.diffFileFacts(worktree.projectId, worktree.id, fromSha, to.sha, options),
+          ],
+          { concurrency: 2 },
+        ).pipe(Effect.mapError(readFailure));
+        return new WorktreeRangeDiff({
+          worktreeId: worktree.id,
+          from,
+          to,
+          fromSha,
+          diff: diff.value,
+          files: facts.value.map((fact) => new WorktreeRangeFile(fact)),
+          observation: observationOf(diff.stamp),
         });
       }),
     )

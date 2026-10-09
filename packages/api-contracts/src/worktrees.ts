@@ -1,4 +1,4 @@
-import { ProjectId, WorktreeId } from "@mend/domain";
+import { CheckpointId, ProjectId, WorktreeId } from "@mend/domain";
 import {
   AgentLaunchMode,
   Change as SessionChange,
@@ -14,6 +14,7 @@ import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 import { CheckpointRequest, WorktreeName } from "./project-environment.ts";
 import {
+  ObservationStamp,
   RemovalReport,
   SessionAnnotation,
   StoreFailure,
@@ -44,6 +45,42 @@ export class WorktreeNameTaken extends Schema.TaggedErrorClass<WorktreeNameTaken
   { projectId: Schema.String, name: Schema.String },
   { httpApiStatus: 409 },
 ) {}
+
+/** One file of a checkpoint range, as git counts it (`DiffFileFact` in @mend/store). */
+export class WorktreeRangeFile extends Schema.Class<WorktreeRangeFile>("WorktreeRangeFile")({
+  oldPath: Schema.NullOr(Schema.String),
+  newPath: Schema.NullOr(Schema.String),
+  status: Schema.Literals([
+    "added",
+    "modified",
+    "deleted",
+    "renamed",
+    "copied",
+    "type-changed",
+    "unmerged",
+    "unknown",
+  ]),
+  additions: Schema.Int,
+  deletions: Schema.Int,
+  binary: Schema.Boolean,
+}) {}
+
+/**
+ * A slice of a worktree's checkpoint chain, rendered: from `from` (or, with none, the worktree's
+ * base) to `to`. Both ends are immutable commits, so the slice never moves; what it was read from
+ * is in `observation`, as for a change's diff.
+ */
+export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("WorktreeRangeDiff")({
+  worktreeId: WorktreeId,
+  /** Null when the slice starts at the worktree's base. */
+  from: Schema.NullOr(Checkpoint),
+  to: Checkpoint,
+  /** The commit the slice starts at: `from`'s, else the worktree's base. */
+  fromSha: Schema.String,
+  diff: Schema.String,
+  files: Schema.Array(WorktreeRangeFile),
+  observation: Schema.optionalKey(ObservationStamp),
+}) {}
 
 /** Provisioning the container without a conversation; joining happens via sessions. */
 export class NewWorktree extends Schema.Class<NewWorktree>("NewWorktree")({
@@ -131,6 +168,20 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       payload: NewWorktreeSession,
       success: Session,
       error: [WorktreeNotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // A read: a slice of the worktree's checkpoint chain, for clients that show one turn's work
+    // (the t3code gateway, ADR 0012 phase 3). Visible to whoever sees the worktree.
+    HttpApiEndpoint.get("diff", "/worktrees/:id/diff", {
+      params: { id: WorktreeId },
+      query: {
+        from: Schema.optional(CheckpointId),
+        to: CheckpointId,
+        whitespace: Schema.optional(Schema.Literal("ignore")),
+      },
+      success: WorktreeRangeDiff,
+      error: [WorktreeNotFound, NotFound, StoreFailure],
     }),
   )
   .add(

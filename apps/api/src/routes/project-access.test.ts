@@ -558,6 +558,13 @@ const CASES: ReadonlyArray<AccessCase> = [
   child("project-read", "worktree", "POST", "/api/worktrees", "/sessions", {
     harness: "shell",
   })("worktrees.createSession"),
+  child(
+    "project-read",
+    "worktree",
+    "GET",
+    "/api/worktrees",
+    "/diff?to=checkpoint-1",
+  )("worktrees.diff"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/checkpoints", {
     trigger: "user-mark",
   })("worktrees.checkpoint"),
