@@ -174,11 +174,15 @@ workspaces and warms replacements. Status such as `2 ready · 1 warming` reports
 launch guarantee. A standby serves a fresh worktree; a session joining a worktree that already holds
 captures starts cold until the executor can materialise a delta.
 
-A standby starts as one person before any worktree is known, so it never serves a
-[per-person workspace](/operate/per-person-workspaces/). Mend keeps standbys for a person only while
-their new worktrees would run with a shared home: an image or runtime that cannot run per person, or
-`MEND_HARNESS_LAYOUT=shared`. Otherwise it keeps none, their launches start cold, and the card says
-`no standby · per-person workspaces launch cold`.
+A standby starts before any worktree is known, in the layout its owner's new worktrees would run in.
+Where they run per person, the standby starts as its owner: their own Linux user, their logins in
+their own home, and its restore giving the worktree to them and the `mend` group, as a
+[per-person workspace](/operate/per-person-workspaces/) of theirs would. Where they run with a
+shared home (an image or runtime that cannot run per person, or `MEND_HARNESS_LAYOUT=shared`), it
+starts with one shared home, as before. A standby serves only its owner's new session in a worktree
+that has no layout yet and that they started, in the layout that session's launch is decided in.
+Anything else starts cold: another person's session, a worktree someone else started, a worktree
+that has already run per person, or the operator's `harnessLayout` asking for the other layout.
 
 ## Automatic install
 

@@ -7782,6 +7782,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              harnessLayout: "shared",
               worktree: null,
               branch: null,
               baseSha: null,
@@ -7882,6 +7883,7 @@ describe("SessionEngine hot sessions", () => {
               status: "ready",
               error: null,
               fingerprint: "match-simulated-by-the-fake-claim",
+              harnessLayout: "shared",
               worktree: null,
               branch: null,
               baseSha: null,
@@ -11918,11 +11920,13 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
-  it("under the default, keeps standbys where launches run shared, drains the ready ones once they would run per person, keeps a claimed one, and says why (docs/adr/0016, Delivery 21)", async () => {
+  it("under the default, keeps standbys in the layout launches run: shared ones where they run shared, person ones booted as their owner once they run per person, never draining a claimed one (docs/adr/0016, per-person standbys)", async () => {
     const created: Array<CreateOptions> = [];
+    const homes: Array<string | undefined> = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
     const logs: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
     // Core's report on the image, as it changes under the test: first a runtime that cannot run
     // per person (Kubernetes' no-new-privileges), then one that can.
     const coreSays: { person: boolean | null; missing: ReadonlyArray<string> } = {
@@ -11937,43 +11941,80 @@ describe("SessionEngine capture mode", () => {
           world.projects.set(project.id, hot);
           world.recentOwners = ["user-fixture"];
           const engine = yield* SessionEngine;
-          // Every launch would run shared: the pool is kept, and nothing says otherwise.
+          // Every launch would run shared: shared standbys, booted as before.
           yield* engine.reconcileHotSessions(project.id);
           yield* until(
             () => pool.entries.filter((entry) => entry.status === "ready").length === 2,
             "two standbys",
           );
-          expect(yield* engine.hotSessionsColdReason(hot, "user-fixture")).toBeNull();
-          expect(logs.some((line) => line.includes("warm skipped"))).toBe(false);
+          expect(pool.entries.map((entry) => entry.harnessLayout)).toEqual(["shared", "shared"]);
+          expect(homes).toEqual([undefined, undefined]);
+          expect(created.every((options) => options.source?.kind === "capture")).toBe(true);
+          expect(
+            created.some(
+              (options) => options.source?.kind === "capture" && "ownerMap" in options.source,
+            ),
+          ).toBe(false);
           // One is claimed by a launch in flight.
-          const claimedId = pool.entries[0]?.id;
           const first = pool.entries[0];
-          if (first === undefined || claimedId === undefined) throw new Error("no standby");
+          if (first === undefined) throw new Error("no standby");
           pool.entries[0] = new HotWorkspace({ ...first, status: "claimed" });
-          // Now a fresh worktree would run per person: no standby could be claimed.
+          // Now a fresh worktree would run per person: the ready shared standby could never be
+          // claimed, and goes; the claimed one is the launch's; person standbys warm in its place.
           coreSays.person = true;
           coreSays.missing = [];
           yield* engine.reconcileHotSessions(project.id);
           yield* until(
-            () => pool.entries.every((entry) => entry.status === "claimed"),
-            "the ready standby drained",
+            () =>
+              pool.entries.filter(
+                (entry) => entry.status === "ready" && entry.harnessLayout === "person",
+              ).length === 2,
+            "two person standbys",
           );
-          yield* Effect.sleep("50 millis");
-          expect(pool.entries.map((entry) => entry.id)).toEqual([claimedId]);
-          expect(created).toHaveLength(2);
-          expect(yield* engine.hotSessionsColdReason(hot, "user-fixture")).toBe(
-            "per-person workspaces launch cold",
-          );
-          // Said once, not on every pass.
-          yield* engine.reconcileHotSessions(project.id);
-          yield* Effect.sleep("50 millis");
-          expect(logs.filter((line) => line.includes("warm skipped")).length).toBe(1);
+          expect(pool.entries.map((entry) => [entry.status, entry.harnessLayout])).toEqual([
+            ["claimed", "shared"],
+            ["ready", "person"],
+            ["ready", "person"],
+          ]);
+          // Booted as their owner: their logins in their own home, their owner map naming them
+          // alone, and no dotfiles at boot.
+          const owner = state.identities.get("user-fixture");
+          if (owner === undefined) throw new Error("no identity made for the standby's owner");
+          expect(homes.slice(2)).toEqual([
+            `/home/${owner.name} ${owner.uid}:40000`,
+            `/home/${owner.name} ${owner.uid}:40000`,
+          ]);
+          for (const options of created.slice(2)) {
+            expect(options.source).toMatchObject({
+              kind: "capture",
+              ownerMap: {
+                gid: 40000,
+                worktreeUid: owner.uid,
+                people: [{ id: "user-fixture", uid: owner.uid }],
+              },
+            });
+            expect(options.dotfiles).toBeUndefined();
+          }
+          expect(logs.some((line) => line.includes("warm skipped"))).toBe(false);
         }),
       {
         captured: memory,
-        sealantLayer: sealantLaunchLayer(created),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { createHomes: homes },
+        ),
         hotWorkspacesLayer: pool.layer,
-        harnessLayout: { flag: "person", platform: personPlatform([], coreSays) },
+        harnessLayout: { flag: "person", platform: personPlatform([], coreSays), state },
         logs,
       },
     );
@@ -25354,6 +25395,319 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
     // A standby boots with no owner map, and a claim says it expects none (sealant#333), so Core
     // refuses one booted with a map before its daemon is reached.
     expect(replanned).toEqual([{ expectedOwnerMap: null }]);
+  });
+
+  // ─── per-person standbys (docs/adr/0016) ──────────────────────────────────
+
+  const STANDBY_OWNER = linuxLoginNameOf("user-fixture");
+
+  /**
+   * A world whose pool warms per-person standbys for `user-fixture` (Core says the image runs
+   * per person), with Maria a member: its replan answers the claimed worktree as sealantd does,
+   * recording the map each claim says it expects.
+   */
+  const personStandbyWorld = (options: {
+    readonly report: { person: boolean | null; missing: ReadonlyArray<string> };
+    readonly exec: (
+      argv: ReadonlyArray<string>,
+    ) => { exitCode: number; stdout: string; stderr: string } | undefined;
+  }) => {
+    const created: Array<CreateOptions> = [];
+    const homes: Array<string | undefined> = [];
+    const opened: Array<PersonSessionOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const stopped: Array<string> = [];
+    const replanned: Array<WorkspaceCaptureOwnerMap | null | undefined> = [];
+    const calls: Array<string> = [];
+    const pool = memoryHotPool();
+    const state = makeHarnessLayoutsMemoryState();
+    const executor: { id: SessionId | null } = { id: null };
+    const replan = (
+      workspace: Workspace,
+      replanOptions?: { readonly expectedOwnerMap: WorkspaceCaptureOwnerMap | null },
+    ) =>
+      Effect.gen(function* () {
+        void workspace;
+        replanned.push(replanOptions?.expectedOwnerMap);
+        const api = servedSocketApis.get(executor.id ?? SessionId.make(""))?.capture;
+        if (api === undefined) throw new Error("the executor serves no capture api");
+        const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(Effect.orDie);
+        return {
+          worktreeId: plan.worktree_id,
+          epoch: plan.epoch,
+          ...(plan.head === null
+            ? {}
+            : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+          filesWritten: 0,
+          bytesWritten: 0,
+          filesSkipped: 0,
+          bytesSkipped: 0,
+          removed: 0,
+          unchanged: true,
+        } satisfies WorkspaceCaptureReplanned;
+      });
+    const layers = {
+      captured: makeMemoryCaptureStore(),
+      hotWorkspacesLayer: pool.layer,
+      prepareWorld: (world: World) => {
+        world.members.set(MARIA, "member");
+        world.recentOwners = ["user-fixture"];
+      },
+      sealantLayer: sealantLaunchLayer(
+        created,
+        undefined,
+        stopped,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        opened,
+        undefined,
+        execCalls,
+        undefined,
+        { createHomes: homes, replan, exec: options.exec },
+      ),
+      harnessLayout: {
+        flag: "person" as const,
+        platform: personPlatform(calls, options.report),
+        state,
+      },
+    };
+    return {
+      created,
+      homes,
+      opened,
+      execCalls,
+      stopped,
+      replanned,
+      calls,
+      pool,
+      state,
+      executor,
+      layers,
+    };
+  };
+
+  /** Warm the project's pool and wait for its one person standby. */
+  const warmPersonStandby = (project: Project, pool: ReturnType<typeof memoryHotPool>) =>
+    Effect.gen(function* () {
+      const engine = yield* SessionEngine;
+      yield* engine.reconcileHotSessions(project.id);
+      yield* until(
+        () =>
+          pool.entries.some(
+            (entry) => entry.status === "ready" && entry.harnessLayout === "person",
+          ),
+        "a person standby",
+      );
+      const standby = pool.entries.find((entry) => entry.harnessLayout === "person");
+      if (standby === undefined) throw new Error("no person standby");
+      return standby;
+    });
+
+  it("a person standby, warmed as its owner, is claimed by their fresh worktree and runs per person: their user, a 0700 home, their own logins, their saved directory under people/", async () => {
+    const world = personStandbyWorld({
+      report: { person: true, missing: [] },
+      exec: answerLayout(LAYOUT_READY),
+    });
+    await withEngine(
+      (testWorld, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, testWorld);
+          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          const standby = yield* warmPersonStandby(project, world.pool);
+          const owner = world.state.identities.get("user-fixture");
+          if (owner === undefined) throw new Error("no identity for the standby's owner");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // The session adopts the standby's id: it was claimed.
+          expect(session.id).toBe(standby.id);
+          world.executor.id = session.id;
+          const execsBefore = world.execCalls.length;
+          const startedAt = performance.now();
+          yield* engine.launch(session.id, ["claude"]);
+          const claimMs = performance.now() - startedAt;
+          const claimExecs = world.execCalls.length - execsBefore;
+          const launched = testWorld.sessions.get(session.id);
+          expect(launched?.status).not.toBe("failed");
+          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+          // Booted as its owner: their logins in their own home, at the standby's create.
+          expect(world.homes[0]).toBe(`/home/${STANDBY_OWNER} ${owner.uid}:40000`);
+          // The claim names the map the standby booted with, which Core compares.
+          expect(world.replanned).toEqual([
+            {
+              gid: 40000,
+              worktreeUid: owner.uid,
+              people: [{ id: "user-fixture", uid: owner.uid }],
+            },
+          ]);
+          // Prepare made the launcher's user, a 0700 home, and their saved directory.
+          const prepare = world.execCalls.find((argv) => (argv[2] ?? "").includes("mend-layout"));
+          expect(prepare?.[2]).toContain(
+            `mend_people='${STANDBY_OWNER}:${owner.uid}:user-fixture:`,
+          );
+          expect(prepare?.[2]).toContain(`chmod 0700 "$p_h"`);
+          expect(prepare?.[2]).toContain(`${HARNESS_HOME_MOUNT_PATH}/people`);
+          // The agent runs as them, on their own logins: nothing posted to `/root`.
+          const users = world.opened.map((opened) => opened.user?.name ?? null);
+          expect(users.length).toBeGreaterThan(0);
+          expect(users.every((user) => user === STANDBY_OWNER)).toBe(true);
+          expect(world.calls.some((call) => call.endsWith(":/root"))).toBe(false);
+          // The worktree is person from this launch on, recorded under the standby's launch.
+          expect(world.state.worktrees.get(session.worktreeId)?.layout).toBe("person");
+          expect(world.state.launches.get(`standby:${standby.id}`)).toMatchObject({
+            layout: "person",
+            confirmed: true,
+          });
+          // The claimed standby is the session's: never stopped under it.
+          expect(world.stopped).not.toContain(standby.sealantWorkspaceId);
+          // The claim path, timed in the engine with fakes: Mend's own work, no platform latency.
+          expect(claimMs).toBeLessThan(5_000);
+          yield* Effect.logInfo(
+            `per-person standby claim · engine time ${claimMs.toFixed(0)} ms · ${claimExecs} execs`,
+          );
+        }),
+      world.layers,
+    );
+  });
+
+  it("a person standby's claim costs no more execs than a shared standby's, past the person prepare a cold person launch runs too (Performance)", async () => {
+    const claimOf = async (person: boolean) => {
+      const world = personStandbyWorld({
+        report: person
+          ? { person: true, missing: [] }
+          : { person: false, missing: ["sudo-no-new-privileges"] },
+        exec: answerLayout(LAYOUT_READY),
+      });
+      let execs = -1;
+      await withEngine(
+        (testWorld, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, testWorld);
+            testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+            const engine = yield* SessionEngine;
+            yield* engine.reconcileHotSessions(project.id);
+            yield* until(
+              () => world.pool.entries.some((entry) => entry.status === "ready"),
+              "a standby",
+            );
+            const standby = world.pool.entries[0];
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            expect(session.id).toBe(standby?.id);
+            world.executor.id = session.id;
+            const before = world.execCalls.length;
+            yield* engine.launch(session.id, ["claude"]);
+            execs = world.execCalls.length - before;
+          }),
+        world.layers,
+      );
+      return execs;
+    };
+    const shared = await claimOf(false);
+    const person = await claimOf(true);
+    expect(shared).toBeGreaterThan(0);
+    // The person prepare rides the helper's exec (no new exec); its own deliveries replace the
+    // shared ones into `/root`, as a cold person launch's do.
+    expect(person).toBeLessThanOrEqual(shared);
+  });
+
+  it("another person's launch, the operator's shared, and a worktree another person owns each go cold: the person standby stays ready", async () => {
+    const world = personStandbyWorld({
+      report: { person: true, missing: [] },
+      exec: answerLayout(LAYOUT_READY),
+    });
+    await withEngine(
+      (testWorld, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, testWorld);
+          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          const standby = yield* warmPersonStandby(project, world.pool);
+          const provision = (ownerUserId: string, extra: { harnessLayout?: HarnessLayout } = {}) =>
+            engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId,
+              base: null,
+              ...extra,
+            });
+          // Maria's fresh worktree: never another person's standby (owner's rule).
+          const maria = yield* provision(MARIA);
+          expect(maria.id).not.toBe(standby.id);
+          // The operator's shared on a fresh worktree of the owner's: a person standby runs per person.
+          const shared = yield* provision("user-fixture", { harnessLayout: "shared" });
+          expect(shared.id).not.toBe(standby.id);
+          // The owner's session in Maria's worktree: its owner map would name the wrong owner.
+          const inMarias = yield* engine.provisionSessionIn(maria.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          expect(inMarias.id).not.toBe(standby.id);
+          expect(world.pool.entries.find((entry) => entry.id === standby.id)?.status).toBe("ready");
+          expect(world.replanned).toEqual([]);
+        }),
+      world.layers,
+    );
+  });
+
+  it("a claimed person standby's decision stands against a no learnt since: its prepare falls back to shared in it with the logins in /root, and the session runs (review 2 of mend#582, N7)", async () => {
+    const report: { person: boolean | null; missing: ReadonlyArray<string> } = {
+      person: true,
+      missing: [],
+    };
+    const world = personStandbyWorld({
+      report,
+      exec: answerLayout("mend-layout probed\nmend-layout missing no sudo\n"),
+    });
+    await withEngine(
+      (testWorld, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, testWorld);
+          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          const standby = yield* warmPersonStandby(project, world.pool);
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).toBe(standby.id);
+          world.executor.id = session.id;
+          // Between the claim and its launch, Core learns the image cannot run per person.
+          report.person = false;
+          report.missing = ["no sudo"];
+          yield* engine.launch(session.id, ["claude"]);
+          const launched = testWorld.sessions.get(session.id);
+          expect(launched?.status).not.toBe("failed");
+          expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
+          // Decision 1's fallback, in the standby: the home released, the logins in /root.
+          expect(world.calls).toContain(`delete:/home/${STANDBY_OWNER}`);
+          expect(world.calls).toContain("post:user-fixture:/root");
+          expect(world.opened.every((opened) => opened.user === undefined)).toBe(true);
+          expect(world.state.worktrees.get(session.worktreeId)?.layout ?? null).toBeNull();
+        }),
+      world.layers,
+    );
   });
 });
 

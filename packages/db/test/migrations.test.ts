@@ -2654,3 +2654,67 @@ describe.skipIf(!reachable)("0119 image layout confirmed", () => {
     ]);
   });
 });
+
+describe.skipIf(!reachable)("0120 hot workspace layout", () => {
+  const DB = `${SCRATCH_DB}_hot_layout`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("a standby from before it booted shared, and a layout is person or shared", async () => {
+    const result = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0119_image_layout_confirmed");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO hot_workspaces (id, project_id, owner_user_id, fingerprint)
+          VALUES ('hot-before', 'p-1', 'alice', 'fp')`;
+        yield* migrations["0120_hot_workspace_layout"];
+        yield* sql`
+          INSERT INTO hot_workspaces (id, project_id, owner_user_id, fingerprint, harness_layout)
+          VALUES ('hot-person', 'p-1', 'alice', 'fp', 'person')`;
+        const refused = yield* sql`
+          INSERT INTO hot_workspaces (id, project_id, owner_user_id, fingerprint, harness_layout)
+          VALUES ('hot-other', 'p-1', 'alice', 'fp', 'other')`.pipe(
+          Effect.as(false),
+          Effect.catch(() => Effect.succeed(true)),
+        );
+        const rows = yield* sql<{ readonly id: string; readonly layout: string }>`
+          SELECT id, harness_layout AS layout FROM hot_workspaces ORDER BY id`;
+        return { rows: rows.map((row) => [row.id, row.layout]), refused };
+      }),
+    );
+    expect(result).toEqual({
+      rows: [
+        ["hot-before", "shared"],
+        ["hot-person", "person"],
+      ],
+      refused: true,
+    });
+  });
+});

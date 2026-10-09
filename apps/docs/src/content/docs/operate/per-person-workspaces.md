@@ -42,11 +42,16 @@ rationale:
   machine included: whoever runs there runs as their own user. A server on the deprecated co-located
   store (`MEND_SESSION_STORE=colocated`) runs every session with one shared home, whatever the
   setting.
-- A standby workspace for [Hot sessions](/guides/project-environment/#hot-sessions) starts as one
-  person before any worktree is known, so it never serves a per-person launch. Mend keeps standbys
-  only for people whose new worktrees would run with a shared home (an image or runtime that cannot
-  run per person, or `MEND_HARNESS_LAYOUT=shared`). For anyone else it keeps none, their launches
-  start cold, and the Hot sessions card says `no standby · per-person workspaces launch cold`.
+- A standby workspace for [Hot sessions](/guides/project-environment/#hot-sessions) starts in the
+  layout its owner's new worktrees would run in. A per-person standby starts as its owner: their
+  user, their logins in their own home, and its restore giving the worktree to them and the `mend`
+  group. It serves only its owner's session in a new worktree of theirs whose launch is decided per
+  person; the workspace's preparation runs at that claim, as a cold per-person launch's does. Where
+  new worktrees run with a shared home (an image or runtime that cannot run per person, or
+  `MEND_HARNESS_LAYOUT=shared`), standbys start with one shared home, as before. A launch whose
+  standby does not match starts cold. Once a standby is claimed, its layout stands: if Mend learns
+  in between that the image cannot run per person, the launch runs with one shared home in that
+  standby, with the reason, rather than failing.
 
 ### What a workspace needs
 

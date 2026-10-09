@@ -17,6 +17,7 @@ import {
   linuxHomeOf,
 } from "@mend/domain/workbench";
 import {
+  CONTROL_PLANE_UNREADABLE,
   type HeldHome,
   type HomeLogins,
   type LoginProvider,
@@ -317,6 +318,25 @@ export const loginsOfCreate = (
     (provider) => credentials?.[provider] !== undefined && credentials[provider] !== false,
   );
 
+/** What a fresh worktree's launch is predicted on (`freshLaunchLayout`). */
+export interface FreshLaunchInput {
+  readonly ownerUserId: string;
+  readonly image: Effect.Effect<WorkspaceImage>;
+  readonly harness: Harness;
+  readonly launcherHasDotfiles?: Effect.Effect<boolean>;
+}
+
+/**
+ * The layout a standby boots in (docs/adr/0016, per-person standbys). A `person` standby boots
+ * with its owner's capture owner map and their logins in their own home, on the image answer
+ * `imageKey` named, so a new answer for the image drains it.
+ */
+export type StandbyLayout =
+  | { readonly layout: "shared" }
+  | { readonly layout: "person"; readonly imageKey: string; readonly runtime: string };
+
+const SHARED_STANDBY: StandbyLayout = { layout: "shared" };
+
 export interface HarnessLayoutSteps {
   readonly flag: HarnessLayout;
   /** The layout of a capture-mode launch, before its create; a refusal fails with its line. */
@@ -332,8 +352,11 @@ export interface HarnessLayoutSteps {
     readonly harness: Harness;
     /** Whether the worktree's head capture holds `harness/people/` (read only when needed). */
     readonly headHasPeople: Effect.Effect<boolean>;
-    /** The launch claimed a standby, whose claim found it would run shared (`standbyMayServe`). */
-    readonly standby?: boolean;
+    /**
+     * The launch claimed a standby, booted in this layout, whose claim found the launch would run
+     * in it (`standbyLayoutFor`): that stands.
+     */
+    readonly standby?: HarnessLayout;
     /**
      * Whether the launcher keeps dotfiles this project applies: read only when the flag would make
      * a fresh worktree person and the platform cannot apply dotfiles as a person yet.
@@ -375,32 +398,26 @@ export interface HarnessLayoutSteps {
    */
   readonly noteRecorded: () => void;
   /**
-   * Whether a fresh worktree's launch would run `person` for this owner, image and harness, as
-   * `decide` would choose it: false with the flag `shared`, an image or runtime that cannot run
-   * per person, or dotfiles the platform cannot apply per person.
+   * The layout a fresh worktree's launch would run in for this owner, image and harness, as
+   * `decide` would choose it: `shared` with the flag `shared`, an image or runtime that cannot
+   * run per person, or dotfiles the platform cannot apply per person. What a standby for this
+   * owner boots in. Null when it cannot be told now (the control plane could not be asked): the
+   * pool keeps what it has rather than draining on a passing failure (review 2 of mend#582, N7).
    */
-  readonly freshLaunchPerson: (input: {
-    readonly ownerUserId: string;
-    readonly image: Effect.Effect<WorkspaceImage>;
-    readonly harness: Harness;
-    readonly launcherHasDotfiles?: Effect.Effect<boolean>;
-  }) => Effect.Effect<boolean>;
+  readonly freshLaunchLayout: (input: FreshLaunchInput) => Effect.Effect<StandbyLayout | null>;
   /**
-   * Whether a standby (created before any worktree is known, as root) may serve the worktree:
-   * one with no layout whose launch is predicted shared (`fresh`, read only with the flag
-   * `person`).
+   * The layout a standby must have booted in to serve this worktree's launch, or null when none
+   * may (a standby is created before any worktree is known): a worktree with no layout, whose
+   * head holds no `people/`, takes a standby in the layout its fresh launch is predicted
+   * (`fresh`, read only with the flag `person`). A worktree already person, or asked for per
+   * person, launches cold.
    */
-  readonly standbyMayServe: (
+  readonly standbyLayoutFor: (
     worktreeId: WorktreeId,
-    fresh: {
-      readonly ownerUserId: string;
-      readonly image: Effect.Effect<WorkspaceImage>;
-      readonly harness: Harness;
-      readonly launcherHasDotfiles?: Effect.Effect<boolean>;
-    },
+    fresh: FreshLaunchInput,
     /** Whether the worktree's head holds `harness/people/`, read only with the flag `person`. */
     headHasPeople?: Effect.Effect<boolean>,
-  ) => Effect.Effect<boolean>;
+  ) => Effect.Effect<StandbyLayout | null>;
   /**
    * One identity pickup ticket per person prepare may make (docs/adr/0016, decision 4), by
    * account: what prepare's exec redeems for each person it makes, their Mend token of this
@@ -921,7 +938,7 @@ export const makeHarnessLayoutSteps = (deps: {
         headHasPeople,
         capability,
         dotfilesBlocked,
-        ...(input.standby === true ? { standby: true } : {}),
+        ...(input.standby === undefined ? {} : { standby: input.standby }),
       });
       if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
       if (decision.layout === "shared") {
@@ -993,7 +1010,7 @@ export const makeHarnessLayoutSteps = (deps: {
       readonly launcherHasDotfiles?: Effect.Effect<boolean>;
     },
   ) {
-    const { capability } = yield* capabilityFor(
+    const { capability, imageKey, runtime } = yield* capabilityFor(
       yield* input.image,
       input.ownerUserId,
       input.harness,
@@ -1012,7 +1029,12 @@ export const makeHarnessLayoutSteps = (deps: {
       capability,
       dotfilesBlocked,
     });
-    return { person: decision.kind === "launch" && decision.layout === "person", capability };
+    return {
+      person: decision.kind === "launch" && decision.layout === "person",
+      capability,
+      imageKey,
+      runtime,
+    };
   });
 
   const nextLaunchPerson: HarnessLayoutSteps["nextLaunchPerson"] = Effect.fn(
@@ -1035,28 +1057,34 @@ export const makeHarnessLayoutSteps = (deps: {
     );
   });
 
-  const freshLaunchPerson: HarnessLayoutSteps["freshLaunchPerson"] = Effect.fn(
-    "HarnessLayoutSteps.freshLaunchPerson",
+  const freshLaunchLayout: HarnessLayoutSteps["freshLaunchLayout"] = Effect.fn(
+    "HarnessLayoutSteps.freshLaunchLayout",
   )(function* (input) {
-    if (flag !== "person") return false;
-    return (yield* predictPerson({ layout: null, requested: null }, input)).person;
+    if (flag !== "person") return SHARED_STANDBY;
+    const predicted = yield* predictPerson({ layout: null, requested: null }, input);
+    if (predicted.person) {
+      return { layout: "person", imageKey: predicted.imageKey, runtime: predicted.runtime };
+    }
+    // A passing failure to ask the control plane says nothing of the image.
+    return predicted.capability.missing.includes(CONTROL_PLANE_UNREADABLE) ? null : SHARED_STANDBY;
   });
 
-  // A standby boots before any worktree is known, as root and with no capture owner map; sealantd
-  // reads that map only at boot (sealant#333), so a standby can never become a person executor.
-  // It serves a worktree with no layout whose launch is predicted shared (an image or runtime
-  // that cannot run per person, the operator's `shared`); every launch that could be person (a
-  // person worktree, the operator's person, a fresh worktree predicted person) launches cold.
-  const standbyMayServe: HarnessLayoutSteps["standbyMayServe"] = Effect.fn(
-    "HarnessLayoutSteps.standbyMayServe",
+  // A standby boots before any worktree is known, and sealantd reads its capture owner map only
+  // at boot (sealant#333): a shared standby boots with none, a person standby with its owner's
+  // alone (`{ gid, worktreeUid: owner, people: [owner] }`), which is complete for a worktree
+  // with no `people/` in its head whose change owner is that owner. So a standby serves a
+  // worktree with no layout yet, in the layout its fresh launch is predicted; a worktree already
+  // person, or asked for per person, launches cold.
+  const standbyLayoutFor: HarnessLayoutSteps["standbyLayoutFor"] = Effect.fn(
+    "HarnessLayoutSteps.standbyLayoutFor",
   )(function* (worktreeId, fresh, headHasPeople) {
-    if (flag !== "person" && nothingRecorded()) return true;
+    if (flag !== "person" && nothingRecorded()) return SHARED_STANDBY;
     const worktree = yield* repo.worktreeLayout(worktreeId);
-    if (worktree.layout !== null || worktree.requested === "person") return false;
-    if (flag !== "person" || worktree.requested === "shared") return true;
+    if (worktree.layout !== null || worktree.requested === "person") return null;
+    if (flag !== "person" || worktree.requested === "shared") return SHARED_STANDBY;
     // A head that holds `people/` is person whatever the record says (decision 14).
-    if (headHasPeople !== undefined && (yield* headHasPeople)) return false;
-    return !(yield* freshLaunchPerson(fresh));
+    if (headHasPeople !== undefined && (yield* headHasPeople)) return null;
+    return yield* freshLaunchLayout(fresh);
   });
 
   const settlePrepare: HarnessLayoutSteps["settlePrepare"] = Effect.fn(
@@ -1828,8 +1856,8 @@ export const makeHarnessLayoutSteps = (deps: {
     noteRecorded: () => {
       layoutsRecorded = true;
     },
-    freshLaunchPerson,
-    standbyMayServe,
+    freshLaunchLayout,
+    standbyLayoutFor,
     prepareTickets,
     prepareScript: layoutPrepareScript,
     settlePrepare,

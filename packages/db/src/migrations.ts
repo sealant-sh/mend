@@ -3321,6 +3321,19 @@ const imageLayoutConfirmedMigration = Effect.gen(function* () {
                   WHERE l.image_key = c.image_key AND l.layout = 'person' AND l.confirmed)`;
 });
 
+/**
+ * The layout a standby booted in (docs/adr/0016, per-person standbys): a `person` standby boots
+ * with its owner's capture owner map and serves only their launches decided `person`. Every row
+ * before it booted shared.
+ */
+const hotWorkspaceLayoutMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE hot_workspaces
+      ADD COLUMN harness_layout text NOT NULL DEFAULT 'shared'
+        CHECK (harness_layout IN ('person', 'shared'))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3441,4 +3454,5 @@ export const migrations = {
   "0117_conversation_homes": conversationHomesMigration,
   "0118_pre_release_executors": preReleaseExecutorsMigration,
   "0119_image_layout_confirmed": imageLayoutConfirmedMigration,
+  "0120_hot_workspace_layout": hotWorkspaceLayoutMigration,
 };

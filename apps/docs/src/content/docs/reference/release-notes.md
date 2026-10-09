@@ -21,8 +21,9 @@ run runs as them. `MEND_HARNESS_LAYOUT` is `person` unless set; an operator sets
 person always runs per person, whatever the setting. A loopback server on the capture store (the
 default `mend server setup`) runs per person too. Where a workspace cannot run per person (a nix
 image, no `sudo`, a Kubernetes workspace runtime, a Docker host with no-new-privileges), a new
-worktree runs with one shared home and the session says why. Hot sessions keep standbys only for
-people whose new worktrees run with a shared home; for anyone else every launch starts cold. See
+worktree runs with one shared home and the session says why. Hot sessions keep standbys in the
+layout new worktrees run in: a per-person standby starts as its owner, with their logins in their
+own home, and serves their next session in a new worktree. See
 [Per-person workspaces](/operate/per-person-workspaces/).
 
 Everyone in a per-person workspace has passwordless sudo, which runs as root: anyone working there,

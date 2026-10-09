@@ -27,6 +27,8 @@ export interface NewHotWorkspace {
   readonly worktreeId: WorktreeId | null;
   readonly ownerUserId: string;
   readonly fingerprint: string;
+  /** The layout the standby boots in (`HotWorkspace.harnessLayout`). */
+  readonly harnessLayout: HotWorkspace["harnessLayout"];
   readonly worktree: string | null;
   readonly branch: string | null;
   readonly baseSha: HotWorkspace["baseSha"];

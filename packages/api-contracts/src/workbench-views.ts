@@ -313,12 +313,6 @@ export class ProjectHotSessionsStatus extends Schema.Class<ProjectHotSessionsSta
   warming: Schema.Int,
   failed: Schema.Int,
   error: Schema.NullOr(Schema.String),
-  /**
-   * Why no standby is kept for the caller, observed (`per-person workspaces launch cold`): their
-   * fresh worktrees run per person, which no standby serves. Null while standbys are kept. Older
-   * servers omit it.
-   */
-  cold: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
 /** One file in the user's dotfiles snapshot — path relative to `~`, size as a fact. */

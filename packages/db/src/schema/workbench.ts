@@ -60,7 +60,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
-import type { CapturePosition } from "@mend/domain/workbench";
+import type { CapturePosition, HarnessLayout } from "@mend/domain/workbench";
 import {
   AuditData,
   HotWorkspaceEnvironment,
@@ -520,6 +520,8 @@ export const hotWorkspaces = pgTable(
     status: text().$type<HotWorkspaceStatus>().notNull().default("warming"),
     error: text(),
     fingerprint: text().notNull(),
+    /** The layout the standby booted in (docs/adr/0016); `shared` for rows from before 0120. */
+    harnessLayout: text().$type<HarnessLayout>().notNull().default("shared"),
     // Null since standby workspaces (0048): the pool no longer pre-creates a worktree.
     worktree: text(),
     branch: text(),

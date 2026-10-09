@@ -63,8 +63,11 @@ export interface LayoutDecisionInput {
   /** The worktree's head capture holds `harness/people/`: person, record or not. */
   readonly headHasPeople: boolean;
   readonly capability: LayoutCapability;
-  /** The launch claimed a standby, whose claim found it would run shared. */
-  readonly standby?: boolean;
+  /**
+   * The launch claimed a standby, whose claim found it would run in this layout: the layout the
+   * standby booted in (`HotWorkspace.harnessLayout`).
+   */
+  readonly standby?: HarnessLayout;
   /**
    * The launcher has dotfiles and the platform cannot apply them as a person yet
    * (`PersonLayoutPlatform.dotfilesUser`): a worktree with no layout yet runs `shared`, as decision
@@ -158,10 +161,15 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
     return { kind: "launch", layout: "shared", source: "flag", reason: null, probe: false };
   }
   // A standby this session claimed, on a worktree nothing makes person: its claim found the
-  // launch would run shared, and it stands, whatever was learnt about the image since (a probe
-  // racing the claim). The standby runs one person, so it takes the launch rather than failing
-  // it (review 2 of mend#582, N7); its prepare checks the image as a cold shared launch's does.
-  if (input.standby === true) {
+  // launch would run in the layout the standby booted in, and that stands, whatever was learnt
+  // about the image since (a probe racing the claim), rather than failing the launch (review 2
+  // of mend#582, N7). A person standby booted with its owner's map: its prepare checks the image
+  // as a cold person launch's does, and falls back to shared on a fresh worktree as that does.
+  if (input.standby === "person") {
+    return { kind: "launch", layout: "person", source: "flag", onMissing: "fallback" };
+  }
+  // A shared standby runs one person; its prepare checks the image as a cold shared launch's does.
+  if (input.standby === "shared") {
     return {
       kind: "launch",
       layout: "shared",
@@ -213,9 +221,6 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
  */
 export const KUBERNETES_LAYOUT_OBSTACLE =
   "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
-
-/** Why a project keeps no standby for an owner whose fresh worktrees run per person. */
-export const HOT_POOL_PER_PERSON_COLD = "per-person workspaces launch cold";
 
 /** Why a session served by a standby runs shared (`decideHarnessLayout`'s `standby`). */
 export const STANDBY_REASON =

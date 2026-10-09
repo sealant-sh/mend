@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
+import { HarnessLayout } from "./harness-layout.ts";
 import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 import { SessionDotfiles } from "./session.ts";
@@ -62,6 +63,13 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   error: Schema.NullOr(Schema.String),
   /** Hash of every create-time-fixed input; claims require an exact match. */
   fingerprint: Schema.String,
+  /**
+   * The harness layout the standby booted in (docs/adr/0016): `person` booted with its owner's
+   * capture owner map and their logins in their own home, so it serves only that owner's launch
+   * decided `person`; `shared` serves only a launch decided `shared`. Rows from before it are
+   * `shared`.
+   */
+  harnessLayout: HarnessLayout,
   /** Worktree directory name inside the project's store (derived from `id`). */
   worktree: Schema.NullOr(Schema.String),
   /** The pre-created session branch the worktree is on. */
