@@ -35,10 +35,12 @@ Preconditions:
 
 - Mend is healthy at `<web>` and its deployment exposes the workspace SSH gateway (the no-gateway
   step needs one that does not).
-- Run every command with a disposable home so the run never edits the real `~/.ssh/config`:
-  `export HOME=<tmp>/ssh-home`, copy the signed-in `cli.json` to
-  `$HOME/.config/mend/cli.json`, and `unset SSH_AUTH_SOCK` so setup generates a key of its own
-  instead of pinning one from an agent.
+- Run every command with fresh disposable `HOME` and `XDG_CONFIG_HOME` directories so the run
+  edits only its own SSH configuration and key: `export HOME=<tmp>/ssh-home` and
+  `export XDG_CONFIG_HOME=<tmp>/ssh-config`. Create `$XDG_CONFIG_HOME/mend` and copy the run's
+  signed-in `cli.json` there, to `$XDG_CONFIG_HOME/mend/cli.json`. Unset `SSH_AUTH_SOCK` so setup
+  generates a dedicated key at `$XDG_CONFIG_HOME/mend/ssh/id_ed25519` instead of pinning an
+  agent key. Both directories start empty apart from that copied credential file.
 
 - **Status before setup.** Run `mend ssh`. Stdout shows
   `gateway         <host>:<port> · published for <web>`,
@@ -67,15 +69,19 @@ Preconditions:
 - **No gateway.** Against a deployment without one, `mend ssh` prints
   `workspace ssh   no gateway · this deployment exposes none` (exit `0`), and `mend ssh setup`
   prints `mend: This deployment exposes no workspace SSH gateway.` (exit `1`).
-- **Connect.** Not drivable from a user surface: no Mend surface prints a session's workspace id,
-  which the `connect with` line needs (Gotchas). Record it unreachable with that reason.
+- **Connect from the CLI.** Not drivable through the CLI/web listings: neither provides the
+  workspace id the `connect with` line needs (Gotchas). Record it unreachable with that reason.
+  VS Code's `Copy code command` includes the id in its remote authority, but that path is not
+  drivable yet because the verify stack has no VS Code driver.
 - **VS Code (not drivable yet).** `Mend: Set up workspace SSH` asks `Set up workspace SSH?` with
   `Set up`; afterwards the status bar reads
   `Mend SSH config saved; client key registered. Host trust not checked.` `Mend: Open in VS Code`
   needs the Microsoft Remote SSH extension (otherwise
   `Opening a remote Mend worktree requires Microsoft Remote SSH.` with `Install Remote SSH` and
   `Copy code command`), and for a settled session asks `<session> has no live workspace.` with
-  `Resume and open`.
+  `Resume and open`. With Remote SSH absent, `Copy code command` copies
+  `code --remote ssh-remote+<prefix>-<workspace-id>@<host> "/workspace/repo"`.
+  Not drivable yet: no VS Code driver exists in the verify stack.
 - **Proof.** Keep the `mend ssh`, `mend ssh setup` (twice) and `mend ssh bogus` transcripts with
   exit codes, and the disposable `~/.ssh/config` after each setup.
 
@@ -83,18 +89,21 @@ Preconditions:
 
 - `mend ssh setup` writes the `~/.ssh/config` of whoever runs it and registers a key on the
   server. Without a disposable `HOME`, a run edits the operator's real SSH configuration.
-- Moving `HOME` also moves the CLI's credential file (`$XDG_CONFIG_HOME`, default
-  `~/.config/mend`); copy `cli.json` in, or the commands answer `not signed in`.
+- Changing `HOME` leaves an existing `XDG_CONFIG_HOME` authoritative for CLI credentials and
+  the dedicated SSH key. Set both to fresh disposable directories. The resolved Mend config
+  directory is `$XDG_CONFIG_HOME/mend`; copy `cli.json` there, or the commands answer `not signed in`.
 - With `SSH_AUTH_SOCK` set, setup may pin a key from the agent (`from your ssh-agent (public
   identity saved locally)`) instead of generating one, which changes the printed lines.
-- Failures print `mend: …` on stdout, not stderr, and set exit `1`. Assert on stdout and the exit
-  code.
+- Local SSH command failures, including an unknown subcommand, no gateway during setup, or a
+  config/key error, print `mend: …` on stdout and set exit `1`. API and authentication failures
+  print `mend: …` on stderr and exit `1`. Capture both streams and the exit code.
 - `mend ssh status` also reads `--host`; `help.ts` documents the flag only for `mend ssh setup`.
 - `ssh-config` and `client key` lines describe this client's files and the server's key list.
   `host trust      not checked` is the honest state: Mend has no host-key fingerprint from the
   platform.
-- The `connect with` line needs a workspace id, and neither `mend sessions --json`, the web
-  session page nor any other user surface shows one; only the VS Code extension reads it
-  internally. That is a product gap: a CLI user cannot use the printed command. `mend shell` is the
-  CLI's way into a workspace (see [Session shell](./session-shell.md)).
+- The `connect with` line needs a workspace id, which neither `mend sessions --json` nor the
+  web session page lists. That is a product gap for a CLI user trying the printed command.
+  VS Code is an exception: when Microsoft Remote SSH is absent, `Copy code command` copies a
+  remote authority containing the workspace id. `mend shell` is the CLI's way into a workspace
+  (see [Session shell](./session-shell.md)).
 - A settled session has no running workspace to reach; the editor flow resumes it as a shell first.

@@ -5,8 +5,11 @@ and the efforts a model takes when they are fewer than the harness's. Every clie
 list (`mend models`, the web and desktop composers' model and settings menus, the phone's chips,
 VS Code's quick picks) and preselects the server's default. A launch sends the chosen model,
 effort and speed; the server resolves a missing model to the default, keeps an effort within what
-the model takes, and records what the session was started with. Every surface then shows the model
-beside the harness. A resume keeps the recorded model; a resume on another harness clears it.
+the model takes, and records what the session was started with. The CLI's human session listing,
+web session facts and desktop terminal header show the model and any recorded effort. Web project
+rows and mobile session rows and headers show the model without effort. TUI rows show the harness
+without model or effort; VS Code tree rows omit model and effort. A resume keeps the recorded
+model; a resume on another harness clears it.
 
 ## Sub-features
 
@@ -18,15 +21,18 @@ beside the harness. A resume keeps the recorded model; a resume on another harne
 - `desktop-picker` does the same in the desktop launcher.
 - `mobile-picker` picks model, thinking and priority chips under each harness row.
 - `vscode-picker` picks model and thinking in `Mend: New Session…`'s quick picks.
-- `model-shown` shows the recorded model (and effort) beside the harness on every surface.
+- `model-shown` shows model and recorded effort in the CLI's human listing, web session facts
+  and desktop terminal header; web project rows and mobile rows and headers show model only.
+  TUI rows show harness only, and VS Code tree rows omit model and effort.
 - `resume-with` resumes a settled session on another harness (`mend resume --with`), which clears
   the recorded model.
 
 ## How to get to it (user POV)
 
-- CLI: `mend models [--json]`; `mend claude|codex|opencode|pi … --model <id> --effort <level> --fast`;
-  `mend resume [session-id] --with <harness>`; `mend sessions` shows `· <model> · <effort>` on each
-  row.
+- CLI: `mend models [--json]`; `mend claude|codex|opencode|pi … --model <id>`. Claude and Codex
+  take `--effort <level>`, and pi takes it as thinking; opencode's launch ignores effort.
+  `--fast` requests priority processing for Codex only. `mend resume [session-id] --with <harness>`;
+  `mend sessions` shows `· <model> · <effort>` when those facts were recorded.
 - Web: the Now page's `New session` composer: the harness pill, the model pill (named by the
   model's label), and the settings pill (named `settings` or by its summary) with `Thinking`,
   `Speed`, `Permissions` and `Land when a turn completes`. Narrow composers fold them into one
@@ -34,12 +40,15 @@ beside the harness. A resume keeps the recorded model; a resume on another harne
   model.
 - Desktop: the launcher (the sidebar's `New session in <project>` button) with the same pills; the
   terminal pane's header shows the model.
-- Mobile: the Projects tab, under each project, one row per harness (`claude`, `codex`): tapping
-  the row opens `model`, `thinking`, `base` and `priority` chips; session rows and the session
-  header show the model.
+- Mobile: the Projects tab, under each project, one row per harness (`claude`, `codex`). Opening
+  a row shows `model` chips only with catalog entries, `thinking` only with several effort choices,
+  `base` only with fetched branches, and `priority` only when the catalog reports `fastCapable`
+  (Codex; Claude has none). Session rows and the session header show model without effort.
 - VS Code: `Mend: New Session…` asks `Harness`, then `Model`, then `Thinking`, then `Permissions`.
-  Not drivable yet: no VS Code harness exists for this map.
-- Slack: `model=` in a mention (see [Slack](./slack.md)). Not drivable yet.
+  The session tree omits model and effort; it shows harness only in the fallback label when a
+  session has no label. Not drivable yet: no VS Code driver exists in the verify stack.
+- Slack: `model=` in a mention (see [Slack](./slack.md)). Not drivable yet: no Slack driver exists
+  in the verify stack.
 
 ## Driving it with verify
 
@@ -54,7 +63,10 @@ Preconditions:
 - `mend resume` reads the project from the current directory: run it inside a clone of
   `<repo-url>` whose `origin` is `<repo-url>`. Resuming `--with codex` needs `mend connect codex`.
 - `app` is the desktop window's page over CDP, signed in to `<web>`, and `phone` the Expo web page
-  at 390x844, paired with `<web>` (see [Pair a device](./pairing-devices.md)).
+  at 390x844, paired with `<web>` (see [Pair a device](./pairing-devices.md)). The mobile chips
+  step needs a fixture with only `<project>` visible in Projects, catalog entries for Claude and
+  several effort choices. With several projects, report that step blocked by the missing
+  project-scoped harness handle.
 
 - **List.** Run `mend models`. Stdout shows one block per harness: a line `<harness>  effort <range>`
   (with ` · --fast` where the harness offers priority processing), then one line per model:
@@ -97,11 +109,13 @@ Preconditions:
   `New session in <project>` opens. Its model pill is named by the model's label; choosing a
   `menuitemradio` changes it as on the web. After `Start`, the terminal pane's header shows
   `<model-id> · <effort>` (an effort only when one was chosen).
-- **Mobile chips.** In the phone (390x844), run
+- **Mobile chips.** With the single-project fixture, in the phone (390x844), run
   `await phone.getByRole("tab", { name: "Projects" }).click()`, then
   `await phone.getByText("claude", { exact: true }).click()`. The row opens `model` chips, one per
-  catalog model by label, `default` beside the default, and `thinking` chips. Its summary line
-  under `claude` reads the chosen model's label.
+  catalog model by label, `default` beside the default, and `thinking` chips when there are
+  several effort choices. `base` appears after branches are fetched; Claude has no `priority`
+  group. Its summary line under `claude` reads the chosen model's label. With several projects,
+  stop before the text click and report the missing project-scoped handle.
 - **Resume on another harness.** Stop the session from "Launch on a model" (`mend stop <id8>`),
   then, inside the clone, run `mend resume <id8> --with codex` in its own PTY. Stdout shows
   `✓ resuming claude · <id8> as codex` and `  watch · <web>/sessions/<id>`. Detach with `Ctrl+]`, then run
@@ -112,6 +126,8 @@ Preconditions:
 
 ## Gotchas
 
+- The web composer's prompt textarea has no label; Playwright names it only from the placeholder
+  `What should the session do?`. That is a missing-label finding.
 - The composer's pills have no stable accessible name: the model pill is named by the current
   model's label, the settings pill by its summary (`settings`, `high`, `high · ask`, …), the harness
   pill by the harness. Ask for the name the current state implies. That is a finding.
@@ -124,7 +140,11 @@ Preconditions:
 - `mend sessions --json` carries no `model` or `effort` field; only the human listing shows them.
   Assert on the text listing (or the web session page). That is a product gap against the models
   decision that every client shows the model.
+- TUI session rows omit model and effort, VS Code tree rows omit both, and mobile rows and
+  headers omit effort. VS Code's tree also omits harness when a session has a label, but its
+  fallback label includes harness. These are display gaps against the recorded-model decision.
 - The web session page shows the model's id, not its label; the composer shows the label.
+- `--fast` affects Codex only. opencode's launch ignores effort even when a choice was recorded.
 - An id the catalog does not list is passed through to the harness as given; the harness decides
   whether it exists. A failed launch for that reason is the harness's word, not Mend's.
 - opencode lists models but names no default, so a launch with no `--model` records no model and
@@ -136,6 +156,8 @@ Preconditions:
   whose advice does not apply to `resume`. It attaches the terminal: run it in its own PTY.
 - The phone's harness rows and chips have no roles, and each row's `Start` is a role-less
   `EvButton` named only `Start`: with `claude` and `codex` rows (and one set per project) the run
-  cannot tell them apart. The `getByText` step above is the only handle. That is a finding; start
-  phone sessions from the session recipes, not by these buttons.
+  cannot tell them apart. The `getByText("claude", { exact: true })` step is unambiguous only
+  with one project visible. There is no project-scoped accessible harness handle; with several
+  projects report the chips step blocked by that missing handle. That is a finding; start phone
+  sessions from the session recipes, not by these buttons.
 - The TUI dashboard has no model picker: its launches run the server's default.

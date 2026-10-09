@@ -51,6 +51,10 @@ Preconditions:
 - The desktop steps run the app with a remote debugging port (README, Driving conventions) and the
   same `XDG_CONFIG_HOME`, because the desktop and the CLI share one credential file. `app` below is
   the desktop window's page from `chromium.connectOverCDP`; `page` is the run's own browser.
+- For password reset, `<email>` is an active operator account and the run holds its password;
+  the first account on the instance is an operator. The logout and desktop sign-out steps before
+  reset sign the CLI out, so sign it in again as that operator first. Without that account, report
+  the reset step unreachable.
 
 - **Create the first account.** On the fresh instance, run `await page.goto("<web>/login")`. The
   heading `Create the first account` is visible and the step list marks `01 Account` with
@@ -109,8 +113,12 @@ Preconditions:
   `Not signed in`. On `/connect` the same act is the button
   `sign out · revokes this device when it is one, removes the token`, after which the text reads
   `Signed out · the device was revoked on the server.`
-- **Password reset.** Run `mend operator reset-link <email>`. Stdout prints
-  `<web>/reset/<token>` and `password reset for <email> · works once · expires <day>`. Run
+- **Restore the operator CLI.** Run `mend login --url <web>` again and approve it at `/authorize`
+  as in "CLI login", signed in to the browser as the operator `<email>`. `mend doctor` reports
+  `signed in` again.
+- **Password reset.** Run `mend operator reset-link <email>`, naming the operator's own account.
+  Stdout prints `<web>/reset/<token>` and
+  `password reset for <email> · works once · expires <day>`; exit `0`. Run
   `await page.goto("<that URL>")`: the heading `Set a new password` is visible. Run
   `await page.getByLabel("New password", { exact: true }).fill("<new password>")`,
   `await page.getByLabel("New password, again").fill("<new password>")` and
@@ -118,6 +126,10 @@ Preconditions:
   with the status `Password changed. Sign in with the new one.` Opening the link again and
   submitting shows the alert
   `This link is spent or expired. Ask an owner or the operator for a new one.`
+- **After the reset.** Open `<web>/settings`: the browser walks to `/login`, because the reset
+  ended every browser session for this account; sign in with `<new password>`. Run `mend doctor`
+  from the CLI: its line still matches `/^✓ signed in\s+token accepted/`, because a reset does
+  not revoke device tokens.
 - **Proof.** Save `await page.locator("body").ariaSnapshot()` and a screenshot for `/login`
   (registration closed), `/authorize` before and after `Authorize`, and Settings → Devices before
   and after `mend logout`. Keep every `mend login`, `mend logout`, `mend doctor` and
@@ -144,8 +156,13 @@ Preconditions:
 - `mend logout` prints `nothing saved — already signed out` only when no `cli.json` exists at all;
   a second `mend logout` after the first prints the `✓ signed out` line again.
 - A reset ends every browser session of the account (Better Auth's `revokeSessionsOnPasswordReset`);
-  sign the browser in again afterwards. Not verified from source: whether device tokens survive a
-  reset, and whether the operator may reset their own account. Run the reset step last.
+  sign the browser in again afterwards. Device tokens are checked on their own: one stops working
+  only when it is revoked or its account is deactivated, so the CLI, the desktop app and paired
+  phones stay signed in through a reset. Run the reset step last.
+- `mend operator reset-link` takes any account with that email that belongs to an organization,
+  the operator's own included; it refuses an email with no such account
+  (`No active account in an organization has that email.`). Owners reset members' passwords from
+  Settings → Members instead (see [Organization](./organization.md)).
 - The desktop `/connect` form has no accessible name, and its waiting state's link is a button
   named by the full authorize URL; read the URL from that button's text.
 - The `Sign out` button in the web shell exists twice in the DOM (sidebar and top strip); only one

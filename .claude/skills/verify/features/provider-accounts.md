@@ -29,8 +29,8 @@ marked as needing a reconnect, and Mend says so in the web app, `mend accounts` 
   `Settings → Accounts`.
 - CLI: `mend connect <claude|codex|github> [--use-my-login] [--from-stdin] [--remove]`,
   `mend accounts`, and the provider lines of `mend doctor`.
-- Desktop: Settings → `Connected accounts`, the same three rows with `Connect`, `Replace` and
-  `Disconnect`, taking a pasted credential.
+- Desktop: Settings (the title bar's `Settings` link) → `Connected accounts`, shown while signed
+  in: the same three rows with `Connect`, `Replace` and `Disconnect`, taking a pasted credential.
 - Session starts: in a per-person workspace a launch without the harness's login is refused with
   `Connect Claude to start a session here.`, or
   `Your Claude login needs reconnecting. Reconnect Claude to start a session here.`; a steered
@@ -41,7 +41,9 @@ marked as needing a reconnect, and Mend says so in the web app, `mend accounts` 
 
 Preconditions:
 
-- Mend is healthy at `<web>`, the browser and the CLI are signed in as the same account.
+- Mend is healthy at `<web>`, the browser and the CLI are signed in as the same account. For the
+  desktop step, the desktop app runs with a remote debugging port, signed in as that account (it
+  shares the CLI's credential file); `app` is its window's page from `chromium.connectOverCDP`.
 - The run holds credentials it may send to this disposable instance: a GitHub token (`gh` logged
   in on the run's machine, or `<github-token>`), and for the Claude and Codex steps a Claude setup
   token (`claude setup-token`) and a Codex `auth.json`. The interactive `mend connect claude` and
@@ -64,11 +66,21 @@ Preconditions:
   prints its `connected` line; a Claude credential given as a JSON grant also prints
   `  access expires <time> · grant expires <time>`, and any MCP tokens in it stay on the machine
   (`  keeping <names> on this machine`).
-- **Interactive grant.** With a person present, run `mend connect claude` in its own PTY. It prints
-  `  Mend needs its own Claude login; it is sent to your server and not kept here` and
-  `  your own Claude login stays as it is`, runs Claude's browser login, then
-  `  your own Claude login still works · verified` and the `connected` line. `mend connect codex`
-  prints the Codex equivalents and a device code to enter.
+- **Interactive Claude grant.** With a person present, run `mend connect claude` in its own PTY. It
+  prints `  Mend needs its own Claude login; it is sent to your server and not kept here` and
+  `  your own Claude login stays as it is`, then runs Claude's browser login. Afterwards it checks
+  the machine's own Claude login and prints one of: `  your own Claude login still works · verified`
+  (it is still logged in), or the line that starts
+  `  your own Claude login was signed out by this one — this account allows one grant at a time.`
+  (it was logged in before and is signed out now). If neither condition holds, including when
+  the status check is unavailable, no personal-login status line prints. Then the `connected`
+  line. Capture which status line printed, or its absence, as CLI output.
+- **Interactive Codex grant.** With a person present, run `mend connect codex` in its own PTY. It
+  prints `  Mend needs its own Codex login; it is sent to your server and not kept here` and
+  `  your own Codex login stays as it is`, then hands the terminal to `codex login --device-auth`,
+  whose own output gives the link and code to enter. After approval it prints the `connected` line;
+  it prints no check of the machine's own Codex login. A failed login ends with
+  `mend: codex: the login did not complete`, exit `1`.
 - **Second view on the web.** Run `await page.goto("<web>/settings#accounts")`. The heading
   `Connected accounts` is visible, and each connected row's line reads `<account> · …<suffix>`
   in place of `not connected`. A connected row's buttons read `Replace` and `Disconnect`.
@@ -84,11 +96,30 @@ Preconditions:
   reads `<login> · …<suffix>`. `mend accounts` lists `github   connected …`.
 - **Disconnect from the web.** Choose that row's `Disconnect`. It reads `…`, then the row reads
   `not connected` and `mend accounts` agrees.
+- **Desktop.** In the desktop app (`app`, over CDP), keep Claude and Codex connected and GitHub
+  disconnected after the web steps. Run
+  `await app.getByRole("link", { name: "Settings" }).click()`. The heading `Connected accounts` is
+  visible with rows `Claude`, `Codex` and `GitHub`; the GitHub row's hint reads
+  ``Paste `gh auth token` — gives `gh` in every session a GH_TOKEN``. Run
+  `await app.getByRole("button", { name: "Connect", exact: true }).click()`,
+  `await app.getByPlaceholder("gho_…").fill("<github-token>")` and
+  `await app.getByPlaceholder("gho_…").press("Enter")`. The submit reads `Connecting…`, the form
+  closes, and the row's hint reads `connected · <login> · …<suffix>` with `Replace` and
+  `Disconnect` beside it. `mend accounts` lists `github   connected …`. Run
+  `await app.getByRole("button", { name: "Replace", exact: true }).nth(2).click()`, fill the same
+  field and press `Enter` again; the form closes and the connected hint returns. `mend accounts`
+  still lists `github   connected …`. Run
+  `await app.getByRole("button", { name: "Disconnect", exact: true }).nth(2).click()`: the hint
+  returns to the paste instruction and `mend accounts` lists `github   not connected`. Record
+  both `.nth(2)` actions as positional, using the provider order in Gotchas. A refused credential
+  shows an alert (`app.getByRole("alert")`).
 - **Refused usage.** Run `mend connect gitlab`. Stderr reads
   `mend: usage: mend connect <claude|codex|github> [--use-my-login] [--from-stdin] [--remove]`
   and `       mend connect pi [--dir <path>] [--dry-run] [--remove]`; exit `1`.
 - **Proof.** Save `await page.locator("body").ariaSnapshot()` and a screenshot of the
-  `Connected accounts` section before and after each web action. Keep every `mend accounts`,
+  `Connected accounts` section before and after each web action, and
+  `await app.locator("body").ariaSnapshot()` with a screenshot of the desktop's section before and
+  after its connect, replace and disconnect. Keep every `mend accounts`,
   `mend connect` and `mend doctor` transcript with its exit code. Restore the accounts noted at the
   start.
 

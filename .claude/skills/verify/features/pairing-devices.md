@@ -50,7 +50,8 @@ Preconditions:
   `<name>`, then `<platform> · paired <day> · last used <when>`.
 - **Pair from the web.** Run `await page.getByRole("button", { name: "Pair a phone" }).click()`.
   The button reads `Minting…`, then the panel shows `code` with a grouped code `XXXX-XXXX`, `url`
-  with `<web>`, a countdown `expires in 9:5x`, and the text
+  with `<web>`, a countdown matching `/^expires in \d+:\d{2}$/` (it may start at `10:00` or
+  `9:59`) whose value is lower a few seconds later, and the text
   `The QR encodes mend://pair?u=<url-encoded web>&c=<code>`. Run
   `await page.getByRole("button", { name: "Done" }).click()`; the panel closes.
 - **Pair from the CLI.** Run `mend pair`. Stdout shows a block-character QR, then
@@ -76,7 +77,7 @@ Preconditions:
   `code expired — generate a new one on the machine`, and the phone stays on `/pair`.
 - **Test the connection.** On the phone's Settings, run
   `await phone.getByText("Test connection", { exact: true }).click()`. The word `connected` and
-  `connected · <n> projects` appear.
+  a line matching `/^connected · \d+ projects?$/` appear (`connected · 1 project` for one).
 - **Second view.** Reload `<web>/settings#devices`. A new device with platform `web` is listed,
   `last used` recent.
 - **Mint by hand.** Run

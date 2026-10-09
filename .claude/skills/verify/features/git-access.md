@@ -41,8 +41,10 @@ Preconditions:
 - Mend is healthy at `<web>`, the browser and the CLI are signed in as the same account, and
   `<project>` is adopted with `ambient` access.
 - For `bridge`, the run's machine has an ssh-agent with a key loaded (`SSH_AUTH_SOCK` set).
-- Proving a clone through the Mend key needs a disposable git account or repository the run may
-  add a key to (`<private-repo-url>`); without one, report that step unreachable.
+- The private adoption steps need a disposable git account or repository the run may add a key
+  to and its SSH remote URL, written `<private-ssh-repo-url>` (`git@github.com:<owner>/<repo>.git`
+  or `ssh://git@<host>/<owner>/<repo>.git`). The Mend key and the bridge sign SSH transport only;
+  an HTTPS clone does not exercise either signer. Without that fixture, report the steps unreachable.
 - Note the account's mode (`mend keys mode`) and `<project>`'s mode, and restore both at the end.
 
 - **Show the key.** Run `mend keys show`. With no key it prints
@@ -79,11 +81,11 @@ Preconditions:
   GitHub origin its text links `<owner>/<repo>` for the deploy-key page. Choose `bridge`: the card
   reads `no signer connected` and the hint naming `mend keys share`. Choose `ambient`: both go.
 - **Adopt with the key.** After adding the public key to the disposable git account, run
-  `mend adopt <private-repo-url> --name <project>-key --auth mend-key`. Stdout shows
+  `mend adopt <private-ssh-repo-url> --name <project>-key --auth mend-key`. Stdout shows
   `✓ adopted · <project>-key · <store path>` and
   `  git auth mend key (your Mend key signed this clone)`. Exit `0`.
 - **Adopt over the bridge.** Set `mend keys mode bridge`, keep `mend keys share` running in its
-  own PTY, and run `mend adopt <private-repo-url> --name <project>-bridge --auth bridge`. Stdout
+  own PTY, and run `mend adopt <private-ssh-repo-url> --name <project>-bridge --auth bridge`. Stdout
   shows ``  git auth bridge (signed through the connected `mend keys share`)``, and the share's
   terminal prints `✎ signature requested by mend (…)` then `✓ signed (<n>s)`.
 - **Refused mode.** Run `mend adopt <repo-url> --auth nope`. Stderr reads
