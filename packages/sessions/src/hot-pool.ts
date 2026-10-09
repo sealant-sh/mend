@@ -85,26 +85,33 @@ export const hotFingerprint = (
     // v2 relocates pi's `.pi` too (a standby made before it would leave pi's state ephemeral).
     harnessHomeLayout: "capture-root-v2",
     workspaceImage: encodeWorkspaceImage(inputs.workspaceImage),
-    applyDotfiles: inputs.applyDotfiles,
+    // A person standby applies no dotfiles at boot: its owner's are resolved at claim, so a
+    // dotfiles change does not drain it (review of mend#596, N7). A shared standby's keys keep
+    // their order, so its hash is what it was.
+    ...(standby.layout === "person" ? {} : { applyDotfiles: inputs.applyDotfiles }),
     inheritUserSkills: inputs.inheritUserSkills,
     skills: byName(inputs.skills).map((skill) => ({
       id: skill.id,
       name: skill.name,
       revision: skill.revision,
     })),
-    dotfiles: {
-      repository:
-        inputs.dotfiles.repository === null
-          ? null
-          : {
-              url: inputs.dotfiles.repository.url,
-              ref: inputs.dotfiles.repository.ref,
-              subdirectory: inputs.dotfiles.repository.subdirectory,
-              manager: inputs.dotfiles.repository.manager,
-              bootstrap: inputs.dotfiles.repository.bootstrap,
-            },
-      snapshotSha: inputs.dotfiles.snapshotSha,
-    },
+    ...(standby.layout === "person"
+      ? {}
+      : {
+          dotfiles: {
+            repository:
+              inputs.dotfiles.repository === null
+                ? null
+                : {
+                    url: inputs.dotfiles.repository.url,
+                    ref: inputs.dotfiles.repository.ref,
+                    subdirectory: inputs.dotfiles.repository.subdirectory,
+                    manager: inputs.dotfiles.repository.manager,
+                    bootstrap: inputs.dotfiles.repository.bootstrap,
+                  },
+            snapshotSha: inputs.dotfiles.snapshotSha,
+          },
+        }),
     environmentRevision: inputs.environmentRevision,
     secretRevision: inputs.secretRevision,
     clusterBindingRevision: inputs.clusterBindingRevision,

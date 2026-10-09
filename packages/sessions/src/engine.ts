@@ -15396,12 +15396,77 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // pre-provisioned skeleton whose id this session adopted. Adopt its live workspace and
         // skip the create entirely; a dead or half-stamped entry drains (keeping the worktree,
         // which the session owns) and the launch falls through to the cold path.
+        // Per-person harness homes (docs/adr/0016, decision 14): the layout is decided before the
+        // create, which commits to it. A refusal leaves nothing behind: no claim, no executor.
+        // The co-located store runs as before.
+        // The image the create will ask for, read only when the layout decision needs it.
+        const launchImage = Effect.suspend(() =>
+          project.workspaceImage === null
+            ? settingsRepo
+                .forOrganization(project.organizationId)
+                .pipe(Effect.map((settings) => settings.workspaceImage))
+            : Effect.succeed(project.workspaceImage),
+        );
+        const decideLayout = (layoutLaunchId: string, standby: HarnessLayout | null) =>
+          capture === null
+            ? Effect.succeed(SHARED_AS_BEFORE)
+            : layoutSteps
+                .decide({
+                  worktreeId: session.worktreeId,
+                  sessionId,
+                  launchId: layoutLaunchId,
+                  ownerUserId,
+                  organizationId: project.organizationId,
+                  harness: platformShape(session.harness).harness,
+                  image: launchImage,
+                  headHasPeople: headHoldsPeople(session.worktreeId),
+                  // A claimed standby's claim found this launch runs in the layout it booted
+                  // in, and that stands.
+                  ...(standby === null ? {} : { standby }),
+                  // Decision 1's fallback for dotfiles until the platform applies them per person.
+                  launcherHasDotfiles: launchImage.pipe(
+                    Effect.flatMap((image) => dotfilesNotPerPerson(project, image, ownerUserId)),
+                    Effect.map((found) => found.notApplied.length > 0),
+                  ),
+                })
+                .pipe(settleOnFailure);
         const claimedEntry =
           manifest === null && nativeImport === null ? yield* hotWorkspaces.byId(sessionId) : null;
-        const adopted =
+        const adoptedStandby =
           claimedEntry !== null && claimedEntry.status === "claimed"
             ? yield* adoptClaimedWorkspace(claimedEntry)
             : null;
+        // A claimed standby's layout, decided before anything is asked of it: its claim's
+        // decision stands against what was learnt of the image since (`decide`'s `standby`).
+        const standbyLayout =
+          adoptedStandby !== null && claimedEntry !== null
+            ? yield* decideLayout(standbyLaunchIdOf(claimedEntry.id), claimedEntry.harnessLayout)
+            : null;
+        // A standby serves only a launch decided in the layout it booted in (`standbyLayoutFor`).
+        // A person standby's owner map is complete only for a fresh worktree of its owner's: a
+        // decision for any other reason (the worktree turned person, or its head gained `people/`,
+        // between the claim and now) would restore someone's saved directory under a map that
+        // does not name them (review of mend#596, N1). Either way nothing has run in it yet: it
+        // goes, and the launch goes on cold.
+        const standbyMismatch =
+          standbyLayout !== null &&
+          claimedEntry !== null &&
+          (standbyLayout.layout !== claimedEntry.harnessLayout ||
+            (standbyLayout.layout === "person" && standbyLayout.source !== "flag"));
+        if (standbyMismatch && claimedEntry !== null) {
+          yield* Effect.logInfo(
+            "session engine: claimed standby's layout does not serve this launch · cold launch",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId,
+              standby: claimedEntry.harnessLayout,
+              decided: standbyLayout?.layout ?? null,
+              source: standbyLayout?.source ?? null,
+            }),
+          );
+          yield* drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(Effect.ignore);
+        }
+        const adopted = standbyMismatch ? null : adoptedStandby;
         // An unusable standby (dead, half-stamped) was never replanned: nothing of the session's
         // is on it, so its claim is released at once rather than waited out by the cold path.
         if (capture !== null && claimedEntry !== null && adopted === null) {
@@ -15498,67 +15563,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The cold executor's launch identity, minted before its lease is claimed: the lease is
         // bound to it (cross-repo decision 11), and so are its token and its create.
         const coldLaunchKey = reusedCreateKey ?? executorCreateKeyFor(sessionId, new Date());
-        // Per-person harness homes (docs/adr/0016, decision 14): the layout is decided before the
-        // create, which commits to it. A refusal leaves nothing behind: no claim, no executor.
-        // The co-located store runs as before.
-        // The image the create will ask for, read only when the layout decision needs it.
-        const launchImage = Effect.suspend(() =>
-          project.workspaceImage === null
-            ? settingsRepo
-                .forOrganization(project.organizationId)
-                .pipe(Effect.map((settings) => settings.workspaceImage))
-            : Effect.succeed(project.workspaceImage),
-        );
-        const decideLayout = (layoutLaunchId: string, standby: HarnessLayout | null) =>
-          capture === null
-            ? Effect.succeed(SHARED_AS_BEFORE)
-            : layoutSteps
-                .decide({
-                  worktreeId: session.worktreeId,
-                  sessionId,
-                  launchId: layoutLaunchId,
-                  ownerUserId,
-                  organizationId: project.organizationId,
-                  harness: platformShape(session.harness).harness,
-                  image: launchImage,
-                  headHasPeople: headHoldsPeople(session.worktreeId),
-                  // A claimed standby's claim found this launch runs in the layout it booted
-                  // in, and that stands.
-                  ...(standby === null ? {} : { standby }),
-                  // Decision 1's fallback for dotfiles until the platform applies them per person.
-                  launcherHasDotfiles: launchImage.pipe(
-                    Effect.flatMap((image) => dotfilesNotPerPerson(project, image, ownerUserId)),
-                    Effect.map((found) => found.notApplied.length > 0),
-                  ),
-                })
-                .pipe(settleOnFailure);
         let launchLayout: LaunchLayout =
-          adopted !== null && claimedEntry !== null
-            ? yield* decideLayout(standbyLaunchIdOf(claimedEntry.id), claimedEntry.harnessLayout)
+          adopted !== null && standbyLayout !== null
+            ? standbyLayout
             : yield* decideLayout(coldLaunchKey, null);
-        if (
-          adopted !== null &&
-          claimedEntry !== null &&
-          launchLayout.layout !== claimedEntry.harnessLayout
-        ) {
-          // A standby serves only a launch decided in the layout it booted in
-          // (`standbyLayoutFor`), and its claim's decision stands against what was learnt of the
-          // image since (`decide`'s `standby`). Only a shared standby on a worktree that became
-          // person between the claim and now (another session's first person launch) reaches
-          // here: it goes, and the launch asks again.
-          yield* drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(Effect.ignore);
-          const error = new SealantPlatformError({
-            code: "harness_layout_refused",
-            status: 409,
-            message:
-              claimedEntry.harnessLayout === "shared"
-                ? "the standby claimed for this session runs as one person, and this worktree runs per person; start the session again"
-                : "the standby claimed for this session runs each person as their own user, and this launch runs as one person; start the session again",
-            cause: null,
-          });
-          yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
-          return yield* error;
-        }
         // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
         // same statement) with a boot-sized TTL, bound to the launch; the executor learns the
         // epoch from its first plan and the first heartbeat brings the TTL back to the 30 s

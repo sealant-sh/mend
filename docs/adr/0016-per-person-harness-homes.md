@@ -1462,4 +1462,12 @@ benchmark once more, before 0.36 is tagged.
   launch's. A reconcile that cannot ask the control plane keeps the pool as it is. A replan that
   fails goes cold under a layout decided for the cold executor's own launch. The Hot sessions status
   no longer carries a cold reason.
+- 2026-10-10, after the review of mend#596: a claimed standby's layout is decided as soon as it is
+  adopted, before its replan; one that does not serve the launch (another layout, or a person
+  standby decided for any reason but the flag: the worktree turned person or its head gained
+  `people/` since the claim) is drained and the launch goes on cold, instead of failing. While the
+  control plane cannot be asked, a fresh launch is still predicted shared where the image is known
+  to run shared (a runtime ruled out, Core's "no", or Mend's record of one), so shared standbys keep
+  serving. A person standby's fingerprint leaves out the dotfiles inputs, which it resolves at
+  claim.
 - Open: gate B's history record.

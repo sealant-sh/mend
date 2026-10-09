@@ -401,8 +401,9 @@ export interface HarnessLayoutSteps {
    * The layout a fresh worktree's launch would run in for this owner, image and harness, as
    * `decide` would choose it: `shared` with the flag `shared`, an image or runtime that cannot
    * run per person, or dotfiles the platform cannot apply per person. What a standby for this
-   * owner boots in. Null when it cannot be told now (the control plane could not be asked): the
-   * pool keeps what it has rather than draining on a passing failure (review 2 of mend#582, N7).
+   * owner boots in. Null when it cannot be told now (the control plane could not be asked, and
+   * nothing known of the image says shared): the pool keeps what it has rather than draining on a
+   * passing failure (review 2 of mend#582, N7), and a claim goes cold.
    */
   readonly freshLaunchLayout: (input: FreshLaunchInput) => Effect.Effect<StandbyLayout | null>;
   /**
@@ -1065,8 +1066,24 @@ export const makeHarnessLayoutSteps = (deps: {
     if (predicted.person) {
       return { layout: "person", imageKey: predicted.imageKey, runtime: predicted.runtime };
     }
-    // A passing failure to ask the control plane says nothing of the image.
-    return predicted.capability.missing.includes(CONTROL_PLANE_UNREADABLE) ? null : SHARED_STANDBY;
+    if (!predicted.capability.missing.includes(CONTROL_PLANE_UNREADABLE)) return SHARED_STANDBY;
+    // A passing failure to ask the control plane says nothing of the image, but what is known of
+    // it still stands (review of mend#596, N2): a runtime ruled out, Core's own "no", or Mend's
+    // record of a "no" keep fresh launches shared, so shared standbys still serve them.
+    const image = yield* input.image;
+    const report = yield* platform.imageReport({
+      ownerUserId: input.ownerUserId,
+      image,
+      harness: input.harness,
+    });
+    if (runtimeLayoutObstacle(report.runtime) !== null || report.person === false) {
+      return SHARED_STANDBY;
+    }
+    const recorded = yield* repo.capabilityOf(
+      imageLayoutKeyOf(image, report.digest),
+      report.runtime ?? "unknown",
+    );
+    return recorded !== null && !recorded.person ? SHARED_STANDBY : null;
   });
 
   // A standby boots before any worktree is known, and sealantd reads its capture owner map only
