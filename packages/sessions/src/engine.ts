@@ -318,12 +318,11 @@ import {
 } from "./conversation-home.ts";
 import { HAND_OVER_NOT_NOW, handOverFailed, makeConversationSteps } from "./conversation-steps.ts";
 import {
-  countFetchRetries,
   dependencyInstallDoneLine,
   detectInstallCommand,
-  installScript,
   PLATFORM_PROBE_SCRIPT,
   platformKeyOf,
+  runInstallCommand,
 } from "./dependency-cache.ts";
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
@@ -2735,19 +2734,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               command,
             }),
           );
-          const result = yield* sealant.exec(workspace, ["sh", "-lc", installScript(command)], {
-            cwd: "/workspace/repo",
-            ...(user === undefined ? {} : { user }),
-          });
-          // Counted from this exec's output and dropped: the line carries the count, never the text.
-          const fetchRetries = countFetchRetries(result.stdout, result.stderr);
-          yield* Effect.logInfo(dependencyInstallDoneLine(result.exitCode, fetchRetries)).pipe(
+          // Counted from each exec's output and dropped: the lines carry the count, never the
+          // text. A shortened install that failed on fetch retries runs once more with pnpm's
+          // defaults, and says so on its own line.
+          const outcome = yield* runInstallCommand(command, (script) =>
+            sealant.exec(workspace, ["sh", "-lc", script], {
+              cwd: "/workspace/repo",
+              ...(user === undefined ? {} : { user }),
+            }),
+          ).pipe(Effect.annotateLogs({ sessionId: session.id, platform, command }));
+          yield* Effect.logInfo(
+            dependencyInstallDoneLine(outcome.exitCode, outcome.fetchRetries),
+          ).pipe(
             Effect.annotateLogs({
               sessionId: session.id,
               platform,
               command,
-              fetchRetries,
-              stderr: result.exitCode === 0 ? "" : result.stderr.slice(-400),
+              fetchRetries: outcome.fetchRetries,
+              retriedWithDefaults: outcome.retriedWithDefaults,
+              stderr: outcome.exitCode === 0 ? "" : outcome.stderr.slice(-400),
             }),
           );
           return null;

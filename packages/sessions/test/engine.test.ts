@@ -21961,58 +21961,82 @@ describe("automatic install", () => {
   }
 
   // A plain pnpm install runs with Mend's fetch timeouts (`installScript`), and the line it logs
-  // says how many fetch retries the output reported, counted from this exec's output alone.
-  it("a detected pnpm install runs with fetch timeouts and logs its fetch retries", async () => {
-    const PNPM = "pnpm install --frozen-lockfile";
-    const created: Array<CreateOptions> = [];
-    const execCalls: ReadonlyArray<string>[] = [];
-    const memory = makeMemoryCaptureStore();
-    const logs: string[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const { engine, session } = yield* launchOnce(world, tmp);
-          const project = world.projects.get(session.projectId);
-          if (project === undefined) throw new Error("project missing");
-          world.projects.set(project.id, new Project({ ...project, installCommand: PNPM }));
-          yield* engine.launch(session.id, ["codex"]);
-          const installs = execCalls.filter((argv) => argv[0] === "sh" && argv[1] === "-lc");
-          expect(installs.map((argv) => argv[2])).toContain(installScript(PNPM));
-          expect(installs.map((argv) => argv[2])).not.toContain(PNPM);
-          expect(
-            logs.some((line) =>
-              line.includes("dependency install · completed · exit 0 · fetch retries 2"),
-            ),
-          ).toBe(true);
-          // Only the count is logged, never the output it was counted from.
-          expect(logs.some((line) => line.includes("registry.npmjs.org"))).toBe(false);
-        }),
-      {
-        captured: memory,
-        logs,
-        sealantLayer: lifecycleLayer(created, {
-          execCalls,
-          captureOps: {
-            exec: (argv) =>
-              (argv[2] ?? "").startsWith("uname -s; uname -m;")
-                ? { exitCode: 0, stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n", stderr: "" }
-                : argv[2] === installScript(PNPM)
-                  ? {
-                      exitCode: 0,
-                      stdout: [
-                        "Packages: +2024",
-                        " WARN  GET https://registry.npmjs.org/a/-/a-1.0.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 2 seconds. 2 retries left.",
-                        "Done in 31.2s using pnpm v10.32.1",
-                      ].join("\n"),
-                      stderr:
-                        "request to https://registry.npmjs.org/b failed, reason: read ECONNRESET\n",
-                    }
-                  : undefined,
-          },
-        }),
-      },
-    );
-  });
+  // says how many fetch retries the output reported, counted from the execs' output alone. When
+  // the shortened install fails on fetch timeouts (a registry slower than 15 s to answer), the
+  // command runs once more as written, with pnpm's defaults, and a line says so.
+  const RETRY =
+    " WARN  GET https://registry.npmjs.org/a/-/a-1.0.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 2 seconds. 2 retries left.";
+  const GIVE_UP =
+    " ERR_SOCKET_TIMEOUT  request to https://registry.npmjs.org/a/-/a-1.0.0.tgz failed, reason: Socket timeout\n";
+  for (const shortened of ["completes", "fails on fetch timeouts"] as const) {
+    it(`a detected pnpm install runs with fetch timeouts; ${shortened === "completes" ? "it completes and logs its fetch retries" : "it fails on fetch timeouts, runs again with pnpm's defaults and says so"}`, async () => {
+      const PNPM = "pnpm install --frozen-lockfile";
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const logs: string[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const project = world.projects.get(session.projectId);
+            if (project === undefined) throw new Error("project missing");
+            world.projects.set(project.id, new Project({ ...project, installCommand: PNPM }));
+            yield* engine.launch(session.id, ["codex"]);
+            const installs = execCalls
+              .filter((argv) => argv[0] === "sh" && argv[1] === "-lc")
+              .map((argv) => argv[2])
+              .filter((script) => script === installScript(PNPM) || script === PNPM);
+            const retried = logs.some((line) =>
+              line.includes("dependency install · retried with defaults"),
+            );
+            if (shortened === "completes") {
+              expect(installs).toEqual([installScript(PNPM)]);
+              expect(retried).toBe(false);
+              expect(
+                logs.some((line) =>
+                  line.includes("dependency install · completed · exit 0 · fetch retries 2"),
+                ),
+              ).toBe(true);
+            } else {
+              expect(installs).toEqual([installScript(PNPM), PNPM]);
+              expect(retried).toBe(true);
+              // The end line keeps its shape: the rerun's exit, the retries of both runs.
+              expect(
+                logs.some((line) =>
+                  line.includes("dependency install · completed · exit 0 · fetch retries 1"),
+                ),
+              ).toBe(true);
+            }
+            // Only the count is logged, never the output it was counted from.
+            expect(logs.some((line) => line.includes("registry.npmjs.org"))).toBe(false);
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            execCalls,
+            captureOps: {
+              exec: (argv) =>
+                (argv[2] ?? "").startsWith("uname -s; uname -m;")
+                  ? { exitCode: 0, stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n", stderr: "" }
+                  : argv[2] === installScript(PNPM)
+                    ? shortened === "completes"
+                      ? {
+                          exitCode: 0,
+                          stdout: ["Packages: +2024", RETRY, RETRY, "Done in 31.2s"].join("\n"),
+                          stderr: "",
+                        }
+                      : { exitCode: 1, stdout: `${RETRY}\n`, stderr: GIVE_UP }
+                    : argv[2] === PNPM
+                      ? { exitCode: 0, stdout: "Done in 20.2s using pnpm v10.32.1\n", stderr: "" }
+                      : undefined,
+            },
+          }),
+        },
+      );
+    });
+  }
 });
 
 /**

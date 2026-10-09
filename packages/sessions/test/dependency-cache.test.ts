@@ -36,10 +36,12 @@ import {
   INSTALL_FETCH_RETRY_MAXTIMEOUT_MS,
   INSTALL_FETCH_RETRY_MINTIMEOUT_MS,
   INSTALL_FETCH_TIMEOUT_MS,
+  type InstallExecResult,
   installScript,
   platformKeyOf,
   promoteBulkToCache,
   readDependencyCache,
+  runInstallCommand,
 } from "../src/dependency-cache.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 
@@ -86,10 +88,17 @@ describe("detectInstall", () => {
   });
 });
 
+const writeFiles = (base: string, files: Readonly<Record<string, string>> | undefined) => {
+  for (const [name, text] of Object.entries(files ?? {})) {
+    fs.mkdirSync(path.dirname(path.join(base, name)), { recursive: true });
+    fs.writeFileSync(path.join(base, name), text);
+  }
+};
+
 describe("installScript", () => {
   const PNPM = "pnpm install --frozen-lockfile";
 
-  it("runs every command but a plain pnpm install exactly as written", () => {
+  it("runs every command but a plain one-line pnpm install exactly as written", () => {
     for (const command of [
       "npm ci",
       "npm install",
@@ -101,12 +110,16 @@ describe("installScript", () => {
       "pnpm install --filter '@mend/*'",
       "pnpm run build",
       "cd app && pnpm install",
+      "pnpm install\npnpm build",
+      "pnpm install\r\npnpm build",
+      "pnpm\ninstall",
     ]) {
       expect(installScript(command)).toBe(command);
     }
     expect(installScript(PNPM)).not.toBe(PNPM);
     expect(installScript("pnpm i")).toContain("\npnpm i $mend_fetch_timeout");
     expect(installScript(` ${PNPM} `)).toContain(`\n${PNPM} $mend_fetch_timeout`);
+    expect(installScript("pnpm\tinstall")).toContain("\npnpm\tinstall $mend_fetch_timeout");
   });
 
   it("carries no secret: only fixed setting names and numbers", () => {
@@ -123,12 +136,17 @@ describe("installScript", () => {
   });
 
   // The script, run by a real `sh` against a stand-in `pnpm` that writes down its argv and the
-  // fetch settings it was handed. Whatever the project, the person or the environment set wins.
+  // fetch settings it was handed, and exits with `$STAND_IN_EXIT` (0 when unset). Whatever the
+  // command, the project, the person, the image or the environment set wins.
   describe("run by sh", () => {
     const run = (setup: {
+      readonly command?: string;
       readonly files?: Readonly<Record<string, string>>;
       readonly home?: Readonly<Record<string, string>>;
-      readonly env?: Readonly<Record<string, string>>;
+      /** Files under the temporary root, for config paths the environment points at. */
+      readonly root?: Readonly<Record<string, string>>;
+      readonly env?: (root: string) => Readonly<Record<string, string>>;
+      readonly status?: number;
     }) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-install-script-"));
       try {
@@ -136,13 +154,9 @@ describe("installScript", () => {
         const home = path.join(root, "home");
         const bin = path.join(root, "bin");
         for (const dir of [repo, home, bin]) fs.mkdirSync(dir, { recursive: true });
-        for (const [name, text] of Object.entries(setup.files ?? {})) {
-          fs.writeFileSync(path.join(repo, name), text);
-        }
-        for (const [name, text] of Object.entries(setup.home ?? {})) {
-          fs.mkdirSync(path.dirname(path.join(home, name)), { recursive: true });
-          fs.writeFileSync(path.join(home, name), text);
-        }
+        writeFiles(repo, setup.files);
+        writeFiles(home, setup.home);
+        writeFiles(root, setup.root);
         const out = path.join(root, "pnpm.out");
         fs.writeFileSync(
           path.join(bin, "pnpm"),
@@ -152,17 +166,25 @@ describe("installScript", () => {
             "for name in npm_config_fetch_timeout npm_config_update_notifier npm_config_fetch_retry_mintimeout npm_config_fetch_retry_maxtimeout pnpm_config_fetch_retry_mintimeout pnpm_config_fetch_retry_maxtimeout; do",
             `  printf '%s=%s\\n' "$name" "$(printenv "$name")" >> "${out}"`,
             "done",
+            'exit "${STAND_IN_EXIT:-0}"',
           ].join("\n"),
           { mode: 0o755 },
         );
-        const ran = spawnSync("sh", ["-c", installScript(PNPM)], {
+        // A stand-in `node` too, so the script reads node's global npmrc under this root
+        // (`<root>/etc/npmrc`) and never the test machine's.
+        fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+        const ran = spawnSync("sh", ["-c", installScript(setup.command ?? PNPM)], {
           cwd: repo,
           // A clean environment: a test run under pnpm carries npm_config_* of its own.
-          env: { PATH: `${bin}:/usr/bin:/bin:${process.env.PATH ?? ""}`, HOME: home, ...setup.env },
+          env: {
+            PATH: `${bin}:/usr/bin:/bin:${process.env.PATH ?? ""}`,
+            HOME: home,
+            ...setup.env?.(root),
+          },
           encoding: "utf8",
         });
         expect(ran.stderr).toBe("");
-        expect(ran.status).toBe(0);
+        expect(ran.status).toBe(setup.status ?? 0);
         return Object.fromEntries(
           fs
             .readFileSync(out, "utf8")
@@ -177,17 +199,27 @@ describe("installScript", () => {
         fs.rmSync(root, { recursive: true, force: true });
       }
     };
+    const MIN = String(INSTALL_FETCH_RETRY_MINTIMEOUT_MS);
+    const MAX = String(INSTALL_FETCH_RETRY_MAXTIMEOUT_MS);
+    const WITH_FLAG = `install --frozen-lockfile --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}`;
 
     it("sets the timeout on the command line and the retry waits in the environment when nobody did", () => {
       expect(run({})).toEqual({
-        argv: `install --frozen-lockfile --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}`,
+        argv: WITH_FLAG,
         npm_config_fetch_timeout: "",
         npm_config_update_notifier: "false",
-        npm_config_fetch_retry_mintimeout: String(INSTALL_FETCH_RETRY_MINTIMEOUT_MS),
-        npm_config_fetch_retry_maxtimeout: String(INSTALL_FETCH_RETRY_MAXTIMEOUT_MS),
-        pnpm_config_fetch_retry_mintimeout: String(INSTALL_FETCH_RETRY_MINTIMEOUT_MS),
-        pnpm_config_fetch_retry_maxtimeout: String(INSTALL_FETCH_RETRY_MAXTIMEOUT_MS),
+        npm_config_fetch_retry_mintimeout: MIN,
+        npm_config_fetch_retry_maxtimeout: MAX,
+        pnpm_config_fetch_retry_mintimeout: MIN,
+        pnpm_config_fetch_retry_maxtimeout: MAX,
       });
+    });
+
+    it("keeps the install's exit status, whatever it is", () => {
+      for (const status of [1, 137]) {
+        const seen = run({ env: () => ({ STAND_IN_EXIT: String(status) }), status });
+        expect(seen.argv).toBe(WITH_FLAG);
+      }
     });
 
     it("leaves the timeout to a project's .npmrc that sets it", () => {
@@ -195,23 +227,17 @@ describe("installScript", () => {
         files: { ".npmrc": "registry=https://example.test/\n fetch-timeout = 120000\n" },
       });
       expect(seen.argv).toBe("install --frozen-lockfile");
-      expect(seen.npm_config_fetch_retry_mintimeout).toBe(
-        String(INSTALL_FETCH_RETRY_MINTIMEOUT_MS),
-      );
+      expect(seen.npm_config_fetch_retry_mintimeout).toBe(MIN);
     });
 
     it("leaves a retry wait to a project's pnpm-workspace.yaml that sets it", () => {
       const seen = run({
         files: { "pnpm-workspace.yaml": "packages:\n  - apps/*\nfetchRetryMintimeout: 5000\n" },
       });
-      expect(seen.argv).toBe(
-        `install --frozen-lockfile --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}`,
-      );
+      expect(seen.argv).toBe(WITH_FLAG);
       expect(seen.npm_config_fetch_retry_mintimeout).toBe("");
       expect(seen.pnpm_config_fetch_retry_mintimeout).toBe("");
-      expect(seen.pnpm_config_fetch_retry_maxtimeout).toBe(
-        String(INSTALL_FETCH_RETRY_MAXTIMEOUT_MS),
-      );
+      expect(seen.pnpm_config_fetch_retry_maxtimeout).toBe(MAX);
     });
 
     it("leaves a setting to the person's ~/.npmrc or pnpm rc", () => {
@@ -223,28 +249,171 @@ describe("installScript", () => {
       });
       expect(seen.argv).toBe("install --frozen-lockfile");
       expect(seen.npm_config_fetch_retry_maxtimeout).toBe("");
-      expect(seen.npm_config_fetch_retry_mintimeout).toBe(
-        String(INSTALL_FETCH_RETRY_MINTIMEOUT_MS),
+      expect(seen.npm_config_fetch_retry_mintimeout).toBe(MIN);
+    });
+
+    it("leaves a setting to the user config NPM_CONFIG_USERCONFIG points at, in either case", () => {
+      for (const name of ["NPM_CONFIG_USERCONFIG", "npm_config_userconfig"]) {
+        const seen = run({
+          root: { "elsewhere/npmrc": "fetch-timeout=120000\n" },
+          // The default ~/.npmrc is not read when another user config is named.
+          home: { ".npmrc": "fetch-retry-mintimeout=5000\n" },
+          env: (root) => ({ [name]: path.join(root, "elsewhere/npmrc") }),
+        });
+        expect(seen.argv).toBe("install --frozen-lockfile");
+        expect(seen.npm_config_fetch_retry_mintimeout).toBe(MIN);
+      }
+    });
+
+    it("leaves a setting to the global npmrc: the one named, the npm prefix's, or node's prefix's", () => {
+      const named = run({
+        root: { "global/npmrc": "fetch-timeout=120000\n" },
+        env: (root) => ({ NPM_CONFIG_GLOBALCONFIG: path.join(root, "global/npmrc") }),
+      });
+      expect(named.argv).toBe("install --frozen-lockfile");
+      const prefix = run({
+        root: { "npm-global/etc/npmrc": "fetch-retry-maxtimeout=30000\n" },
+        env: (root) => ({ npm_config_prefix: path.join(root, "npm-global") }),
+      });
+      expect(prefix.argv).toBe(WITH_FLAG);
+      expect(prefix.npm_config_fetch_retry_maxtimeout).toBe("");
+      // The stand-in node is `<root>/bin/node`: its prefix's etc/npmrc is `<root>/etc/npmrc`.
+      const node = run({ root: { "etc/npmrc": "update-notifier=true\n" } });
+      expect(node.argv).toBe(WITH_FLAG);
+      expect(node.npm_config_update_notifier).toBe("");
+    });
+
+    it("leaves a setting the command already passes", () => {
+      const flag = run({ command: "pnpm install --frozen-lockfile --fetch-timeout=60000" });
+      expect(flag.argv).toBe("install --frozen-lockfile --fetch-timeout=60000");
+      expect(flag.npm_config_fetch_retry_mintimeout).toBe(MIN);
+      const config = run({ command: "pnpm install --config.fetch-retry-mintimeout=9000" });
+      expect(config.argv).toBe(
+        `install --config.fetch-retry-mintimeout=9000 --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}`,
       );
+      expect(config.npm_config_fetch_retry_mintimeout).toBe("");
+      expect(config.pnpm_config_fetch_retry_maxtimeout).toBe(MAX);
     });
 
     it("leaves a setting the environment already carries, under either prefix and either case", () => {
       const seen = run({
-        env: { npm_config_fetch_timeout: "90000", PNPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "30000" },
+        env: () => ({
+          npm_config_fetch_timeout: "90000",
+          PNPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "30000",
+        }),
       });
       expect(seen.argv).toBe("install --frozen-lockfile");
       expect(seen.npm_config_fetch_timeout).toBe("90000");
       expect(seen.npm_config_fetch_retry_maxtimeout).toBe("");
       expect(seen.pnpm_config_fetch_retry_maxtimeout).toBe("");
-      expect(seen.pnpm_config_fetch_retry_mintimeout).toBe(
-        String(INSTALL_FETCH_RETRY_MINTIMEOUT_MS),
-      );
+      expect(seen.pnpm_config_fetch_retry_mintimeout).toBe(MIN);
     });
   });
 });
 
+/** Run `body` with an exec that runs a script by `sh` beside a stand-in `pnpm` of these lines. */
+const withStandIn = async <A>(
+  pnpm: ReadonlyArray<string>,
+  body: (
+    exec: (script: string) => Effect.Effect<InstallExecResult>,
+    seen: string[],
+  ) => Effect.Effect<A>,
+): Promise<A> => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-install-rerun-"));
+  try {
+    const repo = path.join(root, "repo");
+    const bin = path.join(root, "bin");
+    for (const dir of [repo, bin]) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(bin, "pnpm"), ["#!/bin/sh", ...pnpm].join("\n"), {
+      mode: 0o755,
+    });
+    fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const seen: string[] = [];
+    const exec = (script: string) =>
+      Effect.sync(() => {
+        seen.push(script);
+        const ran = spawnSync("sh", ["-c", script], {
+          cwd: repo,
+          env: { PATH: `${bin}:/usr/bin:/bin:${process.env.PATH ?? ""}`, HOME: root },
+          encoding: "utf8",
+        });
+        return { exitCode: ran.status ?? 1, stdout: ran.stdout, stderr: ran.stderr };
+      });
+    return await Effect.runPromise(body(exec, seen));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+};
+
+// The rerun with pnpm's defaults, through a real `sh` and a stand-in `pnpm` that, like a registry
+// slower than 15 s to answer every time, fails with timeouts under Mend's flag and succeeds
+// without it.
+describe("runInstallCommand", () => {
+  const RETRY = ` WARN  GET https://registry.example/a/-/a-1.0.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 2 seconds. 2 retries left.`;
+  const GIVE_UP = ` ERR_SOCKET_TIMEOUT  request to https://registry.example/a/-/a-1.0.0.tgz failed, reason: Socket timeout`;
+  // Fails with two retries and pnpm's give-up line under Mend's timeout; succeeds without it.
+  const SLOW_PROXY = [
+    `case "$*" in *--fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}*)`,
+    `  printf '%s\\n%s\\n' '${RETRY}' '${RETRY}'; printf '%s\\n' '${GIVE_UP}' >&2; exit 1;;`,
+    "esac",
+    "echo 'Done in 20.2s using pnpm v10.32.1'",
+  ];
+
+  it("a shortened install that failed on fetch timeouts runs once more with pnpm's defaults, and succeeds", async () => {
+    const PNPM = "pnpm install --frozen-lockfile";
+    await withStandIn(SLOW_PROXY, (exec, seen) =>
+      Effect.gen(function* () {
+        const outcome = yield* runInstallCommand(PNPM, exec);
+        expect(outcome).toEqual({
+          exitCode: 0,
+          fetchRetries: 2,
+          retriedWithDefaults: true,
+          stderr: "",
+        });
+        expect(seen).toEqual([installScript(PNPM), PNPM]);
+      }),
+    );
+  });
+
+  it("the rerun's failure is the outcome, with the retries of both runs", async () => {
+    const PNPM = "pnpm install";
+    await withStandIn(
+      [`printf '%s\\n' '${RETRY}'`, `printf '%s\\n' '${GIVE_UP}' >&2`, "exit 1"],
+      (exec, seen) =>
+        Effect.gen(function* () {
+          const outcome = yield* runInstallCommand(PNPM, exec);
+          expect(outcome.exitCode).toBe(1);
+          expect(outcome.fetchRetries).toBe(2);
+          expect(outcome.retriedWithDefaults).toBe(true);
+          expect(seen).toEqual([installScript(PNPM), PNPM]);
+        }),
+    );
+  });
+
+  it("runs once when the install succeeded, failed without fetch retries, or was left as written", async () => {
+    for (const [command, pnpm, exitCode, fetchRetries] of [
+      ["pnpm install", [`printf '%s\\n' '${RETRY}'`, "exit 0"], 0, 1],
+      [
+        "pnpm install",
+        ["echo ' ERR_PNPM_FETCH_404  GET https://registry.example/x: Not Found'", "exit 1"],
+        1,
+        0,
+      ],
+      ["pnpm install && true", [`printf '%s\\n' '${RETRY}'`, "exit 1"], 1, 1],
+    ] as const) {
+      await withStandIn(pnpm, (exec, seen) =>
+        Effect.gen(function* () {
+          const outcome = yield* runInstallCommand(command, exec);
+          expect(outcome).toMatchObject({ exitCode, fetchRetries, retriedWithDefaults: false });
+          expect(seen).toHaveLength(1);
+        }),
+      );
+    }
+  });
+});
+
 describe("countFetchRetries", () => {
-  it("counts the lines that report a stalled or retried download, once per line", () => {
+  it("counts the lines that report a download about to be retried, once per line", () => {
     const stdout = [
       "Packages: +2024",
       "Progress: resolved 2024, reused 1, downloaded 2002, added 2023",
@@ -252,20 +421,35 @@ describe("countFetchRetries", () => {
       " WARN  GET https://registry.npmjs.org/@expo/ui/-/ui-0.2.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 10 seconds. 2 retries left.",
       // pnpm 11
       "[WARN] GET https://registry.npmjs.org/a/-/a-1.0.0.tgz error (ERR_PNPM_FETCH_TIMEOUT). Will retry in 1 second. 2 retries left.",
-      // pnpm 12: the error and the retry on two lines
+      // pnpm 12: the error and the retry on two lines; the retry line counts
       "[WARN] GET https://registry.npmjs.org/b/-/b-1.0.0.tgz error (Failed to fetch: operation timed out) — 1",
       "Will retry in 10s. 1 retries left.",
+      // a reset connection, warned about and retried
+      " WARN  GET https://registry.npmjs.org/@vitest/spy/-/spy-3.2.7.tgz error (ECONNRESET). Will retry in 10 seconds. 2 retries left.",
       " WARN  Tarball download average speed 31 KiB/s (size 1024 KiB) is below 50 KiB/s",
       "Done in 14.2s using pnpm v10.32.1",
     ].join("\n");
-    const stderr = [
-      "npm error code EIDLETIMEOUT",
-      "npm error Idle timeout reached for host `registry.npmjs.org:443`",
-      "request to https://registry.npmjs.org/c failed, reason: read ECONNRESET",
-    ].join("\n");
-    expect(countFetchRetries(stdout, stderr)).toBe(5);
+    expect(countFetchRetries(stdout, "")).toBe(4);
     expect(countFetchRetries("Done in 9.8s using pnpm v10.32.1\n", "")).toBe(0);
     expect(countFetchRetries("", "")).toBe(0);
+  });
+
+  it("does not count a give-up line, an HTTP refusal, or a script printing a socket error", () => {
+    const stderr = [
+      // pnpm 10 once its retries ran out
+      " ERR_SOCKET_TIMEOUT  request to https://registry.npmjs.org/a/-/a-1.0.0.tgz failed, reason: Socket timeout",
+      "FetchError: request to https://registry.npmjs.org/a/-/a-1.0.0.tgz failed, reason: Socket timeout",
+      // pnpm 11 refused
+      " ERR_PNPM_FETCH_401  GET https://npm.example/@corp%2Fui: Unauthorized - 401",
+      " ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/nope: Not Found - 404",
+      // npm
+      "npm error code EIDLETIMEOUT",
+      "npm error Idle timeout reached for host `registry.npmjs.org:443`",
+      // a postinstall
+      "Error: read ECONNRESET",
+      "request to https://example.test failed, reason: connect ETIMEDOUT 10.0.0.1:443",
+    ].join("\n");
+    expect(countFetchRetries("", stderr)).toBe(0);
   });
 });
 
