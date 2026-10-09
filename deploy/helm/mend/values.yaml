@@ -251,6 +251,36 @@ networkPolicies:
   # Where the Sealant API lives (the worker and web call it).
   sealantNamespace: sealant
 
+# The package and image mirrors (docs: operate/npm-mirror, operate/docker-mirror). Off by default here; the
+# packaged install (`mend server setup`) runs both. Neither is published beyond its ClusterIP
+# Service, and networkPolicies admits only the API tier and workspace Pods.
+mirrors:
+  npm:
+    # nginx caching registry.npmjs.org; the API tier gets MEND_NPM_MIRROR_URL. Sessions install
+    # through it unless the project names a registry or a login for registry.npmjs.org.
+    enabled: false
+    # The unprivileged nginx image (uid 101): the same configuration as the packaged install's.
+    image: nginxinc/nginx-unprivileged:1.29-alpine
+    # nginx's cap on the cache (least recently used out); keep the claim a little larger.
+    maxSize: 10g
+    storage: 12Gi
+    storageClassName: ""
+    resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: "1", memory: 256Mi } }
+  docker:
+    # The reference registry in proxy mode for Docker Hub. Point workspace Docker daemons at it
+    # in the SEALANT chart: workspaces.docker.registryMirrors: [http://<release>-docker-mirror.<namespace>.svc:5000]
+    enabled: false
+    image: registry:3.1
+    # How long a layer or manifest is kept after it was fetched; the registry has no size cap.
+    ttl: 168h
+    storage: 50Gi
+    storageClassName: ""
+    resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: "1", memory: 512Mi } }
+    upstreamCredentials:
+      # A Secret with keys `username` and `password` (a Docker Hub access token): the mirror pulls
+      # as that account. Empty pulls anonymously.
+      existingSecret: ""
+
 # Extra API-tier env (plain values only). Not forwarded to the web tier.
 # Configure shared browser origins through web.appUrl / web.allowedOrigins above.
 extraEnv: []

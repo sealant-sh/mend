@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -765,3 +766,67 @@ test(
     assert.match(unknown.stderr, /exposure\.mode must be loopback, private or public/);
   },
 );
+
+test("the mirrors are off unless asked for, and nothing names them", { skip }, () => {
+  const result = renderFixture("obc");
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /npm-mirror|docker-mirror/);
+  const env = envOf(result.stdout, "mend-api");
+  assert.equal(env.has("MEND_NPM_MIRROR_URL"), false);
+  assert.equal(env.has("SEALANT_DOCKER_REGISTRY_MIRRORS"), false);
+});
+
+test(
+  "the mirrors run as optional components: ClusterIP only, non-root, admitted only from the API and workspaces",
+  { skip },
+  () => {
+    const result = renderFixture(
+      "obc",
+      "mirrors.npm.enabled=true",
+      "mirrors.docker.enabled=true",
+      "mirrors.docker.upstreamCredentials.existingSecret=docker-hub",
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const manifest = result.stdout;
+    const env = envOf(manifest, "mend-api");
+    assert.equal(env.get("MEND_NPM_MIRROR_URL"), "http://mend-npm-mirror.mend.svc:4873/");
+    assert.equal(
+      env.get("SEALANT_DOCKER_REGISTRY_MIRRORS"),
+      "http://mend-docker-mirror.mend.svc:5000",
+    );
+    for (const name of ["mend-npm-mirror", "mend-docker-mirror"]) {
+      const service = documentOf(manifest, "Service", name);
+      assert.match(service, /type: ClusterIP/);
+      assert.doesNotMatch(service, /nodePort|LoadBalancer/);
+      const deployment = documentOf(manifest, "Deployment", name);
+      assert.match(deployment, /runAsNonRoot: true/);
+      assert.match(deployment, /drop: \[ALL\]/);
+      assert.match(deployment, /type: Recreate/);
+      documentOf(manifest, "PersistentVolumeClaim", name);
+      const policy = documentOf(manifest, "NetworkPolicy", name);
+      assert.match(policy, /app.kubernetes.io\/component: api/);
+      assert.match(policy, /app.kubernetes.io\/component: workspace/);
+    }
+    // The nginx configuration is the packaged install's, byte for byte.
+    const config = documentOf(manifest, "ConfigMap", "mend-npm-mirror");
+    const conf = fs.readFileSync(path.join(root, "deploy/docker/npm-mirror.conf"), "utf8");
+    const body = config
+      .split("default.conf.template: |\n")[1]
+      .split("\n")
+      .map((line) => line.replace(/^ {4}/, ""))
+      .join("\n");
+    assert.equal(body.trimEnd(), conf.trimEnd());
+    const npm = documentOf(manifest, "Deployment", "mend-npm-mirror");
+    assert.match(npm, /name: NPM_MIRROR_MAX_SIZE, value: "10g"/);
+    // The Docker Hub login reaches the mirror from its Secret, and no other Pod.
+    const docker = documentOf(manifest, "Deployment", "mend-docker-mirror");
+    assert.match(docker, /secretKeyRef: \{ name: docker-hub, key: password \}/);
+    assert.doesNotMatch(documentOf(manifest, "Deployment", "mend-api"), /docker-hub/);
+  },
+);
+
+test("the chart refuses an npm mirror cap nginx would not read", { skip }, () => {
+  const result = renderFixture("obc", "mirrors.npm.enabled=true", "mirrors.npm.maxSize=10GB");
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /mirrors\.npm\.maxSize must be a whole number/);
+});

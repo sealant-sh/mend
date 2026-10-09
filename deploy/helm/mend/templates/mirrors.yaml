@@ -1,0 +1,170 @@
+{{- /*
+The package and image mirrors (docs: operate/npm-mirror, operate/docker-mirror), optional on Kubernetes. Each
+is one replica with a ReadWriteOnce claim, reached by a ClusterIP Service and nothing else.
+
+- npm: nginx caching registry.npmjs.org (files/npm-mirror.conf, the same configuration
+  `mend server setup` writes), capped at mirrors.npm.maxSize, least recently used out. The API
+  tier gets MEND_NPM_MIRROR_URL, and the dependency install of each session goes through it when
+  the project sets no registry of its own.
+- docker: the reference registry in proxy mode for Docker Hub, each layer kept for mirrors.docker.ttl
+  after it was fetched. Workspace Docker daemons are pointed at it by the SEALANT chart's worker
+  (SEALANT_DOCKER_REGISTRY_MIRRORS): see NOTES.txt.
+*/ -}}
+{{- if .Values.mirrors.npm.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-npm-mirror
+  labels: {{ include "mend.labels" . | nindent 4 }}
+data:
+  default.conf.template: |
+    {{- .Files.Get "files/npm-mirror.conf" | nindent 4 }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-npm-mirror
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.mirrors.npm.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: { requests: { storage: {{ .Values.mirrors.npm.storage }} } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-npm-mirror
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{ include "mend.component" (dict "root" . "name" "npm-mirror") | nindent 4 }}
+  ports: [{ name: http, port: 4873, targetPort: 4873 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-npm-mirror
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # One writer on a ReadWriteOnce claim: the old Pod goes before the new one mounts it.
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "npm-mirror") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "mend.component" (dict "root" . "name" "npm-mirror") | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Files.Get "files/npm-mirror.conf" | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      # The unprivileged nginx image runs as its own uid 101; the claim is made writable for it.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: nginx
+          image: {{ .Values.mirrors.npm.image }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          env:
+            - { name: NGINX_ENTRYPOINT_LOCAL_RESOLVERS, value: "1" }
+            - { name: NGINX_ENTRYPOINT_QUIET_LOGS, value: "1" }
+            {{- if not (regexMatch "^[1-9][0-9]{0,5}[mg]$" .Values.mirrors.npm.maxSize) }}
+            {{ fail (printf "mirrors.npm.maxSize must be a whole number of mebibytes or gibibytes, such as 10g (got %q)" .Values.mirrors.npm.maxSize) }}
+            {{- end }}
+            - { name: NPM_MIRROR_MAX_SIZE, value: {{ .Values.mirrors.npm.maxSize | quote }} }
+          ports: [{ containerPort: 4873, name: http }]
+          readinessProbe:
+            httpGet: { path: /-/ping, port: http }
+            periodSeconds: 10
+          resources: {{ toYaml .Values.mirrors.npm.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/nginx/templates, readOnly: true }
+            - { name: cache, mountPath: /var/cache/npm-mirror }
+      volumes:
+        - name: config
+          configMap: { name: {{ .Release.Name }}-npm-mirror }
+        - name: cache
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-npm-mirror }
+{{- end }}
+{{- if .Values.mirrors.docker.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-docker-mirror
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.mirrors.docker.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: { requests: { storage: {{ .Values.mirrors.docker.storage }} } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-docker-mirror
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{ include "mend.component" (dict "root" . "name" "docker-mirror") | nindent 4 }}
+  ports: [{ name: http, port: 5000, targetPort: 5000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-docker-mirror
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "docker-mirror") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "mend.component" (dict "root" . "name" "docker-mirror") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: registry
+          image: {{ .Values.mirrors.docker.image }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          env:
+            - { name: REGISTRY_PROXY_REMOTEURL, value: https://registry-1.docker.io }
+            - { name: REGISTRY_PROXY_TTL, value: {{ .Values.mirrors.docker.ttl | quote }} }
+            - { name: REGISTRY_LOG_LEVEL, value: warn }
+            - { name: REGISTRY_LOG_ACCESSLOG_DISABLED, value: "true" }
+            # The metrics listener stays on the Pod's loopback.
+            - { name: REGISTRY_HTTP_DEBUG_ADDR, value: 127.0.0.1:5001 }
+            - { name: REGISTRY_HTTP_DEBUG_PROMETHEUS_ENABLED, value: "true" }
+            {{- with .Values.mirrors.docker.upstreamCredentials.existingSecret }}
+            # A Docker Hub login, from a Secret the operator made: the mirror's alone, never a
+            # workspace's.
+            - name: REGISTRY_PROXY_USERNAME
+              valueFrom: { secretKeyRef: { name: {{ . }}, key: username } }
+            - name: REGISTRY_PROXY_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ . }}, key: password } }
+            {{- end }}
+          ports: [{ containerPort: 5000, name: http }]
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          resources: {{ toYaml .Values.mirrors.docker.resources | nindent 12 }}
+          volumeMounts:
+            - { name: cache, mountPath: /var/lib/registry }
+      volumes:
+        - name: cache
+          persistentVolumeClaim: { claimName: {{ .Release.Name }}-docker-mirror }
+{{- end }}

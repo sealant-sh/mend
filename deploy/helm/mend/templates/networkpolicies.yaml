@@ -105,4 +105,27 @@ spec:
         - podSelector:
             matchLabels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 14 }}
       ports: [{ protocol: TCP, port: 5432 }]
+{{- range $mirror := list "npm" "docker" }}
+{{- if (index $.Values.mirrors $mirror).enabled }}
+---
+# The {{ $mirror }} mirror accepts the API tier and Sealant workspace Pods on its port, and nothing
+# else; its egress is the upstream registry over the internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-{{ $mirror }}-mirror
+  labels: {{ include "mend.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{ include "mend.component" (dict "root" $ "name" (printf "%s-mirror" $mirror)) | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{ include "mend.component" (dict "root" $ "name" "api") | nindent 14 }}
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $.Values.networkPolicies.workspaceNamespace }} } }
+          podSelector: { matchLabels: { app.kubernetes.io/managed-by: sealant, app.kubernetes.io/component: workspace } }
+      ports: [{ protocol: TCP, port: {{ eq $mirror "npm" | ternary 4873 5000 }} }]
+{{- end }}
+{{- end }}
 {{- end }}

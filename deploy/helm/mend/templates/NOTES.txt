@@ -34,3 +34,23 @@ selector below, narrow it to the RGW Pods: { app: rook-ceph-rgw, rook_object_sto
       {{- end }}
       port: {{ .Values.captureStore.blobStore.endpoint.podPort }}
   workspaces.volumeMappings: []   # the RWX store mapping of chart 0.1.x is retired
+{{- if or .Values.mirrors.npm.enabled .Values.mirrors.docker.enabled }}
+
+Mirrors (ClusterIP only; the workspace NetworkPolicy of the SEALANT chart must let workspace Pods reach them):
+{{- if .Values.mirrors.npm.enabled }}
+  npm:    http://{{ .Release.Name }}-npm-mirror.{{ .Release.Namespace }}.svc:4873/ (MEND_NPM_MIRROR_URL), capped at {{ .Values.mirrors.npm.maxSize }}
+    networkPolicies.workspaceEgressAllow:
+      - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} } }
+        podSelector: { matchLabels: { app.kubernetes.io/component: npm-mirror } }
+        port: 4873
+{{- end }}
+{{- if .Values.mirrors.docker.enabled }}
+  docker: http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000, each layer kept {{ .Values.mirrors.docker.ttl }}{{ if .Values.mirrors.docker.upstreamCredentials.existingSecret }}, pulls as the login in {{ .Values.mirrors.docker.upstreamCredentials.existingSecret }}{{ else }}, pulls anonymously{{ end }}
+    In the SEALANT chart, point workspace Docker daemons at it:
+      workspaces.docker.registryMirrors: [http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000]
+    networkPolicies.workspaceEgressAllow:
+      - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} } }
+        podSelector: { matchLabels: { app.kubernetes.io/component: docker-mirror } }
+        port: 5000
+{{- end }}
+{{- end }}
