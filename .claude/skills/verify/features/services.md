@@ -24,8 +24,8 @@ desktop has a Services sheet with the same verbs as the web card.
 - `service-restart-stop` restarts a Service on the same port, or stops it and closes its tunnel.
 - `service-hold` keeps the workspace up after the agent stops, and `Stop services` /
   `mend stop --services` ends that.
-- `service-tui` shows the selected session's Services in the dashboard, tunnels its browser
-  Services while it is selected, and stops a held set with `Shift+K`.
+- `service-tui` shows the selected session's Services in the dashboard, tunnels its browser Services
+  while it is selected, and stops a held set with `Shift+K`.
 - `service-desktop` runs, adopts, opens, logs, restarts and stops Services from the desktop's
   Services sheet.
 
@@ -42,14 +42,14 @@ desktop has a Services sheet with the same verbs as the web card.
   `mend service stop <name-or-id>`, `mend service init [--yes]`.
 - CLI: `mend attach`, `mend codex`, `mend claude` and the dashboard tunnel the attached session's
   `--http`/`--https` Services on their own; `mend stop --services [session]` stops them all.
-- TUI: the dashboard's session pane lists the selected session's Services (two, then
-  `+<n> more`). On a server that is not this machine, it tunnels that session's `--http`/`--https`
-  Services while it stays selected (unless `mend ui --no-tunnel`). On a row whose agent stopped while
-  Services keep the workspace up, `Shift+K` twice stops them.
+- TUI: the dashboard's session pane lists the selected session's Services (two, then `+<n> more`).
+  On a server that is not this machine, it tunnels that session's `--http`/`--https` Services while
+  it stays selected (unless `mend ui --no-tunnel`). On a row whose agent stopped while Services keep
+  the workspace up, `Shift+K` twice stops them.
 - Desktop: a session tab's header button `Services <n>`, `Ctrl+Shift+S`, a Service's line under its
   session in the sidebar, or `Services` in the session row's right-click menu opens the side sheet
-  `Session Services`. While Services hold a stopped session, its header has `stop services`, and
-  the row's right-click menu has `Stop services`.
+  `Session Services`. While Services hold a stopped session, its header has `stop services`, and the
+  row's right-click menu has `Stop services`.
 - Mobile, VS Code and Slack: no Services surface.
 
 ## Driving it with verify
@@ -105,14 +105,14 @@ Preconditions:
   `no services running`.
 - **Desktop: open the sheet.** Click the session's sidebar row (named
   `<harness> · <label or branch>`), then run
-  `await page.getByRole("button", { name: /^Services \d+$/ }).click()` (or press
-  `Control+Shift+S`). The side sheet `Session Services` opens
+  `await page.getByRole("button", { name: /^Services \d+$/ }).click()` (or press `Control+Shift+S`).
+  The side sheet `Session Services` opens
   (`const sheet = page.getByRole("complementary", { name: "Session Services" })`), headed `Services`
   with the session's label or branch. The sidebar's line for the Service is a button named
   `web reachable`.
 - **Desktop: read a Service.** The row `web` reads `<declaration source> · :8000` and three facts:
-  `Process running` (with its attempt), `Forward bound to <address>`, and `TCP accepted on :8000` with
-  `observed <when>`. Its actions include `Logs`, `Restart` and `Stop`, plus `Open` and
+  `Process running` (with its attempt), `Forward bound to <address>`, and `TCP accepted on :8000`
+  with `observed <when>`. Its actions include `Logs`, `Restart` and `Stop`, plus `Open` and
   `Copy endpoint` when this desktop can reach the address, or `Copy command` (the
   `mend service connect` line) when it cannot.
 - **Desktop: logs.** Scope to the article containing the exact Service name `web`, then run
@@ -131,10 +131,9 @@ Preconditions:
   `await sheet.getByRole("button", { name: "Run or adopt" }).click()`. It reads `Starting…`, then a
   `web3` row joins the sheet. A port outside 1–65535 reads `Enter a port between 1 and 65535.`
 - **Desktop: restart and stop.** On the `web3` row, `Restart` reads `Restart…` and the row returns
-  to `Process running`; `Stop` reads `Stop…`, then the row offers `Run again` (or
-  `Remove forward` while its forward is still bound). `Close` closes the
-  sheet. `Recipes` lists the worktree's `mend.toml` Services with `Run`, or
-  `No recipes declared in mend.toml.`
+  to `Process running`; `Stop` reads `Stop…`, then the row offers `Run again` (or `Remove forward`
+  while its forward is still bound). `Close` closes the sheet. `Recipes` lists the worktree's
+  `mend.toml` Services with `Run`, or `No recipes declared in mend.toml.`
 - **Hold after the agent stops.** Run `mend stop <id8>`. Stdout reads
   `✓ stopped · <harness> · <id8> · <branch>`, then one line naming what keeps the workspace up,
   ending `· mend stop --services <id8>`, then `  review · <web>/sessions/<id>`. The session page
@@ -156,8 +155,8 @@ Preconditions:
   `await page.locator("body").ariaSnapshot()` and a screenshot. Keep the `mend service run`, `list`,
   `connect`, curl, `logs`, `stop` and `mend stop --services` transcripts with exit codes, the TUI
   session pane (`tmux capture-pane -p`) with `web` listed and after `Shift+K`, and the desktop sheet
-  (`page.getByRole("complementary", { name: "Session Services" }).ariaSnapshot()`) with `web`
-  listed and after the stops.
+  (`page.getByRole("complementary", { name: "Session Services" }).ariaSnapshot()`) with `web` listed
+  and after the stops.
 
 ## Gotchas
 

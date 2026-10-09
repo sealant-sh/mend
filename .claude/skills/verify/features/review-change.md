@@ -102,21 +102,21 @@ Preconditions:
   `tmux send-keys -t mend-review v`. `tmux capture-pane -p -t mend-review` shows
   ` mend / <project> / review · <harness> <id8> · checkpoint recorded`, then
   ` <branch> · worktree vs <base sha, 12 characters> · 1 files +1 −0 · 2 open`; a box
-  ` change description ` (`No description yet — t composes one from the diff and session record.`
-  until there is one, and `Mend has not read this change.` until a pass ran); the panes
-  ` files · 1 `, ` comments · 2 open ` and ` VERIFY.md · unified `; the line
+  `change description` (`No description yet — t composes one from the diff and session record.`
+  until there is one, and `Mend has not read this change.` until a pass ran); the panes `files · 1`,
+  `comments · 2 open` and `VERIFY.md · unified`; the line
   ` m read · g suggest · t tour · ,/. tour stops · s draft review · o web · r refresh`; and the
   footer
   ` diff · ↑↓/jk lines · n/p files · [/ ] hunks · v range · c inline · C change · d layout · w wrap · z whitespace`.
   The two web comments are listed.
 - **TUI: inline comment.** In the diff pane, run `tmux send-keys -t mend-review c`. An editor titled
-  ` comment · VERIFY.md:1 ` opens with the placeholder `What should change, and why?` and
+  `comment · VERIFY.md:1` opens with the placeholder `What should change, and why?` and
   ` ctrl+enter save · esc cancel`. Run
   `tmux send-keys -t mend-review -l 'Check the trailing newline.'`, then save with Ctrl+Enter (see
   Gotchas). The status line reads ` Inline comment added` and the comments pane reads
-  ` comments · 3 open `. `v` before `c` starts a range (` Range starts at line <n>`).
+  `comments · 3 open`. `v` before `c` starts a range (` Range starts at line <n>`).
 - **TUI: change comment.** Run `tmux send-keys -t mend-review C`. The editor is titled
-  ` comment · change `. Type and save as above. The status line reads ` Change comment added`.
+  `comment · change`. Type and save as above. The status line reads ` Change comment added`.
 - **TUI: comment state.** Run `tmux send-keys -t mend-review Tab` to reach the comments pane. Its
   footer reads
   ` comments · ↑↓/jk move · enter anchor · a accept/address · x dismiss · u reopen · tab pane`, and
@@ -145,8 +145,8 @@ Preconditions:
   `await page.getByRole("button", { name: "Comment on change" }).click()`. A composer opens under
   `Comments & evidence`, headed `Whole change`. Run
   `await page.getByRole("textbox", { name: "Describe what you observed or want changed." }).fill("Desktop: say where VERIFY.md is read.")`
-  and `await page.getByRole("button", { name: "Add comment" }).click()`. It reads `Saving…`, then the
-  composer closes and `comment → <n>` counts one more. `Comment on file` opens the same composer
+  and `await page.getByRole("button", { name: "Add comment" }).click()`. It reads `Saving…`, then
+  the composer closes and `comment → <n>` counts one more. `Comment on file` opens the same composer
   headed `VERIFY.md`. A line number click opens it headed `VERIFY.md · new 1` (no handle; see
   Gotchas).
 - **Desktop: comment state.** On a comment card under `Review comments`, run
@@ -171,8 +171,8 @@ Preconditions:
   `/review/<change id>`. The screen reads `review`, the branch, and
   `checkpoint <a> → <b> · 1 file · +1 −0 · <n> open comments`. The file header reads `VERIFY.md`
   with `+1 −0` and the comment count.
-- **Mobile: inline comment.** Tap the added line's text in the diff (no role or name; see
-  Gotchas). A composer opens under it, labelled `VERIFY.md:1`. Run
+- **Mobile: inline comment.** Tap the added line's text in the diff (no role or name; see Gotchas).
+  A composer opens under it, labelled `VERIFY.md:1`. Run
   `await page.getByRole("textbox", { name: "Comment on this line…" }).fill("Mobile: one line is enough.")`
   and tap the `Comment` under it, the first on the screen; the change-level composer's comes later
   (`page.getByText("Comment", { exact: true }).first()`). The card under the line reads
@@ -239,8 +239,8 @@ Preconditions:
   sleep. Their findings are draft comments with evidence lines (`seq <n> · <excerpt>`), never a
   verdict.
 - The dashboard needs Node 26 or newer; every other command works on Node 22.
-- In the TUI review screen, `q` quits the whole dashboard; `esc`, `h` or backspace return to it.
-  `v` on a session with no change answers `this session has no reviewable change yet`.
+- In the TUI review screen, `q` quits the whole dashboard; `esc`, `h` or backspace return to it. `v`
+  on a session with no change answers `this session has no reviewable change yet`.
 - The TUI editor saves on Ctrl+Enter only. A terminal sends a plain Enter for it unless it reports
   modified keys, and tmux forwards a modified Enter only with its `extended-keys` option on. This
   map has not established that `tmux send-keys C-Enter` reaches the editor. If it does not, report
@@ -262,8 +262,8 @@ Preconditions:
 - The desktop keeps one open key per change in `localStorage`, so reopening `review the change`
   returns to the same slice until `New snapshot`.
 - The desktop's comment composer has no label; its name falls back to
-  `Describe what you observed or want changed.`. The instruction field has no label either; its
-  name falls back to `Select comments, then assemble an editable instruction.`. Those are findings.
+  `Describe what you observed or want changed.`. The instruction field has no label either; its name
+  falls back to `Select comments, then assemble an editable instruction.`. Those are findings.
 - The desktop Pinned Review offers no `Read this change`, `Suggest fixes` or description compose,
   and lists only people's comments written on a slice with its own diff digest: Mend's drafts are
   filtered out, so they cannot be accepted there (`commentsForComparison`,

@@ -46,10 +46,10 @@ but does not land; Slack lands automatically or from a button in the thread.
   change into a local clone without pushing.
 - TUI: none. The dashboard has no landing; use `mend land`.
 - Desktop: a session tab's header button `land` (the owner) or `landing` (everyone else, once
-  something landed) opens the side sheet `Land the change`. Once something landed, the line under the
-  header states the latest fact and opens the same sheet. The Pinned Review's header has `Land` (or
-  `Landing`). The composer's settings menu has `Land when a turn completes` for a session run as a
-  conversation.
+  something landed) opens the side sheet `Land the change`. Once something landed, the line under
+  the header states the latest fact and opens the same sheet. The Pinned Review's header has `Land`
+  (or `Landing`). The composer's settings menu has `Land when a turn completes` for a session run as
+  a conversation.
 - Mobile: no landing. A session's conversation shows a `pull request` card with `Open on GitHub`
   and, for the owner, `Refresh`. The Review screen and session rows carry the link
   `Open pull request <n> on GitHub`.
@@ -71,9 +71,9 @@ Preconditions:
 - A settled session in `<project>` holds a change, from
   `mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`. Note its session id
   `<id>` and worktree name `<worktree>` from the `✓ worktree` line.
-- Desktop steps: the desktop harness from [Start a session](./start-session.md), and a second settled
-  change of its own: run the same `mend run` again and note its worktree `<worktree-2>`. A change
-  landed on the web has nothing new for the desktop to push.
+- Desktop steps: the desktop harness from [Start a session](./start-session.md), and a second
+  settled change of its own: run the same `mend run` again and note its worktree `<worktree-2>`. A
+  change landed on the web has nothing new for the desktop to push.
 - Mobile steps: the Expo web build at `<mobile-web>`, paired and allowed, as in
   [Adopt a project](./adopt-project.md), after the web landing.
 
@@ -123,11 +123,11 @@ Preconditions:
   `<harness> · <label or branch>`), then run
   `await page.getByRole("button", { name: "land", exact: true }).click()`. The side sheet
   `Land the change` opens
-  (`const sheet = page.getByRole("complementary", { name: "Land the change" })`), headed
-  `Land` with the session's label or branch. It reads
-  `push <branch> to origin · pull request into <base>`; the region `What Mend observed` reads
-  `not landed · nothing pushed from Mend yet`; the region `Land this change` holds the textboxes
-  `Pull request title` and `Your description`, the button `Push and open pull request`, and
+  (`const sheet = page.getByRole("complementary", { name: "Land the change" })`), headed `Land` with
+  the session's label or branch. It reads `push <branch> to origin · pull request into <base>`; the
+  region `What Mend observed` reads `not landed · nothing pushed from Mend yet`; the region
+  `Land this change` holds the textboxes `Pull request title` and `Your description`, the button
+  `Push and open pull request`, and
   `checkpoints the worktree, commits what the agent left uncommitted, fast-forward only · merging stays on GitHub`.
 - **Desktop: land.** Run
   `await sheet.getByRole("textbox", { name: "Pull request title" }).fill("verify: landing from the desktop")`,
@@ -143,17 +143,18 @@ Preconditions:
 - **Desktop: the landing line.** Under the tab's header, a button now reads the latest fact
   (`page.getByRole("button", { name: /^pushed · / })`). Click it; the sheet opens again.
 - **Desktop: from the Pinned Review.** Open the change's review (`review the change`). Its header
-  has `Land` (`page.getByRole("button", { name: "Land", exact: true })`) with `aria-pressed="false"`.
-  Click it: `aria-pressed` becomes `true` and the same sheet opens beside the review.
+  has `Land` (`page.getByRole("button", { name: "Land", exact: true })`) with
+  `aria-pressed="false"`. Click it: `aria-pressed` becomes `true` and the same sheet opens beside
+  the review.
 - **Mobile: the pull request card.** Run `await page.goto("<mobile-web>/session/<id>")` for the web
-  step's session. Its conversation shows a card reading `pull request`, the state (`open`),
-  `#<n>`, the title, the branch, where it came from and `observed <when>`, with `Open on GitHub` and,
-  for the owner, `Refresh`. Tap `Refresh` (`page.getByText("Refresh", { exact: true })`); it reads
+  step's session. Its conversation shows a card reading `pull request`, the state (`open`), `#<n>`,
+  the title, the branch, where it came from and `observed <when>`, with `Open on GitHub` and, for
+  the owner, `Refresh`. Tap `Refresh` (`page.getByText("Refresh", { exact: true })`); it reads
   `Asking GitHub…`, then the observed line updates.
 - **Mobile: the links.** On the Review screen (`/review/<change id>`), the link
-  `Open pull request <n> on GitHub` (`page.getByRole("link", { name: "Open pull request <n> on GitHub" })`)
-  heads the screen with the state and `observed <when>`. The Now tab's row for the session carries a
-  link of the same name.
+  `Open pull request <n> on GitHub`
+  (`page.getByRole("link", { name: "Open pull request <n> on GitHub" })`) heads the screen with the
+  state and `observed <when>`. The Now tab's row for the session carries a link of the same name.
 - **Slack.** `not drivable yet`: it needs a Slack workspace with the organization's Slack app
   connected, and a GitHub origin. The end state is the status message's landing line
   (`pushed · <branch> · pull request #<n> · opened`) and the pull request on GitHub.
@@ -192,8 +193,8 @@ Preconditions:
   Do not read that exit code as a failed push.
 - A disposable origin is required: landing really pushes and really opens a pull request, as the
   person whose GitHub login is connected.
-- The desktop's Land sheet has no description preview; `Preview description` exists on the web
-  only. That is a product gap.
+- The desktop's Land sheet has no description preview; `Preview description` exists on the web only.
+  That is a product gap.
 - The desktop's header button reads `land` in lower case and the Pinned Review's reads `Land`.
   Playwright's name match is case-insensitive without `exact: true`, so pass it. `land` appears only
   once the change exists and its landing record has been read; for anyone but the owner, `landing`

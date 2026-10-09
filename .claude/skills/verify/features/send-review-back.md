@@ -91,31 +91,31 @@ Preconditions:
   `mend: session <id> has no pending follow-up`.
 - **TUI: send.** In the dashboard's review screen for the change (see
   [Review the change](./review-change.md)), with open, unsent comments, run
-  `tmux send-keys -t mend-review s`. An editor titled
-  ` send review to session · edit before sending ` opens, holding the instruction assembled from
-  every open, unsent comment, over ` ctrl+enter save · esc cancel`. Edit it, then press Ctrl+Enter
-  (see Gotchas). The status line reads ` Follow-up delivery requested · retry keeps the same run`.
-  With nothing to send, `s` answers
-  ` No unsent open comments — accept a draft or write a comment first`.
+  `tmux send-keys -t mend-review s`. An editor titled `send review to session · edit before sending`
+  opens, holding the instruction assembled from every open, unsent comment, over
+  ` ctrl+enter save · esc cancel`. Edit it, then press Ctrl+Enter (see Gotchas). The status line
+  reads ` Follow-up delivery requested · retry keeps the same run`. With nothing to send, `s`
+  answers ` No unsent open comments — accept a draft or write a comment first`.
 - **TUI: deliver a pending bundle.** While a bundle is pending, the description box ends with
   ` · follow-up pending` and the status line adds ` · y deliver & relaunch`. Stop the agent
   (`mend stop <id8>`), then run `tmux send-keys -t mend-review y`. The status line reads
   ` Delivering the persisted Review bundle…`, then
   ` Delivery reconciled · the same idempotency key names one run`. With nothing pending, `y` answers
   ` No retryable follow-up — s assembles the open Review comments first`. Back in the dashboard
-  (`esc`), the session pane's comment line reads `<n> open comments · follow-up pending · v reviews
-  the change` while one waits.
+  (`esc`), the session pane's comment line reads
+  `<n> open comments · follow-up pending · v reviews the change` while one waits.
 - **Desktop: select and assemble.** In the Pinned Review, the section `Follow-up instruction` lists
   one checkbox per open comment, none checked, and reads `0 selected`. Run
   `await page.getByRole("checkbox", { name: /<comment text>/ }).check()`. It reads `1 selected`. Run
   `await page.getByRole("button", { name: "Assemble selected comments" }).click()`. The textarea
   (named by its placeholder `Select comments, then assemble an editable instruction.`) fills with
   the instruction; edit it there.
-- **Desktop: deliver.** Run `await page.getByRole("button", { name: "Deliver to session" }).click()`.
-  It reads `Delivering…`, then a line reads `delivered · run <run id>`, or
-  `bundle pending · the session is active` while the agent runs. A failure reads the server's words
-  or `delivery failed · retryable`, and the button then reads `Retry delivery` (`Check delivery`
-  while one is in progress). `Copy` copies the instruction.
+- **Desktop: deliver.** Run
+  `await page.getByRole("button", { name: "Deliver to session" }).click()`. It reads `Delivering…`,
+  then a line reads `delivered · run <run id>`, or `bundle pending · the session is active` while
+  the agent runs. A failure reads the server's words or `delivery failed · retryable`, and the
+  button then reads `Retry delivery` (`Check delivery` while one is in progress). `Copy` copies the
+  instruction.
 - **Mobile: send.** On the phone's Review screen (`<mobile-web>/review/<change id>`), tap
   `Send review` (`page.getByText("Send review", { exact: true })`). A dialog opens
   (`page.getByRole("dialog")`) reading `Send review to the session`,
@@ -165,22 +165,21 @@ Preconditions:
   reuses the key (`Retry delivery`, `Check delivery`). Do not count a retry as a second delivery.
 - The dashboard and the phone send every open, unsent comment; neither lets the user choose
   (`openSendEditor`, `apps/cli/src/review.tsx:886`; `SendReviewModal`,
-  `apps/mobile/src/app/review/[id].tsx:421`). Only the web and the desktop select. That is a
-  product gap.
+  `apps/mobile/src/app/review/[id].tsx:421`). Only the web and the desktop select. That is a product
+  gap.
 - The TUI editor saves on Ctrl+Enter only; see [Review the change](./review-change.md) for the tmux
-  caveat. Unlike the web overlay, `s` and Ctrl+Enter deliver at once; there is no separate
-  `Deliver` step.
+  caveat. Unlike the web overlay, `s` and Ctrl+Enter deliver at once; there is no separate `Deliver`
+  step.
 - The desktop starts with nothing selected; the web overlay starts with every open comment checked.
-  Each desktop checkbox is named by its wrapping label: the comment's location
-  (`VERIFY.md · new 1`, `Whole change`) followed by its body. Match the body with a regular
-  expression.
+  Each desktop checkbox is named by its wrapping label: the comment's location (`VERIFY.md · new 1`,
+  `Whole change`) followed by its body. Match the body with a regular expression.
 - The desktop's instruction textarea is named only by its placeholder
   (`Select comments, then assemble an editable instruction.`). That is a finding. Without steering,
   `Deliver to session` is absent and the section reads
   `Only this session's owner delivers to it, unless they share control. Copy the instruction to hand it over.`
 - The phone's send dialog has the `dialog` role but no name, and its instruction textarea has no
-  label and no placeholder, so no name at all (`apps/mobile/src/app/review/[id].tsx:443`,
-  `:483`). `Send review`, `Send to session`, `Cancel`, `Done` and `Deliver & relaunch` are pressables
-  with no role. Those are findings.
+  label and no placeholder, so no name at all (`apps/mobile/src/app/review/[id].tsx:443`, `:483`).
+  `Send review`, `Send to session`, `Cancel`, `Done` and `Deliver & relaunch` are pressables with no
+  role. Those are findings.
 - The phone's follow-up panel reads `deliver with mend continue from a terminal` for a bundle it
   cannot deliver itself (one from before pinned Review).

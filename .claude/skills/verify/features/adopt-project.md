@@ -33,8 +33,8 @@ phone adopts from its Adopt project screen, and VS Code from a command.
   no URL, Mend uses the current checkout's origin.
 - CLI: `mend projects` lists adopted projects with their live sessions.
 - TUI: run `mend ui` (or bare `mend`) inside a checkout whose origin is a network Git URL that no
-  project has. Once the workbench loads, a box titled `adopt this repository URL?` offers it, once per
-  dashboard run.
+  project has. Once the workbench loads, a box titled `adopt this repository URL?` offers it, once
+  per dashboard run.
 - Desktop: no adopt control. With no project, the sidebar reads
   `no projects — adopt one with mend adopt`.
 - Mobile: the Projects tab's `Adopt` button opens the `Adopt project` screen (`/adopt`).
@@ -102,8 +102,7 @@ Preconditions:
 - **TUI: adopt.** Run `tmux send-keys -t mend-adopt Enter`. The status line reads
   `adopting <project>-tui · cloning into the store · <n>s elapsed`, then
   `adopted · <project>-tui · w starts a worktree`, and the projects section names `<project>-tui` as
-  the selected project. Quit
-  with `tmux send-keys -t mend-adopt q`.
+  the selected project. Quit with `tmux send-keys -t mend-adopt q`.
 - **Mobile: open the screen.** Run `await page.goto("<mobile-web>/projects")`. The tab `Projects` is
   selected (`page.getByRole("tab", { name: "Projects" })`) and the meta line reads `<n> adopted`.
   Tap `Adopt`: `await page.getByText("Adopt", { exact: true }).click()` (no button role, see
@@ -115,9 +114,9 @@ Preconditions:
   source, the textbox `project-name` and `Adopt`, faded.
 - **Mobile: adopt.** Run
   `await page.getByRole("textbox", { name: "https://github.com/owner/repo.git" }).fill("<repo-url>")`,
-  then `await page.getByRole("textbox", { name: "project-name" }).fill("<project>-mobile")`, then tap
-  the bar's `Adopt`. It reads `Adopting…` with the status `cloning into the store`; on success the
-  screen closes and the Projects tab lists `<project>-mobile` with its default branch. A refusal
+  then `await page.getByRole("textbox", { name: "project-name" }).fill("<project>-mobile")`, then
+  tap the bar's `Adopt`. It reads `Adopting…` with the status `cloning into the store`; on success
+  the screen closes and the Projects tab lists `<project>-mobile` with its default branch. A refusal
   shows `failed` and the server's words.
 - **VS Code: adopt.** `not drivable yet`: this map has no VS Code harness. The user runs
   `Mend: Adopt a project…`, types the URL into the `Git clone URL` box (it refuses a non-network URL
@@ -154,8 +153,8 @@ Preconditions:
 - The dashboard offers adoption only when no project matches the checkout: not by origin, and not by
   a project name equal to the checkout's directory name (`matchProjectByCwd`,
   `apps/cli/src/shared.ts:420`). That is why the TUI step needs a repository no project has, cloned
-  into a directory whose name is not taken. The offer is raised once per run; after `esc` the
-  status line reads `not adopted · use mend adopt <url> any time` and the run never offers again.
+  into a directory whose name is not taken. The offer is raised once per run; after `esc` the status
+  line reads `not adopted · use mend adopt <url> any time` and the run never offers again.
 - The TUI, mobile and VS Code adoptions offer no visibility choice, and the TUI offers no name: the
   dashboard sends a name, the source and an access mode (`apps/cli/src/dashboard-adoption.ts:50`),
   the phone a name and the source (`apps/mobile/src/data/live.ts:802`), and VS Code a name and the
@@ -164,12 +163,12 @@ Preconditions:
 - TUI status lines clear five seconds after they appear (`apps/cli/src/dashboard.tsx:641`); capture
   the pane right after the key. The busy line with its elapsed seconds stays until the call returns.
 - On the phone, `Adopt` (on the Projects tab and in the adopt bar) is a pressable with no role and
-  no label (`apps/mobile/src/components/button.tsx`), so it is not a `button` to Playwright. Drive it
-  by its text. That is a finding.
+  no label (`apps/mobile/src/components/button.tsx`), so it is not a `button` to Playwright. Drive
+  it by its text. That is a finding.
 - The phone's fields have no labels; their names come from placeholders:
-  `Search github — empty shows your latest`, `https://github.com/owner/repo.git` and
-  `project-name`. The repository rows the server's `gh` lists have no role or name; select one by
-  its `owner/name` text. Both are findings.
+  `Search github — empty shows your latest`, `https://github.com/owner/repo.git` and `project-name`.
+  The repository rows the server's `gh` lists have no role or name; select one by its `owner/name`
+  text. Both are findings.
 - On the phone, an invalid URL or name only fades `Adopt`; it stays tappable and does nothing. The
   refusal line is plain text, not `role="alert"`.
 - The phone's GitHub list needs `gh` signed in on the server machine. Without it the screen reads

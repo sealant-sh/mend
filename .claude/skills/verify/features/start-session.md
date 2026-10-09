@@ -2,10 +2,10 @@
 
 A session is one supervised conversation with a coding agent, or one command of the user's own, in a
 git worktree of an adopted project. A user starts one from the Now page's composer, from a
-worktree's `New session` menu, or with `mend codex`, `mend claude` or `mend run`; from the
-dashboard with `w` or `n`; from the desktop launcher; from a project on the phone; from VS Code; or
-with `@mend` in Slack. Mend records everything it does and opens the session's page, where its
-status reads as an observation ("Running · recording", "Completed · observed").
+worktree's `New session` menu, or with `mend codex`, `mend claude` or `mend run`; from the dashboard
+with `w` or `n`; from the desktop launcher; from a project on the phone; from VS Code; or with
+`@mend` in Slack. Mend records everything it does and opens the session's page, where its status
+reads as an observation ("Running · recording", "Completed · observed").
 
 ## Sub-features
 
@@ -25,8 +25,8 @@ status reads as an observation ("Running · recording", "Completed · observed")
 - `start-slack` starts one with `@mend <prompt>` in Slack.
 - `session-page` shows the session's status, terminal or record, checkpoints, and the way to its
   review.
-- `session-attach-resume` takes a live session's terminal (`a` in the dashboard), or resumes a settled
-  one (`r`, the desktop's `resume`, the phone's `Resume`).
+- `session-attach-resume` takes a live session's terminal (`a` in the dashboard), or resumes a
+  settled one (`r`, the desktop's `resume`, the phone's `Resume`).
 - `session-stop` stops the agent; the record and the review remain.
 
 ## How to get to it (user POV)
@@ -40,14 +40,14 @@ status reads as an observation ("Running · recording", "Completed · observed")
   `["prompt"] [--name <worktree>] [--worktree <existing>] [--model <id>] [--effort <level>] [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground] [--no-tunnel] [--land|--no-land] [--project <p>]`.
 - CLI: `mend run [--project <p>] -- <command...>`.
 - CLI: `mend sessions`, `mend worktrees`, `mend attach`, `mend stop`.
-- TUI: the dashboard (`mend ui`, or bare `mend`). `w` opens the `new worktree · <project>` box (name,
-  base, harness); `n` on the projects pane, or in a project with no worktree, opens the same box. `n`
-  on the worktrees or sessions pane opens `new session in <worktree> · pick a harness`. On a selected
-  session, `a` attaches, `r` resumes a settled one on a picked harness, `Shift+K` twice stops it, and
-  `o` opens its web page.
-- Desktop: the `+` button on a project's sidebar row (named `New session in <project>`), or `New
-  session` in the project row's right-click menu, opens the launcher dialog. With no tab open, the
-  main pane shows the same composer inline under `New session · <project>`. The inbox face's `+`
+- TUI: the dashboard (`mend ui`, or bare `mend`). `w` opens the `new worktree · <project>` box
+  (name, base, harness); `n` on the projects pane, or in a project with no worktree, opens the same
+  box. `n` on the worktrees or sessions pane opens `new session in <worktree> · pick a harness`. On
+  a selected session, `a` attaches, `r` resumes a settled one on a picked harness, `Shift+K` twice
+  stops it, and `o` opens its web page.
+- Desktop: the `+` button on a project's sidebar row (named `New session in <project>`), or
+  `New session` in the project row's right-click menu, opens the launcher dialog. With no tab open,
+  the main pane shows the same composer inline under `New session · <project>`. The inbox face's `+`
   does the same. `Open a shell` in the composer starts a shell session in a new worktree. A session
   tab's header has `stop` and, once settled, `resume`; a session row's right-click menu has `Stop`.
 - Mobile: the Projects tab lists, under each project, a worktree-name field and a `claude` and a
@@ -134,39 +134,40 @@ Preconditions:
   first line of `tmux capture-pane -p -t mend-ui` reads ` mend  <n> projects · <n> live` with the
   server URL at the right. The keyboard starts in the sessions pane; its footer reads
   ` ↑↓ move · ←→ panes · a attach · r resume · n new session · w new worktree · ⇧K stop · ⇧D remove · v review · e rename · o web · q quit`.
-- **TUI: select the project.** Run `tmux send-keys -t mend-ui h h`. The projects pane is open and the
-  footer reads ` ↑↓ move · → worktrees · n/w new worktree · ⇧R refresh · q quit`. Press `j` or `k`
-  until the row marked `▌` reads `<project>`.
-- **TUI: new worktree.** Run `tmux send-keys -t mend-ui w`. A box titled
-  ` new worktree · <project> ` opens with the rows `name`, `base` and `harness`, and the footer
-  ` enter continue · esc cancel`. Run `tmux send-keys -t mend-ui -l verify-tui`, then
-  `tmux send-keys -t mend-ui Enter`. The base step lists the project's branches, one marked
-  `default`, under the footer ` type to filter · ↑↓ move · enter choose base · esc back`. Once the
-  list shows, press `Enter` (the highlighted branch). The harness step lists `codex`, `claude`,
-  `opencode`, `pi` and `shell`, with the footer ` ↑↓ move · enter launch · esc back`.
-- **TUI: launch a shell session.** Run `tmux send-keys -t mend-ui Down Down Down Down Enter`. The box
-  closes. The status line reads `provisioning shell workspace · <n>s elapsed`, then
-  `started · shell <id8> · a attaches` (or `still starting · shell <id8> · a attaches once the row
-  reads running`). The sessions pane shows `shell <id8>` with `starting`, then `running`, and the
-  session pane reads `shell · no conversation record; a attaches if live`.
+- **TUI: select the project.** Run `tmux send-keys -t mend-ui h h`. The projects pane is open and
+  the footer reads ` ↑↓ move · → worktrees · n/w new worktree · ⇧R refresh · q quit`. Press `j` or
+  `k` until the row marked `▌` reads `<project>`.
+- **TUI: new worktree.** Run `tmux send-keys -t mend-ui w`. A box titled `new worktree · <project>`
+  opens with the rows `name`, `base` and `harness`, and the footer ` enter continue · esc cancel`.
+  Run `tmux send-keys -t mend-ui -l verify-tui`, then `tmux send-keys -t mend-ui Enter`. The base
+  step lists the project's branches, one marked `default`, under the footer
+  ` type to filter · ↑↓ move · enter choose base · esc back`. Once the list shows, press `Enter`
+  (the highlighted branch). The harness step lists `codex`, `claude`, `opencode`, `pi` and `shell`,
+  with the footer ` ↑↓ move · enter launch · esc back`.
+- **TUI: launch a shell session.** Run `tmux send-keys -t mend-ui Down Down Down Down Enter`. The
+  box closes. The status line reads `provisioning shell workspace · <n>s elapsed`, then
+  `started · shell <id8> · a attaches` (or
+  `still starting · shell <id8> · a attaches once the row reads running`). The sessions pane shows
+  `shell <id8>` with `starting`, then `running`, and the session pane reads
+  `shell · no conversation record; a attaches if live`.
 - **TUI: another session in the worktree.** With the new row selected, run
-  `tmux send-keys -t mend-ui n`. A box titled ` new session in verify-tui · pick a harness ` lists the
+  `tmux send-keys -t mend-ui n`. A box titled `new session in verify-tui · pick a harness` lists the
   harnesses, with the footer ` ↑↓ move · enter start · esc cancel`. Run
   `tmux send-keys -t mend-ui Down Down Down Down Enter`. The status line reads
-  `starting shell in the worktree · <n>s elapsed`, then `started · shell <id8> · a attaches`, and the
-  pane title reads ` sessions · 2 `.
+  `starting shell in the worktree · <n>s elapsed`, then `started · shell <id8> · a attaches`, and
+  the pane title reads `sessions · 2`.
 - **TUI: attach and detach.** Run `tmux send-keys -t mend-ui a`. The dashboard gives way to
   `attaching · shell · <id8> · detach: Ctrl+]` and the shell. Run `tmux send-keys -t mend-ui C-]`.
   The dashboard returns with `detached · <id8> keeps running`.
 - **TUI: open the web page.** Run `tmux send-keys -t mend-ui o`. The status line reads
   `opened · <web>/sessions/<id8>…`.
 - **TUI: stop.** Run `tmux send-keys -t mend-ui K`. The status line reads
-  `press ⇧K again to stop · shell <id8>`. Within five seconds run `tmux send-keys -t mend-ui K` again.
-  It reads `stopped · shell <id8> · the record and review remain`.
+  `press ⇧K again to stop · shell <id8>`. Within five seconds run `tmux send-keys -t mend-ui K`
+  again. It reads `stopped · shell <id8> · the record and review remain`.
   `mend sessions --project <project> --all --json` shows that session `stopped`.
 - **TUI: resume.** Select the settled `verify-claude` session from the CLI stop step (`h` to the
   worktrees pane, `j`/`k` to `verify-claude`, `l` back to the sessions pane). Run
-  `tmux send-keys -t mend-ui r`. A box titled ` resume claude <id8> · pick a harness ` (or the
+  `tmux send-keys -t mend-ui r`. A box titled `resume claude <id8> · pick a harness` (or the
   session's label) lists `claude` first with `same harness · native resume, conversation intact`.
   Run `tmux send-keys -t mend-ui Enter`. The status line reads
   `resuming <name> · a fresh workspace restores the saved state · <n>s elapsed`, then
@@ -180,16 +181,16 @@ Preconditions:
 - **Desktop: open a shell session.** Run
   `await dialog.getByRole("textbox", { name: "worktree name — e.g. fix-auth (empty = auto)" }).fill("verify-desktop")`,
   then `await dialog.getByRole("button", { name: "Open a shell" }).click()`. The button reads
-  `Opening…`, the dialog closes, and a tab opens whose header shows the status word (`starting`, then
-  `running`) and the branch `mend/verify-desktop`. The sidebar lists a row whose name starts with
-  `shell · `.
+  `Opening…`, the dialog closes, and a tab opens whose header shows the status word (`starting`,
+  then `running`) and the branch `mend/verify-desktop`. The sidebar lists a row whose name starts
+  with `shell · `.
 - **Desktop: start an agent.** Needs a provider. Open the launcher again and type `verify-desktop`
   into the worktree name field; an existing name joins that worktree. Click the harness pill (a
   button named by the current harness, such as `claude`), then
   `await page.getByRole("menuitemradio", { name: /^claude/ }).click()`. Fill
   `await dialog.getByRole("textbox", { name: "What should the session do?" }).fill("List the files and change nothing.")`
-  and run `await dialog.getByRole("button", { name: "Start", exact: true }).click()`. The button reads
-  `Starting…`, then a tab opens; its status word reads `starting`, then `running · recorded`.
+  and run `await dialog.getByRole("button", { name: "Start", exact: true }).click()`. The button
+  reads `Starting…`, then a tab opens; its status word reads `starting`, then `running · recorded`.
 - **Desktop: stop and resume.** In that tab's header run
   `await page.getByRole("button", { name: "stop", exact: true }).click()`. It reads `stopping…`,
   then the status word reads `stopped` and `resume` appears. Run
@@ -199,12 +200,11 @@ Preconditions:
   `<harness> · <label, or the branch when there is none>`, then its state word or age; read the
   label and branch from `mend sessions --project <project> --json` and run
   `await page.getByRole("button", { name: new RegExp("^claude · <label or branch>") }).click({ button: "right" })`.
-  A menu lists
-  `Open`, `Services`, `Copy branch` and `Stop`. Click `Stop`
+  A menu lists `Open`, `Services`, `Copy branch` and `Stop`. Click `Stop`
   (`page.getByRole("menuitem", { name: "Stop", exact: true })`); the item now reads
   `Stop the coding agent?`. Click it again. The row's session settles.
-- **Mobile: start a conversation.** Needs a provider. Run `await page.goto("<mobile-web>/projects")`.
-  Under `<project>`, fill
+- **Mobile: start a conversation.** Needs a provider. Run
+  `await page.goto("<mobile-web>/projects")`. Under `<project>`, fill
   `page.getByRole("textbox", { name: "worktree name — e.g. fix-auth (empty = auto)" })` with
   `verify-mobile` (scope it to the project when several are listed), then tap the `Start` on the
   `claude` row, the first `Start` under that project. The app opens `/session/<id>?mode=protocol`;
@@ -278,13 +278,13 @@ Preconditions:
   `select a session first · → opens worktrees`, and `n` opens the new-worktree box rather than a
   session in an existing worktree.
 - The TUI's `new session in <worktree>` box shows the same harness hints as a new worktree
-  (`mend <harness> · new worktree, recorded session`, `a plain bash session · new worktree,
-  recorded`) though the session joins the selected worktree (`deriveHarnesses(null)`,
-  `apps/cli/src/dashboard-model.ts:436`, used at `apps/cli/src/dashboard.tsx:814`). That copy is a
-  finding.
-- The dashboard hides a settled session only when `hasTranscript === false`
-  (`isDeadEnd`, `apps/cli/src/dashboard-model.ts:345`); `mend sessions --all` still lists it.
-  Sessions whose transcript state is unknown and shell sessions remain listed.
+  (`mend <harness> · new worktree, recorded session`,
+  `a plain bash session · new worktree, recorded`) though the session joins the selected worktree
+  (`deriveHarnesses(null)`, `apps/cli/src/dashboard-model.ts:436`, used at
+  `apps/cli/src/dashboard.tsx:814`). That copy is a finding.
+- The dashboard hides a settled session only when `hasTranscript === false` (`isDeadEnd`,
+  `apps/cli/src/dashboard-model.ts:345`); `mend sessions --all` still lists it. Sessions whose
+  transcript state is unknown and shell sessions remain listed.
 - On the desktop, `New session in <project>` names the `+` button, the launcher dialog and the
   composer form inside it (the inline composer form too). Ask for the role.
 - The desktop composer's fields have no labels: the worktree name and the prompt are named by their
@@ -295,14 +295,14 @@ Preconditions:
   composer does not say so before `Start`.
 - The desktop's `+` on a project row is transparent until hovered; Playwright still clicks it.
 - The desktop header actions are lowercase (`stop`, `resume`, `delete`, `mark checkpoint`).
-  Playwright matches a name string case-insensitively as a substring unless `exact: true`, so
-  `stop` without it also matches `stop services`.
+  Playwright matches a name string case-insensitively as a substring unless `exact: true`, so `stop`
+  without it also matches `stop services`.
 - The desktop's `delete` asks through a native confirm. Accept it with
   `page.once("dialog", (d) => d.accept())` before the click. Right-click menu items that destroy
   something need two clicks: the first renames the item to its question.
 - The phone starts only `claude` and `codex`, as conversations; it has no shell or `mend run`. Its
-  `Start`, `Send` and the composer's `Stop` are pressables with no role, and each harness row has its
-  own `Start`, so position under the project is the only handle
+  `Start`, `Send` and the composer's `Stop` are pressables with no role, and each harness row has
+  its own `Start`, so position under the project is the only handle
   (`apps/mobile/src/components/start-session.tsx:142`). That is a finding.
 - The phone's Project screen (`/project/<id>`) is reachable only by its URL: nothing in the app
   navigates there. That is a product gap.
