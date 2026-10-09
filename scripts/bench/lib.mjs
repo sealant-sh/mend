@@ -414,7 +414,10 @@ export const BUDGETS = {
   api: { pct: 0.05, abs: 20, text: "+5% or +20 ms" },
   // Fixed ceilings, checked on the run under test alone (a `shared` record has no hand-over and no
   // second person's saved directory to compare against).
-  handover: { ceiling: 5000, text: "under 5 s" },
+  // "Steering hand-over (send to first output, nothing in the background; …; a conversation of
+  // realistic size) | under 5 s more than the same turn sent by the process's own person": the
+  // per-round difference `first_output_over_own`.
+  handover: { ceiling: 5000, text: "under 5 s over the owner's own turn" },
   growth: { ceiling: 64 * 1024, text: "at most 64 KB" },
 };
 
@@ -429,17 +432,38 @@ export const allowance = (budgetKey, before, stat) => {
   return Math.max((before[stat] ?? 0) * budget.pct, budget.abs);
 };
 
+/** One comparison row: a statistic of the run under test against its limit. */
+const rowOf = ({ name, measure, before: beforeValue, limit, current, stat, notRun }) => {
+  const value = current.n === 0 ? null : current[stat];
+  return {
+    measure: name,
+    unit: measure.unit,
+    budget: measure.budget,
+    stat,
+    before: beforeValue,
+    after: value,
+    limit,
+    ok: value !== null && limit !== null && value <= limit,
+    missing: value === null,
+    ...(notRun === null ? {} : { notRun }),
+  };
+};
+
 /**
  * Two result files against the budgets. Every budgeted measure of the baseline is checked on each
  * named statistic (the median and the p90 by default, as review r4 of the ADR asks; the worst
  * only when asked). A measure the baseline has and the other run lacks is a miss: a number that
- * was not taken cannot be inside its limit.
+ * was not taken cannot be inside its limit. A `person` record must also carry what only a person
+ * worktree has, for every scenario it was asked to run (`requiredOf`): those absent are misses
+ * too, so a run that skipped or crashed them cannot pass. Its errors fail the comparison, and its
+ * not-run entries are listed.
  */
 export const compareResults = (before, after, { stats = ["median", "p90"] } = {}) => {
   const rows = [];
   const incomparable = [];
   const sampledBefore = resourcesSampledAt(before);
   const sampledAfter = resourcesSampledAt(after);
+  const required = requiredOf(after);
   for (const [name, measure] of Object.entries(before.measures ?? {})) {
     if (
       measure.budget === undefined ||
@@ -463,49 +487,52 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
     const current = summarize(other?.samples ?? []);
     const notRun = current.n === 0 ? notRunReasonOf(after, name) : null;
     for (const stat of stats) {
-      const allowed = allowance(measure.budget, baseline, stat);
-      const limit = baseline[stat] + allowed;
-      const value = current.n === 0 ? null : current[stat];
+      const limit = baseline[stat] + allowance(measure.budget, baseline, stat);
+      rows.push(rowOf({ name, measure, before: baseline[stat], limit, current, stat, notRun }));
+    }
+  }
+  // A baselined measure the record under test must carry, which the baseline lacks: it cannot be
+  // checked, which is a miss, not a pass.
+  for (const { measure: name, unit, budget } of required.measures) {
+    if (isCeiling(budget) || rows.some((row) => row.measure === name)) continue;
+    const current = summarize(after.measures?.[name]?.samples ?? []);
+    const notRun =
+      current.n === 0
+        ? (notRunReasonOf(after, name) ?? "not in the record")
+        : `the baseline has no ${name} to compare against`;
+    for (const stat of stats) {
       rows.push({
-        measure: name,
-        unit: measure.unit,
-        budget: measure.budget,
-        stat,
-        before: baseline[stat],
-        after: value,
-        limit,
-        ok: value !== null && value <= limit,
-        missing: value === null,
-        ...(notRun === null ? {} : { notRun }),
+        ...rowOf({
+          name,
+          measure: { unit, budget },
+          before: null,
+          limit: null,
+          current,
+          stat,
+          notRun,
+        }),
+        missing: true,
+        ok: false,
       });
     }
   }
   // A ceiling is checked on the run under test, whatever the baseline holds: a measure either
-  // record budgets that way, and the other run lacks, is a miss.
+  // record budgets that way, or the record under test must carry, and it lacks, is a miss.
   const ceilings = new Map();
   for (const record of [after, before]) {
     for (const [name, measure] of Object.entries(record.measures ?? {})) {
       if (isCeiling(measure.budget) && !ceilings.has(name)) ceilings.set(name, measure);
     }
   }
+  for (const entry of required.measures) {
+    if (isCeiling(entry.budget) && !ceilings.has(entry.measure)) ceilings.set(entry.measure, entry);
+  }
   for (const [name, measure] of ceilings) {
     const current = summarize(after.measures?.[name]?.samples ?? []);
     const notRun = current.n === 0 ? notRunReasonOf(after, name) : null;
+    const limit = BUDGETS[measure.budget].ceiling;
     for (const stat of stats) {
-      const value = current.n === 0 ? null : current[stat];
-      const limit = BUDGETS[measure.budget].ceiling;
-      rows.push({
-        measure: name,
-        unit: measure.unit,
-        budget: measure.budget,
-        stat,
-        before: null,
-        after: value,
-        limit,
-        ok: value !== null && value <= limit,
-        missing: value === null,
-        ...(notRun === null ? {} : { notRun }),
-      });
+      rows.push(rowOf({ name, measure, before: null, limit, current, stat, notRun }));
     }
   }
   for (const [name, companion] of Object.entries(before.companions ?? {})) {
@@ -518,6 +545,7 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
       incomparable.push({ ...entry, measure: `${name}: ${entry.measure}` });
     }
   }
+  const checks = after.checks ?? [];
   return {
     rows,
     misses: rows.filter((row) => !row.ok),
@@ -526,7 +554,82 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
     // A correctness check the run under test failed fails the comparison too: a fast launch that
     // ran as the wrong person, or billed the wrong login, is not inside any budget.
     checkFailures: failedChecks(after),
+    // A check the record must carry that it never made, or never saw hold (only skipped).
+    checksNotVerified: required.checks
+      .filter((name) => !checks.some((check) => check.check === name && check.passed > 0))
+      .map((name) => ({
+        check: name,
+        reason:
+          checks.find((check) => check.check === name)?.detail ??
+          notRunReasonOf(after, name) ??
+          "not in the record",
+      })),
+    checksSkipped: checks.filter((check) => (check.skipped ?? 0) > 0),
+    // What went wrong in the run under test fails it; the baseline's are said.
+    errors: after.errors ?? [],
+    baselineErrors: before.errors ?? [],
+    notRun: after.notRun ?? [],
   };
+};
+
+/** Whether a comparison fails: a miss, a failed or unverified check, or an error in the run. */
+export const comparisonFails = (comparison) =>
+  comparison.misses.length > 0 ||
+  comparison.checkFailures.length > 0 ||
+  comparison.checksNotVerified.length > 0 ||
+  comparison.errors.length > 0;
+
+/** The harnesses Mend runs in protocol mode, where a turn can be steered (the hand-over). */
+export const PROTOCOL_HARNESSES = ["claude", "codex"];
+
+/**
+ * What a `person` record must carry for each scenario it was asked to run (its `options`): the
+ * hand-over's budgeted difference per protocol harness, growth per harness, the different-person
+ * join, and the person checks that say who an agent runs as and where its home is. Nothing for a
+ * record of another layout, or one that names no scenarios.
+ */
+export const requiredOf = (result) => {
+  const measures = [];
+  const checks = [];
+  if (layoutOf(result) !== "person") return { measures, checks };
+  const only = result.options?.only ?? [];
+  const harnesses = result.options?.harnesses ?? [];
+  if (only.includes("handover")) {
+    for (const harness of harnesses.filter((name) => PROTOCOL_HARNESSES.includes(name))) {
+      for (const kind of ["to_other", "back"]) {
+        measures.push({
+          measure: `handover.${harness}.${kind}.first_output_over_own`,
+          unit: "ms",
+          budget: "handover",
+        });
+        for (const check of ["billed", "runs_as", "one_agent", "completed"]) {
+          checks.push(`handover.${harness}.${kind}.${check}`);
+        }
+      }
+    }
+  }
+  if (only.includes("growth")) {
+    for (const harness of harnesses) {
+      measures.push({
+        measure: `growth.${harness}.extra_person_beyond_state_bytes`,
+        unit: "bytes",
+        budget: "growth",
+      });
+    }
+  }
+  if (only.includes("join-other")) {
+    measures.push({ measure: "join.other.first_output", unit: "ms", budget: "join-other" });
+  }
+  if (only.includes("person-checks")) {
+    const who = ["runs_as", "uid", "home", "agent_process"];
+    for (const harness of harnesses) {
+      for (const check of who) checks.push(`person.${harness}.${check}`);
+    }
+    if (harnesses.includes("pi")) {
+      for (const check of who) checks.push(`person.pi.joined.${check}`);
+    }
+  }
+  return { measures, checks };
 };
 
 // ─── layouts and what a comparison is ───────────────────────────────────────
@@ -541,56 +644,120 @@ export const layoutOf = (result) => {
   return /^(person|shared)\b/.exec(result.target?.flag ?? "")?.[1] ?? null;
 };
 
-/**
- * What a comparison stands for, in words, with what keeps it from standing for that. Gate P1
- * (docs/adr/0016, "Method") is `person` launches against `shared` launches at the same commit, on
- * the same instance, images and harness versions; `shared` against an older `shared` record is its
- * named check; anything else is a plain before-and-after.
- */
 const describeRecord = (result, layout) =>
   `${layout ?? "layout unknown"} · ${result.target?.version ?? "version unknown"}${
-    result.target?.commit ? ` (${String(result.target.commit).slice(0, 9)})` : ""
-  }`;
+    result.target?.commit && result.target.commit !== "unknown"
+      ? ` (${String(result.target.commit).slice(0, 9)})`
+      : ""
+  }${result.target?.mendImage ? ` · ${String(result.target.mendImage).split(" ").at(-1)?.slice(0, 19)}` : ""}`;
 
+/** The Mend server's image id a record ran on (`docker inspect`'s `.Image`), or null. */
+const mendImageIdOf = (result) => {
+  const text = result.target?.mendImage ?? null;
+  if (text === null) return null;
+  return /sha256:[0-9a-f]+/.exec(String(text).split(" ").at(-1) ?? "")?.[0] ?? null;
+};
+
+/** A known commit, or null for none or `unknown`. */
+const commitOf = (result) => {
+  const commit = result.target?.commit ?? null;
+  return commit === null || commit === "unknown" || commit === "" ? null : commit;
+};
+
+/** What gate P1 measures that no record of this benchmark covers (said, so a pass is not read as all of it). */
+export const P1_NOT_COVERED = [
+  "restore wall time on the box's largest worktree, interleaved between the layouts, on the box's own filesystem (docs/adr/0016, \"What the design does to stay inside them\"; sealantd#145): not measured by this benchmark, which restores its own fresh st-bench worktrees one layout per run",
+];
+
+/**
+ * What a comparison stands for, in words, with what keeps it from standing for that. Gate P1
+ * (docs/adr/0016, "Method") is `person` launches against `shared` launches of the same build (the
+ * Mend image's id, else its commit), on the same instance, project, workspace image and harness
+ * versions; any of those differing makes it "not the gate". `shared` against an older `shared`
+ * record is its named check; anything else is a plain before-and-after. Each side's build that
+ * cannot be told (no image id, no commit) and each harness version one side lacks is warned of.
+ */
 export const describeComparison = (before, after) => {
   const layouts = [layoutOf(before), layoutOf(after)];
   const versions = [before.target?.version ?? null, after.target?.version ?? null];
   const warnings = [];
-  const sameVersion = versions[0] !== null && versions[0] === versions[1];
-  const sameCommit =
-    (before.target?.commit ?? null) === (after.target?.commit ?? null) || !before.target?.commit;
-  if (!sameVersion || !sameCommit) {
+  const differs = [];
+  const images = [mendImageIdOf(before), mendImageIdOf(after)];
+  const commits = [commitOf(before), commitOf(after)];
+  let sameBuild;
+  if (images[0] !== null && images[1] !== null) {
+    sameBuild = images[0] === images[1];
+    if (!sameBuild)
+      differs.push(
+        `the Mend images differ (${images[0].slice(0, 19)} and ${images[1].slice(0, 19)})`,
+      );
+  } else if (commits[0] !== null && commits[1] !== null) {
+    sameBuild = commits[0] === commits[1];
+    if (!sameBuild)
+      differs.push(`the commits differ (${commits[0].slice(0, 9)} and ${commits[1].slice(0, 9)})`);
+  } else {
+    sameBuild = versions[0] !== null && versions[0] === versions[1];
+    if (!sameBuild)
+      differs.push(`the versions differ (${versions[0] ?? "?"} and ${versions[1] ?? "?"})`);
     warnings.push(
-      `the two records are of different builds (${versions[0] ?? "?"} and ${versions[1] ?? "?"})`,
+      "the build is told apart by its version only: a record lacks the Mend image's id and its commit (run with the host)",
     );
   }
-  if ((before.target?.url ?? null) !== (after.target?.url ?? null)) {
-    warnings.push(
-      `the two records are of different instances (${before.target?.url} and ${after.target?.url})`,
-    );
+  if (sameBuild && versions[0] !== versions[1]) {
+    differs.push(`the versions differ (${versions[0] ?? "?"} and ${versions[1] ?? "?"})`);
   }
-  if ((before.target?.project?.id ?? null) !== (after.target?.project?.id ?? null)) {
-    warnings.push("the two records ran on different projects");
-  }
-  if ((before.target?.workspaceImage ?? null) !== (after.target?.workspaceImage ?? null)) {
-    warnings.push(
-      `the workspace images differ (${before.target?.workspaceImage ?? "?"} and ${after.target?.workspaceImage ?? "?"})`,
-    );
-  }
-  for (const [harness, version] of Object.entries(after.target?.harnessVersions ?? {})) {
-    const theirs = before.target?.harnessVersions?.[harness];
-    if (theirs !== undefined && theirs !== version) {
-      warnings.push(`${harness} ran ${theirs} before and ${version} after`);
+  for (const [index, result] of [before, after].entries()) {
+    if (commitOf(result) === null) {
+      warnings.push(`the ${index === 0 ? "baseline" : "record under test"}'s commit is unknown`);
     }
   }
+  if ((before.target?.url ?? null) !== (after.target?.url ?? null)) {
+    differs.push(`different instances (${before.target?.url} and ${after.target?.url})`);
+  }
+  if ((before.target?.project?.id ?? null) !== (after.target?.project?.id ?? null)) {
+    differs.push("different projects");
+  }
+  const workspace = [before.target?.workspaceImage ?? null, after.target?.workspaceImage ?? null];
+  if (workspace[0] !== null && workspace[1] !== null && workspace[0] !== workspace[1]) {
+    differs.push(`the workspace images differ (${workspace[0]} and ${workspace[1]})`);
+  } else if (workspace[0] === null || workspace[1] === null) {
+    warnings.push("a record does not say its workspace image");
+  }
+  const harnesses = new Set([
+    ...(before.options?.harnesses ?? []),
+    ...(after.options?.harnesses ?? []),
+    ...Object.keys(before.target?.harnessVersions ?? {}),
+    ...Object.keys(after.target?.harnessVersions ?? {}),
+  ]);
+  for (const harness of harnesses) {
+    const ours = [
+      before.target?.harnessVersions?.[harness],
+      after.target?.harnessVersions?.[harness],
+    ];
+    if (ours[0] !== undefined && ours[1] !== undefined) {
+      if (ours[0] !== ours[1])
+        differs.push(`${harness} ran ${ours[0]} before and ${ours[1]} after`);
+    } else {
+      warnings.push(
+        `${harness}'s version is not in ${ours[0] === undefined && ours[1] === undefined ? "either record" : ours[0] === undefined ? "the baseline" : "the record under test"}`,
+      );
+    }
+  }
+  const notGate = differs.length === 0 ? "" : ` (not the gate: ${differs.join("; ")})`;
   let kind = "before and after";
+  let notCovered = [];
   if (layouts[0] === "shared" && layouts[1] === "person") {
-    kind = "gate P1: person launches against shared launches";
-    if (!sameVersion || !sameCommit) kind += " (not the gate: not the same build)";
+    kind = `gate P1: person launches against shared launches${notGate}`;
+    notCovered = P1_NOT_COVERED;
   } else if (layouts[0] === "person" && layouts[1] === "shared") {
     kind = "shared launches against person launches (reversed: the gate puts shared first)";
-  } else if (layouts[0] === "shared" && layouts[1] === "shared" && !sameVersion) {
-    kind = "gate P1's named check: shared launches against an earlier shared record";
+  } else if (layouts[0] === "shared" && layouts[1] === "shared" && !sameBuild) {
+    const others = differs.filter(
+      (reason) => !/images differ|commits differ|versions differ/.test(reason),
+    );
+    kind = `gate P1's named check: shared launches against an earlier shared record${
+      others.length === 0 ? "" : ` (not the check: ${others.join("; ")})`
+    }`;
   } else if (layouts[0] !== null && layouts[0] === layouts[1]) {
     kind = `${layouts[0]} launches, before and after`;
   }
@@ -599,7 +766,9 @@ export const describeComparison = (before, after) => {
     before: describeRecord(before, layouts[0]),
     after: describeRecord(after, layouts[1]),
     layouts,
+    differs,
     warnings,
+    notCovered,
   };
 };
 
@@ -651,11 +820,15 @@ export const liveAgents = (processes) =>
 export const turnEnded = (turn) =>
   ["completed", "interrupted", "failed", "cancelled"].includes(turn?.status);
 
+/** Items that are not the agent's output for a turn: the person's message, and errors. */
+const NOT_OUTPUT = new Set(["user-message", "error"]);
+
 /**
  * A turn's times, all on the server's clock and all from its creation (the submit as the server
- * received it): to `startedAt` (the hand-over, when the sender changed), to the first thing the
- * agent said or did for it (an item of that turn other than the person's message), and to its end
- * when it completed. Null where the record does not say.
+ * received it): to `startedAt` (when a process claimed it), to the first thing the agent said or
+ * did for it (an item of that turn other than the person's message or an error), and to its end.
+ * The first output and the end are kept only for a turn that completed: a fast error is not a
+ * fast answer. Null where the record does not say.
  */
 export const turnTimes = (turn, items = []) => {
   const created = Date.parse(turn.createdAt);
@@ -663,21 +836,40 @@ export const turnTimes = (turn, items = []) => {
     const at = iso === null || iso === undefined ? Number.NaN : Date.parse(iso);
     return Number.isFinite(at) && Number.isFinite(created) ? at - created : null;
   };
+  const completed = turn.status === "completed";
   const first = items
-    .filter((item) => item.turnId === turn.id && item.kind !== "user-message")
+    .filter((item) => item.turnId === turn.id && !NOT_OUTPUT.has(item.kind))
     .map((item) => item.createdAt)
     .toSorted((a, b) => Date.parse(a) - Date.parse(b))[0];
   return {
     started: since(turn.startedAt),
-    firstOutput: first === undefined ? null : since(first),
-    completed: turn.status === "completed" ? since(turn.endedAt) : null,
+    firstOutput: !completed || first === undefined ? null : since(first),
+    completed: completed ? since(turn.endedAt) : null,
   };
 };
 
 /**
+ * One round's hand-over cost as the ADR words it: a steered turn's send to first output, less the
+ * same round's turn sent by the process's own person (`own`). Null when either is missing.
+ */
+export const overOwn = (steered, own) =>
+  steered === null || own === null || steered === undefined || own === undefined
+    ? null
+    : steered - own;
+
+/** Who an id is, in a record: the owner, the other person, or nobody. Ids stay out of records. */
+const roleOf = (id, ownerId) =>
+  id === null || id === undefined
+    ? "nobody recorded"
+    : id === ownerId
+      ? "the owner"
+      : "the other person";
+
+/**
  * What one steered turn must show (docs/adr/0016, decision 6): it ran on its sender's login
  * (`billedUserId`), on a process that runs as its sender (`runsAs`), from the person expected
- * (the owner, or someone else), with one agent at a time while it ran, and it answered.
+ * (the owner, or someone else), with one agent at a time while it ran (as polled), and it
+ * answered. Details name people by role, never by id.
  */
 export const turnVerdicts = ({ turn, process, ownerId, fromOwner, maxLive, answer, items }) => {
   const sender = turn.author ?? null;
@@ -689,22 +881,22 @@ export const turnVerdicts = ({ turn, process, ownerId, fromOwner, maxLive, answe
     {
       name: "sender",
       ok: sender !== null && (fromOwner ? sender === ownerId : sender !== ownerId),
-      detail: `sent by ${sender ?? "nobody recorded"} (${fromOwner ? "the owner" : "another person"} expected)`,
+      detail: `sent by ${roleOf(sender, ownerId)} (${fromOwner ? "the owner" : "the other person"} expected)`,
     },
     {
       name: "billed",
       ok: sender !== null && turn.billedUserId === sender,
-      detail: `billed to ${turn.billedUserId ?? "nobody"}${turn.billedAccountName ? ` · ${turn.billedAccountName}` : ""}, sent by ${sender ?? "?"}`,
+      detail: `billed to ${roleOf(turn.billedUserId, ownerId)}, sent by ${roleOf(sender, ownerId)}`,
     },
     {
       name: "runs_as",
       ok: sender !== null && process !== null && process.runsAs === sender,
-      detail: `process ${process?.id?.slice(0, 8) ?? "not found"} runs as ${process?.runsAs ?? "nobody recorded"}, sent by ${sender ?? "?"}`,
+      detail: `${process === null ? "its process not found" : `its process runs as ${roleOf(process.runsAs, ownerId)}`}, sent by ${roleOf(sender, ownerId)}`,
     },
     {
       name: "one_agent",
       ok: maxLive <= 1,
-      detail: `at most ${maxLive} agent process(es) live at once while it ran`,
+      detail: `at most ${maxLive} agent process(es) live at once while it ran, as polled every 250 ms`,
     },
     {
       name: "completed",
@@ -756,22 +948,30 @@ export const PEOPLE_ROOT = "/workspace/harness-home/people";
 /**
  * Run in the executor as the person (`asPersonCommand`), with their account id: their uid (the
  * owner of their saved directory), their passwd name and home, the home's owner and mode, the
- * names of the processes running as them, their pi and opencode ChatGPT logins (presence, owner,
- * mode, whether the provider's key is there, and where the file really is) and the digest of the
+ * names of the processes running as them (the probe's own process tree left out), their pi and
+ * opencode ChatGPT logins (presence, owner, mode, how many lines name the provider's key, or
+ * `unreadable` when the person cannot read it, and where the file really is) and the digest of the
  * pi profile in their home. Nothing it prints is a secret: no file's contents, no environment.
+ * `ST_BENCH_PEOPLE` and `ST_BENCH_PASSWD` stand in for the executor's paths in the tests.
  */
 export const PERSON_PROBE_SH = [
   PROFILE_DIGEST_SH,
-  `P="${PEOPLE_ROOT}/$1"`,
+  `P="\${ST_BENCH_PEOPLE:-${PEOPLE_ROOT}}/$1"`,
   `if [ ! -d "$P" ]; then echo "probe saved absent"; exit 0; fi`,
   `uid=$(stat -c %u "$P"); echo "probe uid $uid"`,
-  `ent=$(awk -F: -v u="$uid" '$3==u{print $1" "$6; exit}' /etc/passwd)`,
+  `ent=$(awk -F: -v u="$uid" '$3==u{print $1" "$6; exit}' "\${ST_BENCH_PASSWD:-/etc/passwd}")`,
   `if [ -z "$ent" ]; then echo "probe user none"; exit 0; fi`,
   `echo "probe user $ent"; home=\${ent#* }`,
   `[ -d "$home" ] && echo "probe home-stat $(stat -c '%u %a' "$home")"`,
-  `for s in /proc/[0-9]*/status; do u=$(awk '/^Uid:/{print $2; exit}' "$s" 2>/dev/null) || continue; ` +
-    `[ "$u" = "$uid" ] || continue; echo "probe proc $(awk '/^Name:/{print $2; exit}' "$s" 2>/dev/null)"; done`,
-  `login() { if [ -f "$1" ]; then echo "probe login $2 present $(stat -L -c '%u %a' "$1") $(grep -c "\\"$2\\"" "$1") $(readlink -f "$1")"; ` +
+  // The probe runs as the person too: it and every process under it are not theirs to count.
+  `me=$$`,
+  `inprobe() { p=$1; n=0; while [ -n "$p" ] && [ "$p" -gt 1 ] && [ "$n" -lt 64 ]; do ` +
+    `[ "$p" = "$me" ] && return 0; p=$(awk '/^PPid:/{print $2; exit}' "/proc/$p/status" 2>/dev/null); n=$((n+1)); done; return 1; }`,
+  `for s in /proc/[0-9]*/status; do pid=\${s#/proc/}; pid=\${pid%/status}; ` +
+    `u=$(awk '/^Uid:/{print $2; exit}' "$s" 2>/dev/null) || continue; [ "$u" = "$uid" ] || continue; ` +
+    `inprobe "$pid" && continue; n=$(awk '/^Name:/{print $2; exit}' "$s" 2>/dev/null); [ -n "$n" ] && echo "probe proc $n"; done`,
+  `login() { if [ -f "$1" ]; then if [ -r "$1" ]; then c=$(grep -c "\\"$2\\"" "$1" 2>/dev/null); [ -n "$c" ] || c=unreadable; else c=unreadable; fi; ` +
+    `echo "probe login $2 present $(stat -L -c '%u %a' "$1") $c $(readlink -f "$1")"; ` +
     `else echo "probe login $2 absent"; fi; }`,
   `login "$home/.pi/agent/auth.json" openai-codex`,
   `login "$home/.local/share/opencode/auth.json" openai`,
@@ -780,7 +980,10 @@ export const PERSON_PROBE_SH = [
     `else echo "probe pi-profile absent"; fi`,
 ].join("\n");
 
-/** What `PERSON_PROBE_SH` printed, as one object; null fields where it said nothing. */
+/**
+ * What `PERSON_PROBE_SH` printed, as one object; null fields where it said nothing. A login line
+ * that says the file is there and does not parse is kept as `unparsed`, never read as absent.
+ */
 export const parsePersonProbe = (text) => {
   const probe = {
     saved: true,
@@ -805,14 +1008,19 @@ export const parsePersonProbe = (text) => {
       probe.homeOwner = Number(match[1]);
       probe.homeMode = match[2];
     } else if ((match = /^probe proc (.+)$/.exec(line))) probe.processes.push(match[1]);
-    else if ((match = /^probe login (\S+) present (\d+) ([0-7]+) (\d+) (.+)$/.exec(line))) {
+    else if (
+      (match = /^probe login (\S+) present (\d+) ([0-7]+) (\d+|unreadable) (\/\S.*)$/.exec(line))
+    ) {
       probe.logins[match[1]] = {
         present: true,
         owner: Number(match[2]),
         mode: match[3],
-        keyLines: Number(match[4]),
+        unreadable: match[4] === "unreadable",
+        keyLines: match[4] === "unreadable" ? null : Number(match[4]),
         realPath: match[5],
       };
+    } else if ((match = /^probe login (\S+) present\b/.exec(line))) {
+      probe.logins[match[1]] = { present: true, unparsed: true, raw: line };
     } else if ((match = /^probe login (\S+) absent$/.exec(line))) {
       probe.logins[match[1]] = { present: false };
     } else if (
@@ -836,13 +1044,32 @@ export const FIRST_PERSON_UID = 40001;
 /** Each harness's ChatGPT login, as the probe names it (docs/adr/0016, decision 5). */
 const CHATGPT_LOGIN_OF = { pi: "openai-codex", opencode: "openai" };
 
+/** A process name that is the harness's own (`claude`, `codex`, `pi`, `opencode`, `.opencode`). */
+const isHarnessProcess = (name, harness) => new RegExp(`^\\.?${harness}`).test(name);
+
+/** A login file's words for a check's detail; never its contents. */
+const loginWords = (key, login) => {
+  if (!login.present) return `no ${key} login file`;
+  if (login.unparsed) return `${key} file there, and the probe's line did not parse: ${login.raw}`;
+  const where = login.realPath.startsWith("/workspace/") ? "saved state" : "the home";
+  const holds = login.unreadable
+    ? "the person cannot read it"
+    : login.keyLines > 0
+      ? "has the provider's entry"
+      : "no provider entry";
+  return `${key} · owner ${login.owner} · mode ${login.mode} · ${holds} · in ${where}`;
+};
+
 /**
  * What a person launch must show in its executor (docs/adr/0016, decisions 1, 2 and 5): the agent
  * runs as a uid in the person range with its own home (the agent's own `id -u` and `$HOME`, which
- * only the agent can read, against the probe's passwd entry), the home is theirs and 0700, pi's
- * profile is the person's own (`piDigest` from `GET /me/pi-profile`, null for none) and not
- * `otherPiDigest`'s, and pi's and opencode's ChatGPT login is in their home, theirs, 0600, never
- * under the saved worktree.
+ * only the agent can read, against the probe's passwd entry), a process of the harness runs as
+ * them (the probe's own left out), the home is theirs and 0700, pi's profile is the person's own
+ * (`piDigest` from `GET /me/pi-profile`, null for none) and not `otherPiDigest`'s, and pi's and
+ * opencode's ChatGPT login is in their home, theirs, readable by them, 0600, never under the saved
+ * worktree. With no login of their own (`loginSkipped`), what is there must hold nobody's entry,
+ * and an agent that answered anyway (`agentSaid`) fails `answered_without_login`. `ok` null is a
+ * check that could not be made.
  */
 export const personVerdicts = ({
   probe,
@@ -872,12 +1099,13 @@ export const personVerdicts = ({
       probe.homeMode === "700",
     `home ${probe.home ?? "none"} · owner ${probe.homeOwner ?? "?"} · mode ${probe.homeMode ?? "?"}`,
   );
+  const names = [...new Set(probe.processes)];
   add(
-    "processes",
-    probe.processes.length > 0,
-    probe.processes.length > 0
-      ? `runs ${[...new Set(probe.processes)].slice(0, 8).join(", ")}`
-      : "no process runs as this person",
+    "agent_process",
+    names.some((name) => isHarnessProcess(name, harness)),
+    names.length > 0
+      ? `runs ${names.slice(0, 8).join(", ")}`
+      : "no process runs as this person (the probe's own left out)",
   );
   if (agentSaid === null && loginSkipped !== null) {
     add("agent_identity", null, `skipped: ${loginSkipped}, so the agent cannot answer`);
@@ -891,34 +1119,34 @@ export const personVerdicts = ({
     );
   }
   const loginKey = CHATGPT_LOGIN_OF[harness];
-  if (loginKey !== undefined && loginSkipped !== null) {
-    // No login of their own: what is there must still be theirs and hold nobody's entry, never
-    // the owner's (Mend uses nobody else's login, decision 5).
+  if (loginKey !== undefined) {
     const login = probe.logins[loginKey] ?? { present: false };
-    add("chatgpt_login", null, `skipped: ${loginSkipped}`);
-    add(
-      "chatgpt_login_nobody_else",
-      !login.present ||
-        (login.owner === probe.uid &&
-          login.keyLines === 0 &&
-          !login.realPath.startsWith("/workspace/")),
-      login.present
-        ? `${loginKey} file · owner ${login.owner} · mode ${login.mode} · ${login.keyLines > 0 ? "holds a provider entry" : "no provider entry"} · in ${login.realPath.startsWith("/workspace/") ? "saved state" : "the home"}`
-        : `no ${loginKey} login file`,
-    );
-  } else if (loginKey !== undefined) {
-    const login = probe.logins[loginKey] ?? { present: false };
-    add(
-      "chatgpt_login",
-      login.present &&
-        login.owner === probe.uid &&
-        login.mode === "600" &&
-        login.keyLines > 0 &&
-        !login.realPath.startsWith("/workspace/"),
-      login.present
-        ? `${loginKey} · owner ${login.owner} · mode ${login.mode} · ${login.keyLines > 0 ? "has the provider's entry" : "no entry for the provider"} · in ${login.realPath.startsWith("/workspace/") ? "saved state" : "the home"}`
-        : `no ${loginKey} login file`,
-    );
+    const usable = login.present && !login.unparsed && !login.unreadable;
+    const inHome = usable && !login.realPath.startsWith("/workspace/");
+    if (loginSkipped !== null) {
+      // No login of their own: what is there must still be theirs and hold nobody's entry, never
+      // the owner's (Mend uses nobody else's login, decision 5); a file they cannot read is not
+      // known to hold nothing.
+      add("chatgpt_login", null, `skipped: ${loginSkipped}`);
+      add(
+        "chatgpt_login_nobody_else",
+        !login.present || (usable && inHome && login.owner === probe.uid && login.keyLines === 0),
+        loginWords(loginKey, login),
+      );
+      if (agentSaid !== null) {
+        add(
+          "answered_without_login",
+          false,
+          `answered with no ChatGPT login of its own: uid ${agentSaid.uid} · HOME ${agentSaid.home}`,
+        );
+      }
+    } else {
+      add(
+        "chatgpt_login",
+        usable && inHome && login.owner === probe.uid && login.mode === "600" && login.keyLines > 0,
+        loginWords(loginKey, login),
+      );
+    }
   }
   if (harness === "pi" && piDigest !== undefined) {
     const profile = probe.piProfile ?? { present: false };
@@ -943,8 +1171,8 @@ export const personVerdicts = ({
       if (otherPiDigest === null || otherPiDigest === piDigest) {
         add(
           "pi_profile_not_other",
-          true,
-          "cannot be told apart: the other person's profile is the same or absent",
+          null,
+          "skipped: cannot be told apart, the other person's profile is the same or absent",
         );
       } else {
         add(
@@ -959,6 +1187,21 @@ export const personVerdicts = ({
   }
   return out;
 };
+
+/**
+ * The executor checks `personVerdicts` makes, each skipped with `reason`: what a run without the
+ * server's host could not look at, tallied so it shows as not checked rather than vanishing.
+ */
+export const personVerdictsSkipped = ({ harness, joined = false }, reason) =>
+  [
+    "uid",
+    "home",
+    "agent_process",
+    "agent_identity",
+    ...(CHATGPT_LOGIN_OF[harness] === undefined ? [] : ["chatgpt_login"]),
+    ...(harness === "pi" ? ["pi_profile"] : []),
+    ...(harness === "pi" && joined ? ["pi_profile_not_other"] : []),
+  ].map((name) => ({ name, ok: null, detail: `skipped: ${reason}` }));
 
 /**
  * Why a person's pi or opencode has no ChatGPT login to answer on, or null when it has one: the
@@ -1192,6 +1435,7 @@ export const formatComparison = (comparison) => {
           `before: ${label.before}`,
           `after:  ${label.after}`,
           ...label.warnings.map((warning) => `warning: ${warning}`),
+          ...(label.notCovered ?? []).map((item) => `not covered by this comparison: ${item}`),
           "",
         ];
   lines.push(
@@ -1221,6 +1465,29 @@ export const formatComparison = (comparison) => {
       "",
       formatChecks(comparison.checkFailures),
     );
+  }
+  if ((comparison.checksNotVerified ?? []).length > 0) {
+    lines.push("", "Checks the run under test must hold and did not show holding:", "");
+    for (const entry of comparison.checksNotVerified) {
+      lines.push(`- ${entry.check}: ${entry.reason}`);
+    }
+  }
+  if ((comparison.checksSkipped ?? []).length > 0) {
+    lines.push("", "Skipped checks of the run under test (not verified):", "");
+    lines.push(formatChecks(comparison.checksSkipped));
+  }
+  if ((comparison.errors ?? []).length > 0) {
+    lines.push("", "Errors in the run under test:", "");
+    for (const error of comparison.errors) lines.push(`- ${error.scenario}: ${error.message}`);
+  }
+  if ((comparison.baselineErrors ?? []).length > 0) {
+    lines.push("", "Errors in the baseline (its missing measures are not compared):", "");
+    for (const error of comparison.baselineErrors)
+      lines.push(`- ${error.scenario}: ${error.message}`);
+  }
+  if ((comparison.notRun ?? []).length > 0) {
+    lines.push("", "Not run in the run under test:", "");
+    for (const entry of comparison.notRun) lines.push(`- ${entry.measure}: ${entry.reason}`);
   }
   return lines.join("\n");
 };
@@ -1306,6 +1573,14 @@ export const mergeResults = (base, extra, takes = null) => {
     ),
   );
   const extraNotRun = (extra.notRun ?? []).filter((entry) => accept(entry.measure));
+  // Checks go by scenario, whether the merge takes named measures or not: a scenario run again
+  // (a re-run of misses runs whole scenarios) stands for its checks, failures included, so a
+  // re-run's faster numbers never come without what it observed.
+  const checkTaken = (name) => {
+    if (only !== null && !only.includes(scenarioOf(name) ?? "")) return false;
+    const harness = harnessOf(name);
+    return harness === null || harnesses === null || harnesses.includes(harness);
+  };
   // A scenario run again stands whole: its measures the later run did not take go too. Named
   // measures (a re-run of misses) replace only themselves.
   const kept = Object.fromEntries(
@@ -1335,8 +1610,8 @@ export const mergeResults = (base, extra, takes = null) => {
     notes: [...(base.notes ?? []), ...(extra.notes ?? [])],
     // A scenario run again stands for its checks too.
     checks: [
-      ...(base.checks ?? []).filter((check) => takes !== null || !accept(check.check)),
-      ...(extra.checks ?? []).filter((check) => accept(check.check)),
+      ...(base.checks ?? []).filter((check) => !checkTaken(check.check)),
+      ...(extra.checks ?? []).filter((check) => checkTaken(check.check)),
     ],
     imageBuilds: [...(base.imageBuilds ?? []), ...(extra.imageBuilds ?? [])],
     errors: [...(base.errors ?? []), ...(extra.errors ?? [])],
@@ -1391,6 +1666,9 @@ export const parseOptions = (argv, now = Date.now()) => {
     secretFile: false,
     layout: null,
     flag: null,
+    handoverSeedTurns: 4,
+    all: false,
+    runId: null,
     out: null,
     stats: ["median", "p90"],
     rerun: false,
@@ -1412,6 +1690,9 @@ export const parseOptions = (argv, now = Date.now()) => {
     "--typing-runs": (v) => (opts.typingRuns = positiveInt("--typing-runs", v)),
     "--api-runs": (v) => (opts.apiRuns = positiveInt("--api-runs", v)),
     "--flag": (v) => (opts.flag = v),
+    "--handover-seed-turns": (v) =>
+      (opts.handoverSeedTurns = positiveInt("--handover-seed-turns", v)),
+    "--run": (v) => (opts.runId = v),
     "--layout": (v) => (opts.layout = v),
     "--out": (v) => (opts.out = v),
     "--stats": (v) => (opts.stats = list(v)),
@@ -1420,6 +1701,7 @@ export const parseOptions = (argv, now = Date.now()) => {
     "--no-host": () => (opts.noHost = true),
     "--secret-file": () => (opts.secretFile = true),
     "--rerun": () => (opts.rerun = true),
+    "--all": () => (opts.all = true),
   };
   const positional = [];
   for (let index = 0; index < argv.length; index += 1) {
@@ -1453,6 +1735,14 @@ export const parseOptions = (argv, now = Date.now()) => {
     }
   }
   if (opts.harnesses.length === 0) throw new Error("--harnesses needs at least one harness");
+  if (opts.runId !== null && !/^[0-9a-z]+$/.test(opts.runId)) {
+    throw new Error(`--run takes a run's id (the one its log starts with), not ${opts.runId}`);
+  }
+  if (opts.command === "cleanup" && !opts.all && opts.runId === null) {
+    throw new Error(
+      "cleanup removes one run's worktrees (--run <id>, from its log or record) or every st-bench worktree of the project (--all)",
+    );
+  }
   if (opts.layout !== null && opts.layout !== "person" && opts.layout !== "shared") {
     throw new Error(`--layout takes person or shared, not ${opts.layout}`);
   }
@@ -1475,6 +1765,15 @@ export const parseOptions = (argv, now = Date.now()) => {
   }
   return opts;
 };
+
+/**
+ * Whether a cleanup takes a worktree: one of run `rid`'s (`st-bench-<rid>-…`), or with `all` any
+ * `st-bench-` worktree. Never one without the prefix.
+ */
+export const inCleanupScope = (name, rid, all) =>
+  typeof name === "string" &&
+  name.startsWith("st-bench-") &&
+  (all || (typeof rid === "string" && rid !== "" && name.startsWith(`st-bench-${rid}-`)));
 
 /**
  * An origin URL in the SSH form Mend's git shim carries (`git@host:owner/repo.git`); null when it

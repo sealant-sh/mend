@@ -8,30 +8,45 @@
 //   node scripts/bench/bench.mjs compare <before> <after> check after against before and the budgets
 //   node scripts/bench/bench.mjs merge <base> <extra>     fold a later run of some scenarios in
 //   node scripts/bench/bench.mjs companion <main> <other> keep a run on another project inside main
-//   node scripts/bench/bench.mjs cleanup [options]        remove every st-bench- resource
+//   node scripts/bench/bench.mjs cleanup --run <id>|--all  remove one run's st-bench- worktrees, or all
 //
 // `node scripts/bench/bench.mjs help` lists the options. Everything the benchmark creates is named
-// `st-bench-…` and removed when it ends, whatever happened, and by `cleanup`.
+// `st-bench-<run id>-…` and removed when it ends, whatever happened: its own run's worktrees only,
+// so a bench run beside another (a gate run) leaves that one alone. `cleanup --run <id>` removes
+// what one run left; `cleanup --all` sweeps every st-bench worktree of the project.
 //
 // Gate P1 (docs/adr/0016, "Method"): `person` launches against `shared` launches at one commit, each
 // on a fresh worktree, the layout picked per launch with the operator's `harnessLayout` (never by
 // flipping MEND_HARNESS_LAYOUT). `run --layout shared` and `run --layout person` take the two
 // records; `compare <shared> <person>` checks the second against the first and says which
 // comparison it is. With `--layout person` three more scenarios run on person worktrees of their own:
-// - `handover`: a protocol session of the first account with shared control on; each round the
-//   second account sends a turn (the hand-over to their process), the owner sends one back, and the
-//   owner sends one more (no hand-over). Each turn is timed on the server's clock from its submit to
-//   its start (budget: under 5 s for a hand-over), its first item and its end, and checked: billed to
-//   its sender, on a process that runs as its sender, one agent live at a time.
-// - `growth`: the second account's own session in the first one's worktree; their saved directory
-//   sized, machine state left out, against their conversation state and memory (budget: at most
-//   64 KB beyond them).
+// - `handover`: a protocol session of the first account, its conversation grown first
+//   (`--handover-seed-turns` turns that read files, its size recorded in input tokens), shared
+//   control on; each round the second account sends a turn (the hand-over to their process), the
+//   owner sends one back, and the owner sends one more (no hand-over). Each turn is timed on the
+//   server's clock from its submit to its start, its first output and its end. The ADR's row,
+//   "send to first output … under 5 s more than the same turn sent by the process's own person",
+//   is budgeted per round as `first_output_over_own` (the steered turn's first output less the own
+//   turn's). Each turn is checked: billed to its sender, on a process that runs as its sender, one
+//   agent live at a time (polled).
+// - `growth`: `--runs` rounds per harness of the second account's own session in the first one's
+//   worktree; their saved directory sized, machine state left out, against their conversation state
+//   and memory (budget: at most 64 KB beyond them). A round whose second person held no
+//   conversation (no ChatGPT login of their own, or no answer) goes under
+//   `growth.<harness>.no_conversation.*`, unbudgeted.
 // - `person-checks`: per harness, a person launch whose agent runs as a uid of the person range with
-//   its own home and answers; pi's profile is the person's own, pi's and opencode's ChatGPT login is
-//   in their home; for pi, the second account joins and its pi has its own profile, not the first
-//   one's. Probed in the executor as that person, without printing a file's contents.
-// Checks are observations, not timings: they are tallied in the record's `checks`, and a failed
-// one fails `run` and `compare`.
+//   its own home and answers; a process of the harness runs as them; pi's profile is the person's
+//   own, pi's and opencode's ChatGPT login is in their home; for pi, the second account joins and
+//   its pi has its own profile, not the first one's. Probed in the executor as that person (its own
+//   processes left out), without printing a file's contents. A person with no ChatGPT login is
+//   watched for 75 s, not waited on: an answer then fails.
+// Checks are observations, not timings: they are tallied in the record's `checks` (held, failed,
+// skipped), and a failed one fails `run` and `compare`. A person run whose per-person scenarios
+// could not run (no second account, no host) exits 1. `compare` fails a person record that lacks
+// what it was asked for (the hand-over's budgeted difference, growth, the different-person join,
+// the checks of who an agent runs as and its home), that has errors, or whose checks failed, and
+// says what P1 asks that no record of this benchmark covers: restore wall time on the box's
+// largest worktree, interleaved between the layouts.
 //
 // What the record keeps apart, so one run's accident does not read as a regression:
 // - An executor's size (`executor.<harness>.*_bytes`) is taken at the launch's first output, a fixed
@@ -55,9 +70,10 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { makeApi, makeHost } from "./host.mjs";
+import { makeApi, makeHost, mendImageCommit } from "./host.mjs";
 import {
   compareResults,
+  comparisonFails,
   failedChecks,
   formatComparison,
   formatTable,
@@ -93,7 +109,7 @@ what runs
   --harnesses <a,b,…>         launch harnesses, the first carries the other scenarios; the hand-over
                               runs on claude and codex among them, growth and person-checks on each
                               (default: claude,codex,pi,opencode)
-  --runs <n>                  runs of each launch scenario, and rounds of the hand-over
+  --runs <n>                  runs of each launch scenario, rounds of the hand-over and of growth
                               (default: 10, the ADR's gate)
   --joins-per-run <n>         joins of each kind per run (default: 1)
   --resumes-per-run <n>       resume-and-Stop cycles per run (default: 1)
@@ -101,6 +117,10 @@ what runs
   --typing-runs <n>           keystrokes timed (default: 30)
   --api-runs <n>              reads of the session list and a session view (default: 20)
   --secret-file               put an st-bench secret file in place to time its delivery (removed after)
+  --handover-seed-turns <n>   turns that grow the hand-over's conversation before its rounds, each
+                              reading files (default: 4)
+  --run <id>                  cleanup: the run whose worktrees to remove (its log's "bench <id>")
+  --all                       cleanup: every st-bench worktree of the project, any run's
   --flag <text>               the harness layout under test (default: read from the server's env).
                               Run against MEND_MODE=all: with MEND_MODE=api beside MEND_MODE=worker,
                               the worker's engine sees an operator's harnessLayout request made
@@ -116,9 +136,14 @@ output and comparison
 gate P1 (docs/adr/0016): person launches against shared launches at one commit
   run --layout shared … --out shared.json; run --layout person … --out person.json;
   compare shared.json person.json. compare says what it compares (gate P1, its named check of
-  shared against an earlier shared record, or a plain before-and-after) and warns when the
-  builds, instance, project, image or harness versions differ. Ceiling budgets (the hand-over's
-  5 s, growth's 64 KB) are checked on the record under test alone; its failed checks fail it
+  shared against an earlier shared record, or a plain before-and-after); a different Mend image
+  (its id, else its commit), instance, project, workspace image or harness version makes it "not
+  the gate", and a version or commit it cannot tell is warned of. Ceiling budgets (the hand-over's
+  5 s over the own turn, growth's 64 KB) are checked on the record under test alone. It fails on a
+  miss; on a person record lacking what it was asked for (handover, growth, join-other, the checks
+  of who an agent runs as and where its home is); on a failed or unverified check; and on an error
+  in the record. It says what it does not cover: P1's restore wall time on the box's largest
+  worktree, interleaved between the layouts
 
 what the record keeps apart
   executor sizes              taken at each launch's first output; memory_after_answer_bytes is what
@@ -193,6 +218,7 @@ const describeTarget = async ({ url, api, host, project }, opts) => {
   const health = await api.get("/health");
   let flag = opts.flag;
   let mendImage = null;
+  let imageCommit = null;
   if (host !== null) {
     if (flag === null) {
       const out = await host
@@ -206,6 +232,7 @@ const describeTarget = async ({ url, api, host, project }, opts) => {
           .shell(`docker inspect ${opts.mendContainer} --format '{{.Config.Image}} {{.Image}}'`)
           .catch(() => "")
       ).trim() || null;
+    imageCommit = await mendImageCommit(host, opts.mendContainer).catch(() => null);
   }
   let storeBytes = null;
   if (host !== null && typeof project.storePath === "string") {
@@ -218,7 +245,12 @@ const describeTarget = async ({ url, api, host, project }, opts) => {
   return {
     url,
     version: health.version ?? null,
-    commit: health.version === undefined ? null : gitCommitOf(health.version),
+    // The running image's revision label, else a local `v<version>` tag (prereleases have none),
+    // else said unknown: `compare` warns, and tells builds apart by the image's id.
+    commit:
+      imageCommit ??
+      (health.version === undefined ? null : gitCommitOf(health.version)) ??
+      "unknown",
     flag: flag ?? "unknown (no host access)",
     // What every start that made a worktree asked for; null: the server's flag decided.
     layout: opts.layout,
@@ -254,6 +286,9 @@ const newResult = (opts) => ({
     apiRuns: opts.apiRuns,
     secretFile: opts.secretFile,
     layout: opts.layout,
+    // Whether a second account's token was given: the person-only scenarios need it.
+    secondAccount: opts.secondTokenFile !== null,
+    handoverSeedTurns: opts.handoverSeedTurns,
   },
   // Where each launch harness's executor size was taken (`compare` reads it).
   method: { executorResources: RESOURCES_AT_FIRST_OUTPUT },
@@ -272,6 +307,9 @@ const runBench = async (opts) => {
   const connection = await connect(opts);
   const result = newResult(opts);
   const rid = Date.now().toString(36).slice(-6);
+  // The run's id names its worktrees (`st-bench-<rid>-…`); its cleanup takes only those.
+  result.rid = rid;
+  result.blocked = [];
   const clock = await measureClockOffset(connection.host);
   result.clock = clock;
   result.target = await describeTarget(connection, opts);
@@ -351,6 +389,12 @@ const main = async () => {
         log(`${failed.length} check(s) failed: ${failed.map((check) => check.check).join(", ")}`);
         process.exitCode = 1;
       }
+      // Per-person scenarios asked of a person run that could not run (no second account, no host).
+      for (const blocked of result.blocked ?? []) {
+        log(`${blocked.scenario} was asked for and did not run: ${blocked.reason}`);
+        process.exitCode = 1;
+      }
+      log(`run id ${result.rid} · \`cleanup --run ${result.rid}\` removes what it left`);
       return;
     }
     case "table": {
@@ -377,6 +421,8 @@ const main = async () => {
       let comparison = compareResults(before, after, { stats: opts.stats });
       process.stdout.write(`${formatComparison(comparison)}\n`);
       if (comparison.misses.length > 0 && opts.rerun) {
+        // The re-run's checks and errors come with its numbers (mergeResults), so a re-run that
+        // was fast because it ran as the wrong person fails on its checks.
         const missed = [...new Set(comparison.misses.map((row) => row.measure))];
         const plan = rerunPlan(missed, opts);
         log(`re-running ${plan.only.join(", ")} once for: ${missed.join(", ")}`);
@@ -390,14 +436,22 @@ const main = async () => {
       }
       if (comparison.misses.length > 0) {
         log(`${comparison.misses.length} statistic(s) over their limit or missing`);
-        process.exitCode = 1;
       } else {
         log("every budgeted statistic within its limit");
       }
       if (comparison.checkFailures.length > 0) {
         log(`${comparison.checkFailures.length} check(s) of the record under test failed`);
-        process.exitCode = 1;
       }
+      if (comparison.checksNotVerified.length > 0) {
+        log(
+          `${comparison.checksNotVerified.length} check(s) the record must hold were not seen holding`,
+        );
+      }
+      if (comparison.errors.length > 0) {
+        log(`${comparison.errors.length} error(s) in the record under test`);
+      }
+      for (const item of comparison.label.notCovered) log(`not covered: ${item}`);
+      if (comparisonFails(comparison)) process.exitCode = 1;
       return;
     }
     case "cleanup": {
@@ -407,7 +461,8 @@ const main = async () => {
         ...connection,
         opts,
         result,
-        rid: "cleanup",
+        // `--run <id>` scopes it to one run; `--all` sweeps every st-bench worktree.
+        rid: opts.runId,
         log,
         clockOffsetMs: 0,
         rec: makeRecorder(result, log),
@@ -418,7 +473,7 @@ const main = async () => {
           secretFile: false,
         },
       };
-      await cleanupAll(ctx);
+      await cleanupAll(ctx, { all: opts.all });
       if (result.errors.length > 0) process.exitCode = 1;
       return;
     }
