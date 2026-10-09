@@ -268,6 +268,67 @@ export function requestFailureEvidence(error, method, route, elapsedMs) {
   return `public API ${method} ${path}: failed after ${seconds} s (${why})`;
 }
 
+/**
+ * The headlines `mend server setup` fails with (apps/cli/src/server-setup.ts), each matched
+ * against its output and named by our own label: the CLI appends Docker's output to them, which
+ * may carry credentials, so only the label is ever printed.
+ */
+const setupHeadlines = [
+  [/Could not pull /, "an image pull failed"],
+  [/ before continuing/, "an offline image was not preloaded"],
+  [/Mend containers did not start/, "the containers did not start or report healthy"],
+  [/Garage did not answer its status/, "Garage did not answer its status"],
+  [/Garage reported no node/, "Garage reported no node"],
+  [/is not readable by Mend's key/, "the Garage bucket was not readable by Mend's key"],
+  [/Docker Compose config failed/, "Docker Compose rejected the generated configuration"],
+  [/Docker Compose \w+ failed/, "a Docker Compose command failed"],
+  [/cannot reach its daemon/, "the Docker daemon was unreachable"],
+  [/Docker Compose v2 plugin is required/, "the Docker Compose v2 plugin was missing"],
+  [/Could not identify the Docker runtime/, "the Docker runtime was not identified"],
+];
+
+const plainState = (value) =>
+  typeof value === "string" && /^[a-z-]{1,20}$/.test(value) ? value : "unknown";
+
+/**
+ * Why `mend server setup` failed, as DIAGNOSIS lines a CI log may carry: how it ended (exit code,
+ * signal, or killed at its limit) and after how long, the first setup headline its output names
+ * (by label), and each product container's service, state, exit code and health from `docker
+ * inspect`. Never the output itself, a container's logs, or anything a container was given.
+ */
+export function setupFailureEvidence({ code, signal, terminated, elapsedMs, text, containers }) {
+  const seconds = (Math.max(0, Number(elapsedMs) || 0) / 1000).toFixed(1);
+  const ended = terminated
+    ? `killed at its limit after ${seconds} s`
+    : Number.isInteger(code)
+      ? `exited ${code} after ${seconds} s`
+      : `ended by ${typeof signal === "string" && /^SIG[A-Z0-9]{1,10}$/.test(signal) ? signal : "a signal"} after ${seconds} s`;
+  const headline = setupHeadlines.find(([pattern]) => pattern.test(String(text ?? "")));
+  const lines = [
+    `DIAGNOSIS setup ${ended}: ${headline === undefined ? "no setup headline Mend classifies" : headline[1]}`,
+  ];
+  const product = (containers ?? []).filter(
+    (item) => item?.Config?.Labels?.["com.docker.compose.project"] === "mend",
+  );
+  if (product.length === 0) lines.push("DIAGNOSIS setup left no product container");
+  for (const item of product.toSorted((a, b) =>
+    String(a.Config.Labels["com.docker.compose.service"]).localeCompare(
+      String(b.Config.Labels["com.docker.compose.service"]),
+    ),
+  )) {
+    const service = item.Config.Labels["com.docker.compose.service"];
+    const state = item.State ?? {};
+    lines.push(
+      `DIAGNOSIS container ${/^[a-z0-9-]{1,30}$/.test(service ?? "") ? service : "unnamed"}: ${plainState(state.Status)}` +
+        `${state.Status === "exited" && Number.isInteger(state.ExitCode) ? ` (exit ${state.ExitCode})` : ""}` +
+        `${state.OOMKilled === true ? " · out of memory" : ""}` +
+        ` · health ${state.Health === undefined ? "none" : plainState(state.Health.Status)}` +
+        `${Number.isInteger(item.RestartCount) && item.RestartCount > 0 ? ` · restarted ${item.RestartCount}` : ""}`,
+    );
+  }
+  return lines;
+}
+
 const logEntryHead =
   /^\[(\d\d:\d\d:\d\d\.\d{3})\] ([A-Z]+)(?: \(#\d+\))?((?: (?:"[^"]*"|[^\s"]+)=\d+ms)*): (session engine: .*)$/;
 

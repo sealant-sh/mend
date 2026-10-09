@@ -47,6 +47,7 @@ import {
   readPrivateIdentity,
   readUpgradeInputs,
   requestFailureEvidence,
+  setupFailureEvidence,
   runPackagedUpgrade,
   privateTreeFingerprint,
   sessionStateEvidence,
@@ -1883,4 +1884,63 @@ test("fixture answers a failed git http-backend spawn once and keeps serving", a
     await new Promise((resolve) => server.close(resolve));
     await rm(scratch, { recursive: true, force: true });
   }
+});
+
+test("a failed server setup is classified by its own headline and its containers' states, never its output", () => {
+  const container = (service, State, extra = {}) => ({
+    Config: {
+      Labels: { "com.docker.compose.project": "mend", "com.docker.compose.service": service },
+    },
+    State,
+    RestartCount: 0,
+    ...extra,
+  });
+  const secret = "postgresql://mend:5f2c0ffee@postgres:5432/mend";
+  const lines = setupFailureEvidence({
+    code: 1,
+    signal: null,
+    terminated: false,
+    elapsedMs: 26_400,
+    text: `mend: Mend containers did not start: container mend-mend-1 exited (1) ${secret}`,
+    containers: [
+      container("postgres", { Status: "running", Health: { Status: "healthy" } }),
+      container("mend", { Status: "exited", ExitCode: 1, OOMKilled: false }, { RestartCount: 2 }),
+      container("garage", { Status: "running", Health: { Status: "healthy" } }),
+      {
+        Config: { Labels: { "com.docker.compose.project": "other" } },
+        State: { Status: "running" },
+      },
+    ],
+  });
+  assert.deepEqual(lines, [
+    "DIAGNOSIS setup exited 1 after 26.4 s: the containers did not start or report healthy",
+    "DIAGNOSIS container garage: running · health healthy",
+    "DIAGNOSIS container mend: exited (exit 1) · health none · restarted 2",
+    "DIAGNOSIS container postgres: running · health healthy",
+  ]);
+  assert.doesNotMatch(lines.join("\n"), /5f2c0ffee|postgresql|mend-mend-1/);
+  assert.deepEqual(
+    setupFailureEvidence({
+      code: null,
+      signal: "SIGKILL",
+      terminated: true,
+      elapsedMs: 600_000,
+      text: "mend: Could not pull ghcr.io/sealant-sh/mend:1.2.3: denied",
+      containers: [],
+    }),
+    [
+      "DIAGNOSIS setup killed at its limit after 600.0 s: an image pull failed",
+      "DIAGNOSIS setup left no product container",
+    ],
+  );
+  const odd = setupFailureEvidence({
+    code: 2,
+    elapsedMs: 1000,
+    text: "something new",
+    containers: [container("mend", { Status: "Running; rm -rf", Health: { Status: "<x>" } })],
+  });
+  assert.deepEqual(odd, [
+    "DIAGNOSIS setup exited 2 after 1.0 s: no setup headline Mend classifies",
+    "DIAGNOSIS container mend: unknown · health unknown",
+  ]);
 });
