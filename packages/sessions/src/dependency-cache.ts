@@ -231,6 +231,112 @@ export const detectInstall = (
 export const detectInstallCommand = (topLevelNames: ReadonlyArray<string>): string | null =>
   detectInstall(topLevelNames)?.command ?? null;
 
+// ─── Fetch timeouts for the install ─────────────────────────────────────────
+
+/**
+ * How long pnpm waits on a silent registry connection before it retries, for the install Mend
+ * runs. pnpm's own default is 60 s, then a 10 s wait before the retry: on the box one stalled
+ * tarball out of 2,003 held first output for about 70 s (2026-10-09 diagnosis). This is an idle
+ * timeout in every pnpm checked, never a total one: pnpm 10 sets it as the socket inactivity
+ * timeout (`@pnpm/network.agent` → agentkeepalive), pnpm 11 and 12 time out a body that stops
+ * flowing, and in each a 1 MiB tarball trickling at 31 KiB/s with a 5 s timeout downloaded in 32 s.
+ * A large tarball on a slow link therefore still completes; only silence trips it. pnpm 10 times
+ * out only before the response headers: once headers arrive it clears the socket timeout, so a
+ * stall in the middle of a body waits for the registry whatever this says.
+ */
+export const INSTALL_FETCH_TIMEOUT_MS = 15_000;
+/** The first retry's wait (pnpm's default 10 s); the factor stays pnpm's 10. */
+export const INSTALL_FETCH_RETRY_MINTIMEOUT_MS = 2_000;
+/** The longest wait between retries (pnpm's default 60 s). */
+export const INSTALL_FETCH_RETRY_MAXTIMEOUT_MS = 10_000;
+
+/**
+ * A plain `pnpm install` (or `pnpm i`) with simple arguments: what `detectInstall` names, or a
+ * saved command of the same shape. Anything else (another package manager, `&&`, a pipe, quotes, a
+ * variable) runs exactly as written.
+ */
+const PNPM_INSTALL = /^pnpm\s+(?:install|i)(?:\s+[\w@./=:+,-]+)*$/;
+
+/**
+ * The files where a project or the person running the install may set a fetch setting, in the
+ * install's working directory and its user's home. A key set in any of them, or in the
+ * environment already, wins: Mend sets only what nobody set.
+ */
+const FETCH_SETTING_FILES = [
+  ".npmrc",
+  "pnpm-workspace.yaml",
+  '"$HOME/.npmrc"',
+  '"${XDG_CONFIG_HOME:-$HOME/.config}/pnpm/rc"',
+  '"${XDG_CONFIG_HOME:-$HOME/.config}/pnpm/config.yaml"',
+].join(" ");
+
+/** One setting: its `.npmrc` and `pnpm-workspace.yaml` spellings and its environment names. */
+const fetchSettingUnset = (kebab: string, camel: string): string => {
+  const snake = kebab.replaceAll("-", "_");
+  const env = [`npm_config_${snake}`, `pnpm_config_${snake}`]
+    .flatMap((name) => [name, name.toUpperCase()])
+    .map((name) => `\${${name}-}`)
+    .join("");
+  return `[ -z "${env}" ] && ! grep -Eqs '^[[:space:]]*(${kebab}|${camel})[[:space:]]*[=:]' ${FETCH_SETTING_FILES}`;
+};
+
+/**
+ * The script `sh -lc` runs for an install command. A plain pnpm install gets shorter fetch
+ * timeouts unless the project, the person or the environment set them; every other command is
+ * returned unchanged.
+ *
+ * The timeout goes on the command line, because pnpm 10 reads `npm_config_fetch_timeout` from the
+ * environment as a string and then turns the timeout off altogether (`@pnpm/network.agent` keeps it
+ * only when it is a number), and pnpm 11 and 12 ignore `npm_config_*`. A command-line flag beats a
+ * project's `.npmrc`, so the script checks for the setting first. pnpm 10's update check is turned
+ * off: on a fresh executor it has no record of its last check, so `pnpm install` resolves `pnpm`
+ * from the registry first, and that request makes the HTTPS agent every later request reuses with
+ * the default 60 s timeout, whatever `--fetch-timeout` says (`@pnpm/network.agent` caches agents by
+ * TLS settings, not by timeout). The retry waits go in the environment under both prefixes:
+ * pnpm 10 reads `npm_config_*`, pnpm 11 and later `pnpm_config_*`, and pnpm 12 has no
+ * command-line flag for them (an unknown flag fails the install). npm is left alone: npm does not retry a body that times out, so a shorter timeout would
+ * turn a stall npm survives today into a failed install.
+ */
+export const installScript = (command: string): string => {
+  const trimmed = command.trim();
+  if (!PNPM_INSTALL.test(trimmed)) return command;
+  const retryWait = (kebab: string, camel: string, ms: number) => {
+    const snake = kebab.replaceAll("-", "_");
+    return `if ${fetchSettingUnset(kebab, camel)}; then export npm_config_${snake}=${ms} pnpm_config_${snake}=${ms}; fi`;
+  };
+  return [
+    "mend_fetch_timeout=",
+    `if ${fetchSettingUnset("fetch-timeout", "fetchTimeout")}; then mend_fetch_timeout=--fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}; fi`,
+    `if ${fetchSettingUnset("update-notifier", "updateNotifier")}; then export npm_config_update_notifier=false; fi`,
+    retryWait("fetch-retry-mintimeout", "fetchRetryMintimeout", INSTALL_FETCH_RETRY_MINTIMEOUT_MS),
+    retryWait("fetch-retry-maxtimeout", "fetchRetryMaxtimeout", INSTALL_FETCH_RETRY_MAXTIMEOUT_MS),
+    `${trimmed} $mend_fetch_timeout`,
+  ].join("\n");
+};
+
+/**
+ * A line a package manager prints when a download timed out, was reset, or will be retried:
+ * pnpm 10 (`ERR_SOCKET_TIMEOUT … Will retry in 10 seconds`), pnpm 11 (`ERR_PNPM_FETCH_TIMEOUT`),
+ * pnpm 12 (`Will retry in 10s`), npm (`EIDLETIMEOUT`, `ETIMEDOUT`, `ECONNRESET`), and yarn and
+ * bun where they name the same socket errors. A line counts once, whatever it matches.
+ */
+const FETCH_RETRY_LINE =
+  /ERR_SOCKET_TIMEOUT|ECONNRESET|ETIMEDOUT|EIDLETIMEOUT|Will retry in|ERR_PNPM_FETCH/;
+
+/** How many fetch retries or stalls an install's output reports, from its stdout and stderr. */
+export const countFetchRetries = (...outputs: ReadonlyArray<string>): number =>
+  outputs.flatMap((output) => output.split("\n")).filter((line) => FETCH_RETRY_LINE.test(line))
+    .length;
+
+/**
+ * The engine's log line once the install has run, e.g.
+ * `session engine: dependency install · completed · exit 0 · fetch retries 2`. The benchmark
+ * reads the last field to set stalled samples apart; it is always there, `fetch retries 0` when
+ * the output reported none.
+ */
+export const dependencyInstallDoneLine = (exitCode: number, fetchRetries: number): string =>
+  `session engine: dependency install · ${exitCode === 0 ? "completed" : "exited"} · exit ${exitCode} · fetch retries ${fetchRetries}`;
+
 /**
  * What an executor answers to learn its platform key, in sealantd's form (`engine.rs`
  * `default_platform`: `<os>-<arch>-<libc>` from Rust's `consts::OS` / `consts::ARCH` and

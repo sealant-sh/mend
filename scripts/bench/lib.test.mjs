@@ -214,6 +214,14 @@ test("milestones are one session's engine lines, named without the evidence word
     "dependency install · completed",
   );
   assert.equal(
+    milestoneName("session engine: dependency install · completed · exit 0 · fetch retries 2"),
+    "dependency install · completed",
+  );
+  assert.equal(
+    milestoneName("session engine: dependency install · exited · exit 1 · fetch retries 0"),
+    "dependency install · exited",
+  );
+  assert.equal(
     milestoneName("session engine: capture flush · final · observed"),
     "capture flush · final",
   );

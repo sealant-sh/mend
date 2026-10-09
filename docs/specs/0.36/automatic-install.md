@@ -172,8 +172,15 @@ relaunch and the install job's own session. The project is read fresh at each la
 5. Command: `project.installCommand`, else
    `detectInstallCommand(git ls-tree --name-only <session.baseSha>)` from the bare store. None:
    skip, logged.
-6. Run `sh -lc <command>` with cwd `/workspace/repo` through `sealant.exec`, as the session's owner.
-   Log `dependency install · completed|exited · exit <n>` (stderr's last 400 characters on failure).
+6. Run `sh -lc <script>` with cwd `/workspace/repo` through `sealant.exec`, as the session's owner.
+   The script is the command itself, except for a plain `pnpm install` (`installScript`,
+   `dependency-cache.ts`). That one gets `--fetch-timeout=15000` and the environment
+   `npm_config_update_notifier=false` and fetch-retry waits of 2 s and at most 10 s (under
+   `npm_config_` and `pnpm_config_`). Each is added only when neither the environment nor `.npmrc`,
+   `pnpm-workspace.yaml`, `~/.npmrc` or the user's pnpm config sets it. Log
+   `dependency install · completed|exited · exit <n> · fetch retries <k>`, where `k` is the number
+   of output lines that report a stalled or retried download (stderr's last 400 characters on
+   failure).
 7. A nonzero exit does not fail the launch. Any error is logged as `dependency install did not run`,
    and the agent starts.
 
@@ -392,7 +399,7 @@ ssh … "docker exec mend-postgres-1 psql -U mend -d mend -Atc \
 - `session engine: dependency install skipped · automatic install off`
 - `… dependency tree observed for this platform`
 - `… dependency install · running { command }`
-- `… dependency install · completed|exited · exit N`
+- `… dependency install · completed|exited · exit N · fetch retries K`
 - `dependency-install: shared cache promoted { platform, captureId, packs }`
 - `dependency cache: the record under this platform names another platform's tree · not served`
 

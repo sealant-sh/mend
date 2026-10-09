@@ -317,7 +317,14 @@ import {
   isForeignReasoningRefusal,
 } from "./conversation-home.ts";
 import { HAND_OVER_NOT_NOW, handOverFailed, makeConversationSteps } from "./conversation-steps.ts";
-import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
+import {
+  countFetchRetries,
+  dependencyInstallDoneLine,
+  detectInstallCommand,
+  installScript,
+  PLATFORM_PROBE_SCRIPT,
+  platformKeyOf,
+} from "./dependency-cache.ts";
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
@@ -2728,17 +2735,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               command,
             }),
           );
-          const result = yield* sealant.exec(workspace, ["sh", "-lc", command], {
+          const result = yield* sealant.exec(workspace, ["sh", "-lc", installScript(command)], {
             cwd: "/workspace/repo",
             ...(user === undefined ? {} : { user }),
           });
-          yield* Effect.logInfo(
-            `session engine: dependency install · ${result.exitCode === 0 ? "completed" : "exited"} · exit ${result.exitCode}`,
-          ).pipe(
+          // Counted from this exec's output and dropped: the line carries the count, never the text.
+          const fetchRetries = countFetchRetries(result.stdout, result.stderr);
+          yield* Effect.logInfo(dependencyInstallDoneLine(result.exitCode, fetchRetries)).pipe(
             Effect.annotateLogs({
               sessionId: session.id,
               platform,
               command,
+              fetchRetries,
               stderr: result.exitCode === 0 ? "" : result.stderr.slice(-400),
             }),
           );

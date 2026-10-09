@@ -177,12 +177,16 @@ export const firstExecAt = (blocks, workspaceId, fromMs) =>
     );
   })?.at ?? null;
 
-/** A milestone's name: the engine's message without its prefix and its trailing evidence word. */
+/**
+ * A milestone's name: the engine's message without its prefix and its trailing evidence (the
+ * evidence word, the dependency install's fetch retries and its exit code).
+ */
 export const milestoneName = (message) =>
   message
     .replace(/^session engine:\s*/, "")
     .replace(/^capture mode:\s*/, "capture mode · ")
     .replace(/\s*·\s*observed$/, "")
+    .replace(/\s*·\s*fetch retries \d+$/, "")
     .replace(/\s*·\s*exit -?\d+$/, "")
     .replace(/\s*\{.*$/, "")
     .trim();

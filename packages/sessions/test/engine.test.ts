@@ -271,6 +271,7 @@ import {
 } from "effect";
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
+import { installScript } from "../src/dependency-cache.ts";
 import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
@@ -21958,6 +21959,60 @@ describe("automatic install", () => {
       );
     });
   }
+
+  // A plain pnpm install runs with Mend's fetch timeouts (`installScript`), and the line it logs
+  // says how many fetch retries the output reported, counted from this exec's output alone.
+  it("a detected pnpm install runs with fetch timeouts and logs its fetch retries", async () => {
+    const PNPM = "pnpm install --frozen-lockfile";
+    const created: Array<CreateOptions> = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const memory = makeMemoryCaptureStore();
+    const logs: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          const project = world.projects.get(session.projectId);
+          if (project === undefined) throw new Error("project missing");
+          world.projects.set(project.id, new Project({ ...project, installCommand: PNPM }));
+          yield* engine.launch(session.id, ["codex"]);
+          const installs = execCalls.filter((argv) => argv[0] === "sh" && argv[1] === "-lc");
+          expect(installs.map((argv) => argv[2])).toContain(installScript(PNPM));
+          expect(installs.map((argv) => argv[2])).not.toContain(PNPM);
+          expect(
+            logs.some((line) =>
+              line.includes("dependency install · completed · exit 0 · fetch retries 2"),
+            ),
+          ).toBe(true);
+          // Only the count is logged, never the output it was counted from.
+          expect(logs.some((line) => line.includes("registry.npmjs.org"))).toBe(false);
+        }),
+      {
+        captured: memory,
+        logs,
+        sealantLayer: lifecycleLayer(created, {
+          execCalls,
+          captureOps: {
+            exec: (argv) =>
+              (argv[2] ?? "").startsWith("uname -s; uname -m;")
+                ? { exitCode: 0, stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n", stderr: "" }
+                : argv[2] === installScript(PNPM)
+                  ? {
+                      exitCode: 0,
+                      stdout: [
+                        "Packages: +2024",
+                        " WARN  GET https://registry.npmjs.org/a/-/a-1.0.0.tgz error (ERR_SOCKET_TIMEOUT). Will retry in 2 seconds. 2 retries left.",
+                        "Done in 31.2s using pnpm v10.32.1",
+                      ].join("\n"),
+                      stderr:
+                        "request to https://registry.npmjs.org/b failed, reason: read ECONNRESET\n",
+                    }
+                  : undefined,
+          },
+        }),
+      },
+    );
+  });
 });
 
 /**
