@@ -189,11 +189,13 @@ message carries those ids, in the queue and across a restart.
   token is in the path, so these requests are neither logged nor traced.
 - An image attached to a message that was never sent is let go after a week: at start, and by each
   person's hub every hour.
-- The gateway places images only through Mend's paste route, as the sender; it has no writer of its
-  own. Where the file lands, and as whom it is written, is the route's: today Mend's workspace
-  writer puts it under the workspace's harness home (`/workspace/harness-home/paste/`), outside the
-  worktree, not as the sending person under per-person homes (ADR 0016), and follows a symlinked
-  paste directory. That writer is being fixed in Mend itself; the gateway follows it unchanged.
+- The gateway places images only through Mend's paste route, as the sender, and has no writer of its
+  own: the turn names exactly the path Mend answers. With mend#615, in a per-person executor (the
+  default) the file is written as the sender into their own directory
+  (`/workspace/harness-home/people/<account>/paste/`), which their agent, running as them, reads; in
+  a shared executor, into `/workspace/harness-home/paste/`. A steerer's image under shared control
+  lands in the steerer's directory, and its turn runs as the steerer (ADR 0016, decision 6): the
+  paste and the turn always go with the same sender's token.
 
 ### A queue that survives a restart
 

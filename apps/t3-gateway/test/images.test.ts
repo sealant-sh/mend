@@ -107,7 +107,9 @@ describe("images on a message", () => {
           yield* eventually(() => posts(mend, "/turns").length === 1, "the turn");
           const pasted = posts(mend, "/images")[0]?.body;
           assert.deepStrictEqual(pasted, { contentsBase64: Buffer.from(PNG).toString("base64") });
-          const path = "/workspace/harness-home/paste/20261010-090000-1.png";
+          // Mend answers where it placed the file: in a per-person executor, the sender's own
+          // directory (mend#615). The turn names exactly that path.
+          const path = "/workspace/harness-home/people/user-1/paste/20261010-090000-1.png";
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
             input: `What is wrong here?\n\n[image: screen.png · ${path}]\n\n${IMAGES_NOTE}`,
           });
@@ -332,6 +334,79 @@ describe("what a message may carry", () => {
         const message = projection.messages.find((candidate) => candidate.id === "message-edited");
         assert.strictEqual(message?.text, "Words only");
         assert.deepStrictEqual(message?.attachments, []);
+      }),
+    ),
+  );
+});
+
+describe("where an image lands", () => {
+  it.live(
+    "a steerer's image is placed as the steerer, and its turn is sent as the steerer, at the path Mend answered",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          // Alice's session, with shared control on: Bea may steer it but does not own it.
+          mend.workbench.addSession({ id: "session-1", projectId: "project-1", own: false });
+          const bea = { id: "user-2", name: "Bea", email: "bea@example.com" };
+          const { rpc } = yield* pairAndConnect(mend, "STEERER-IMAGE", bea);
+          const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+            threadId: THREAD,
+            messageId: MessageId.make("message-steered"),
+            attachments: [
+              {
+                type: "image",
+                name: "screen.png",
+                mimeType: "image/png",
+                sizeBytes: PNG.byteLength,
+                dataUrl: dataUrl(PNG),
+              },
+            ],
+          });
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            send("message-steered", "Look", kept.attachments),
+          );
+          yield* eventually(() => posts(mend, "/turns").length === 1, "the turn");
+          const pasted = posts(mend, "/images")[0];
+          const turn = posts(mend, "/turns")[0];
+          // One sender for both: the paste lands in Bea's own directory, and her turn runs as her
+          // (ADR 0016, decision 6), so her agent can read it.
+          assert.isDefined(pasted?.authorization);
+          assert.strictEqual(pasted?.authorization, turn?.authorization);
+          const path = "/workspace/harness-home/people/user-2/paste/20261010-090000-1.png";
+          assert.include(JSON.stringify(turn?.body), path);
+        }),
+      ),
+  );
+
+  it.live("in a shared executor, the shared paste directory Mend answers", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.sharedExecutor = true;
+        const { rpc } = yield* pairAndConnect(mend, "SHARED-IMAGE");
+        const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+          threadId: THREAD,
+          messageId: MessageId.make("message-shared"),
+          attachments: [
+            {
+              type: "image",
+              name: "screen.png",
+              mimeType: "image/png",
+              sizeBytes: PNG.byteLength,
+              dataUrl: dataUrl(PNG),
+            },
+          ],
+        });
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          send("message-shared", "Look", kept.attachments),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the turn");
+        assert.include(
+          JSON.stringify(posts(mend, "/turns")[0]?.body),
+          "/workspace/harness-home/paste/20261010-090000-1.png",
+        );
       }),
     ),
   );

@@ -665,7 +665,14 @@ export class FakeWorkbench {
             return json(422, { _tag: "PastedImageRejected", message: "not an image" });
           }
           this.pastedImages += 1;
-          const placed = `/workspace/harness-home/paste/20261010-090000-${this.pastedImages}.png`;
+          // As mend#615 places a paste: in a per-person executor, in the sender's own directory;
+          // in a shared one, in the shared paste directory.
+          const account = this.accountOf(request.headers.authorization);
+          const directory =
+            this.sharedExecutor || account === null
+              ? "/workspace/harness-home/paste"
+              : `/workspace/harness-home/people/${account}/paste`;
+          const placed = `${directory}/20261010-090000-${this.pastedImages}.png`;
           return json(200, { path: placed, mediaType: "image/png", bytes: bytes.byteLength });
         });
       }
@@ -863,6 +870,10 @@ export class FakeWorkbench {
 
   /** How many images were pasted into workspaces. */
   pastedImages = 0;
+  /** The Mend account a request's bearer belongs to (set by the fake Mend that pairs devices). */
+  accountOf: (authorization: string | undefined) => string | null = () => null;
+  /** The session's executor is shared (ADR 0016's shared layout), not per person. */
+  sharedExecutor = false;
   /** Every launch Mend took, with what it named. */
   readonly launches: Array<{ readonly sessionId: string; readonly body: object }> = [];
 
