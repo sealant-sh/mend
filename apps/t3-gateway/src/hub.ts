@@ -1301,13 +1301,17 @@ export const makePersonHub = (input: {
       const archivedDeltas: Array<ArchivedShellDelta> = [];
       for (const [id, next] of nextArchived) {
         if (shellArchived.get(id)?.print === next.print) continue;
-        archivedDeltas.push({ kind: "thread.updated", sequence: ++sequence, thread: next.value });
+        archivedDeltas.push({
+          kind: "thread.updated",
+          sequence: nextSequence(),
+          thread: next.value,
+        });
       }
       for (const [id, previous] of shellArchived) {
         if (nextArchived.has(id)) continue;
         archivedDeltas.push({
           kind: "thread.removed",
-          sequence: ++sequence,
+          sequence: nextSequence(),
           threadId: previous.value.id,
         });
       }
