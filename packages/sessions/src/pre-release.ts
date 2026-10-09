@@ -3,8 +3,8 @@
  * (docs/adr/0016-per-person-harness-homes.md, decision 14, Delivery 19): the parts that need no
  * engine. Whom an old shared home's memory is credited to, what a re-run still has to credit,
  * what would stop if a retiring executor were replaced now, and the check Mend runs in it before
- * it replaces it on its own. Reached only behind `MEND_HARNESS_LAYOUT=person` or a worktree
- * already per person.
+ * it replaces it on its own. Reached only behind `MEND_HARNESS_LAYOUT=person` (the default) or a
+ * worktree already per person.
  */
 import { createHash } from "node:crypto";
 

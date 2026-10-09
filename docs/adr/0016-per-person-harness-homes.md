@@ -1392,4 +1392,12 @@ benchmark once more, before 0.36 is tagged.
   budgeted against their own kind. The gate fails if the `person` layout reinstalls at a share of
   its resumes more than 2 per 10 above `shared`'s, or at every resume while `shared` restored at
   least one; the engine's reason for each reinstall is recorded.
+- 2026-10-09: the owner turned per-person on by default for 0.36; the flip (21) merges once the P1
+  timing gate passes on the box; the week of use runs with the default on, before 0.36 is tagged.
+- 2026-10-09, Delivery 21 as built: `MEND_HARNESS_LAYOUT` is `person` unless set, and `shared` is
+  the operator's opt-out; every check that asked whether the flag was on now follows the default,
+  and a worktree with no layout whose launch cannot run per person still runs `shared` with the
+  reason. The `/root` relocation already ran only in `shared` executors. A standby boots as one
+  person and never serves a launch that may run per person, so with `person` the hot pool keeps none
+  in capture mode (it logs `warm skipped`) rather than keep executors no launch would claim.
 - Open: gate B's history record.

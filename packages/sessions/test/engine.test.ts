@@ -11918,6 +11918,35 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
+  it("keeps no standby while MEND_HARNESS_LAYOUT is person, the default: none would ever be claimed (docs/adr/0016, Delivery 21)", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const logs: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => logs.some((line) => line.includes("warm skipped · per-person workspaces")),
+            "the skip",
+          );
+          expect(pool.entries).toHaveLength(0);
+          expect(created).toHaveLength(0);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: pool.layer,
+        harnessLayout: { flag: "person" },
+        logs,
+      },
+    );
+  });
+
   it("a claimed standby found dead gives up its claim at once: the cold launch does not wait it out (review round 4)", async () => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();

@@ -2,12 +2,13 @@
  * The session engine's per-person steps (docs/adr/0016-per-person-harness-homes.md), behind
  * `MEND_HARNESS_LAYOUT`: the layout decided before create, what prepare runs and what it found,
  * the people an executor holds, the user each of their processes starts as, and the logins in
- * each person's home (decision 5). With the flag off and nothing recorded, nothing here reads the
- * store, execs or calls Core.
+ * each person's home (decision 5). With `MEND_HARNESS_LAYOUT=shared` (the operator's opt-out) and
+ * nothing recorded, nothing here reads the store, execs or calls Core.
  */
 import { HarnessLayoutsRepo, type OrganizationsRepo } from "@mend/db";
 import { type OrganizationId, type WorkspaceImage, WorktreeId } from "@mend/domain";
 import {
+  DEFAULT_HARNESS_LAYOUT,
   type HarnessLayout,
   HarnessLayout as HarnessLayoutSchema,
   type HarnessLayoutSource,
@@ -56,7 +57,10 @@ import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
 
 // ─── configuration ───────────────────────────────────────────────────────────
 
-/** `MEND_HARNESS_LAYOUT`: the layout of worktrees with none yet. `shared` until Delivery 21. */
+/**
+ * `MEND_HARNESS_LAYOUT`: the layout of worktrees with none yet. `person` unless the operator sets
+ * `shared` (Delivery 21); a worktree already `person` stays `person` either way (decision 14).
+ */
 export class HarnessLayoutConfig extends Context.Service<
   HarnessLayoutConfig,
   {
@@ -83,13 +87,13 @@ export const HarnessLayoutConfigLive: Layer.Layer<HarnessLayoutConfig, Config.Co
     HarnessLayoutConfig,
     Effect.gen(function* () {
       const flag = yield* Config.schema(HarnessLayoutSchema, "MEND_HARNESS_LAYOUT").pipe(
-        Config.withDefault("shared" as const),
+        Config.withDefault(DEFAULT_HARNESS_LAYOUT),
       );
       return { flag };
     }),
   );
 
-/** The flag off, for tests and compositions that never run the person layout. */
+/** `MEND_HARNESS_LAYOUT=shared`, for tests and compositions that never run the person layout. */
 export const HarnessLayoutConfigShared: Layer.Layer<HarnessLayoutConfig> = Layer.succeed(
   HarnessLayoutConfig,
   { flag: "shared" },

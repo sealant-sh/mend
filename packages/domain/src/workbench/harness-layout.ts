@@ -14,6 +14,13 @@ export const HarnessLayout = Schema.Literals(["person", "shared"]);
 export type HarnessLayout = typeof HarnessLayout.Type;
 
 /**
+ * `MEND_HARNESS_LAYOUT` when the operator sets nothing: the layout of a worktree with none yet.
+ * `person` since Delivery 21; `MEND_HARNESS_LAYOUT=shared` is the operator's opt-out, and decides
+ * only worktrees that have never run `person` (decision 14).
+ */
+export const DEFAULT_HARNESS_LAYOUT: HarnessLayout = "person";
+
+/**
  * What decided a launch's layout (decision 14), in the order Mend asks:
  *
  * - `worktree`: the worktree's sticky record (`worktrees.harness_layout`); once `person`, always.

@@ -1,8 +1,9 @@
 ---
 title: Per-person workspaces
 description:
-  MEND_HARNESS_LAYOUT=person gives each person their own Linux user and home in a workspace. What it
-  needs, what sudo means there, how older workspaces are replaced, and the performance limits.
+  Each person gets their own Linux user and home in a workspace, by default;
+  MEND_HARNESS_LAYOUT=shared opts out. What it needs, what sudo means there, how older workspaces
+  are replaced, and the performance limits.
 sidebar:
   order: 4
 ---
@@ -13,13 +14,14 @@ of whoever launched it. With them, each person who runs anything in the workspac
 Linux user and home, and everything they run runs as them: their logins, Git and Mend identity,
 dotfiles, secret files, memory and MCP servers.
 
-Per-person workspaces ship in Mend 0.36 behind an operator setting, off by default. Design and
+Per-person workspaces ship in Mend 0.36, on by default; an operator can opt out. Design and
 rationale:
 [ADR 0016](https://github.com/sealant-sh/mend/blob/main/docs/adr/0016-per-person-harness-homes.md).
 
-## Turn it on
+## On by default, and opting out
 
-Set `MEND_HARNESS_LAYOUT=person` on the server and restart it. The default is `shared`.
+`MEND_HARNESS_LAYOUT` is `person` unless set. To keep every new worktree on one shared home, set
+`MEND_HARNESS_LAYOUT=shared` on the server and restart it.
 
 - The setting decides only worktrees that have no layout yet. A worktree's layout is recorded with
   its first per-person launch.
@@ -34,7 +36,14 @@ Set `MEND_HARNESS_LAYOUT=person` on the server and restart it. The default is `s
   Nothing in the worktree changes on a refusal; fixing the image makes the next launch work. A Mend
   older than 0.36 cannot resume that worktree's sessions.
 
-- With the setting off and no layout recorded anywhere, Mend reads no layout from the store.
+- With `MEND_HARNESS_LAYOUT=shared` and no layout recorded anywhere, Mend reads no layout from the
+  store.
+- A server on the deprecated co-located store (`MEND_SESSION_STORE=colocated`) runs every session
+  with one shared home, whatever the setting.
+- A standby workspace for [Hot sessions](/guides/project-environment/#hot-sessions) starts as one
+  person before any worktree is known, so it never serves a per-person launch. While
+  `MEND_HARNESS_LAYOUT` is `person`, Mend keeps no standby, and every launch starts cold; the server
+  log says `warm skipped`.
 
 ### What a workspace needs
 
@@ -146,7 +155,7 @@ This worktree's workspace is being replaced so that each person runs as themselv
 Then it checks again, saves a final capture and replaces the workspace only once that save stands. A
 failed check or save unmarks it and says why. A replacement that a crash or a restart interrupts is
 unmarked at the next start, after ten minutes on the regular sweep, or when the owner asks again.
-Mend looks for workspaces to retire only while `MEND_HARNESS_LAYOUT=person` is set.
+Mend looks for workspaces to retire only while `MEND_HARNESS_LAYOUT` is `person`, the default.
 
 **Otherwise the change's owner chooses.** The owner sees **Replace this workspace now**, when Mend
 last checked and what it checked, and one line each for what would stop: terminal sessions (they end
@@ -229,8 +238,7 @@ commit without changing `MEND_HARNESS_LAYOUT`:
 - **P1** compares per-person launches against shared-home launches on a scratch instance, then on
   Mend's own instance, and checks shared-home launches on the new images against the record taken
   before any per-person code. It holds back turning the setting on there.
-- **P2** repeats the comparison after a week of use with the setting on. It holds back making
-  per-person the default and the release.
+- **P2** repeats the comparison after a week of use with the setting on. It holds back the release.
 
 Both records are checked in under `docs/perf/`. CI also counts the execs and platform calls of a
 cold launch, a join, a resume and a hand-over, and fails when a count grows past its budget.

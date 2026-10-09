@@ -2321,7 +2321,7 @@ export class SessionEngine extends Context.Service<
     /**
      * One pass over every live `shared` executor (decision 14): marked to retire when its
      * worktree's next launch would be `person`, and replaced on its own once nothing would stop
-     * that anyone would miss and its final flush is saved. With `MEND_HARNESS_LAYOUT` off it does
+     * that anyone would miss and its final flush is saved. With `MEND_HARNESS_LAYOUT=shared` it does
      * nothing. Runs on its own heartbeat; exposed for deterministic ticks.
      */
     readonly sweepRetirements: () => Effect.Effect<void>;
@@ -7235,8 +7235,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Open bridge-op attributions, ended when the transport closes. */
       const bridgeContexts = new Map<string, () => void>();
       const scope = yield* Effect.scope;
-      // Per-person harness homes (docs/adr/0016), behind `MEND_HARNESS_LAYOUT`: with the flag off
-      // and no worktree recorded `person`, a launch reads one row here and runs as before.
+      // Per-person harness homes (docs/adr/0016), `MEND_HARNESS_LAYOUT=person` unless the operator
+      // opts out: with `MEND_HARNESS_LAYOUT=shared` and no worktree recorded `person`, a launch
+      // reads one row here and runs as before.
       const harnessLayouts = yield* HarnessLayoutsRepo;
       const harnessLayoutConfig = yield* HarnessLayoutConfig;
       const personPlatform = yield* PersonLayoutPlatform;
@@ -20851,7 +20852,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `session engine: warm skipped · ${clusterBindings.bindings.length} cluster binding${clusterBindings.bindings.length === 1 ? "" : "s"}${clusterBindings.serviceAccount === null ? "" : " · service account set"} · local runner`,
           ).pipe(Effect.annotateLogs({ projectId }));
         }
-        const target = warmSkipped ? 0 : Math.max(0, project.hotSessions);
+        // A standby boots as one person before any worktree is known, so it never serves a launch
+        // that may run per person (`standbyMayServe`): with `MEND_HARNESS_LAYOUT=person`, the
+        // default, none would ever be claimed, and keeping one running would only cost an
+        // executor. The pool holds none, and what it held drains (docs/adr/0016, Delivery 21).
+        const standbysUnclaimable = capture !== null && harnessLayoutConfig.flag === "person";
+        if (standbysUnclaimable && project.hotSessions > 0) {
+          yield* Effect.logInfo(
+            "session engine: warm skipped · per-person workspaces launch cold · MEND_HARNESS_LAYOUT=person",
+          ).pipe(Effect.annotateLogs({ projectId }));
+        }
+        const target = warmSkipped || standbysUnclaimable ? 0 : Math.max(0, project.hotSessions);
         // A hot workspace runs as one account and only that account claims it (docs/adr/0003),
         // so the pool is kept per owner: the recent owners who may still run here, each with the
         // fingerprint the project resolves to for them.

@@ -67,7 +67,7 @@ export const sharedControlConfirmOf = (
 /**
  * Whether the session's waiting line is worth reading (docs/adr/0016, decision 6): someone is live
  * in its executor and its owner shares control. Otherwise nobody else's turn can wait, and nothing
- * is read (with `MEND_HARNESS_LAYOUT` off, `livePeople` is always empty: no extra work at all).
+ * is read (with `MEND_HARNESS_LAYOUT=shared`, `livePeople` is always empty: no extra work at all).
  */
 export const readsWaiting = (
   session: Pick<SessionDto, "livePeople" | "sharedControlEnabledAt"> | null | undefined,

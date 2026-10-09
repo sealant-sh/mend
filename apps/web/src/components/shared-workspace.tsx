@@ -38,7 +38,7 @@ import { useTRPC } from "#/lib/trpc";
  * What the session page says where people share a workspace (docs/adr/0016-per-person-harness-homes.md,
  * decisions 6, 13 and 14), in the domain's words. Each view here is pure and takes its facts; the
  * wrappers below read them through the API, and only where the session says they can show: with
- * `MEND_HARNESS_LAYOUT` off the page asks for nothing more than before.
+ * `MEND_HARNESS_LAYOUT=shared` the page asks for nothing more than before.
  */
 
 // ─── The waiting line (decision 6) ─────────────────────────────────────────────

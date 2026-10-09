@@ -2,8 +2,8 @@
  * Per-person harness homes (docs/adr/0016-per-person-harness-homes.md), the parts that need no
  * engine: which layout a launch runs (decision 14), the scripts that make people's users and
  * homes inside an executor (decisions 1 and 2), the worktree repair (decision 2), and the user a
- * process starts as. Everything here is reached only behind `MEND_HARNESS_LAYOUT=person` or a
- * worktree already recorded `person`; with neither, a launch runs exactly as before.
+ * process starts as. Everything here is reached only behind `MEND_HARNESS_LAYOUT=person` (the
+ * default) or a worktree already recorded `person`; with neither, a launch runs exactly as before.
  */
 import { createHash } from "node:crypto";
 

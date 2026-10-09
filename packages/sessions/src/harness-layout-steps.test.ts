@@ -14,10 +14,12 @@ import {
   SealantPlatformError,
 } from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
+import { ConfigProvider, Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  HarnessLayoutConfig,
+  HarnessLayoutConfigLive,
   type PersonHome,
   UNKNOWN_LAUNCH_REFUSAL,
   loginNeedOf,
@@ -290,6 +292,35 @@ const settleInput = (launchId: string, stdout: string) => ({
   workspace,
   stdout,
   fallback: { credentials: { claude: true, github: true }, dotfiles: [] },
+});
+
+/** The layout `HarnessLayoutConfigLive` reads from an environment. */
+const flagWith = (env: Record<string, string>) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      return (yield* HarnessLayoutConfig).flag;
+    }).pipe(
+      Effect.provide(
+        HarnessLayoutConfigLive.pipe(
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
+        ),
+      ),
+    ),
+  );
+
+describe("MEND_HARNESS_LAYOUT (docs/adr/0016, Delivery 21)", () => {
+  it("is person when the operator sets nothing", async () => {
+    expect(await flagWith({})).toBe("person");
+  });
+
+  it("is shared when the operator opts out, and person when they name it", async () => {
+    expect(await flagWith({ MEND_HARNESS_LAYOUT: "shared" })).toBe("shared");
+    expect(await flagWith({ MEND_HARNESS_LAYOUT: "person" })).toBe("person");
+  });
+
+  it("refuses a value that is neither", async () => {
+    await expect(flagWith({ MEND_HARNESS_LAYOUT: "on" })).rejects.toThrow();
+  });
 });
 
 describe("the layout each launch runs, as the channel reads it (docs/adr/0016)", () => {
