@@ -89,8 +89,8 @@ Preconditions:
   (`page.getByRole("switch", { name: "Use global skills" })`) reports `aria-checked="true"`. Under
   `Global skills`, the row with the link `verify-cli-skill` (`exact: true`) reads `Overridden here`.
 - **Turn global skills off.** Click the switch. It reports `aria-checked="false"`, the section's
-  button reads `Global skills off · 1 project skill`, and the global row reads `Off`. Click it again
-  to restore `Inherited`/`Overridden here`.
+  button is named `Skills Global skills off · 1 project skill`, and the global row reads `Off`.
+  Click it again to restore `Inherited`/`Overridden here`.
 - **Session receives them.** Run
   `mend run --project <project> -- sh -c 'ls ~/.claude/skills > SKILLS-SEEN.md'`. Exit code `0`.
   The change (see [Review a change](./review-change.md)) holds `SKILLS-SEEN.md` listing
@@ -98,6 +98,15 @@ Preconditions:
 - **Prune.** Remove `<scratch>/skills/verify-cli-skill`, add
   `<scratch>/skills/verify-other/SKILL.md`, and run `mend skills push --dir <scratch>/skills --prune`.
   The counts end `· 1 removed`, and `mend skills` lists `verify-other` only.
+- **Restore both libraries.** Open `<web>/skills` and click
+  `await page.getByRole("link", { name: /^verify-other/ }).click()`. Remove it with
+  `await page.getByRole("button", { name: "Remove", exact: true }).click()`, then
+  `await page.getByRole("button", { name: "Really remove?" }).click()`. The browser returns to
+  `/skills`. Open `<web>/projects/<id>/setup#skills` and click
+  `await page.getByRole("link", { name: /^verify-cli-skill/ }).click()`, then use the same two
+  removal clicks.
+  The browser returns to `/projects/<id>/setup#skills`. Run `mend skills` and
+  `mend skills --project <project>`; both print the empty-library lines from the preconditions.
 - **Proof.** Keep every `mend skills` transcript with exit codes, the ARIA snapshot and screenshot
   of `/skills` after the create, of the skill page after the save, and of the project's `Skills`
   region with the switch on and off, and the `SKILLS-SEEN.md` diff.
@@ -127,7 +136,8 @@ Preconditions:
   `--project` last, or give it a name.
 - Skill names are directory names lowercased. Binary files, files over 512 KB and bundles over 64
   files are skipped with a note line, not an error.
-- Skills are delivered when the workspace is created. A running session keeps what it started with.
+- Shared-home workspaces receive skills when created. Per-person homes receive them at the
+  person's first process and every later agent start, including within an existing workspace.
   A launch never fails for skills; a delivery that fails is logged on the server only.
 - Skills also land in `~/.codex/skills` and `~/.pi/agent/skills`. The docs' delivery table lists
   Claude Code and Codex only, not pi's directory.

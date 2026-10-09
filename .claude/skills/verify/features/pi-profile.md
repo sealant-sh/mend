@@ -25,9 +25,16 @@ makes.
 - CLI: `mend connect pi [--dir <path>] [--dry-run] [--remove]`.
 - CLI: `mend pi ["prompt"] [--name <worktree>] … [--project <p>]` starts a pi session that receives
   the profile (the same command as `mend codex`; see [Start a session](./start-session.md)).
-- Web and other surfaces: a pi session can be started wherever a harness is picked (the composer's
-  harness menu lists `pi`), and receives the profile the same way. No surface shows or edits the
-  profile itself.
+- Web: the Now page composer at `/` and a project's worktree session menu at `/projects/<id>`
+  offer `pi`.
+- TUI: the dashboard (`mend ui`, or bare `mend`) offers `pi` in its harness picker.
+- Desktop: the launcher's harness menu offers `pi`.
+- VS Code: `Mend: New Session…` and `Mend: New session in this worktree…` offer `pi` in the
+  `Harness` picker. `not drivable yet`: the verify stack has no VS Code driver.
+- Mobile and Slack: session launches offer Claude and Codex only; neither offers pi. Slack is
+  `not drivable yet`: the verify stack has no Slack driver.
+- These pi entry points use the saved profile, subject to the shared-home limit in Gotchas. Only
+  the CLI saves or removes it; no surface shows or edits the saved profile.
 
 ## Driving it with verify
 
@@ -65,6 +72,8 @@ Preconditions:
   `ls ~/.pi/agent/mend/profile ~/.pi/agent/mend/profile/prompts`. The listing shows `prompts` and
   `settings.json`, and `bye.md` and `verify.md` under `prompts`. Run
   `grep '"theme"' ~/.pi/agent/settings.json`; it prints the `"theme": "dark"` line.
+- **VS Code entry point.** `not drivable yet`: the verify stack has no VS Code driver. The
+  `Harness` picker in either new-session command offers `pi`; launching creates a pi session.
 - **Remove.** Run `mend connect pi --remove`. Stdout is `pi: profile removed`. Run it again: stdout
   is `pi: no profile saved`. Stop the session with `mend stop <id8>`.
 - **Proof.** Keep every `mend connect pi` transcript with exit codes, the `mend pi --detach`

@@ -13,10 +13,11 @@ that is not written at launch is named on the session page.
 - `secrets-add-cli` keeps a file from `--from <file>` or stdin with `mend secrets add`, or replaces
   the one at that path.
 - `secrets-add-web` keeps a file from a chosen file or pasted text on Settings → Secret files.
-- `secrets-path-refused` refuses a path outside the home, with `..`, or under a captured directory,
-  before anything is sent.
+- `secrets-path-refused` refuses a path outside the home or under a captured directory before
+  anything is sent. The web also refuses raw `..` segments; the CLI validates the normalized path.
 - `secrets-remove` removes one by path, from the CLI or the web.
-- `secrets-delivery` writes the files into each new session's workspace home; a file not written is
+- `secrets-delivery` writes the files into each new workspace home. In a per-person workspace,
+  delivery runs at the person's first process and every later agent start. A file not written is
   named in the session's line.
 - `secrets-mobile-list` shows the list on the phone.
 
@@ -102,12 +103,16 @@ Preconditions:
   buttons.
 - The footer status (`created …`, `removed …`) and the red error line are plain text, not
   `role="status"` or `role="alert"`.
-- The web form trims a leading `~/` only; the CLI also maps an absolute path under the CLI machine's
-  home to the same workspace path.
+- The web form trims whitespace and a leading `~/`, then validates the path without normalizing
+  it. It refuses `a/../token`. The CLI maps an absolute path under the CLI machine's home to a
+  workspace path and normalizes before validation, so `a/../token` becomes `token`. A normalized
+  path that still escapes the home or names a captured directory is refused.
 - Never write a secret file's content into the worktree in a recipe: the worktree is captured. Prove
   delivery with a byte count or a `test -f`, as above, and use disposable values only.
-- A file is at most 256 KB, at most 64 files per person. Delivery happens at workspace launch: a
-  running session keeps what it has.
+- A file is at most 256 KB, at most 64 files per person. Shared-home workspaces receive files at
+  launch. In per-person homes, delivery runs at the person's first process and every later agent
+  start, including within an existing workspace. A saved change reaches that home at the next
+  delivery.
 - A session that joins a workspace someone else launched (shared home) receives none of the
   joiner's files. Its summary line reads
   `secret files · <n> not written · this workspace is another person's · ~/<path>`. A disposable

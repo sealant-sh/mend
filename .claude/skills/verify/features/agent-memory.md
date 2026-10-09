@@ -51,7 +51,8 @@ Preconditions:
   `- verify: the map's memory line\n`.
 - `mend memory --project <project>` prints
   `<project>: no agent memory yet · mend memory import brings this machine's`.
-- For the delivery steps, `mend connect claude` has been run against this instance.
+- The Claude launch used below needs `mend connect claude` against this instance. Import, list,
+  show and remove need no connected provider.
 
 - **Plan.** From `<scratch>/checkout`, run
   `CLAUDE_CONFIG_DIR=<scratch>/claude CODEX_HOME=<scratch>/codex mend memory import --dry-run`.
@@ -96,9 +97,12 @@ Preconditions:
   `cli.json`. Later imports from the same checkout merge against what this one sent.
 - The project comes from the current directory's checkout (its origin) unless `--project` names one.
   Run the import from the clone, not from `<scratch>`.
-- Memory is delivered to agent sessions only (`mend claude`, `mend codex`), not to `mend run`
-  commands, and not to a session that was ever under shared control. Delivery needs a connected
-  provider, so the delivery steps cost a session on the person's login.
+- Mend stores Claude memory files and Codex summary files. Delivery is separate from which
+  harness uses those formats: fresh shared-home workspace launches deliver the owner's stored
+  memory even for `mend run`, pi or opencode. In per-person homes, delivery runs at agent starts
+  for a personal session that has never had shared control. Ownership and shared-control history
+  govern whose memory can be delivered and saved back. Memory delivery itself needs no connected
+  provider.
 - Read-back happens when the agent ends, not on a timer. A session left open saves nothing until it
   stops.
 - `mend memory <word>` with any word other than `show`, `rm` or `import` lists, rather than refusing
@@ -106,4 +110,6 @@ Preconditions:
 - A name alone is Claude's file; prefix Codex's with `codex:` (`codex:MEMORY.md`).
 - There is no web or phone view of memory. ADR 0009 lists web and phone views as later work. Product
   gap; only the CLI is drivable.
-- pi and opencode keep no memory; nothing is delivered to them.
+- Mend has no pi or opencode memory format to import or save back. Their launches can still
+  receive the person's stored Claude and Codex files; that does not show that either harness reads
+  them.

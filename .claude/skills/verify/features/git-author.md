@@ -2,9 +2,10 @@
 
 The git author is the name and email that commits made in a person's workspaces carry. Until the
 person sets one, it is the name and email they registered with. They change it on Settings → Git
-author or with `mend git-author`, and sessions launched afterwards commit as the new author. Mend
-writes it as system git config before the agent starts, so a `user` section in the person's
-dotfiles `.gitconfig`, or in the repository's own config, still decides.
+author or with `mend git-author`. Mend writes it as system git config in a shared-home workspace.
+In a per-person workspace, Mend writes `~/.mend/git-author` and includes it at the top of
+`~/.config/git/config`. The person's own `user` settings in dotfiles or the repository's config
+still decide.
 
 ## Sub-features
 
@@ -81,9 +82,11 @@ Preconditions:
 - `mend git-author` takes exactly two words, name then email. Quote a name with spaces.
 - A `user` section in the person's dotfiles or in the repository's config wins over the setting, by
   design. Clear dotfiles first, or the `AUTHOR.md` step shows the dotfiles' author.
-- The change applies to sessions launched after it. A running session keeps the author it started
-  with.
+- Shared-home workspaces receive the author at launch. In a per-person home Mend rewrites the
+  author at every identity pickup, so a changed setting applies at the next pickup, including in
+  an existing workspace.
 - When Mend cannot write the author into a workspace, it logs a warning on the server only; the
   session page says nothing. The `AUTHOR.md` step is the observable proof.
-- In a per-person workspace the author goes into the person's own `~/.config/git/config` instead of
-  system config. `git config user.name` reads it the same way.
+- In a per-person workspace `~/.config/git/config` includes `~/.mend/git-author` at its top.
+  Later `user` settings in that config and in `~/.gitconfig` take precedence.
+  `git config user.name` reads the resulting author.

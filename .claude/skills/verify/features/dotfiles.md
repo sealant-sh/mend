@@ -1,7 +1,7 @@
 # Dotfiles
 
 Dotfiles belong to a person and follow them into every project. A user points the server at a
-dotfiles repository, which the server clones as them at every launch, and adds a snapshot of home
+dotfiles repository, which the server clones as them when applying it, and adds a snapshot of home
 files captured on the machine that has them, from the terminal (`mend dotfiles sync`) or the web
 Settings page. A project's Setup page decides whether its sessions apply the launching person's
 dotfiles. Each session page then says what was sent at launch, or which source was not applied and
@@ -41,8 +41,9 @@ why.
 
 Preconditions:
 
-- Mend is healthy at `<web>`, the browser is signed in, and `<project>` is adopted with its
-  workspace image on a managed OS family (not a custom image).
+- Mend is healthy at `<web>`, the browser is signed in as the project creator or an organization
+  owner, and `<project>` is adopted with its workspace image on a managed OS family (not a custom
+  image). This role is required for the project switches.
 - `<dotfiles-repo-url>` is a disposable public HTTPS repository whose root holds a file
   `.verify-dotfile`; HTTPS clones without a credential, so it must be public.
 - `<scratch>` is an empty directory the run made. `<xdg>` is the directory that holds the signed-in
@@ -148,8 +149,10 @@ Preconditions:
 - The docs and the API describe a per-person setting `Start my agents after install.sh`
   (`PUT /dotfiles/start-after-install`). Neither Settings nor the CLI offers it. Product gap; not
   drivable.
-- Dotfiles resolve when the workspace is created. A running session keeps what it launched with.
-  Custom-image projects never apply dotfiles; their card reads
+- In a shared-home workspace, dotfiles resolve when the workspace is created. In a per-person
+  workspace, they apply at that person's first process, including when the person joins an existing
+  workspace. Later processes in that home do not reapply them. Custom-image projects never apply
+  dotfiles; their card reads
   `custom image · dotfiles and default shell profile not applied`.
 - The session page's `dotfiles ·` lines say what Mend sent, not what the workspace applied. A
   source that failed shows `dotfiles · repo not applied · <reason>` in the warning color, still as
