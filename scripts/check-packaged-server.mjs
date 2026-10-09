@@ -18,7 +18,9 @@
  * retag one image or override health ENV. Same-source fixtures prove upgrade mechanics
  * and retention only, not historical schema migration or backup restore compatibility.
  * No macOS claim. SIGKILL cannot clean up; retained resources make the next run refuse.
- * Raw command output, HTTP bodies, credentials and Docker logs are never printed.
+ * Raw command output, HTTP bodies, credentials and Docker logs are never printed. A failure
+ * after the session exists prints DIAGNOSIS lines instead: status words from the public API and
+ * the engine's own message heads, with their annotations left out and opaque runs masked.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -67,9 +69,12 @@ import {
   ownsWorkspaceContainer,
   readPrivateIdentity,
   readUpgradeInputs,
+  requestFailureEvidence,
   runPackagedUpgrade,
   privateTreeFingerprint,
   verifyUpgradeBackup,
+  engineTimelineEvidence,
+  sessionStateEvidence,
 } from "./packaged-server-assertions.mjs";
 import { preparePackagedSshAcceptance } from "./packaged-ssh-acceptance.mjs";
 
@@ -101,6 +106,9 @@ const containers = new Set();
 const networks = new Map();
 let volumes;
 let upgrade;
+// The session the capture stages follow, once there is one: what a failure past that point
+// classifies in the CI log (`printDiagnosis`).
+let diagnosis;
 
 // Only read-only Docker preflight uses the original home. Every subsequent client gets a
 // private HOME/XDG tree, no agent socket, no Git overrides, and no Mend/harness credentials.
@@ -274,27 +282,50 @@ async function freePorts() {
   }
 }
 
-async function request(origin, route, { token, method = "GET", body, headers = {} } = {}) {
-  return fetch(`${origin}/api${route}`, {
-    method,
-    headers: {
-      ...headers,
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    signal: AbortSignal.timeout(120_000),
-    redirect: "error",
-  });
+// A request that throws (its deadline, a refused connection) fails the stage with the route it
+// was and how long it waited (`requestFailureEvidence`), never the error's own words.
+async function request(
+  origin,
+  route,
+  { token, method = "GET", body, headers = {}, timeout = 120_000 } = {},
+) {
+  const started = Date.now();
+  const signal = AbortSignal.timeout(timeout);
+  try {
+    const response = await fetch(`${origin}/api${route}`, {
+      method,
+      headers: {
+        ...headers,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal,
+      redirect: "error",
+    });
+    return response;
+  } catch (error) {
+    check(false, `${stage}: ${requestFailureEvidence(error, method, route, Date.now() - started)}`);
+  }
 }
 
-async function json(origin, route, options) {
+async function json(origin, route, options = {}) {
+  const started = Date.now();
   const response = await request(origin, route, options);
   check(
     response.ok,
     `${stage}: public API ${route.split("?")[0]} returned HTTP ${response.status}`,
   );
-  return response.json();
+  // The body arrives under the same deadline as the head; a stall in it is named the same way.
+  try {
+    return await response.json();
+  } catch (error) {
+    const elapsed = Date.now() - started;
+    check(
+      false,
+      `${stage}: ${requestFailureEvidence(error, options.method ?? "GET", route, elapsed)}`,
+    );
+  }
 }
 
 async function health(origin, expectedVersion = version) {
@@ -444,6 +475,61 @@ async function sshIdentity(port) {
     .toSorted();
   check(publicKeys.length > 0, "SSH gateway must present a host key on the selected port");
   return hash(publicKeys.join("\n"));
+}
+
+// A failed stage after the session exists says, in the CI log, where the session stood: the
+// public API's status words (`sessionStateEvidence`), the executors Docker reports, and the
+// engine's message heads for the session since its launch (`engineTimelineEvidence`). Nothing raw:
+// no annotation, body, output or credential. The private diagnostics below still hold the rest.
+async function printDiagnosis() {
+  const { origin, token, sessionId, since } = diagnosis;
+  // Whether the server answers at all tells one stuck route from a stuck server.
+  const healthStarted = Date.now();
+  try {
+    const response = await fetch(`${origin}/api/health`, {
+      signal: AbortSignal.timeout(10_000),
+      redirect: "error",
+    });
+    await response.body?.cancel();
+    console.error(
+      `DIAGNOSIS health answered HTTP ${response.status} in ${Date.now() - healthStarted} ms`,
+    );
+  } catch (error) {
+    console.error(
+      `DIAGNOSIS ${requestFailureEvidence(error, "GET", "/health", Date.now() - healthStarted)}`,
+    );
+  }
+  let detail;
+  try {
+    detail = await json(origin, `/sessions/${sessionId}`, { token, timeout: 10_000 });
+    console.error(`DIAGNOSIS ${sessionStateEvidence(detail)}`);
+  } catch (error) {
+    console.error(
+      `DIAGNOSIS session detail unavailable: ${error instanceof assert.AssertionError ? error.message : "raw error withheld"}`,
+    );
+  }
+  const owned = await collectOwned();
+  if (!owned) return;
+  const initialIds = new Set(initial.containers.map((item) => item.Id));
+  const executors = owned.now.containers
+    .filter((item) => ownsWorkspaceContainer(item, initialIds))
+    .map((item) => item.State?.Status ?? "unknown");
+  console.error(
+    `DIAGNOSIS executors: ${executors.length === 0 ? "none" : executors.toSorted().join(", ")}`,
+  );
+  const mend = owned.compose.find(
+    (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
+  );
+  if (!mend) return console.error("DIAGNOSIS engine log unavailable: no Mend container");
+  const logs = await start("docker", ["--context", context, "logs", "--since", since, mend.Id], {
+    timeout: 30_000,
+  }).result;
+  const ids = [sessionId, detail?.session?.worktreeId, detail?.session?.sealantWorkspaceId];
+  const timeline = engineTimelineEvidence(`${logs.output}\n${logs.error}`, ids);
+  console.error(
+    `DIAGNOSIS engine log for the session, message heads only (${timeline.length}${logs.ok ? "" : ", read incomplete"}):`,
+  );
+  for (const line of timeline) console.error(`DIAGNOSIS   ${line}`);
 }
 
 async function collectFailureLogs() {
@@ -1117,6 +1203,7 @@ async function main() {
     const detail = await api(`/projects/${project.id}?deadEnds=include`);
     return detail.sessions?.find((item) => item.branch === "mend/packaged-proof");
   });
+  diagnosis = { origin, token, sessionId: session.id, since: launchStarted };
   const sessionDetail = async () => {
     const current = await api(`/sessions/${session.id}`);
     check(
@@ -1611,6 +1698,13 @@ try {
   console.error(
     `FAIL ${stage}: ${error instanceof assert.AssertionError ? error.message : "operation failed; raw error withheld"}`,
   );
+  if (diagnosis) {
+    try {
+      await printDiagnosis();
+    } catch {
+      console.error("DIAGNOSIS incomplete; raw error withheld");
+    }
+  }
 } finally {
   if (process.exitCode === 1 && (setupAttempted || fixtureId)) {
     try {

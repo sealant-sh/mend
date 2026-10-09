@@ -38,6 +38,7 @@ import {
   createDiagnosticProbe,
   createFailedCommandDiagnostics,
   dockerFingerprint,
+  engineTimelineEvidence,
   installationOwnerLabel,
   isolatedClientEnvironment,
   isInside,
@@ -45,8 +46,10 @@ import {
   ownsWorkspaceContainer,
   readPrivateIdentity,
   readUpgradeInputs,
+  requestFailureEvidence,
   runPackagedUpgrade,
   privateTreeFingerprint,
+  sessionStateEvidence,
   verifyUpgradeBackup,
 } from "./packaged-server-assertions.mjs";
 
@@ -727,6 +730,103 @@ test("flush attempt evidence names this session's refusals, timeouts and partial
   assert.equal(bounded.length, 4);
   assert.ok(bounded.every((line) => line.length <= 200));
   assert.ok(bounded[3].startsWith("refused · why-8 · "));
+});
+
+test("a request that throws names its route, its wait and its class, never its message", () => {
+  const timeout = Object.assign(new Error("The operation was aborted due to timeout"), {
+    name: "TimeoutError",
+  });
+  assert.equal(
+    requestFailureEvidence(
+      timeout,
+      "POST",
+      "/sessions/e8f4474e-b96c-4d41-b286-e1a864d966ff/checkpoints?secret=x",
+      120_004,
+    ),
+    "public API POST /sessions/:id/checkpoints: no answer in 120.0 s",
+  );
+  const refused = Object.assign(new TypeError("fetch failed https://user:token@host/"), {
+    cause: { code: "ECONNREFUSED" },
+  });
+  assert.equal(
+    requestFailureEvidence(
+      refused,
+      "GET",
+      "/changes/1e252e03-69ca-49c1-88d8-fb7bea04520e/diff",
+      12,
+    ),
+    "public API GET /changes/:id/diff: failed after 0.0 s (ECONNREFUSED)",
+  );
+  const odd = Object.assign(new Error("Bearer abc"), { name: "Bearer abc", code: "lower" });
+  assert.equal(
+    requestFailureEvidence(odd, "GET", "/projects", 1500),
+    "public API GET /projects: failed after 1.5 s (Error)",
+  );
+  assert.doesNotMatch(requestFailureEvidence(refused, "GET", "/x", 1), /token|fetch failed/);
+});
+
+test("engine timeline keeps this session's message heads, never annotations, causes or secrets", () => {
+  const sessionId = "e8f4474e-b96c-4d41-b286-e1a864d966ff";
+  const worktree = "1e252e03-69ca-49c1-88d8-fb7bea04520e";
+  const log = [
+    "plain startup noise",
+    `[13:41:39.999] INFO (#514) http.span=38039ms: session engine: capture flush · completed · observed {`,
+    `  sessionId: '${sessionId}',`,
+    "  error: 'https://user:hunter2@example.invalid/repo.git'",
+    "}",
+    `[13:41:40.001] INFO (#12): session engine: checkpoint taken { worktree: '${worktree}', sha: 'abc' }`,
+    `[13:41:40.002] INFO (#13): session engine: unrelated session { sessionId: 'aadc6b45-e1c7-4843-b002-2335b58d372c' }`,
+    "[13:41:40.003] WARN (#14): session engine: pickup refused · ghp_0123456789abcdefghijklmnopqrstuvwxyz Error: secret detail",
+    "    at stack (file.ts:1:1)",
+    "[13:41:40.004] INFO (#15): http server: request { sessionId: '" + sessionId + "' }",
+    `[13:41:40.005] DEBUG (#16) "some span"=5ms: session engine: final flush asked { sessionId: '${sessionId}' }`,
+  ].join("\n");
+  const timeline = engineTimelineEvidence(log, [sessionId, worktree, null]);
+  assert.deepEqual(timeline, [
+    "13:41:39.999 INFO session engine: capture flush · completed · observed [http 38039ms]",
+    "13:41:40.001 INFO session engine: checkpoint taken",
+    "13:41:40.003 WARN session engine: pickup refused · …",
+    "13:41:40.005 DEBUG session engine: final flush asked",
+  ]);
+  assert.doesNotMatch(timeline.join("\n"), /hunter2|ghp_|secret detail|sha: |file\.ts/);
+  assert.deepEqual(engineTimelineEvidence(log, [sessionId], 1), [
+    "13:41:40.005 DEBUG session engine: final flush asked",
+  ]);
+  assert.deepEqual(engineTimelineEvidence(undefined, [sessionId]), []);
+});
+
+test("session state names statuses and counters, and only the presence of free text", () => {
+  const state = {
+    session: {
+      status: "completed",
+      sealantWorkspaceId: "w",
+      captureDrain: "stop",
+      capturePending: 0,
+      captureRefused: null,
+      captureDrainRequestedAt: "2026-10-09T17:51:59.000Z",
+      captureDrainProgressAt: null,
+      captureNotSavedAt: null,
+      captureIncompleteReason: "snap failed: /root/.ssh/id_ed25519 unreadable",
+      captureFailingSince: null,
+    },
+    currentAgent: { status: "exited" },
+    processes: [
+      { kind: "agent", status: "exited" },
+      {
+        kind: "shell",
+        status: "a status with 'quotes' and far too many words to be a status word",
+      },
+    ],
+    checkpoints: [{ trigger: "turn-boundary" }, { trigger: "user-mark" }],
+    change: { id: "c" },
+  };
+  const evidence = sessionStateEvidence(state);
+  assert.equal(
+    evidence,
+    "session completed · agent exited · processes [agent:exited,shell:?] · checkpoints [turn-boundary,user-mark] · change present · workspace set · drain stop · pending 0 · refused null · drain requested set · drain progress unset · not saved unset · incomplete reason set · failing unset",
+  );
+  assert.doesNotMatch(evidence, /id_ed25519/);
+  assert.equal(sessionStateEvidence(undefined), "session detail unreadable");
 });
 
 const identityBytes = Buffer.from("SECRET=fixture-only\r\nSECOND=value\n");

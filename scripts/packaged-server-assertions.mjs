@@ -244,6 +244,128 @@ export function flushAttemptEvidence(logText, sessionId, limit = 6) {
   return seen.slice(-limit);
 }
 
+const uuidsInText = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * A public API request that threw instead of answering, in words the CI log may carry: the method,
+ * the route with every id folded to `:id` and no query, how long it waited, and either "no answer"
+ * (the request's own deadline) or the error's system code or class. Never the error's message,
+ * which can carry the URL, a header or a body. Before this, such a throw printed only "operation
+ * failed; raw error withheld", which cannot tell a hung route from a refused connection.
+ */
+export function requestFailureEvidence(error, method, route, elapsedMs) {
+  const path = String(route).split("?")[0].replace(uuidsInText, ":id");
+  const seconds = (Math.max(0, Number(elapsedMs) || 0) / 1000).toFixed(1);
+  const name =
+    typeof error?.name === "string" && /^\w{1,40}$/.test(error.name) ? error.name : "Error";
+  if (name === "TimeoutError") return `public API ${method} ${path}: no answer in ${seconds} s`;
+  const code = error?.cause?.code ?? error?.code;
+  const why = typeof code === "string" && /^[A-Z][A-Z0-9_]{1,40}$/.test(code) ? code : name;
+  return `public API ${method} ${path}: failed after ${seconds} s (${why})`;
+}
+
+const logEntryHead =
+  /^\[(\d\d:\d\d:\d\d\.\d{3})\] ([A-Z]+)(?: \(#\d+\))?((?: (?:"[^"]*"|[^\s"]+)=\d+ms)*): (session engine: .*)$/;
+
+/**
+ * Effect's default logger prints `[time] LEVEL (#fiber) spans: message`, then on the same line a
+ * cause it carries (`Error: …`) and its annotations (`{ … }`, one line when short). Where either
+ * begins, the message ends.
+ */
+const messageEnd = /\s(?:\{|[A-Z]\w*(?:Error|Exception)\b|Error\b|\[?Fiber\b|Interrupted\b)/;
+
+/** An engine message head with anything opaque (tokens, hashes, URLs) masked. */
+const maskedHead = (text) =>
+  text
+    .replace(/\b[a-z][\w+.-]*:\/\/\S+/gi, "<url>")
+    .replace(/[A-Za-z0-9+/_=-]{32,}/g, "…")
+    .slice(0, 160);
+
+/**
+ * The engine's own account of a session from the Mend container's log, for the CI log of a stage
+ * that failed: every `session engine: …` entry whose annotations name one of `ids` (the session,
+ * its worktree, its workspace), and every one the engine logged as a warning or an error, as
+ * `<time> <LEVEL> <message>` plus the request's `http.span` when the entry carries one. The message
+ * head only: the annotations ({ … }), where the engine puts errors, paths and its other private
+ * details, never leave the runner, and an opaque run (a token, a hash, a URL) in a head is masked.
+ * The newest `limit` entries are kept. Engine-authored text, as `flushAttemptEvidence` reads it.
+ */
+export function engineTimelineEvidence(logText, ids, limit = 40) {
+  if (typeof logText !== "string") return [];
+  const wanted = (Array.isArray(ids) ? ids : []).filter(
+    (id) => typeof id === "string" && id.length >= 8,
+  );
+  const entries = [];
+  let current;
+  for (const line of logText.split("\n")) {
+    const head = line.match(logEntryHead);
+    if (head) {
+      const end = head[4].search(messageEnd);
+      current = {
+        time: head[1],
+        level: head[2],
+        spans: head[3].trim(),
+        head: end === -1 ? head[4] : head[4].slice(0, end),
+        body: end === -1 ? "" : `${head[4].slice(end)}\n`,
+      };
+      entries.push(current);
+    } else if (/^\[\d\d:\d\d:\d\d\.\d{3}\] /.test(line)) current = undefined;
+    else if (current) current.body += `${line}\n`;
+  }
+  return entries
+    .filter(
+      (entry) =>
+        ["WARN", "ERROR", "FATAL"].includes(entry.level) ||
+        wanted.some((id) => entry.body.includes(`'${id}'`)),
+    )
+    .map((entry) => {
+      const span = entry.spans.match(/\bhttp\.span=(\d+)ms\b/)?.[1];
+      return `${entry.time} ${entry.level} ${maskedHead(entry.head)}${span ? ` [http ${span}ms]` : ""}`;
+    })
+    .slice(-limit);
+}
+
+/** A status word (an enum value), or `?` for anything else. */
+const statusWord = (value) =>
+  typeof value === "string" && /^[\w-]{1,32}$/.test(value) ? value : "?";
+const counter = (value) => (Number.isInteger(value) ? String(value) : "null");
+
+/**
+ * What the public API says of a session, in words the CI log may carry: its status, its agent's,
+ * every process's kind and status, the worktree's checkpoint triggers, and the capture drain's
+ * reason and counters. Free text the engine stores (summaries, sealantd's reasons and errors) is
+ * named only as present, never quoted.
+ */
+export function sessionStateEvidence(detail) {
+  if (!detail || typeof detail !== "object" || !detail.session) return "session detail unreadable";
+  const { session } = detail;
+  const processes = Array.isArray(detail.processes)
+    ? detail.processes
+        .map((item) => `${statusWord(item.kind)}:${statusWord(item.status)}`)
+        .join(",")
+    : "?";
+  const triggers = Array.isArray(detail.checkpoints)
+    ? detail.checkpoints.map((item) => statusWord(item.trigger)).join(",")
+    : "?";
+  const present = (name) => (session[name] ? "set" : "unset");
+  return [
+    `session ${statusWord(session.status)}`,
+    `agent ${detail.currentAgent ? statusWord(detail.currentAgent.status) : "none"}`,
+    `processes [${processes}]`,
+    `checkpoints [${triggers}]`,
+    `change ${detail.change?.id ? "present" : "absent"}`,
+    `workspace ${session.sealantWorkspaceId ? "set" : "unset"}`,
+    `drain ${session.captureDrain === null || session.captureDrain === undefined ? "none" : statusWord(session.captureDrain)}`,
+    `pending ${counter(session.capturePending)}`,
+    `refused ${counter(session.captureRefused)}`,
+    `drain requested ${present("captureDrainRequestedAt")}`,
+    `drain progress ${present("captureDrainProgressAt")}`,
+    `not saved ${present("captureNotSavedAt")}`,
+    `incomplete reason ${present("captureIncompleteReason")}`,
+    `failing ${present("captureFailingSince")}`,
+  ].join(" · ");
+}
+
 const shaPattern = /^[0-9a-f]{40}$/;
 
 /**
