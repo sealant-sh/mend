@@ -229,7 +229,27 @@ the change against its base, from `GET /api/changes/:id/diff` read as the person
 file is that file's section of the patch. Mend serves the change as a patch, so whole contents (for
 expanding a hunk) come back only for files the patch holds whole, added or deleted; a changed file
 answers `VcsUnsupportedOperationError` until phase 3's worktree read. Whitespace is never ignored:
-Mend's change diff has no such option. Per-turn diffs are phase 3.
+Mend's change diff has no such option.
+
+### Per-turn diffs
+
+Mend keeps checkpoints per worktree and does not link them to turns; the gateway correlates them
+(`src/turn-checkpoints.ts`), as ADR 0012 decided:
+
+- a turn's checkpoint is the last `turn-boundary` checkpoint its session took between the turn's
+  start and the next turn's (Mend takes one when a turn ends);
+- a turn starts from the newest checkpoint of the worktree, any session's, taken before it began, or
+  the worktree's base;
+- when another session takes checkpoints in the same worktree, a turn's changes can include its work
+  from while the turn ran, and the thread says so in a notice.
+
+While someone watches a thread, the gateway reads its worktree's chain (`GET /api/worktrees/:id`)
+when it opens and whenever another turn ended, then each new turn's files from
+`GET /api/worktrees/:id/diff?from=&to=`, the last 50 turns at most, in the background. Each turn's
+checkpoint goes to t3code as a `ready` checkpoint numbered by its run, so the changed-files card
+shows under the turn. A slice never changes, so its files are kept. `orchestration.getTurnDiff` and
+`orchestration.getFullThreadDiff` answer from the same slices; a turn with no checkpoint yet answers
+the method's own error.
 
 ## Phase 2: threads from t3code
 

@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 
 import {
+  CheckpointId,
   MessageId,
   NodeId,
   ProjectId,
@@ -89,6 +90,13 @@ export interface ThreadSource {
   /** Messages a t3code client sent that are not a Mend turn yet: the gateway's queue. */
   readonly pending: ReadonlyArray<PendingRun>;
   /**
+   * For a watched thread, each ended turn's checkpoint and the files its turn changed
+   * (`turn-checkpoints.ts`); empty for a thread nobody watches.
+   */
+  readonly turnCheckpoints: ReadonlyMap<string, TurnCheckpoint>;
+  /** Another session takes checkpoints in the worktree: a turn's files may hold its work too. */
+  readonly sharedWorktree: boolean;
+  /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
    */
@@ -103,6 +111,23 @@ export interface ThreadSource {
    */
   readonly notices: ThreadNotices;
 }
+
+/** The checkpoint Mend took when a turn ended, and what that turn changed. */
+export interface TurnCheckpoint {
+  readonly id: string;
+  readonly ref: string;
+  readonly capturedAt: string;
+  readonly files: ReadonlyArray<{
+    readonly path: string;
+    readonly kind: string;
+    readonly additions: number;
+    readonly deletions: number;
+  }>;
+}
+
+/** A turn's checkpoint as t3code names it in a thread. */
+export const checkpointIdOf = (checkpointId: string): CheckpointId =>
+  CheckpointId.make(`checkpoint:${checkpointId}`);
 
 /**
  * One message in the gateway's queue (ADR 0012, "The gateway holds the queue"), as a run until
@@ -344,7 +369,10 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
       requestedAt: utc(turn.createdAt),
       startedAt: turn.startedAt === null ? null : utc(turn.startedAt),
       completedAt: turn.endedAt === null ? null : utc(turn.endedAt),
-      checkpointId: null,
+      checkpointId: (() => {
+        const checkpoint = source.turnCheckpoints.get(turn.id);
+        return checkpoint === undefined ? null : checkpointIdOf(checkpoint.id);
+      })(),
       contextHandoffId: null,
     }),
   );

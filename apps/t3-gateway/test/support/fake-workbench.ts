@@ -486,6 +486,28 @@ export class FakeWorkbench {
         return json(200, this.createSession(id, payload, { name, base, worktreeId: null }));
       });
     }
+    if (method === "GET" && collection === "worktrees" && sub === undefined) {
+      if (!Array.from(this.sessions.values()).some((s) => s.worktreeId === id)) {
+        return json(404, { _tag: "WorktreeNotFound", id });
+      }
+      return json(200, { checkpoints: this.checkpoints.get(id) ?? [] });
+    }
+    if (method === "GET" && collection === "worktrees" && sub === "diff") {
+      const key = `${url.searchParams.get("from") ?? "base"}..${url.searchParams.get("to") ?? ""}`;
+      const range = this.ranges.get(key);
+      if (range === undefined) return json(404, { _tag: "NotFound", id: key });
+      return json(200, {
+        diff: range.diff,
+        files: range.files.map((file) => ({
+          oldPath: file.path,
+          newPath: file.path,
+          status: file.status,
+          additions: file.additions,
+          deletions: file.deletions,
+          binary: false,
+        })),
+      });
+    }
     if (method === "POST" && collection === "worktrees" && sub === "sessions") {
       return body().then((value) => {
         record(value);
@@ -903,6 +925,26 @@ export class FakeWorkbench {
   /** How many files `GET /api/projects/:id/files` lists before it cuts (Mend's is 20,000). */
   fileListingLimit = 20_000;
 
+  /** Each worktree's checkpoint chain (`GET /api/worktrees/:id`), oldest first. */
+  readonly checkpoints = new Map<
+    string,
+    Array<{
+      id: string;
+      sessionId: string | null;
+      ordinal: number;
+      ref: string;
+      trigger: string;
+      createdAt: string;
+    }>
+  >();
+  /** `GET /api/worktrees/:id/diff`, by `<from or base>..<to>`. */
+  readonly ranges = new Map<
+    string,
+    {
+      diff: string;
+      files: ReadonlyArray<{ path: string; status: string; additions: number; deletions: number }>;
+    }
+  >();
   /** `GET /api/changes/:id/stats`, by change id. */
   readonly stats = new Map<string, { files: number; additions: number; deletions: number }>();
   /** How many images were pasted into workspaces. */
@@ -911,6 +953,26 @@ export class FakeWorkbench {
   accountOf: (authorization: string | undefined) => string | null = () => null;
   /** The session's executor is shared (ADR 0016's shared layout), not per person. */
   sharedExecutor = false;
+
+  /** A checkpoint of the session's worktree, as Mend takes one when a turn ends. */
+  addCheckpoint(sessionId: string, trigger = "turn-boundary"): string {
+    const session = this.sessions.get(sessionId);
+    const worktreeId = session?.worktreeId ?? "worktree";
+    const chain = this.checkpoints.get(worktreeId) ?? [];
+    const ordinal = chain.length;
+    const id = `checkpoint-${worktreeId}-${ordinal}`;
+    chain.push({
+      id,
+      sessionId,
+      ordinal,
+      ref: `refs/mend/checkpoints/${worktreeId}/${ordinal}`,
+      trigger,
+      createdAt: tick(),
+    });
+    this.checkpoints.set(worktreeId, chain);
+    return id;
+  }
+
   /** Every launch Mend took, with what it named. */
   readonly launches: Array<{ readonly sessionId: string; readonly body: object }> = [];
 

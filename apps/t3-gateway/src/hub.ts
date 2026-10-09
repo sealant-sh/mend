@@ -4,6 +4,8 @@ import {
   EventId,
   OrchestrationProjectShell,
   OrchestrationV2AppThread,
+  OrchestrationV2Checkpoint,
+  OrchestrationV2CheckpointScope,
   OrchestrationV2ConversationMessage,
   OrchestrationV2ProviderSession,
   OrchestrationV2ProviderThread,
@@ -55,6 +57,7 @@ import {
 } from "./mend-client.ts";
 import type {
   MendActiveSession,
+  MendCheckpoint,
   MendProcess,
   MendConversationWait,
   MendEventPointer,
@@ -77,12 +80,14 @@ import {
   type ReplayLog,
 } from "./replay.ts";
 import {
+  byOrdinal,
   isProjectable,
   launchingAgentOf,
   PROJECTION_SCHEMA_VERSION,
   projectShellOf,
   threadShellOf,
   type ThreadSource,
+  type TurnCheckpoint,
   worktreePathOf,
 } from "./shell.ts";
 import {
@@ -96,6 +101,13 @@ import {
   type TurnIds,
 } from "./state.ts";
 import { threadProjectionOf } from "./thread-projection.ts";
+import {
+  checkpointFileOf,
+  isSharedChain,
+  sliceKey,
+  turnSlicesOf,
+  type TurnSlice,
+} from "./turn-checkpoints.ts";
 
 /**
  * The projection hub (ADR 0012, "Projection"): one per paired person, shared by every socket and
@@ -203,6 +215,18 @@ export interface PersonHub {
       readonly dataUrl: string;
     }>;
   }) => Effect.Effect<ReadonlyArray<MessageImage>, ThreadCommandRefused>;
+  /**
+   * The unified diff of a thread from the end of turn `fromTurnCount` (0: where its first turn
+   * started) to the end of turn `toTurnCount`, from the worktree's checkpoint chain, read as the
+   * person (`turn-checkpoints.ts`).
+   */
+  readonly turnDiff: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly fromTurnCount: number;
+    readonly toTurnCount: number;
+    readonly ignoreWhitespace: boolean;
+  }) => Effect.Effect<string, ThreadCommandFailure>;
   /** One of the person's images, or null when it is not theirs. */
   readonly imageOf: (imageId: string) => MessageImage | null;
   /**
@@ -411,6 +435,10 @@ interface Watch {
   thread: OrchestrationV2AppThread | null;
   /** What was published for it since its baseline, for a client resuming after a sequence. */
   log: ReplayLog<ThreadChange> | null;
+  /** The worktree's checkpoint chain as last read; null until it is (`turn-checkpoints.ts`). */
+  chain: ReadonlyArray<MendCheckpoint> | null;
+  /** How many of its turns had ended when the chain was last read: a new end reads it again. */
+  endedTurns: number;
 }
 
 /** A refusal Mend gave a command, in the words t3code shows. */
@@ -451,6 +479,8 @@ const printMessage = printer(OrchestrationV2ConversationMessage);
 const printTurnItem = printer(OrchestrationV2TurnItem);
 const printProviderSession = printer(OrchestrationV2ProviderSession);
 const printProviderThread = printer(OrchestrationV2ProviderThread);
+const printCheckpointScope = printer(OrchestrationV2CheckpointScope);
+const printCheckpoint = printer(OrchestrationV2Checkpoint);
 
 /** One entity of a thread projection, the event that upserts it, and its print. */
 interface ThreadEntity {
@@ -531,6 +561,20 @@ const printProjection = (
         payload: message,
       }));
     }
+    for (const scope of projection.checkpointScopes) {
+      yield* add(`checkpoint-scope:${scope.id}`, printCheckpointScope(scope), (base) => ({
+        ...base,
+        type: "checkpoint-scope.created",
+        payload: scope,
+      }));
+    }
+    for (const checkpoint of projection.checkpoints) {
+      yield* add(`checkpoint:${checkpoint.id}`, printCheckpoint(checkpoint), (base) => ({
+        ...base,
+        type: "checkpoint.captured",
+        payload: checkpoint,
+      }));
+    }
     for (const item of projection.turnItems) {
       yield* add(`item:${item.id}`, printTurnItem(item), (base) => ({
         ...base,
@@ -545,6 +589,8 @@ const printProjection = (
       projection: {
         ...projection,
         runs: kept("run", projection.runs),
+        checkpointScopes: kept("checkpoint-scope", projection.checkpointScopes),
+        checkpoints: kept("checkpoint", projection.checkpoints),
         runtimeRequests: kept("request", projection.runtimeRequests),
         messages: kept("message", projection.messages),
         turnItems: kept("item", projection.turnItems),
@@ -1023,6 +1069,7 @@ export const makePersonHub = (input: {
             runIds: ids?.runIds ?? NO_IDS,
             messageIds: ids?.messageIds ?? NO_IDS,
             imagesOf: imagesOfMessage,
+            ...turnCheckpointsOf(session.id, conversation.turns),
             pending: (queue?.entries ?? []).map((queued) => ({
               runId: queued.runId,
               messageId: queued.messageId,
@@ -1048,6 +1095,40 @@ export const makePersonHub = (input: {
 
     const sourceOf = (sessionId: string): ThreadSource | null =>
       threadSources().find((source) => source.session.id === sessionId) ?? null;
+
+    /**
+     * Slice key → the files of that slice of a worktree's chain, as t3code's checkpoint card lists
+     * them. Both ends of a slice are immutable, so an entry never goes stale; the oldest go first.
+     */
+    const sliceFiles = new Map<string, ReadonlyArray<ReturnType<typeof checkpointFileOf>>>();
+    const keepSliceFiles = (
+      key: string,
+      files: ReadonlyArray<ReturnType<typeof checkpointFileOf>>,
+    ) => {
+      sliceFiles.set(key, files);
+      for (const oldest of sliceFiles.keys()) {
+        if (sliceFiles.size <= SLICE_FILES_KEPT) break;
+        sliceFiles.delete(oldest);
+      }
+    };
+
+    /** A watched thread's turns, each with the checkpoint Mend took when it ended. */
+    const turnCheckpointsOf = (sessionId: string, turns: ReadonlyArray<MendTurn>) => {
+      const chain = watches.get(sessionId)?.chain ?? null;
+      if (chain === null) return { turnCheckpoints: NO_TURN_CHECKPOINTS, sharedWorktree: false };
+      const turnCheckpoints = new Map<string, TurnCheckpoint>();
+      for (const [turnId, slice] of turnSlicesOf(sessionId, turns, chain)) {
+        const files = sliceFiles.get(sliceKey(slice));
+        if (files === undefined) continue;
+        turnCheckpoints.set(turnId, {
+          id: slice.to.id,
+          ref: slice.to.ref,
+          capturedAt: slice.to.createdAt,
+          files,
+        });
+      }
+      return { turnCheckpoints, sharedWorktree: isSharedChain(sessionId, chain) };
+    };
 
     const itemsOf = (sessionId: string): ReadonlyArray<MendItem> =>
       Array.from(watches.get(sessionId)?.items.values() ?? []);
@@ -1552,7 +1633,66 @@ export const makePersonHub = (input: {
             yield* publishAll;
           }),
         );
+        if (watch !== undefined) yield* Effect.forkIn(readTurnCheckpoints(sessionId), hubScope);
       });
+
+    /**
+     * A watched thread's checkpoint chain, read when it opens and again whenever another of its
+     * turns ended, and the files of each new turn's slice (at most the last `TURN_SLICES_READ`
+     * turns), one read each. In the background: a thread never waits for it to open.
+     */
+    const readTurnCheckpoints = (sessionId: string) =>
+      Effect.gen(function* () {
+        const plan = yield* locked(
+          Effect.sync(() => {
+            const watch = watches.get(sessionId);
+            const source = sourceOf(sessionId);
+            if (watch === undefined || source === null) return null;
+            const ended = source.turns.filter((turn) => turn.endedAt !== null).length;
+            if (watch.chain !== null && ended === watch.endedTurns) return null;
+            watch.endedTurns = ended;
+            return { worktreeId: source.session.worktreeId, turns: source.turns };
+          }),
+        );
+        if (plan === null) return;
+        const chain = yield* asPerson((token) =>
+          mend.worktreeCheckpoints(token, plan.worktreeId),
+        ).pipe(Effect.catchTag("MendNotFound", () => Effect.succeed([])));
+        const wanted = Array.from(turnSlicesOf(sessionId, plan.turns, chain).values())
+          .slice(-TURN_SLICES_READ)
+          .filter((slice) => !sliceFiles.has(sliceKey(slice)));
+        yield* Effect.forEach(
+          wanted,
+          (slice: TurnSlice) =>
+            asPerson((token) =>
+              mend.worktreeDiff(token, plan.worktreeId, {
+                from: slice.from?.id ?? null,
+                to: slice.to.id,
+                ignoreWhitespace: false,
+              }),
+            ).pipe(
+              Effect.map((range) =>
+                keepSliceFiles(sliceKey(slice), range.files.map(checkpointFileOf)),
+              ),
+              // A Mend without the slice read shows no per-turn cards.
+              Effect.catchTag("MendNotFound", () => Effect.void),
+            ),
+          { concurrency: 2, discard: true },
+        );
+        yield* locked(
+          Effect.gen(function* () {
+            const watch = watches.get(sessionId);
+            if (watch !== undefined) watch.chain = chain;
+            yield* publishThread(sessionId);
+          }),
+        );
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("t3 gateway could not read a thread's checkpoints", {
+            cause: error.message,
+          }),
+        ),
+      );
 
     let loaded = false;
     /** Refreshes asked for before the first full read finished: run once it has. */
@@ -2723,6 +2863,8 @@ export const makePersonHub = (input: {
               prints: null,
               thread: null,
               log: null,
+              chain: null,
+              endedTurns: -1,
             };
             watches.set(threadId, fresh);
             return fresh;
@@ -2768,6 +2910,7 @@ export const makePersonHub = (input: {
           }),
         );
         if (opened.projection === null) return null;
+        yield* Effect.forkIn(readTurnCheckpoints(threadId), hubScope);
         const changes = published.pipe(Stream.map((change) => change.change));
         const subscribed: ThreadSubscription = {
           start:
@@ -2821,6 +2964,73 @@ export const makePersonHub = (input: {
       );
     }
 
+    const turnDiff: PersonHub["turnDiff"] = (request) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sessionId = sessionIdOf(request.threadId);
+        const found = yield* locked(
+          Effect.sync(() => {
+            const source = sourceOf(sessionId);
+            return source === null
+              ? null
+              : {
+                  worktreeId: source.session.worktreeId,
+                  turns: source.turns.toSorted(byOrdinal),
+                  chain: watches.get(sessionId)?.chain ?? null,
+                };
+          }),
+        );
+        if (found === null) {
+          return yield* refused(`Thread ${request.threadId} is not in this environment.`);
+        }
+        const token = request.session.deviceToken;
+        const chain =
+          found.chain ??
+          (yield* mend
+            .worktreeCheckpoints(token, found.worktreeId)
+            .pipe(Effect.catchTag("MendNotFound", () => Effect.succeed([]))));
+        const slices = turnSlicesOf(sessionId, found.turns, chain);
+        const sliceOf = (count: number) => {
+          const turn = found.turns[count - 1];
+          return turn === undefined ? undefined : slices.get(turn.id);
+        };
+        const to = sliceOf(request.toTurnCount);
+        if (to === undefined) {
+          return yield* refused(
+            `Mend has no checkpoint for turn ${request.toTurnCount} of this thread yet.`,
+          );
+        }
+        // From the start: where the thread's first turn with a checkpoint started.
+        const from =
+          request.fromTurnCount === 0
+            ? {
+                checkpoint:
+                  found.turns
+                    .map((turn) => slices.get(turn.id))
+                    .find((slice) => slice !== undefined)?.from ?? null,
+              }
+            : { checkpoint: sliceOf(request.fromTurnCount)?.to };
+        if (from.checkpoint === undefined) {
+          return yield* refused(
+            `Mend has no checkpoint for turn ${request.fromTurnCount} of this thread.`,
+          );
+        }
+        const range = yield* mend
+          .worktreeDiff(token, found.worktreeId, {
+            from: from.checkpoint?.id ?? null,
+            to: to.to.id,
+            ignoreWhitespace: request.ignoreWhitespace,
+          })
+          .pipe(
+            Effect.catchTag("MendNotFound", (error) =>
+              Effect.fail(
+                new ThreadCommandRefused({ reason: error.message, authorization: false }),
+              ),
+            ),
+          );
+        return range.diff;
+      });
+
     const locationOf = (cwd: string) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -2859,6 +3069,7 @@ export const makePersonHub = (input: {
       });
 
     return {
+      turnDiff,
       locationOf,
       shellSnapshot,
       subscribeShell,
@@ -2919,6 +3130,12 @@ const IMAGE_PRUNE_INTERVAL = "1 hour";
 
 /** How long an image attached to a message that was never sent is kept. */
 const UNSENT_IMAGE_TTL_MS = 7 * 24 * 60 * 60_000;
+
+/** How many turns of a thread get their files read for t3code's checkpoint cards. */
+const TURN_SLICES_READ = 50;
+/** How many slices' files a hub keeps. */
+const SLICE_FILES_KEPT = 2_000;
+const NO_TURN_CHECKPOINTS: ReadonlyMap<string, TurnCheckpoint> = new Map();
 
 /** How many sequences a hub reserves at a time (`reserveSequences`). */
 const SEQUENCE_BLOCK = 1_000_000;

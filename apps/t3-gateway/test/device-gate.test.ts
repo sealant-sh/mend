@@ -31,6 +31,8 @@ const revokedMend: DeviceCalls = {
   worktreeNames: () => refused("worktrees"),
   projectFiles: () => refused("files"),
   changeStats: () => refused("stats"),
+  worktreeCheckpoints: () => refused("checkpoints"),
+  worktreeDiff: () => refused("range"),
   createSession: () => refused("create"),
   joinWorktree: () => refused("join"),
   labelSession: () => refused("label"),
@@ -85,6 +87,12 @@ describe("the device gate", () => {
         worktreeNames: gated.worktreeNames("t-worktreeNames", "p"),
         projectFiles: gated.projectFiles("t-projectFiles", "p", null),
         changeStats: gated.changeStats("t-changeStats", "c"),
+        worktreeCheckpoints: gated.worktreeCheckpoints("t-worktreeCheckpoints", "w"),
+        worktreeDiff: gated.worktreeDiff("t-worktreeDiff", "w", {
+          from: null,
+          to: "c",
+          ignoreWhitespace: false,
+        }),
         createSession: gated.createSession("t-createSession", "p", {
           harness: "codex",
           label: null,
