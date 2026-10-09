@@ -691,25 +691,28 @@ export const makePersonHub = (input: {
         keptQueues.set(restored.sessionId, JSON.stringify(restored.queue));
       }
     }
+    /** Writes one queue if it changed since it was last kept: whether the state file has it now. */
+    const keepQueue = (sessionId: string, queue: Queueing.ThreadQueue): Effect.Effect<boolean> =>
+      Effect.suspend(() => {
+        if (keeper === null) return Effect.succeed(true);
+        const stored = Queueing.storedOf(queue);
+        const print = JSON.stringify(stored);
+        if (keptQueues.get(sessionId) === print) return Effect.succeed(true);
+        return state.saveQueue(keeper.id, sessionId, stored).pipe(
+          Effect.tap(() => Effect.sync(() => keptQueues.set(sessionId, print))),
+          Effect.as(true),
+          Effect.catch((error) =>
+            Effect.logError("t3 gateway could not keep a queue", { cause: error.message }).pipe(
+              Effect.as(false),
+            ),
+          ),
+        );
+      });
     /** Writes every queue that changed since it was last kept. */
     const keepQueues = Effect.suspend(() =>
-      keeper === null
-        ? Effect.void
-        : Effect.forEach(
-            Array.from(queues),
-            ([sessionId, queue]) => {
-              const stored = Queueing.storedOf(queue);
-              const print = JSON.stringify(stored);
-              if (keptQueues.get(sessionId) === print) return Effect.void;
-              return state.saveQueue(keeper.id, sessionId, stored).pipe(
-                Effect.tap(() => Effect.sync(() => keptQueues.set(sessionId, print))),
-                Effect.catch((error) =>
-                  Effect.logError("t3 gateway could not keep a queue", { cause: error.message }),
-                ),
-              );
-            },
-            { discard: true },
-          ),
+      Effect.forEach(Array.from(queues), ([sessionId, queue]) => keepQueue(sessionId, queue), {
+        discard: true,
+      }),
     );
     const handledCommands = new Set<string>();
 
@@ -1685,12 +1688,22 @@ export const makePersonHub = (input: {
           const work =
             step === null
               ? Effect.void
-              : Effect.forkIn(
-                  step.kind === "send"
-                    ? sendTurn(sessionId, step.entry)
-                    : launchAgain(sessionId, step.entry),
-                  hubScope,
-                ).pipe(Effect.asVoid);
+              : Effect.gen(function* () {
+                  // The step is kept before it is taken: a message the state file still reads as
+                  // queued would be sent again after a restart. A send it cannot keep never goes.
+                  const kept = yield* keepQueue(sessionId, queue);
+                  if (!kept && step.kind === "send") {
+                    Queueing.fail(queue, step.entry, NOT_KEPT);
+                    yield* keepQueue(sessionId, queue);
+                    return;
+                  }
+                  yield* Effect.forkIn(
+                    step.kind === "send"
+                      ? sendTurn(sessionId, step.entry)
+                      : launchAgain(sessionId, step.entry),
+                    hubScope,
+                  );
+                });
           return Effect.andThen(work, scheduleWake(sessionId, queue));
         },
         { discard: true },
@@ -1745,6 +1758,18 @@ export const makePersonHub = (input: {
           Effect.gen(function* () {
             if (sourceOf(command.threadId) === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            }
+            // A client re-sends a command it saw no answer to, a restart of the gateway in between
+            // too: a message already kept or sent is the same message.
+            if (
+              queueOf(command.threadId).entries.some(
+                (entry) => entry.messageId === command.messageId,
+              ) ||
+              Array.from(turnIds.get(command.threadId)?.messageIds.values() ?? []).includes(
+                command.messageId,
+              )
+            ) {
+              return sequence;
             }
             queueOf(command.threadId).entries.push(
               Queueing.newEntry({
@@ -2302,6 +2327,10 @@ const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
 /** How long a kept queue waits before its person's hub reads Mend again after a failed read. */
 const QUEUE_RESTORE_RETRY = "30 seconds";
+
+/** Why a message the state file could not keep was not sent. */
+const NOT_KEPT =
+  "The gateway could not write this message to its state file, so it did not send it. Send it again.";
 
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";

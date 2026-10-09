@@ -166,6 +166,13 @@ After a restart, the gateway opens the hub of every person with a queued message
 Mend once, and sends it in order: no client has to come back. Mend not answering yet is tried again
 every 30 seconds.
 
+A message is kept as `sending` before it goes to Mend; when the state file cannot take that write,
+the message fails with a reason and is not sent. A client that sends the same message again (the
+same `messageId`), a restart in between too, gets the message already kept or sent. A kept message
+goes to Mend with its sender's own device token, so Mend's rules apply as they would to a fresh one:
+a session deleted while the gateway was down fails the message, and so does a sender who may no
+longer steer the session.
+
 ### Review
 
 `review.getDiffPreview` and `review.getDiffFileContents` (`src/review.ts`) show the thread's change:
