@@ -69,6 +69,11 @@ export class WorktreeRangeFile extends Schema.Class<WorktreeRangeFile>("Worktree
  * A slice of a worktree's checkpoint chain, rendered: from `from` (or, with none, the worktree's
  * base) to `to`. Both ends are immutable commits, so the slice never moves; what it was read from
  * is in `observation`, as for a change's diff.
+ *
+ * Bounded: `files` lists every file of the slice (or the one `path` asked for), while `diff`
+ * carries the patches of at most 200 of them within 8 MiB, rendered whole, in `files`' order.
+ * `truncated` says some are not in `diff`, and `omitted` names them; each can be asked for alone
+ * with `path`. A file whose own patch passes the budget stays omitted.
  */
 export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("WorktreeRangeDiff")({
   worktreeId: WorktreeId,
@@ -79,6 +84,10 @@ export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("Worktree
   fromSha: Schema.String,
   diff: Schema.String,
   files: Schema.Array(WorktreeRangeFile),
+  /** Some of `files` have no patch in `diff`: past the file cap, the byte budget or the deadline. */
+  truncated: Schema.Boolean,
+  /** The files of `files` with no patch in `diff`, by path (the new path, else the old). */
+  omitted: Schema.Array(Schema.String),
   observation: Schema.optionalKey(ObservationStamp),
 }) {}
 
@@ -179,6 +188,8 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
         from: Schema.optional(CheckpointId),
         to: CheckpointId,
         whitespace: Schema.optional(Schema.Literal("ignore")),
+        /** One file of the slice, by its new or old path: its patch alone. */
+        path: Schema.optional(Schema.String),
       },
       success: WorktreeRangeDiff,
       error: [WorktreeNotFound, NotFound, StoreFailure],

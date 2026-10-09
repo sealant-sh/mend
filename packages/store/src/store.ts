@@ -7,7 +7,7 @@ import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench"
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { git, GitError } from "./git.ts";
+import { git, gitCapped, GitError } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -218,6 +218,18 @@ export type DiffFileStatus =
   | "unknown";
 
 /** Git facts for one file in an immutable commit range. */
+/**
+ * How a range is rendered (`Store.diffRange`). `paths` keeps only those files (literal paths; a
+ * rename's both sides); `maxBytes` stops at that many bytes and keeps only the files rendered whole,
+ * so a caller compares the files it got with those it asked for.
+ */
+export interface DiffRangeOptions {
+  readonly ignoreWhitespace?: boolean;
+  readonly contextLines?: number;
+  readonly paths?: ReadonlyArray<string>;
+  readonly maxBytes?: number;
+}
+
 export interface DiffFileFact {
   readonly oldPath: string | null;
   readonly newPath: string | null;
@@ -519,10 +531,7 @@ export class Store extends Context.Service<
       dir: string,
       a: string,
       b: string,
-      options?: {
-        readonly ignoreWhitespace?: boolean;
-        readonly contextLines?: number;
-      },
+      options?: DiffRangeOptions,
     ) => Effect.Effect<string, GitError>;
     /** Unified diff of the live worktree against a base commit. */
     readonly diffWorktree: (worktreePath: string, base: string) => Effect.Effect<string, GitError>;
@@ -962,16 +971,20 @@ export class Store extends Context.Service<
         dir: string,
         a: string,
         b: string,
-        options?: {
-          readonly ignoreWhitespace?: boolean;
-          readonly contextLines?: number;
-        },
+        options?: DiffRangeOptions,
       ) {
-        const args = ["diff", "--find-renames"];
+        const args = options?.paths === undefined ? [] : ["--literal-pathspecs"];
+        args.push("diff", "--find-renames");
         if (options?.ignoreWhitespace === true) args.push("--ignore-all-space");
         if (options?.contextLines !== undefined) args.push(`--unified=${options.contextLines}`);
         args.push(a, b);
-        return yield* git(args, dir);
+        if (options?.paths !== undefined) args.push("--", ...options.paths);
+        if (options?.maxBytes === undefined) return yield* git(args, dir);
+        const out = yield* gitCapped(args, dir, options.maxBytes);
+        if (!out.cut) return out.stdout;
+        // Cut: only the files rendered whole stay; a half file is no patch.
+        const last = out.stdout.lastIndexOf("\ndiff --git ");
+        return last <= 0 ? "" : out.stdout.slice(0, last);
       });
 
       const worktreeMatchesCommit = Effect.fn("Store.worktreeMatchesCommit")(function* (

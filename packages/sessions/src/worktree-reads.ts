@@ -14,6 +14,7 @@ import {
   type ChangedFile,
   decodeManifest,
   type DiffFileFact,
+  type DiffRangeOptions,
   type FileListing,
   type GitError,
   GitOpsRunner,
@@ -117,7 +118,7 @@ export class WorktreeReads extends Context.Service<
       worktreeId: WorktreeId,
       a: string,
       b: string,
-      options?: { readonly ignoreWhitespace?: boolean; readonly contextLines?: number },
+      options?: DiffRangeOptions,
     ) => Effect.Effect<Stamped<string>, WorktreeReadError>;
     readonly diffFileFacts: (
       projectId: ProjectId,

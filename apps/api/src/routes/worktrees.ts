@@ -27,13 +27,25 @@ import {
 } from "@mend/db";
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, WorktreeReads } from "@mend/sessions";
-import { Store } from "@mend/store";
+import { type DiffFileFact, Store } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
 import { unlandedWork } from "../landing-state.ts";
 import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
+
+/**
+ * A checkpoint slice's rendering budget (`GET /worktrees/:id/diff`): at most this many files'
+ * patches, as the live change's diff renders at most 200 untracked files, within this many bytes,
+ * and within the deadline. Past any, the rest are omitted by name, never a failure.
+ */
+const RANGE_RENDER_FILES = 200;
+const RANGE_RENDER_BYTES = 8 * 1024 * 1024;
+const RANGE_DEADLINE = "20 seconds";
+
+/** A file of a slice by its path: the new one, else the old. */
+const pathOf = (fact: DiffFileFact) => fact.newPath ?? fact.oldPath ?? "";
 
 /**
  * The worktree container's own verbs (plan §5.5/§5.6): provision the durable
@@ -133,21 +145,69 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const fromSha = from?.sha ?? worktree.baseSha;
         const reads = yield* WorktreeReads;
         const options = query.whitespace === "ignore" ? { ignoreWhitespace: true } : {};
-        const [diff, facts] = yield* Effect.all(
-          [
-            reads.diffRange(worktree.projectId, worktree.id, fromSha, to.sha, options),
-            reads.diffFileFacts(worktree.projectId, worktree.id, fromSha, to.sha, options),
-          ],
-          { concurrency: 2 },
-        ).pipe(Effect.mapError(readFailure));
+        // The files first: one line each, whatever their size. A slice git cannot even list in
+        // time is refused in words, never left running.
+        const facts = yield* reads
+          .diffFileFacts(worktree.projectId, worktree.id, fromSha, to.sha, options)
+          .pipe(
+            Effect.mapError(readFailure),
+            Effect.timeoutOrElse({
+              duration: RANGE_DEADLINE,
+              orElse: () =>
+                Effect.fail(
+                  new StoreFailure({
+                    message: `Mend could not list this slice's files within ${RANGE_DEADLINE}.`,
+                  }),
+                ),
+            }),
+          );
+        const wanted =
+          query.path === undefined
+            ? facts.value
+            : facts.value.filter(
+                (fact) => fact.newPath === query.path || fact.oldPath === query.path,
+              );
+        if (query.path !== undefined && wanted.length === 0) {
+          return yield* new NotFound({ id: query.path });
+        }
+        // Then the patches of the first files, within the budget and the deadline: past either,
+        // the files rendered whole stay and the rest are named as omitted, never a failure.
+        const page = wanted.slice(0, RANGE_RENDER_FILES);
+        const paths = [
+          ...new Set(
+            page.flatMap((fact) => [fact.oldPath, fact.newPath].filter((p) => p !== null)),
+          ),
+        ];
+        const rendered =
+          page.length === 0
+            ? null
+            : yield* reads
+                .diffRange(worktree.projectId, worktree.id, fromSha, to.sha, {
+                  ...options,
+                  paths,
+                  maxBytes: RANGE_RENDER_BYTES,
+                })
+                .pipe(
+                  Effect.mapError(readFailure),
+                  Effect.timeoutOrElse({
+                    duration: RANGE_DEADLINE,
+                    orElse: () => Effect.succeed(null),
+                  }),
+                );
+        const diff = rendered?.value ?? "";
+        // One patch per file, in the files' order (both are git's, from the same range).
+        const whole = Math.min(page.length, diff.match(/^diff --git /gm)?.length ?? 0);
+        const omitted = wanted.slice(whole).map(pathOf);
         return new WorktreeRangeDiff({
           worktreeId: worktree.id,
           from,
           to,
           fromSha,
-          diff: diff.value,
-          files: facts.value.map((fact) => new WorktreeRangeFile(fact)),
-          observation: observationOf(diff.stamp),
+          diff,
+          files: wanted.map((fact) => new WorktreeRangeFile(fact)),
+          truncated: omitted.length > 0,
+          omitted,
+          observation: observationOf((rendered ?? facts).stamp),
         });
       }),
     )

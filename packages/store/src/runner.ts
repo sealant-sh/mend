@@ -50,6 +50,7 @@ import {
 import {
   type ChangedFile,
   type DiffFileFact,
+  type DiffRangeOptions,
   type FileListing,
   type StoreBranch,
   Store,
@@ -165,7 +166,7 @@ export class GitOpsRunner extends Context.Service<
       cache: RunnerCache,
       a: string,
       b: string,
-      options?: { readonly ignoreWhitespace?: boolean; readonly contextLines?: number },
+      options?: DiffRangeOptions,
     ) => Effect.Effect<string, GitError>;
     readonly diffFileFacts: (
       cache: RunnerCache,
@@ -532,7 +533,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         cache: RunnerCache,
         a: string,
         b: string,
-        options?: { readonly ignoreWhitespace?: boolean; readonly contextLines?: number },
+        options?: DiffRangeOptions,
       ) {
         const [shaA, shaB] = yield* Effect.all([resolve(cache, a), resolve(cache, b)]);
         return yield* store.diffRange(cache.path, shaA, shaB, options);
