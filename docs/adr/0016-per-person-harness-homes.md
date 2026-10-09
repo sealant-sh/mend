@@ -822,6 +822,16 @@ same project (Mend's own repository), the same image and the same harness versio
 Each limit applies to the median and to the 90th percentile of the runs, `person` launches against
 `shared` launches at the same commit, each run on a fresh worktree (decision 14).
 
+A new session's and a resume's first output and first-turn latency are measured less the launch's
+dependency install, whose time depends on the public npm registry. The install is recorded and
+reported separately. Because it runs as the launcher (their login profile, the store under
+`/var/cache`, default ACLs on every new file), its clean runs, those where no fetch was retried, are
+budgeted on their own (+5% or +1 s, at least 5 per harness per layout). Stalled installs are counted
+per layout and reported. A resume that restored the saved dependency tree is compared with the same
+kind, and so is one that reinstalled. The `person` layout's share of resumes that reinstalled may
+exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every resume while
+`shared` restored at least one (decision log, 2026-10-09).
+
 | Measure                                                                                                                                             | Limit                                                                                                         |
 | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | New session to first output (each harness), resume, Stop's save                                                                                     | +5% or +1 s, whichever is larger                                                                              |
@@ -1373,4 +1383,13 @@ benchmark once more, before 0.36 is tagged.
   on in both layouts, in words true to each (`SessionControlView.turnsOnSendersLogin`, from the live
   executor's launch layout, or the worktree's record when none is live; unknown reads as the owner's
   logins), and only once the session view has said which.
+- 2026-10-09: the start budget of a new launch and a resume, first output and first turn alike,
+  excludes the dependency install, whose duration depends on the public registry (diagnosis:
+  registry stalls 14–78 s in both layouts). The install is recorded and reported separately and is
+  compared across the layouts on its clean runs (no fetch retried; +5% or +1 s at the median and the
+  p90, at least 5 per harness per layout). Stalled installs are counted per layout, and a failed
+  install fails the gate. Resumes that restored the saved tree and resumes that reinstalled are each
+  budgeted against their own kind. The gate fails if the `person` layout reinstalls at a share of
+  its resumes more than 2 per 10 above `shared`'s, or at every resume while `shared` restored at
+  least one; the engine's reason for each reinstall is recorded.
 - Open: gate B's history record.

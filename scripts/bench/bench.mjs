@@ -69,6 +69,32 @@
 //   limit", "Usage limit reached", "5-hour limit reached") will not answer: the wait ends there, the
 //   run gets a note, and `first_turn` is recorded as not run with that reason, which `compare`
 //   prints in place of MISSING. A rate limit the harness retries by itself is not one.
+// - A launch's dependency install fetches every tarball from the public npm registry, whose stalls
+//   swing it 14–78 s in either layout. The install's window is exactly one engine "dependency
+//   install · running" line and one "· completed"/"· exited" line (else its measures are not run,
+//   with why). Its time is `<prefix>.install` for every install; the engine's count of fetches pnpm
+//   retried (`install_fetch_retries`) splits clean installs (`install_clean`, none retried) from
+//   stalled ones. An install the engine ran again with pnpm's defaults ("retried with defaults",
+//   between the two lines) is one install over both runs, counted in `install_reruns` and kept out
+//   of `install_clean`. A clean install holds the person's own cost (the install runs as the launcher,
+//   with their login profile, the store under /var/cache, default ACLs on each new file), so it is
+//   budgeted (+5% or +1 s), and gate P1 needs at least 5 per harness per layout; stalled installs
+//   are counted per layout and reported. With no count in the line (older builds) `install_clean`
+//   is not run. A failed install is a failed check (`<launch>.install_succeeded`). The start budget
+//   of a new launch is on `first_output_excl_install` and `first_turn_excl_install`, the launch's
+//   time less its install; the raw `first_output`/`first_turn` are kept, unbudgeted.
+// - A resume is kept apart by kind: `resume.tree_restored.*` (the saved dependency tree restored)
+//   and `resume.installed.*` (reinstalled; its start budget less the install), each budgeted
+//   against the same kind, with `resume.unclassified.*` when the log cannot tell. Gate P1 fails when
+//   the person layout reinstalls at a share of resumes more than 2 per 10 over shared's (scaled),
+//   or at every resume while shared restored at least one, or either side tells too few apart; both
+//   shares are printed either way. Each reinstall keeps why the engine said it ran
+//   (`resumeReinstalls`, tallied per layout in the comparison). These need the host; `compare`
+//   reads raw measures an older record budgeted as unbudgeted (docs/adr/0016, decision log
+//   2026-10-09).
+// - `new.<harness>.launch_call` is capped: the server answers the launch after its 30 s answer
+//   window at the latest and the launch goes on. It is unbudgeted (`cappedAtMs` on the measure),
+//   with `launch_call_capped` (1 when the call took the whole window) and a note per capped call.
 // - The answer is watched for from the first output on, while the executor is sized beside it.
 // - A merge stamps each executor size with the point its own record sampled it at (`sampledAt`).
 
@@ -472,6 +498,11 @@ const main = async () => {
       }
       if (comparison.checkFailures.length > 0) {
         log(`${comparison.checkFailures.length} check(s) of the record under test failed`);
+      }
+      if (comparison.layoutFailures.length > 0) {
+        log(
+          `${comparison.layoutFailures.length} failure(s) between the layouts (installs, resumes)`,
+        );
       }
       if (comparison.checksNotVerified.length > 0) {
         log(

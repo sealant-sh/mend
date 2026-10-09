@@ -31,6 +31,13 @@ import {
   liveAgents,
   overOwn,
   firstExecAt,
+  engineLinesOf,
+  FETCH_RETRIES_UNKNOWN,
+  installOf,
+  NO_HOST,
+  resumeKindOf,
+  LAUNCH_ANSWER_WINDOW_MS,
+  launchCallCapped,
   milestonesOf,
   parseContainerDisk,
   parseDockerTime,
@@ -73,9 +80,10 @@ const errorText = (error) => (error instanceof Error ? error.message : String(er
 // ─── the recorder ───────────────────────────────────────────────────────────
 
 export const makeRecorder = (result, log) => ({
-  sample: (name, value, unit, budget = null) => {
+  /** `extra` is said of the measure once, beside its unit and budget (`cappedAtMs`). */
+  sample: (name, value, unit, budget = null, extra = null) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return;
-    const measure = (result.measures[name] ??= { unit, budget, samples: [] });
+    const measure = (result.measures[name] ??= { unit, budget, ...extra, samples: [] });
     measure.samples.push(Math.round(value * 10) / 10);
   },
   note: (text) => {
@@ -90,6 +98,10 @@ export const makeRecorder = (result, log) => ({
   error: (scenario, error) => {
     result.errors.push({ scenario, message: errorText(error), at: new Date().toISOString() });
     log(`error · ${scenario} · ${errorText(error)}`);
+  },
+  /** A resume that reinstalled, with why the engine said it did (`resumeReinstalls`). */
+  reinstall: (entry) => {
+    (result.resumeReinstalls ??= []).push(entry);
   },
   /**
    * A correctness observation, never a timing: tallied per check, failures logged. `ok` null is a
@@ -267,21 +279,21 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   const agentAt = local(ctx, agent.createdAt);
   const outputAt = local(ctx, agent.firstOutputAt);
   if (ctx.host === null) {
-    const prefix = typeof prefixOf === "function" ? prefixOf(null) : prefixOf;
+    const install = installOf(null);
+    const prefix = typeof prefixOf === "function" ? prefixOf(null, install) : prefixOf;
     rec.sample(`${prefix}.agent_to_output`, outputAt - agentAt, "ms");
-    rec.notRun(`${prefix}.step.*`, "no access to the server's host (pass --ssh or run there)");
-    return { prefix, milestones: null };
+    rec.notRun(`${prefix}.step.*`, NO_HOST);
+    return { prefix, milestones: null, install };
   }
   const workspaceId = detail.session.sealantWorkspaceId;
   const blocks = await mendBlocks(ctx, startedAt, outputAt + 1000);
-  const milestones = milestonesOf(blocks, {
-    sessionId,
-    workspaceId,
-    fromMs: startedAt,
-    toMs: agentAt,
-  });
-  // The prefix may depend on what the launch turned out to be (a join that launched cold).
-  const prefix = typeof prefixOf === "function" ? prefixOf(milestones) : prefixOf;
+  const window = { sessionId, workspaceId, fromMs: startedAt, toMs: agentAt };
+  const milestones = milestonesOf(blocks, window);
+  // Every line of the window, none deduplicated: a second install attempt must show.
+  const install = installOf(engineLinesOf(blocks, window));
+  // The prefix may depend on what the launch turned out to be (a join that launched cold, a
+  // resume that reinstalled).
+  const prefix = typeof prefixOf === "function" ? prefixOf(milestones, install) : prefixOf;
   rec.sample(`${prefix}.agent_to_output`, outputAt - agentAt, "ms");
   const executorUp = workspaceId === null ? null : firstExecAt(blocks, workspaceId, startedAt);
   const marks = [...milestones];
@@ -297,7 +309,10 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   if (delivery !== null) {
     // A join that launched cold, or a launch that waited for an image build, is kept apart,
     // unbudgeted, like its first output.
-    const apart = prefix.endsWith(".cold") || prefix.endsWith(".image_built");
+    const apart =
+      prefix.endsWith(".cold") ||
+      prefix.endsWith(".image_built") ||
+      prefix.endsWith(".unclassified");
     rec.sample(`${prefix}.delivery`, delivery, "ms", apart ? null : "delivery");
   } else {
     rec.notRun(`${prefix}.delivery`, "the delivery milestones were not in the log");
@@ -308,7 +323,68 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   }
   const image = blocks.map((block) => parseImageLine(block.message)).find((line) => line !== null);
   if (image !== null && image !== undefined) ctx.result.target.workspaceImage ??= image.image;
-  return { prefix, milestones };
+  return { prefix, milestones, install };
+};
+
+/**
+ * A launch's dependency install (`installOf`): its time for every install (`<prefix>.install`,
+ * both runs when it was run again with pnpm's defaults), the fetches pnpm retried, the re-runs
+ * (`install_reruns`), and a clean install's time (`<prefix>.install_clean`: none retried, none
+ * run again),
+ * which holds the person's own cost and carries `budget`. A stalled install's time is the public
+ * registry's: counted, noted, kept out of the budget. With no count in the engine's line,
+ * `install_clean` is not run. `check` names the install's check (`new.codex`,
+ * `resume.installed`): a failed install fails it. An install the log does not show is not run,
+ * with why.
+ */
+export const recordInstall = (ctx, prefix, install, budget, check, label) => {
+  if (install.kind === "unknown") {
+    ctx.rec.notRun(`${prefix}.install`, install.reason);
+    ctx.rec.notRun(`${prefix}.install_clean`, install.reason);
+    return;
+  }
+  if (install.kind !== "ran") return;
+  ctx.rec.sample(`${prefix}.install`, install.ms, "ms");
+  ctx.rec.check(
+    `${check}.install_succeeded`,
+    !install.exited,
+    install.exited
+      ? `${label}: the install exited ${install.exitCode ?? "non-zero"} after ${(install.ms / 1000).toFixed(1)} s`
+      : null,
+  );
+  if (install.fetchRetries === null) {
+    ctx.rec.notRun(`${prefix}.install_clean`, FETCH_RETRIES_UNKNOWN);
+    return;
+  }
+  ctx.rec.sample(`${prefix}.install_fetch_retries`, install.fetchRetries, "count");
+  ctx.rec.sample(`${prefix}.install_reruns`, install.reruns, "count");
+  if (install.exited) return;
+  if (install.reruns > 0) {
+    ctx.rec.note(
+      `${label}: the install was run again with pnpm's defaults (${install.fetchRetries} fetch retries over both runs, ${(install.ms / 1000).toFixed(1)} s); kept out of ${prefix}.install_clean`,
+    );
+  } else if (install.fetchRetries === 0) {
+    ctx.rec.sample(`${prefix}.install_clean`, install.ms, "ms", budget);
+  } else {
+    ctx.rec.note(
+      `${label}: the install stalled on the registry (${install.fetchRetries} fetch retries, ${(install.ms / 1000).toFixed(1)} s); kept out of ${prefix}.install_clean`,
+    );
+  }
+};
+
+/**
+ * A launch's time less its dependency install (`<name>_excl_install`), which carries the start
+ * budget: the install fetches every tarball from the public npm registry, whose stalls swing it
+ * 14–78 s in either layout (docs/adr/0016, decision log 2026-10-09); clean installs are compared on
+ * their own (`recordInstall`). A launch that ran no install subtracts nothing; one whose install
+ * the log does not show, or shows more than once, is not run.
+ */
+export const recordExcludingInstall = (ctx, name, value, budget, install) => {
+  if (install.kind === "unknown") {
+    ctx.rec.notRun(`${name}_excl_install`, install.reason);
+    return;
+  }
+  ctx.rec.sample(`${name}_excl_install`, value - install.ms, "ms", budget);
 };
 
 /**
@@ -335,6 +411,13 @@ const recordJoin = async (ctx, prefix, budget, { startedAt, session, detail, age
     (milestones) => (joinedLiveExecutor(milestones) ? prefix : `${prefix}.cold`),
     { startedAt, sessionId: session.id, detail, agent },
   );
+  // A join of a live executor runs no dependency install (only a cold launch does); one that did
+  // is said, its install recorded under `<prefix>.install`.
+  if (recorded.install.kind === "ran") {
+    ctx.rec.note(
+      `${recorded.prefix} #${run} ran a dependency install (${(recorded.install.ms / 1000).toFixed(1)} s) before its first output`,
+    );
+  }
   if (recorded.prefix === prefix) {
     ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", budget);
   } else {
@@ -488,11 +571,22 @@ const newSession = async (ctx, harness, run) => {
     : built === null
       ? `new.${harness}`
       : `new.${harness}.image_built`;
+  // The start budget is on first output and first turn less the install (`_excl_install`).
   const budget = built === null && !otherLayout ? "start" : null;
   const firstOutput = outputAt - startedAt;
-  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", budget);
+  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms");
   ctx.rec.sample(`new.${harness}.create_call`, createMs, "ms");
-  ctx.rec.sample(`new.${harness}.launch_call`, launchMs, "ms");
+  // The launch call answers by its window at the latest, the launch going on: capped, unbudgeted.
+  ctx.rec.sample(`new.${harness}.launch_call`, launchMs, "ms", null, {
+    cappedAtMs: LAUNCH_ANSWER_WINDOW_MS,
+  });
+  const capped = launchCallCapped(launchMs);
+  ctx.rec.sample(`new.${harness}.launch_call_capped`, capped ? 1 : 0, "count");
+  if (capped) {
+    ctx.rec.note(
+      `${harness} #${run}: the launch call answered at the server's ${LAUNCH_ANSWER_WINDOW_MS / 1000} s answer window (${(launchMs / 1000).toFixed(1)} s), the launch going on; capped`,
+    );
+  }
   if (built !== null) {
     ctx.rec.note(
       `${harness} #${run} waited for its workspace image to be built (${built.id.slice(0, 19)}, created ${built.created}): ${(firstOutput / 1000).toFixed(1)} s, kept apart under ${prefix}`,
@@ -503,7 +597,7 @@ const newSession = async (ctx, harness, run) => {
   // After the answer and the sizes, so it never runs inside a measured window.
   await noteHarnessVersion(ctx, container, harness, session.ownerUserId);
   if (answered.at !== null) {
-    ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms", budget);
+    ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms");
     ctx.rec.sample(`${prefix}.output_to_answer`, answered.at - outputAt, "ms");
     if (ctx.host !== null && container !== null) {
       const after = await executorResources(ctx.host, container);
@@ -517,13 +611,25 @@ const newSession = async (ctx, harness, run) => {
     const reason = `the harness's account hit its usage limit ("${answered.limit}")`;
     ctx.rec.note(`${harness} #${run}: no answer, ${reason}`);
     ctx.rec.notRun(`${prefix}.first_turn`, reason);
+    ctx.rec.notRun(`${prefix}.first_turn_excl_install`, reason);
     ctx.rec.notRun(`${prefix}.output_to_answer`, reason);
   } else {
     ctx.rec.note(
       `${harness} #${run}: the answer (${answer}) was not seen in the agent's output within 3 min`,
     );
   }
-  await recordLaunch(ctx, prefix, { startedAt, sessionId: session.id, detail, agent });
+  const recorded = await recordLaunch(ctx, prefix, {
+    startedAt,
+    sessionId: session.id,
+    detail,
+    agent,
+  });
+  const { install } = recorded;
+  recordInstall(ctx, prefix, install, budget, `new.${harness}`, `${harness} #${run}`);
+  recordExcludingInstall(ctx, `${prefix}.first_output`, firstOutput, budget, install);
+  if (answered.at !== null) {
+    recordExcludingInstall(ctx, `${prefix}.first_turn`, answered.at - startedAt, budget, install);
+  }
   if (container !== null && ctx.host !== null) {
     const boot = restoreOf(
       sealantdEvents(ctx, await ctx.host.shell(`docker logs -t ${container} 2>&1`)),
@@ -759,7 +865,9 @@ const resume = async (ctx, primary, run) => {
   const container = ctx.host === null ? null : await executorOf(ctx.host, sessionId);
   const built = await imageBuiltDuring(ctx, container, `resume #${run}`, startedAt, outputAt);
   const prefix = built === null ? "resume" : "resume.image_built";
-  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", built === null ? "start" : null);
+  // Unbudgeted: a resume either restores the saved dependency tree or reinstalls, and each kind is
+  // budgeted against the same kind (`resume.tree_restored.*`, `resume.installed.*`).
+  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms");
   ctx.rec.sample("resume.call", ms, "ms");
   if (built !== null) {
     ctx.rec.note(
@@ -767,15 +875,48 @@ const resume = async (ctx, primary, run) => {
     );
   }
   ctx.log(`resume #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
-  await recordLaunch(ctx, prefix, { startedAt, sessionId, detail, agent });
+  const recorded = await recordLaunch(
+    ctx,
+    (_, install) => (built === null ? `resume.${resumeKindOf(install)}` : prefix),
+    { startedAt, sessionId, detail, agent },
+  );
+  const { install } = recorded;
+  const kind = recorded.prefix;
+  const label = `resume #${run}`;
+  // Budgeted against the same kind only; a resume that cannot be told is kept apart.
+  const budgeted = built === null && kind !== "resume.unclassified";
+  if (built === null) {
+    if (kind === "resume.installed") {
+      ctx.rec.sample(`${kind}.first_output`, firstOutput, "ms");
+      recordInstall(ctx, kind, install, "start", kind, label);
+      const why = install.why ?? null;
+      ctx.rec.reinstall({ run, why, ms: install.ms });
+      ctx.rec.note(`${label} reinstalled: ${why ?? "the engine's line gave no reason"}`);
+      recordExcludingInstall(ctx, `${kind}.first_output`, firstOutput, "start", install);
+    } else {
+      ctx.rec.sample(`${kind}.first_output`, firstOutput, "ms", budgeted ? "start" : null);
+    }
+    if (kind === "resume.unclassified") {
+      ctx.rec.note(
+        `${label} could not be told apart (${install.kind === "unknown" ? install.reason : "no install, and no saved dependency tree observed"}); kept apart under ${kind}`,
+      );
+    }
+  } else {
+    recordExcludingInstall(ctx, `${prefix}.first_output`, firstOutput, null, install);
+  }
   if (container !== null) {
     const boot = restoreOf(
       sealantdEvents(ctx, await ctx.host.shell(`docker logs -t ${container} 2>&1`)),
     );
     if (boot !== null) {
-      ctx.rec.sample("resume.restore_ms", boot.ms, "ms", "start");
-      ctx.rec.sample("resume.restore_bytes", boot.bytes, "bytes", "bytes");
+      // What a restore carries depends on whether the saved tree came with it: by kind.
+      ctx.rec.sample("resume.restore_ms", boot.ms, "ms");
+      ctx.rec.sample("resume.restore_bytes", boot.bytes, "bytes");
       ctx.rec.sample("resume.restore_files", boot.files, "count");
+      if (built === null) {
+        ctx.rec.sample(`${kind}.restore_ms`, boot.ms, "ms", budgeted ? "start" : null);
+        ctx.rec.sample(`${kind}.restore_bytes`, boot.bytes, "bytes", budgeted ? "bytes" : null);
+      }
     }
     await recordResources(ctx, "executor.resumed", container, null);
   }

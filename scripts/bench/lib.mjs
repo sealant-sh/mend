@@ -196,8 +196,23 @@ export const milestoneName = (message) =>
  * (the workspace note is logged once per harness file). These are what a launch, a resume or a
  * Stop is broken into.
  */
-export const milestonesOf = (blocks, { sessionId, workspaceId, fromMs, toMs }) => {
+export const milestonesOf = (blocks, window) => {
   const seen = new Set();
+  const out = [];
+  for (const line of engineLinesOf(blocks, window)) {
+    if (seen.has(line.name)) continue;
+    seen.add(line.name);
+    out.push({ name: line.name, at: line.at, level: line.level, fields: line.fields });
+  }
+  return out;
+};
+
+/**
+ * Every session-engine line of one session or workspace in a window, in order, none dropped
+ * (`milestonesOf` keeps each name once), with its message whole: what the install's window is read
+ * from, where a second attempt must show.
+ */
+export const engineLinesOf = (blocks, { sessionId, workspaceId, fromMs, toMs }) => {
   const out = [];
   for (const block of blocks) {
     if (block.at < fromMs || block.at > toMs) continue;
@@ -206,10 +221,13 @@ export const milestonesOf = (blocks, { sessionId, workspaceId, fromMs, toMs }) =
       (sessionId !== undefined && block.fields.sessionId === sessionId) ||
       (workspaceId !== undefined && block.fields.workspaceId === workspaceId);
     if (!ours) continue;
-    const name = milestoneName(block.message);
-    if (seen.has(name)) continue;
-    seen.add(name);
-    out.push({ name, at: block.at, level: block.level, fields: block.fields });
+    out.push({
+      name: milestoneName(block.message),
+      at: block.at,
+      level: block.level,
+      fields: block.fields,
+      message: block.message,
+    });
   }
   return out;
 };
@@ -251,6 +269,148 @@ export const deliveryWindow = (milestones) => {
   if (start === undefined) return null;
   return ends.at(-1).at - start.at;
 };
+
+/** What a measure that needs the server's log says when the bench cannot read it. */
+export const NO_HOST = "no access to the server's host (pass --ssh or run there)";
+
+const INSTALL_RUNNING = /^dependency install · running\b/;
+const INSTALL_ENDED = /^dependency install · (?:completed|exited)\b/;
+/** The engine's line before it runs a failed install once more with pnpm's defaults (mend#585). */
+const INSTALL_RERUN = /^dependency install · retried with defaults\b/;
+/** What the engine says when a launch ran no install: a tree restored, skipped, or not run. */
+const INSTALL_NONE =
+  /^(?:dependency tree observed|dependency install skipped|dependency install did not run)/;
+const TREE_RESTORED = /^dependency tree observed/;
+
+/** Why a clean install cannot be told from a stalled one: the engine's line has no count. */
+export const FETCH_RETRIES_UNKNOWN =
+  "the engine's install line carries no fetch-retry count (a build before mend#585)";
+
+/**
+ * The engine's install end line (mend#585): `session engine: dependency install · completed ·
+ * exit 0 · fetch retries 2`, or `· exited · exit 1 · fetch retries 0`; before it, the same
+ * without `· fetch retries N`.
+ */
+const INSTALL_END_LINE =
+  /^session engine: dependency install · (?:completed|exited) · exit (-?\d+)(?: · fetch retries (\d+))?$/;
+
+/**
+ * An install end line's exit code and fetch retries, read from its exact words; the retries also
+ * from its structured field (`fetchRetries`, a number or its digits). Each null when the line
+ * does not say it (a build before mend#585 has no retries): unknown, never 0.
+ */
+export const installEndOf = (line) => {
+  const match = INSTALL_END_LINE.exec((line.message ?? "").trim());
+  const field = line.fields?.fetchRetries;
+  const fromField =
+    typeof field === "number" && Number.isInteger(field) && field >= 0
+      ? field
+      : typeof field === "string" && /^\d+$/.test(field.trim())
+        ? Number(field.trim())
+        : null;
+  return {
+    exitCode: match === null ? null : Number(match[1]),
+    fetchRetries: match?.[2] === undefined ? fromField : Number(match[2]),
+  };
+};
+
+/** How many fetches pnpm retried during an install, from its end line (`installEndOf`). */
+export const fetchRetriesOf = (line) => installEndOf(line).fetchRetries;
+
+/**
+ * The dependency install inside a launch, from every engine line of its window
+ * (`engineLinesOf`, nothing deduplicated):
+ * - `{ kind: "ran", ms, exited, exitCode, fetchRetries, reruns, why }`: exactly one "dependency
+ *   install · running" and one end ("· completed" or "· exited"), the end after it; `ms` between
+ *   them, `exited` when the install failed, `fetchRetries` null when the line has no count,
+ *   `reruns` the "retried with defaults" lines between them (the install run once more with
+ *   pnpm's defaults, which `ms` covers), `why` the running line's reason;
+ * - `{ kind: "none", ms: 0, restored }`: no install, as the engine said (`restored` when it saw
+ *   the head's dependency tree for the platform, else an install skipped or not run);
+ * - `{ kind: "unknown", reason }`: the log shows neither, or not exactly one install.
+ * Its time depends on the public npm registry (docs/adr/0016, decision log 2026-10-09).
+ */
+export const installOf = (lines) => {
+  if (lines === null) return { kind: "unknown", reason: NO_HOST };
+  const running = lines.filter((line) => INSTALL_RUNNING.test(line.name));
+  const ended = lines.filter((line) => INSTALL_ENDED.test(line.name));
+  if (running.length === 0 && ended.length === 0) {
+    const none = lines.filter((line) => INSTALL_NONE.test(line.name));
+    if (none.length === 0) {
+      return { kind: "unknown", reason: "the dependency install's lines were not in the log" };
+    }
+    return { kind: "none", ms: 0, restored: none.some((line) => TREE_RESTORED.test(line.name)) };
+  }
+  if (running.length !== 1 || ended.length !== 1) {
+    return {
+      kind: "unknown",
+      reason: `${running.length} "dependency install · running" and ${ended.length} end line(s) in the launch's window; exactly one of each is needed`,
+    };
+  }
+  const [start] = running;
+  const [end] = ended;
+  if (end.at < start.at) {
+    return { kind: "unknown", reason: "the install's end line precedes its running line" };
+  }
+  // A re-run with pnpm's defaults is the same install: its line falls between the one running
+  // line and the one end line, which then says the last run's exit and both runs' retries.
+  const reruns = lines.filter((line) => INSTALL_RERUN.test(line.name));
+  if (reruns.some((line) => line.at < start.at || line.at > end.at)) {
+    return {
+      kind: "unknown",
+      reason: 'a "retried with defaults" line falls outside the install\'s running and end lines',
+    };
+  }
+  const { exitCode, fetchRetries } = installEndOf(end);
+  const why = installWhyOf(start);
+  return {
+    kind: "ran",
+    // Both runs, when it was run again.
+    ms: end.at - start.at,
+    // A non-zero exit fails the install whatever the line's word, as does "exited".
+    exited: /^dependency install · exited/.test(end.name) || (exitCode !== null && exitCode !== 0),
+    exitCode,
+    fetchRetries,
+    reruns: Math.max(reruns.length, end.fields?.retriedWithDefaults === true ? 1 : 0),
+    why,
+  };
+};
+
+/** The platforms a logged list names (`[ 'linux-x64-glibc' ]`, an array, or `[]`). */
+const platformsOf = (value) => {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string");
+  if (typeof value !== "string") return [];
+  return [...value.matchAll(/'([^']+)'|"([^"]+)"/g)].map((match) => match[1] ?? match[2]);
+};
+
+/**
+ * Why the engine ran an install, from its "dependency install · running" line: a stated `reason`
+ * when the line carries one, else what its fields say of the saved head (`capturedFor`: the
+ * platforms whose dependency tree it holds, against this executor's `platform`). Null when the
+ * line says neither.
+ */
+export const installWhyOf = (line) => {
+  const fields = line.fields ?? {};
+  for (const key of ["reason", "why"]) {
+    if (typeof fields[key] === "string" && fields[key] !== "") return fields[key];
+  }
+  if (!("capturedFor" in fields)) return null;
+  const platform = typeof fields.platform === "string" ? fields.platform : "this platform";
+  const captured = platformsOf(fields.capturedFor);
+  return captured.length === 0
+    ? `the saved head held no dependency tree (needed: ${platform})`
+    : `the saved head held a tree for ${captured.join(", ")}, not ${platform}`;
+};
+
+/**
+ * `POST /sessions/:id/launch` answers with the session as it stands after this long and the
+ * launch carries on (`LAUNCH_ANSWER_WINDOW`, apps/api/src/session-start.ts): a launch call is
+ * capped there, so it is recorded unbudgeted, with whether it hit the cap.
+ */
+export const LAUNCH_ANSWER_WINDOW_MS = 30_000;
+
+/** Whether a launch call's time is the answer window's rather than the launch's. */
+export const launchCallCapped = (ms) => ms >= LAUNCH_ANSWER_WINDOW_MS;
 
 /** A harness's version from its own first screen ("Claude Code v2.1.287"), or null. */
 export const harnessVersionOf = (screen) => {
@@ -428,6 +588,21 @@ export const BUDGETS = {
 /** Whether a budget is a fixed ceiling rather than an allowance over a baseline. */
 const isCeiling = (budgetKey) => typeof BUDGETS[budgetKey]?.ceiling === "number";
 
+/**
+ * Measures records made before 2026-10-09 budgeted, recorded unbudgeted since: a new launch's and
+ * a resume's first output and first turn, which hold the dependency install and its public
+ * registry's stalls (their `_excl_install` measures carry the budget now, and clean installs are
+ * compared on their own), a resume's restore, budgeted per kind of resume since (one that restored
+ * the saved tree, one that reinstalled), and the launch call, capped by the answer window. A
+ * comparison reads them as unbudgeted whatever a record says.
+ */
+const UNBUDGETED =
+  /^(?:(?:new\.[a-z]+|resume)\.(?:first_output|first_turn)|new\.[a-z]+\.launch_call|resume\.restore_(?:ms|bytes))$/;
+
+/** A measure's budget class as a comparison reads it. */
+export const budgetOf = (name, measure) =>
+  UNBUDGETED.test(name) ? null : (measure?.budget ?? null);
+
 /** The increase a budget allows over one statistic of the baseline. */
 export const allowance = (budgetKey, before, stat) => {
   const budget = BUDGETS[budgetKey];
@@ -444,13 +619,14 @@ export const allowance = (budgetKey, before, stat) => {
 export const expectedSamplesOf = (result, name) => {
   const runs = result.options?.runs ?? 10;
   if (
-    /^(?:new|stop)\.(?:claude|codex|pi|opencode)\.(?:first_output|save)$/.test(name) ||
+    /^new\.(?:claude|codex|pi|opencode)\.(?:first_output|first_turn)_excl_install$/.test(name) ||
+    /^new\.(?:claude|codex|pi|opencode)\.install_clean$/.test(name) ||
+    /^stop\.(?:claude|codex|pi|opencode)\.save$/.test(name) ||
     /^handover\.\w+\.(?:to_other|back)\.first_output_over_own$/.test(name) ||
     /^growth\.\w+\.extra_person_beyond_state_bytes$/.test(name)
   ) {
     return runs;
   }
-  if (name === "resume.first_output") return runs * (result.options?.resumesPerRun ?? 1);
   if (name === "join.same.first_output" || name === "join.other.first_output") {
     return runs * (result.options?.joinsPerRun ?? 1);
   }
@@ -461,6 +637,35 @@ export const expectedSamplesOf = (result, name) => {
 export const seriesFloorOf = (expected) => Math.max(5, Math.ceil(expected * 0.8));
 
 /**
+ * The fewest clean installs (no fetch retried) a harness's new launches may keep under gate P1,
+ * per layout: the registry's stalls set some apart, so the floor is fixed, not 80% of the runs.
+ */
+export const CLEAN_INSTALL_FLOOR = 5;
+
+const CLEAN_INSTALL = /^new\.[a-z]+\.install_clean$/;
+
+/**
+ * How a launch's installs split: all, clean, stalled (a fetch retried), run again with pnpm's
+ * defaults (`rerun`, stalled too), unknown count, failed.
+ */
+export const installsOf = (result, prefix) => {
+  const n = (name) => summarize(result.measures?.[`${prefix}.${name}`]?.samples ?? []).n;
+  const retries = result.measures?.[`${prefix}.install_fetch_retries`]?.samples ?? [];
+  const failed = (result.checks ?? []).find(
+    (check) => check.check === `${prefix}.install_succeeded`,
+  );
+  const reruns = result.measures?.[`${prefix}.install_reruns`]?.samples ?? [];
+  return {
+    installs: n("install"),
+    clean: n("install_clean"),
+    stalled: retries.filter((value) => value > 0).length,
+    rerun: reruns.filter((value) => value > 0).length,
+    unknown: n("install") - retries.length,
+    failed: failed?.failed ?? 0,
+  };
+};
+
+/**
  * Why a gate series is too short to stand (`n of N kept; at least F needed`, with what was set
  * apart: rounds discarded as compacted, rounds with no conversation), or null when it is long
  * enough or has no expected length. A series with no samples is already a miss.
@@ -469,9 +674,20 @@ const shortSeriesOf = (result, name, who) => {
   const expected = expectedSamplesOf(result, name);
   if (expected === null) return null;
   const n = summarize(result.measures?.[name]?.samples ?? []).n;
-  const floor = seriesFloorOf(expected);
+  const clean = CLEAN_INSTALL.test(name);
+  const floor = clean ? CLEAN_INSTALL_FLOOR : seriesFloorOf(expected);
   if (n === 0 || n >= floor) return null;
   const apart = [];
+  if (clean) {
+    const installs = installsOf(result, name.replace(/\.install_clean$/, ""));
+    if (installs.stalled > 0) {
+      apart.push(
+        `${installs.stalled} stalled: a fetch retried${installs.rerun > 0 ? `, ${installs.rerun} of them run again with pnpm's defaults` : ""}`,
+      );
+    }
+    if (installs.unknown > 0) apart.push(`${installs.unknown} with no retry count`);
+    if (installs.failed > 0) apart.push(`${installs.failed} failed`);
+  }
   const handover = /^handover\.(\w+)\./.exec(name);
   if (handover !== null) {
     const discarded = (result.checks ?? []).find(
@@ -535,9 +751,9 @@ export const compareResults = (
   const sampledAfter = resourcesSampledAt(after);
   const gate = !companion && layoutOf(before) === "shared" && layoutOf(after) === "person";
   const required = requiredOf(after, { gate, secondPersonHarnesses });
-  for (const [name, measure] of Object.entries(before.measures ?? {})) {
+  for (const [name, recorded] of Object.entries(before.measures ?? {})) {
+    const measure = { ...recorded, budget: budgetOf(name, recorded) };
     if (
-      measure.budget === undefined ||
       measure.budget === null ||
       BUDGETS[measure.budget] === undefined ||
       isCeiling(measure.budget)
@@ -556,6 +772,15 @@ export const compareResults = (
       }
     }
     const current = summarize(other?.samples ?? []);
+    // A kind of resume the record under test never had is not a miss: the kinds' shares are
+    // checked on their own (`resumeKindFailures`).
+    if (current.n === 0 && RESUME_KIND.test(name)) {
+      incomparable.push({
+        measure: name,
+        reason: "the record under test had no resume of this kind",
+      });
+      continue;
+    }
     const notRun = current.n === 0 ? notRunReasonOf(after, name) : null;
     for (const stat of stats) {
       const limit = baseline[stat] + allowance(measure.budget, baseline, stat);
@@ -565,9 +790,9 @@ export const compareResults = (
   // Under the gate, a budgeted measure the record under test has and the baseline lacks (a shared
   // launch that errored, say) was never compared: a miss, not a pass.
   if (gate) {
-    for (const [name, measure] of Object.entries(after.measures ?? {})) {
+    for (const [name, recorded] of Object.entries(after.measures ?? {})) {
+      const measure = { ...recorded, budget: budgetOf(name, recorded) };
       if (
-        measure.budget === undefined ||
         measure.budget === null ||
         BUDGETS[measure.budget] === undefined ||
         isCeiling(measure.budget) ||
@@ -577,6 +802,10 @@ export const compareResults = (
         continue;
       }
       if (summarize(before.measures?.[name]?.samples ?? []).n > 0) continue;
+      if (RESUME_KIND.test(name)) {
+        incomparable.push({ measure: name, reason: "the baseline had no resume of this kind" });
+        continue;
+      }
       const current = summarize(measure.samples ?? []);
       for (const stat of stats) {
         rows.push({
@@ -685,6 +914,16 @@ export const compareResults = (
     misses: rows.filter((row) => !row.ok),
     incomparable,
     gate,
+    installs: installReportOf(before, after),
+    resumes: {
+      before: resumeKindsOf(before),
+      after: resumeKindsOf(after),
+      shares: reinstallSharesOf(before, after),
+      reasons: { before: reinstallReasonsOf(before), after: reinstallReasonsOf(after) },
+    },
+    // Under the gate: the person layout reinstalling at more resumes than shared, too few resumes
+    // of a known kind, no kind on both sides, and a failed install in the baseline.
+    layoutFailures: gate && !companion ? gateLayoutFailures(before, after) : [],
     label: describeComparison(before, after, { secondPersonHarnesses, companion }),
     // A correctness check the run under test failed fails the comparison too: a fast launch that
     // ran as the wrong person, or billed the wrong login, is not inside any budget.
@@ -718,11 +957,156 @@ export const compareResults = (
  */
 export const comparisonFails = (comparison) =>
   comparison.misses.length > 0 ||
+  (comparison.layoutFailures ?? []).length > 0 ||
   comparison.checkFailures.length > 0 ||
   comparison.checksNotVerified.length > 0 ||
   comparison.errors.length > 0 ||
   (comparison.gate === true &&
     ((comparison.label?.differs ?? []).length > 0 || comparison.baselineErrors.length > 0));
+
+// ─── installs and resumes per layout (docs/adr/0016, decision log 2026-10-09) ──
+
+/**
+ * The kinds a resume is kept apart by: one that restored the saved dependency tree
+ * (`resume.tree_restored.*`) and one that reinstalled (`resume.installed.*`). Each is budgeted
+ * against the same kind; a kind only one record had is not compared, and the shares are checked.
+ */
+const RESUME_KIND = /^resume\.(?:installed|tree_restored)\./;
+
+/**
+ * A resume's kind from its install (`installOf`): `installed`, `tree_restored` (the engine saw
+ * the head's dependency tree for the platform), or `unclassified` (the log cannot tell, or the
+ * install was skipped or did not run).
+ */
+export const resumeKindOf = (install) =>
+  install.kind === "ran"
+    ? "installed"
+    : install.kind === "none" && install.restored
+      ? "tree_restored"
+      : "unclassified";
+
+/** How a record's resumes went: reinstalled, restored the saved tree, or could not be told. */
+export const resumeKindsOf = (result) => {
+  const n = (kind) => summarize(result.measures?.[`resume.${kind}.first_output`]?.samples ?? []).n;
+  return {
+    installed: n("installed"),
+    restored: n("tree_restored"),
+    unclassified: n("unclassified"),
+  };
+};
+
+/** Each launch's installs in either record: every harness's new launches, then the resumes'. */
+export const installReportOf = (before, after) =>
+  [...GATE_HARNESSES.map((harness) => `new.${harness}`), "resume.installed"]
+    .map((prefix) => ({
+      prefix,
+      before: installsOf(before, prefix),
+      after: installsOf(after, prefix),
+    }))
+    .filter((row) => row.before.installs > 0 || row.after.installs > 0);
+
+/**
+ * How much larger a share of its resumes the person layout may reinstall at than shared: 2 per 10
+ * resumes, scaled with their number. Shared resumes reinstall now and then too (a capture still
+ * uploading at the Stop), so a smaller excess is noise.
+ */
+export const REINSTALL_TOLERANCE = { per: 10, more: 2 };
+
+/**
+ * Both layouts' resume reinstall shares, and whether the person layout's is too large: more than
+ * `REINSTALL_TOLERANCE` over shared's (exact integer arithmetic), or every person resume
+ * reinstalled while shared restored the saved tree at least once. Null when either side told no
+ * resume apart.
+ */
+export const reinstallSharesOf = (before, after) => {
+  const shared = resumeKindsOf(before);
+  const person = resumeKindsOf(after);
+  const sharedKnown = shared.installed + shared.restored;
+  const personKnown = person.installed + person.restored;
+  if (sharedKnown === 0 || personKnown === 0) return null;
+  // person/personKnown - shared/sharedKnown > more/per, without division.
+  const { per, more } = REINSTALL_TOLERANCE;
+  const excess =
+    per * (person.installed * sharedKnown - shared.installed * personKnown) >
+    more * sharedKnown * personKnown;
+  const everyOne = person.installed === personKnown && shared.restored >= 1;
+  return {
+    shared: { installed: shared.installed, of: sharedKnown },
+    person: { installed: person.installed, of: personKnown },
+    tooMany: excess || everyOne,
+    why: excess
+      ? `more than ${more} per ${per} resumes over shared`
+      : everyOne
+        ? "every person resume reinstalled while shared restored the saved tree"
+        : null,
+  };
+};
+
+const percent = (part, of) => `${Math.round((100 * part) / of)}%`;
+
+/** Both reinstall shares in words. */
+export const reinstallSharesText = (shares) =>
+  `resumes that reinstalled: shared ${shares.shared.installed} of ${shares.shared.of} (${percent(shares.shared.installed, shares.shared.of)}), person ${shares.person.installed} of ${shares.person.of} (${percent(shares.person.installed, shares.person.of)}); gate P1 allows ${REINSTALL_TOLERANCE.more} per ${REINSTALL_TOLERANCE.per} more, and fails when every person resume reinstalls while shared restored at least one`;
+
+/**
+ * Why a record's resumes reinstalled, as the engine said it (`resumeReinstalls`), tallied:
+ * `[reason, count]`, most first. A reinstall with no stated reason counts under its own words.
+ */
+export const reinstallReasonsOf = (result) => {
+  const counts = new Map();
+  for (const entry of result.resumeReinstalls ?? []) {
+    const why = entry.why ?? "the engine's line gave no reason";
+    counts.set(why, (counts.get(why) ?? 0) + 1);
+  }
+  return [...counts].toSorted((a, b) => b[1] - a[1]);
+};
+
+/**
+ * What fails gate P1 between the layouts that no single measure holds: the person layout
+ * reinstalling at too large a share of its resumes against shared (`reinstallSharesOf`: its saved
+ * tree not saved or not restored, a loss of work product that would read as a faster resume),
+ * either record classifying
+ * fewer resumes than its floor, no kind of resume both records had (nothing compared), and a
+ * failed install in the baseline (the record under test's fail as checks).
+ */
+export const gateLayoutFailures = (before, after) => {
+  const failures = [];
+  const shared = resumeKindsOf(before);
+  const person = resumeKindsOf(after);
+  for (const [who, result, kinds] of [
+    ["the shared record", before, shared],
+    ["the person record", after, person],
+  ]) {
+    const expected = (result.options?.runs ?? 10) * (result.options?.resumesPerRun ?? 1);
+    const floor = seriesFloorOf(expected);
+    const known = kinds.installed + kinds.restored;
+    if (known < floor) {
+      failures.push(
+        `${who} told ${known} of ${expected} resumes apart (reinstalled or restored the saved tree${kinds.unclassified > 0 ? `; ${kinds.unclassified} could not be told` : ""}); at least ${floor} needed`,
+      );
+    }
+  }
+  const sharedKnown = shared.installed + shared.restored;
+  const personKnown = person.installed + person.restored;
+  const shares = reinstallSharesOf(before, after);
+  if (shares?.tooMany === true) {
+    failures.push(
+      `the person layout reinstalled at ${shares.person.installed} of ${shares.person.of} resumes, the shared at ${shares.shared.installed} of ${shares.shared.of} (${shares.why}): the person layout's saved dependency tree was not restored as often`,
+    );
+  }
+  const both = ["installed", "restored"].filter((kind) => shared[kind] > 0 && person[kind] > 0);
+  if (sharedKnown > 0 && personKnown > 0 && both.length === 0) {
+    failures.push(
+      "no kind of resume ran in both records (reinstalled, restored the saved tree): no resume time was compared",
+    );
+  }
+  for (const row of installReportOf(before, after)) {
+    if (row.before.failed > 0) {
+      failures.push(`the shared record: ${row.before.failed} failed install(s) in ${row.prefix}`);
+    }
+  }
+  return failures;
+};
 
 /** The harnesses Mend runs in protocol mode, where a turn can be steered (the hand-over). */
 export const PROTOCOL_HARNESSES = ["claude", "codex"];
@@ -732,16 +1116,20 @@ export const GATE_HARNESSES = ["claude", "codex", "pi", "opencode"];
 
 /**
  * The launch measures gate P1 needs from both records, per the ADR's table: each harness's new
- * session to first output and its Stop's save; a resume; a second session of the same person; a
- * checkpoint save; shell and terminal open, typing, `git fetch`; the session list and view. (`git
- * push` is left out: a project may give the shim no push access, which a record says as not run.)
+ * session to first output and to its first answer, each less its dependency install, and its
+ * clean installs (no fetch retried, at least `CLEAN_INSTALL_FLOOR`), compared on their own
+ * (decision log 2026-10-09); each Stop's save; a second session of the same person; a checkpoint
+ * save; shell and terminal open, typing, `git fetch`; the session list and view. Resumes are
+ * checked by kind (`gateLayoutFailures`). (`git push` is left out: a project may give the shim no
+ * push access, which a record says as not run.)
  */
 const gateLaunchMeasures = () => [
   ...GATE_HARNESSES.flatMap((harness) => [
-    { measure: `new.${harness}.first_output`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.first_output_excl_install`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.first_turn_excl_install`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.install_clean`, unit: "ms", budget: "start" },
     { measure: `stop.${harness}.save`, unit: "ms", budget: "start" },
   ]),
-  { measure: "resume.first_output", unit: "ms", budget: "start" },
   { measure: "join.same.first_output", unit: "ms", budget: "start" },
   { measure: "checkpoint.save", unit: "ms", budget: "start" },
   { measure: "shell.open", unit: "ms", budget: "interactive" },
@@ -885,6 +1273,7 @@ const commitOf = (result) => {
 /** What gate P1 measures that no record of this benchmark covers (said, so a pass is not read as all of it). */
 export const P1_NOT_COVERED = [
   "restore wall time on the box's largest worktree, interleaved between the layouts, on the box's own filesystem (docs/adr/0016, \"What the design does to stay inside them\"; sealantd#145): not measured by this benchmark, which restores its own fresh st-bench worktrees one layout per run",
+  "a dependency install that stalled on the public npm registry (a fetch retried): its time is the registry's, so it is recorded (`<launch>.install`) and counted per layout, not budgeted; clean installs, which hold the person's own cost (the install as the launcher, their login profile, the store under /var/cache, default ACLs on every new file), are budgeted on their own, and the start budget is on first output and first turn less the install (docs/adr/0016, decision log 2026-10-09)",
 ];
 
 /**
@@ -1712,7 +2101,11 @@ export const formatTable = (result) => {
   for (const [name, measure] of Object.entries(result.measures ?? {})) {
     const summary = summarize(measure.samples ?? []);
     if (summary.n === 0) continue;
-    const budget = BUDGETS[measure.budget]?.text ?? "–";
+    const budget =
+      BUDGETS[budgetOf(name, measure)]?.text ??
+      (typeof measure.cappedAtMs === "number"
+        ? `none: capped at ${formatValue(measure.cappedAtMs, "ms")}`
+        : "–");
     lines.push(
       `| ${name} | ${summary.n} | ${formatValue(summary.median, measure.unit)} | ${formatValue(summary.p90, measure.unit)} | ${formatValue(summary.worst, measure.unit)} | ${budget} |`,
     );
@@ -1780,6 +2173,51 @@ export const formatComparison = (comparison) => {
   }
   for (const entry of comparison.incomparable ?? []) {
     lines.push(`| ${entry.measure} | | | | | not comparable: ${entry.reason} |`);
+  }
+  if ((comparison.installs ?? []).length > 0) {
+    lines.push(
+      "",
+      "Dependency installs (before → after; stalled: a fetch retried, kept out of the budget):",
+      "",
+      "| Launch | installs | clean | stalled | re-run with defaults | no retry count | failed |",
+      "| --- | --: | --: | --: | --: | --: | --: |",
+    );
+    for (const row of comparison.installs) {
+      const pair = (key) => `${row.before[key]} → ${row.after[key]}`;
+      lines.push(
+        `| ${row.prefix} | ${pair("installs")} | ${pair("clean")} | ${pair("stalled")} | ${pair("rerun")} | ${pair("unknown")} | ${pair("failed")} |`,
+      );
+    }
+  }
+  const resumes = comparison.resumes ?? null;
+  if (
+    resumes !== null &&
+    Object.values({ ...resumes.before, ...resumes.after }).some((n) => n > 0)
+  ) {
+    const said = (kinds) =>
+      `${kinds.restored} restored the saved tree, ${kinds.installed} reinstalled${kinds.unclassified > 0 ? `, ${kinds.unclassified} could not be told` : ""}`;
+    lines.push(
+      "",
+      `Resumes before: ${said(resumes.before)}.`,
+      `Resumes after: ${said(resumes.after)}.`,
+    );
+    if (resumes.shares !== null && resumes.shares !== undefined) {
+      lines.push(`Shares of ${reinstallSharesText(resumes.shares)}.`);
+    }
+    for (const [who, reasons] of [
+      ["before", resumes.reasons?.before ?? []],
+      ["after", resumes.reasons?.after ?? []],
+    ]) {
+      if (reasons.length > 0) {
+        lines.push(
+          `Why resumes reinstalled ${who}: ${reasons.map(([why, n]) => `${n} × ${why}`).join("; ")}.`,
+        );
+      }
+    }
+  }
+  if ((comparison.layoutFailures ?? []).length > 0) {
+    lines.push("", "Between the layouts (gate P1):", "");
+    for (const failure of comparison.layoutFailures) lines.push(`- ${failure}`);
   }
   if ((comparison.checkFailures ?? []).length > 0) {
     lines.push(
@@ -1947,6 +2385,7 @@ export const mergeResults = (base, extra, takes = null) => {
     // either run stays failed.
     checks: sumChecks(base.checks ?? [], extra.checks ?? []),
     imageBuilds: [...(base.imageBuilds ?? []), ...(extra.imageBuilds ?? [])],
+    resumeReinstalls: [...(base.resumeReinstalls ?? []), ...(extra.resumeReinstalls ?? [])],
     errors: [...(base.errors ?? []), ...(extra.errors ?? [])],
     merged: [
       ...(base.merged ?? []),
