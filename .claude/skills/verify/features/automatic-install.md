@@ -1,12 +1,12 @@
 # Automatic install
 
-In capture mode (the default session store), Mend installs a project's dependencies before the
-agent starts when the session's saved state has no dependency tree for the workspace's platform,
-and fills the project's shared cache that standby workspaces start from. The command is detected
-from the lockfile at the root of the base tree (`pnpm-lock.yaml` → `pnpm install --frozen-lockfile`, `package-lock.json` → `npm ci`, `Cargo.lock` → `cargo fetch --locked`, and so
-on), or a custom command replaces it. A per-project switch turns it off; a tree already saved or
-cached is restored either way. The user sets both on the project's Setup tab, in the card titled
-`Dependencies`.
+In capture mode (the default session store), Mend installs a project's dependencies before the agent
+starts when the session's saved state has no dependency tree for the workspace's platform, and fills
+the project's shared cache that standby workspaces start from. The command is detected from the
+lockfile at the root of the base tree (`pnpm-lock.yaml` → `pnpm install --frozen-lockfile`,
+`package-lock.json` → `npm ci`, `Cargo.lock` → `cargo fetch --locked`, and so on), or a custom
+command replaces it. A per-project switch turns it off; a tree already saved or cached is restored
+either way. The user sets both on the project's Setup tab, in the card titled `Dependencies`.
 
 ## Sub-features
 
@@ -56,21 +56,24 @@ Preconditions:
 - **No install when off.** Run the same `mend run` command again (it makes a new worktree). The
   change adds `INSTALL.txt` holding `absent`, unless the project's shared cache already holds a
   tree, which a standby restores even when off (see Gotchas).
-- **Turn it on.** Choose `on`. The custom command line returns as `runs · npm install --no-audit · custom`. Clear it and save to restore the precondition.
+- **Turn it on.** Choose `on`. The custom command line returns as
+  `runs · npm install --no-audit · custom`. Clear it and save to restore the precondition.
 - **Proof.** ARIA snapshots and screenshots of `section("Dependencies")` in each state (detected,
   custom, off), the two `mend run` transcripts, and both review pages showing `INSTALL.txt`.
 
 ## Gotchas
 
-- On a co-located server the card reads `Capture mode only. This server runs sessions co-located with the store, where a worktree keeps its own dependencies and Mend runs no install. …` and the
-  switch changes nothing a session can observe. Report the in-session steps unreachable there.
+- On a co-located server the card reads
+  `Capture mode only. This server runs sessions co-located with the store, where a worktree keeps its own dependencies and Mend runs no install. …`
+  and the switch changes nothing a session can observe. Report the in-session steps unreachable
+  there.
 - The `on`/`off` buttons are named only `on` and `off`, with no group name tying them to
-  `automatic install` (`apps/web/src/components/on-off-switch.tsx:156-172`). The `Dotfiles`
-  section on the same page has two more pairs with the same names. Scope to the `Dependencies`
-  section.
+  `automatic install` (`apps/web/src/components/on-off-switch.tsx:156-172`). The `Dotfiles` section
+  on the same page has two more pairs with the same names. Scope to the `Dependencies` section.
 - The card's heading is `Dependencies`, not "Automatic install"; the switch label
   `automatic install` is plain text.
-- The detected line reads `origin/<branch>` as last fetched; it says `not read · detected from the lockfile at launch` when the store could not read that tree, and
+- The detected line reads `origin/<branch>` as last fetched; it says
+  `not read · detected from the lockfile at launch` when the store could not read that tree, and
   `no lockfile recognised on <ref> · detected again at launch` when none matched.
 - Turning the switch on from off, or changing the command, queues an install session that fills the
   shared cache. A standby workspace starts from that cache, so with hot sessions on, a session can

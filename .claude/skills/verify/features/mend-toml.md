@@ -1,13 +1,13 @@
 # mend.toml and declared Services
 
-A repository declares its Services once, in a `mend.toml` at its root: one `[service.<name>]`
-table per Service with a `port`, an optional `command` (none means adopt a port something else
-listens on), an optional `protocol` (`tcp` or `udp`) and an optional `browserScheme` (`http` or
-`https`). Mend reads the file from the session's own worktree, so an agent can add a recipe in its
-change. A project can also declare recipes on its Setup tab; sessions offer both as one-tap
-launchers, and on a name collision the file wins and the project's recipe shows as `Shadowed`.
-`mend service init` scaffolds the file from `package.json` scripts and Compose ports; nothing runs
-until a user starts a recipe.
+A repository declares its Services once, in a `mend.toml` at its root: one `[service.<name>]` table
+per Service with a `port`, an optional `command` (none means adopt a port something else listens
+on), an optional `protocol` (`tcp` or `udp`) and an optional `browserScheme` (`http` or `https`).
+Mend reads the file from the session's own worktree, so an agent can add a recipe in its change. A
+project can also declare recipes on its Setup tab; sessions offer both as one-tap launchers, and on
+a name collision the file wins and the project's recipe shows as `Shadowed`. `mend service init`
+scaffolds the file from `package.json` scripts and Compose ports; nothing runs until a user starts a
+recipe.
 
 ## Sub-features
 
@@ -36,8 +36,8 @@ until a user starts a recipe.
 
 Preconditions:
 
-- Mend is healthy at `<web>`, signed in as the creator of `<project>` (or an owner), in capture
-  mode or co-located.
+- Mend is healthy at `<web>`, signed in as the creator of `<project>` (or an owner), in capture mode
+  or co-located.
 - `<repo-url>`'s default branch has this `mend.toml` at its root, where `<serve-cmd>` listens on TCP
   port `8000` and answers HTTP in the workspace image (as in [Services](./services.md)):
 
@@ -51,11 +51,11 @@ Preconditions:
   port = 5432
   ```
 
-- A live session in `<project>`: run `mend run --project <project> -- sleep 1800` in its own PTY
-  and note `<id>` and `<id8>`.
+- A live session in `<project>`: run `mend run --project <project> -- sleep 1800` in its own PTY and
+  note `<id>` and `<id8>`.
 - `<project>` declares no recipes on its Setup tab.
-- A scratch directory `/tmp/verify-init`, outside any Git repository, holds only `package.json`
-  with `{"scripts":{"dev":"vite --port 5173"}}`.
+- A scratch directory `/tmp/verify-init`, outside any Git repository, holds only `package.json` with
+  `{"scripts":{"dev":"vite --port 5173"}}`.
 - `const section = (name) => page.locator("section").filter({ has: page.getByRole("heading", { name, exact: true }) })`.
 
 - **Init, non-interactive.** In `/tmp/verify-init` run `mend service init < /dev/null`. Stdout shows
@@ -67,8 +67,8 @@ Preconditions:
   `✓ wrote /tmp/verify-init/mend.toml — commit it, then: mend service run web`. Exit code `0`. Run
   it again: exit code `1`, stderr
   `mend: /tmp/verify-init/mend.toml already exists — edit it directly (init never merges)`.
-- **Recipes on the card.** Go to `<web>/sessions/<id>`. The `Services` card shows a row `web` with
-  a `Run` button and the line `<serve-cmd> · :8000 · mend.toml`, and a row `db` with
+- **Recipes on the card.** Go to `<web>/sessions/<id>`. The `Services` card shows a row `web` with a
+  `Run` button and the line `<serve-cmd> · :8000 · mend.toml`, and a row `db` with
   `adopt · :5432 · mend.toml`.
 - **Run from the CLI.** Run `mend service run <id8> web --no-connect`. Exit code `0`. Stdout shows
   `✓ Service web · <status>`, the address lines, and `  logs: mend service logs web`. On the card,
@@ -79,8 +79,8 @@ Preconditions:
   `+ declare service…`, fill the textboxes by placeholder: `name (web)` = `verify-proj`,
   `pnpm dev (empty = adopt a listening port)` = `<serve-cmd with port 8001>`, `port (3000)` =
   `8001`, pick `http` in the combobox `Browser behavior`, and choose `declare service`. It reads
-  `declaring…`, then the section lists `verify-proj` with `<serve-cmd with port 8001> · :8001 · http`
-  and a `remove` button.
+  `declaring…`, then the section lists `verify-proj` with
+  `<serve-cmd with port 8001> · :8001 · http` and a `remove` button.
 - **Refusals.** Declare `verify-proj` again: a line reads
   `Already declared on this project: verify-proj`. Declare the name `Bad Name`: a line reads
   `"Bad Name" is not a usable Service name (lowercase letters, digits, ".", "_", "-").` Choose
@@ -94,15 +94,16 @@ Preconditions:
 - **Parse error.** Start a second live session that breaks the file in its own worktree:
   `mend run --project <project> -- sh -c 'echo "[service" > mend.toml; sleep 1800'` in its own PTY,
   noting `<id2>`/`<id8b>`. Its session page's `Services` card reads
-  `mend.toml did not parse — fix it in the worktree`. Run `mend service run <id8b> web --no-connect`:
-  exit code `1`, stderr starts `mend: mend.toml is not valid TOML:`.
+  `mend.toml did not parse — fix it in the worktree`. Run
+  `mend service run <id8b> web --no-connect`: exit code `1`, stderr starts
+  `mend: mend.toml is not valid TOML:`.
 - **Desktop.** With the first session open as a tab in the desktop app (see
   [Desktop app](./desktop.md)), choose `getByRole("button", { name: /^Services \d+$/ })`. Under the
   paragraph `Recipes`, rows read `web` with `<serve-cmd> · :8000`, `db` with `adopt · :5432`, and
   the project's `web` with `adopt · :9000 · overridden by file` and a disabled `Run`.
 - **Cleanup.** Run `mend service stop web` and `mend service stop verify-proj`, choose `remove` on
-  both project recipes in `section("Services")` (it acts on the first click), and stop both
-  `sleep` sessions by id.
+  both project recipes in `section("Services")` (it acts on the first click), and stop both `sleep`
+  sessions by id.
 - **Proof.** The `mend service init` and `mend service run` transcripts with exit codes; ARIA
   snapshots and screenshots of the session's `Services` card with recipe rows, with the `Shadowed`
   row, and with the parse error; the Setup `Services` section with both project recipes.
@@ -113,8 +114,8 @@ Preconditions:
   workspace image ([Workspace images](./workspace-images.md)), and live preview is not built. The
   README's `mend-toml-setup-preview` row records the gap.
 - In capture mode Mend reads `/workspace/repo/mend.toml` from the live workspace. A session with no
-  live workspace lists only the project's recipes, and running a file recipe asks for a resume.
-  Keep a session alive for every card and CLI step.
+  live workspace lists only the project's recipes, and running a file recipe asks for a resume. Keep
+  a session alive for every card and CLI step.
 - The card shows recipe rows only to someone who may start Services in that workspace, while it is
   live. A recipe whose name already shows as a live or recently ended Service has no recipe row;
   restart that Service from its own row instead.
@@ -130,8 +131,8 @@ Preconditions:
   card's run form uses.
 - The shorthand `mend service <name>` cannot reach a recipe named like a `service` verb (`run`,
   `add`, `init`, `connect`, `list`, `logs`, `restart`, `stop`). Use `mend service run <name>`.
-- With no session argument the CLI takes the one live session, or opens a picker with several.
-  Pass `<id8>` in a scripted drive.
+- With no session argument the CLI takes the one live session, or opens a picker with several. Pass
+  `<id8>` in a scripted drive.
 - `mend service init` reads the current Git top level (or the current directory), proposes at most
   one Service from the root `package.json` scripts (`dev`, `start`, `serve`, `preview`, the first
   with a port it can name), one per workspace package, and one per Compose service with a published

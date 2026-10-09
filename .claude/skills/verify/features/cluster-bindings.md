@@ -3,10 +3,10 @@
 On a Mend server whose workspaces run on Kubernetes, a project can bind cluster objects by name: a
 Kubernetes Secret or ConfigMap in the platform's workspaces namespace whose keys become workspace
 environment, and optionally the service account the workspaces run as. Mend stores the names only
-and never sees the contents; the platform resolves them at each fresh workspace launch. A user
-binds and removes them on the project's Setup tab or with `mend env cluster`, and `mend env show`
-lists them beside configuration and secret names. On a local-runner install bindings do not resolve,
-and a declared binding blocks launches until it is removed.
+and never sees the contents; the platform resolves them at each fresh workspace launch. A user binds
+and removes them on the project's Setup tab or with `mend env cluster`, and `mend env show` lists
+them beside configuration and secret names. On a local-runner install bindings do not resolve, and a
+declared binding blocks launches until it is removed.
 
 ## Sub-features
 
@@ -35,9 +35,9 @@ and a declared binding blocks launches until it is removed.
 
 Preconditions:
 
-- Mend runs on a Kubernetes deployment of Sealant (the web panel shows no local-runner warning).
-  On any other install only the `cluster-local-runner` steps apply; report the rest unreachable
-  with "server is not Kubernetes-backed".
+- Mend runs on a Kubernetes deployment of Sealant (the web panel shows no local-runner warning). On
+  any other install only the `cluster-local-runner` steps apply; report the rest unreachable with
+  "server is not Kubernetes-backed".
 - The operator has created a Secret `verify-env` in the platform's workspaces namespace, labelled
   for workspace environment, holding the key `VERIFY_CLUSTER=from-cluster`, and allowlisted a
   service account `<sa>` for workspaces. Launch names both.
@@ -65,8 +65,8 @@ Preconditions:
   and `  <sa>  service account · workspace pod identity · allowlisted by the operator` (names padded
   to one width).
 - **Delivery.** Run
-  `mend run --project <project> -- sh -c 'printf "%s\n" "$VERIFY_CLUSTER" > CLUSTER.txt'`. Exit
-  code `0`. The session's change adds `CLUSTER.txt` with the line `from-cluster`.
+  `mend run --project <project> -- sh -c 'printf "%s\n" "$VERIFY_CLUSTER" > CLUSTER.txt'`. Exit code
+  `0`. The session's change adds `CLUSTER.txt` with the line `from-cluster`.
 - **CLI add.** Run `mend env cluster add configmap verify-config --project <project>`. Exit code
   `0`. Stdout reads `✓ bound configmap/verify-config · cluster r<n>`,
   `  resolved by the platform at launch · contents unknown to Mend` and
@@ -82,8 +82,9 @@ Preconditions:
   `Remove? Running workspaces keep it`; choose it again. The status reads
   `Removed secret/verify-env.` and the panel reads `No cluster bindings.`
 - **Local-runner install (cluster-local-runner).** On a non-Kubernetes install, the panel reads
-  `This install runs workspaces on the local runner. Cluster bindings do not resolve here; declared bindings block launches — remove them to launch here.` `Kind`, `Object name`, `Bind`, the service
-  account textbox and `Set` are disabled; `Remove` and `Clear` stay enabled.
+  `This install runs workspaces on the local runner. Cluster bindings do not resolve here; declared bindings block launches — remove them to launch here.`
+  `Kind`, `Object name`, `Bind`, the service account textbox and `Set` are disabled; `Remove` and
+  `Clear` stay enabled.
 - **Proof.** Save the panel's ARIA snapshot and a screenshot with `secret/verify-env` bound and
   after removal, the `mend env show` and `mend env cluster` transcripts with exit codes, and the
   review page showing `CLUSTER.txt`.
@@ -95,10 +96,10 @@ Preconditions:
   names every binding. Remove it (`mend env cluster remove …` or the web `Remove`) to launch again.
   Never leave a binding behind on a shared local instance.
 - A duplicate bind from the CLI exits `1` with the bare status line
-  `mend: POST /projects/<id>/cluster-bindings → 409`: the conflict carries no message for the CLI
-  to print (`packages/api-contracts/src/project-environment.ts:177`). The web says which binding.
-- Object names follow Kubernetes DNS-1123 subdomain grammar and a project holds at most 16
-  bindings (docs). A refused name comes back as the server's own message.
+  `mend: POST /projects/<id>/cluster-bindings → 409`: the conflict carries no message for the CLI to
+  print (`packages/api-contracts/src/project-environment.ts:177`). The web says which binding.
+- Object names follow Kubernetes DNS-1123 subdomain grammar and a project holds at most 16 bindings
+  (docs). A refused name comes back as the server's own message.
 - Only objects the operator labelled for workspace environment resolve, and a service account
   outside the operator's allowlist fails the launch. Both are cluster-side; the panel cannot show
   them.
