@@ -1394,10 +1394,23 @@ benchmark once more, before 0.36 is tagged.
   least one; the engine's reason for each reinstall is recorded.
 - 2026-10-09: the owner turned per-person on by default for 0.36; the flip (21) merges once the P1
   timing gate passes on the box; the week of use runs with the default on, before 0.36 is tagged.
-- 2026-10-09, Delivery 21 as built: `MEND_HARNESS_LAYOUT` is `person` unless set, and `shared` is
-  the operator's opt-out; every check that asked whether the flag was on now follows the default,
-  and a worktree with no layout whose launch cannot run per person still runs `shared` with the
-  reason. The `/root` relocation already ran only in `shared` executors. A standby boots as one
-  person and never serves a launch that may run per person, so with `person` the hot pool keeps none
-  in capture mode (it logs `warm skipped`) rather than keep executors no launch would claim.
+- 2026-10-09, Delivery 21 as built, after the review of mend#582: `MEND_HARNESS_LAYOUT` is `person`
+  unless set (empty counts as unset), and `shared` is the operator's opt-out; every check that asked
+  whether the flag was on follows the default. A shared launch's probe runs only where nothing is
+  known, and its answer is recorded unconfirmed: it fills in an unknown, never replaces Core's or a
+  person prepare's answer, and no executor is retired on it (`image_layout_capabilities.confirmed`,
+  migration 0119); retirement waits for an answer a per-person executor gave. A Kubernetes workspace
+  runtime is a static obstacle (shared, nothing probed). A person prepare checks no-new-privileges
+  (`NoNewPrivs` in `/proc/self/status`) with the rest of decision 1's probe, so a hardened Docker
+  host falls back to shared on a fresh worktree. The prepare sends one data list
+  (`name:uid:account id:member:ticket` per person) and one loop over a `mend_person` function
+  defined once, about 95 bytes a person instead of 6.3 KB, so 200 members make a 41 KB script and a
+  73 KB exec beside the helper (Linux refuses one argument over 128 KiB; before, 13 people passed
+  it). Standbys are kept for an owner whose fresh worktrees are predicted shared and claimed by a
+  worktree with no layout predicted shared; for anyone else none is kept, and the Hot sessions
+  status says why (`ProjectHotSessionsStatus.cold`). A worktree's head read for `people/` is
+  remembered per head when it holds none, so a worktree that falls back to shared reads its manifest
+  once per capture, not on every launch. The `/root` relocation already ran only in `shared`
+  executors. A loopback server on the capture store runs per person by default, as the layout
+  follows capability, not exposure.
 - Open: gate B's history record.

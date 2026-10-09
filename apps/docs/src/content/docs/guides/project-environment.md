@@ -175,9 +175,10 @@ launch guarantee. A standby serves a fresh worktree; a session joining a worktre
 captures starts cold until the executor can materialise a delta.
 
 A standby starts as one person before any worktree is known, so it never serves a
-[per-person workspace](/operate/per-person-workspaces/). While `MEND_HARNESS_LAYOUT` is `person`,
-the default, Mend keeps no standby and every launch starts cold; set `MEND_HARNESS_LAYOUT=shared` to
-keep hot sessions.
+[per-person workspace](/operate/per-person-workspaces/). Mend keeps standbys for a person only while
+their new worktrees would run with a shared home: an image or runtime that cannot run per person, or
+`MEND_HARNESS_LAYOUT=shared`. Otherwise it keeps none, their launches start cold, and the card says
+`no standby · per-person workspaces launch cold`.
 
 ## Automatic install
 

@@ -38,6 +38,11 @@ export interface LayoutCapability {
   readonly missing: ReadonlyArray<string>;
   /** Who said so: Mend's record of a prepare, Core's report, or what Mend knows statically. */
   readonly source: "mend" | "core" | "static" | null;
+  /**
+   * Mend's record, observed in a per-person executor: its prepare, or Core's create refusing the
+   * owner map. A shared launch's probe is a prediction, and nothing is retired on one.
+   */
+  readonly confirmed?: boolean;
 }
 
 export const UNKNOWN_CAPABILITY: LayoutCapability = { person: null, missing: [], source: null };
@@ -158,12 +163,15 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
     return { kind: "launch", layout: "person", source: "flag", onMissing: "fallback" };
   }
   if (capability.person === false) {
+    // Never probed over a known "no": a shared executor cannot see what only a per-person one
+    // meets (no-new-privileges, the owner map), so its "yes" would undo Core's or a person
+    // prepare's answer, and launches would alternate (review of mend#582, finding 1).
     return {
       kind: "launch",
       layout: "shared",
       source: "capability",
       reason: `this image cannot run per-person users (${capability.missing.join(", ")}), so this workspace takes one person`,
-      probe: capability.source !== "static",
+      probe: false,
     };
   }
   // Unknown means shared: the launch runs as before and its prepare records the answer, so the
@@ -176,6 +184,17 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
     probe: true,
   };
 };
+
+/**
+ * Why no executor of a Kubernetes workspace runtime runs per person: workspace Pods run with
+ * `allowPrivilegeEscalation: false` (no-new-privileges), where no one's sudo works. The same
+ * words Core's create refusal is read as (`ownerMapRefusalOf`).
+ */
+export const KUBERNETES_LAYOUT_OBSTACLE =
+  "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
+
+/** Why a project keeps no standby for an owner whose fresh worktrees run per person. */
+export const HOT_POOL_PER_PERSON_COLD = "per-person workspaces launch cold";
 
 /** Why a fresh worktree whose launcher has dotfiles runs shared until the verb ships. */
 export const DOTFILES_BLOCK_REASON =
@@ -408,6 +427,13 @@ export const assertScriptSafe = (identity: LinuxIdentity): void => {
   }
 };
 
+/**
+ * What a per-person prepare says when the executor runs under no-new-privileges (a Docker
+ * daemon's `"no-new-privileges": true`, Kubernetes' `allowPrivilegeEscalation: false`): sudo
+ * cannot raise anyone, and sealantd withholds `CAP_FOWNER` (decision 1).
+ */
+export const NO_NEW_PRIVILEGES_MISSING = "no-new-privileges is set, so no one's sudo works";
+
 /** What a layout line on stdout says (`parseLayoutReport`). */
 export const LAYOUT_LINE = "mend-layout";
 
@@ -421,9 +447,22 @@ export const LAYOUT_LINE = "mend-layout";
  */
 export const layoutProbeScript = (
   people: ReadonlyArray<LinuxIdentity>,
-  options: { readonly passwd?: string; readonly group?: string; readonly aclDir?: string } = {},
+  options: {
+    readonly passwd?: string;
+    readonly group?: string;
+    readonly aclDir?: string;
+    /**
+     * Check no-new-privileges (`NoNewPrivs` in this file, `/proc/self/status` unless a test names
+     * another): only in a per-person executor, where sealantd imposes none of its own, so what is
+     * set came from the runtime and no one's sudo would work (decision 1).
+     */
+    readonly noNewPrivileges?: string;
+    /** `$mend_people` is already set (`personPrepareScript`): the loop reads it, `people` unused. */
+    readonly listed?: boolean;
+  } = {},
 ): string => {
   for (const person of people) assertScriptSafe(person);
+  const loop = options.listed === true || people.length > 0;
   const passwd = shellQuote(options.passwd ?? "/etc/passwd");
   const group = shellQuote(options.group ?? "/etc/group");
   const aclDir = options.aclDir ?? "/workspace";
@@ -444,11 +483,26 @@ export const layoutProbeScript = (
       `do missing "gid $w is taken in this image"; done`,
     `awk -F: '$1=="${MEND_GROUP.name}" && $3!=${MEND_GROUP.gid} { f=1 } END { exit !f }' ${group} 2>/dev/null && ` +
       `missing "group ${MEND_GROUP.name} is taken in this image"`,
-    ...people.map(
-      (person) =>
-        `awk -F: '$1=="${person.name}" && $3!=${person.uid} { f=1 } END { exit !f }' ${passwd} 2>/dev/null && ` +
-        `missing "user ${person.name} is taken in this image"`,
-    ),
+    // One loop over the people list (`name:uid[:…]` each), however many people: their names
+    // taken by another uid.
+    ...(options.listed === true || people.length === 0
+      ? []
+      : [
+          `mend_people=${shellQuote(people.map((person) => `${person.name}:${person.uid}`).join(" "))}`,
+        ]),
+    ...(!loop
+      ? []
+      : [
+          `for p in $mend_people; do n=\${p%%:*}; r=\${p#*:}; u=\${r%%:*}; ` +
+            `awk -F: -v n="$n" -v u="$u" '$1==n && $3!=u { f=1 } END { exit !f }' ${passwd} 2>/dev/null && ` +
+            `missing "user $n is taken in this image"; done`,
+        ]),
+    ...(options.noNewPrivileges === undefined
+      ? []
+      : [
+          `grep -q '^NoNewPrivs:[[:space:]]*1' ${shellQuote(options.noNewPrivileges)} 2>/dev/null && ` +
+            `missing "${NO_NEW_PRIVILEGES_MISSING}"`,
+        ]),
     `if t=$(mktemp -d ${shellQuote(`${aclDir}/.mend-acl.`)}XXXXXX 2>/dev/null); then ` +
       `setfacl -m d:g::rwx "$t" >/dev/null 2>&1 || missing "no ACLs on /workspace"; rm -rf "$t"; ` +
       `else missing "no ACLs on /workspace"; fi`,
@@ -551,7 +605,7 @@ export const ASIDE_FUNCTION =
  * `~/.mend/displaced/`, never deleted. A link they left anywhere on these paths is refused by
  * name, and could lead only where they can already write.
  */
-const personHomeAsPerson = (places: { readonly home: string; readonly saved: string }): string => {
+const personHomeAsPerson = (): string => {
   const dirs = PERSON_SAVED_STATE.filter((entry) => entry.kind === "directory");
   const all = PERSON_SAVED_STATE.map((entry) => entry.path);
   const savedDirs = [
@@ -561,12 +615,13 @@ const personHomeAsPerson = (places: { readonly home: string; readonly saved: str
     ...parentsOf(all),
     ...dirs.map((entry) => entry.path),
   ];
-  // Every path below is `$H` or `$S` and a fixed relative path with no space or quote, so the
-  // script stays small enough to ride inside another one's single quotes.
+  // Every path below is `$H` or `$S` (the home and the saved directory, its two arguments) and a
+  // fixed relative path with no space or quote, so the script is the same for everyone and rides
+  // once in a prepare, however many people it makes.
   return [
     `set -e`,
     `umask 077`,
-    `H=${shellQuote(places.home)}; S=${shellQuote(places.saved)}`,
+    `H=$1; S=$2`,
     ASIDE_FUNCTION,
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
     // A link anywhere on these paths is refused before anything is made through it.
@@ -626,82 +681,101 @@ const personHomeAsPerson = (places: { readonly home: string; readonly saved: str
  */
 export const personHomeScript = (
   person: LinuxIdentity,
-  options: {
-    readonly harnessHome: string;
+  options: PersonHomeOptions & {
     /** `R`; the passwd home, `/home/<name>`, unless a test names another. */
     readonly home?: string;
-    readonly tmpRoot?: string;
-    readonly runRoot?: string;
-    /** The skeleton a new home is made from; `/etc/skel` unless a test names another. */
-    readonly skel?: string;
   },
-): string => {
-  assertScriptSafe(person);
-  const home = options.home ?? linuxHomeOf(person);
-  const skel = options.skel ?? "/etc/skel";
-  const saved = savedDirOf(options.harnessHome, person.accountId);
-  const tmp = `${options.tmpRoot ?? "/tmp"}/u-${person.uid}`;
-  const run = `${options.runRoot ?? "/run/user"}/${person.uid}`;
-  const owner = `${person.uid}:${MEND_GROUP.gid}`;
+): string => `${personHomeFunction(options)}\n${personHomeCall(person, options.home)}`;
+
+/** Where `personHomeFunction` makes what is fixed per executor; the executor's own when absent. */
+export interface PersonHomeOptions {
+  readonly harnessHome: string;
+  readonly tmpRoot?: string;
+  readonly runRoot?: string;
+  /** The skeleton a new home is made from; `/etc/skel` unless a test names another. */
+  readonly skel?: string;
+}
+
+/**
+ * `personHomeScript`'s work as one shell function, `mend_person <name> <uid> <account id>
+ * <home>`, defined once however many people a prepare makes (review of mend#582, finding 2: a
+ * copy per person grew the exec past Linux's 128 KiB argument limit at about 13 people). The
+ * person-side part rides once too, in `as_person`, which takes the home and saved directory as
+ * its arguments.
+ */
+export const personHomeFunction = (options: PersonHomeOptions): string => {
   const q = shellQuote;
+  const skel = q(options.skel ?? "/etc/skel");
+  const people = `${options.harnessHome}/${PEOPLE_DIR}`;
+  const group = MEND_GROUP.gid;
   return [
+    `as_person=${q(personHomeAsPerson())}`,
+    `mend_person() {`,
     `set -e`,
+    `p_n=$1; p_u=$2; p_h=$4; p_p=${q(people)}; p_s="$p_p/$3"; p_o="$2:${group}"`,
+    `p_t=${q(options.tmpRoot ?? "/tmp")}"/u-$2"; p_r=${q(options.runRoot ?? "/run/user")}"/$2"`,
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
     `root=0; [ "$(id -u)" = 0 ] && root=1`,
     // The user, once: its uid is checked against the passwd entry whoever made it.
     `if [ "$root" = 1 ]; then ` +
-      `if id -u ${person.name} >/dev/null 2>&1; then ` +
-      `[ "$(id -u ${person.name})" = ${person.uid} ] || fail "user ${person.name} has another uid in this image"; ` +
+      `if id -u "$p_n" >/dev/null 2>&1; then ` +
+      `[ "$(id -u "$p_n")" = "$p_u" ] || fail "user $p_n has another uid in this image"; ` +
       `else ` +
-      `grep -q '^${MEND_GROUP.name}:' /etc/group || groupadd -g ${MEND_GROUP.gid} ${MEND_GROUP.name}; ` +
+      `grep -q '^${MEND_GROUP.name}:' /etc/group || groupadd -g ${group} ${MEND_GROUP.name}; ` +
       `sh_=$(awk -F: '$1=="root" { print $7 }' /etc/passwd); [ -n "$sh_" ] || sh_=/bin/sh; ` +
       `extra=; grep -q '^docker:' /etc/group && extra="-G docker"; ` +
       // The home is made before the user, already theirs by number, so Core's POST of their
       // logins (decision 5), which may run beside this script and make the home itself when it
       // gets there first, always finds a home owned by them, and useradd never races it to the
       // mkdir.
-      `mkdir -p ${q(home.slice(0, home.lastIndexOf("/")) || "/")}; ` +
-      `if [ ! -d ${q(home)} ]; then mkdir -m 0700 ${q(home)} 2>/dev/null || [ -d ${q(home)} ] || fail "the home of ${person.name} could not be made"; ` +
-      `chown ${owner} ${q(home)}; fi; ` +
-      `useradd -u ${person.uid} -g ${MEND_GROUP.name} $extra -m -k ${q(skel)} -d ${q(home)} -s "$sh_" ${person.name}; ` +
+      `mkdir -p "$(dirname "$p_h")"; ` +
+      `if [ ! -d "$p_h" ]; then mkdir -m 0700 "$p_h" 2>/dev/null || [ -d "$p_h" ] || fail "the home of $p_n could not be made"; ` +
+      `chown "$p_o" "$p_h"; fi; ` +
+      `useradd -u "$p_u" -g ${MEND_GROUP.name} $extra -m -k ${skel} -d "$p_h" -s "$sh_" "$p_n"; ` +
       // useradd copied no skeleton into a home that was already there, and what Core wrote
       // before the user existed may be root's: both become the user's, nothing already there
       // replaced. The home is new, so the walk is short.
       // `|| true`: a coreutils whose `-n` exits 1 when it skips (upstream 9.2) must not fail the
       // person.
-      `if [ -d ${q(skel)} ]; then cp -an ${q(`${skel}/.`)} ${q(home)}/ || true; fi; ` +
-      `chown -hR ${owner} ${q(home)}; ` +
+      `if [ -d ${skel} ]; then cp -an ${skel}/. "$p_h"/ || true; fi; ` +
+      `chown -hR "$p_o" "$p_h"; ` +
       `fi; fi`,
     // Root touches only what no person can replace: the home itself (under root's `/home`), the
     // private temporary and runtime directories (each checked not to be a link first: `/tmp` is
     // everyone's), the people root and `P` itself (under root's `people/`). Nothing below `P` or
     // the home: those are made as the person (below), so a link they left there leads root
     // nowhere (review of mend#566, P2-1).
-    `mkdir -p ${q(home)}`,
-    `[ "$root" = 1 ] && chown ${owner} ${q(home)} || true`,
-    `chmod 0700 ${q(home)}`,
+    `mkdir -p "$p_h"`,
+    `[ "$root" = 1 ] && chown "$p_o" "$p_h" || true`,
+    `chmod 0700 "$p_h"`,
     // One someone else made first (in `/tmp`, anyone can) is renamed out of the way, never
     // adopted with whatever it holds, and theirs is made new (review of mend#566, round 2 P3-2).
-    `for d in ${q(tmp)} ${q(run)}; do [ -L "$d" ] && fail "unexpected link: $d"; ` +
-      `if [ "$root" = 1 ] && [ -e "$d" ] && [ "$(stat -c %u "$d")" != ${person.uid} ]; then ` +
+    `for d in "$p_t" "$p_r"; do [ -L "$d" ] && fail "unexpected link: $d"; ` +
+      `if [ "$root" = 1 ] && [ -e "$d" ] && [ "$(stat -c %u "$d")" != "$p_u" ]; then ` +
       `mv -T -- "$d" "$d.mend-set-aside-$(date +%s%N 2>/dev/null || date +%s)" || fail "could not move aside: $d"; fi; ` +
       `mkdir -p "$(dirname "$d")"; [ -d "$d" ] || mkdir -m 0700 "$d"; [ -L "$d" ] && fail "unexpected link: $d"; ` +
-      `[ "$root" = 1 ] && chown -h ${owner} "$d"; chmod 0700 "$d"; done`,
+      `[ "$root" = 1 ] && chown -h "$p_o" "$d"; chmod 0700 "$d"; done`,
     // `P`: the people root is root's and traversable; each saved directory is its person's.
-    `[ -L ${q(`${options.harnessHome}/${PEOPLE_DIR}`)} ] && fail "unexpected link: ${options.harnessHome}/${PEOPLE_DIR}"`,
-    `[ -L ${q(saved)} ] && fail "unexpected link: ${saved}"`,
-    `mkdir -p ${q(`${options.harnessHome}/${PEOPLE_DIR}`)} ${q(saved)}`,
+    `[ -L "$p_p" ] && fail "unexpected link: $p_p"`,
+    `[ -L "$p_s" ] && fail "unexpected link: $p_s"`,
+    `mkdir -p "$p_p" "$p_s"`,
     // A directory a restore brought back as root (before sealantd's owner map) becomes the
     // person's; one already theirs is not walked. `-R` follows no link inside it.
-    `if [ "$root" = 1 ] && [ "$(stat -c %u ${q(saved)})" != ${person.uid} ]; then chown -hR ${owner} ${q(saved)}; fi`,
-    `chmod 0710 ${q(saved)}`,
-    `if [ "$root" = 1 ]; then chgrp ${MEND_GROUP.gid} ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}; fi`,
-    `chmod 0711 ${q(`${options.harnessHome}/${PEOPLE_DIR}`)}`,
+    `if [ "$root" = 1 ] && [ "$(stat -c %u "$p_s")" != "$p_u" ]; then chown -hR "$p_o" "$p_s"; fi`,
+    `chmod 0710 "$p_s"`,
+    `if [ "$root" = 1 ]; then chgrp ${group} "$p_p"; fi`,
+    `chmod 0711 "$p_p"`,
     // Everything else, as the person: `setpriv` (util-linux, which the person layout requires).
-    `as_person=${q(personHomeAsPerson({ home, saved }))}`,
-    `if [ "$root" = 1 ]; then (cd / && setpriv --reuid=${person.uid} --regid=${MEND_GROUP.gid} --clear-groups -- sh -c "$as_person") || exit 1; ` +
-      `else sh -c "$as_person" || exit 1; fi`,
+    `if [ "$root" = 1 ]; then (cd / && setpriv --reuid="$p_u" --regid=${group} --clear-groups -- sh -c "$as_person" sh "$p_h" "$p_s") || exit 1; ` +
+      `else sh -c "$as_person" sh "$p_h" "$p_s" || exit 1; fi`,
+    `}`,
   ].join("\n");
+};
+
+/** One person's call of `personHomeFunction`'s `mend_person`. */
+export const personHomeCall = (person: LinuxIdentity, home?: string): string => {
+  assertScriptSafe(person);
+  return `mend_person ${person.name} ${person.uid} ${person.accountId} ${shellQuote(home ?? linuxHomeOf(person))}`;
 };
 
 /**
@@ -734,7 +808,7 @@ export const identityPickupScript = (
     if (!SAFE_TICKET.test(ticket)) throw new Error("a pickup ticket is 43 base64url characters");
     return [ticket, person.name, home ?? linuxHomeOf(person), String(person.uid)];
   });
-  return `node -e ${shellQuote(IDENTITY_PROGRAM)} -- ${args.map(shellQuote).join(" ")}`;
+  return `${IDENTITY_COMMAND} ${args.map(shellQuote).join(" ")}`;
 };
 
 /**
@@ -894,6 +968,9 @@ next(0);
 `,
 ].join("\n");
 
+/** The identity pickup's node, before its words: `ticket name home uid` per person. */
+const IDENTITY_COMMAND = `node -e ${shellQuote(IDENTITY_PROGRAM)} --`;
+
 /**
  * What prepare runs in a person-layout executor beside the helper install, as root and in the
  * same exec (decision 1): the probe, then, only when nothing is missing, every person's user and
@@ -930,6 +1007,8 @@ export const personPrepareScript = (
       readonly aclDir?: string;
       /** The group the restored worktree must have; `mend`'s unless a test names another. */
       readonly worktreeGid?: number;
+      /** Where `NoNewPrivs` is read; `/proc/self/status` unless a test names another. */
+      readonly status?: string;
     };
   },
 ): string => {
@@ -938,31 +1017,36 @@ export const personPrepareScript = (
   const worktreeGid = places.worktreeGid ?? MEND_GROUP.gid;
   const marker = places.marker ?? REPAIR_MARKER;
   const markerDir = marker.slice(0, marker.lastIndexOf("/"));
-  const identities = people.map((entry) => entry.person);
-  const tickets = people.flatMap(({ person, ticket }) =>
-    ticket === undefined
-      ? []
-      : [
-          {
-            person,
-            ticket,
-            ...(places.homesRoot === undefined
-              ? {}
-              : { home: `${places.homesRoot}/${person.name}` }),
-          },
-        ],
-  );
+  // One data list, a word per person (`name:uid:account id:member:ticket`, `-` for no ticket), read
+  // by every loop below: the exec grows by about a hundred bytes per person, never by a copy of a
+  // script (review of mend#582, finding 2). Every field is checked safe, so a word never splits.
+  const list = people.map(({ person, ifSaved, ticket }) => {
+    assertScriptSafe(person);
+    if (ticket !== undefined && !SAFE_TICKET.test(ticket)) {
+      throw new Error("a pickup ticket is 43 base64url characters");
+    }
+    return `${person.name}:${person.uid}:${person.accountId}:${ifSaved ? 1 : 0}:${ticket ?? "-"}`;
+  });
+  const withTickets = people.some((entry) => entry.ticket !== undefined);
+  const peopleRoot = `${options.harnessHome}/${PEOPLE_DIR}`;
   const homeOptions = {
     harnessHome: options.harnessHome,
     ...(places.tmpRoot === undefined ? {} : { tmpRoot: places.tmpRoot }),
     ...(places.runRoot === undefined ? {} : { runRoot: places.runRoot }),
     ...(places.skel === undefined ? {} : { skel: places.skel }),
   };
+  /** Splits `$p`, one word of the list, into `$n $u $a $f $t`. */
+  const split =
+    `n=\${p%%:*}; r=\${p#*:}; u=\${r%%:*}; r=\${r#*:}; a=\${r%%:*}; r=\${r#*:}; ` +
+    `f=\${r%%:*}; t=\${r#*:}`;
   return [
-    layoutProbeScript(identities, {
+    `mend_people=${q(list.join(" "))}; mend_homes=${q(places.homesRoot ?? "/home")}`,
+    layoutProbeScript([], {
       ...(places.passwd === undefined ? {} : { passwd: places.passwd }),
       ...(places.group === undefined ? {} : { group: places.group }),
       ...(places.aclDir === undefined ? {} : { aclDir: places.aclDir }),
+      noNewPrivileges: places.status ?? "/proc/self/status",
+      listed: true,
     }),
     `layout_failed=0`,
     // The owner map applied: the restored worktree is group mend's. Nobody is made otherwise.
@@ -972,33 +1056,33 @@ export const personPrepareScript = (
       `printf '%s unowned %s\\n' ${LAYOUT_LINE} "the restored worktree's group is $wg, not ${MEND_GROUP.name} (${worktreeGid})"; ` +
       `layout_missing=1; fi; fi`,
     `if [ "$layout_missing" = 0 ]; then`,
+    // What makes one person, defined once.
+    personHomeFunction(homeOptions),
     // One person at a time, each in a subshell of its own: a failure names its person, and only
     // a person this prepare made is reported made. The subshell is a statement of its own, never
     // the left side of `&&` or `||`, where the shell would ignore its `set -e` and a failed
-    // `useradd` would pass for made.
-    ...people.map(({ person, ifSaved }) => {
-      const saved = q(savedDirOf(options.harnessHome, person.accountId));
-      return (
-        `if [ "$layout_failed" = 0 ]${ifSaved ? ` && [ -d ${saved} ]` : ""}; then\n` +
-        `person_out=$( ( ${personHomeScript(person, {
-          ...homeOptions,
-          ...(places.homesRoot === undefined ? {} : { home: `${places.homesRoot}/${person.name}` }),
-        }).replaceAll("\n", "\n  ")}\n) 2>&1 )\n` +
-        `if [ "$?" = 0 ]; then printf '%s made %s\\n' ${LAYOUT_LINE} ${person.name}; ` +
-        // A restored opencode database: scrubbed of in-app logins off the launch path, as its
-        // person (decision 8a), once prepare says whose it is.
-        `if [ -f ${q(`${savedDirOf(options.harnessHome, person.accountId)}/${OPENCODE_DATABASE}`)} ]; then ` +
-        `printf '%s opencode %s\\n' ${LAYOUT_LINE} ${person.name}; fi; ` +
-        // What went wrong, in the person's line (review of mend#552, P3-8): its last words.
-        `else printf '%s failed %s %s\\n' ${LAYOUT_LINE} ${person.name} "$(printf '%s' "$person_out" | tail -n 3 | tr '\\n' ' ')"; ` +
-        `layout_failed=1; fi\nfi`
-      );
-    }),
-    // Each person made gets their Mend token and git author through their own pickup.
-    ...(tickets.length === 0
+    // `useradd` would pass for made. A member (`1`) is made only when their saved directory came
+    // back with the restored head; nobody after a failure is made.
+    `for p in $mend_people; do ${split}`,
+    `[ "$layout_failed" = 0 ] || break`,
+    `if [ "$f" = 1 ] && [ ! -d ${q(peopleRoot)}"/$a" ]; then continue; fi`,
+    `person_out=$( ( mend_person "$n" "$u" "$a" "$mend_homes/$n" ) 2>&1 )`,
+    `if [ "$?" = 0 ]; then printf '%s made %s\\n' ${LAYOUT_LINE} "$n"; ` +
+      // A restored opencode database: scrubbed of in-app logins off the launch path, as its
+      // person (decision 8a), once prepare says whose it is.
+      `if [ -f ${q(peopleRoot)}"/$a/${OPENCODE_DATABASE}" ]; then printf '%s opencode %s\\n' ${LAYOUT_LINE} "$n"; fi; ` +
+      // What went wrong, in the person's line (review of mend#552, P3-8): its last words.
+      `else printf '%s failed %s %s\\n' ${LAYOUT_LINE} "$n" "$(printf '%s' "$person_out" | tail -n 3 | tr '\\n' ' ')"; ` +
+      `layout_failed=1; fi`,
+    `done`,
+    // Each person made gets their Mend token and git author through their own pickup: the words
+    // `identityPickupScript` passes, built from the list (a person not made is skipped there).
+    ...(!withTickets
       ? []
       : [
-          `if [ "$layout_failed" = 0 ]; then ${identityPickupScript(tickets)} || layout_failed=1; fi`,
+          `if [ "$layout_failed" = 0 ]; then set --; for p in $mend_people; do ${split}; ` +
+            `[ "$t" = - ] || set -- "$@" "$t" "$n" "$mend_homes/$n" "$u"; done; ` +
+            `${IDENTITY_COMMAND} "$@" || layout_failed=1; fi`,
         ]),
     `if [ "$layout_failed" = 0 ]; then`,
     `chmod 0755 /root 2>/dev/null || true`,

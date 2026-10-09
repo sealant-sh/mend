@@ -11918,30 +11918,62 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
-  it("keeps no standby while MEND_HARNESS_LAYOUT is person, the default: none would ever be claimed (docs/adr/0016, Delivery 21)", async () => {
+  it("under the default, keeps standbys where launches run shared, drains the ready ones once they would run per person, keeps a claimed one, and says why (docs/adr/0016, Delivery 21)", async () => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
     const logs: Array<string> = [];
+    // Core's report on the image, as it changes under the test: first a runtime that cannot run
+    // per person (Kubernetes' no-new-privileges), then one that can.
+    const coreSays: { person: boolean | null; missing: ReadonlyArray<string> } = {
+      person: false,
+      missing: ["sudo-no-new-privileges"],
+    };
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
           const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const hot = new Project({ ...project, hotSessions: 2 });
+          world.projects.set(project.id, hot);
+          world.recentOwners = ["user-fixture"];
           const engine = yield* SessionEngine;
+          // Every launch would run shared: the pool is kept, and nothing says otherwise.
           yield* engine.reconcileHotSessions(project.id);
           yield* until(
-            () => logs.some((line) => line.includes("warm skipped · per-person workspaces")),
-            "the skip",
+            () => pool.entries.filter((entry) => entry.status === "ready").length === 2,
+            "two standbys",
           );
-          expect(pool.entries).toHaveLength(0);
-          expect(created).toHaveLength(0);
+          expect(yield* engine.hotSessionsColdReason(hot, "user-fixture")).toBeNull();
+          expect(logs.some((line) => line.includes("warm skipped"))).toBe(false);
+          // One is claimed by a launch in flight.
+          const claimedId = pool.entries[0]?.id;
+          const first = pool.entries[0];
+          if (first === undefined || claimedId === undefined) throw new Error("no standby");
+          pool.entries[0] = new HotWorkspace({ ...first, status: "claimed" });
+          // Now a fresh worktree would run per person: no standby could be claimed.
+          coreSays.person = true;
+          coreSays.missing = [];
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => pool.entries.every((entry) => entry.status === "claimed"),
+            "the ready standby drained",
+          );
+          yield* Effect.sleep("50 millis");
+          expect(pool.entries.map((entry) => entry.id)).toEqual([claimedId]);
+          expect(created).toHaveLength(2);
+          expect(yield* engine.hotSessionsColdReason(hot, "user-fixture")).toBe(
+            "per-person workspaces launch cold",
+          );
+          // Said once, not on every pass.
+          yield* engine.reconcileHotSessions(project.id);
+          yield* Effect.sleep("50 millis");
+          expect(logs.filter((line) => line.includes("warm skipped")).length).toBe(1);
         }),
       {
         captured: memory,
         sealantLayer: sealantLaunchLayer(created),
         hotWorkspacesLayer: pool.layer,
-        harnessLayout: { flag: "person" },
+        harnessLayout: { flag: "person", platform: personPlatform([], coreSays) },
         logs,
       },
     );
@@ -23994,7 +24026,9 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
     // Users and homes are made in the executor's first exec, beside the helper install.
     const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
-    expect(first?.[2]).toContain(`useradd -u 40001 -g mend`);
+    expect(first?.[2]).toContain(`useradd -u "$p_u" -g mend`);
+    // One word per person in one list, never a copy of the script (review of mend#582).
+    expect(first?.[2]).toContain(`mend_people='${LAUNCHER}:40001:`);
     expect(first?.[2]).toContain("ln -sf /run/mend/bin/mend /usr/local/bin/mend");
     // Every agent of the launcher runs as them; a same-person join makes nobody and repairs nothing.
     const users = run.opened.map((options) => options.user?.name ?? null);
@@ -24028,8 +24062,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       expect.arrayContaining([LAUNCHER, JOINER]),
     );
     const home = other.execs.find(isPersonHome);
-    expect(home?.[2]).toContain(`useradd -u 40002 -g mend`);
-    expect(home?.[2]).toContain(JOINER);
+    expect(home?.[2]).toContain(`useradd -u "$p_u" -g mend`);
+    expect(home?.[2]).toContain(`mend_person ${JOINER} 40002 `);
   });
 
   it("Maria's join into Alice's executor runs on Maria's logins alone: one Core call, never Alice's home, released when she stops", async () => {
@@ -24067,8 +24101,12 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(joinExecs.length).toBeGreaterThan(0);
     for (const argv of joinExecs) expect(argv.join(" ")).not.toContain(aliceHome);
     const prepare = run.execs.find(isPrepare)?.[2] ?? "";
-    expect(prepare).toContain(`chmod 0700 '${aliceHome}'`);
-    expect(prepare).toContain(`chown -hR 40001:40000 '${aliceHome}'`);
+    // Her home is `/home/<name>` from the people list, uid 40001, made 0700 and hers.
+    expect(prepare).toContain(`mend_homes='/home'`);
+    expect(prepare).toContain(`'${aliceHome.slice("/home/".length)}:40001:`);
+    expect(prepare).toContain('chmod 0700 "$p_h"');
+    expect(prepare).toContain('p_o="$2:40000"');
+    expect(prepare).toContain('chown -hR "$p_o" "$p_h"');
     // Maria's stop releases her logins; Alice's create-time home stays while her executor lives.
     expect(calls.slice(marks["joined"], marks["joinerStopped"])).toEqual([`delete:${mariaHome}`]);
     expect(calls.some((call) => call === `delete:${aliceHome}`)).toBe(false);
@@ -24326,11 +24364,11 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     });
     const prepare = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
     // Prepare names her, made only if her saved directory came back.
-    expect(prepare?.[2]).toContain(`/workspace/harness-home/people/${MARIA}`);
+    expect(prepare?.[2]).toContain(`:${MARIA}:1:`);
     expect(run.joinPersonHomes).toBe(1);
     const home = run.execs.find(isPersonHome);
-    expect(home?.[2]).toContain(`useradd -u 40001 -g mend`);
-    expect(home?.[2]).toContain(JOINER);
+    expect(home?.[2]).toContain(`useradd -u "$p_u" -g mend`);
+    expect(home?.[2]).toContain(`mend_person ${JOINER} 40001 `);
     // Her agent starts only after that exec: no process is opened as a user nobody made.
     const homeAt = run.execs.indexOf(home ?? []);
     expect(homeAt).toBeGreaterThan(run.cold - 1);
@@ -24425,6 +24463,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       runtime: "docker",
       person: false,
       missing: ["no sudo"],
+      confirmed: true,
       observedAt: new Date(),
     });
     const run = await launchPersonOnce({
@@ -25364,6 +25403,17 @@ const recordingLandings = (asked: Array<string>): Layer.Layer<WorkspaceGitHooks>
 const identityArgsOf = (
   script: string,
 ): ReadonlyArray<{ readonly ticket: string; readonly name: string; readonly home: string }> => {
+  // A prepare's people list (`name:uid:account id:member:ticket` each, `personPrepareScript`).
+  const listed = /^mend_people='([^']*)'; mend_homes='([^']*)'/m.exec(script);
+  if (listed !== null) {
+    return (listed[1] ?? "")
+      .split(" ")
+      .filter((word) => word !== "")
+      .flatMap((word) => {
+        const [name = "", , , , ticket = "-"] = word.split(":");
+        return ticket === "-" ? [] : [{ ticket, name, home: `${listed[2] ?? ""}/${name}` }];
+      });
+  }
   const tail = [...script.matchAll(/ -- ((?:'[A-Za-z0-9_./-]+' ?){4,})/g)].at(-1)?.[1] ?? "";
   const words = [...tail.matchAll(/'([^']*)'/g)].map((match) => match[1] ?? "");
   const people: Array<{ ticket: string; name: string; home: string }> = [];
@@ -30116,8 +30166,9 @@ describe("pre-release executors and the migration of their shared home (docs/adr
 
   /**
    * A worktree whose launch ran `shared` with the flag on (its image not yet known, so prepare
-   * probed it and found it can run per person): its next launch would be `person`. The first
-   * prepare answers the probe, every later one makes the launcher.
+   * probed it and found it can run per person), on an image a per-person launch has confirmed
+   * since: its next launch would be `person`. The first prepare answers the probe, every later
+   * one makes the launcher.
    */
   const retiringWorld = async (
     run: (
@@ -30130,6 +30181,8 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       readonly saved?: () => boolean;
       readonly retireCheck?: () => string;
       readonly state?: HarnessLayoutsMemoryState;
+      /** Whether a per-person launch has confirmed the image since; yes unless a test says. */
+      readonly confirmed?: boolean;
       /** Holds a PTY's open on the platform until it completes (a slow start). */
       readonly aroundOpen?: () => Effect.Effect<void>;
     } = {},
@@ -30162,6 +30215,13 @@ describe("pre-release executors and the migration of their shared home (docs/adr
           );
           const launched = world.sessions.get(session.id);
           if (launched === undefined) return yield* Effect.die("no session");
+          // A per-person launch elsewhere has since confirmed the image: a shared probe's yes
+          // alone retires nothing (review of mend#582, finding 1).
+          if (options.confirmed !== false) {
+            for (const [key, record] of state.capabilities) {
+              state.capabilities.set(key, { ...record, confirmed: true });
+            }
+          }
           yield* run(engine, world, { session: launched, order });
         }),
       {
@@ -30268,6 +30328,29 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       expect([...run.state.worktrees.values()].map((worktree) => worktree.layout)).toContain(
         "person",
       );
+      expect([...run.state.retirements.values()]).toEqual([]);
+    },
+  );
+
+  it(
+    "retires nothing on a shared probe's yes alone: only an answer a per-person executor gave replaces a live executor (review of mend#582, finding 1)",
+    { timeout: 30_000 },
+    async () => {
+      const run = await retiringWorld(
+        (engine, _world, { session }) =>
+          Effect.gen(function* () {
+            yield* engine.sweepRetirements();
+            expect(yield* engine.workspaceRetirement(session.id, "user-fixture")).toBeNull();
+          }),
+        { confirmed: false },
+      );
+      expect(run.state.capabilities.get(IMAGE_KEY)).toMatchObject({
+        person: true,
+        confirmed: false,
+      });
+      expect(run.order).not.toContain("check");
+      expect(run.order).not.toContain("stop");
+      expect(run.created).toHaveLength(1);
       expect([...run.state.retirements.values()]).toEqual([]);
     },
   );

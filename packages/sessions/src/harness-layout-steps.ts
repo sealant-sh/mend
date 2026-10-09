@@ -28,12 +28,13 @@ import {
   workspaceProcessUserObstacleOf,
 } from "@mend/sealant";
 import type { Harness, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
-import { Clock, Config, Deferred, Duration, Effect, Layer, Schedule } from "effect";
+import { Clock, Config, Deferred, Duration, Effect, Layer, Schedule, Schema } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
 import { CONVERSATION_HOMES } from "./conversation-home.ts";
 import {
+  KUBERNETES_LAYOUT_OBSTACLE,
   type LayoutCapability,
   type PrepareFinding,
   UNKNOWN_CAPABILITY,
@@ -86,8 +87,14 @@ export const HarnessLayoutConfigLive: Layer.Layer<HarnessLayoutConfig, Config.Co
   Layer.effect(
     HarnessLayoutConfig,
     Effect.gen(function* () {
-      const flag = yield* Config.schema(HarnessLayoutSchema, "MEND_HARNESS_LAYOUT").pipe(
-        Config.withDefault(DEFAULT_HARNESS_LAYOUT),
+      // Unset or empty (a templated `MEND_HARNESS_LAYOUT=`) is the default; anything else but
+      // `person` or `shared` stops the server.
+      const flag = yield* Config.schema(
+        Schema.Literals([...HarnessLayoutSchema.literals, ""]),
+        "MEND_HARNESS_LAYOUT",
+      ).pipe(
+        Config.withDefault(""),
+        Config.map((value): HarnessLayout => (value === "" ? DEFAULT_HARNESS_LAYOUT : value)),
       );
       return { flag };
     }),
@@ -325,14 +332,16 @@ export interface HarnessLayoutSteps {
     readonly launcherHasDotfiles?: Effect.Effect<boolean>;
   }) => Effect.Effect<LaunchLayout, SealantPlatformError>;
   /**
-   * Whether any executor of the worktree can run the person layout: the flag on, or the worktree
+   * Whether any executor of the worktree can run the person layout: `MEND_HARNESS_LAYOUT=person` (the default), or the worktree
    * already person. One row read; with neither, a process start asks nothing else here.
    */
   readonly mayRunPerson: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
   /**
    * Whether the worktree's next launch would run `person` (decision 14), asked of a worktree whose
    * live executor is `shared`: the flag, the worktree's record and the image's capability, read as
-   * `decide` reads them, with nothing recorded. False with the flag off, with no read at all.
+   * `decide` reads them, with nothing recorded. True only on an answer a per-person executor gave
+   * (Mend's confirmed record), never on a prediction. False with `MEND_HARNESS_LAYOUT=shared`,
+   * with no read at all.
    */
   readonly nextLaunchPerson: (input: {
     readonly worktreeId: WorktreeId;
@@ -342,22 +351,45 @@ export interface HarnessLayoutSteps {
     readonly launcherHasDotfiles?: Effect.Effect<boolean>;
   }) => Effect.Effect<boolean>;
   /**
-   * Whether any worktree may run the person layout at all: the flag on, or a layout recorded (at
+   * Whether any worktree may run the person layout at all: `MEND_HARNESS_LAYOUT=person` (the default), or a layout recorded (at
    * startup, or since). Answered from memory. False means `mayRunPerson` answers false for every
    * worktree without a read, so a caller may skip the reads it would make to ask it.
    */
   readonly personPossible: () => boolean;
   /**
    * A worktree's layout is being recorded outside these steps (the operator's `harnessLayout`,
-   * noted before its write): from now on the steps read the store again. With the flag off and
+   * noted before its write): from now on the steps read the store again. With `MEND_HARNESS_LAYOUT=shared` and
    * nothing recorded, it is the only way a layout gets recorded (`decide` records nothing then),
    * so nothing polls the store for one (docs/adr/0016). Another engine over the same database (a
    * second Mend, or `MEND_MODE=api` beside `MEND_MODE=worker`) sees such a record only after it
    * restarts (deploy/aws/issues-for-real-ha.md, A6).
    */
   readonly noteRecorded: () => void;
-  /** Whether a standby (created before any worktree is known, as root) may serve the worktree. */
-  readonly standbyMayServe: (worktreeId: WorktreeId) => Effect.Effect<boolean>;
+  /**
+   * Whether a fresh worktree's launch would run `person` for this owner, image and harness, as
+   * `decide` would choose it: false with the flag `shared`, an image or runtime that cannot run
+   * per person, or dotfiles the platform cannot apply per person.
+   */
+  readonly freshLaunchPerson: (input: {
+    readonly ownerUserId: string;
+    readonly image: Effect.Effect<WorkspaceImage>;
+    readonly harness: Harness;
+    readonly launcherHasDotfiles?: Effect.Effect<boolean>;
+  }) => Effect.Effect<boolean>;
+  /**
+   * Whether a standby (created before any worktree is known, as root) may serve the worktree:
+   * one with no layout whose launch is predicted shared (`fresh`, read only with the flag
+   * `person`).
+   */
+  readonly standbyMayServe: (
+    worktreeId: WorktreeId,
+    fresh: {
+      readonly ownerUserId: string;
+      readonly image: Effect.Effect<WorkspaceImage>;
+      readonly harness: Harness;
+      readonly launcherHasDotfiles?: Effect.Effect<boolean>;
+    },
+  ) => Effect.Effect<boolean>;
   /**
    * One identity pickup ticket per person prepare may make (docs/adr/0016, decision 4), by
    * account: what prepare's exec redeems for each person it makes, their Mend token of this
@@ -562,7 +594,7 @@ const bounded = <K, V>() => {
  */
 export const ownerMapRefusalOf = (error: SealantPlatformError): string | null => {
   if (error.message.includes("is not available on Kubernetes")) {
-    return "Kubernetes workspaces cannot run per-person users: no one's sudo works there";
+    return KUBERNETES_LAYOUT_OBSTACLE;
   }
   if (error.message.includes("is not available in Cloudflare")) {
     return "Cloudflare sandboxes cannot run per-person users";
@@ -656,6 +688,12 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly sealant: Pick<SealantClientShape, "exec">;
   readonly harnessHome: string;
   /**
+   * Why no executor of this deployment can run per person, known without asking (a Kubernetes
+   * workspace runtime: no one's sudo works under `allowPrivilegeEscalation: false`); null when
+   * nothing rules it out. Its launches run shared and probe nothing.
+   */
+  readonly runtimeObstacle?: string | null;
+  /**
    * An identity pickup ticket (purpose `session-token`) for `person` in `launchId`, bound to them:
    * redeemed, it answers their Mend token, minted then, and their git author.
    */
@@ -682,7 +720,7 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly fork: (effect: Effect.Effect<void>) => Effect.Effect<void>;
   /**
    * Whether any launch or worktree had a layout recorded when this process started
-   * (`HarnessLayoutsRepo.anyRecorded`, one query). With the flag off and none, every layout
+   * (`HarnessLayoutsRepo.anyRecorded`, one query). With `MEND_HARNESS_LAYOUT=shared` and none, every layout
    * question answers `shared` with no store read, until something is recorded.
    */
   readonly anyRecorded: boolean;
@@ -762,6 +800,7 @@ export const makeHarnessLayoutSteps = (deps: {
     // read): a Core that cannot run a process as a person is refused here, before create.
     const obstacle =
       staticLayoutObstacle(image, { processUser: platform.processUser }) ??
+      deps.runtimeObstacle ??
       (yield* platform.controlPlaneObstacle);
     if (obstacle !== null) {
       return {
@@ -777,7 +816,12 @@ export const makeHarnessLayoutSteps = (deps: {
     const recorded = yield* repo.capabilityOf(imageKey, runtime);
     const capability: LayoutCapability =
       recorded !== null
-        ? { person: recorded.person, missing: recorded.missing, source: "mend" }
+        ? {
+            person: recorded.person,
+            missing: recorded.missing,
+            source: "mend",
+            confirmed: recorded.confirmed,
+          }
         : report.person !== null
           ? { person: report.person, missing: report.missing, source: "core" }
           : UNKNOWN_CAPABILITY;
@@ -796,7 +840,7 @@ export const makeHarnessLayoutSteps = (deps: {
 
   const decide: HarnessLayoutSteps["decide"] = Effect.fn("HarnessLayoutSteps.decide")(
     function* (input) {
-      // The flag off and nothing ever recorded: shared, as before, with no read at all.
+      // `MEND_HARNESS_LAYOUT=shared` and nothing ever recorded: shared, as before, with no read at all.
       if (nothingRecorded()) {
         layoutByLaunch.set(input.launchId, "shared");
         return SHARED_AS_BEFORE;
@@ -896,12 +940,16 @@ export const makeHarnessLayoutSteps = (deps: {
     return (yield* repo.worktreeLayout(worktreeId)).layout === "person";
   });
 
-  const nextLaunchPerson: HarnessLayoutSteps["nextLaunchPerson"] = Effect.fn(
-    "HarnessLayoutSteps.nextLaunchPerson",
-  )(function* (input) {
-    if (flag !== "person") return false;
-    const worktree = yield* repo.worktreeLayout(input.worktreeId);
-    if (worktree.requested === "shared") return false;
+  /** The layout `decide` would choose for this worktree record, read as `decide` reads it. */
+  const predictPerson = Effect.fn("HarnessLayoutSteps.predictPerson")(function* (
+    worktree: { readonly layout: "person" | null; readonly requested: HarnessLayout | null },
+    input: {
+      readonly ownerUserId: string;
+      readonly image: Effect.Effect<WorkspaceImage>;
+      readonly harness: Harness;
+      readonly launcherHasDotfiles?: Effect.Effect<boolean>;
+    },
+  ) {
     const { capability } = yield* capabilityFor(
       yield* input.image,
       input.ownerUserId,
@@ -921,20 +969,42 @@ export const makeHarnessLayoutSteps = (deps: {
       capability,
       dotfilesBlocked,
     });
-    return decision.kind === "launch" && decision.layout === "person";
+    return { person: decision.kind === "launch" && decision.layout === "person", capability };
+  });
+
+  const nextLaunchPerson: HarnessLayoutSteps["nextLaunchPerson"] = Effect.fn(
+    "HarnessLayoutSteps.nextLaunchPerson",
+  )(function* (input) {
+    if (flag !== "person") return false;
+    const worktree = yield* repo.worktreeLayout(input.worktreeId);
+    if (worktree.requested === "shared") return false;
+    const { person, capability } = yield* predictPerson(worktree, input);
+    // Retired only on an answer a per-person executor gave (its prepare, or Core's create): a
+    // shared probe's yes, or Core's build report, is a prediction, and replacing a live
+    // executor on one could replace it into a refusal (review of mend#582, finding 1).
+    return person && capability.source === "mend" && capability.confirmed === true;
+  });
+
+  const freshLaunchPerson: HarnessLayoutSteps["freshLaunchPerson"] = Effect.fn(
+    "HarnessLayoutSteps.freshLaunchPerson",
+  )(function* (input) {
+    if (flag !== "person") return false;
+    return (yield* predictPerson({ layout: null, requested: null }, input)).person;
   });
 
   // A standby boots before any worktree is known, as root and with no capture owner map; sealantd
   // reads that map only at boot (sealant#333), so a standby can never become a person executor.
-  // Every launch that could be person (the flag on, a person worktree, the operator's person)
-  // skips standbys and launches cold.
+  // It serves a worktree with no layout whose launch is predicted shared (an image or runtime
+  // that cannot run per person, the operator's `shared`); every launch that could be person (a
+  // person worktree, the operator's person, a fresh worktree predicted person) launches cold.
   const standbyMayServe: HarnessLayoutSteps["standbyMayServe"] = Effect.fn(
     "HarnessLayoutSteps.standbyMayServe",
-  )(function* (worktreeId) {
-    if (flag === "person") return false;
-    if (nothingRecorded()) return true;
+  )(function* (worktreeId, fresh) {
+    if (flag !== "person" && nothingRecorded()) return true;
     const worktree = yield* repo.worktreeLayout(worktreeId);
-    return worktree.layout === null && worktree.requested !== "person";
+    if (worktree.layout !== null || worktree.requested === "person") return false;
+    if (flag !== "person" || worktree.requested === "shared") return true;
+    return !(yield* freshLaunchPerson(fresh));
   });
 
   const settlePrepare: HarnessLayoutSteps["settlePrepare"] = Effect.fn(
@@ -945,11 +1015,14 @@ export const makeHarnessLayoutSteps = (deps: {
       if (!layout.probe) return { layout: "shared", fallback: null };
       const report = parseLayoutReport(input.stdout);
       if (report.probed && layout.imageKey !== null) {
+        // A prediction: a shared executor cannot see what only a per-person one meets, so it is
+        // recorded only where nothing is, and nothing is retired on it.
         yield* repo.recordCapability({
           imageKey: layout.imageKey,
           runtime: layout.runtime,
           person: report.missing.length === 0,
           missing: report.missing,
+          confirmed: false,
         });
       }
       yield* repo.confirm(input.launchId);
@@ -985,6 +1058,7 @@ export const makeHarnessLayoutSteps = (deps: {
         runtime: layout.runtime,
         person: true,
         missing: [],
+        confirmed: true,
       });
       yield* repo.confirmPerson(input.launchId, input.worktreeId);
       layoutByLaunch.set(input.launchId, "person");
@@ -1031,6 +1105,7 @@ export const makeHarnessLayoutSteps = (deps: {
         runtime: layout.runtime,
         person: false,
         missing,
+        confirmed: true,
       });
     }
     if (layout.onMissing === "refuse") {
@@ -1088,6 +1163,7 @@ export const makeHarnessLayoutSteps = (deps: {
       runtime: layout.runtime,
       person: false,
       missing: [lacks],
+      confirmed: true,
     });
     const refused = (message: string) =>
       new SealantPlatformError({
@@ -1695,6 +1771,7 @@ export const makeHarnessLayoutSteps = (deps: {
     noteRecorded: () => {
       layoutsRecorded = true;
     },
+    freshLaunchPerson,
     standbyMayServe,
     prepareTickets,
     prepareScript: layoutPrepareScript,

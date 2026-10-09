@@ -210,25 +210,53 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
         yield* repo.requestLayout(worktree, "shared");
         expect((yield* repo.worktreeLayout(worktree)).requested).toBe("shared");
         expect(yield* repo.capabilityOf("img", "docker")).toBeNull();
+        // A shared launch's probe: a first guess, recorded only where nothing is.
+        yield* repo.recordCapability({
+          imageKey: "img",
+          runtime: "docker",
+          person: true,
+          missing: [],
+          confirmed: false,
+        });
+        expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
+          person: true,
+          confirmed: false,
+        });
         yield* repo.recordCapability({
           imageKey: "img",
           runtime: "docker",
           person: false,
           missing: ["sudo", "uid 40001 is taken"],
+          confirmed: true,
         });
         expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
           person: false,
           missing: ["sudo", "uid 40001 is taken"],
+          confirmed: true,
+        });
+        // A probe's yes never replaces a recorded no (Delivery 21).
+        yield* repo.recordCapability({
+          imageKey: "img",
+          runtime: "docker",
+          person: true,
+          missing: [],
+          confirmed: false,
+        });
+        expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
+          person: false,
+          confirmed: true,
         });
         yield* repo.recordCapability({
           imageKey: "img",
           runtime: "docker",
           person: true,
           missing: [],
+          confirmed: true,
         });
         expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
           person: true,
           missing: [],
+          confirmed: true,
         });
         expect(yield* repo.capabilityOf("img", "microvm")).toBeNull();
       }),

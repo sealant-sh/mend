@@ -38,12 +38,15 @@ rationale:
 
 - With `MEND_HARNESS_LAYOUT=shared` and no layout recorded anywhere, Mend reads no layout from the
   store.
-- A server on the deprecated co-located store (`MEND_SESSION_STORE=colocated`) runs every session
-  with one shared home, whatever the setting.
+- The default holds for every server on the capture store, a loopback `mend server setup` on one
+  machine included: whoever runs there runs as their own user. A server on the deprecated co-located
+  store (`MEND_SESSION_STORE=colocated`) runs every session with one shared home, whatever the
+  setting.
 - A standby workspace for [Hot sessions](/guides/project-environment/#hot-sessions) starts as one
-  person before any worktree is known, so it never serves a per-person launch. While
-  `MEND_HARNESS_LAYOUT` is `person`, Mend keeps no standby, and every launch starts cold; the server
-  log says `warm skipped`.
+  person before any worktree is known, so it never serves a per-person launch. Mend keeps standbys
+  only for people whose new worktrees would run with a shared home (an image or runtime that cannot
+  run per person, or `MEND_HARNESS_LAYOUT=shared`). For anyone else it keeps none, their launches
+  start cold, and the Hot sessions card says `no standby · per-person workspaces launch cold`.
 
 ### What a workspace needs
 
@@ -57,12 +60,18 @@ runs with a shared home, and the session says why.
 - **The image** has a setuid `sudo`, `useradd`, `setfacl`, and no user or group with an id in
   40000–49999 other than the `mend` group (gid 40000). Sealant's managed images carry them.
 - **The runtime** supports ACLs on `/workspace` and does not impose no-new-privileges on the
-  executor, since `sudo` cannot work under it. On Kubernetes, `allowPrivilegeEscalation: false`
-  imposes it.
+  executor, since `sudo` cannot work under it. A per-person workspace checks this before it makes
+  anyone (`NoNewPrivs` in `/proc/self/status`), so a Docker host with `"no-new-privileges": true` in
+  `daemon.json` runs a new worktree with a shared home and says why.
+- **Kubernetes** imposes no-new-privileges (`allowPrivilegeEscalation: false`), so on a Kubernetes
+  workspace runtime every new worktree runs with a shared home and says why; nothing is probed.
 
 Core records what each image can do when it builds it, and Mend records what each executor's prepare
 found, per image digest and runtime. When neither knows yet, the launch runs with a shared home and
-its prepare records the answer, so the next launch on that image can run per person.
+its prepare checks the image, so the next launch on that image can run per person. That check runs
+in a shared workspace, which cannot see what only a per-person one meets, so it only fills in an
+unknown: it never replaces an answer Core or a per-person workspace gave. A workspace started before
+0.36 is replaced (below) only once a per-person workspace has run on that image.
 
 **nix images take one person.** Their passwd is in the read-only store, which cannot hold a setuid
 `sudo`. A custom image without `sudo`, `useradd` or ACL support also takes one person.

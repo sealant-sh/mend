@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runExec, startPickupChannel } from "../test/pickup-channel.ts";
 import { GIT_CREDENTIAL_HELPER_SCRIPT } from "./git-credential.ts";
 import {
+  NO_NEW_PRIVILEGES_MISSING,
   PERSON_SAVED_STATE,
   UNKNOWN_CAPABILITY,
   decideHarnessLayout,
@@ -29,6 +30,7 @@ import {
   worktreeRepairScript,
   type LayoutDecisionInput,
 } from "./harness-layout.ts";
+import { SESSION_SOCKET_MOUNT_PATH, workspaceScriptStaging } from "./session-socket.ts";
 
 const alice = new LinuxIdentity({ accountId: "alice-1", name: "m3kq7xj2a", uid: 40_012 });
 
@@ -219,11 +221,13 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
       source: "capability",
       probe: true,
     });
-    // Known not to: shared, said, and checked again (an image can be fixed).
+    // Known not to: shared, said, and never probed over: a shared executor cannot see what only
+    // a per-person one meets, so its yes would undo the no (review of mend#582, finding 1). A
+    // fixed image is a new digest, and so a new record.
     expect(decideHarnessLayout({ ...on, capability: noSudo })).toMatchObject({
       layout: "shared",
       source: "capability",
-      probe: true,
+      probe: false,
       reason:
         "this image cannot run per-person users (no sudo), so this workspace takes one person",
     });
@@ -373,12 +377,16 @@ const prepare = (
   people: Parameters<typeof personPrepareScript>[0],
   // The restored worktree's group, as sealantd's owner map leaves it: the test's own gid.
   worktreeGid: number = process.getgid?.() ?? 0,
+  // The executor's `/proc/self/status`, as its no-new-privileges reads: off unless a test says.
+  noNewPrivs: 0 | 1 = 0,
 ) => {
   const harnessHome = path.join(root.dir, "harness-home");
   fs.mkdirSync(harnessHome, { recursive: true });
   const homesRoot = path.join(root.dir, "home");
   const repo = path.join(root.dir, "repo");
   fs.mkdirSync(repo, { recursive: true });
+  const status = path.join(root.dir, "status");
+  fs.writeFileSync(status, `Name:\tsh\nNoNewPrivs:\t${noNewPrivs}\nSeccomp:\t0\n`);
   const script = personPrepareScript(people, {
     harnessHome,
     repo,
@@ -392,6 +400,7 @@ const prepare = (
       group: root.group,
       aclDir: root.dir,
       worktreeGid,
+      status,
     },
   });
   return { harnessHome, homesRoot, script };
@@ -473,6 +482,82 @@ describe("what prepare makes (decision 1)", () => {
     expect(report.ready).toBe(false);
     expect(run.stdout).not.toContain(maria.name);
     expect(run.status).toBe(3);
+  });
+});
+
+describe("a prepare under no-new-privileges (decision 1; review of mend#582, finding 3)", () => {
+  it("says the executor cannot run per person, and makes nobody", () => {
+    const root = fakeRoot();
+    const { harnessHome, script } = prepare(
+      root,
+      [{ person: alice, ifSaved: false }],
+      process.getgid?.() ?? 0,
+      1,
+    );
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.probed).toBe(true);
+    expect(report.missing).toEqual([NO_NEW_PRIVILEGES_MISSING]);
+    expect(report.made).toEqual([]);
+    expect(report.ready).toBe(false);
+    expect(fs.existsSync(path.join(harnessHome, "people", alice.accountId))).toBe(false);
+  });
+
+  it("is checked only in a per-person prepare: a shared launch's probe cannot see it", () => {
+    expect(layoutProbeScript([])).not.toContain("NoNewPrivs");
+    expect(
+      personPrepareScript([{ person: alice, ifSaved: false }], {
+        harnessHome: "/workspace/harness-home",
+        repo: "/workspace/repo",
+      }),
+    ).toContain("'/proc/self/status'");
+  });
+});
+
+/** The organization's members as Mend makes their identities, with a 43-character ticket each. */
+const members = (count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    person: new LinuxIdentity({
+      accountId: `acct${String(index).padStart(28, "0")}`,
+      name: `m${"abcdefgh".slice(0, 4)}${String.fromCharCode(97 + (index % 26))}${String.fromCharCode(97 + (Math.floor(index / 26) % 26))}a2`,
+      uid: 40_001 + index,
+    }),
+    ifSaved: index > 0,
+    ticket: "t".repeat(43),
+  }));
+const prepareOf = (count: number) =>
+  personPrepareScript(members(count), {
+    harnessHome: "/workspace/harness-home",
+    repo: "/workspace/repo",
+  });
+/** The one `sh -c` argument the launch sends: the helper install beside the layout script. */
+const execArgumentOf = (count: number) => {
+  const helper = `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH, { gitCredentialHelper: true })} && true`;
+  return Buffer.byteLength(`( ${helper} ); h=$?\n${prepareOf(count)}\nexit $h`);
+};
+
+describe("the size of a prepare's exec (review of mend#582, finding 2)", () => {
+  it("adds one call line per person, never a copy of the script", () => {
+    const one = Buffer.byteLength(prepareOf(1));
+    const perPerson = (Buffer.byteLength(prepareOf(201)) - one) / 200;
+    // A name, a uid, an account id and a ticket: about 100 bytes, not 6 KB.
+    expect(perPerson).toBeLessThan(128);
+  });
+
+  it("keeps 200 members far below Linux's 128 KiB limit for one argument", () => {
+    expect(Buffer.byteLength(prepareOf(200))).toBeLessThan(48 * 1024);
+    expect(execArgumentOf(200)).toBeLessThan(96 * 1024);
+  });
+
+  it("runs the same for many people: every one made, in order", () => {
+    const root = fakeRoot();
+    const people = members(12);
+    const { script } = prepare(
+      root,
+      people.map(({ person }) => ({ person, ifSaved: false })),
+    );
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.made).toEqual(people.map(({ person }) => person.name));
+    expect(report.ready).toBe(true);
   });
 });
 
@@ -1203,7 +1288,8 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     const root = fakeRoot();
     const { home, script } = homeOf(root);
     expect(root.run(script).status).toBe(0);
-    expect(script).toContain("setpriv --reuid=40012 --regid=40000 --clear-groups");
+    expect(script).toContain('setpriv --reuid="$p_u" --regid=40000 --clear-groups');
+    expect(script).toContain("mend_person m3kq7xj2a 40012 ");
     // Root gives away only the home itself: `.mend`, `.config` and the rest are the person's own.
     for (const line of root
       .log()

@@ -211,9 +211,10 @@ ends up kept beside it. Start your session in a worktree of your own to work fro
 ## A session that joins someone else's executor runs on their logins
 
 Applies to workspaces that share one home: new worktrees on a server where the operator set
-`MEND_HARNESS_LAYOUT=shared`, and worktrees whose image cannot run per person (nix, no `sudo`).
-Per-person workspaces are the default in 0.36: in a [per-person workspace](#per-person-workspaces)
-each person's processes run as their own user, on their own logins.
+`MEND_HARNESS_LAYOUT=shared`, and worktrees whose workspace cannot run per person (a nix image, no
+`sudo`, a Kubernetes workspace runtime, a Docker host with no-new-privileges). Per-person workspaces
+are the default in 0.36: in a [per-person workspace](#per-person-workspaces) each person's processes
+run as their own user, on their own logins.
 
 On a server a worktree has one executor, started by whoever launched first. Every process in it runs
 as root in that person's harness home, whoever started the process. A session you start in a

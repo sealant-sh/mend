@@ -3298,6 +3298,20 @@ const preReleaseExecutorsMigration = Effect.gen(function* () {
   yield* sql`INSERT INTO worktree_owner_gaps (worktree_id) SELECT id FROM worktrees`;
 });
 
+/**
+ * 0119 (docs/adr/0016, Delivery 21): whether an image's per-person answer was observed in a
+ * per-person executor (its prepare, or Core's create refusing the owner map). A shared launch's
+ * probe cannot see what only a per-person executor meets (no-new-privileges, the owner map), so
+ * its "yes" is a prediction: it never replaces an answer already recorded, and no executor is
+ * retired on it. Rows recorded before this release count as unconfirmed.
+ */
+const imageLayoutConfirmedMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE image_layout_capabilities
+      ADD COLUMN confirmed boolean NOT NULL DEFAULT false`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -3417,4 +3431,5 @@ export const migrations = {
   "0116_shared_control_ever": sharedControlEverMigration,
   "0117_conversation_homes": conversationHomesMigration,
   "0118_pre_release_executors": preReleaseExecutorsMigration,
+  "0119_image_layout_confirmed": imageLayoutConfirmedMigration,
 };
