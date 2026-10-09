@@ -26,6 +26,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as RcMap from "effect/RcMap";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -45,6 +46,7 @@ import {
 } from "./mend-client.ts";
 import type {
   MendActiveSession,
+  MendProcess,
   MendConversationWait,
   MendEventPointer,
   MendItem,
@@ -577,7 +579,14 @@ export const makePersonHub = (input: {
       launched.set(thread.sessionId, thread);
       sessionOfThread.set(thread.threadId, thread.sessionId);
     };
-    for (const thread of yield* state.listThreads().pipe(
+    // Only the person's own launches: a client thread id names a session for its launcher alone,
+    // and everyone else sees the session by its Mend id.
+    const launcher = input.viewer?.id ?? null;
+    for (const thread of yield* (
+      launcher === null
+        ? Effect.succeed<ReadonlyArray<LaunchedThread>>([])
+        : state.listThreads(launcher)
+    ).pipe(
       Effect.catch((error) =>
         Effect.logError("t3 gateway could not read its thread map", {
           cause: error.message,
@@ -589,11 +598,15 @@ export const makePersonHub = (input: {
     /** A t3code thread id as the Mend session it is. */
     const sessionIdOf = (threadId: string): string => sessionOfThread.get(threadId) ?? threadId;
     /**
-     * Sessions just created for a launch whose opening message is not queued yet: hidden until it
-     * is, so the client never sees the thread without its message (Mend's own pointer for the new
-     * session may arrive first).
+     * Sessions just created for a launch that no project read has shown yet: hidden, and their
+     * queue left alone, until one does, so the client never sees the thread without its message
+     * and the message is never failed as "gone" for a session not read yet.
      */
     const opening = new Set<string>();
+    /** A launched session a project read showed: it is a thread from here. */
+    const seen = (sessionIds: Iterable<string>) => {
+      for (const sessionId of sessionIds) opening.delete(sessionId);
+    };
     const queues = new Map<string, Queueing.ThreadQueue>();
     const handledCommands = new Set<string>();
 
@@ -1032,6 +1045,7 @@ export const makePersonHub = (input: {
         Effect.gen(function* () {
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
+          seen(entries.flatMap((entry) => entry.sessions.map((session) => session.id)));
           active = facts;
           applyRetirements(retired);
           conversations.clear();
@@ -1102,6 +1116,7 @@ export const makePersonHub = (input: {
               projects.delete(projectId);
             } else {
               projects.set(projectId, entry);
+              seen(entry.sessions.map((session) => session.id));
             }
             const kept = new Set(entry?.sessions.map((session) => session.id) ?? []);
             for (const session of previous?.sessions ?? []) {
@@ -1431,8 +1446,13 @@ export const makePersonHub = (input: {
      */
     const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
+        // A launched thread's options go with its launches only until Mend has recorded a protocol
+        // agent for it; from then on Mend reuses what that agent recorded (mend#493), as for every
+        // session, so a mode or model changed in Mend is never undone from here.
+        const options =
+          recordedAgentOf(sessionId) === null ? launched.get(sessionId)?.options : undefined;
         const answer = yield* mend
-          .launchProtocol(entry.token, sessionId, "", launched.get(sessionId)?.options)
+          .launchProtocol(entry.token, sessionId, "", options)
           .pipe(Effect.result);
         // Mend refuses a launch that races another (`session_starting`) or finds the agent up
         // (`session_active`); its 422 carries only words, so the session itself is read: launching
@@ -1471,6 +1491,15 @@ export const makePersonHub = (input: {
         if (projectId !== undefined) yield* requestRefresh(`project:${projectId}`);
       });
 
+    /** The protocol agent Mend has recorded for a session, or null when it has none yet. */
+    const recordedAgentOf = (sessionId: string): MendProcess | null => {
+      for (const entry of projects.values()) {
+        const agent = entry.annotations.get(sessionId)?.currentAgent ?? null;
+        if (agent !== null && agent.kind === "agent-protocol") return agent;
+      }
+      return null;
+    };
+
     /** Session id → when its queue is next looked at without a read (a retry, a deadline). */
     const wakes = new Map<string, number>();
     /**
@@ -1503,8 +1532,9 @@ export const makePersonHub = (input: {
       Effect.forEach(
         Array.from(queues),
         ([sessionId, queue]) => {
-          // Before the first full read, nothing is known of any session yet.
-          if (!loaded) return Effect.void;
+          // Before the first full read, nothing is known of any session yet; a launched session no
+          // read has shown yet is not gone either.
+          if (!loaded || opening.has(sessionId)) return Effect.void;
           const step = Queueing.nextStep(queue, viewOf(sessionId), performance.now(), timings);
           const work =
             step === null
@@ -1691,7 +1721,24 @@ export const makePersonHub = (input: {
         }),
       );
 
-    /** Launch commands under way, so a retry sent while the first runs is not a second thread. */
+    /** `wanted`, or `wanted-2`, `wanted-3`, …, whichever no worktree of the project has; null when unsure. */
+    const freeWorktreeName = (token: string, projectId: string, wanted: string) =>
+      mend.worktreeNames(token, projectId).pipe(
+        Effect.map((names) => {
+          const taken = new Set(names);
+          for (let suffix = 1; suffix <= 20; suffix++) {
+            const candidate = suffix === 1 ? wanted : `${wanted.slice(0, 60)}-${suffix}`;
+            if (!taken.has(candidate)) return candidate;
+          }
+          return null;
+        }),
+        Effect.orElseSucceed(() => null),
+      );
+
+    /**
+     * Launch commands and client thread ids under way, so a retry sent while the first runs is not
+     * a second thread, and two launches never take one thread id.
+     */
     const launching = new Set<string>();
 
     const launchReserved = (request: ThreadLaunch) =>
@@ -1733,12 +1780,18 @@ export const makePersonHub = (input: {
               : "No such worktree.",
           );
         }
+        // Mend joins an existing worktree of the same name: a new worktree takes a name no
+        // worktree of the project has, or none, and Mend names it.
+        const name =
+          target.kind === "new" && target.name !== null
+            ? yield* freeWorktreeName(token, request.projectId, target.name)
+            : null;
         const created = yield* asCommandRefusal(
           target.kind === "new"
             ? mend.createSession(token, request.projectId, {
                 harness: request.harness,
                 label: request.label,
-                name: target.name,
+                name,
                 base: target.base,
               })
             : mend.joinWorktree(token, target.worktreeId, {
@@ -1752,7 +1805,7 @@ export const makePersonHub = (input: {
           commandId: request.commandId,
           options: request.options,
         };
-        yield* state.recordThread(thread, Date.now()).pipe(
+        yield* state.recordThread(request.session.mendUser.id, thread, Date.now()).pipe(
           Effect.catch((error) =>
             Effect.logError("t3 gateway could not record a launched thread", {
               cause: error.message,
@@ -1769,8 +1822,7 @@ export const makePersonHub = (input: {
         // The opening message is queued like any other: the queue launches the session on what
         // the launch named and sends the message as an exact turn once the agent runs.
         const queueOpening = () => {
-          opening.delete(created.id);
-          if (message === null || !isKnownThread(created.id)) return;
+          if (message === null) return;
           const queue = queueOf(created.id);
           if (queue.entries.some((entry) => entry.messageId === message.messageId)) return;
           queue.entries.push(
@@ -1783,23 +1835,42 @@ export const makePersonHub = (input: {
             }),
           );
         };
-        // The session as Mend has it now, with its message, so the thread is in the shell before
-        // the launch answers: t3code's client opens a launched thread only once its shell shows it,
-        // with a message in it.
-        yield* refreshProject(request.projectId, queueOpening).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("t3 gateway could not read a launched thread's project", {
-              cause: error.message,
-            }),
-          ),
-        );
-        // After a project read that failed above, the thread still shows and its message queues.
-        yield* locked(
-          Effect.gen(function* () {
-            queueOpening();
-            yield* publishAll;
-          }),
-        );
+        // The message is queued at once, whatever the reads below find: it is never dropped.
+        // Until a project read shows the session, it stays hidden and its queue waits.
+        yield* locked(Effect.sync(queueOpening));
+        // The session as Mend has it now, so the thread is in the shell, with its message, before
+        // the launch answers: t3code's client opens a launched thread only once its shell shows it.
+        const read = (attempts: number) =>
+          refreshProject(request.projectId).pipe(
+            Effect.retry({ times: attempts, schedule: Schedule.spaced(OPENING_READ_RETRY) }),
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not read a launched thread's project", {
+                cause: error.message,
+              }),
+            ),
+          );
+        yield* read(OPENING_READ_ATTEMPTS);
+        if (yield* locked(Effect.sync(() => opening.has(created.id)))) {
+          // Mend not answering yet: keep reading in the background; the message waits for it.
+          yield* Effect.forkIn(
+            read(OPENING_READ_BACKGROUND_ATTEMPTS).pipe(
+              Effect.andThen(
+                locked(
+                  Effect.gen(function* () {
+                    if (!opening.has(created.id)) return;
+                    opening.delete(created.id);
+                    Queueing.failAll(
+                      queueOf(created.id),
+                      "Mend created the session, but the gateway could not read it to send this message.",
+                    );
+                    yield* publishAll;
+                  }),
+                ),
+              ),
+            ),
+            hubScope,
+          );
+        }
         if (message === null) {
           // Nothing to send: the agent comes up now, and a refusal is the launch's.
           yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
@@ -1820,12 +1891,23 @@ export const makePersonHub = (input: {
           const resumed: LaunchedThreadId = { threadId: known.threadId, resumed: true };
           return resumed;
         }
-        if (launching.has(request.commandId)) {
+        if (request.session.mendUser.id !== launcher) {
+          return yield* refused("A launch is the paired person's own.", true);
+        }
+        const reserved = [
+          `command:${request.commandId}`,
+          ...(request.threadId === null ? [] : [`thread:${request.threadId}`]),
+        ];
+        if (reserved.some((key) => launching.has(key))) {
           return yield* refused("This launch is already under way.");
         }
-        launching.add(request.commandId);
+        for (const key of reserved) launching.add(key);
         return yield* launchReserved(request).pipe(
-          Effect.ensuring(Effect.sync(() => launching.delete(request.commandId))),
+          Effect.ensuring(
+            Effect.sync(() => {
+              for (const key of reserved) launching.delete(key);
+            }),
+          ),
         );
       });
 
@@ -1964,6 +2046,11 @@ export class Projections extends Context.Service<
     readonly refuseDevice: (userId: string, deviceToken: string) => Effect.Effect<void>;
   }
 >()("@mend/t3-gateway/Projections") {}
+
+/** How a launch reads its new session's project before it answers, and then in the background. */
+const OPENING_READ_RETRY = "500 millis";
+const OPENING_READ_ATTEMPTS = 3;
+const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";

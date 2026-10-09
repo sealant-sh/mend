@@ -167,15 +167,15 @@ Mend's change diff has no such option. Per-turn diffs are phase 3.
 The gateway creates a Mend session as the person who paired, so Mend records them as its owner and
 origin `mend`, and its agent runs as them (docs/adr/0016).
 
-| t3code                                       | Mend                                                                                                                            |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `worktree { baseRef, branch? }`              | `POST /api/projects/:id/sessions`: a new worktree from `baseRef`, named from the branch's last segment when Mend takes the name |
-| `existing_worktree { worktreePath }`         | `POST /api/worktrees/:id/sessions`: the worktree of the project's session at that path                                          |
-| `root`                                       | Refused: every Mend session has a worktree of its own                                                                           |
-| model, reasoning effort, `fast` service tier | named on every launch of the thread: a first launch that brought no agent up leaves Mend nothing to reuse                       |
-| `full-access`, `approval-required`           | `bypass`, `ask`; other runtime modes are refused                                                                                |
-| `title` with `generateTitle`                 | no label: the thread is named from its first message, as any unnamed Mend session                                               |
-| `initialMessage`                             | queued like a follow-up; the run is `preparing` while the session launches                                                      |
+| t3code                                       | Mend                                                                                                                                                                                                       |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worktree { baseRef, branch? }`              | `POST /api/projects/:id/sessions`: a new worktree from `baseRef`, named from the branch's last segment, or `-2` to `-20` after it when the project has a worktree of that name; never an existing worktree |
+| `existing_worktree { worktreePath }`         | `POST /api/worktrees/:id/sessions`: the worktree of the project's session at that path                                                                                                                     |
+| `root`                                       | Refused: every Mend session has a worktree of its own                                                                                                                                                      |
+| model, reasoning effort, `fast` service tier | named on each launch until Mend has recorded the session's agent; after that Mend reuses what it recorded                                                                                                  |
+| `full-access`, `approval-required`           | `bypass`, `ask`; other runtime modes are refused                                                                                                                                                           |
+| `title` with `generateTitle`                 | no label: the thread is named from its first message, as any unnamed Mend session                                                                                                                          |
+| `initialMessage`                             | queued like a follow-up; the run is `preparing` while the session launches                                                                                                                                 |
 
 The opening message goes through the queue: the queue launches the session
 (`POST /api/sessions/:id/launch`, no prompt) and sends the message with
@@ -185,8 +185,13 @@ client's own thread id, with its message in it: t3code's client opens a launched
 its shell shows one. Images in the opening message are refused until the gateway sends images.
 
 A launched thread keeps the id its client gave it: `thread_ids` in the state file maps it to its
-session, and every method that names a thread takes that id. A retry of the same `commandId` is the
+session, for the person who launched it only, and every method that names a thread takes that id.
+Anyone else who can read the session sees it by its Mend id. A retry of the same `commandId` is the
 same thread (`resumed: true`), across a restart too.
+
+The opening message is kept from the moment the launch is accepted. When Mend does not answer the
+first reads of the new session, the gateway keeps reading in the background, and fails the message
+with a reason if it still cannot read the session after thirty seconds.
 
 ## Run it
 

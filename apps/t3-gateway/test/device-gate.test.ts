@@ -28,6 +28,7 @@ const revokedMend: DeviceCalls = {
   conversationWait: () => refused("waiting"),
   workspaceRetirement: () => refused("retirement"),
   changeDiff: () => refused("diff"),
+  worktreeNames: () => refused("worktrees"),
   createSession: () => refused("create"),
   joinWorktree: () => refused("join"),
   submitTurn: () => refused("submit"),
@@ -75,6 +76,7 @@ describe("the device gate", () => {
         conversationWait: gated.conversationWait("t-conversationWait", "s"),
         workspaceRetirement: gated.workspaceRetirement("t-workspaceRetirement", "s"),
         changeDiff: gated.changeDiff("t-changeDiff", "c"),
+        worktreeNames: gated.worktreeNames("t-worktreeNames", "p"),
         createSession: gated.createSession("t-createSession", "p", {
           harness: "codex",
           label: null,

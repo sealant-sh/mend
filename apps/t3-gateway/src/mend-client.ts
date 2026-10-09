@@ -22,6 +22,7 @@ import {
   MendSessionDetail,
   MendTurn,
   MendWorkspaceRetirement,
+  MendWorktreeListing,
 } from "./mend-workbench.ts";
 
 /**
@@ -252,6 +253,11 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
     ) => MendRead<MendWorkspaceRetirement | null>;
+    /** `GET /api/projects/:id/worktrees`: the names of the project's worktrees. */
+    readonly worktreeNames: (
+      deviceToken: string,
+      projectId: string,
+    ) => MendRead<ReadonlyArray<string>>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
     readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
     /**
@@ -320,6 +326,7 @@ const decodeWorkspaceRetirement = Schema.decodeUnknownEffect(
   Schema.NullOr(MendWorkspaceRetirement),
 );
 const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
+const decodeWorktreeListing = Schema.decodeUnknownEffect(MendWorktreeListing);
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
 const MendErrorBody = Schema.Struct({
@@ -556,6 +563,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeWorkspaceRetirement,
         );
 
+      const worktreeNames = (deviceToken: string, projectId: string) =>
+        read(
+          "GET /api/projects/:id/worktrees",
+          `/api/projects/${encodeURIComponent(projectId)}/worktrees`,
+          deviceToken,
+          decodeWorktreeListing,
+        ).pipe(Effect.map((listing) => listing.worktrees.map((worktree) => worktree.name)));
+
       const changeDiff = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/diff",
@@ -731,6 +746,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         conversationWait,
         workspaceRetirement,
         changeDiff,
+        worktreeNames,
         createSession,
         joinWorktree,
         submitTurn,

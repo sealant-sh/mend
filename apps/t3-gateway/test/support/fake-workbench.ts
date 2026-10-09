@@ -143,6 +143,8 @@ export class FakeWorkbench {
   requestsDelayMs = 0;
   /** `GET /api/projects` answers 502, as Mend does while it comes back from a restart. */
   projectsDown = false;
+  /** How many `GET /api/projects/:id` reads answer 502 before they answer again. */
+  projectDetailFailures = 0;
   /** Whether a launch brings the agent up at all (false: provisioning stalls, to fail it later). */
   launchBringsAgentUp = true;
   /** How long after a launch answers its new agent is running. */
@@ -482,6 +484,24 @@ export class FakeWorkbench {
       });
     }
 
+    if (method === "GET" && collection === "projects" && sub === "worktrees") {
+      if (this.projectView(id) === null) return json(404, { _tag: "NotFound" });
+      const names = new Set(
+        Array.from(this.sessions.values())
+          .filter((session) => session.projectId === id)
+          .map((session) => session.worktree),
+      );
+      return json(200, { worktrees: Array.from(names, (name) => ({ name })) });
+    }
+    if (
+      method === "GET" &&
+      collection === "projects" &&
+      sub === undefined &&
+      this.projectDetailFailures > 0
+    ) {
+      this.projectDetailFailures -= 1;
+      return json(502, { _tag: "BadGateway" });
+    }
     if (method === "GET" && collection === "projects" && sub === undefined) {
       const project = this.projectView(id);
       if (project === null) return json(404, { _tag: "NotFound" });

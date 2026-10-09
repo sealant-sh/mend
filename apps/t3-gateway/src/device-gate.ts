@@ -31,6 +31,7 @@ class GatedMendClient {
   readonly conversationWait: DeviceCalls["conversationWait"];
   readonly workspaceRetirement: DeviceCalls["workspaceRetirement"];
   readonly changeDiff: DeviceCalls["changeDiff"];
+  readonly worktreeNames: DeviceCalls["worktreeNames"];
   readonly createSession: DeviceCalls["createSession"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
   readonly submitTurn: DeviceCalls["submitTurn"];
@@ -52,6 +53,7 @@ class GatedMendClient {
     this.conversationWait = calls.conversationWait;
     this.workspaceRetirement = calls.workspaceRetirement;
     this.changeDiff = calls.changeDiff;
+    this.worktreeNames = calls.worktreeNames;
     this.createSession = calls.createSession;
     this.joinWorktree = calls.joinWorktree;
     this.submitTurn = calls.submitTurn;
@@ -99,6 +101,7 @@ export const gateDeviceCalls = (
     workspaceRetirement: (token, sessionId) =>
       guard(token, mend.workspaceRetirement(token, sessionId)),
     changeDiff: (token, changeId) => guard(token, mend.changeDiff(token, changeId)),
+    worktreeNames: (token, projectId) => guard(token, mend.worktreeNames(token, projectId)),
     submitTurn: (token, sessionId, input) => guard(token, mend.submitTurn(token, sessionId, input)),
     createSession: (token, projectId, input) =>
       guard(token, mend.createSession(token, projectId, input)),

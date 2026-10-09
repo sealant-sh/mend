@@ -24,7 +24,7 @@ import { planLaunch, worktreeNameOf } from "../src/launch.ts";
 import { openGatewayState } from "../src/state.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
-import { gatewayTestLayer } from "./support/gateway.ts";
+import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 
 /**
@@ -106,6 +106,116 @@ const shellThread =
     item.kind === "thread.updated" && item.thread.id === threadId && accept(item.thread);
 
 describe("orchestration.launchThread", () => {
+  it.live(
+    "keeps a launched thread's id the launcher's: everyone else sees the session by its Mend id",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          const { rpc } = yield* pairAndConnect(mend, "LAUNCHER");
+          const launched = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+            launchInput({ threadId: ThreadId.make("draft-mine") }),
+          );
+          assert.strictEqual(launched.threadId, "draft-mine");
+          const sessionId = Array.from(mend.workbench.sessions.keys())[0] ?? "";
+          const other = yield* pairAndConnect(mend, "TEAMMATE", {
+            id: "user-2",
+            name: "Bea",
+            email: "bea@example.com",
+          });
+          const shell = yield* feed(other.rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          const seen = yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          const ids = seen.snapshot.threads.map((thread) => String(thread.id));
+          assert.notInclude(ids, "draft-mine");
+          // The teammate cannot reach the session through the launcher's id.
+          const exit = yield* Effect.exit(
+            other.rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: ThreadId.make("draft-mine"),
+            }),
+          );
+          assert.isTrue(Exit.isFailure(exit));
+          void sessionId;
+        }),
+      ),
+  );
+
+  it.live("names a launch's options only until Mend has recorded the agent", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const { rpc } = yield* pairAndConnect(mend, "OPTIONS");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+          launchInput({ threadId: ThreadId.make("draft-options") }),
+        );
+        yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the first turn");
+        const sessionId = Array.from(mend.workbench.sessions.keys())[0] ?? "";
+        // The idle stop; a follow-up relaunches on what Mend recorded, naming nothing.
+        mend.workbench.stopAgent(sessionId);
+        const turn = mend.workbench.turns.get(sessionId)?.[0];
+        if (turn !== undefined) mend.workbench.setTurn(turn, "completed");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "message.dispatch",
+          commandId: commandId(),
+          createdBy: "user",
+          creationSource: "web",
+          threadId: ThreadId.make("draft-options"),
+          messageId: MessageId.make("message-later"),
+          text: "Pick it up",
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+        });
+        yield* eventually(() => mend.workbench.launches.length === 2, "the relaunch");
+        assert.deepStrictEqual(mend.workbench.launches[1]?.body, { mode: "protocol" });
+      }),
+    ),
+  );
+
+  it.live("never drops the opening message when Mend does not answer the first reads", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const { rpc } = yield* pairAndConnect(mend, "FLAKY");
+        // The hub has read Mend once; the reads after the create fail twice.
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        mend.workbench.projectDetailFailures = 2;
+        const launched = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+          launchInput({ threadId: ThreadId.make("draft-flaky") }),
+        );
+        assert.strictEqual(launched.projection.runs[0]?.userMessageId, "message-first");
+        yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the first turn");
+        assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          input: "Add a health check",
+        });
+      }),
+    ),
+  );
+
+  it.live("never joins an existing worktree by name: a new worktree takes a free name", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const { rpc } = yield* pairAndConnect(mend, "NAMES");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+          launchInput({ threadId: ThreadId.make("draft-one") }),
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+          launchInput({ threadId: ThreadId.make("draft-two") }),
+        );
+        const names = calls(mend, "POST", "/projects/project-1/sessions").map((call) =>
+          typeof call.body === "object" && call.body !== null && "name" in call.body
+            ? call.body.name
+            : undefined,
+        );
+        assert.deepStrictEqual(names, ["health-check", "health-check-2"]);
+      }),
+    ),
+  );
+
   it.live(
     "creates a session the person owns, under the client's thread id, and sends its first message once the agent runs",
     () =>
@@ -309,7 +419,7 @@ describe("orchestration.launchThread", () => {
       ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
 
       const threads = yield* Effect.scoped(
-        openGatewayState(statePath).pipe(Effect.flatMap((state) => state.listThreads())),
+        openGatewayState(statePath).pipe(Effect.flatMap((state) => state.listThreads(PERSON.id))),
       );
       assert.strictEqual(threads[0]?.threadId, "draft-kept");
       assert.strictEqual(threads[0]?.options.permissionMode, "ask");
