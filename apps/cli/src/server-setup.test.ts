@@ -150,9 +150,17 @@ const makeRuntime = (
           composeFile !== undefined && fs.readFileSync(composeFile, "utf8").includes("\n  garage:");
         // The edge overlay, when the generation has one, brings Caddy's image into the project.
         const withEdge = args.some((arg) => arg.endsWith("/compose.edge.yaml"));
+        // So does the mirrors overlay, with each mirror's image.
+        const mirrorsFile = args.find((arg) => arg.endsWith("/compose.mirrors.yaml"));
+        const mirrorImages =
+          mirrorsFile === undefined
+            ? []
+            : [...fs.readFileSync(mirrorsFile, "utf8").matchAll(/^ {4}image: (\S+)$/gm)].map(
+                (match) => `${match[1]}\n`,
+              );
         return {
           status: 0,
-          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n${withGarage ? "dxflrs/garage:v2.4.1\n" : ""}${withEdge ? "caddy:2.10-alpine\n" : ""}`,
+          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n${withGarage ? "dxflrs/garage:v2.4.1\n" : ""}${withEdge ? "caddy:2.10-alpine\n" : ""}${mirrorImages.join("")}`,
           stderr: "",
         };
       }
@@ -299,8 +307,10 @@ describe("mend server setup", () => {
           const identity = fs.readFileSync(path.join(configDir, "identity.env"));
           expect(fs.readFileSync(path.join(directory, "identity.env"))).toEqual(identity);
           expect(fs.readdirSync(directory).toSorted()).toEqual([
+            "compose.mirrors.yaml",
             "compose.yaml",
             "identity.env",
+            "npm-mirror.conf",
             "postgres-init.sh",
             "server.env",
             "server.json",
@@ -783,6 +793,7 @@ describe("mend server setup", () => {
         "MEND_GARAGE_RPC_SECRET",
         "MEND_GARAGE_VOLUME_NAME",
         "MEND_IMAGE_REPOSITORY",
+        "MEND_NPM_MIRROR_MAX_SIZE",
         "MEND_PORT",
         "MEND_POSTGRES_ADMIN_PASSWORD",
         "MEND_SSH_PORT",
@@ -795,6 +806,12 @@ describe("mend server setup", () => {
         "WORKSPACE_SSH_GATEWAY_TOKEN",
       ].toSorted(),
     );
+    expect(env.get("MEND_NPM_MIRROR_MAX_SIZE")).toBe("10g");
+    expect(
+      JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8"))
+        .mirrors,
+    ).toEqual({ npm: { maxSize: "10g" }, docker: {} });
+    expect(modeOf(activeFile(control.runtime.configDir, "npm-mirror.conf"))).toBe(0o644);
     expect(
       fs.readFileSync(activeFile(control.runtime.configDir, "compose.yaml"), "utf8"),
     ).toContain("mend-postgres");
@@ -805,6 +822,8 @@ describe("mend server setup", () => {
       "Starting Mend 0.23.0 containers; Docker waits up to 120s for them to report healthy",
       "Capture store bucket mend is laid out in Garage",
       "Mend 0.23.0 is reachable at http://localhost:3105",
+      "The npm mirror runs on this install. New sessions install npm packages through it, capped at 10g.",
+      "The Docker mirror runs on this install. New sessions' Docker daemons pull Docker Hub images through it (mend-docker-mirror).",
       "Open http://localhost:3105, create the first account, then run: mend login --url http://localhost:3105",
     ]);
 
@@ -821,6 +840,8 @@ describe("mend server setup", () => {
       activeFile(control.runtime.configDir, "server.env"),
       "-f",
       activeFile(control.runtime.configDir, "compose.yaml"),
+      "-f",
+      activeFile(control.runtime.configDir, "compose.mirrors.yaml"),
       "up",
       "-d",
       "--wait",
@@ -1530,8 +1551,10 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(generation).toSorted()).toEqual([
       "Caddyfile",
       "compose.edge.yaml",
+      "compose.mirrors.yaml",
       "compose.yaml",
       "identity.env",
+      "npm-mirror.conf",
       "postgres-init.sh",
       "server.env",
       "server.json",
@@ -1557,7 +1580,7 @@ describe("mend server setup", () => {
     expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
     expect(env.has("MEND_EXPOSURE")).toBe(false);
     const up = control.commands.slice(plainCommands).find(([, args]) => args.includes("up"));
-    expect(up?.[1].slice(0, 14)).toEqual([
+    expect(up?.[1].slice(0, 16)).toEqual([
       "--context",
       "default",
       "compose",
@@ -1571,6 +1594,8 @@ describe("mend server setup", () => {
       path.join(generation, "compose.yaml"),
       "-f",
       path.join(generation, "compose.edge.yaml"),
+      "-f",
+      path.join(generation, "compose.mirrors.yaml"),
       "up",
     ]);
     expect(up?.[1]).not.toContain("--remove-orphans");

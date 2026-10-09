@@ -10,6 +10,7 @@ import {
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
 import { composeOverlays } from "./server-edge.ts";
+import { mirrorServices } from "./server-mirrors.ts";
 import { serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
 import { withServerStore } from "./server-store.ts";
@@ -80,6 +81,8 @@ export interface ServerPlan {
   readonly dockerContext: string;
   /** The TLS edge's host when the install runs one; its container and volumes go with the rest. */
   readonly edgeHost: string | null;
+  /** The mirrors' Compose services the install runs; their containers and caches go too. */
+  readonly mirrors?: ReadonlyArray<string>;
   readonly generations: number;
   readonly backups: number;
 }
@@ -167,6 +170,7 @@ export const describeUninstall = async (
         appUrl: read.value.config.appUrl,
         dockerContext: read.value.config.dockerContext,
         edgeHost: read.value.config.edgeHost ?? null,
+        mirrors: mirrorServices(read.value.config.mirrors),
         generations: countEntries(path.join(configDir, "generations")),
         backups: countEntries(path.join(configDir, "backups")),
       };
@@ -199,8 +203,12 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
       `server   Mend ${version}${appUrl === "" ? "" : ` at ${appUrl}`}${dockerContext === "" ? "" : ` · docker context ${dockerContext}`}`,
     );
     if (dockerContext !== "") {
-      const edge = edgeHost === null ? [] : ["edge"];
-      const edgeVolumes = edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"];
+      const mirrors = plan.server.mirrors ?? [];
+      const edge = [...(edgeHost === null ? [] : ["edge"]), ...mirrors];
+      const edgeVolumes = [
+        ...(edgeHost === null ? [] : ["mend-edge-data", "mend-edge-config"]),
+        ...mirrors.map((service) => `mend-${service}`),
+      ];
       lines.push(
         `         containers ${["mend", "postgres", "garage", ...edge].join(", ")} · volumes ${[MEND_DOCKER_NAMESPACE_WITH_GARAGE.store, ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE), "mend-config", "mend-ssh", "mend-postgres", ...edgeVolumes].join(", ")} · image ghcr.io/sealant-sh/mend:${version}${edgeHost === null ? "" : ` · the edge for ${edgeHost}`}`,
       );
@@ -279,7 +287,9 @@ const removeServer = async (
             `docker compose down failed: ${(down.error ?? down.stderr.trim()) || "no output"}. Containers and files are retained; fix Docker and run mend uninstall again.`,
           );
         }
-        server.writeLine("removed containers mend, postgres, garage and the Compose-owned volumes");
+        server.writeLine(
+          `removed containers ${["mend", "postgres", "garage", ...mirrorServices(installation.config.mirrors)].join(", ")} and the Compose-owned volumes`,
+        );
 
         // The external volumes are the data. Only this installation's own label allows their
         // removal; anything else is somebody's data and stays, named. A generation from before

@@ -1,0 +1,54 @@
+# Written by mend server setup: the package and image mirrors this install runs, on the Compose
+# network only (no host port). Values come from server.env. Sessions install npm packages and
+# pull Docker Hub images through them; a mirror that is down sends them to the registry itself.
+services:
+  mend:
+    environment:
+      MEND_NPM_MIRROR_URL: http://npm-mirror:4873/
+      SEALANT_DOCKER_REGISTRY_MIRRORS: http://docker-mirror:5000
+      SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: mend-docker-mirror
+
+  # Read-through cache of registry.npmjs.org (npm-mirror.conf). Size-capped; the least recently
+  # used tarballs go first. GET and HEAD only, no credential forwarded.
+  npm-mirror:
+    image: nginx:1.29-alpine
+    hostname: npm-mirror
+    restart: unless-stopped
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+      NPM_MIRROR_MAX_SIZE: ${MEND_NPM_MIRROR_MAX_SIZE:?set MEND_NPM_MIRROR_MAX_SIZE in server.env}
+    volumes:
+      - ./npm-mirror.conf:/etc/nginx/templates/default.conf.template:ro
+      - mend-npm-mirror:/var/cache/npm-mirror
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # Pull-through cache of Docker Hub. Each layer and manifest is kept for seven days after it
+  # was fetched. The metrics listener stays on the container's loopback.
+  docker-mirror:
+    image: registry:3.1
+    container_name: mend-docker-mirror
+    hostname: docker-mirror
+    restart: unless-stopped
+    environment:
+      REGISTRY_PROXY_REMOTEURL: https://registry-1.docker.io
+      REGISTRY_PROXY_TTL: 168h
+      REGISTRY_LOG_LEVEL: warn
+      REGISTRY_LOG_ACCESSLOG_DISABLED: "true"
+      REGISTRY_HTTP_DEBUG_ADDR: 127.0.0.1:5001
+      REGISTRY_HTTP_DEBUG_PROMETHEUS_ENABLED: "true"
+    volumes:
+      - mend-docker-mirror:/var/lib/registry
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  mend-npm-mirror:
+  mend-docker-mirror:

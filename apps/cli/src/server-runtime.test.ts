@@ -24,14 +24,14 @@ afterEach(() => {
 
 const fixtureAsset = (file: string): string =>
   fs.readFileSync(new URL(`../test-fixtures/docker/${file}`, import.meta.url), "utf8");
-/** What a daemon-less fake answers: the bundle's three images, and the Garage init after `up`. */
+/** What a daemon-less fake answers: the bundle's images and its overlays', and the Garage init after `up`. */
 const fakeDocker = (args: ReadonlyArray<string>): string => {
   if (args[0] === "context") return "unix:///var/run/docker.sock";
   if (args[2] === "info") return "Docker Engine - Community";
   if (args.includes("image")) return "0.23.0";
   if (!args.includes("compose")) return "1.45 1.47";
   if (args.includes("config"))
-    return `ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\n${args.some((arg) => arg.endsWith("/compose.edge.yaml")) ? "caddy:2.10-alpine\n" : ""}`;
+    return `ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\n${args.some((arg) => arg.endsWith("/compose.edge.yaml")) ? "caddy:2.10-alpine\n" : ""}${args.some((arg) => arg.endsWith("/compose.mirrors.yaml")) ? "nginx:1.29-alpine\nregistry:3.1\n" : ""}`;
   if (args.includes("exec") && args.includes("garage")) {
     const sub = args.slice(args.indexOf("/etc/garage.toml") + 1);
     if (sub[0] === "status") return "==== HEALTHY NODES ====\n0123456789abcdef  garage\n";
@@ -392,6 +392,8 @@ describe.skipIf(!composeAvailable)(
                     "server.json",
                     "server.env",
                     "compose.yaml",
+                    "compose.mirrors.yaml",
+                    "npm-mirror.conf",
                     "postgres-init.sh",
                   ].toSorted(),
                 );
@@ -636,9 +638,11 @@ describe.skipIf(!composeAvailable)(
       expect(fs.readdirSync(directory).toSorted()).toEqual([
         "Caddyfile",
         "compose.edge.yaml",
+        "compose.mirrors.yaml",
         "compose.posture.yaml",
         "compose.yaml",
         "identity.env",
+        "npm-mirror.conf",
         "postgres-init.sh",
         "server.env",
         "server.json",
@@ -648,7 +652,7 @@ describe.skipIf(!composeAvailable)(
           {
             directory,
             dockerContext: "default",
-            overlays: ["compose.edge.yaml", "compose.posture.yaml"],
+            overlays: ["compose.edge.yaml", "compose.posture.yaml", "compose.mirrors.yaml"],
           },
           ["config", "--format", "json"],
         ),
@@ -669,6 +673,9 @@ describe.skipIf(!composeAvailable)(
               MEND_URL_BEARERS: "refuse",
               MEND_TRUSTED_PROXIES: "192.168.250.0/28",
               MEND_EXECUTOR_NETWORK: "private",
+              MEND_NPM_MIRROR_URL: "http://npm-mirror:4873/",
+              SEALANT_DOCKER_REGISTRY_MIRRORS: "http://docker-mirror:5000",
+              SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER: "mend-docker-mirror",
             },
             networks: { default: null, edge: null },
             ports: [
@@ -693,6 +700,28 @@ describe.skipIf(!composeAvailable)(
           },
         },
         networks: { edge: { ipam: { config: [{ subnet: "192.168.250.0/28" }] } } },
+      });
+      // The mirrors, beside the rest on the project network, with their values from server.env.
+      expect(compose).toMatchObject({
+        services: {
+          "npm-mirror": {
+            image: "nginx:1.29-alpine",
+            environment: { NPM_MIRROR_MAX_SIZE: "10g" },
+            volumes: expect.arrayContaining([
+              expect.objectContaining({
+                type: "bind",
+                source: path.join(directory, "npm-mirror.conf"),
+                target: "/etc/nginx/templates/default.conf.template",
+                read_only: true,
+              }),
+            ]),
+          },
+          "docker-mirror": {
+            image: "registry:3.1",
+            container_name: "mend-docker-mirror",
+            environment: { REGISTRY_PROXY_REMOTEURL: "https://registry-1.docker.io" },
+          },
+        },
       });
       if (typeof compose !== "object" || compose === null || !("services" in compose))
         throw new Error("no services rendered");
