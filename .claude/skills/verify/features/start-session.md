@@ -212,7 +212,8 @@ Preconditions:
 - **Mobile: send the first message.** Run
   `await page.getByRole("textbox", { name: "Message the session…" }).fill("List the files and change nothing.")`
   and tap `Send` (`page.getByText("Send", { exact: true })`). The status word moves to `running`.
-- **Mobile: Now.** Tap the tab `Now` (`page.getByRole("tab", { name: "Now" })`). The meta line reads
+- **Mobile: Now.** Run `await page.goto("<mobile-web>/")` to return to the tabs, then tap `Now`
+  (`page.getByRole("tab", { name: "Now" })`). The meta line reads
   `nothing waiting on you · <n> live` (or `<n> waiting · <n> live`), and the session is listed under
   `Live` by its label, or `session <id8>` before it has one.
 - **Mobile: resume.** After `mend stop <id8>` on that session, open `/session/<id>`. The header has
@@ -281,9 +282,9 @@ Preconditions:
   recorded`) though the session joins the selected worktree (`deriveHarnesses(null)`,
   `apps/cli/src/dashboard-model.ts:436`, used at `apps/cli/src/dashboard.tsx:814`). That copy is a
   finding.
-- The dashboard hides a settled session that never had a conversation, such as a stopped `shell`
-  session (`isDeadEnd`, `apps/cli/src/dashboard-model.ts:345`); `mend sessions --all` still lists
-  it. Resume an agent session, not a shell, in the TUI.
+- The dashboard hides a settled session only when `hasTranscript === false`
+  (`isDeadEnd`, `apps/cli/src/dashboard-model.ts:345`); `mend sessions --all` still lists it.
+  Sessions whose transcript state is unknown and shell sessions remain listed.
 - On the desktop, `New session in <project>` names the `+` button, the launcher dialog and the
   composer form inside it (the inline composer form too). Ask for the role.
 - The desktop composer's fields have no labels: the worktree name and the prompt are named by their

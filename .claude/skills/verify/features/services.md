@@ -115,12 +115,15 @@ Preconditions:
   `observed <when>`. Its actions include `Logs`, `Restart` and `Stop`, plus `Open` and
   `Copy endpoint` when this desktop can reach the address, or `Copy command` (the
   `mend service connect` line) when it cannot.
-- **Desktop: logs.** Run `await sheet.getByRole("button", { name: "Logs" }).first().click()`. A
-  dialog named `web logs` opens (`page.getByRole("dialog", { name: "web logs" })`), titled
+- **Desktop: logs.** Scope to the article containing the exact Service name `web`, then run
+  `await sheet.getByRole("article").filter({ has: page.getByText("web", { exact: true }) }).getByRole("button", { name: "Logs", exact: true }).click()`.
+  A dialog named `web logs` opens (`page.getByRole("dialog", { name: "web logs" })`), titled
   `web · logs` with `read-only · sequence-addressed`, the recorded output, `Open as tab` and
-  `Close`. `Open as tab` closes it and opens a tab headed `web · logs · read-only · <branch>` with
-  `close`.
-- **Desktop: run or adopt.** In the sheet's `One-off` form, run
+  `Close`. `Open as tab` closes the dialog and the Services sheet, and opens a tab headed
+  `web · logs · read-only · <branch>` with `close`.
+- **Desktop: run or adopt.** Click the session's sidebar row again to return to its session tab,
+  then run `await page.getByRole("button", { name: /^Services \d+$/ }).click()` to reopen
+  `Session Services`. In the sheet's `One-off` form, run
   `await sheet.getByRole("textbox", { name: "command · leave empty to adopt a listening port" }).fill("<serve-cmd with port 8002>")`,
   `await sheet.getByRole("textbox", { name: "port", exact: true }).fill("8002")`,
   `await sheet.getByRole("textbox", { name: "name", exact: true }).fill("web3")`, choose `http` in

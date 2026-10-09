@@ -162,8 +162,10 @@ Preconditions:
   `<sha A> → <sha B>` line follows. Before that, a moved worktree shows
   `Worktree changed since this Review snapshot. The pinned patch below has not moved.`
 - **Desktop: checkpoints.** Back on the workbench (`← Workbench`), a live session's header has
-  `mark checkpoint`; it reads `marking…`. An ended session's tab lists its checkpoints under the
-  record as buttons named `Replay from checkpoint <i>, seq <seq>` in the group `Replay checkpoints`.
+  `mark checkpoint`; it reads `marking…`. A settled PTY session with recorded output, showing
+  terminal replay, lists its checkpoints under the record as buttons named
+  `Replay from checkpoint <i>, seq <seq>` in the group `Replay checkpoints`. Conversation sessions
+  have no checkpoint scrubber.
 - **Mobile: open the review.** Run `await page.goto("<mobile-web>/session/<id>")`, then
   `await page.getByRole("button", { name: "Review the change" }).click()`. The URL becomes
   `/review/<change id>`. The screen reads `review`, the branch, and
@@ -188,6 +190,11 @@ Preconditions:
   (`page.getByRole("button", { name: "Diff" })`). The URL becomes `/diff/<change id>`, the heading
   `Diff` is visible, and the meta line reads
   `checkpoint <a> → <b> · <sha, 7 characters> · 1 file · +1 −0`.
+- **VS Code.** `not drivable yet`: no VS Code driver in the verify stack. `Mend: Open in Mend` on
+  the session opens `<web>/sessions/<id>` in a browser, where `Review the change` leads to
+  `/changes/<change id>`.
+- **Slack.** `not drivable yet`: no Slack driver in the verify stack. The end-of-session reply's
+  `Review in Mend` button opens `<web>/changes/<change id>` in a browser.
 - **Proof.** Capture the review with both comments: `await page.locator("body").ariaSnapshot()` and
   `await page.screenshot({ path })` with the heading and the `<sha A> → <sha B>` line visible. Keep
   the `mend sessions --json` output, `tmux capture-pane -p` of the TUI review screen after each key,
@@ -254,8 +261,9 @@ Preconditions:
   1512x982.
 - The desktop keeps one open key per change in `localStorage`, so reopening `review the change`
   returns to the same slice until `New snapshot`.
-- The desktop's comment composer and instruction fields are named by placeholders only
-  (`Describe what you observed or want changed.`). That is a finding.
+- The desktop's comment composer has no label; its name falls back to
+  `Describe what you observed or want changed.`. The instruction field has no label either; its
+  name falls back to `Select comments, then assemble an editable instruction.`. Those are findings.
 - The desktop Pinned Review offers no `Read this change`, `Suggest fixes` or description compose,
   and lists only people's comments written on a slice with its own diff digest: Mend's drafts are
   filtered out, so they cannot be accepted there (`commentsForComparison`,
