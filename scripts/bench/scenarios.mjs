@@ -22,6 +22,7 @@ import {
   builtWithin,
   classifySavedFiles,
   compactedBetween,
+  compactionsOf,
   lastRequestTokensOf,
   LAST_REQUEST_SH,
   deliveryWindow,
@@ -45,6 +46,7 @@ import {
   personVerdictsSkipped,
   PROTOCOL_HARNESSES,
   restoreOf,
+  roundConversationOf,
   SAVED_SIZES_SH,
   sshRemoteOf,
   stagedBytesOf,
@@ -910,15 +912,24 @@ const launchTurn = async (ctx, sessionId, timeoutMs = 900_000) => {
 
 /**
  * The size of the session's conversation now: the prompt of its last model request, in tokens,
- * read as the owner from their newest transcript in the executor (`LAST_REQUEST_SH`). Null without
- * the host, or when the transcript does not say.
+ * and the compactions its transcript records, read as the owner in the executor from the
+ * transcript of the conversation the session's agent holds (its `providerSessionId`, which the
+ * protocol host records when the harness says it is ready), wherever it is (`LAST_REQUEST_SH`):
+ * never another, older conversation's. `{ tokens: null }` without the host, before the harness
+ * named its conversation, or when the transcript does not say.
  */
-const conversationTokens = async (ctx, session, container) => {
-  if (ctx.host === null || container === null) return null;
+const conversationSize = async (ctx, session, container) => {
+  if (ctx.host === null || container === null) return { tokens: null, compactions: null };
+  const detail = await ctx.api.get(`/sessions/${session.id}`).catch(() => null);
+  const conversation =
+    detail?.currentAgent?.providerSessionId ?? detail?.session?.providerSessionId ?? null;
+  if (conversation === null || !/^[\w-]+$/.test(conversation)) {
+    return { tokens: null, compactions: null };
+  }
   const out = await ctx.host
-    .shell(asPersonCommand(container, session.ownerUserId, LAST_REQUEST_SH))
+    .shell(asPersonCommand(container, session.ownerUserId, LAST_REQUEST_SH, [conversation]))
     .catch(() => "");
-  return lastRequestTokensOf(out);
+  return { tokens: lastRequestTokensOf(out), compactions: compactionsOf(out) };
 };
 
 /**
@@ -927,11 +938,13 @@ const conversationTokens = async (ctx, session, container) => {
  * named by a fixed command (never "the largest", which on Mend's own repository is over a megabyte
  * and overruns every window), until the last request's prompt reaches `--handover-context-tokens`
  * (default 45,000) or `--handover-seed-turns` (default 8) have run. The size recorded is the last
- * request's prompt, not a turn's summed usage. Without the host it cannot be read: the turns run
- * to the cap and the size is not run. The size, or null.
+ * request's prompt in this session's own transcript, not a turn's summed usage. With the host, a
+ * size that cannot be read fails the seed (and the hand-over on this harness), so the rounds never
+ * run on a conversation of unknown size; without it the turns run to the cap and the size is not
+ * run. The size and compaction count after the seed.
  */
 const seedConversation = async (ctx, session, harness, container) => {
-  let tokens = null;
+  let size = { tokens: null, compactions: null };
   let turns = 0;
   for (let k = 1; k <= ctx.opts.handoverSeedTurns; k += 1) {
     const { value: submitted } = await ctx.api.call("POST", `/sessions/${session.id}/turns`, {
@@ -944,29 +957,40 @@ const seedConversation = async (ctx, session, harness, container) => {
       turn.status === "completed",
       `${turn.status}${turn.error ? `: ${turn.error}` : ""}`,
     );
-    const now = await conversationTokens(ctx, session, container);
-    if (compactedBetween(tokens, now)) {
+    const now = await conversationSize(ctx, session, container);
+    if (container !== null && now.tokens === null) {
+      ctx.rec.check(
+        `handover.${harness}.seed.size_read`,
+        false,
+        `the size of this session's conversation could not be read from its transcript after seed turn ${k}`,
+      );
+      throw new Error(
+        `handover.${harness}: the seed's size could not be read, so the rounds would run on a conversation of unknown size`,
+      );
+    }
+    if (compactedBetween(size.tokens, now.tokens)) {
       ctx.rec.check(
         `handover.${harness}.seed.not_compacted`,
         false,
-        `the conversation shrank from ${tokens} to ${now} tokens while it was grown`,
+        `the conversation shrank from ${size.tokens} to ${now.tokens} tokens while it was grown`,
       );
     }
-    tokens = now ?? tokens;
-    if (tokens !== null && tokens >= ctx.opts.handoverContextTokens) break;
+    size = now.tokens === null ? size : now;
+    if (size.tokens !== null && size.tokens >= ctx.opts.handoverContextTokens) break;
   }
-  if (tokens === null) {
+  if (size.tokens === null) {
     ctx.rec.notRun(
       `handover.${harness}.conversation_input_tokens`,
       "the conversation's size is read from its transcript in the executor: needs the host",
     );
   } else {
-    ctx.rec.sample(`handover.${harness}.conversation_input_tokens`, tokens, "count");
+    ctx.rec.check(`handover.${harness}.seed.size_read`, true, `${size.tokens} tokens`);
+    ctx.rec.sample(`handover.${harness}.conversation_input_tokens`, size.tokens, "count");
   }
   ctx.log(
-    `handover.${harness} · conversation grown in ${turns} turn(s) · ${tokens ?? "unknown"} input tokens on its last request`,
+    `handover.${harness} · conversation grown in ${turns} turn(s) · ${size.tokens ?? "unknown"} input tokens on its last request`,
   );
-  return tokens;
+  return size;
 };
 
 /**
@@ -1011,13 +1035,14 @@ const handoverOn = async (ctx, harness) => {
     let size = await seedConversation(ctx, session, harness, container);
     await ctx.api.put(`/sessions/${session.id}/shared-control`, { enabled: true });
     for (let round = 1; round <= ctx.opts.runs; round += 1) {
-      // Each turn's conversation size after it: a round in which it shrank was compacted, and its
-      // differences are not the hand-over's (a summarised own turn, or a to_other that paid for
-      // the summary), so the round is discarded and said.
+      // Each turn's conversation size after it. A shrink at a steered turn with no compaction in the
+      // transcript is the conversation lost at the hand-over: a failure. A recorded compaction, or a
+      // shrink at the own turn, discards the round (its differences are not the hand-over's). A
+      // size that could not be read says nothing either way: the round is kept, and the check is
+      // skipped, never held.
       const sizes = [];
       const measured = async (times) => {
-        const now = await conversationTokens(ctx, session, container);
-        sizes.push(now);
+        sizes.push(await conversationSize(ctx, session, container));
         return times;
       };
       const to = await measured(
@@ -1030,23 +1055,49 @@ const handoverOn = async (ctx, harness) => {
         await steeredTurn(ctx, { session, harness, kind: "own", api: ctx.api, round }),
       );
       const trail = [size, ...sizes];
-      const compacted = trail.some((value, index) =>
-        index > 0 ? compactedBetween(trail[index - 1], value) : false,
+      const verdict = roundConversationOf(
+        trail.map((entry) => entry.tokens),
+        trail.map((entry) => entry.compactions),
       );
-      for (const value of sizes) {
-        ctx.rec.sample(`handover.${harness}.round_context_tokens`, value, "count");
+      for (const entry of sizes) {
+        ctx.rec.sample(`handover.${harness}.round_context_tokens`, entry.tokens, "count");
       }
-      size = sizes.findLast((value) => value !== null) ?? size;
-      if (compacted) {
+      size = sizes.findLast((entry) => entry.tokens !== null) ?? size;
+      const words = trail.map((entry) => entry.tokens ?? "?").join(" → ");
+      for (const kind of ["to_other", "back"]) {
+        if (verdict.unread) {
+          ctx.rec.check(
+            `handover.${harness}.${kind}.conversation_kept`,
+            null,
+            `round ${round}: a size could not be read (${words} tokens)`,
+          );
+        } else {
+          ctx.rec.check(
+            `handover.${harness}.${kind}.conversation_kept`,
+            !verdict.lost.includes(kind),
+            verdict.lost.includes(kind)
+              ? `round ${round}: conversation lost at the hand-over (${words} tokens, no compaction in the transcript)`
+              : `round ${round}: ${words} tokens`,
+          );
+        }
+      }
+      if (verdict.unread) {
         ctx.rec.check(
           `handover.${harness}.round_not_compacted`,
           null,
-          `round ${round} discarded: the conversation shrank (${trail.join(" → ")} tokens), it was compacted`,
+          `round ${round}: a size could not be read (${words} tokens), so compaction cannot be told`,
+        );
+      } else if (verdict.compacted && verdict.lost.length === 0) {
+        ctx.rec.check(
+          `handover.${harness}.round_not_compacted`,
+          null,
+          `round ${round} discarded: the conversation was compacted (${words} tokens)`,
         );
         ctx.rec.note(`handover.${harness} #${round}: compacted, its differences discarded`);
         continue;
+      } else {
+        ctx.rec.check(`handover.${harness}.round_not_compacted`, true, `${words} tokens`);
       }
-      if (container !== null) ctx.rec.check(`handover.${harness}.round_not_compacted`, true);
       for (const [kind, times] of [
         ["to_other", to],
         ["back", back],

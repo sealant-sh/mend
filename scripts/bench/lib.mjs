@@ -432,6 +432,60 @@ export const allowance = (budgetKey, before, stat) => {
   return Math.max((before[stat] ?? 0) * budget.pct, budget.abs);
 };
 
+/**
+ * How many samples a gate measure's series should have: one per round for the per-round measures
+ * (a launch and its Stop per harness, the hand-over's differences, growth), one per resume or join
+ * per round for those. Null for the measures that repeat inside a scenario (interactive, API).
+ */
+export const expectedSamplesOf = (result, name) => {
+  const runs = result.options?.runs ?? 10;
+  if (
+    /^(?:new|stop)\.(?:claude|codex|pi|opencode)\.(?:first_output|save)$/.test(name) ||
+    /^handover\.\w+\.(?:to_other|back)\.first_output_over_own$/.test(name) ||
+    /^growth\.\w+\.extra_person_beyond_state_bytes$/.test(name)
+  ) {
+    return runs;
+  }
+  if (name === "resume.first_output") return runs * (result.options?.resumesPerRun ?? 1);
+  if (name === "join.same.first_output" || name === "join.other.first_output") {
+    return runs * (result.options?.joinsPerRun ?? 1);
+  }
+  return null;
+};
+
+/** The fewest samples a series may keep: 80% of what was asked, and never fewer than 5. */
+export const seriesFloorOf = (expected) => Math.max(5, Math.ceil(expected * 0.8));
+
+/**
+ * Why a gate series is too short to stand (`n of N kept; at least F needed`, with what was set
+ * apart: rounds discarded as compacted, rounds with no conversation), or null when it is long
+ * enough or has no expected length. A series with no samples is already a miss.
+ */
+const shortSeriesOf = (result, name, who) => {
+  const expected = expectedSamplesOf(result, name);
+  if (expected === null) return null;
+  const n = summarize(result.measures?.[name]?.samples ?? []).n;
+  const floor = seriesFloorOf(expected);
+  if (n === 0 || n >= floor) return null;
+  const apart = [];
+  const handover = /^handover\.(\w+)\./.exec(name);
+  if (handover !== null) {
+    const discarded = (result.checks ?? []).find(
+      (check) => check.check === `handover.${handover[1]}.round_not_compacted`,
+    );
+    if ((discarded?.skipped ?? 0) > 0) apart.push(`${discarded.skipped} discarded: compacted`);
+  }
+  const growth = /^growth\.(\w+)\./.exec(name);
+  if (growth !== null) {
+    const empty = summarize(
+      result.measures?.[`growth.${growth[1]}.no_conversation.extra_person_beyond_state_bytes`]
+        ?.samples ?? [],
+    ).n;
+    if (empty > 0) apart.push(`${empty} with no conversation`);
+  }
+  return `${who} kept ${n} of ${expected}${apart.length === 0 ? "" : ` (${apart.join(", ")})`}; at least ${floor} needed`;
+};
+
 /** One comparison row: a statistic of the run under test against its limit. */
 const rowOf = ({ name, measure, before: beforeValue, limit, current, stat, notRun }) => {
   const value = current.n === 0 ? null : current[stat];
@@ -581,7 +635,16 @@ export const compareResults = (
       rows.push(rowOf({ name, measure, before: null, limit, current, stat, notRun }));
     }
   }
-  for (const [name, ours] of Object.entries(before.companions ?? {})) {
+  // Companions (another project's runs), on either side: one only one record has is compared
+  // against an empty counterpart, and its failed and unverified checks and errors count as the
+  // main record's do.
+  const fromCompanions = { checkFailures: [], checksNotVerified: [], errors: [] };
+  const companionNames = new Set([
+    ...Object.keys(before.companions ?? {}),
+    ...Object.keys(after.companions ?? {}),
+  ]);
+  for (const name of companionNames) {
+    const ours = before.companions?.[name] ?? { measures: {} };
     const theirs = after.companions?.[name] ?? { measures: {} };
     const compared = compareResults(ours, theirs, { stats, companion: true });
     for (const row of compared.rows) {
@@ -589,6 +652,27 @@ export const compareResults = (
     }
     for (const entry of compared.incomparable) {
       incomparable.push({ ...entry, measure: `${name}: ${entry.measure}` });
+    }
+    for (const check of compared.checkFailures) {
+      fromCompanions.checkFailures.push({ ...check, check: `${name}: ${check.check}` });
+    }
+    for (const entry of compared.checksNotVerified) {
+      fromCompanions.checksNotVerified.push({ ...entry, check: `${name}: ${entry.check}` });
+    }
+    for (const error of compared.errors) {
+      fromCompanions.errors.push({ ...error, scenario: `${name}: ${error.scenario}` });
+    }
+  }
+  // Under the gate, a series shorter than its floor (rounds discarded as compacted, launches kept
+  // apart, growth rounds that held no conversation) is a miss: a median of one round is not the
+  // ADR's ten-run gate.
+  if (gate) {
+    for (const row of rows) {
+      const short =
+        shortSeriesOf(after, row.measure, "the record under test") ??
+        (row.before === null ? null : shortSeriesOf(before, row.measure, "the baseline"));
+      if (short !== null && row.ok) Object.assign(row, { ok: false, short });
+      else if (short !== null) row.short = short;
     }
   }
   const checks = after.checks ?? [];
@@ -600,20 +684,23 @@ export const compareResults = (
     label: describeComparison(before, after, { secondPersonHarnesses, companion }),
     // A correctness check the run under test failed fails the comparison too: a fast launch that
     // ran as the wrong person, or billed the wrong login, is not inside any budget.
-    checkFailures: failedChecks(after),
+    checkFailures: [...failedChecks(after), ...fromCompanions.checkFailures],
     // A check the record must carry that it never made, or never saw hold (only skipped).
-    checksNotVerified: required.checks
-      .filter((name) => !checks.some((check) => check.check === name && check.passed > 0))
-      .map((name) => ({
-        check: name,
-        reason:
-          checks.find((check) => check.check === name)?.detail ??
-          notRunReasonOf(after, name) ??
-          "not in the record",
-      })),
+    checksNotVerified: [
+      ...required.checks
+        .filter((name) => !checks.some((check) => check.check === name && check.passed > 0))
+        .map((name) => ({
+          check: name,
+          reason:
+            checks.find((check) => check.check === name)?.detail ??
+            notRunReasonOf(after, name) ??
+            "not in the record",
+        })),
+      ...fromCompanions.checksNotVerified,
+    ],
     checksSkipped: checks.filter((check) => (check.skipped ?? 0) > 0),
     // What went wrong in the run under test fails it; the baseline's are said.
-    errors: after.errors ?? [],
+    errors: [...(after.errors ?? []), ...fromCompanions.errors],
     baselineErrors: before.errors ?? [],
     notRun: after.notRun ?? [],
   };
@@ -690,10 +777,12 @@ export const requiredOf = (result, { gate = false, secondPersonHarnesses = null 
           unit: "ms",
           budget: "handover",
         });
-        for (const check of ["billed", "runs_as", "one_agent", "completed"]) {
+        for (const check of ["billed", "runs_as", "one_agent", "completed", "conversation_kept"]) {
           checks.push(`handover.${harness}.${kind}.${check}`);
         }
       }
+      // The seed's size was read, and at least one round kept its conversation uncompacted.
+      checks.push(`handover.${harness}.seed.size_read`, `handover.${harness}.round_not_compacted`);
     }
   }
   if (only.includes("growth")) {
@@ -738,6 +827,15 @@ export const gateScopeGaps = (before, after, secondPersonHarnesses = null) => {
     if (notRun.length > 0) gaps.push(`${who} did not run ${notRun.join(", ")}`);
     const absent = GATE_HARNESSES.filter((harness) => !harnesses.includes(harness));
     if (absent.length > 0) gaps.push(`${who} did not run ${absent.join(", ")}`);
+  }
+  for (const [who, result] of [
+    ["the shared record", before],
+    ["the person record", after],
+  ]) {
+    const runs = result.options?.runs ?? null;
+    if (runs !== null && runs < 10) {
+      gaps.push(`${who} ran ${runs} round(s); the gate runs at least 10 (docs/adr/0016, "Method")`);
+    }
   }
   const second = secondPersonHarnesses ?? GATE_HARNESSES;
   const ran = after.options?.secondPersonHarnesses ?? after.options?.harnesses ?? [];
@@ -1363,25 +1461,32 @@ export const agentIdentityOf = (screen) => {
 // ─── a conversation's size (docs/adr/0016's hand-over row) ──────────────────
 
 /**
- * Run as the session's owner in the executor, with their account id: the usage of the last model
- * request in their newest transcript (Claude's `"usage":{…}`, Codex's `"last_token_usage":{…}`),
- * found under their saved directory (the shared conversations included). Prints only that usage's
+ * Run as the session's owner in the executor, with their account id and the conversation's id
+ * (the harness's own session id, `providerSessionId`): the usage of the last model request in
+ * that conversation's transcript, wherever it is under their saved directory (`.claude/projects`
+ * or `.codex/sessions` before a hand-over, `conversations/<session>` after), never another, older
+ * conversation's (Claude's `"usage":{…}`, Codex's `"last_token_usage":{…}`), and how many
+ * compactions it records (Claude's `compact_boundary`, Codex's `"type":"compacted"`). Prints only
  * numbers, never a message.
  */
 export const LAST_REQUEST_SH = [
   `P="\${ST_BENCH_PEOPLE:-${PEOPLE_ROOT}}/$1"`,
-  `[ -d "$P" ] || { echo "usage none"; exit 0; }`,
-  // The shared conversations first (where a protocol session's transcript lives), else the rest;
-  // never the prompt histories, which carry no usage.
-  `d="$P/conversations"; [ -d "$d" ] || d="$P"`,
-  `f=$(find "$d" -type f -name '*.jsonl' ! -name history.jsonl ! -name session_index.jsonl -exec stat -c '%Y %n' {} + 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)`,
+  `[ -d "$P" ] && [ -n "$2" ] || { echo "usage none"; exit 0; }`,
+  `f=$(find "$P" -type f -name "*$2*.jsonl" -exec stat -c '%Y %n' {} + 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)`,
   `[ -n "$f" ] || { echo "usage none"; exit 0; }`,
+  `echo "compactions $(grep -cE '"subtype":"compact_boundary"|"type":"compacted"' "$f")"`,
   `u=$(grep -o '"last_token_usage":{[^}]*}' "$f" | tail -1)`,
   `[ -n "$u" ] && { echo "usage codex $u" | tr -cd '[:alnum:]_:,{}" \\n'; exit 0; }`,
   `u=$(grep -o '"usage":{"input_tokens":[^}]*}' "$f" | tail -1)`,
   `[ -n "$u" ] && { echo "usage claude $u" | tr -cd '[:alnum:]_:,{}" \\n'; exit 0; }`,
   `echo "usage none"`,
 ].join("\n");
+
+/** How many compactions `LAST_REQUEST_SH` saw in the transcript, or null. */
+export const compactionsOf = (text) => {
+  const match = /^compactions (\d+)$/m.exec(text);
+  return match === null ? null : Number(match[1]);
+};
 
 /**
  * The prompt size of the last model request (`LAST_REQUEST_SH`'s line): Codex's
@@ -1406,11 +1511,39 @@ export const lastRequestTokensOf = (text) => {
 };
 
 /**
- * Whether a conversation was compacted between two of its requests: its prompt shrank by more than
- * a quarter (a conversation only grows, turn by turn, until a harness summarises it).
+ * Whether a conversation shrank between two of its requests by more than a quarter (a
+ * conversation only grows, turn by turn, until a harness summarises it, or loses it).
  */
 export const compactedBetween = (earlier, later) =>
   typeof earlier === "number" && typeof later === "number" && later < earlier * 0.75;
+
+/**
+ * What one hand-over round's conversation sizes say (`sizes`: before the round, then after its
+ * `to_other`, `back` and `own` turns; `compactions`: the transcript's compaction count at each
+ * point). `lost`: a shrink at a steered turn (`to_other` or `back`) with no compaction recorded,
+ * which is the conversation lost at the hand-over, a failure. `compacted`: a shrink the transcript
+ * records as a compaction, or one at the `own` turn: the round is discarded. `unread`: a size that
+ * could not be read, so nothing can be said either way.
+ */
+export const roundConversationOf = (sizes, compactions = []) => {
+  const kinds = ["to_other", "back", "own"];
+  if (sizes.some((value) => typeof value !== "number")) {
+    return { unread: true, lost: [], compacted: false };
+  }
+  const lost = [];
+  let compacted = false;
+  for (let index = 1; index < sizes.length; index += 1) {
+    if (!compactedBetween(sizes[index - 1], sizes[index])) continue;
+    const marked =
+      typeof compactions[index] === "number" &&
+      typeof compactions[index - 1] === "number" &&
+      compactions[index] > compactions[index - 1];
+    const kind = kinds[index - 1];
+    if (!marked && kind !== "own") lost.push(kind);
+    else compacted = true;
+  }
+  return { unread: false, lost, compacted };
+};
 
 // ─── growth per extra person (docs/adr/0016, "Budgets") ─────────────────────
 
@@ -1493,14 +1626,14 @@ export const classifySavedFiles = (text) => {
  * base64, so no quoting of the host's shell or SSH touches it; it gets the account id as `$1`.
  * When the person has no saved directory there it prints the absent lines of both probes.
  */
-export const asPersonCommand = (container, accountId, script) => {
-  for (const arg of [container, accountId]) {
+export const asPersonCommand = (container, accountId, script, extra = []) => {
+  for (const arg of [container, accountId, ...extra]) {
     if (!/^[\w.:@-]+$/.test(String(arg))) throw new Error(`not an id or a name: ${arg}`);
   }
   const encoded = Buffer.from(script, "utf8").toString("base64");
   return (
     `uid=$(docker exec ${container} stat -c %u ${PEOPLE_ROOT}/${accountId} 2>/dev/null); ` +
-    `if [ -n "$uid" ]; then docker exec -u "$uid" ${container} sh -c "$(printf %s '${encoded}' | base64 -d)" st-bench ${accountId}; ` +
+    `if [ -n "$uid" ]; then docker exec -u "$uid" ${container} sh -c "$(printf %s '${encoded}' | base64 -d)" st-bench ${[accountId, ...extra].join(" ")}; ` +
     `else echo "probe saved absent"; echo "size absent"; fi`
   );
 };
@@ -1627,13 +1760,16 @@ export const formatComparison = (comparison) => {
   );
   const ordered = [...comparison.misses, ...comparison.rows.filter((row) => row.ok)];
   for (const row of ordered) {
-    const verdict = row.missing
-      ? row.notRun === undefined
-        ? "MISSING"
-        : `NOT RUN: ${row.notRun}`
-      : row.ok
-        ? "within"
-        : "OVER";
+    const verdict =
+      row.short !== undefined && !row.missing
+        ? `SHORT: ${row.short}`
+        : row.missing
+          ? row.notRun === undefined
+            ? "MISSING"
+            : `NOT RUN: ${row.notRun}`
+          : row.ok
+            ? "within"
+            : "OVER";
     lines.push(
       `| ${row.measure} | ${row.stat} | ${formatValue(row.before, row.unit)} | ${formatValue(row.after, row.unit)} | ${formatValue(row.limit, row.unit)} | ${verdict} |`,
     );
@@ -1938,9 +2074,17 @@ export const parseOptions = (argv, now = Date.now()) => {
     }
   }
   if (opts.harnesses.length === 0) throw new Error("--harnesses needs at least one harness");
-  for (const harness of opts.secondPersonHarnesses ?? []) {
-    if (!HARNESS_NAMES.includes(harness)) {
-      throw new Error(`unknown harness ${harness} in --second-person-harnesses`);
+  if (opts.secondPersonHarnesses !== null) {
+    for (const harness of opts.secondPersonHarnesses) {
+      if (!HARNESS_NAMES.includes(harness)) {
+        throw new Error(`unknown harness ${harness} in --second-person-harnesses`);
+      }
+    }
+    // The hand-over is P1's headline row: a second person always runs one protocol harness.
+    if (!opts.secondPersonHarnesses.some((harness) => ["claude", "codex"].includes(harness))) {
+      throw new Error(
+        "--second-person-harnesses names the harnesses the second person runs, and must hold claude or codex (the hand-over runs on them)",
+      );
     }
   }
   if (opts.runId !== null && !/^[0-9a-z]+$/.test(opts.runId)) {

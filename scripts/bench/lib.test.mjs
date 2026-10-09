@@ -8,6 +8,10 @@ import { fileURLToPath } from "node:url";
 
 import {
   agentIdentityOf,
+  compactionsOf,
+  expectedSamplesOf,
+  roundConversationOf,
+  seriesFloorOf,
   compactedBetween,
   GATE_HARNESSES,
   gateScopeGaps,
@@ -972,7 +976,10 @@ test("gate P1 fails when the person-only measures, checks or the join never ran 
   assert.equal(missed.filter((name) => name.startsWith("handover.")).length, 4);
   assert.ok(missed.includes("join.other.first_output"));
   assert.ok(result.misses.every((row) => row.notRun === "second account not yet joined"));
-  assert.equal(result.checksNotVerified.length, 16);
+  assert.equal(
+    result.checksNotVerified.length,
+    requiredOf(bare, { gate: true }).checks.filter((name) => name.startsWith("handover.")).length,
+  );
   assert.equal(result.errors.length, 1);
   assert.equal(comparisonFails(result), true);
   const formatted = formatComparison(result);
@@ -1800,24 +1807,25 @@ test("the conversation's size is its last request's prompt, and a shrink is a co
   assert.equal(compactedBetween(50_000, 52_000), false);
   assert.equal(compactedBetween(50_000, 12_000), true);
   assert.equal(compactedBetween(null, 12_000), false);
-  // The probe reads only the newest transcript's usage, never a message.
+  // The probe reads this conversation's transcript (F2 has its own test) and never a message.
   const root = mkdtempSync(path.join(tmpdir(), "st-bench-usage-"));
   try {
     const conversation = path.join(root, "people", "acc-1", "conversations", "s1");
     mkdirSync(conversation, { recursive: true });
     writeFileSync(
-      path.join(conversation, "t.jsonl"),
+      path.join(conversation, "c0ffee-1.jsonl"),
       [
         '{"type":"assistant","message":{"content":"secret words","usage":{"input_tokens":5,"cache_creation_input_tokens":10,"cache_read_input_tokens":100}}}',
         '{"type":"assistant","message":{"content":"more secret words","usage":{"input_tokens":7,"cache_creation_input_tokens":20,"cache_read_input_tokens":30000,"cache_creation":{"x":1}}}}',
       ].join("\n"),
     );
     writeFileSync(path.join(root, "people", "acc-1", "history.jsonl"), '{"display":"a prompt"}\n');
-    const out = execFileSync("sh", ["-c", LAST_REQUEST_SH, "st-bench", "acc-1"], {
+    const out = execFileSync("sh", ["-c", LAST_REQUEST_SH, "st-bench", "acc-1", "c0ffee-1"], {
       env: { ...process.env, ST_BENCH_PEOPLE: path.join(root, "people") },
     }).toString();
     assert.ok(!out.includes("secret"), out);
     assert.equal(lastRequestTokensOf(out), 30_027);
+    assert.equal(compactionsOf(out), 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -1841,4 +1849,260 @@ test("a process is the harness's only by its exact name", () => {
   assert.equal(agentProcessHeld(["pi"], "pi"), true);
   assert.equal(agentProcessHeld([".opencode"], "opencode"), true);
   assert.equal(agentProcessHeld(["claude-code"], "claude"), false);
+});
+
+// ─── review of mend#581, round 3 ────────────────────────────────────────────
+
+test("F1: a gate series shorter than its floor is a miss, however its samples look", () => {
+  assert.equal(seriesFloorOf(10), 8);
+  assert.equal(seriesFloorOf(3), 5);
+  assert.equal(
+    expectedSamplesOf({ options: { runs: 10 } }, "growth.pi.extra_person_beyond_state_bytes"),
+    10,
+  );
+  assert.equal(
+    expectedSamplesOf({ options: { runs: 10, joinsPerRun: 2 } }, "join.other.first_output"),
+    20,
+  );
+  assert.equal(expectedSamplesOf({ options: { runs: 10 } }, "terminal.echo"), null);
+  // 9 of 10 hand-over rounds discarded as compacted: one kept round does not pass the gate.
+  const one = completePerson();
+  one.measures["handover.claude.to_other.first_output_over_own"].samples = [1000];
+  Object.assign(
+    one.checks.find((check) => check.check === "handover.claude.round_not_compacted"),
+    { passed: 1, skipped: 9 },
+  );
+  const result = compareResults(sharedBaseline(), one);
+  const rows = result.misses.filter(
+    (row) => row.measure === "handover.claude.to_other.first_output_over_own",
+  );
+  assert.equal(rows.length, 2);
+  assert.equal(
+    rows[0].short,
+    "the record under test kept 1 of 10 (9 discarded: compacted); at least 8 needed",
+  );
+  assert.match(formatComparison(result), /SHORT: the record under test kept 1 of 10/);
+  assert.equal(comparisonFails(result), true);
+  // Growth rounds with no conversation leave the series short the same way.
+  const growth = completePerson();
+  growth.measures["growth.claude.extra_person_beyond_state_bytes"].samples = tenOf(1000).slice(
+    0,
+    7,
+  );
+  growth.measures["growth.claude.no_conversation.extra_person_beyond_state_bytes"] = {
+    unit: "bytes",
+    budget: null,
+    samples: [100, 100, 100],
+  };
+  const short = compareResults(sharedBaseline(), growth).misses.find(
+    (row) => row.measure === "growth.claude.extra_person_beyond_state_bytes",
+  );
+  assert.equal(
+    short.short,
+    "the record under test kept 7 of 10 (3 with no conversation); at least 8 needed",
+  );
+  // 8 of 10 is enough; a short baseline fails too.
+  const eight = completePerson();
+  eight.measures["growth.claude.extra_person_beyond_state_bytes"].samples = tenOf(1000).slice(0, 8);
+  assert.equal(comparisonFails(compareResults(sharedBaseline(), eight)), false);
+  const thin = sharedBaseline();
+  thin.measures["new.pi.first_output"].samples = [30_000, 30_000];
+  assert.match(
+    compareResults(thin, completePerson()).misses.find(
+      (row) => row.measure === "new.pi.first_output",
+    ).short,
+    /^the baseline kept 2 of 10/,
+  );
+  // A record of fewer than ten rounds is not the gate.
+  const five = completePerson();
+  five.options.runs = 5;
+  assert.ok(
+    compareResults(sharedBaseline(), five).label.differs.includes(
+      'the person record ran 5 round(s); the gate runs at least 10 (docs/adr/0016, "Method")',
+    ),
+  );
+});
+
+test("F2: the size is read from this session's own transcript, wherever it is, never an older one", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "st-bench-own-"));
+  try {
+    const person = path.join(root, "people", "acc-1");
+    // As in a person executor: `conversations/` exists and holds an earlier shared conversation.
+    mkdirSync(path.join(person, "conversations", "older-session", ".claude", "projects", "w"), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(
+        person,
+        "conversations",
+        "older-session",
+        ".claude",
+        "projects",
+        "w",
+        "aaaa-old.jsonl",
+      ),
+      '{"message":{"usage":{"input_tokens":1,"cache_read_input_tokens":90000}}}\n',
+    );
+    // This session's transcript, before its first hand-over: under the harness's own directory.
+    mkdirSync(path.join(person, ".claude", "projects", "w"), { recursive: true });
+    writeFileSync(
+      path.join(person, ".claude", "projects", "w", "bbbb-this.jsonl"),
+      [
+        '{"message":{"usage":{"input_tokens":2,"cache_read_input_tokens":12000}}}',
+        '{"type":"system","subtype":"compact_boundary"}',
+        '{"message":{"usage":{"input_tokens":3,"cache_read_input_tokens":21000}}}',
+      ].join("\n"),
+    );
+    const read = (conversation) =>
+      execFileSync("sh", ["-c", LAST_REQUEST_SH, "st-bench", "acc-1", conversation], {
+        env: { ...process.env, ST_BENCH_PEOPLE: path.join(root, "people") },
+      }).toString();
+    assert.equal(lastRequestTokensOf(read("bbbb-this")), 21_003);
+    assert.equal(compactionsOf(read("bbbb-this")), 1);
+    // A conversation not on disk is unread, never another's size.
+    assert.equal(lastRequestTokensOf(read("cccc-none")), null);
+    assert.equal(
+      lastRequestTokensOf(
+        execFileSync("sh", ["-c", LAST_REQUEST_SH, "st-bench", "acc-1"], {
+          env: { ...process.env, ST_BENCH_PEOPLE: path.join(root, "people") },
+        }).toString(),
+      ),
+      null,
+    );
+    // Codex's rollout names the thread id; a compaction is a "compacted" entry.
+    mkdirSync(path.join(person, ".codex", "sessions", "2026"), { recursive: true });
+    writeFileSync(
+      path.join(person, ".codex", "sessions", "2026", "rollout-2026-10-09-dddd-codex.jsonl"),
+      '{"type":"event_msg","payload":{"info":{"last_token_usage":{"input_tokens":48000,"cached_input_tokens":47000}}}}\n',
+    );
+    assert.equal(lastRequestTokensOf(read("dddd-codex")), 48_000);
+    assert.throws(() => asPersonCommand("sealant-1", "acc-1", "true", ["a; rm"]), /not an id/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("F3/F4: a shrink at a steered turn is a lost conversation; an unread size proves nothing", () => {
+  // Grown to 50k: a shrink at the hand-over with no compaction in the transcript is a failure.
+  assert.deepEqual(roundConversationOf([50_000, 9000, 9500, 10_000], [0, 0, 0, 0]), {
+    unread: false,
+    lost: ["to_other"],
+    compacted: false,
+  });
+  assert.deepEqual(roundConversationOf([50_000, 51_000, 9000, 9500], [0, 0, 0, 0]).lost, ["back"]);
+  // The transcript records a compaction there: the round is discarded, not failed.
+  assert.deepEqual(roundConversationOf([50_000, 9000, 9500, 10_000], [0, 1, 1, 1]), {
+    unread: false,
+    lost: [],
+    compacted: true,
+  });
+  // A shrink at the owner's own turn discards the round.
+  assert.deepEqual(roundConversationOf([50_000, 51_000, 52_000, 9000], [0, 0, 0, 0]), {
+    unread: false,
+    lost: [],
+    compacted: true,
+  });
+  assert.deepEqual(roundConversationOf([50_000, 51_000, 52_000, 53_000], [0, 0, 0, 0]), {
+    unread: false,
+    lost: [],
+    compacted: false,
+  });
+  // A size not read: nothing can be said, so nothing holds (F4).
+  assert.deepEqual(roundConversationOf([50_000, null, 52_000, 53_000], []), {
+    unread: true,
+    lost: [],
+    compacted: false,
+  });
+  // Under the gate the hand-over's conversation checks are required, so an all-skipped one fails.
+  const unread = completePerson();
+  const kept = unread.checks.find((check) => check.check === "handover.claude.round_not_compacted");
+  Object.assign(kept, { passed: 0, skipped: 10 });
+  assert.ok(
+    compareResults(sharedBaseline(), unread).checksNotVerified.some(
+      (entry) => entry.check === "handover.claude.round_not_compacted",
+    ),
+  );
+});
+
+test("F5: a companion's failed checks, errors and unverified checks count, on either side", () => {
+  const companionPerson = () =>
+    layoutRecord(
+      "person",
+      "1",
+      { "join.other.first_output": { unit: "ms", budget: "join-other", samples: tenOf(20_000) } },
+      {
+        target: { project: { name: "configs", id: "c" } },
+        options: { layout: "person", only: ["join-other"], harnesses: ["claude"] },
+      },
+    );
+  const companionShared = () =>
+    layoutRecord(
+      "shared",
+      "1",
+      { "join.other.first_output": { unit: "ms", budget: "join-other", samples: tenOf(19_000) } },
+      {
+        target: { project: { name: "configs", id: "c" } },
+        options: { layout: "shared", only: ["join-other"], harnesses: ["claude"] },
+      },
+    );
+  const failing = companionPerson();
+  failing.checks = [
+    {
+      check: "join.other.runs_as",
+      passed: 0,
+      failed: 10,
+      skipped: 0,
+      detail: null,
+      failures: ["root"],
+    },
+  ];
+  failing.errors = [{ scenario: "join.other", message: "boom" }];
+  const result = compareResults(
+    withCompanion(sharedBaseline(), companionShared()),
+    withCompanion(completePerson(), failing),
+  );
+  assert.deepEqual(
+    result.checkFailures.map((check) => check.check),
+    ["configs: join.other.runs_as"],
+  );
+  assert.deepEqual(
+    result.errors.map((error) => error.scenario),
+    ["configs: join.other"],
+  );
+  assert.equal(comparisonFails(result), true);
+  // A companion only the record under test carries is checked against nothing.
+  const oneSided = compareResults(sharedBaseline(), withCompanion(completePerson(), failing));
+  assert.equal(oneSided.checkFailures.length, 1);
+  assert.equal(comparisonFails(oneSided), true);
+  // A clean companion on both sides passes.
+  assert.equal(
+    comparisonFails(
+      compareResults(
+        withCompanion(sharedBaseline(), companionShared()),
+        withCompanion(completePerson(), companionPerson()),
+      ),
+    ),
+    false,
+  );
+});
+
+test("F6: the second person's harnesses are never empty and always hold the hand-over", () => {
+  assert.throws(
+    () => parseOptions(["compare", "a", "b", "--second-person-harnesses", ""]),
+    /claude or codex/,
+  );
+  assert.throws(
+    () => parseOptions(["compare", "a", "b", "--second-person-harnesses", ","]),
+    /claude or codex/,
+  );
+  assert.throws(
+    () => parseOptions(["compare", "a", "b", "--second-person-harnesses", "pi"]),
+    /claude or codex/,
+  );
+  assert.throws(() => parseOptions(["run", "--second-person-harnesses", "vim"]), /unknown harness/);
+  assert.deepEqual(
+    parseOptions(["compare", "a", "b", "--second-person-harnesses", "codex,pi"])
+      .secondPersonHarnesses,
+    ["codex", "pi"],
+  );
 });

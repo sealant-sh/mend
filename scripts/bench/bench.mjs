@@ -29,9 +29,12 @@
 //   server's clock from its submit to its start, its first output and its end. The ADR's row,
 //   "send to first output … under 5 s more than the same turn sent by the process's own person",
 //   is budgeted per round as `first_output_over_own` (the steered turn's first output less the own
-//   turn's). A round in which the conversation shrank (compacted) is discarded and said. Each turn
-//   is checked: billed to its sender, on a process that runs as its sender, one agent live at a
-//   time (polled). It runs on claude and codex among the second person's harnesses.
+//   turn's). Sizes are read from this session's own transcript (its harness's conversation id). A
+//   shrink of more than a quarter at a steered turn with no compaction in the transcript fails
+//   (conversation lost at the hand-over); a recorded compaction, or a shrink at the own turn,
+//   discards the round. A seed whose size cannot be read fails. Each turn is checked: billed to its
+//   sender, on a process that runs as its sender, one agent live at a time (polled). It runs on
+//   claude and codex among the second person's harnesses.
 // - `growth`: `--runs` rounds per second-person harness of the second account's own session in the first one's
 //   worktree; their saved directory sized, machine state left out, against their conversation state
 //   and memory (budget: at most 64 KB beyond them). A round whose second person held no
@@ -118,7 +121,8 @@ what runs
                               among them), growth and the joined pi (default: --harnesses). Their
                               connected accounts decide it: pi and opencode need a Codex account.
                               compare: the explicit opt-in to a partial gate P1 that asks the second
-                              person for these only, said in the verdict
+                              person for these only, said in the verdict. Never empty, and always
+                              holds claude or codex (the hand-over runs on them)
   --runs <n>                  runs of each launch scenario, rounds of the hand-over and of growth
                               (default: 10, the ADR's gate)
   --joins-per-run <n>         joins of each kind per run (default: 1)
@@ -155,7 +159,10 @@ gate P1 (docs/adr/0016): person launches against shared launches at one commit
   --second-person-harnesses opts into a partial gate, which the verdict line says). A record that
   ran less, another Mend image (its id, else its commit), instance, project, workspace image or
   harness version make it "not the gate", and that fails. A budgeted measure either side lacks is
-  a miss, and the baseline's errors fail it too. Ceiling budgets (the hand-over's 5 s over the own
+  a miss, and the baseline's errors fail it too. A per-round series (launches and Stops, the
+  hand-over's differences, growth, joins, resumes) that kept fewer than 80% of its rounds, or
+  fewer than 5, is a miss (SHORT), and a record of fewer than 10 rounds is not the gate. A
+  companion record's failed checks and errors count, on either side. Ceiling budgets (the hand-over's 5 s over the own
   turn, growth's 64 KB) are checked on the record under test alone. It also fails on a failed or
   unverified check and on an error in the record under test. It says what it does not cover: P1's
   restore wall time on the box's largest worktree, interleaved between the layouts. The last line
