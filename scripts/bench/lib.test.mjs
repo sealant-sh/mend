@@ -46,6 +46,7 @@ import {
   builtWithin,
   FETCH_RETRIES_UNKNOWN,
   fetchRetriesOf,
+  installEndOf,
   installOf,
   installsOf,
   installWhyOf,
@@ -2163,7 +2164,7 @@ test("a launch's install is exactly one running line to one end line, with its r
   const ran = launchLines([
     [900, "session engine: workspace note"],
     [1000, "session engine: dependency install · running"],
-    [75_000, "session engine: dependency install · completed · fetch retries 2 · exit 0"],
+    [75_000, "session engine: dependency install · completed · exit 0 · fetch retries 2"],
     [76_000, "session engine: harness warm-up"],
   ]);
   assert.deepEqual(installOf(ran), {
@@ -2215,7 +2216,7 @@ test("a launch's install is exactly one running line to one end line, with its r
     [1000, "session engine: dependency install · running"],
     [2000, "session engine: dependency install did not run"],
     [30_000, "session engine: dependency install · running"],
-    [44_000, "session engine: dependency install · completed · fetch retries 0 · exit 0"],
+    [44_000, "session engine: dependency install · completed · exit 0 · fetch retries 0"],
   ]);
   assert.deepEqual(installOf(twice), {
     kind: "unknown",
@@ -2234,26 +2235,22 @@ test("a launch's install is exactly one running line to one end line, with its r
   assert.deepEqual(installOf(null), { kind: "unknown", reason: NO_HOST });
 });
 
-test("an install's fetch retries are read in words or fields, and unknown when absent", () => {
+test("an install's end line is read exactly: its exit code and fetch retries (mend#585)", () => {
   const line = (message, fields = {}) => ({ name: milestoneName(message), message, fields });
-  assert.equal(
-    fetchRetriesOf(
-      line("session engine: dependency install · completed · fetch retries 3 · exit 0"),
-    ),
-    3,
+  assert.deepEqual(
+    installEndOf(line("session engine: dependency install · completed · exit 0 · fetch retries 2")),
+    { exitCode: 0, fetchRetries: 2 },
   );
-  assert.equal(
-    fetchRetriesOf(line("session engine: dependency install · completed · fetch retries: 0")),
-    0,
+  assert.deepEqual(
+    installEndOf(line("session engine: dependency install · exited · exit 1 · fetch retries 0")),
+    { exitCode: 1, fetchRetries: 0 },
   );
-  assert.equal(
-    fetchRetriesOf(line("session engine: dependency install · completed · 4 fetch retries")),
-    4,
-  );
-  assert.equal(
-    fetchRetriesOf(line("session engine: dependency install · completed · fetch retry 1")),
-    1,
-  );
+  // A build before mend#585: the exit code, no retries (unknown, never 0).
+  assert.deepEqual(installEndOf(line("session engine: dependency install · completed · exit 0")), {
+    exitCode: 0,
+    fetchRetries: null,
+  });
+  // Only the structured field is read loosely; other wordings are not the engine's.
   assert.equal(
     fetchRetriesOf(
       line("session engine: dependency install · completed · exit 0", { fetchRetries: 5 }),
@@ -2261,8 +2258,31 @@ test("an install's fetch retries are read in words or fields, and unknown when a
     5,
   );
   assert.equal(
-    fetchRetriesOf(line("session engine: dependency install · completed · exit 0")),
-    null,
+    fetchRetriesOf(
+      line("session engine: dependency install · completed · exit 0", { fetchRetries: "3" }),
+    ),
+    3,
+  );
+  for (const message of [
+    "session engine: dependency install · completed · fetch retries 3 · exit 0",
+    "session engine: dependency install · completed · exit 0 · fetch retries: 1",
+    "session engine: dependency install · completed · exit 0 · 4 fetch retries",
+  ]) {
+    assert.equal(fetchRetriesOf(line(message)), null, message);
+  }
+  // A non-zero exit fails the install, whatever the line's word.
+  const install = installOf(
+    [
+      line("session engine: dependency install · running"),
+      {
+        ...line("session engine: dependency install · completed · exit 2 · fetch retries 0"),
+        at: 5000,
+      },
+    ].map((entry, index) => ({ at: index === 0 ? 1000 : entry.at, ...entry })),
+  );
+  assert.deepEqual(
+    [install.exited, install.exitCode, install.fetchRetries, install.ms],
+    [true, 2, 0, 4000],
   );
 });
 
@@ -2730,7 +2750,7 @@ test("why a resume reinstalled is what the engine's running line says, tallied p
       name: "dependency install · completed",
       at: 15_000,
       fields: {},
-      message: "session engine: dependency install · completed · fetch retries 0 · exit 0",
+      message: "session engine: dependency install · completed · exit 0 · fetch retries 0",
     },
   ];
   assert.equal(

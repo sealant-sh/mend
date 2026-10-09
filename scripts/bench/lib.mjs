@@ -282,24 +282,38 @@ const TREE_RESTORED = /^dependency tree observed/;
 
 /** Why a clean install cannot be told from a stalled one: the engine's line has no count. */
 export const FETCH_RETRIES_UNKNOWN =
-  "the engine's install line carries no fetch-retry count (a build before the install's fetch timeouts)";
+  "the engine's install line carries no fetch-retry count (a build before mend#585)";
 
 /**
- * How many fetches pnpm retried during an install, from the engine's end line: its words
- * ("· fetch retries 2", "fetch retries: 2", "2 fetch retries") or a field (`fetchRetries`,
- * `fetch_retries`). Null when the line says nothing of it (an older build): unknown, never 0.
+ * The engine's install end line (mend#585): `session engine: dependency install · completed ·
+ * exit 0 · fetch retries 2`, or `· exited · exit 1 · fetch retries 0`; before it, the same
+ * without `· fetch retries N`.
  */
-export const fetchRetriesOf = (line) => {
-  for (const key of ["fetchRetries", "fetch_retries", "fetchRetryCount"]) {
-    const value = line.fields?.[key];
-    if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
-  }
-  const text = line.message ?? line.name ?? "";
-  const match =
-    /fetch[ _-]?retr(?:y|ies)\s*[:=]?\s*(\d+)/i.exec(text) ??
-    /(\d+)\s+fetch[ _-]?retr(?:y|ies)/i.exec(text);
-  return match === null ? null : Number(match[1]);
+const INSTALL_END_LINE =
+  /^session engine: dependency install · (?:completed|exited) · exit (-?\d+)(?: · fetch retries (\d+))?$/;
+
+/**
+ * An install end line's exit code and fetch retries, read from its exact words; the retries also
+ * from its structured field (`fetchRetries`, a number or its digits). Each null when the line
+ * does not say it (a build before mend#585 has no retries): unknown, never 0.
+ */
+export const installEndOf = (line) => {
+  const match = INSTALL_END_LINE.exec((line.message ?? "").trim());
+  const field = line.fields?.fetchRetries;
+  const fromField =
+    typeof field === "number" && Number.isInteger(field) && field >= 0
+      ? field
+      : typeof field === "string" && /^\d+$/.test(field.trim())
+        ? Number(field.trim())
+        : null;
+  return {
+    exitCode: match === null ? null : Number(match[1]),
+    fetchRetries: match?.[2] === undefined ? fromField : Number(match[2]),
+  };
 };
+
+/** How many fetches pnpm retried during an install, from its end line (`installEndOf`). */
+export const fetchRetriesOf = (line) => installEndOf(line).fetchRetries;
 
 /**
  * The dependency install inside a launch, from every engine line of its window
@@ -334,15 +348,15 @@ export const installOf = (lines) => {
   if (end.at < start.at) {
     return { kind: "unknown", reason: "the install's end line precedes its running line" };
   }
-  const exit = /·\s*exit (-?\d+)/.exec(end.message ?? "");
+  const { exitCode, fetchRetries } = installEndOf(end);
   const why = installWhyOf(start);
-  const exitCode = exit === null ? null : Number(exit[1]);
   return {
     kind: "ran",
     ms: end.at - start.at,
+    // A non-zero exit fails the install whatever the line's word, as does "exited".
     exited: /^dependency install · exited/.test(end.name) || (exitCode !== null && exitCode !== 0),
     exitCode,
-    fetchRetries: fetchRetriesOf(end),
+    fetchRetries,
     why,
   };
 };
