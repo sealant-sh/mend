@@ -20,15 +20,15 @@ desktop app) is a listed device under Settings → Devices, and revoking one end
 
 ## How to get to it (user POV)
 
-- Web: Settings (`/settings`, section `#devices`), the heading `Devices` with the buttons
-  `Refresh`, `Mint a token by hand` and `Pair a phone`. The Now page links there as
+- Web: Settings (`/settings`, section `#devices`), the heading `Devices` with the buttons `Refresh`,
+  `Mint a token by hand` and `Pair a phone`. The Now page links there as
   `Pair your phone · Settings → Devices` until a device is paired, and the first-run checklist row
   `Pair your phone` links `Settings → Devices`.
 - CLI: `mend pair [--url <base url>]`; hidden from help, `mend qr <text>`.
-- Mobile: the `pair` screen (`/pair`, title `Pair with your machine`), opened by a scanned or
-  tapped `mend://pair?u=<url>&c=<code>` link, by `Pair with your machine` on Settings when unpaired,
-  or `Pair another machine` when paired. Settings → `Advanced` takes a URL and a bearer token by
-  hand; `Unpair` forgets them.
+- Mobile: the `pair` screen (`/pair`, title `Pair with your machine`), opened by a scanned or tapped
+  `mend://pair?u=<url>&c=<code>` link, by `Pair with your machine` on Settings when unpaired, or
+  `Pair another machine` when paired. Settings → `Advanced` takes a URL and a bearer token by hand;
+  `Unpair` forgets them.
 - Desktop: no pairing screen. Its sign-in makes it a device (see [Sign in](./sign-in.md)).
 - Revocation: Settings → Devices `Revoke`; `mend logout` revokes its own terminal's device.
 
@@ -46,12 +46,12 @@ Preconditions:
   `phone` below is the Playwright page on `<expo>`; `page` is the signed-in web browser.
 
 - **Open Devices.** Run `await page.goto("<web>/settings#devices")`. The heading `Devices` is
-  visible (`page.getByRole("heading", { name: "Devices" })`), with one line per device:
-  `<name>`, then `<platform> · paired <day> · last used <when>`.
-- **Pair from the web.** Run `await page.getByRole("button", { name: "Pair a phone" }).click()`.
-  The button reads `Minting…`, then the panel shows `code` with a grouped code `XXXX-XXXX`, `url`
-  with `<web>`, a countdown matching `/^expires in \d+:\d{2}$/` (it may start at `10:00` or
-  `9:59`) whose value is lower a few seconds later, and the text
+  visible (`page.getByRole("heading", { name: "Devices" })`), with one line per device: `<name>`,
+  then `<platform> · paired <day> · last used <when>`.
+- **Pair from the web.** Run `await page.getByRole("button", { name: "Pair a phone" }).click()`. The
+  button reads `Minting…`, then the panel shows `code` with a grouped code `XXXX-XXXX`, `url` with
+  `<web>`, a countdown matching `/^expires in \d+:\d{2}$/` (it may start at `10:00` or `9:59`) whose
+  value is lower a few seconds later, and the text
   `The QR encodes mend://pair?u=<url-encoded web>&c=<code>`. Run
   `await page.getByRole("button", { name: "Done" }).click()`; the panel closes.
 - **Pair from the CLI.** Run `mend pair`. Stdout shows a block-character QR, then
@@ -76,18 +76,17 @@ Preconditions:
   `code not found — check it against the machine` or
   `code expired — generate a new one on the machine`, and the phone stays on `/pair`.
 - **Test the connection.** On the phone's Settings, run
-  `await phone.getByText("Test connection", { exact: true }).click()`. The word `connected` and
-  a line matching `/^connected · \d+ projects?$/` appear (`connected · 1 project` for one).
+  `await phone.getByText("Test connection", { exact: true }).click()`. The word `connected` and a
+  line matching `/^connected · \d+ projects?$/` appear (`connected · 1 project` for one).
 - **Second view.** Reload `<web>/settings#devices`. A new device with platform `web` is listed,
   `last used` recent.
-- **Mint by hand.** Run
-  `await page.getByRole("button", { name: "Mint a token by hand" }).click()`,
+- **Mint by hand.** Run `await page.getByRole("button", { name: "Mint a token by hand" }).click()`,
   `await page.getByRole("textbox", { name: "device name" }).fill("verify-by-hand")` and
-  `await page.getByRole("button", { name: "Mint", exact: true }).click()`. The panel shows
-  `device` `verify-by-hand`, `url`, and `token · shown once` with the token and a `Copy` button.
-  The list gains `verify-by-hand` reading `other · paired <day> · last used never`.
-- **Revoke.** Count `page.getByRole("button", { name: "Revoke" })`. Only when it is `1` is the
-  row known: run its `click()`, then
+  `await page.getByRole("button", { name: "Mint", exact: true }).click()`. The panel shows `device`
+  `verify-by-hand`, `url`, and `token · shown once` with the token and a `Copy` button. The list
+  gains `verify-by-hand` reading `other · paired <day> · last used never`.
+- **Revoke.** Count `page.getByRole("button", { name: "Revoke" })`. Only when it is `1` is the row
+  known: run its `click()`, then
   `await page.getByRole("button", { name: "Confirm revoke" }).click()`. The row disappears. With
   more devices listed, record this step as blocked by the missing name (Gotchas) and prove
   revocation with `mend logout` instead: its device disappears from the list after a reload.
@@ -96,10 +95,10 @@ Preconditions:
   phone's device until it is revoked there.
 - **QR renderer.** Run `mend qr hello`: stdout is a block-character QR, exit `0`. Run `mend qr`:
   stderr reads `mend: usage: mend qr <text>`, exit `1`.
-- **Proof.** Save `await page.locator("body").ariaSnapshot()` and a screenshot of Settings →
-  Devices with the pairing panel open, after the phone's claim, and after the revoke. Save the
-  phone's Settings screen before and after `Unpair`, and keep the `mend pair` and `mend qr`
-  transcripts with exit codes.
+- **Proof.** Save `await page.locator("body").ariaSnapshot()` and a screenshot of Settings → Devices
+  with the pairing panel open, after the phone's claim, and after the revoke. Save the phone's
+  Settings screen before and after `Unpair`, and keep the `mend pair` and `mend qr` transcripts with
+  exit codes.
 
 ## Gotchas
 
@@ -114,16 +113,17 @@ Preconditions:
 - The QR itself is `aria-hidden`; the payload text beside it is what the run reads.
 - The phone app's controls carry no roles. `EvButton`s (`Pair`, `Type the code instead`,
   `Test connection`, `Unpair`, `Pair with your machine`) render as focusable `div`s, not buttons,
-  and the two inputs have no label: their names come from the placeholders `https://mend.example.com`
-  and `ABCD-EFGH`. The `getByText` steps above are the only handle; each is a finding. The Advanced
-  bearer-token input is a password input with only a placeholder (`token`).
+  and the two inputs have no label: their names come from the placeholders
+  `https://mend.example.com` and `ABCD-EFGH`. The `getByText` steps above are the only handle; each
+  is a finding. The Advanced bearer-token input is a password input with only a placeholder
+  (`token`).
 - The phone's tab bar is the exception: its items are `role="tab"` named `Now`, `Projects`,
   `Settings`.
 - The camera scan and the keychain are native-only. On the web build the scan path is unreachable
   and the pairing is stored in browser storage; report the native paths unreachable.
 - `mend pair --url` takes only a URL the server already lists; it cannot add one. With none
-  configured it fails with `the server returned no configured pairing URLs; configure APP_URL on the
-  server`.
+  configured it fails with
+  `the server returned no configured pairing URLs; configure APP_URL on the server`.
 - Pairing claims are rate limited: repeated wrong codes read
   `too many attempts — wait a minute, then try again`.
 - A device token acts as the whole account; scoped device permissions are planned, not built.
