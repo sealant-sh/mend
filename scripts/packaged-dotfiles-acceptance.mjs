@@ -85,32 +85,51 @@ export function dotfilesProbePaths(marker) {
 }
 
 /**
- * The session's command: facts about `home` (/root, where sealantd applies dotfiles), one
- * `mend-dotfiles-proof <key> <value>` line each, and nothing judged in the workspace. It always
- * exits 0, so a missing file is a named fact here, not a failed session. zsh proves the synced
- * `.zshrc` is the one an interactive shell of that home loads.
+ * The session's command: who it runs as, and facts about their home, one
+ * `mend-dotfiles-proof <key> <value>` line each, and nothing judged in the workspace. The home is
+ * the passwd entry's of whoever runs it: `/root` in a `shared` executor, `/home/<name>` for a
+ * person (docs/adr/0016, decision 1), where sealantd's `dotfiles.apply` puts their dotfiles
+ * (decision 11). As a person it also reports whether `/root` holds any of the same paths, through
+ * the group's passwordless sudo: a person's dotfiles never land there. It always exits 0, so a
+ * missing file is a named fact here, not a failed session. zsh proves the synced `.zshrc` is the
+ * one an interactive shell of that home loads. `home` fixes the home instead and skips `/root`
+ * (the unit tests).
  */
-export function dotfilesProbeScript(paths, home = "/root") {
-  for (const path of [...paths, home])
+export function dotfilesProbeScript(paths, home) {
+  for (const path of [...paths, ...(home === undefined ? [] : [home])])
     requireFact(/^[A-Za-z0-9._/-]+$/.test(path), "Probe paths must be plain paths");
-  const zshrc = `${home}/.mend-dotfiles-zshrc-probe`;
+  const zshrc = "$h/.mend-dotfiles-zshrc-probe";
   return [
-    `h=${home}`,
+    'u="$(id -un)"',
+    home === undefined ? 'h="$(getent passwd "$u" | cut -d : -f 6)"' : `h=${home}`,
     `p() { printf '${probePrefix} %s %s\\n' "$1" "$2"; }`,
     'p uid "$(id -u)"',
+    'p user "$u"',
+    'p home "$h"',
+    'p env-home "$HOME"',
+    'p home-mode "$(stat -c %a "$h")"',
     `for f in ${paths.join(" ")}; do`,
     '  if [ -f "$h/$f" ]; then p "file:$f" "$(sha256sum "$h/$f" | cut -d " " -f 1)";',
     '  elif [ -e "$h/$f" ]; then p "file:$f" present-not-file;',
     '  else p "file:$f" absent; fi',
+    ...(home === undefined
+      ? [
+          '  if [ "$(id -u)" != 0 ]; then',
+          '    if ! sudo -n true 2>/dev/null; then p "root:$f" unreadable;',
+          '    elif sudo -n test -e "/root/$f"; then p "root:$f" present;',
+          '    else p "root:$f" absent; fi',
+          "  fi",
+        ]
+      : []),
     "done",
     'if [ -x "$h/bin/mend-proof" ]; then p exec:bin/mend-proof yes; else p exec:bin/mend-proof no; fi',
-    'p shell "$(getent passwd root | cut -d : -f 7)"',
-    `rm -f ${zshrc}`,
+    'p shell "$(getent passwd "$u" | cut -d : -f 7)"',
+    `rm -f "${zshrc}"`,
     "if command -v zsh >/dev/null 2>&1; then",
-    `  HOME="$h" zsh -ic 'printf %s "\${MEND_DOTFILES_PROOF:-unset}" > ${zshrc}' </dev/null >/dev/null 2>&1 || true`,
+    `  HOME="$h" zsh -ic 'printf %s "\${MEND_DOTFILES_PROOF:-unset}" > "$HOME/.mend-dotfiles-zshrc-probe"' </dev/null >/dev/null 2>&1 || true`,
     "fi",
-    `if [ -s ${zshrc} ]; then p zshrc "$(cat ${zshrc})"; else p zshrc none; fi`,
-    `rm -f ${zshrc}`,
+    `if [ -s "${zshrc}" ]; then p zshrc "$(cat "${zshrc}")"; else p zshrc none; fi`,
+    `rm -f "${zshrc}"`,
     "p done 1",
   ].join("\n");
 }
@@ -133,17 +152,71 @@ export function dotfilesProbeFacts(text) {
   return facts;
 }
 
+/** The reserved range person uids come from, and the shape of their login names (decision 1). */
+const PERSON_UIDS = { min: 40000, max: 49999 };
+const PERSON_LOGIN = /^m[a-z2-7]{8}$/;
+
 /**
- * What the probe must report. `repository: true` is a launch with both archives: the repository's
- * home tree copied to /root, its bootstrap run, and the snapshot applied after it. `false` is a
- * launch whose repository clone failed: the snapshot alone, and nothing of the repository's.
+ * Who the launch must have run as, from the layout its agent process records (`runsAs`: the
+ * account a person executor runs it as, null for root in a `shared` one), checked against what
+ * the probe saw: root with `/root`, or a person with uid and name from the reserved range, HOME
+ * their passwd home `/home/<name>`, 0700, the image's login shell (root's, zsh here), and none
+ * of the probed paths in `/root`. Returns the home the dotfiles must be in.
+ */
+export function assertLaunchIdentity(observed, runsAs, paths, when) {
+  const fact = (key) => observed.get(key);
+  if (runsAs === null) {
+    requireFact(
+      fact("uid") === "0" && fact("user") === "root",
+      `${when}: the session ran shared, and the workspace reported a user other than root`,
+    );
+    requireFact(
+      fact("home") === "/root" && fact("env-home") === "/root",
+      `${when}: the session ran shared, and its home was not /root`,
+    );
+    requireFact(fact("shell") === "/usr/bin/zsh", `${when}: root's login shell was not zsh`);
+    return "/root";
+  }
+  requireFact(
+    typeof runsAs === "string" && runsAs.length > 0,
+    `${when}: the session's agent must name the person it runs as, or none`,
+  );
+  const uid = Number(fact("uid"));
+  requireFact(
+    /^[0-9]+$/.test(fact("uid") ?? "") && uid >= PERSON_UIDS.min && uid <= PERSON_UIDS.max,
+    `${when}: the session ran per person, and the workspace reported a uid outside ${PERSON_UIDS.min}–${PERSON_UIDS.max}`,
+  );
+  const user = fact("user") ?? "";
+  requireFact(
+    PERSON_LOGIN.test(user),
+    `${when}: the session ran per person, and its user was not a Mend login name`,
+  );
+  const home = `/home/${user}`;
+  requireFact(
+    fact("home") === home && fact("env-home") === home,
+    `${when}: the person's HOME and passwd home must both be /home/<their name>`,
+  );
+  requireFact(fact("home-mode") === "700", `${when}: the person's home must be 0700`);
+  requireFact(
+    fact("shell") === "/usr/bin/zsh",
+    `${when}: the person's login shell was not the image's (zsh)`,
+  );
+  for (const path of paths)
+    requireFact(
+      fact(`root:${path}`) === "absent",
+      `${when}: /root ${fact(`root:${path}`) === "present" ? "held" : "could not be checked for"} ${path}; a person's dotfiles go to their own home`,
+    );
+  return home;
+}
+
+/**
+ * What the probe must report of the home `assertLaunchIdentity` found. `repository: true` is a
+ * launch with both archives: the repository's home tree copied there, its bootstrap run, and the
+ * snapshot applied after it. `false` is a launch whose repository clone failed: the snapshot
+ * alone, and nothing of the repository's.
  */
 export function expectedDotfilesFacts(marker, { repository, home = "/root" }) {
-  const expected = new Map([
-    ["uid", "0"],
-    ["shell", "/usr/bin/zsh"],
-    ["zshrc", marker],
-  ]);
+  const expected = new Map([["zshrc", marker]]);
   const snapshot = new Map(dotfilesSnapshotFiles(marker).map((file) => [file.path, file]));
   for (const file of dotfilesRepositoryFiles(marker)) {
     if (file.home === null || snapshot.has(file.home)) continue;
@@ -217,8 +290,9 @@ async function writeTree(root, files) {
  * Dotfiles against the real packaged instance, through the installed CLI and the public API:
  * `mend dotfiles sync` from a HOME of its own, `mend dotfiles repo` pointed at a repository the
  * network Git fixture serves (manager copy, a subdirectory, a bootstrap), a project on a family
- * image with zsh, a session whose command reports /root, and a second launch after the saved ref
- * was deleted, which must launch without the repository and say so.
+ * image with zsh, a session whose command reports who it ran as and their home, and a second
+ * launch after the saved ref was deleted, which must run per person, launch without the
+ * repository and say so.
  *
  * await runPackagedDotfilesAcceptance({ cli, startCli, docker, run, until, api, scratch,
  *   environment, fixtureId, fixtureOrigin, sourceUrl, runId })
@@ -341,6 +415,9 @@ export async function runPackagedDotfilesAcceptance({
   requireFact(image.saved === true, "Public API must accept the ubuntu family image with zsh");
 
   const probe = dotfilesProbeScript(dotfilesProbePaths(marker));
+  // Per-person homes are the default (docs/adr/0016, Delivery 21), and this image is new to the
+  // instance: its first launch may run shared while Mend checks it, and any launch after that
+  // check runs as its person. Each launch is held to the layout its agent records.
   const launch = async (name, timeout) => {
     const launched = startCli(
       ["run", "--project", projectName, "--name", name, "--", "sh", "-c", probe],
@@ -374,6 +451,7 @@ export async function runPackagedDotfilesAcceptance({
     );
     return { detail, facts: dotfilesProbeFacts(await recordText(api, detail)) };
   };
+  const probedPaths = dotfilesProbePaths(marker);
 
   // ── launch 1: both archives ──────────────────────────────────────────────
   // The first launch builds the family image, so it gets the longest bound.
@@ -384,13 +462,19 @@ export async function runPackagedDotfilesAcceptance({
     snapshotSha,
     notApplied: [],
   });
+  const firstHome = assertLaunchIdentity(
+    first.facts,
+    first.detail.currentAgent.runsAs ?? null,
+    probedPaths,
+    "Dotfiles launch",
+  );
   assertDotfilesFacts(
     first.facts,
-    expectedDotfilesFacts(marker, { repository: true }),
+    expectedDotfilesFacts(marker, { repository: true, home: firstHome }),
     "Dotfiles launch",
   );
   console.log(
-    "PASS dotfiles on an ubuntu family image: repository tree copied from dots/ to /root with its bootstrap run, snapshot applied over it, zsh the login shell loading the synced .zshrc, session names repository ref and snapshot sha",
+    `PASS dotfiles on an ubuntu family image, ${firstHome === "/root" ? "shared while Mend checked the image" : "per person"}: repository tree copied from dots/ to ${firstHome === "/root" ? "/root" : "the person's home"} with its bootstrap run, snapshot applied over it, zsh the login shell loading the synced .zshrc, session names repository ref and snapshot sha`,
   );
 
   // ── launch 2: the saved ref is gone from the remote ──────────────────────
@@ -415,13 +499,24 @@ export async function runPackagedDotfilesAcceptance({
     snapshotSha,
     notApplied: ["repository"],
   });
+  const secondRunsAs = second.detail.currentAgent.runsAs ?? null;
+  requireFact(
+    secondRunsAs !== null,
+    "Dotfiles launch without its repository: a launch after Mend checked the image must run per person, the default",
+  );
+  const secondHome = assertLaunchIdentity(
+    second.facts,
+    secondRunsAs,
+    probedPaths,
+    "Dotfiles launch without its repository",
+  );
   assertDotfilesFacts(
     second.facts,
-    expectedDotfilesFacts(marker, { repository: false }),
+    expectedDotfilesFacts(marker, { repository: false, home: secondHome }),
     "Dotfiles launch without its repository",
   );
   console.log(
-    "PASS a dotfiles repository whose ref is gone costs no launch: the session applied the snapshot alone and reports the repository not applied",
+    "PASS a dotfiles repository whose ref is gone costs no launch: the session ran per person, applied the snapshot alone into the person's 0700 home (none of it in /root) and reports the repository not applied",
   );
 }
 

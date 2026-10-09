@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import {
   assertDotfilesFacts,
+  assertLaunchIdentity,
   DOTFILES_SUBDIRECTORY,
   DOTFILES_WORKSPACE_IMAGE,
   dotfilesProbeFacts,
@@ -70,9 +71,9 @@ async function probe(home) {
   return dotfilesProbeFacts(stdout.replaceAll("\n", "\r\n"));
 }
 
-/** The facts a home can show on this machine: everything but uid, login shell and zsh. */
+/** The facts a home can show on this machine: everything but what zsh loads. */
 function homeFacts(expected) {
-  return new Map([...expected].filter(([key]) => !["uid", "shell", "zshrc"].includes(key)));
+  return new Map([...expected].filter(([key]) => key !== "zshrc"));
 }
 
 test("the repository is the alpha shape: dot entries beside package directories under dots/", () => {
@@ -227,6 +228,103 @@ test("probe facts come from prefixed lines only, and a record without done is re
   assert.throws(
     () => assertDotfilesFacts(new Map([["uid", "0"]]), new Map([["shell", "/usr/bin/zsh"]]), "x"),
     /x: the workspace reported shell not at all; expected \/usr\/bin\/zsh/,
+  );
+});
+
+test("the probe reports who ran it and their home, and checks /root only in a workspace", async (t) => {
+  const home = await appliedHome(t, { repository: null });
+  const facts = await probe(home);
+  assert.equal(facts.get("uid"), String(process.getuid()));
+  assert.equal(facts.get("home"), home);
+  assert.equal(facts.get("env-home"), home);
+  assert.match(facts.get("home-mode"), /^[0-7]{3,4}$/);
+  assert.ok(
+    [...facts.keys()].every((key) => !key.startsWith("root:")),
+    "A fixed home must not reach for /root",
+  );
+  const live = dotfilesProbeScript(dotfilesProbePaths(marker));
+  assert.match(live, /h="\$\(getent passwd "\$u" \| cut -d : -f 6\)"/);
+  assert.match(live, /sudo -n test -e "\/root\/\$f"/);
+  assert.doesNotMatch(dotfilesProbeScript(dotfilesProbePaths(marker), home), /sudo/);
+});
+
+/** What the probe reports in a workspace, before the home's files. */
+const identity = (entries) => new Map(Object.entries(entries));
+const rootFacts = {
+  uid: "0",
+  user: "root",
+  home: "/root",
+  "env-home": "/root",
+  "home-mode": "700",
+  shell: "/usr/bin/zsh",
+};
+const person = (overrides = {}) => {
+  const paths = dotfilesProbePaths(marker);
+  return {
+    uid: "40007",
+    user: "mabcdefgh",
+    home: "/home/mabcdefgh",
+    "env-home": "/home/mabcdefgh",
+    "home-mode": "700",
+    shell: "/usr/bin/zsh",
+    ...Object.fromEntries(paths.map((path) => [`root:${path}`, "absent"])),
+    ...overrides,
+  };
+};
+
+test("a launch is held to the layout its agent records: root's home shared, the person's own per person", () => {
+  const paths = dotfilesProbePaths(marker);
+  assert.equal(assertLaunchIdentity(identity(rootFacts), null, paths, "x"), "/root");
+  assert.equal(
+    assertLaunchIdentity(identity(person()), "account-1", paths, "x"),
+    "/home/mabcdefgh",
+  );
+  // The release gate of 0.36.0-next.656: a per-person launch held to root's uid and /root.
+  assert.throws(
+    () => assertLaunchIdentity(identity(person()), null, paths, "x"),
+    /ran shared, and the workspace reported a user other than root/,
+  );
+  // And the other way: an agent recorded per person that ran as root.
+  assert.throws(
+    () => assertLaunchIdentity(identity(rootFacts), "account-1", paths, "x"),
+    /uid outside 40000–49999/,
+  );
+});
+
+test("a person launch is refused anything less than their own private home, and dotfiles in /root", () => {
+  const paths = dotfilesProbePaths(marker);
+  const cases = [
+    [{ uid: "1000" }, /uid outside/],
+    [{ user: "ubuntu" }, /not a Mend login name/],
+    [{ home: "/root" }, /HOME and passwd home/],
+    [{ "env-home": "/root" }, /HOME and passwd home/],
+    [{ "home-mode": "755" }, /home must be 0700/],
+    [{ shell: "/bin/sh" }, /login shell was not the image's/],
+    [{ "root:.zshrc": "present" }, /\/root held \.zshrc/],
+    [{ "root:.config/mend-proof/config": "unreadable" }, /could not be checked for/],
+  ];
+  for (const [overrides, failure] of cases)
+    assert.throws(
+      () => assertLaunchIdentity(identity(person(overrides)), "account-1", paths, "x"),
+      failure,
+    );
+  const missing = person();
+  delete missing["root:.zshrc"];
+  assert.throws(
+    () => assertLaunchIdentity(identity(missing), "account-1", paths, "x"),
+    /could not be checked for \.zshrc/,
+  );
+});
+
+test("the bootstrap proof names the home the dotfiles went to", () => {
+  const facts = (home) =>
+    expectedDotfilesFacts(marker, { repository: true, home }).get("file:.mend-bootstrap-proof");
+  assert.notEqual(facts("/home/mabcdefgh"), facts("/root"));
+  assert.equal(
+    expectedDotfilesFacts(marker, { repository: false, home: "/home/mabcdefgh" }).get(
+      "file:.mend-bootstrap-proof",
+    ),
+    "absent",
   );
 });
 

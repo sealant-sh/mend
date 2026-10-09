@@ -70,6 +70,7 @@ import {
   readPrivateIdentity,
   readUpgradeInputs,
   requestFailureEvidence,
+  setupFailureEvidence,
   runPackagedUpgrade,
   privateTreeFingerprint,
   verifyUpgradeBackup,
@@ -189,6 +190,8 @@ function start(command, args, options = {}) {
     return {
       ok,
       code,
+      signal,
+      terminated,
       output: output.toString(),
       error: Buffer.concat(stderr).toString(),
       diagnosticMatched: probe.matched(),
@@ -786,6 +789,30 @@ async function main() {
     run(process.execPath, [bin, ...args], { environment: env, ...options });
   const startCli = (args, options = {}) =>
     start(process.execPath, [bin, ...args], { environment: env, ...options });
+  // A server command that fails says why in words the CI log may carry
+  // (`setupFailureEvidence`): how it ended, setup's own headline by label, and each product
+  // container's state and health. Its output stays in the private diagnostics.
+  const serverCli = async (args, { timeout = 600_000 } = {}) => {
+    const started = Date.now();
+    const result = await startCli(args, { timeout }).result;
+    if (!result.ok) {
+      let containers = [];
+      try {
+        containers = (await collectOwned())?.compose ?? [];
+      } catch {
+        console.error("DIAGNOSIS product containers could not be listed");
+      }
+      for (const line of setupFailureEvidence({
+        ...result,
+        elapsedMs: Date.now() - started,
+        text: `${result.output}\n${result.error}`,
+        containers,
+      }))
+        console.error(line);
+    }
+    check(result.ok, `${stage}: installed mend failed; output withheld to protect credentials`);
+    return result.output;
+  };
   check((await cli(["--help"])).includes("adopt"), "Installed CLI help must work");
   check(
     (await cli([])).includes("adopt"),
@@ -872,7 +899,7 @@ async function main() {
   assertFreshDocker(await snapshot()); // Recheck immediately before the first product mutation.
   setupAttempted = true;
   try {
-    await cli(setupArgs, { timeout: 600_000 });
+    await serverCli(setupArgs);
   } finally {
     await collectOwned();
   }
@@ -1573,16 +1600,16 @@ async function main() {
   );
   console.log(`PASS CLI ${manifest.version} reads left server ${version} unchanged`);
   stage = "idempotent setup rerun";
-  await cli(setupArgs, { timeout: 600_000 });
+  await serverCli(setupArgs);
   await retained();
   stage = "setup with installed CLI version independent of server pin";
-  await cli(["server", "setup", "--offline"], { timeout: 600_000 });
+  await serverCli(["server", "setup", "--offline"]);
   await retained();
   stage = "public server restart";
   const beforeRestart = (await idle()).find(
     (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
   );
-  await cli(["server", "restart", "--offline"], { timeout: 600_000 });
+  await serverCli(["server", "restart", "--offline"]);
   await retained();
   const afterRestart = (await idle()).find(
     (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
@@ -1606,7 +1633,7 @@ async function main() {
     /* Stopped listener. */
   }
   check(!reachable, "Stopped server must not answer healthy");
-  await cli(["server", "start", "--offline"], { timeout: 600_000 });
+  await serverCli(["server", "start", "--offline"]);
   await retained();
   console.log(
     "PASS setup rerun, actual restart, stop/start retained account, identity, config pin, SSH key, project, worktree, checkpoint chain, Review patch, change and record",
@@ -1619,7 +1646,7 @@ async function main() {
       throw error;
     });
     check(backupNames.length === 0, "Earlier operations must not create upgrade backups");
-    await runPackagedUpgrade(upgrade, offline, cli, collectOwned);
+    await runPackagedUpgrade(upgrade, offline, serverCli, collectOwned);
     await health(origin, upgrade.version);
     const target = await installation(upgrade.version, upgrade.assets);
     assertUpgradeRetention(saved, target);
