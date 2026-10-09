@@ -1478,10 +1478,12 @@ benchmark once more, before 0.36 is tagged.
   second person sent into the owner's session failed. Their hand-over ran the exec that makes their
   user and home beside Core's POST of their logins (both started within 3 ms), and Core's write
   exited 1. A person's logins are now posted only once that exec has exited 0. A POST that fails
-  without refusing a login is asked once more, after the user and home are ensured again (the same
-  idempotent script, with no token pickup), and a second failure refuses the start in words. The
-  failed turn never ran on the owner's process or login: a hand-over prepares the sender's user,
-  home and logins before it stops anything, and a failure fails the waiting turn unsent. A first
-  steer or join now waits for the POST after the exec (about 140 ms on the box) instead of beside
-  it.
+  without refusing a login is asked once more, after the user and home are ensured again, and a
+  second failure refuses the start in words. The ensure reads and changes nothing in the home when
+  the user and the home are there, because the person's deliveries may be running in it by then
+  (dotfiles that fold `~/.claude` into a link, which the whole home script refuses); only a missing
+  user or home runs the whole script (review of mend#619). The failed turn never ran on the owner's
+  process or login: a hand-over prepares the sender's user, home and logins before it stops
+  anything, and a failure fails the waiting turn unsent. A first steer or join now waits for the
+  POST after the exec (about 140 ms on the box) instead of beside it.
 - Open: gate B's history record.

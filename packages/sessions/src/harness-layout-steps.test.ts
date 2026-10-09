@@ -33,6 +33,7 @@ import {
   NO_NEW_PRIVILEGES_MISSING,
   PASSING_NO_KEPT_MS,
   STANDBY_REASON,
+  personHomeEnsureScript,
 } from "./harness-layout.ts";
 import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
 
@@ -1451,7 +1452,10 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       expect(result.homeExecs).toHaveLength(2);
       expect(result.homeExecs[1]).toContain(`mend_person ${result.maria.name}`);
       expect(result.homeExecs[0]).toContain("t".repeat(43));
-      expect(result.homeExecs[1]).not.toContain("t".repeat(43));
+      // The ensure touches nothing in her home while her deliveries may run there (R1 of mend#619).
+      expect(result.homeExecs[1]).toBe(
+        personHomeEnsureScript(result.maria, { harnessHome: "/workspace/harness-home" }),
+      );
       if (refusedWith === null) {
         expect(result.outcome._tag).toBe("Success");
         continue;

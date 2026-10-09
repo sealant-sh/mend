@@ -18,6 +18,7 @@ import {
   imageLayoutKeyOf,
   layoutProbeScript,
   parseLayoutReport,
+  personHomeEnsureScript,
   personHomeScript,
   personLayoutRefusal,
   gitAuthorConfigText,
@@ -30,6 +31,7 @@ import {
   worktreeRepairScript,
   type LayoutDecisionInput,
 } from "./harness-layout.ts";
+import { personLinksScript } from "./person-deliveries.ts";
 import { SESSION_SOCKET_MOUNT_PATH, workspaceScriptStaging } from "./session-socket.ts";
 
 const alice = new LinuxIdentity({ accountId: "alice-1", name: "m3kq7xj2a", uid: 40_012 });
@@ -625,6 +627,56 @@ describe("a private TMPDIR someone else made first (review of mend#566, round 2 
       "cache",
       "shared",
     ]);
+  });
+});
+
+describe("a person ensured again while their deliveries run (review of mend#619, R1)", () => {
+  /** Alice made by her first start's exec, as root; then her dotfiles fold `~/.claude` into a link. */
+  const madeThenFolded = () => {
+    const root = fakeRoot();
+    const options = {
+      harnessHome: path.join(root.dir, "harness-home"),
+      home: path.join(root.dir, "home", alice.name),
+      tmpRoot: path.join(root.dir, "tmp"),
+      runRoot: path.join(root.dir, "run"),
+      skel: root.skel,
+    };
+    expect(root.run(personHomeScript(alice, options)).status).toBe(0);
+    // A supported folded dotfiles directory, while her dotfiles apply runs.
+    const folded = path.join(options.home, "dotfiles-claude");
+    fs.mkdirSync(folded);
+    fs.writeFileSync(path.join(folded, "settings.json"), "{}");
+    fs.rmSync(path.join(options.home, ".claude"), { recursive: true });
+    fs.symlinkSync(folded, path.join(options.home, ".claude"));
+    return { root, options, folded };
+  };
+
+  it("passes over her folded ~/.claude untouched, where the whole home script refuses it", () => {
+    const { root, options, folded } = madeThenFolded();
+    // What the retry ran before: refused, so a usable first steer was refused.
+    const whole = root.run(personHomeScript(alice, options));
+    expect(whole.status).toBe(1);
+    expect(whole.stderr).toContain("unexpected link");
+    const ensured = root.run(personHomeEnsureScript(alice, options));
+    expect(ensured.status).toBe(0);
+    expect(fs.readlinkSync(path.join(options.home, ".claude"))).toBe(folded);
+    expect(fs.readdirSync(folded)).toEqual(["settings.json"]);
+    // Her delivery then restores the links as it would have, and the home is whole again.
+    expect(root.run(personLinksScript(alice, options)).status).toBe(0);
+    expect(root.run(personHomeScript(alice, options)).status).toBe(0);
+  });
+
+  it("makes her user and home whole when either is not there", () => {
+    const { root, options } = madeThenFolded();
+    fs.rmSync(options.home, { recursive: true });
+    expect(root.run(personHomeEnsureScript(alice, options)).status).toBe(0);
+    expect(fs.statSync(path.join(options.home, ".mend")).isDirectory()).toBe(true);
+    // Her user gone (an image restarted under her): made again, home and all.
+    fs.rmSync(path.join(root.dir, "users", alice.name));
+    expect(root.run(personHomeEnsureScript(alice, options)).status).toBe(0);
+    expect(fs.readFileSync(path.join(root.dir, "users", alice.name), "utf8").trim()).toBe(
+      String(alice.uid),
+    );
   });
 });
 

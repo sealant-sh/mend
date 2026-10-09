@@ -869,6 +869,27 @@ export const personHomeCall = (person: LinuxIdentity, home?: string): string => 
 };
 
 /**
+ * A person's user and home ensured once more, after a start already made them
+ * (`HarnessLayoutSteps.processAs`'s retry of a failed login write): their user there with their
+ * uid and their home a directory, not a link, is enough, and nothing in the home is read or
+ * changed. Their deliveries (dotfiles that fold `~/.claude` into a link, the links restored after
+ * them) may be running in it, and `personHomeScript` refuses a link it did not make (review of
+ * mend#619, R1). Only a user or home that is not there runs `personHomeScript` whole. As a non-root
+ * caller (the tests) the user is not asked for.
+ */
+export const personHomeEnsureScript = (
+  person: LinuxIdentity,
+  options: PersonHomeOptions & { readonly home?: string },
+): string => {
+  const home = shellQuote(options.home ?? linuxHomeOf(person));
+  return [
+    `if { [ "$(id -u)" != 0 ] || [ "$(id -u ${person.name} 2>/dev/null)" = ${person.uid} ]; } && ` +
+      `[ -d ${home} ] && [ ! -L ${home} ]; then exit 0; fi`,
+    personHomeScript(person, options),
+  ].join("\n");
+};
+
+/**
  * Each person's Mend session token and git author, written into their home without either
  * reaching an exec's arguments (decision 4; Core keeps every exec's argv, review of mend#552/#553
  * P1-1). The exec carries one pickup ticket per person (`pickup-tickets.ts`, purpose

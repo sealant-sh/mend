@@ -48,6 +48,7 @@ import {
   ownerMapRefusal,
   parseLayoutReport,
   personLayoutRefusal,
+  personHomeEnsureScript,
   personHomeScript,
   personPrepareScript,
   personProcessEnv,
@@ -1461,18 +1462,10 @@ export const makeHarnessLayoutSteps = (deps: {
           if (!needsHome) yield* tellHomeReady(false);
           if (!needsHome && !needsLogins) return [];
           let minted = false;
-          /**
-           * Their user, home and saved directory (`personHomeScript`, idempotent, so a server
-           * restart that forgot costs one more exec and changes nothing), and whatever rides with
-           * it; confirmed only by its exit.
-           */
-          const homeExec = (after: string) =>
+          /** One exec as root, confirmed only by its exit. */
+          const homeExec = (script: string) =>
             Effect.gen(function* () {
-              const result = yield* sealant.exec(input.workspace, [
-                "sh",
-                "-c",
-                `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n${after}`,
-              ]);
+              const result = yield* sealant.exec(input.workspace, ["sh", "-c", script]);
               if (result.exitCode !== 0) {
                 return yield* new SealantPlatformError({
                   code: "person_user_not_made",
@@ -1482,8 +1475,10 @@ export const makeHarnessLayoutSteps = (deps: {
                 });
               }
             });
-          // Their first process in this executor: one exec, whose Mend token and git author ride
-          // through a pickup (decision 4): no exec of their own, and neither in its arguments.
+          // Their first process in this executor: their user, home and saved directory
+          // (`personHomeScript`, idempotent, so a server restart that forgot costs one more exec and
+          // changes nothing), in one exec whose Mend token and git author ride through a pickup
+          // (decision 4): no exec of their own, and neither in its arguments.
           const makeHome = Effect.gen(function* () {
             if (!needsHome) return;
             const ticket = yield* deps.identityTicket({
@@ -1493,9 +1488,10 @@ export const makeHarnessLayoutSteps = (deps: {
               person: identity,
             });
             minted = true;
-            yield* homeExec(identityPickupScript([{ person: identity, ticket }])).pipe(
-              Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))),
-            );
+            yield* homeExec(
+              `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
+                identityPickupScript([{ person: identity, ticket }]),
+            ).pipe(Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))));
             made.add(identity.accountId);
             madeIn.set(workspaceId, made);
             yield* tellHomeReady(true);
@@ -1504,15 +1500,19 @@ export const makeHarnessLayoutSteps = (deps: {
           // user and home: Core's write and the making of the home never touch it at once (the
           // box, 2026-10-09: a first steer's write raced `useradd` and the skeleton copy, and
           // exited 1). A write that failed without refusing a login (unconfirmed, a home not
-          // usable) is asked once more, after the home is ensured again; then the start is
-          // refused. Nobody else's login is ever read or written for them.
+          // usable) is asked once more, after their user and home are ensured again without
+          // touching what is in the home, where their deliveries may be running by then
+          // (`personHomeEnsureScript`); then the start is refused. Nobody else's login is ever
+          // read or written for them.
           const write = writeLogins({ workspace: input.workspace, launchId, identity, need });
           const writeThem = needsLogins
             ? write.pipe(
                 Effect.catch((error) =>
                   error.code !== "person_login_not_written"
                     ? Effect.fail(error)
-                    : homeExec(":").pipe(
+                    : homeExec(
+                        personHomeEnsureScript(identity, { harnessHome: deps.harnessHome }),
+                      ).pipe(
                         Effect.andThen(write),
                         Effect.mapError((again) =>
                           again.code === "person_login_not_written"
