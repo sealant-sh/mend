@@ -6,7 +6,9 @@
  * into their own home, and is reached only in a person-layout executor.
  */
 import { linuxHomeOf, type LinuxIdentity } from "@mend/domain/workbench";
+import { Option, Schema } from "effect";
 
+import { AGENT_MEMORY_INCOMING } from "./agent-memory.ts";
 import {
   ASIDE_FUNCTION,
   assertScriptSafe,
@@ -88,16 +90,24 @@ export type PersonRecord =
   | "skills-manifest"
   | "skills-digests"
   | "memory-delivered"
+  /** Of the paths the memory record names, the ones `P` holds, one per line. */
+  | "memory-present"
   | "secret-files"
   /** Their first-process deliveries ran in this executor (`FIRST_PROCESS_DONE`). */
   | "first-done";
 
 /**
  * The one exec, as the person, that reads what Mend last delivered into their home and saved
- * directory: the skills manifests and the memory record in `P/.mend-saved/`, and the sealed
- * secret-files record in `~/.mend` (never saved). Each is printed as
- * `mend-record <name> <base64>`, or `mend-record <name> -` when it is not a plain file. Folded
+ * directory: the skills manifests and the memory record in `P/.mend-saved/`, which of the paths
+ * that record names `P` still holds (`personMemoryInPlace`), and the sealed secret-files record in
+ * `~/.mend` (never saved). Each is printed as `mend-record <name> <base64>`, or
+ * `mend-record <name> -` when it is not a plain file (or, for the paths, none is there). Folded
  * into one exec so a person's deliveries cost one read, whatever they deliver.
+ *
+ * It also clears a memory delivery's staged files an earlier start left behind (its exec failed
+ * after the staging): a start that finds the memory in place runs no program to clear them, and
+ * one that does not stages its own again. It runs under the person's delivery lock, before any
+ * staging of this start.
  */
 export const personRecordsExec = (
   places: PersonPlaces,
@@ -116,6 +126,15 @@ export const personRecordsExec = (
       `out() { if [ -f "$2" ] && [ ! -L "$2" ]; then printf 'mend-record %s ' "$1"; ` +
         `base64 < "$2" | tr -d '\\n'; printf '\\n'; else printf 'mend-record %s -\\n' "$1"; fi; }`,
       ...records.map(([name, file]) => `out ${name} ${q(file)}`),
+      // The memory record's keys, one per line as the delivery program writes them
+      // (`JSON.stringify(record, null, 2)`); a key with a quote or a backslash is not listed, so
+      // its file counts as not there and the memory is delivered.
+      `md=${q(`${places.saved}/${paths.memoryDelivered}`)}; ms=${q(places.saved)}; mp=`,
+      `if [ -f "$md" ] && [ ! -L "$md" ]; then mp=$(sed -n 's/^  "\\([^"\\\\]*\\)": "[^"\\\\]*",*$/\\1/p' "$md" | ` +
+        `while IFS= read -r p; do if [ -e "$ms/$p" ] || [ -L "$ms/$p" ]; then printf '%s\\n' "$p"; fi; done); fi`,
+      `if [ -n "$mp" ]; then printf 'mend-record memory-present '; printf '%s\\n' "$mp" | base64 | tr -d '\\n'; printf '\\n'; ` +
+        `else printf 'mend-record memory-present -\\n'; fi`,
+      `mi=${q(`${places.saved}/${personSavedPathOf(AGENT_MEMORY_INCOMING)}`)}; if [ -e "$mi" ] || [ -L "$mi" ]; then rm -rf "$mi"; fi`,
       // The secret files' record is in the home's own `~/.mend`, read as `secretFilesDeliveredExec`
       // reads it: nothing through a link.
       `if [ -L ${q(`${places.home}/.mend`)} ]; then printf 'mend-record secret-files -\\n'; printf 'mend-record first-done -\\n'; ` +
@@ -130,7 +149,7 @@ export const parsePersonRecords = (stdout: string): ReadonlyMap<PersonRecord, st
   const found = new Map<PersonRecord, string | null>();
   for (const line of stdout.split("\n")) {
     const match =
-      /^mend-record (skills-manifest|skills-digests|memory-delivered|secret-files|first-done) (\S+)$/.exec(
+      /^mend-record (skills-manifest|skills-digests|memory-delivered|memory-present|secret-files|first-done) (\S+)$/.exec(
         line.trim(),
       );
     const name = match?.[1];
@@ -140,6 +159,7 @@ export const parsePersonRecords = (stdout: string): ReadonlyMap<PersonRecord, st
       (name !== "skills-manifest" &&
         name !== "skills-digests" &&
         name !== "memory-delivered" &&
+        name !== "memory-present" &&
         name !== "secret-files" &&
         name !== "first-done")
     ) {
@@ -148,6 +168,35 @@ export const parsePersonRecords = (stdout: string): ReadonlyMap<PersonRecord, st
     found.set(name, value === "-" ? null : Buffer.from(value, "base64").toString("utf8"));
   }
   return found;
+};
+
+const MemoryList = Schema.fromJsonString(
+  Schema.Array(Schema.Struct({ path: Schema.String, digest: Schema.String })),
+);
+
+/**
+ * Whether a person's memory delivery would change nothing in `P`: the memory record there is
+ * exactly the one the delivery program writes when it puts every file of `list` (a plan's, its
+ * paths in `P`) in place, and `P` holds every one of those paths. Then each stored file is either
+ * still as delivered (`unchanged`) or changed by the person's own agent since (`left`), nothing is
+ * moved aside, and the record would be written back as it is: the delivery, its staged files and
+ * its exec are skipped. A record with a file left as the session had it, a memory changed in the
+ * store, a file gone from `P`, or no record at all: the delivery runs.
+ */
+export const personMemoryInPlace = (
+  list: string,
+  records: ReadonlyMap<PersonRecord, string | null>,
+): boolean => {
+  const listed = Schema.decodeUnknownOption(MemoryList)(list);
+  if (Option.isNone(listed)) return false;
+  const expected = JSON.stringify(
+    Object.fromEntries(listed.value.map((file) => [file.path, file.digest])),
+    null,
+    2,
+  );
+  if ((records.get("memory-delivered") ?? null) !== expected) return false;
+  const present = new Set((records.get("memory-present") ?? "").split("\n"));
+  return listed.value.every((file) => present.has(file.path));
 };
 
 // ─── after a person's dotfiles ───────────────────────────────────────────────

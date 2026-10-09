@@ -14,7 +14,7 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
-import { consolidateCodexDatabase } from "./codex-memory.ts";
+import { codexDatabaseAsRead } from "./codex-memory.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 /**
@@ -380,6 +380,12 @@ export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<
       }
     };
     for (const { root } of AGENT_MEMORY_ROOTS) await walk(root);
+    const delivered = parseAgentMemoryDelivered(
+      await fs.readFile(path.join(harnessHomePath, AGENT_MEMORY_DELIVERED), "utf8").then(
+        (raw) => raw,
+        () => null,
+      ),
+    );
     for (const { path: file } of AGENT_MEMORY_FILES) {
       const abs = path.join(harnessHomePath, file);
       const stat = await fs.lstat(abs).catch(() => null);
@@ -391,7 +397,7 @@ export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<
       // A SQLite file is read with its write-ahead log and stored as one consolidated file.
       const wal = await fs.readFile(`${abs}-wal`).catch(() => null);
       const consolidated = await Effect.runPromise(
-        consolidateCodexDatabase(await fs.readFile(abs), wal),
+        codexDatabaseAsRead(await fs.readFile(abs), wal, delivered[file] ?? null),
       );
       if (consolidated === null || consolidated.byteLength > agentMemoryMaxFileBytes(file)) {
         skipped.push(file);
@@ -399,17 +405,7 @@ export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<
       }
       files.push(asMemoryFile(file, consolidated));
     }
-    const delivered = await fs
-      .readFile(path.join(harnessHomePath, AGENT_MEMORY_DELIVERED), "utf8")
-      .then(
-        (raw) => raw,
-        () => null,
-      );
-    return {
-      delivered: parseAgentMemoryDelivered(delivered),
-      files,
-      skipped,
-    };
+    return { delivered, files, skipped };
   });
 
 /**

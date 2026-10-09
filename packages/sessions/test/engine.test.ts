@@ -27295,6 +27295,9 @@ const scrubsOf = (run: DeliveryRun) =>
       : [];
   });
 
+/** A record's text as `personRecordsExec` prints it. */
+const printedRecord = (text: string) => Buffer.from(text, "utf8").toString("base64");
+
 describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
   const LAUNCHER = linuxLoginNameOf("user-fixture");
   const JOINER = linuxLoginNameOf(MARIA);
@@ -27558,6 +27561,138 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         (commandOf(argv)[2] ?? "").includes("mend-record");
       if (delivery) expect(run.users[index]).not.toBeNull();
     });
+  });
+
+  /**
+   * An executor's people's saved directories as the delivery program leaves them: each delivery
+   * exec records what it delivered, every path in place, and the records exec reads it back.
+   */
+  const savedMemory = () => {
+    const delivered = new Map<string, { record: string; present: string }>();
+    return (
+      argv: ReadonlyArray<string>,
+    ): { exitCode: number; stdout: string; stderr: string } | undefined => {
+      const command = commandOf(argv);
+      if (command[3] === "mend-agent-memory") {
+        const listed: ReadonlyArray<{ readonly path: string; readonly digest: string }> =
+          JSON.parse(command[7] ?? "[]");
+        delivered.set(command[4] ?? "", {
+          record: JSON.stringify(
+            Object.fromEntries(listed.map((file) => [file.path, file.digest])),
+            null,
+            2,
+          ),
+          present: listed.map((file) => file.path).join("\n"),
+        });
+        return {
+          exitCode: 0,
+          stdout: listed.map((file) => `memory written ${file.path}\n`).join(""),
+          stderr: "",
+        };
+      }
+      const script = command[2] ?? "";
+      if (!script.includes("mend-record")) return undefined;
+      const saved = [...delivered.keys()].find((dir) => script.includes(`ms='${dir}'`));
+      const found = saved === undefined ? undefined : delivered.get(saved);
+      return {
+        exitCode: 0,
+        stdout:
+          found === undefined
+            ? ""
+            : `mend-record memory-delivered ${printedRecord(found.record)}\nmend-record memory-present ${printedRecord(found.present)}\n`,
+        stderr: "",
+      };
+    };
+  };
+
+  /** Alice's second session in her own live executor: the execs and writes of that join alone. */
+  const joinSameAlice = async (layers: Partial<Parameters<typeof withEngine>[1]>) => {
+    let from = 0;
+    const run = await launchAndJoin({
+      join: null,
+      layers,
+      exec: savedMemory(),
+      inspect: (engine, world, ids, seen) =>
+        Effect.gen(function* () {
+          const holder = world.sessions.get(ids.holder);
+          if (holder === undefined) throw new Error("no holder");
+          from = seen.execs.length;
+          const second = yield* engine.provisionSessionIn(holder.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          yield* engine.launch(second.id, ["claude"]);
+          yield* Effect.sleep("50 millis");
+        }),
+    });
+    const cold = { ...run, execs: run.execs.slice(0, from), users: run.users.slice(0, from) };
+    const join = { ...run, execs: run.execs.slice(from), users: run.users.slice(from) };
+    /** Every write of staged memory: under `P`'s incoming directory. */
+    const staged = (part: DeliveryRun) =>
+      part.execs.filter(
+        (argv) =>
+          named(argv, "mend-write") &&
+          commandOf(argv).some((target) => target.includes("agent-memory-incoming")),
+      );
+    return { cold, join, staged };
+  };
+
+  it("a same-person join with their memory unchanged stages and runs nothing for it", async () => {
+    const { cold, join, staged } = await joinSameAlice(people);
+    // The launch delivered it; the join read the one record it reads anyway, and stopped there.
+    expect(asWho(cold, (argv) => named(argv, "mend-agent-memory"))).toEqual([LAUNCHER]);
+    expect(staged(cold)).toHaveLength(1);
+    expect(asWho(join, (argv) => (commandOf(argv)[2] ?? "").includes("mend-record"))).toEqual([
+      LAUNCHER,
+    ]);
+    expect(join.execs.filter((argv) => named(argv, "mend-agent-memory"))).toEqual([]);
+    expect(staged(join)).toEqual([]);
+    // Its other deliveries still run: the secret files, as Alice.
+    expect(asWho(join, (argv) => named(argv, "mend-secret-files"))).toContain(LAUNCHER);
+  });
+
+  it("a same-person join delivers their memory when the store changed it since their last start", async () => {
+    let reads = 0;
+    const { join, staged } = await joinSameAlice({
+      ...people,
+      agentMemoryLayer: agentMemoryLayerOf({
+        forLaunch: (userId) =>
+          Effect.sync(() => {
+            reads += 1;
+            if (reads === 1) return memoryOf(userId);
+            const file = {
+              path: ".claude/projects/-workspace-repo/memory/MEMORY.md",
+              encoding: "utf8",
+              contents: `- what ${userId} learned\n- and read back since\n`,
+            } as const;
+            return [{ ...file, digest: agentMemoryDigest(file), updatedBySession: null }];
+          }),
+      }),
+    });
+    const memory = join.execs.filter((argv) => named(argv, "mend-agent-memory"));
+    expect(memory.map((argv) => commandOf(argv)[4])).toEqual([P_LAUNCHER]);
+    expect(asWho(join, (argv) => named(argv, "mend-agent-memory"))).toEqual([LAUNCHER]);
+    expect(staged(join)).toHaveLength(1);
+  });
+
+  it("another person's join delivers their own memory, into their own P, beside Alice's in place", async () => {
+    const run = await launchAndJoin({ layers: people, exec: savedMemory() });
+    const join = run.execs.slice(run.cold);
+    const memory = join.flatMap((argv, index) =>
+      named(argv, "mend-agent-memory")
+        ? [{ saved: commandOf(argv)[4], user: run.users[run.cold + index] ?? null }]
+        : [],
+    );
+    expect(memory).toEqual([{ saved: P_JOINER, user: JOINER }]);
+    const list = commandOf(join.find((argv) => named(argv, "mend-agent-memory")) ?? [])[7] ?? "";
+    expect(JSON.parse(list)).toEqual([
+      {
+        path: ".claude/projects/-workspace-repo/memory/MEMORY.md",
+        digest: memoryOf(MARIA)[0]?.digest,
+      },
+    ]);
+    for (const argv of join) expect(argv.join(" ")).not.toContain(P_LAUNCHER);
   });
 
   it("two people's pi profiles live in one executor: Maria's own is delivered beside Alice's live pi", async () => {

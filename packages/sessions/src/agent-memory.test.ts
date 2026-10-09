@@ -153,6 +153,33 @@ describe("Codex memory in a harness home (docs/adr/0009, Codex)", () => {
   });
 });
 
+describe("Codex's summary database delivered and untouched", () => {
+  it("reads back as delivered, so the read-back saves no new version of it", async () => {
+    const home = makeHome();
+    const { DatabaseSync } = await import("node:sqlite");
+    const made = path.join(makeHome(), "memories_1.sqlite");
+    const database = new DatabaseSync(made);
+    database.exec("create table stage1_outputs (thread_id text primary key)");
+    database.close();
+    const file = {
+      path: ".codex/memories_1.sqlite",
+      encoding: "base64" as const,
+      contents: fs.readFileSync(made).toString("base64"),
+    };
+    await Effect.runPromise(
+      materializeAgentMemory(
+        home,
+        planAgentMemory([{ ...file, digest: agentMemoryDigest(file), updatedBySession: null }]),
+        "user-anna",
+      ),
+    );
+    const read = await Effect.runPromise(readAgentMemoryFromHome(home));
+    const back = read.files.find((entry) => entry.path === file.path);
+    expect(back === undefined ? null : agentMemoryDigest(back)).toBe(agentMemoryDigest(file));
+    expect(read.delivered[file.path]).toBe(agentMemoryDigest(file));
+  });
+});
+
 describe("a memory file the read-back could not read", () => {
   it("is not taken as deleted: it leaves the delivered record before the read-back", () => {
     expect(

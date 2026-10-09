@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   AGENT_MEMORY_DELIVERED,
+  AGENT_MEMORY_INCOMING,
   deliverAgentMemoryExec,
   mapAgentMemoryPlan,
   planAgentMemory,
@@ -30,6 +31,7 @@ import {
   PERSON_SKILLS_KEPT,
   PERSON_SKILLS_MANIFEST,
   personLinksScript,
+  personMemoryInPlace,
   personRecordsExec,
   personSavedPathOf,
 } from "./person-deliveries.ts";
@@ -471,6 +473,119 @@ describe("a person's memory, in their saved directory (decision 9)", () => {
     // Nothing staged is left, no owner record is written, and nothing lands under `.mend`.
     expect(fs.existsSync(path.join(places.saved, plan.incoming))).toBe(false);
     expect(fs.existsSync(path.join(places.saved, ".mend"))).toBe(false);
+  });
+});
+
+describe("a person's memory already in place (a same-person join)", () => {
+  const MEMORY = ".claude/projects/-workspace-repo/memory/MEMORY.md";
+  const NOTES = ".claude/projects/-workspace-repo/memory/notes.md";
+  /** Stages and runs the delivery program for `files`, into `saved`, as a person's start does. */
+  const deliver = (saved: string, files: ReadonlyArray<StoredMemoryFile>) => {
+    const plan = mapAgentMemoryPlan(planAgentMemory(files), personSavedPathOf);
+    for (const file of plan.staged) {
+      const at = path.join(saved, file.path);
+      fs.mkdirSync(path.dirname(at), { recursive: true });
+      fs.writeFileSync(at, file.bytes);
+    }
+    const result = run(
+      deliverAgentMemoryExec(saved, plan, "", {
+        incoming: plan.incoming,
+        record: personSavedPathOf(AGENT_MEMORY_DELIVERED),
+      }),
+    );
+    expect(result.status).toBe(0);
+    return result.stdout;
+  };
+  /** Whether a start would skip delivering `files`, from the one records exec it runs anyway. */
+  const inPlace = (places: ReturnType<typeof placesIn>, files: ReadonlyArray<StoredMemoryFile>) =>
+    personMemoryInPlace(
+      mapAgentMemoryPlan(planAgentMemory(files), personSavedPathOf).list,
+      parsePersonRecords(
+        run(
+          personRecordsExec(places, { memoryDelivered: personSavedPathOf(AGENT_MEMORY_DELIVERED) }),
+        ).stdout,
+      ),
+    );
+  const memory = [
+    stored(MEMORY, "- notes\n"),
+    stored(NOTES, "- more\n"),
+    stored(CODEX_MEMORY_DATABASE, "a database"),
+  ];
+
+  it("is in place after a delivery, and delivering it again would change nothing in P", () => {
+    const places = placesIn(tmp());
+    expect(inPlace(places, memory)).toBe(false);
+    deliver(places.saved, memory);
+    expect(inPlace(places, memory)).toBe(true);
+    const before = listTree(places.saved);
+    deliver(places.saved, memory);
+    expect(listTree(places.saved)).toEqual(before);
+  });
+
+  it("stays in place when the person's own agent changed a file since: the program leaves it too", () => {
+    const places = placesIn(tmp());
+    deliver(places.saved, memory);
+    fs.writeFileSync(path.join(places.saved, MEMORY), "- notes\n- learned today\n");
+    expect(inPlace(places, memory)).toBe(true);
+    const before = listTree(places.saved);
+    expect(deliver(places.saved, memory)).toContain(`memory left ${MEMORY}`);
+    expect(listTree(places.saved)).toEqual(before);
+  });
+
+  it("is not in place when the stored memory changed, a file is gone, or a file was left as it was", () => {
+    const places = placesIn(tmp());
+    deliver(places.saved, memory);
+    // The store changed a file: delivered, and in place again after.
+    const changed = [stored(MEMORY, "- notes\n- from another session\n"), ...memory.slice(1)];
+    expect(inPlace(places, changed)).toBe(false);
+    expect(deliver(places.saved, changed)).toContain(`memory written ${MEMORY}`);
+    expect(inPlace(places, changed)).toBe(true);
+    // A file the store added, or no longer keeps.
+    expect(inPlace(places, [...changed, stored(".codex/memories/new.md", "new\n")])).toBe(false);
+    expect(inPlace(places, changed.slice(1))).toBe(false);
+    // A delivered file gone from P: delivered again.
+    fs.rmSync(path.join(places.saved, NOTES));
+    expect(inPlace(places, changed)).toBe(false);
+    expect(deliver(places.saved, changed)).toContain(`memory written ${NOTES}`);
+    expect(inPlace(places, changed)).toBe(true);
+  });
+
+  it("is not in place when the last delivery left a file as the session had it", () => {
+    const places = placesIn(tmp());
+    // A file in P before any delivery, other than the stored one: left, and not recorded.
+    fs.mkdirSync(path.dirname(path.join(places.saved, MEMORY)), { recursive: true });
+    fs.writeFileSync(path.join(places.saved, MEMORY), "- mine\n");
+    expect(deliver(places.saved, memory)).toContain(`memory left ${MEMORY}`);
+    expect(inPlace(places, memory)).toBe(false);
+  });
+
+  it("is never another person's: Maria's memory is not in place in a P that holds Alice's", () => {
+    const places = placesIn(tmp());
+    deliver(places.saved, memory);
+    expect(inPlace(places, [stored(MEMORY, "- what Maria learned\n")])).toBe(false);
+  });
+
+  it("the one records read clears staged files an earlier start left, and the memory stays in place", () => {
+    const places = placesIn(tmp());
+    deliver(places.saved, memory);
+    // An earlier start staged its files and its exec never ran.
+    const incoming = path.join(places.saved, personSavedPathOf(AGENT_MEMORY_INCOMING));
+    fs.mkdirSync(path.join(incoming, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(incoming, ".claude/staged.md"), "- staged\n");
+    expect(inPlace(places, memory)).toBe(true);
+    expect(fs.existsSync(incoming)).toBe(false);
+    expect(fs.existsSync(path.join(places.saved, MEMORY))).toBe(true);
+  });
+
+  it("an empty memory delivered is in place; a record not written by the program is not", () => {
+    const places = placesIn(tmp());
+    deliver(places.saved, []);
+    expect(inPlace(places, [])).toBe(true);
+    // The same keys, written another way (on one line): not taken as the program's.
+    deliver(places.saved, memory);
+    const record = path.join(places.saved, personSavedPathOf(AGENT_MEMORY_DELIVERED));
+    fs.writeFileSync(record, JSON.stringify(JSON.parse(fs.readFileSync(record, "utf8"))));
+    expect(inPlace(places, memory)).toBe(false);
   });
 });
 

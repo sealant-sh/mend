@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -252,6 +253,25 @@ export const consolidateCodexDatabase = (
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
+
+/**
+ * Codex's summary database as a read-back takes it: the bytes themselves when they are exactly
+ * the ones delivered (`deliveredDigest`, the delivered record's) and no write-ahead log holds
+ * anything, else consolidated (`consolidateCodexDatabase`). `VACUUM INTO` is not byte-stable (it
+ * moves the schema cookie on), so an untouched database consolidated would read back as one the
+ * session changed: a new stored version at every read-back, and a rewrite of the file at the
+ * person's next start.
+ */
+export const codexDatabaseAsRead = (
+  db: Uint8Array,
+  wal: Uint8Array | null,
+  deliveredDigest: string | null,
+): Effect.Effect<Uint8Array | null> =>
+  deliveredDigest !== null &&
+  (wal === null || wal.byteLength === 0) &&
+  createHash("sha256").update(db).digest("hex") === deliveredDigest
+    ? Effect.succeed(db)
+    : consolidateCodexDatabase(db, wal);
 
 /**
  * Two of Codex's summary databases as one (docs/adr/0009, decision 4): `ours` with every summary
