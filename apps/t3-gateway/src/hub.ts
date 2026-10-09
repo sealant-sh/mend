@@ -3028,7 +3028,9 @@ export const makePersonHub = (input: {
               ),
             ),
           );
-        return range.diff;
+        // Mend renders a large slice's first files only; the client is told as t3code's own
+        // server tells it of output it cut.
+        return range.truncated ? `${range.diff}${TRUNCATED_MARKER}` : range.diff;
       });
 
     const locationOf = (cwd: string) =>
@@ -3136,6 +3138,9 @@ const TURN_SLICES_READ = 50;
 /** How many slices' files a hub keeps. */
 const SLICE_FILES_KEPT = 2_000;
 const NO_TURN_CHECKPOINTS: ReadonlyMap<string, TurnCheckpoint> = new Map();
+
+/** What t3code's server appends to output it cut (`OUTPUT_TRUNCATED_MARKER`). */
+const TRUNCATED_MARKER = "\n\n[truncated]";
 
 /** How many sequences a hub reserves at a time (`reserveSequences`). */
 const SEQUENCE_BLOCK = 1_000_000;

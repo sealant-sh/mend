@@ -506,6 +506,8 @@ export class FakeWorkbench {
           deletions: file.deletions,
           binary: false,
         })),
+        truncated: range.truncated === true,
+        omitted: [],
       });
     }
     if (method === "POST" && collection === "worktrees" && sub === "sessions") {
@@ -943,6 +945,8 @@ export class FakeWorkbench {
     {
       diff: string;
       files: ReadonlyArray<{ path: string; status: string; additions: number; deletions: number }>;
+      /** Mend rendered only some of the files' patches. */
+      truncated?: boolean;
     }
   >();
   /** `GET /api/changes/:id/stats`, by change id. */

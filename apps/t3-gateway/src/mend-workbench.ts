@@ -296,6 +296,8 @@ export type MendRangeFile = typeof MendRangeFile.Type;
 export const MendRangeDiff = Schema.Struct({
   diff: Schema.String,
   files: Schema.Array(MendRangeFile),
+  /** Mend rendered the patches of only some files (its file cap, byte budget or deadline). */
+  truncated: Schema.Boolean,
 });
 export type MendRangeDiff = typeof MendRangeDiff.Type;
 

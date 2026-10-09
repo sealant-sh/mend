@@ -103,6 +103,19 @@ describe("per-turn diffs", () => {
         });
         assert.strictEqual(turn.diff, "diff --git a/parser.test.ts b/parser.test.ts\n");
 
+        // A slice Mend rendered only in part says so, as t3code's server does of output it cut.
+        mend.workbench.ranges.set(`${one}..${two}`, {
+          diff: "diff --git a/parser.test.ts b/parser.test.ts\n",
+          files: [{ path: "parser.test.ts", status: "added", additions: 30, deletions: 0 }],
+          truncated: true,
+        });
+        const cut = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
+          threadId: THREAD,
+          fromTurnCount: 1,
+          toTurnCount: 2,
+        });
+        assert.isTrue(cut.diff.endsWith("\n\n[truncated]"));
+
         // A turn Mend has no checkpoint for is the method's own error.
         const missing = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
