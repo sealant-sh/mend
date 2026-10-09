@@ -960,12 +960,16 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
       _tag: "ok",
     });
+    const withSsh = makeRuntime({ configDir });
     expect(
       await serverCommand(
         ["setup", "--edge", "mend.example.test", "--ssh-bind", "0.0.0.0"],
-        makeRuntime({ configDir }).runtime,
+        withSsh.runtime,
       ),
     ).toEqual({ _tag: "ok" });
+    expect(
+      withSsh.lines.some((line) => line.endsWith("Workspace SSH is published on 0.0.0.0:2222.")),
+    ).toBe(true);
     const env = readEnv(activeFile(configDir, "server.env"));
     expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
     expect(env.get("MEND_SSH_BIND_HOST")).toBe("0.0.0.0");
@@ -1409,6 +1413,14 @@ describe("mend server setup", () => {
     expect(
       control.lines.some((line) =>
         line.startsWith("The edge for mend.example.test is up on 80 and 443."),
+      ),
+    ).toBe(true);
+    // The edge carries HTTPS only: setup says where workspace SSH stayed.
+    expect(
+      control.lines.some((line) =>
+        line.includes(
+          "Workspace SSH is published on 127.0.0.1:2222 only, so Remote-SSH and mend ssh from another machine cannot reach it; --ssh-bind 0.0.0.0 publishes it.",
+        ),
       ),
     ).toBe(true);
     for (const line of control.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);

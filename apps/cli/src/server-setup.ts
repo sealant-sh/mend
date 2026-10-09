@@ -1787,7 +1787,11 @@ const startCompose = async (
 const edgeStartedLine = (config: ServerConfig): string | null =>
   config.edgeHost === undefined
     ? null
-    : `The edge for ${config.edgeHost} is up on 80 and 443. Caddy asks for its certificate once ${config.edgeHost} resolves to this machine and both ports reach it from the Internet. mend server status says whether it holds one, and mend server logs shows what Caddy tried.`;
+    : `The edge for ${config.edgeHost} is up on 80 and 443. Caddy asks for its certificate once ${config.edgeHost} resolves to this machine and both ports reach it from the Internet. mend server status says whether it holds one, and mend server logs shows what Caddy tried.${
+        config.sshBind === undefined
+          ? ` Workspace SSH is published on ${config.bind}:${config.sshPort} only, so Remote-SSH and mend ssh from another machine cannot reach it; --ssh-bind 0.0.0.0 publishes it.`
+          : ` Workspace SSH is published on ${config.sshBind}:${config.sshPort}.`
+      }`;
 
 const setupServer = async (
   args: ReadonlyArray<string>,
