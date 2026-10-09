@@ -212,6 +212,17 @@ exec or a stand-in, and none blocks the build.
 - **What Mend does now:** a single-use, 30-second pickup ticket in argv. The exec redeems it over
   the session channel and writes the bytes straight to the 0600 file (ADR 0010 decision 5, amended
   2026-10-06). No extra exec, and nothing needed from Core.
+- **Status, 2026-10-10:** done in sealant#329 (merged 2026-10-06), checked at the pinned
+  0.39.0-next.707 (Core `96be22f7`). Telemetry ingest drops a `processStarted` payload's arguments
+  (`withholdProcessArgs`: the executable, `argCount` and `argLengths` stay), and a rebuild from an
+  older row withholds them too. An exec run's row and a session's row (`argv` holds `argv[0]` only)
+  keep no arguments. Both run-exec queues delete the job row when a worker takes it
+  (`deleteOnPickup`), and `sweepRunExecJobRows` removes leftovers. No log line in the exec route,
+  the queue or the worker, nor in sealantd, prints the arguments. What remains: the job row holds
+  the argv in Postgres from enqueue until pickup (at once on an idle worker; minutes when every
+  run-exec slot is busy; an `active` leftover is swept after ten minutes), so a backup or WAL taken
+  in that window has it. Mend's pickup ticket keeps that window harmless: single-use, bound to the
+  person and executor, spent or discarded when the exec ends.
 - **Suggested, Core:**
   - **Exec stdin that is never recorded,** or a per-exec `secretEnv` whose values are never
     recorded, seed the redactor, and are redacted in `ProcessStarted.args` too.

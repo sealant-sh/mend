@@ -3,9 +3,11 @@ import { createHash, randomBytes } from "node:crypto";
 /**
  * Pickup tickets: how a secret reaches a workspace without riding an exec's arguments.
  *
- * The platform keeps every exec's argv, in plaintext and for good (Core's `telemetry_events`,
- * `telemetry_timeline` and the job row, which holds it from the moment the exec is queued; review
- * of mend#552/#553, P1-1). So no secret goes there. Mend mints a ticket instead, puts only the
+ * Core before sealant#329 kept every exec's argv, in plaintext and for good (`telemetry_events`,
+ * `telemetry_timeline` and the job row; review of mend#552/#553, P1-1). Since #329 (in the pinned
+ * 0.39.0-next.707) it records only the program and the arguments' count and lengths, and deletes
+ * the job row when a worker takes it, but the row still holds the argv from the moment the exec is
+ * queued until then, and an older Core keeps it all. So no secret goes there. Mend mints a ticket instead, puts only the
  * ticket in the argv, and the same exec redeems it over the session channel, the authenticated
  * connection the workspace already uses to reach Mend, writing what it gets straight into its
  * file. What the platform stores is a ticket that is spent or discarded by the time the exec ends,
