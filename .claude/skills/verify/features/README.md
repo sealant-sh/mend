@@ -113,22 +113,22 @@ Totals: 58 features, 51 mapped, 7 not mapped.
 
 ### The core loop
 
-| Feature          | File                                         | Surfaces                                | Status |
-| ---------------- | -------------------------------------------- | --------------------------------------- | ------ |
-| adopt-project    | [adopt-project.md](./adopt-project.md)       | web, CLI, mobile, VS Code               | mapped |
-| start-session    | [start-session.md](./start-session.md)       | web, CLI, TUI, desktop, mobile, VS Code | mapped |
-| review-change    | [review-change.md](./review-change.md)       | web, TUI, desktop, mobile               | mapped |
-| send-review-back | [send-review-back.md](./send-review-back.md) | web, CLI, TUI, mobile                   | mapped |
-| land-change      | [land-change.md](./land-change.md)           | web, CLI, desktop, mobile, Slack        | mapped |
-| services         | [services.md](./services.md)                 | web, CLI, TUI, desktop                  | mapped |
+| Feature          | File                                         | Surfaces                                        | Status |
+| ---------------- | -------------------------------------------- | ----------------------------------------------- | ------ |
+| adopt-project    | [adopt-project.md](./adopt-project.md)       | web, CLI, TUI, mobile, VS Code                  | mapped |
+| start-session    | [start-session.md](./start-session.md)       | web, CLI, TUI, desktop, mobile, VS Code, Slack  | mapped |
+| review-change    | [review-change.md](./review-change.md)       | web, TUI, desktop, mobile                       | mapped |
+| send-review-back | [send-review-back.md](./send-review-back.md) | web, CLI, TUI, desktop, mobile                  | mapped |
+| land-change      | [land-change.md](./land-change.md)           | web, CLI, desktop, mobile (observe only), Slack | mapped |
+| services         | [services.md](./services.md)                 | web, CLI, TUI, desktop                          | mapped |
 
 ### Access and identity
 
 | Feature           | File                                           | Surfaces                           | Status |
 | ----------------- | ---------------------------------------------- | ---------------------------------- | ------ |
 | sign-in           | [sign-in.md](./sign-in.md)                     | web, CLI, desktop                  | mapped |
-| pairing-devices   | [pairing-devices.md](./pairing-devices.md)     | web, CLI, mobile, desktop          | mapped |
-| provider-accounts | [provider-accounts.md](./provider-accounts.md) | web, CLI                           | mapped |
+| pairing-devices   | [pairing-devices.md](./pairing-devices.md)     | web, CLI, mobile                   | mapped |
+| provider-accounts | [provider-accounts.md](./provider-accounts.md) | web, CLI, desktop                  | mapped |
 | git-access        | [git-access.md](./git-access.md)               | web, CLI                           | mapped |
 | workspace-ssh     | [workspace-ssh.md](./workspace-ssh.md)         | CLI, VS Code                       | mapped |
 | models            | [models.md](./models.md)                       | web, CLI, desktop, mobile, VS Code | mapped |
@@ -174,13 +174,13 @@ Totals: 58 features, 51 mapped, 7 not mapped.
 
 ### Organization and sharing
 
-| Feature          | File                                         | Surfaces          | Status |
-| ---------------- | -------------------------------------------- | ----------------- | ------ |
-| organization     | [organization.md](./organization.md)         | web, CLI          | mapped |
-| shared-control   | [shared-control.md](./shared-control.md)     | web, CLI, desktop | mapped |
-| per-person-homes | [per-person-homes.md](./per-person-homes.md) | web, CLI          | mapped |
-| operator         | [operator.md](./operator.md)                 | CLI, web          | mapped |
-| exposure         | [exposure.md](./exposure.md)                 | CLI               | mapped |
+| Feature          | File                                         | Surfaces                                | Status |
+| ---------------- | -------------------------------------------- | --------------------------------------- | ------ |
+| organization     | [organization.md](./organization.md)         | web, CLI                                | mapped |
+| shared-control   | [shared-control.md](./shared-control.md)     | web, CLI, desktop, mobile               | mapped |
+| per-person-homes | [per-person-homes.md](./per-person-homes.md) | web, CLI, TUI, desktop, mobile, VS Code | mapped |
+| operator         | [operator.md](./operator.md)                 | CLI, web                                | mapped |
+| exposure         | [exposure.md](./exposure.md)                 | CLI, web                                | mapped |
 
 ### This machine: the server and the CLI
 
