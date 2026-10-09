@@ -130,6 +130,89 @@ describe("per-turn diffs", () => {
   );
 });
 
+describe("per-turn diffs while Mend catches up", () => {
+  it.live("a checkpoint that lands after the turn ended is read when it lands", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const start = mend.workbench.addCheckpoint("session-1", "session-start");
+        const first = mend.workbench.addTurn("session-1", "Edit it");
+        mend.workbench.setTurn(first, "completed");
+        const { rpc } = yield* pairAndConnect(mend, "LATE");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        // Mend told of the turn's end before it took the checkpoint.
+        const early = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
+            threadId: THREAD,
+            fromTurnCount: 0,
+            toTurnCount: 1,
+          }),
+        );
+        assert.strictEqual(tagOf(early), "OrchestrationGetTurnDiffError");
+        // Then it lands, and Mend says the worktree moved.
+        const end = mend.workbench.addCheckpoint("session-1");
+        mend.workbench.ranges.set(`${start}..${end}`, {
+          diff: "diff --git a/a.ts b/a.ts\n",
+          files: [{ path: "a.ts", status: "modified", additions: 1, deletions: 1 }],
+        });
+        mend.workbench.emit({
+          type: "session-change",
+          sessionId: "session-1",
+          projectId: "project-1",
+        });
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" && item.event.type === "checkpoint.captured",
+        );
+        const turn = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getTurnDiff]({
+          threadId: THREAD,
+          fromTurnCount: 0,
+          toTurnCount: 1,
+        });
+        assert.strictEqual(turn.diff, "diff --git a/a.ts b/a.ts\n");
+      }),
+    ),
+  );
+
+  it.live("says the worktree is shared when another session works in it with no checkpoint", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        // Bea's session joined the worktree, and its start checkpoint failed: none of hers.
+        mend.workbench.addSession({ id: "session-2", projectId: "project-1", joins: "session-1" });
+        const start = mend.workbench.addCheckpoint("session-1", "session-start");
+        const first = mend.workbench.addTurn("session-1", "A edits");
+        mend.workbench.addTurn("session-2", "B edits alongside");
+        mend.workbench.setTurn(first, "completed");
+        const end = mend.workbench.addCheckpoint("session-1");
+        mend.workbench.ranges.set(`${start}..${end}`, {
+          diff: "diff --git a/from-b b/from-b\n",
+          files: [{ path: "from-b", status: "added", additions: 1, deletions: 0 }],
+        });
+        const { rpc } = yield* pairAndConnect(mend, "SHARED-NO-CHECKPOINT");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" && item.event.type === "checkpoint.captured",
+        );
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.isTrue(JSON.stringify(projection).includes(SHARED_CHAIN_NOTICE));
+      }),
+    ),
+  );
+});
+
 const turn = (id: string, ordinal: number, start: string, end: string | null): MendTurn => ({
   id,
   sessionId: "s",

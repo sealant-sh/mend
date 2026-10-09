@@ -439,6 +439,12 @@ interface Watch {
   chain: ReadonlyArray<MendCheckpoint> | null;
   /** How many of its turns had ended when the chain was last read: a new end reads it again. */
   endedTurns: number;
+  /** When the chain was last read (epoch ms): a turn still waiting for its checkpoint reads again. */
+  chainReadAt: number;
+  /** How many times the chain was read again for a turn's missing checkpoint since a turn ended. */
+  chainRetries: number;
+  /** A read again is already set for when the last one is `CHAIN_REREAD_MS` old. */
+  chainRecheck: boolean;
 }
 
 /** A refusal Mend gave a command, in the words t3code shows. */
@@ -1112,6 +1118,21 @@ export const makePersonHub = (input: {
       }
     };
 
+    /**
+     * Whether another session works in this session's worktree, as the person reads the project:
+     * one whose checkpoints failed adds to the chain's checkpoints all the same.
+     */
+    const othersInWorktree = (sessionId: string): boolean => {
+      for (const entry of projects.values()) {
+        const session = entry.sessions.find((candidate) => candidate.id === sessionId);
+        if (session === undefined) continue;
+        return entry.sessions.some(
+          (candidate) => candidate.id !== sessionId && candidate.worktreeId === session.worktreeId,
+        );
+      }
+      return false;
+    };
+
     /** A watched thread's turns, each with the checkpoint Mend took when it ended. */
     const turnCheckpointsOf = (sessionId: string, turns: ReadonlyArray<MendTurn>) => {
       const chain = watches.get(sessionId)?.chain ?? null;
@@ -1127,7 +1148,10 @@ export const makePersonHub = (input: {
           files,
         });
       }
-      return { turnCheckpoints, sharedWorktree: isSharedChain(sessionId, chain) };
+      return {
+        turnCheckpoints,
+        sharedWorktree: isSharedChain(sessionId, chain) || othersInWorktree(sessionId),
+      };
     };
 
     const itemsOf = (sessionId: string): ReadonlyArray<MendItem> =>
@@ -1597,6 +1621,13 @@ export const makePersonHub = (input: {
             yield* publishAll;
           }),
         );
+        // A checkpoint landing moves the project, not the conversation: a watched thread waiting
+        // for one reads its chain again (`readTurnCheckpoints` reads only when one is due).
+        yield* Effect.forEach(
+          (entry?.sessions ?? []).filter((session) => watches.has(session.id)),
+          (session) => Effect.forkIn(readTurnCheckpoints(session.id), hubScope),
+          { discard: true },
+        );
       });
 
     const isKnownThread = (sessionId: string): boolean => {
@@ -1641,7 +1672,7 @@ export const makePersonHub = (input: {
      * turns ended, and the files of each new turn's slice (at most the last `TURN_SLICES_READ`
      * turns), one read each. In the background: a thread never waits for it to open.
      */
-    const readTurnCheckpoints = (sessionId: string) =>
+    const readTurnCheckpoints = (sessionId: string): Effect.Effect<void> =>
       Effect.gen(function* () {
         const plan = yield* locked(
           Effect.sync(() => {
@@ -1649,12 +1680,48 @@ export const makePersonHub = (input: {
             const source = sourceOf(sessionId);
             if (watch === undefined || source === null) return null;
             const ended = source.turns.filter((turn) => turn.endedAt !== null).length;
-            if (watch.chain !== null && ended === watch.endedTurns) return null;
+            // Mend tells of a turn's end before it takes the turn's checkpoint: a chain read in
+            // between lacks it, so a turn that ended lately with no checkpoint reads it again.
+            const now = Date.now();
+            if (ended !== watch.endedTurns) watch.chainRetries = 0;
+            const missing =
+              watch.chain !== null &&
+              watch.chainRetries < CHAIN_REREADS &&
+              awaitsCheckpoint(sessionId, source.turns, watch.chain);
+            const waiting = missing && now - watch.chainReadAt >= CHAIN_REREAD_MS;
+            if (missing && !waiting && !watch.chainRecheck) {
+              // Too soon after the last read: once more when it is old enough.
+              watch.chainRecheck = true;
+              return { kind: "later" as const };
+            }
+            if (watch.chain !== null && ended === watch.endedTurns && !waiting) return null;
+            if (waiting) watch.chainRetries += 1;
             watch.endedTurns = ended;
-            return { worktreeId: source.session.worktreeId, turns: source.turns };
+            watch.chainReadAt = now;
+            return {
+              kind: "now" as const,
+              worktreeId: source.session.worktreeId,
+              turns: source.turns,
+            };
           }),
         );
         if (plan === null) return;
+        if (plan.kind === "later") {
+          return yield* Effect.forkIn(
+            Effect.sleep(CHAIN_REREAD_MS).pipe(
+              Effect.andThen(
+                locked(
+                  Effect.sync(() => {
+                    const watch = watches.get(sessionId);
+                    if (watch !== undefined) watch.chainRecheck = false;
+                  }),
+                ),
+              ),
+              Effect.andThen(Effect.suspend(() => readTurnCheckpoints(sessionId))),
+            ),
+            hubScope,
+          ).pipe(Effect.asVoid);
+        }
         const chain = yield* asPerson((token) =>
           mend.worktreeCheckpoints(token, plan.worktreeId),
         ).pipe(Effect.catchTag("MendNotFound", () => Effect.succeed([])));
@@ -2865,6 +2932,9 @@ export const makePersonHub = (input: {
               log: null,
               chain: null,
               endedTurns: -1,
+              chainReadAt: 0,
+              chainRetries: 0,
+              chainRecheck: false,
             };
             watches.set(threadId, fresh);
             return fresh;
@@ -2984,11 +3054,18 @@ export const makePersonHub = (input: {
           return yield* refused(`Thread ${request.threadId} is not in this environment.`);
         }
         const token = request.session.deviceToken;
+        const readChain = mend
+          .worktreeCheckpoints(token, found.worktreeId)
+          .pipe(Effect.catchTag("MendNotFound", () => Effect.succeed([])));
+        const cached = found.chain ?? (yield* readChain);
+        const turnTo = found.turns[request.toTurnCount - 1];
+        // The kept chain may predate the asked turn's checkpoint: read it again for that turn.
         const chain =
-          found.chain ??
-          (yield* mend
-            .worktreeCheckpoints(token, found.worktreeId)
-            .pipe(Effect.catchTag("MendNotFound", () => Effect.succeed([]))));
+          turnTo !== undefined &&
+          !turnSlicesOf(sessionId, found.turns, cached).has(turnTo.id) &&
+          found.chain !== null
+            ? yield* readChain
+            : cached;
         const slices = turnSlicesOf(sessionId, found.turns, chain);
         const sliceOf = (count: number) => {
           const turn = found.turns[count - 1];
@@ -3141,6 +3218,27 @@ const NO_TURN_CHECKPOINTS: ReadonlyMap<string, TurnCheckpoint> = new Map();
 
 /** What t3code's server appends to output it cut (`OUTPUT_TRUNCATED_MARKER`). */
 const TRUNCATED_MARKER = "\n\n[truncated]";
+
+/** How soon a thread waiting for a turn's checkpoint reads its chain again. */
+const CHAIN_REREAD_MS = 2_000;
+/**
+ * How many times, after a turn ends, the chain is read again for a checkpoint still missing: Mend
+ * takes it within seconds, and a checkpoint that failed never comes.
+ */
+const CHAIN_REREADS = 10;
+
+/** Whether the last ended turn has no checkpoint in `chain` yet. */
+const awaitsCheckpoint = (
+  sessionId: string,
+  turns: ReadonlyArray<MendTurn>,
+  chain: ReadonlyArray<MendCheckpoint>,
+): boolean => {
+  const last = turns
+    .filter((turn) => turn.endedAt !== null)
+    .toSorted(byOrdinal)
+    .at(-1);
+  return last !== undefined && !turnSlicesOf(sessionId, turns, chain).has(last.id);
+};
 
 /** How many sequences a hub reserves at a time (`reserveSequences`). */
 const SEQUENCE_BLOCK = 1_000_000;

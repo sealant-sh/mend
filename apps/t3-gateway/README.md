@@ -240,11 +240,15 @@ Mend keeps checkpoints per worktree and does not link them to turns; the gateway
   start and the next turn's (Mend takes one when a turn ends);
 - a turn starts from the newest checkpoint of the worktree, any session's, taken before it began, or
   the worktree's base;
-- when another session takes checkpoints in the same worktree, a turn's changes can include its work
-  from while the turn ran, and the thread says so in a notice.
+- when another session works in the same worktree (one the person sees in the project, or one whose
+  checkpoints are in the chain), a turn's changes can include its work from while the turn ran, and
+  the thread says so in a notice. A session whose checkpoints failed counts all the same.
 
 While someone watches a thread, the gateway reads its worktree's chain (`GET /api/worktrees/:id`)
-when it opens and whenever another turn ended, then each new turn's files from
+when it opens and whenever another turn ended. Mend tells of a turn's end before it takes the turn's
+checkpoint, so while the last ended turn has none, the chain is read again when Mend says the
+worktree or the conversation moved, at most every 2 seconds and 10 times; `getTurnDiff` reads it
+again for a turn whose checkpoint the kept chain lacks. Then each new turn's files from
 `GET /api/worktrees/:id/diff?from=&to=`, the last 50 turns at most, in the background. Each turn's
 checkpoint goes to t3code as a `ready` checkpoint numbered by its run, so the changed-files card
 shows under the turn. A slice never changes, so its files are kept. `orchestration.getTurnDiff` and
