@@ -2589,3 +2589,68 @@ describe.skipIf(!reachable)("0118 pre-release executors", () => {
     expect(left).toEqual({ migrations: 0, retirements: 0, owners: 0 });
   });
 });
+
+describe.skipIf(!reachable)("0119 image layout confirmed", () => {
+  const DB = `${SCRATCH_DB}_layout_confirmed`;
+  const layer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("keeps a yes confirmed where a person launch ran on the image, and everything else unconfirmed", async () => {
+    const rows = await withDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0118_pre_release_executors");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO executor_layouts
+            (launch_id, worktree_id, session_id, layout, source, image_key, confirmed)
+          VALUES ('l-1', 'wt-1', 's-1', 'person', 'flag', 'digest:ran', true),
+                 ('l-2', 'wt-1', 's-2', 'person', 'flag', 'digest:predicted', false)`;
+        yield* sql`
+          INSERT INTO image_layout_capabilities (image_key, runtime, person, missing)
+          VALUES ('digest:ran', 'docker', true, '[]'::jsonb),
+                 ('digest:predicted', 'docker', true, '[]'::jsonb),
+                 ('digest:probed', 'docker', true, '[]'::jsonb),
+                 ('digest:no', 'docker', false, '["no sudo"]'::jsonb)`;
+        yield* migrations["0119_image_layout_confirmed"];
+        return yield* sql<{ readonly imageKey: string; readonly confirmed: boolean }>`
+          SELECT image_key AS "imageKey", confirmed FROM image_layout_capabilities
+          ORDER BY image_key`;
+      }),
+    );
+    expect(rows.map((row) => [row.imageKey, row.confirmed])).toEqual([
+      ["digest:no", false],
+      ["digest:predicted", false],
+      ["digest:probed", false],
+      ["digest:ran", true],
+    ]);
+  });
+});

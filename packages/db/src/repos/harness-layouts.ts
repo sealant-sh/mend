@@ -106,14 +106,27 @@ export interface ImageLayoutCapabilityRecord {
   readonly person: boolean;
   /** What it lacked, each in a word the refusal line names (`sudo`, `uid 40001 is taken`, …). */
   readonly missing: ReadonlyArray<string>;
+  /**
+   * Observed in a per-person executor (its prepare, or Core's create refusing the owner map). A
+   * shared launch's probe records an unconfirmed answer, which never replaces one already
+   * recorded: it cannot see what only a per-person executor meets (Delivery 21).
+   */
+  readonly confirmed: boolean;
   readonly observedAt: Date;
 }
+
+/** A capability to record (`HarnessLayoutsRepo.recordCapability`). */
+export type CapabilityWrite = Omit<ImageLayoutCapabilityRecord, "observedAt"> & {
+  /** The reasons of the recorded "no" this unconfirmed answer replaces. */
+  readonly replacing?: ReadonlyArray<string>;
+};
 
 const CapabilityRow = Schema.Struct({
   imageKey: Schema.String,
   runtime: Schema.String,
   person: Schema.Boolean,
   missing: Schema.Array(Schema.String),
+  confirmed: Schema.Boolean,
   observedAt: Schema.Date,
 });
 const decodeCapabilityRow = Schema.decodeUnknownSync(CapabilityRow);
@@ -303,9 +316,12 @@ export class HarnessLayoutsRepo extends Context.Service<
       imageKey: string,
       runtime: string,
     ) => Effect.Effect<ImageLayoutCapabilityRecord | null>;
-    readonly recordCapability: (
-      record: Omit<ImageLayoutCapabilityRecord, "observedAt">,
-    ) => Effect.Effect<void>;
+    /**
+     * What an executor found about an image. A confirmed answer replaces any; an unconfirmed one (a
+     * shared launch's probe) is written only where nothing is, or, with `replacing`, over the
+     * "no" with exactly those reasons that it checked again (compare-and-set).
+     */
+    readonly recordCapability: (record: CapabilityWrite) => Effect.Effect<void>;
     /**
      * A session's conversation moved into its owner's shared directory (decision 6): once shared
      * from now on, until the session ends. Idempotent: the first move's record stays.
@@ -559,23 +575,43 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         runtime: string,
       ) {
         const rows = yield* sql`
-          SELECT image_key AS "imageKey", runtime, person, missing, observed_at AS "observedAt"
+          SELECT image_key AS "imageKey", runtime, person, missing, confirmed,
+                 observed_at AS "observedAt"
           FROM image_layout_capabilities
           WHERE image_key = ${imageKey} AND runtime = ${runtime}`.pipe(Effect.orDie);
         return rows[0] === undefined ? null : decodeCapabilityRow(rows[0]);
       });
 
       const recordCapability = Effect.fn("HarnessLayoutsRepo.recordCapability")(function* (
-        record: Omit<ImageLayoutCapabilityRecord, "observedAt">,
+        record: CapabilityWrite,
       ) {
-        yield* sql`
-          INSERT INTO image_layout_capabilities (image_key, runtime, person, missing)
+        // An unconfirmed answer (a shared launch's probe) is a first guess only: it never
+        // replaces a recorded answer, Core's "no" made into a record included.
+        yield* (
+          record.confirmed
+            ? sql`
+          INSERT INTO image_layout_capabilities (image_key, runtime, person, missing, confirmed)
           VALUES (${record.imageKey}, ${record.runtime}, ${record.person},
-                  ${JSON.stringify(record.missing)}::jsonb)
+                  ${JSON.stringify(record.missing)}::jsonb, true)
           ON CONFLICT (image_key, runtime) DO UPDATE
-            SET person = excluded.person, missing = excluded.missing, observed_at = now()`.pipe(
-          Effect.orDie,
-        );
+            SET person = excluded.person, missing = excluded.missing, confirmed = true,
+                observed_at = now()`
+            : record.replacing !== undefined
+              ? sql`
+          INSERT INTO image_layout_capabilities (image_key, runtime, person, missing, confirmed)
+          VALUES (${record.imageKey}, ${record.runtime}, ${record.person},
+                  ${JSON.stringify(record.missing)}::jsonb, false)
+          ON CONFLICT (image_key, runtime) DO UPDATE
+            SET person = excluded.person, missing = excluded.missing, confirmed = false,
+                observed_at = now()
+            WHERE NOT image_layout_capabilities.person
+              AND image_layout_capabilities.missing = ${JSON.stringify(record.replacing)}::jsonb`
+              : sql`
+          INSERT INTO image_layout_capabilities (image_key, runtime, person, missing, confirmed)
+          VALUES (${record.imageKey}, ${record.runtime}, ${record.person},
+                  ${JSON.stringify(record.missing)}::jsonb, false)
+          ON CONFLICT (image_key, runtime) DO NOTHING`
+        ).pipe(Effect.orDie);
       });
 
       const anyRecorded = Effect.fn("HarnessLayoutsRepo.anyRecorded")(function* () {
@@ -983,10 +1019,17 @@ export const harnessLayoutsRepoMemory = (
       Effect.sync(() => state.capabilities.get(`${imageKey}\u0000${runtime}`) ?? null),
     recordCapability: (record) =>
       Effect.sync(() => {
-        state.capabilities.set(`${record.imageKey}\u0000${record.runtime}`, {
-          ...record,
-          observedAt: new Date(),
-        });
+        const key = `${record.imageKey}\u0000${record.runtime}`;
+        const current = state.capabilities.get(key);
+        if (!record.confirmed && current !== undefined) {
+          const replaces =
+            record.replacing !== undefined &&
+            !current.person &&
+            JSON.stringify(current.missing) === JSON.stringify(record.replacing);
+          if (!replaces) return;
+        }
+        const { replacing: _replacing, ...kept } = record;
+        state.capabilities.set(key, { ...kept, observedAt: new Date() });
       }),
     markConversationShared: (sessionId, owner) =>
       Effect.sync(() => {

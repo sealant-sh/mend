@@ -14,10 +14,12 @@ import {
   SealantPlatformError,
 } from "@mend/sealant";
 import { claudeCode, type Run, type Workspace } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
+import { ConfigProvider, Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  HarnessLayoutConfig,
+  HarnessLayoutConfigLive,
   type PersonHome,
   UNKNOWN_LAUNCH_REFUSAL,
   loginNeedOf,
@@ -25,7 +27,12 @@ import {
   makeHarnessLayoutSteps,
   refusedAccountOf,
 } from "./harness-layout-steps.ts";
-import { DOTFILES_BLOCK_REASON } from "./harness-layout.ts";
+import {
+  DOTFILES_BLOCK_REASON,
+  NO_NEW_PRIVILEGES_MISSING,
+  PASSING_NO_KEPT_MS,
+  STANDBY_REASON,
+} from "./harness-layout.ts";
 import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
 
 /**
@@ -141,6 +148,13 @@ const platformOf = (
     readonly dotfilesUser?: boolean;
     readonly controlPlaneObstacle?: string | null;
     readonly workspaceProcessUser?: "supported" | "unsupported" | "unknown";
+    /** Core's report on the image; a Docker image it can run per person unless a test says. */
+    readonly report?: {
+      readonly digest: string | null;
+      readonly runtime: string | null;
+      readonly person: boolean | null;
+      readonly missing: ReadonlyArray<string>;
+    };
   } = {},
 ) =>
   Layer.succeed(PersonLayoutPlatform, {
@@ -155,7 +169,7 @@ const platformOf = (
     imageReport: () =>
       Effect.sync(() => {
         core.imageReports++;
-        return { digest: "sha256:img", runtime: "docker", person: true, missing: [] };
+        return can.report ?? { digest: "sha256:img", runtime: "docker", person: true, missing: [] };
       }),
     loginOf: () => Effect.succeed("active" as const),
     postCredentials: (_workspace, input) =>
@@ -213,6 +227,7 @@ const stepsWith = (
     readonly revoked?: Array<{ readonly accountId: string; readonly issuedBefore: number }>;
     readonly forks?: Array<Effect.Effect<void>>;
     readonly grace?: Duration.Duration;
+    readonly runtimeObstacle?: string;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -248,6 +263,9 @@ const stepsWith = (
         },
       },
       harnessHome: "/workspace/harness-home",
+      ...(options.runtimeObstacle === undefined
+        ? {}
+        : { runtimeObstacle: options.runtimeObstacle }),
       fork: (effect) => Effect.sync(() => options.forks?.push(effect)),
       identityTicket: (input) =>
         Effect.sync(() => {
@@ -273,8 +291,8 @@ const stepsWith = (
     ),
   );
 
-const decideInput = (launchId: string) => ({
-  worktreeId: WorktreeId.make("wt-1"),
+const decideInput = (launchId: string, worktree = "wt-1") => ({
+  worktreeId: WorktreeId.make(worktree),
   sessionId: "sess-1",
   launchId,
   ownerUserId: "user-alice",
@@ -284,12 +302,399 @@ const decideInput = (launchId: string) => ({
   headHasPeople: Effect.succeed(false),
 });
 
-const settleInput = (launchId: string, stdout: string) => ({
+/** What a fresh worktree of Alice's is predicted on (`freshLaunchPerson`, `standbyMayServe`). */
+const freshInput = {
+  ownerUserId: "user-alice",
+  image: Effect.succeed(defaultWorkspaceImage),
+  harness: claudeCode(),
+};
+
+const settleInput = (launchId: string, stdout: string, worktree = "wt-1") => ({
   launchId,
-  worktreeId: WorktreeId.make("wt-1"),
+  worktreeId: WorktreeId.make(worktree),
   workspace,
   stdout,
   fallback: { credentials: { claude: true, github: true }, dotfiles: [] },
+});
+
+/** The layout `HarnessLayoutConfigLive` reads from an environment. */
+const flagWith = (env: Record<string, string>) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      return (yield* HarnessLayoutConfig).flag;
+    }).pipe(
+      Effect.provide(
+        HarnessLayoutConfigLive.pipe(
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(env))),
+        ),
+      ),
+    ),
+  );
+
+describe("MEND_HARNESS_LAYOUT (docs/adr/0016, Delivery 21)", () => {
+  it("is person when the operator sets nothing, or sets it empty", async () => {
+    expect(await flagWith({})).toBe("person");
+    expect(await flagWith({ MEND_HARNESS_LAYOUT: "" })).toBe("person");
+  });
+
+  it("is shared when the operator opts out, and person when they name it", async () => {
+    expect(await flagWith({ MEND_HARNESS_LAYOUT: "shared" })).toBe("shared");
+    expect(await flagWith({ MEND_HARNESS_LAYOUT: "person" })).toBe("person");
+  });
+
+  it("refuses a value that is neither", async () => {
+    await expect(flagWith({ MEND_HARNESS_LAYOUT: "on" })).rejects.toThrow();
+  });
+});
+
+describe("the default against images and runtimes that cannot run per person (review of mend#582)", () => {
+  const k8s = {
+    digest: "sha256:img",
+    runtime: "k8s",
+    person: false,
+    missing: ["sudo-no-new-privileges"],
+  };
+  /** A shared executor's probe that finds everything a shared executor can see. */
+  const probedYes = "mend-layout probed\n";
+
+  it("Core's no: every fresh launch runs shared, probes nothing, records nothing and retires nothing", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report: k8s }),
+        });
+        const runs: Array<unknown> = [];
+        for (let i = 1; i <= 5; i++) {
+          const worktree = `wt-${i}`;
+          const layout = yield* steps.decide(decideInput(`launch-${i}`, worktree));
+          // Whatever a probe would have found, nothing asked for one.
+          yield* steps.settlePrepare({
+            layout,
+            ...settleInput(`launch-${i}`, probedYes, worktree),
+          });
+          runs.push({
+            layout: layout.layout,
+            probe: layout.layout === "shared" ? layout.probe : null,
+            retire: yield* steps.nextLaunchPerson({
+              worktreeId: WorktreeId.make(worktree),
+              ...freshInput,
+            }),
+            standby: yield* steps.standbyMayServe(WorktreeId.make(worktree), freshInput),
+          });
+        }
+        return {
+          runs,
+          recorded: [...state.capabilities.values()],
+          worktrees: [...state.worktrees.values()].filter((wt) => wt.layout !== null),
+          fresh: yield* steps.freshLaunchPerson(freshInput),
+        };
+      }),
+    );
+    expect(result.runs).toEqual(
+      Array.from({ length: 5 }, () => ({
+        layout: "shared",
+        probe: false,
+        retire: false,
+        standby: true,
+      })),
+    );
+    expect(result.recorded).toEqual([]);
+    expect(result.worktrees).toEqual([]);
+    expect(result.fresh).toBe(false);
+  });
+
+  it("a Kubernetes runtime is known without asking: shared, no probe, Core not asked", async () => {
+    const core = coreCalls();
+    const layout = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+          platform: platformOf(core),
+          runtimeObstacle:
+            "Kubernetes workspaces cannot run per-person users: no one's sudo works there",
+        });
+        return yield* steps.decide(decideInput("launch-k8s"));
+      }),
+    );
+    expect(layout).toMatchObject({ layout: "shared", probe: false });
+    expect(core.imageReports).toBe(0);
+  });
+
+  it("a shared probe's yes is a prediction: the next fresh launch runs person, but nothing is retired until a person prepare confirms it", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), {
+            report: { digest: "sha256:img", runtime: "docker", person: null, missing: [] },
+          }),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        yield* steps.settlePrepare({
+          layout: first,
+          ...settleInput("launch-1", probedYes, "wt-1"),
+        });
+        const predicted = {
+          fresh: yield* steps.freshLaunchPerson(freshInput),
+          retire: yield* steps.nextLaunchPerson({
+            worktreeId: WorktreeId.make("wt-1"),
+            ...freshInput,
+          }),
+        };
+        const second = yield* steps.decide(decideInput("launch-2", "wt-2"));
+        yield* steps.settlePrepare({
+          layout: second,
+          ...settleInput("launch-2", "mend-layout probed\nmend-layout ready\n", "wt-2"),
+        });
+        return {
+          first: first.layout === "shared" ? first.probe : null,
+          predicted,
+          second: second.layout,
+          retire: yield* steps.nextLaunchPerson({
+            worktreeId: WorktreeId.make("wt-1"),
+            ...freshInput,
+          }),
+          recorded: [...state.capabilities.values()].map((record) => ({
+            person: record.person,
+            confirmed: record.confirmed,
+          })),
+        };
+      }),
+    );
+    expect(result).toEqual({
+      first: true,
+      predicted: { fresh: true, retire: false },
+      second: "person",
+      retire: true,
+      recorded: [{ person: true, confirmed: true }],
+    });
+  });
+
+  it("a person prepare under no-new-privileges falls back to shared on a fresh worktree, which stays without a layout", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps } = yield* stepsWith("person", state);
+        const decided = yield* steps.decide(decideInput("launch-nnp"));
+        const settled = yield* steps.settlePrepare({
+          layout: decided,
+          ...settleInput(
+            "launch-nnp",
+            `mend-layout missing ${NO_NEW_PRIVILEGES_MISSING}\nmend-layout probed\n`,
+          ),
+        });
+        return {
+          decided: decided.layout,
+          settled,
+          worktree: (yield* steps.layoutOfLaunch("launch-nnp")) === "shared",
+          layout: state.worktrees.get(WorktreeId.make("wt-1"))?.layout ?? null,
+          recorded: [...state.capabilities.values()].map((record) => ({
+            person: record.person,
+            confirmed: record.confirmed,
+          })),
+          next: yield* steps.decide(decideInput("launch-after", "wt-2")),
+        };
+      }),
+    );
+    expect(result.decided).toBe("person");
+    expect(result.settled).toMatchObject({
+      layout: "shared",
+      fallback: `this image cannot run per-person users (${NO_NEW_PRIVILEGES_MISSING}), so this workspace takes one person`,
+    });
+    expect(result.worktree).toBe(true);
+    expect(result.layout).toBeNull();
+    expect(result.recorded).toEqual([{ person: false, confirmed: true }]);
+    // The image's answer stands: the next fresh launch runs shared, probing nothing.
+    expect(result.next).toMatchObject({ layout: "shared", probe: false });
+  });
+});
+
+describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
+  const IMAGE = "digest:sha256:img\u0000docker";
+  const unknown = { digest: "sha256:img", runtime: "docker", person: null, missing: [] };
+  const recordNo = (state: HarnessLayoutsMemoryState, missing: ReadonlyArray<string>, ageMs = 0) =>
+    state.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: false,
+      missing,
+      confirmed: true,
+      observedAt: new Date(Date.now() - ageMs),
+    });
+  /** Two fresh launches over the record: the first's shared probe answers `probe`. */
+  const twoLaunches = (
+    state: HarnessLayoutsMemoryState,
+    report: {
+      readonly digest: string | null;
+      readonly runtime: string | null;
+      readonly person: boolean | null;
+      readonly missing: ReadonlyArray<string>;
+    },
+    probe = "mend-layout probed\n",
+  ) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report }),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        yield* steps.settlePrepare({ layout: first, ...settleInput("launch-1", probe, "wt-1") });
+        const second = yield* steps.decide(decideInput("launch-2", "wt-2"));
+        return {
+          first:
+            first.layout === "shared" ? { layout: "shared", probe: first.probe } : first.layout,
+          second: second.layout,
+          record: state.capabilities.get(IMAGE),
+        };
+      }),
+    );
+
+  it("heals a no a shared workspace can see: the next shared launch checks again, and its yes replaces it", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    recordNo(state, ["no ACLs on /workspace"]);
+    const result = await twoLaunches(state, unknown);
+    expect(result.first).toEqual({ layout: "shared", probe: true });
+    expect(result.second).toBe("person");
+    expect(result.record).toMatchObject({ person: true, confirmed: false });
+  });
+
+  it("keeps a passing failure for a day, then checks again", async () => {
+    const fresh = makeHarnessLayoutsMemoryState();
+    recordNo(fresh, ["the users could not be made"]);
+    expect(await twoLaunches(fresh, unknown)).toMatchObject({
+      first: { layout: "shared", probe: false },
+      second: "shared",
+      record: { person: false, missing: ["the users could not be made"] },
+    });
+    const old = makeHarnessLayoutsMemoryState();
+    recordNo(old, ["mb6r4kq2d: useradd: cannot lock /etc/passwd"], PASSING_NO_KEPT_MS + 1);
+    expect(await twoLaunches(old, unknown)).toMatchObject({
+      first: { layout: "shared", probe: true },
+      second: "person",
+      record: { person: true, confirmed: false },
+    });
+  });
+
+  it("never checks again over no-new-privileges or an owner map refused, however old", async () => {
+    for (const missing of [
+      [NO_NEW_PRIVILEGES_MISSING],
+      ["its sealantd does not restore files per person"],
+      ["no sudo", NO_NEW_PRIVILEGES_MISSING],
+    ]) {
+      const state = makeHarnessLayoutsMemoryState();
+      recordNo(state, missing, PASSING_NO_KEPT_MS * 10);
+      expect(await twoLaunches(state, unknown)).toMatchObject({
+        first: { layout: "shared", probe: false },
+        second: "shared",
+        record: { person: false, missing, confirmed: true },
+      });
+    }
+  });
+
+  it("never checks again against Core's explicit no, and Core's no beats a probe's unconfirmed yes", async () => {
+    const coreNo = { digest: "sha256:img", runtime: "docker", person: false, missing: ["no sudo"] };
+    const recorded = makeHarnessLayoutsMemoryState();
+    recordNo(recorded, ["no ACLs on /workspace"]);
+    expect(await twoLaunches(recorded, coreNo)).toMatchObject({
+      first: { layout: "shared", probe: false },
+      second: "shared",
+    });
+    const guessed = makeHarnessLayoutsMemoryState();
+    guessed.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: true,
+      missing: [],
+      confirmed: false,
+      observedAt: new Date(),
+    });
+    expect(await twoLaunches(guessed, coreNo)).toMatchObject({
+      first: { layout: "shared", probe: false },
+      second: "shared",
+    });
+  });
+
+  it("a probe that checked again replaces only the no it checked: a newer answer stays", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    recordNo(state, ["no ACLs on /workspace"]);
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report: unknown }),
+        });
+        const first = yield* steps.decide(decideInput("launch-1", "wt-1"));
+        // Meanwhile a per-person executor found no-new-privileges.
+        recordNo(state, [NO_NEW_PRIVILEGES_MISSING]);
+        yield* steps.settlePrepare({
+          layout: first,
+          ...settleInput("launch-1", "mend-layout probed\n", "wt-1"),
+        });
+        return state.capabilities.get(IMAGE);
+      }),
+    );
+    expect(result).toMatchObject({ person: false, missing: [NO_NEW_PRIVILEGES_MISSING] });
+  });
+
+  it("rules out Core's Kubernetes and Cloudflare runtimes before any launch: none is refused to learn it", async () => {
+    for (const runtime of ["k8s", "k3s", "cloudflare"]) {
+      const state = makeHarnessLayoutsMemoryState();
+      const result = await twoLaunches(state, {
+        digest: "sha256:img",
+        runtime,
+        person: null,
+        missing: [],
+      });
+      expect(result).toMatchObject({ first: { layout: "shared", probe: false }, second: "shared" });
+      expect(state.capabilities.size).toBe(0);
+    }
+  });
+
+  it("retires a person worktree's shared executor on the worktree's own record, confirmed or not (N2)", async () => {
+    const state = makeHarnessLayoutsMemoryState();
+    state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+    state.capabilities.set(IMAGE, {
+      imageKey: "digest:sha256:img",
+      runtime: "docker",
+      person: true,
+      missing: [],
+      confirmed: false,
+      observedAt: new Date(),
+    });
+    const next = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), { report: unknown }),
+        });
+        return yield* steps.nextLaunchPerson({
+          worktreeId: WorktreeId.make("wt-1"),
+          ...freshInput,
+        });
+      }),
+    );
+    expect(next).toBe(true);
+  });
+
+  it("a claimed standby's shared decision stands against a yes learnt since, and a head with people keeps a standby away (N7)", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
+        const claimed = yield* steps.decide({ ...decideInput("launch-standby"), standby: true });
+        const plain = yield* steps.decide(decideInput("launch-cold", "wt-2"));
+        return {
+          claimed,
+          plain: plain.layout,
+          withPeople: yield* steps.standbyMayServe(
+            WorktreeId.make("wt-3"),
+            freshInput,
+            Effect.succeed(true),
+          ),
+        };
+      }),
+    );
+    expect(result.claimed).toMatchObject({ layout: "shared", reason: STANDBY_REASON });
+    expect(result.plain).toBe("person");
+    expect(result.withPeople).toBe(false);
+  });
 });
 
 describe("the layout each launch runs, as the channel reads it (docs/adr/0016)", () => {
@@ -333,7 +738,7 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
         const before = yield* stepsWith("shared", state);
         yield* before.steps.decide(decideInput("launch-live"));
         yield* before.steps.mayRunPerson(WorktreeId.make("wt-1"));
-        yield* before.steps.standbyMayServe(WorktreeId.make("wt-1"));
+        yield* before.steps.standbyMayServe(WorktreeId.make("wt-1"), freshInput);
         // Mend restarts: a new process, its cache empty, the launch still live.
         const after = yield* stepsWith("shared", state);
         const layouts = [
@@ -341,7 +746,7 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
           yield* after.steps.layoutOfLaunch("launch-from-before"),
         ];
         const runsPerson = yield* after.steps.mayRunPerson(WorktreeId.make("wt-1"));
-        const standby = yield* after.steps.standbyMayServe(WorktreeId.make("wt-1"));
+        const standby = yield* after.steps.standbyMayServe(WorktreeId.make("wt-1"), freshInput);
         yield* after.steps.decide(decideInput("launch-next"));
         return { layouts, runsPerson, standby, reads: [...before.reads, ...after.reads] };
       }),
@@ -580,10 +985,10 @@ describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
         const off = yield* stepsWith("shared", makeHarnessLayoutsMemoryState());
         const wt = WorktreeId.make("wt-1");
         return [
-          yield* flagOn.steps.standbyMayServe(wt),
-          yield* recorded.steps.standbyMayServe(wt),
-          yield* operator.steps.standbyMayServe(wt),
-          yield* off.steps.standbyMayServe(wt),
+          yield* flagOn.steps.standbyMayServe(wt, freshInput),
+          yield* recorded.steps.standbyMayServe(wt, freshInput),
+          yield* operator.steps.standbyMayServe(wt, freshInput),
+          yield* off.steps.standbyMayServe(wt, freshInput),
         ];
       }),
     );

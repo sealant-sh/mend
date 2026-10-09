@@ -1392,4 +1392,38 @@ benchmark once more, before 0.36 is tagged.
   budgeted against their own kind. The gate fails if the `person` layout reinstalls at a share of
   its resumes more than 2 per 10 above `shared`'s, or at every resume while `shared` restored at
   least one; the engine's reason for each reinstall is recorded.
+- 2026-10-09: the owner turned per-person on by default for 0.36; the flip (21) merges once the P1
+  timing gate passes on the box; the week of use runs with the default on, before 0.36 is tagged.
+- 2026-10-09, Delivery 21 as built, after the review of mend#582: `MEND_HARNESS_LAYOUT` is `person`
+  unless set (empty counts as unset), and `shared` is the operator's opt-out; every check that asked
+  whether the flag was on follows the default. A shared launch's probe runs only where nothing is
+  known, and its answer is recorded unconfirmed: it fills in an unknown, never replaces Core's or a
+  person prepare's answer, and no executor is retired on it (`image_layout_capabilities.confirmed`,
+  migration 0119); retirement waits for an answer a per-person executor gave. A Kubernetes workspace
+  runtime is a static obstacle (shared, nothing probed). A person prepare checks no-new-privileges
+  (`NoNewPrivs` in `/proc/self/status`) with the rest of decision 1's probe, so a hardened Docker
+  host falls back to shared on a fresh worktree. The prepare sends one data list
+  (`name:uid:account id:member:ticket` per person) and one loop over a `mend_person` function
+  defined once, about 95 bytes a person instead of 6.3 KB, so 200 members make a 41 KB script and a
+  73 KB exec beside the helper (Linux refuses one argument over 128 KiB; before, 13 people passed
+  it). Standbys are kept for an owner whose fresh worktrees are predicted shared and claimed by a
+  worktree with no layout predicted shared; for anyone else none is kept, and the Hot sessions
+  status says why (`ProjectHotSessionsStatus.cold`). A worktree's head read for `people/` is
+  remembered per head when it holds none, so a worktree that falls back to shared reads its manifest
+  once per capture, not on every launch. The `/root` relocation already ran only in `shared`
+  executors. A loopback server on the capture store runs per person by default, as the layout
+  follows capability, not exposure.
+- 2026-10-09, after the second review of mend#582: a recorded "no" is weighed by its reasons. One
+  made only of what a shared probe sees (sudo, useradd, setfacl, setpriv, ACLs, sealantd's
+  capabilities, a uid or name taken) is checked again by the next shared launch, whose answer
+  replaces exactly that "no" (compare-and-set on its reasons); one that also names a person who
+  could not be made, or an image that could not be checked, is checked again after a day; one naming
+  no-new-privileges, an owner map refused, a runtime ruled out or the workspace's own refusal, or
+  met by Core's explicit "no", is kept until the digest changes, and Core's "no" beats a probe's
+  unconfirmed "yes". Core's runtimes `k8s`, `k3s` and `cloudflare` are ruled out before any launch.
+  A worktree already person retires its shared executor on its own record, confirmed or not, and
+  migration 0119 keeps a "yes" confirmed where a confirmed person launch ran on the image. A claimed
+  standby's shared decision stands at launch against what was learnt of the image since (`decide`'s
+  `standby`), so a claim never fails its session over a race; a head holding `people/` keeps
+  standbys away, and a claimed standby's prepare runs the probe a cold shared launch would.
 - Open: gate B's history record.

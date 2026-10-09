@@ -210,27 +210,105 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
         yield* repo.requestLayout(worktree, "shared");
         expect((yield* repo.worktreeLayout(worktree)).requested).toBe("shared");
         expect(yield* repo.capabilityOf("img", "docker")).toBeNull();
+        // A shared launch's probe: a first guess, recorded only where nothing is.
+        yield* repo.recordCapability({
+          imageKey: "img",
+          runtime: "docker",
+          person: true,
+          missing: [],
+          confirmed: false,
+        });
+        expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
+          person: true,
+          confirmed: false,
+        });
         yield* repo.recordCapability({
           imageKey: "img",
           runtime: "docker",
           person: false,
           missing: ["sudo", "uid 40001 is taken"],
+          confirmed: true,
         });
         expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
           person: false,
           missing: ["sudo", "uid 40001 is taken"],
+          confirmed: true,
+        });
+        // A probe's yes never replaces a recorded no (Delivery 21).
+        yield* repo.recordCapability({
+          imageKey: "img",
+          runtime: "docker",
+          person: true,
+          missing: [],
+          confirmed: false,
+        });
+        expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
+          person: false,
+          confirmed: true,
         });
         yield* repo.recordCapability({
           imageKey: "img",
           runtime: "docker",
           person: true,
           missing: [],
+          confirmed: true,
         });
         expect(yield* repo.capabilityOf("img", "docker")).toMatchObject({
           person: true,
           missing: [],
+          confirmed: true,
         });
         expect(yield* repo.capabilityOf("img", "microvm")).toBeNull();
+      }),
+    );
+  });
+
+  it("lets a probe that checked a no again replace only that no (review 2 of mend#582, N1)", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* HarnessLayoutsRepo;
+        const no = (missing: ReadonlyArray<string>) =>
+          repo.recordCapability({
+            imageKey: "img2",
+            runtime: "docker",
+            person: false,
+            missing,
+            confirmed: true,
+          });
+        const probedYes = (replacing: ReadonlyArray<string>) =>
+          repo.recordCapability({
+            imageKey: "img2",
+            runtime: "docker",
+            person: true,
+            missing: [],
+            confirmed: false,
+            replacing,
+          });
+        yield* no(["no ACLs on /workspace"]);
+        // The no it checked was replaced meanwhile: the newer answer stays.
+        yield* no(["no-new-privileges is set, so no one's sudo works"]);
+        yield* probedYes(["no ACLs on /workspace"]);
+        expect(yield* repo.capabilityOf("img2", "docker")).toMatchObject({
+          person: false,
+          missing: ["no-new-privileges is set, so no one's sudo works"],
+        });
+        yield* no(["no ACLs on /workspace"]);
+        yield* probedYes(["no ACLs on /workspace"]);
+        expect(yield* repo.capabilityOf("img2", "docker")).toMatchObject({
+          person: true,
+          missing: [],
+          confirmed: false,
+        });
+        // Never over a yes.
+        yield* repo.recordCapability({
+          imageKey: "img2",
+          runtime: "docker",
+          person: false,
+          missing: ["no sudo"],
+          confirmed: false,
+          replacing: [],
+        });
+        expect(yield* repo.capabilityOf("img2", "docker")).toMatchObject({ person: true });
       }),
     );
   });

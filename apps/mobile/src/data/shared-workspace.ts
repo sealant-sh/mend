@@ -66,7 +66,7 @@ export interface SessionSharing {
 /**
  * Whether the waiting line is worth reading (docs/adr/0016, decision 6): someone is live in the
  * executor and its owner shares control. Otherwise nobody else's turn can wait and nothing is read
- * (with `MEND_HARNESS_LAYOUT` off, `livePeople` is always empty: no extra work at all).
+ * (with `MEND_HARNESS_LAYOUT=shared`, `livePeople` is always empty: no extra work at all).
  */
 export const readsWaiting = (session: SessionSharing | undefined): boolean =>
   (session?.livePeople?.length ?? 0) > 0 && (session?.sharedControlEnabledAt ?? null) !== null;

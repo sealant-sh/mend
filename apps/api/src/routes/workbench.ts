@@ -1090,12 +1090,18 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const failed = entries
           .toReversed()
           .find((entry) => entry.status === "failed" && entry.error !== null);
+        // Asked only while the card would otherwise say nothing is ready.
+        const cold =
+          entries.length === 0
+            ? yield* (yield* SessionEngine).hotSessionsColdReason(project, caller.user.id)
+            : null;
         return new ProjectHotSessionsStatus({
           hotSessions: project.hotSessions,
           ready: countOf("ready"),
           warming: countOf("warming"),
           failed: countOf("failed"),
           error: failed?.error ?? null,
+          cold,
         });
       }),
     ),

@@ -174,6 +174,12 @@ workspaces and warms replacements. Status such as `2 ready · 1 warming` reports
 launch guarantee. A standby serves a fresh worktree; a session joining a worktree that already holds
 captures starts cold until the executor can materialise a delta.
 
+A standby starts as one person before any worktree is known, so it never serves a
+[per-person workspace](/operate/per-person-workspaces/). Mend keeps standbys for a person only while
+their new worktrees would run with a shared home: an image or runtime that cannot run per person, or
+`MEND_HARNESS_LAYOUT=shared`. Otherwise it keeps none, their launches start cold, and the card says
+`no standby · per-person workspaces launch cold`.
+
 ## Automatic install
 
 Automatic install applies in capture mode, and it is on by default. On, Mend picks the install

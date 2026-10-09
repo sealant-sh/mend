@@ -282,7 +282,13 @@ export function HotSessionsSection({ project }: { readonly project: ProjectDto }
     if (observed.failed > 0) parts.push(`${observed.failed} failed`);
   }
   const statusLine =
-    parts.length > 0 ? parts.join(" · ") : project.hotSessions === 0 ? "off" : "none ready yet";
+    parts.length > 0
+      ? parts.join(" · ")
+      : project.hotSessions === 0
+        ? "off"
+        : observed?.cold !== undefined && observed.cold !== null
+          ? `no standby · ${observed.cold}`
+          : "none ready yet";
 
   return (
     <section id="hot-sessions" className="project-setup-card">

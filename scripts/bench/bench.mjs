@@ -273,7 +273,10 @@ const describeTarget = async ({ url, api, host, project }, opts) => {
       const out = await host
         .shell(`docker exec ${opts.mendContainer} printenv MEND_HARNESS_LAYOUT; true`)
         .catch(() => "");
-      flag = out.trim() === "" ? "shared (MEND_HARNESS_LAYOUT unset)" : out.trim();
+      flag =
+        out.trim() === ""
+          ? "person (MEND_HARNESS_LAYOUT unset, the default since Delivery 21)"
+          : out.trim();
     }
     mendImage =
       (

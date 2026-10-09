@@ -25,9 +25,9 @@ again, and the session line says "could not be stopped · stop again". If the pl
 it cannot find a running session's workspace, the waiting line now says so instead of "not
 answering", and the log records Sealant's answer.
 
-Known limit: until per-person harness homes are on (`MEND_HARNESS_LAYOUT=person`, ADR 0016; off by
-default), every process in an executor runs as root in the home of the person who started it. A
-person who joins someone else's executor therefore:
+Known limit: in a workspace that shares one home (`MEND_HARNESS_LAYOUT=shared`, or an image that
+cannot run per-person homes, ADR 0016), every process in an executor runs as root in the home of the
+person who started it. A person who joins someone else's executor therefore:
 
 - runs their agent on that person's Claude or Codex login, and a conversation records its turns as
   billed to them;

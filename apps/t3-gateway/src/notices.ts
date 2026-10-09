@@ -28,7 +28,7 @@ export const NO_NOTICES: ThreadNotices = { sharedWorkspace: null, waiting: null,
 /**
  * Whether a session's waiting line is worth reading (`GET /api/sessions/:id/waiting`, decision
  * 6): someone is live in its executor and its owner shares control, as `GET /api/sessions` says.
- * Otherwise nobody else's turn can wait, and nothing is read: with `MEND_HARNESS_LAYOUT` off,
+ * Otherwise nobody else's turn can wait, and nothing is read: with `MEND_HARNESS_LAYOUT=shared`,
  * `livePeople` is always empty, and the gateway does no extra work at all.
  */
 export const readsWaiting = (session: MendActiveSession | undefined): boolean =>

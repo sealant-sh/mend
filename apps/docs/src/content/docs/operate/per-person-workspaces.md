@@ -1,8 +1,9 @@
 ---
 title: Per-person workspaces
 description:
-  MEND_HARNESS_LAYOUT=person gives each person their own Linux user and home in a workspace. What it
-  needs, what sudo means there, how older workspaces are replaced, and the performance limits.
+  Each person gets their own Linux user and home in a workspace, by default;
+  MEND_HARNESS_LAYOUT=shared opts out. What it needs, what sudo means there, how older workspaces
+  are replaced, and the performance limits.
 sidebar:
   order: 4
 ---
@@ -13,13 +14,14 @@ of whoever launched it. With them, each person who runs anything in the workspac
 Linux user and home, and everything they run runs as them: their logins, Git and Mend identity,
 dotfiles, secret files, memory and MCP servers.
 
-Per-person workspaces ship in Mend 0.36 behind an operator setting, off by default. Design and
+Per-person workspaces ship in Mend 0.36, on by default; an operator can opt out. Design and
 rationale:
 [ADR 0016](https://github.com/sealant-sh/mend/blob/main/docs/adr/0016-per-person-harness-homes.md).
 
-## Turn it on
+## On by default, and opting out
 
-Set `MEND_HARNESS_LAYOUT=person` on the server and restart it. The default is `shared`.
+`MEND_HARNESS_LAYOUT` is `person` unless set. To keep every new worktree on one shared home, set
+`MEND_HARNESS_LAYOUT=shared` on the server and restart it.
 
 - The setting decides only worktrees that have no layout yet. A worktree's layout is recorded with
   its first per-person launch.
@@ -34,7 +36,17 @@ Set `MEND_HARNESS_LAYOUT=person` on the server and restart it. The default is `s
   Nothing in the worktree changes on a refusal; fixing the image makes the next launch work. A Mend
   older than 0.36 cannot resume that worktree's sessions.
 
-- With the setting off and no layout recorded anywhere, Mend reads no layout from the store.
+- With `MEND_HARNESS_LAYOUT=shared` and no layout recorded anywhere, Mend reads no layout from the
+  store.
+- The default holds for every server on the capture store, a loopback `mend server setup` on one
+  machine included: whoever runs there runs as their own user. A server on the deprecated co-located
+  store (`MEND_SESSION_STORE=colocated`) runs every session with one shared home, whatever the
+  setting.
+- A standby workspace for [Hot sessions](/guides/project-environment/#hot-sessions) starts as one
+  person before any worktree is known, so it never serves a per-person launch. Mend keeps standbys
+  only for people whose new worktrees would run with a shared home (an image or runtime that cannot
+  run per person, or `MEND_HARNESS_LAYOUT=shared`). For anyone else it keeps none, their launches
+  start cold, and the Hot sessions card says `no standby · per-person workspaces launch cold`.
 
 ### What a workspace needs
 
@@ -48,12 +60,38 @@ runs with a shared home, and the session says why.
 - **The image** has a setuid `sudo`, `useradd`, `setfacl`, and no user or group with an id in
   40000–49999 other than the `mend` group (gid 40000). Sealant's managed images carry them.
 - **The runtime** supports ACLs on `/workspace` and does not impose no-new-privileges on the
-  executor, since `sudo` cannot work under it. On Kubernetes, `allowPrivilegeEscalation: false`
-  imposes it.
+  executor, since `sudo` cannot work under it. A per-person workspace checks this before it makes
+  anyone (`NoNewPrivs` in `/proc/self/status`), so a Docker host with `"no-new-privileges": true` in
+  `daemon.json` runs a new worktree with a shared home and says why.
+- **Kubernetes** imposes no-new-privileges (`allowPrivilegeEscalation: false`), so on a Kubernetes
+  workspace runtime every new worktree runs with a shared home and says why; nothing is probed.
 
 Core records what each image can do when it builds it, and Mend records what each executor's prepare
 found, per image digest and runtime. When neither knows yet, the launch runs with a shared home and
-its prepare records the answer, so the next launch on that image can run per person.
+its prepare checks the image, so the next launch on that image can run per person. A workspace
+started before 0.36 is replaced (below) only once a per-person workspace has run on that image, or
+on a worktree that already runs per person.
+
+A shared workspace's check cannot see what only a per-person workspace meets, so Mend weighs a
+remembered "no" by its reasons:
+
+- **Reasons a shared workspace sees** (no `sudo`, `useradd`, `setfacl` or `setpriv`, no ACLs on
+  `/workspace`, a sealantd without the capabilities, a uid or name taken): the next shared launch
+  checks again, and its answer replaces the "no". Fixing the image heals on its own.
+- **A person who could not be made, or an image that could not be checked:** kept for a day, then
+  checked again.
+- **No-new-privileges, an owner map refused, a runtime that cannot run per person (Kubernetes,
+  Cloudflare), or Core's own "no":** kept until the image's digest changes. After fixing the host
+  (removing `"no-new-privileges": true` from `daemon.json`, say), clear Mend's answer for the image
+  in Postgres, and the next launch checks again:
+
+  ```sql
+  SELECT image_key, runtime, missing, observed_at FROM image_layout_capabilities WHERE NOT person;
+  DELETE FROM image_layout_capabilities WHERE image_key = '<image_key>' AND runtime = '<runtime>';
+  ```
+
+Core reports the runtime it places each image on; on Kubernetes (`k8s`, `k3s`) and Cloudflare
+sandboxes every new worktree runs with a shared home before any launch is tried.
 
 **nix images take one person.** Their passwd is in the read-only store, which cannot hold a setuid
 `sudo`. A custom image without `sudo`, `useradd` or ACL support also takes one person.
@@ -146,7 +184,7 @@ This worktree's workspace is being replaced so that each person runs as themselv
 Then it checks again, saves a final capture and replaces the workspace only once that save stands. A
 failed check or save unmarks it and says why. A replacement that a crash or a restart interrupts is
 unmarked at the next start, after ten minutes on the regular sweep, or when the owner asks again.
-Mend looks for workspaces to retire only while `MEND_HARNESS_LAYOUT=person` is set.
+Mend looks for workspaces to retire only while `MEND_HARNESS_LAYOUT` is `person`, the default.
 
 **Otherwise the change's owner chooses.** The owner sees **Replace this workspace now**, when Mend
 last checked and what it checked, and one line each for what would stop: terminal sessions (they end
@@ -229,8 +267,7 @@ commit without changing `MEND_HARNESS_LAYOUT`:
 - **P1** compares per-person launches against shared-home launches on a scratch instance, then on
   Mend's own instance, and checks shared-home launches on the new images against the record taken
   before any per-person code. It holds back turning the setting on there.
-- **P2** repeats the comparison after a week of use with the setting on. It holds back making
-  per-person the default and the release.
+- **P2** repeats the comparison after a week of use with the setting on. It holds back the release.
 
 Both records are checked in under `docs/perf/`. CI also counts the execs and platform calls of a
 cold launch, a join, a resume and a hand-over, and fails when a count grows past its budget.

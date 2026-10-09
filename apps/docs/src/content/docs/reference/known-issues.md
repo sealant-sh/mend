@@ -210,9 +210,11 @@ ends up kept beside it. Start your session in a worktree of your own to work fro
 
 ## A session that joins someone else's executor runs on their logins
 
-Applies to workspaces that share one home: every worktree while `MEND_HARNESS_LAYOUT` is `shared`,
-the default in 0.36. In a [per-person workspace](#per-person-workspaces) each person's processes run
-as their own user, on their own logins.
+Applies to workspaces that share one home: new worktrees on a server where the operator set
+`MEND_HARNESS_LAYOUT=shared`, and worktrees whose workspace cannot run per person (a nix image, no
+`sudo`, a Kubernetes workspace runtime, a Docker host with no-new-privileges). Per-person workspaces
+are the default in 0.36: in a [per-person workspace](#per-person-workspaces) each person's processes
+run as their own user, on their own logins.
 
 On a server a worktree has one executor, started by whoever launched first. Every process in it runs
 as root in that person's harness home, whoever started the process. A session you start in a
@@ -294,9 +296,9 @@ project. The web app and the phone do not show it yet.
 
 ## Per-person workspaces
 
-Applies to workspaces where each person runs as their own Linux user: worktrees launched with
-`MEND_HARNESS_LAYOUT=person`, and every worktree that has run that way once. See
-[Per-person workspaces](/operate/per-person-workspaces/).
+Applies to workspaces where each person runs as their own Linux user: by default, every new worktree
+whose image can run per person (`MEND_HARNESS_LAYOUT=person`), and every worktree that has run that
+way once. See [Per-person workspaces](/operate/per-person-workspaces/).
 
 Everyone in a per-person workspace has passwordless sudo, which runs as root: anyone working there,
 and their agents, can read and change each other's files, logins included.
@@ -351,9 +353,9 @@ is used by the other person's `git push`.
 
 ### There is no way back from per-person
 
-A worktree that has run per person always runs per person. Turning `MEND_HARNESS_LAYOUT` off changes
-nothing for it, and an image that cannot run it (nix, no `sudo`, a uid clash) is refused for that
-worktree:
+A worktree that has run per person always runs per person. Setting `MEND_HARNESS_LAYOUT=shared`
+changes nothing for it, and an image that cannot run it (nix, no `sudo`, a uid clash) is refused for
+that worktree:
 
 ```text
 This worktree's sessions are saved per person, and its image cannot run per-person users (no sudo). Pick an image that can, or start a new worktree.

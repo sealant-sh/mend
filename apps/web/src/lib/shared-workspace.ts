@@ -116,7 +116,7 @@ type WaitFacts = Pick<SessionDto, "livePeople" | "sharedControlEnabledAt">;
 /**
  * Whether the waiting line (decision 6) can show at all: another sender's turn waits only where
  * people run in the executor (`livePeople`, empty for a shared executor and with
- * `MEND_HARNESS_LAYOUT` off) and the owner shares control. Otherwise the page asks nothing.
+ * `MEND_HARNESS_LAYOUT=shared`) and the owner shares control. Otherwise the page asks nothing.
  */
 export const waitingLineRelevant = (session: WaitFacts): boolean =>
   session.livePeople.length > 0 && session.sharedControlEnabledAt !== null;

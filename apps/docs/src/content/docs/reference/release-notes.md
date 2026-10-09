@@ -13,11 +13,17 @@ Each entry says what a release changes and what it leaves as it was. Known limit
 Not released yet. Previews (`0.36.0-next.<n>`) carry what is below; see
 [Try a preview](/getting-started/try-a-preview/).
 
-### Per-person workspaces, behind `MEND_HARNESS_LAYOUT=person`
+### Per-person workspaces, on by default
 
-Off by default (`shared`). With it set, each person who runs anything in a workspace gets their own
-Linux user and home, and everything they run runs as them. A worktree that has run per person always
-runs per person. See [Per-person workspaces](/operate/per-person-workspaces/).
+Each person who runs anything in a workspace gets their own Linux user and home, and everything they
+run runs as them. `MEND_HARNESS_LAYOUT` is `person` unless set; an operator sets
+`MEND_HARNESS_LAYOUT=shared` to keep new worktrees on one shared home. A worktree that has run per
+person always runs per person, whatever the setting. A loopback server on the capture store (the
+default `mend server setup`) runs per person too. Where a workspace cannot run per person (a nix
+image, no `sudo`, a Kubernetes workspace runtime, a Docker host with no-new-privileges), a new
+worktree runs with one shared home and the session says why. Hot sessions keep standbys only for
+people whose new worktrees run with a shared home; for anyone else every launch starts cold. See
+[Per-person workspaces](/operate/per-person-workspaces/).
 
 Everyone in a per-person workspace has passwordless sudo, which runs as root: anyone working there,
 and their agents, can read and change each other's files, logins included.
