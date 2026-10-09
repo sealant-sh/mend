@@ -32,9 +32,9 @@ it.
 - CLI: `mend adopt` with no URL, run inside a checkout, prints
   `  claude memory <n> files on this machine → mend memory import` (`1 file` for one) when Claude
   keeps memory for it here. Given a URL, it says nothing about memory.
-- Web: no memory view. A session page shows
-  `memory from before 0.36, not credited · <n> files` only on an upgraded server whose shared-home
-  memory could not be credited; a fresh instance never shows it.
+- Web: no memory view. A session page shows `memory from before 0.36, not credited · <n> files` only
+  on an upgraded server whose shared-home memory could not be credited; a fresh instance never shows
+  it.
 - TUI, desktop, mobile, VS Code, Slack: no memory surface.
 
 ## Driving it with verify
@@ -46,20 +46,19 @@ Preconditions:
   `git clone <repo-url> <scratch>/checkout`. Its origin is what ties the directory to `<project>`.
 - Fake this machine's Claude memory for that checkout, away from the real one: set
   `CLAUDE_CONFIG_DIR=<scratch>/claude` and `CODEX_HOME=<scratch>/codex` for every
-  `mend memory import` below, compute `<key>` as `<scratch>/checkout` with every character that is not a letter
-  or digit replaced by `-`, and write `<scratch>/claude/projects/<key>/memory/MEMORY.md` holding
-  `- verify: the map's memory line\n`.
+  `mend memory import` below, compute `<key>` as `<scratch>/checkout` with every character that is
+  not a letter or digit replaced by `-`, and write
+  `<scratch>/claude/projects/<key>/memory/MEMORY.md` holding `- verify: the map's memory line\n`.
 - `mend memory --project <project>` prints
   `<project>: no agent memory yet · mend memory import brings this machine's`.
-- The Claude launch used below needs `mend connect claude` against this instance. Import, list,
-  show and remove need no connected provider.
+- The Claude launch used below needs `mend connect claude` against this instance. Import, list, show
+  and remove need no connected provider.
 
 - **Plan.** From `<scratch>/checkout`, run
   `CLAUDE_CONFIG_DIR=<scratch>/claude CODEX_HOME=<scratch>/codex mend memory import --dry-run`.
   Stdout is `claude memory · <scratch>/claude/projects/<key>/memory · 1 file`,
-  `would import into <project> · 1 added`, `  added     MEMORY.md` and
-  `--dry-run: nothing written`. Exit code `0`. `mend memory --project <project>` still reports no
-  memory.
+  `would import into <project> · 1 added`, `  added     MEMORY.md` and `--dry-run: nothing written`.
+  Exit code `0`. `mend memory --project <project>` still reports no memory.
 - **Import.** Run the same command without `--dry-run`. Stdout shows the same first line, then
   `imported into <project> · 1 added`, `  added     MEMORY.md` and
   `every version replaced is kept · sessions in the project receive it from the next launch`.
@@ -72,7 +71,8 @@ Preconditions:
 - **Import refusals.** From `<scratch>` (not a checkout), run `mend memory import`. Stderr is
   `mend: run mend memory import inside the repository's checkout`. Exit code `1`. From the checkout,
   with `CLAUDE_CONFIG_DIR=<scratch>/empty CODEX_HOME=<scratch>/empty`, stderr is
-  `mend: neither claude nor codex keeps memory for <scratch>/checkout on this machine`. Exit code `1`.
+  `mend: neither claude nor codex keeps memory for <scratch>/checkout on this machine`. Exit code
+  `1`.
 - **Delivered at launch.** Run
   `mend claude "Change nothing." --name verify-memory --project <project> --detach` and note
   `<id8>`. In a tmux session run `mend shell <id8>`, then
@@ -97,12 +97,11 @@ Preconditions:
   `cli.json`. Later imports from the same checkout merge against what this one sent.
 - The project comes from the current directory's checkout (its origin) unless `--project` names one.
   Run the import from the clone, not from `<scratch>`.
-- Mend stores Claude memory files and Codex summary files. Delivery is separate from which
-  harness uses those formats: fresh shared-home workspace launches deliver the owner's stored
-  memory even for `mend run`, pi or opencode. In per-person homes, delivery runs at agent starts
-  for a personal session that has never had shared control. Ownership and shared-control history
-  govern whose memory can be delivered and saved back. Memory delivery itself needs no connected
-  provider.
+- Mend stores Claude memory files and Codex summary files. Delivery is separate from which harness
+  uses those formats: fresh shared-home workspace launches deliver the owner's stored memory even
+  for `mend run`, pi or opencode. In per-person homes, delivery runs at agent starts for a personal
+  session that has never had shared control. Ownership and shared-control history govern whose
+  memory can be delivered and saved back. Memory delivery itself needs no connected provider.
 - Read-back happens when the agent ends, not on a timer. A session left open saves nothing until it
   stops.
 - `mend memory <word>` with any word other than `show`, `rm` or `import` lists, rather than refusing
@@ -110,6 +109,5 @@ Preconditions:
 - A name alone is Claude's file; prefix Codex's with `codex:` (`codex:MEMORY.md`).
 - There is no web or phone view of memory. ADR 0009 lists web and phone views as later work. Product
   gap; only the CLI is drivable.
-- Mend has no pi or opencode memory format to import or save back. Their launches can still
-  receive the person's stored Claude and Codex files; that does not show that either harness reads
-  them.
+- Mend has no pi or opencode memory format to import or save back. Their launches can still receive
+  the person's stored Claude and Codex files; that does not show that either harness reads them.

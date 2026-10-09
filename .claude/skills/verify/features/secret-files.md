@@ -2,10 +2,10 @@
 
 A secret file is a file a person keeps in Mend, encrypted at rest, with a path under the workspace's
 home directory: `~/.aws/credentials`, a kubeconfig, an `.npmrc` token file. Every session the person
-owns receives their secret files before its agent starts, in every project. The content goes in
-once and never comes back out: every surface lists path, size and dates only. A path under a
-directory sessions capture (`.claude`, `.codex`, `.pi`, `.mend` and the like) is refused, and a file
-that is not written at launch is named on the session page.
+owns receives their secret files before its agent starts, in every project. The content goes in once
+and never comes back out: every surface lists path, size and dates only. A path under a directory
+sessions capture (`.claude`, `.codex`, `.pi`, `.mend` and the like) is refused, and a file that is
+not written at launch is named on the session page.
 
 ## Sub-features
 
@@ -37,8 +37,8 @@ Preconditions:
 
 - Mend is healthy at `<web>`, the browser is signed in, and `<project>` is adopted.
 - `mend secrets` prints `no secret files · mend secrets add <path> --from <file> keeps one`.
-- `<scratch>` is an empty directory the run made. Run
-  `printf 'verify-token\n' > <scratch>/token`. The value is disposable; it is not a real credential.
+- `<scratch>` is an empty directory the run made. Run `printf 'verify-token\n' > <scratch>/token`.
+  The value is disposable; it is not a real credential.
 - For the mobile step, the Expo web app is paired to `<web>` (see
   [Pairing devices](./pairing-devices.md)).
 
@@ -60,14 +60,13 @@ Preconditions:
   `13 B · <date> · replaced 1×`. The footer reads `2 kept · up to 64 · each at most 256 KB`.
 - **Web refusal.** Run
   `await page.getByRole("textbox", { name: /^Path in the workspace/ }).fill(".codex/verify")`. The
-  line `.codex/verify is under .codex, which sessions capture` appears and
-  `Add secret file` is disabled.
+  line `.codex/verify is under .codex, which sessions capture` appears and `Add secret file` is
+  disabled.
 - **Web add from text.** Run
   `await page.getByRole("textbox", { name: /^Path in the workspace/ }).fill("~/.verify-mend/web")`,
   then `await page.getByRole("textbox", { name: "Or paste its text" }).fill("web\n")`, then
-  `await page.getByRole("button", { name: "Add secret file" }).click()`. The button reads
-  `Saving…`, then the footer reads `created ~/.verify-mend/web · 4 B` and the list gains
-  `~/.verify-mend/web`.
+  `await page.getByRole("button", { name: "Add secret file" }).click()`. The button reads `Saving…`,
+  then the footer reads `created ~/.verify-mend/web · 4 B` and the list gains `~/.verify-mend/web`.
 - **Web add from a file.** Fill the path with `.verify-mend/file`, then run
   `await page.getByRole("button", { name: "Choose file" }).setInputFiles({ name: "token", mimeType: "text/plain", buffer: Buffer.from("file\n") })`.
   The line beside it reads `token · 5 B`, and `Or paste its text` is disabled. Add it; the list
@@ -76,9 +75,9 @@ Preconditions:
   `await page.getByRole("listitem").filter({ hasText: "~/.verify-mend/web" }).getByRole("button", { name: "Remove" }).click()`.
   The button reads `Removing…`, the row leaves, and the footer reads `removed ~/.verify-mend/web`.
 - **Session receives them.** Run
-  `mend run --project <project> -- sh -c 'wc -c < ~/.verify-mend/token > SECRET-SEEN.md'`. Exit
-  code `0`. The change (see [Review a change](./review-change.md)) holds `SECRET-SEEN.md` with
-  `13`, and nothing under `.verify-mend` appears among the changed files.
+  `mend run --project <project> -- sh -c 'wc -c < ~/.verify-mend/token > SECRET-SEEN.md'`. Exit code
+  `0`. The change (see [Review a change](./review-change.md)) holds `SECRET-SEEN.md` with `13`, and
+  nothing under `.verify-mend` appears among the changed files.
 - **Mobile list.** In the Expo web app at 390x844, run
   `await page.getByRole("tab", { name: "Settings" }).click()`. The text
   `Secret files · written into every session you launch, never captured` is visible, then
@@ -103,18 +102,18 @@ Preconditions:
   buttons.
 - The footer status (`created …`, `removed …`) and the red error line are plain text, not
   `role="status"` or `role="alert"`.
-- The web form trims whitespace and a leading `~/`, then validates the path without normalizing
-  it. It refuses `a/../token`. The CLI maps an absolute path under the CLI machine's home to a
-  workspace path and normalizes before validation, so `a/../token` becomes `token`. A normalized
-  path that still escapes the home or names a captured directory is refused.
+- The web form trims whitespace and a leading `~/`, then validates the path without normalizing it.
+  It refuses `a/../token`. The CLI maps an absolute path under the CLI machine's home to a workspace
+  path and normalizes before validation, so `a/../token` becomes `token`. A normalized path that
+  still escapes the home or names a captured directory is refused.
 - Never write a secret file's content into the worktree in a recipe: the worktree is captured. Prove
   delivery with a byte count or a `test -f`, as above, and use disposable values only.
 - A file is at most 256 KB, at most 64 files per person. Shared-home workspaces receive files at
   launch. In per-person homes, delivery runs at the person's first process and every later agent
   start, including within an existing workspace. A saved change reaches that home at the next
   delivery.
-- A session that joins a workspace someone else launched (shared home) receives none of the
-  joiner's files. Its summary line reads
+- A session that joins a workspace someone else launched (shared home) receives none of the joiner's
+  files. Its summary line reads
   `secret files · <n> not written · this workspace is another person's · ~/<path>`. A disposable
   instance with one account avoids that branch.
 - The mobile list appears only when the phone is paired, and is plain text with no list role.

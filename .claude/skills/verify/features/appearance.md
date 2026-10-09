@@ -52,8 +52,9 @@ Preconditions:
 - **Desktop: open.** Run `await page.getByRole("link", { name: "Settings" }).click()`. The heading
   `Settings` (level 1) and the heading `Appearance` are visible. The buttons `system`, `light` and
   `dark` sit in the `Theme` row; one reports `aria-pressed="true"`.
-- **Desktop: pin dark.** Run `await page.getByRole("button", { name: "dark", exact: true }).click()`.
-  It reports `aria-pressed="true"`, the others `false`, the `html` element has the class `dark`, and
+- **Desktop: pin dark.** Run
+  `await page.getByRole("button", { name: "dark", exact: true }).click()`. It reports
+  `aria-pressed="true"`, the others `false`, the `html` element has the class `dark`, and
   `localStorage.getItem("mend-theme")` is `"dark"`. Choose `light` and the class goes, while the
   terminal preview under `Terminal` stays dark.
 - **Mobile: open.** Run `await page.getByRole("tab", { name: "Settings" }).click()`. The texts
@@ -75,8 +76,8 @@ Preconditions:
   only by color. Read `mend-theme` from local storage, or the `html` class, as the observed state. A
   finding.
 - The desktop theme buttons sit in a `group` with no accessible name, and the `Appearance` section
-  is not a region. The names `system`, `light` and `dark` are lowercase and unique on the page today;
-  the `Default harness` row's group beside it is just as unnamed.
+  is not a region. The names `system`, `light` and `dark` are lowercase and unique on the page
+  today; the `Default harness` row's group beside it is just as unnamed.
 - The mobile theme and text size options are pressables with no role, no accessible name of their
   own and no selected state; `getByRole` cannot reach them. Use `getByText` with `exact: true`. The
   `Theme` and `Text size` captions are plain text, not labels. A finding.
@@ -84,4 +85,5 @@ Preconditions:
   the desktop app or the phone, and a new browser context starts at `System`.
 - The web page applies the stored class before first paint from an inline script, so a reload never
   flashes the other theme. Assert the class right after `goto`, before any click.
-- The desktop terminal, the dashboard (`mend ui`) and the review screen stay dark whatever the theme.
+- The desktop terminal, the dashboard (`mend ui`) and the review screen stay dark whatever the
+  theme.

@@ -49,7 +49,8 @@ Preconditions:
 - `<scratch>` is an empty directory the run made. `<xdg>` is the directory that holds the signed-in
   CLI's `mend/cli.json` (`~/.config` unless `XDG_CONFIG_HOME` says otherwise). Run
   `printf 'verify\n' > <scratch>/.verify-mendrc`.
-- `mend dotfiles` prints `repo      none` and `snapshot  none — sync from this machine: mend dotfiles sync --all`.
+- `mend dotfiles` prints `repo      none` and
+  `snapshot  none — sync from this machine: mend dotfiles sync --all`.
 
 - **Open the panel.** Run `await page.goto("<web>/settings")`. The heading `Settings` (level 1) and
   the heading `Dotfiles` are visible. The panel's footer reads `repo · none — snapshot · none`.
@@ -79,8 +80,8 @@ Preconditions:
 - **Sync preview.** Run `HOME=<scratch> XDG_CONFIG_HOME=<xdg> mend dotfiles sync`. With no known
   config file in `<scratch>`, stdout is `no known config files found under ~` and nothing uploads.
   Exit code `0`.
-- **Sync a named file.** Run `HOME=<scratch> XDG_CONFIG_HOME=<xdg> mend dotfiles sync .verify-mendrc`.
-  Stdout is
+- **Sync a named file.** Run
+  `HOME=<scratch> XDG_CONFIG_HOME=<xdg> mend dotfiles sync .verify-mendrc`. Stdout is
   `synced 1 file from <hostname> · <sha7> — applies from the next session launch`. Run
   `mend dotfiles`: the snapshot now reads `1 file · from <hostname>` and lists `.verify-mendrc`
   only. The web-added file is gone: a CLI sync replaces the snapshot.
@@ -102,25 +103,24 @@ Preconditions:
   `mend run --project <project> -- sh -c 'cat ~/.verify-dotfile ~/.verify-mendrc > DOTFILES-SEEN.md'`.
   Exit code `0`. On its session page the line
   `dotfiles · repo <dotfiles-repo-url> · snapshot <sha7> · sent at launch` is visible
-  (`page.getByText(/^dotfiles · repo /)`), and the change (see [Review a change](./review-change.md))
-  holds `DOTFILES-SEEN.md` with both files' contents.
+  (`page.getByText(/^dotfiles · repo /)`), and the change (see
+  [Review a change](./review-change.md)) holds `DOTFILES-SEEN.md` with both files' contents.
 - **Switch off.** In the `Dotfiles` card choose the first `off` button (see Gotchas). The line reads
-  `dotfiles · off · set up in Settings`. A new `mend run` session shows no `dotfiles ·` line. Turn it
-  back `on`.
+  `dotfiles · off · set up in Settings`. A new `mend run` session shows no `dotfiles ·` line. Turn
+  it back `on`.
 - **Clear.** Run `mend dotfiles repo --clear`. Stdout is
   `✓ cleared the dotfiles repository — applies from the next session launch`. On the web, reload
-  Settings and choose `Remove snapshot`
-  (`page.getByRole("button", { name: "Remove snapshot" })`). The panel reads
-  `no snapshot · nothing rides along yet`, and `mend dotfiles` prints `repo      none` and
-  `snapshot  none — …`.
+  Settings and choose `Remove snapshot` (`page.getByRole("button", { name: "Remove snapshot" })`).
+  The panel reads `no snapshot · nothing rides along yet`, and `mend dotfiles` prints
+  `repo      none` and `snapshot  none — …`.
 - **Proof.** Keep the ARIA snapshot and screenshot of the Dotfiles panel after each save, of the
   project's Dotfiles card, and of the session page with its `dotfiles ·` line; keep every `mend`
   transcript with exit codes.
 
 ## Gotchas
 
-- `Add files…` is a `<label>` styled as a button around a file input with `display: none`. It has
-  no button role and no keyboard focus, so `getByRole` cannot reach it. Use
+- `Add files…` is a `<label>` styled as a button around a file input with `display: none`. It has no
+  button role and no keyboard focus, so `getByRole` cannot reach it. Use
   `page.getByLabel("Add files…").setInputFiles(…)`. A finding: the control is unreachable by
   keyboard and by role.
 - The `Manager` buttons are named by their label and their description run together
@@ -152,8 +152,7 @@ Preconditions:
 - In a shared-home workspace, dotfiles resolve when the workspace is created. In a per-person
   workspace, they apply at that person's first process, including when the person joins an existing
   workspace. Later processes in that home do not reapply them. Custom-image projects never apply
-  dotfiles; their card reads
-  `custom image · dotfiles and default shell profile not applied`.
-- The session page's `dotfiles ·` lines say what Mend sent, not what the workspace applied. A
-  source that failed shows `dotfiles · repo not applied · <reason>` in the warning color, still as
-  plain text.
+  dotfiles; their card reads `custom image · dotfiles and default shell profile not applied`.
+- The session page's `dotfiles ·` lines say what Mend sent, not what the workspace applied. A source
+  that failed shows `dotfiles · repo not applied · <reason>` in the warning color, still as plain
+  text.
