@@ -29182,6 +29182,8 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     }> = [];
     const stops: Array<string> = [];
     const failed: Array<{ readonly turnId: string; readonly words: string }> = [];
+    /** Every process whose open turns were cancelled (`cancelOpenForProcess`). */
+    const swept: Array<string> = [];
     const state = makeHarnessLayoutsMemoryState();
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
@@ -29273,6 +29275,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         protocolHostLayer: steeringHost(attached, stops),
         conversationLayer: Layer.succeed(AgentConversationRepo, {
           ...agentConversationStub,
+          cancelOpenForProcess: (processId) => Effect.sync(() => void swept.push(processId)),
           failTurn: (turnId, words) =>
             Effect.sync(() => {
               failed.push({ turnId, words });
@@ -29315,6 +29318,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       attached,
       stops,
       failed,
+      swept,
       state,
       outcome: result.outcome,
       second: result.second,
@@ -29351,6 +29355,8 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     expect(run.failed).toEqual([
       { turnId: "turn-maria", words: expect.stringContaining("Core did not answer") },
     ]);
+    // The turns queued behind hers are not cancelled: Alice's restarted process takes them.
+    expect(run.swept).not.toContain(run.attached[0]?.process.id);
   }, 30_000);
 
   it("a hand-over whose turn is withdrawn while it is prepared stops nothing and writes nothing into the home (review 2 of mend#572, P2-2)", async () => {
@@ -29391,6 +29397,9 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     });
     expect(restart.outcome?.message).toContain("Core did not answer");
     expect(restart.summary).toContain("could not be started again");
+    // No process takes the conversation's queue: what waited behind Maria's turn ends with the
+    // stopped process, as at any stop.
+    expect(restart.swept).toContain(restart.attached[0]?.process.id);
   }, 30_000);
 
   it("a hand-over whose sender's login went invalid while the turn waited stops nothing (review of mend#572, P2-2)", async () => {

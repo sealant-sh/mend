@@ -730,6 +730,11 @@ export const ProtocolHostLive: Layer.Layer<
           );
           return;
         case "runtime.error":
+          // A process Mend detached itself (a stop, a hand-over, a relaunch) ends its output
+          // because Mend aborted it; whoever detached it settles its turns. A hand-over leaves
+          // the queued ones for the conversation's next process (decision 6), which takes them
+          // when it attaches, and a sweep here would cancel them first (2026-10-09, e4028ea7).
+          if (hosted.get(entry.process.id) !== entry) return;
           hosted.delete(entry.process.id);
           // Close the adapter first: it answers held provider requests and stops the output
           // fiber, so no request.opened can land after the cancel sweep below.
