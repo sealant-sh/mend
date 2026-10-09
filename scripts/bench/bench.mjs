@@ -13,6 +13,26 @@
 // `node scripts/bench/bench.mjs help` lists the options. Everything the benchmark creates is named
 // `st-bench-…` and removed when it ends, whatever happened, and by `cleanup`.
 //
+// Gate P1 (docs/adr/0016, "Method"): `person` launches against `shared` launches at one commit, each
+// on a fresh worktree, the layout picked per launch with the operator's `harnessLayout` (never by
+// flipping MEND_HARNESS_LAYOUT). `run --layout shared` and `run --layout person` take the two
+// records; `compare <shared> <person>` checks the second against the first and says which
+// comparison it is. With `--layout person` three more scenarios run on person worktrees of their own:
+// - `handover`: a protocol session of the first account with shared control on; each round the
+//   second account sends a turn (the hand-over to their process), the owner sends one back, and the
+//   owner sends one more (no hand-over). Each turn is timed on the server's clock from its submit to
+//   its start (budget: under 5 s for a hand-over), its first item and its end, and checked: billed to
+//   its sender, on a process that runs as its sender, one agent live at a time.
+// - `growth`: the second account's own session in the first one's worktree; their saved directory
+//   sized, machine state left out, against their conversation state and memory (budget: at most
+//   64 KB beyond them).
+// - `person-checks`: per harness, a person launch whose agent runs as a uid of the person range with
+//   its own home and answers; pi's profile is the person's own, pi's and opencode's ChatGPT login is
+//   in their home; for pi, the second account joins and its pi has its own profile, not the first
+//   one's. Probed in the executor as that person, without printing a file's contents.
+// Checks are observations, not timings: they are tallied in the record's `checks`, and a failed
+// one fails `run` and `compare`.
+//
 // What the record keeps apart, so one run's accident does not read as a regression:
 // - An executor's size (`executor.<harness>.*_bytes`) is taken at the launch's first output, a fixed
 //   point; `memory_after_answer_bytes` is what it holds once the answer is in. Records before
@@ -38,6 +58,7 @@ import { fileURLToPath } from "node:url";
 import { makeApi, makeHost } from "./host.mjs";
 import {
   compareResults,
+  failedChecks,
   formatComparison,
   formatTable,
   mergeResults,
@@ -54,7 +75,8 @@ const USAGE = `usage: node scripts/bench/bench.mjs <run|table|compare|merge|comp
 server
   --url <url>                 the Mend server (default: the url in --token-file)
   --token-file <path>         the CLI's cli.json or a file holding a bearer (default ~/.config/mend/cli.json)
-  --second-token-file <path>  a second account's token, for the different-person join
+  --second-token-file <path>  a second account's token: the different-person join, the hand-over and
+                              growth
   --project <name|id>         the project to run in (default: mend)
   --ssh "<ssh args>"          reach the server's host for its logs and docker stats
                               (e.g. "-J root@100.94.101.28 root@10.0.0.40"); omit to run on the host
@@ -63,11 +85,16 @@ server
   --cli "<command>"           the mend CLI to time (e.g. "node apps/cli/dist/main.js"); off by default
 
 what runs
-  --only <a,b,…>              scenarios: new,stop,resume,join-same,join-other,interactive,api,handover,growth
-                              (default: all)
-  --harnesses <a,b,…>         launch harnesses, the first carries the other scenarios
+  --only <a,b,…>              scenarios: new,stop,resume,join-same,join-other,interactive,api,
+                              handover,growth,person-checks (default: all)
+  --layout <person|shared>    the harnessLayout of every start that makes a new worktree (the
+                              operator's, docs/adr/0016 decision 14); omitted, the server's flag
+                              decides. handover, growth and person-checks need --layout person
+  --harnesses <a,b,…>         launch harnesses, the first carries the other scenarios; the hand-over
+                              runs on claude and codex among them, growth and person-checks on each
                               (default: claude,codex,pi,opencode)
-  --runs <n>                  runs of each launch scenario (default: 10, the ADR's gate)
+  --runs <n>                  runs of each launch scenario, and rounds of the hand-over
+                              (default: 10, the ADR's gate)
   --joins-per-run <n>         joins of each kind per run (default: 1)
   --resumes-per-run <n>       resume-and-Stop cycles per run (default: 1)
   --interactive-runs <n>      shell opens, attaches, git fetches and pushes, checkpoints (default: 10)
@@ -83,7 +110,15 @@ output and comparison
   --out <path>                where the record goes (default: /tmp/st-bench-<id>.json)
   --stats <a,b>               compared statistics (default: median,p90)
   --rerun                     compare: run each missed measure's scenario once more (needs the server
-                              options) and fail only on a repeated miss
+                              options) and fail only on a repeated miss; the re-run takes the layout
+                              of the record under test unless --layout says otherwise
+
+gate P1 (docs/adr/0016): person launches against shared launches at one commit
+  run --layout shared … --out shared.json; run --layout person … --out person.json;
+  compare shared.json person.json. compare says what it compares (gate P1, its named check of
+  shared against an earlier shared record, or a plain before-and-after) and warns when the
+  builds, instance, project, image or harness versions differ. Ceiling budgets (the hand-over's
+  5 s, growth's 64 KB) are checked on the record under test alone; its failed checks fail it
 
 what the record keeps apart
   executor sizes              taken at each launch's first output; memory_after_answer_bytes is what
@@ -94,7 +129,13 @@ what the record keeps apart
                               image built during the run is listed in imageBuilds
   usage limits                a harness that says its account hit a usage limit until it resets is not
                               waited on: first_turn is not run, with its words as the reason. A rate
-                              limit the harness retries by itself is waited out like any other delay`;
+                              limit the harness retries by itself is waited out like any other delay
+  layouts                     the record keeps the layout asked for (options.layout, target.layout); a
+                              launch whose agent ran in the other one (runsAs says) goes under
+                              new.<harness>.other_layout.*, unbudgeted, and its layout check fails
+  checks                      correctness observations (who a process runs as, who a turn billed, one
+                              agent at a time, homes, logins, pi profiles) are tallied under checks,
+                              never as timings; a failed one fails run and compare`;
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const log = (text) => process.stderr.write(`[${new Date().toISOString().slice(11, 19)}] ${text}\n`);
@@ -179,6 +220,8 @@ const describeTarget = async ({ url, api, host, project }, opts) => {
     version: health.version ?? null,
     commit: health.version === undefined ? null : gitCommitOf(health.version),
     flag: flag ?? "unknown (no host access)",
+    // What every start that made a worktree asked for; null: the server's flag decided.
+    layout: opts.layout,
     project: {
       id: project.id,
       name: project.name,
@@ -210,12 +253,15 @@ const newResult = (opts) => ({
     typingRuns: opts.typingRuns,
     apiRuns: opts.apiRuns,
     secretFile: opts.secretFile,
+    layout: opts.layout,
   },
   // Where each launch harness's executor size was taken (`compare` reads it).
   method: { executorResources: RESOURCES_AT_FIRST_OUTPUT },
   measures: {},
   notRun: [],
   notes: [],
+  // Correctness observations (`rec.check`), tallied per check; never timings.
+  checks: [],
   // Workspace images Docker made during the run; a launch that waited for one is kept apart.
   imageBuilds: [],
   errors: [],
@@ -230,7 +276,7 @@ const runBench = async (opts) => {
   result.clock = clock;
   result.target = await describeTarget(connection, opts);
   log(
-    `bench ${rid} · ${result.target.url} · ${result.target.version} · project ${connection.project.name} · flag ${result.target.flag}`,
+    `bench ${rid} · ${result.target.url} · ${result.target.version} · project ${connection.project.name} · flag ${result.target.flag} · layout ${opts.layout ?? "the server's"}`,
   );
   const ctx = {
     ...connection,
@@ -300,6 +346,11 @@ const main = async () => {
         log(`${result.errors.length} error(s), listed in the record`);
         process.exitCode = 1;
       }
+      const failed = failedChecks(result);
+      if (failed.length > 0) {
+        log(`${failed.length} check(s) failed: ${failed.map((check) => check.check).join(", ")}`);
+        process.exitCode = 1;
+      }
       return;
     }
     case "table": {
@@ -329,7 +380,8 @@ const main = async () => {
         const missed = [...new Set(comparison.misses.map((row) => row.measure))];
         const plan = rerunPlan(missed, opts);
         log(`re-running ${plan.only.join(", ")} once for: ${missed.join(", ")}`);
-        const again = await runBench({ ...opts, ...plan });
+        const layout = opts.layout ?? after.options?.layout ?? null;
+        const again = await runBench({ ...opts, ...plan, layout });
         after = mergeResults(after, again, (name) => missed.includes(name));
         writeJson(opts.out, after);
         comparison = compareResults(before, after, { stats: opts.stats });
@@ -341,6 +393,10 @@ const main = async () => {
         process.exitCode = 1;
       } else {
         log("every budgeted statistic within its limit");
+      }
+      if (comparison.checkFailures.length > 0) {
+        log(`${comparison.checkFailures.length} check(s) of the record under test failed`);
+        process.exitCode = 1;
       }
       return;
     }

@@ -1,7 +1,30 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  agentIdentityOf,
+  asPersonCommand,
+  chatGptLoginSkipOf,
+  classifySavedFiles,
+  describeComparison,
+  failedChecks,
+  layoutOf,
+  liveAgents,
+  parsePersonProbe,
+  PERSON_PROBE_SH,
+  PERSON_STATE_PATHS,
+  personVerdicts,
+  PROFILE_DIGEST_SH,
+  profileDigestOf,
+  SAVED_SIZES_SH,
+  tallyCheck,
+  turnTimes,
+  turnVerdicts,
   allowance,
   builtWithin,
   deliveryWindow,
@@ -726,5 +749,560 @@ test("a merge keeps the point each record sampled its executor sizes at", () => 
   assert.deepEqual(
     [...new Set(compared.rows.map((row) => row.measure))],
     ["executor.codex.memory_bytes"],
+  );
+});
+
+// ─── layouts and gate P1 (docs/adr/0016, "Method") ──────────────────────────
+
+const layoutRecord = (layout, version, measures, extra = {}) => ({
+  options: { layout },
+  target: {
+    url: "https://alpha.mend.run",
+    version,
+    commit: null,
+    flag: "shared (MEND_HARNESS_LAYOUT unset)",
+    layout,
+    project: { id: "p" },
+    workspaceImage: "sha256:a",
+    harnessVersions: { claude: "2.1.287" },
+  },
+  measures,
+  notRun: [],
+  notes: [],
+  errors: [],
+  checks: [],
+  ...extra,
+});
+
+test("--layout takes person or shared, and the per-person scenarios are scenarios", () => {
+  assert.equal(parseOptions(["run"]).layout, null);
+  assert.equal(parseOptions(["run", "--layout", "person"]).layout, "person");
+  assert.equal(parseOptions(["run", "--layout=shared"]).layout, "shared");
+  assert.throws(() => parseOptions(["run", "--layout", "root"]), /person or shared/);
+  assert.deepEqual(parseOptions(["run", "--only", "handover,growth,person-checks"]).only, [
+    "handover",
+    "growth",
+    "person-checks",
+  ]);
+  assert.ok(parseOptions(["run"]).only.includes("person-checks"));
+});
+
+test("a record's layout is what its launches asked for, or the server's flag", () => {
+  assert.equal(layoutOf(layoutRecord("person", "1")), "person");
+  assert.equal(layoutOf({ options: { layout: null }, target: { flag: "person" } }), "person");
+  assert.equal(
+    layoutOf({ options: { layout: null }, target: { flag: "shared (MEND_HARNESS_LAYOUT unset)" } }),
+    "shared",
+  );
+  assert.equal(layoutOf({ target: { flag: "unknown (no host access)" } }), null);
+});
+
+test("a comparison says whether it is gate P1, its named check, or a plain before and after", () => {
+  const shared = layoutRecord("shared", "0.36.0-next.648", {});
+  const person = layoutRecord("person", "0.36.0-next.648", {});
+  const gate = describeComparison(shared, person);
+  assert.equal(gate.kind, "gate P1: person launches against shared launches");
+  assert.equal(gate.before, "shared · 0.36.0-next.648");
+  assert.equal(gate.after, "person · 0.36.0-next.648");
+  assert.deepEqual(gate.warnings, []);
+
+  const older = layoutRecord("shared", "0.36.0-next.602", {});
+  assert.match(describeComparison(older, person).kind, /not the gate: not the same build/);
+  assert.match(describeComparison(older, shared).kind, /named check/);
+  assert.match(describeComparison(person, shared).kind, /reversed/);
+  const drifted = layoutRecord("person", "0.36.0-next.648", {});
+  drifted.target.harnessVersions = { claude: "2.1.300" };
+  drifted.target.workspaceImage = "sha256:b";
+  assert.deepEqual(describeComparison(shared, drifted).warnings, [
+    "the workspace images differ (sha256:a and sha256:b)",
+    "claude ran 2.1.287 before and 2.1.300 after",
+  ]);
+  const formatted = formatComparison(compareResults(shared, person));
+  assert.match(formatted, /^gate P1: person launches against shared launches\nbefore: shared/);
+});
+
+test("a ceiling is checked on the run under test alone, and missing from it is a miss", () => {
+  const shared = layoutRecord(
+    "shared",
+    "1",
+    { "new.claude.first_output": { unit: "ms", budget: "start", samples: tenOf(30_000) } },
+    { notRun: [{ measure: "handover.*", reason: "per-person only: run with --layout person" }] },
+  );
+  const person = layoutRecord("person", "1", {
+    "new.claude.first_output": { unit: "ms", budget: "start", samples: tenOf(30_500) },
+    "handover.claude.to_other.started": {
+      unit: "ms",
+      budget: "handover",
+      samples: [...tenOf(3000).slice(0, 9), 6000],
+    },
+    "growth.claude.extra_person_beyond_state_bytes": {
+      unit: "bytes",
+      budget: "growth",
+      samples: [70_000],
+    },
+  });
+  const result = compareResults(shared, person);
+  const row = (measure, stat) =>
+    result.rows.find((entry) => entry.measure === measure && entry.stat === stat);
+  assert.equal(row("handover.claude.to_other.started", "median").ok, true);
+  assert.equal(row("handover.claude.to_other.started", "median").limit, 5000);
+  assert.equal(row("handover.claude.to_other.started", "median").before, null);
+  // (10 - 1) * 0.9 = 8.1 → 3000 + 0.1 * 3000
+  assert.ok(Math.abs(row("handover.claude.to_other.started", "p90").after - 3300) < 1e-6);
+  assert.equal(row("growth.claude.extra_person_beyond_state_bytes", "median").ok, false);
+  assert.equal(row("growth.claude.extra_person_beyond_state_bytes", "median").limit, 65_536);
+  assert.equal(row("new.claude.first_output", "median").ok, true);
+  assert.equal(allowance("handover", { median: 1 }, "median"), null);
+  // The person record compared against itself without its hand-over misses it.
+  const without = layoutRecord("person", "1", {});
+  const missing = compareResults(person, without).rows.filter((entry) =>
+    entry.measure.startsWith("handover."),
+  );
+  assert.ok(missing.length === 2 && missing.every((entry) => entry.missing && !entry.ok));
+  assert.match(
+    formatTable(person),
+    /\| handover\.claude\.to_other\.started \| 10 \|.*\| under 5 s \|/,
+  );
+});
+
+// ─── checks ─────────────────────────────────────────────────────────────────
+
+test("checks are tallied per name, keep a few failures, and fail a comparison", () => {
+  const checks = [];
+  tallyCheck(checks, "handover.claude.to_other.billed", true, "billed to b");
+  tallyCheck(checks, "handover.claude.to_other.billed", true, "billed to b");
+  for (let k = 0; k < 7; k += 1) tallyCheck(checks, "person.pi.home", false, `home /root ${k}`);
+  assert.deepEqual(
+    checks.map((check) => [check.check, check.passed, check.failed, check.failures.length]),
+    [
+      ["handover.claude.to_other.billed", 2, 0, 0],
+      ["person.pi.home", 0, 7, 5],
+    ],
+  );
+  const person = layoutRecord("person", "1", {}, { checks });
+  assert.deepEqual(
+    failedChecks(person).map((check) => check.check),
+    ["person.pi.home"],
+  );
+  const comparison = compareResults(layoutRecord("shared", "1", {}), person);
+  assert.equal(comparison.checkFailures.length, 1);
+  assert.match(formatComparison(comparison), /Failed checks of the run under test/);
+  const table = formatTable(person);
+  assert.match(table, /Checks \(observations, not timings\)/);
+  // Failures first.
+  assert.match(table, /\| person\.pi\.home \| 0 \| 7 \| 0 \| home \/root 0; [^\n]*\n\| handover/);
+});
+
+test("a re-run of a scenario stands for its checks", () => {
+  const base = {
+    measures: {},
+    checks: [
+      { check: "handover.claude.to_other.billed", passed: 0, failed: 1, failures: ["x"] },
+      { check: "person.pi.home", passed: 1, failed: 0, failures: [] },
+    ],
+  };
+  const extra = {
+    options: { only: ["handover"] },
+    measures: {},
+    checks: [{ check: "handover.claude.to_other.billed", passed: 1, failed: 0, failures: [] }],
+  };
+  const merged = mergeResults(base, extra);
+  assert.deepEqual(
+    merged.checks.map((check) => [check.check, check.failed]),
+    [
+      ["person.pi.home", 0],
+      ["handover.claude.to_other.billed", 0],
+    ],
+  );
+  assert.equal(scenarioOf("person.pi.home"), "person-checks");
+  assert.equal(scenarioOf("handover.codex.back.started"), "handover");
+  assert.equal(scenarioOf("growth.pi.extra_person_bytes"), "growth");
+  assert.equal(harnessOf("handover.codex.back.started"), "codex");
+  assert.equal(harnessOf("growth.pi.extra_person_bytes"), "pi");
+});
+
+// ─── a steered turn ─────────────────────────────────────────────────────────
+
+const TURN = {
+  id: "t2",
+  processId: "proc-b",
+  author: "bob",
+  status: "completed",
+  error: null,
+  billedUserId: "bob",
+  billedAccountName: "default",
+  createdAt: "2026-10-09T10:00:00.000Z",
+  startedAt: "2026-10-09T10:00:03.250Z",
+  endedAt: "2026-10-09T10:00:09.000Z",
+};
+const ITEMS = [
+  {
+    turnId: "t2",
+    kind: "user-message",
+    text: "What is 1 + 2?",
+    createdAt: "2026-10-09T10:00:00.100Z",
+  },
+  { turnId: "t2", kind: "assistant-message", text: "9119", createdAt: "2026-10-09T10:00:05.500Z" },
+  { turnId: "t2", kind: "reasoning", text: null, createdAt: "2026-10-09T10:00:04.000Z" },
+  { turnId: "t1", kind: "assistant-message", text: "9119", createdAt: "2026-10-09T09:59:00.000Z" },
+];
+
+test("a turn is timed on the server's clock from its submit", () => {
+  assert.deepEqual(turnTimes(TURN, ITEMS), { started: 3250, firstOutput: 4000, completed: 9000 });
+  assert.deepEqual(turnTimes({ ...TURN, status: "failed", startedAt: null }, []), {
+    started: null,
+    firstOutput: null,
+    completed: null,
+  });
+});
+
+test("live agents are the agent processes that have not ended", () => {
+  assert.equal(
+    liveAgents([
+      { kind: "agent-protocol", status: "running", exitedAt: null },
+      { kind: "agent-protocol", status: "exited", exitedAt: "2026-10-09T10:00:00Z" },
+      { kind: "shell", status: "running", exitedAt: null },
+      { kind: "agent-pty", status: "starting", exitedAt: null },
+    ]).length,
+    2,
+  );
+});
+
+test("a steered turn bills and runs as its sender, one agent at a time, and answers", () => {
+  const verdicts = (overrides) =>
+    Object.fromEntries(
+      turnVerdicts({
+        turn: TURN,
+        process: { id: "proc-b", runsAs: "bob" },
+        ownerId: "alice",
+        fromOwner: false,
+        maxLive: 1,
+        answer: "9119",
+        items: ITEMS,
+        ...overrides,
+      }).map((verdict) => [verdict.name, verdict.ok]),
+    );
+  assert.deepEqual(verdicts({}), {
+    sender: true,
+    billed: true,
+    runs_as: true,
+    one_agent: true,
+    completed: true,
+    answers: true,
+  });
+  const wrong = verdicts({
+    turn: { ...TURN, billedUserId: "alice", status: "cancelled" },
+    process: { id: "proc-a", runsAs: "alice" },
+    maxLive: 2,
+    answer: "1234",
+  });
+  assert.deepEqual(wrong, {
+    sender: true,
+    billed: false,
+    runs_as: false,
+    one_agent: false,
+    completed: false,
+    answers: false,
+  });
+  assert.equal(verdicts({ fromOwner: true }).sender, false);
+  assert.equal(verdicts({ process: null }).runs_as, false);
+});
+
+// ─── a person in an executor ────────────────────────────────────────────────
+
+const PROBE = [
+  "probe uid 40002",
+  "probe user mabcdefgh /home/mabcdefgh",
+  "probe home-stat 40002 700",
+  "probe proc pi",
+  "probe proc node",
+  "probe login openai-codex present 40002 600 1 /home/mabcdefgh/.pi/agent/auth.json",
+  "probe login openai present 40002 600 1 /home/mabcdefgh/.mend/opencode/auth.json",
+  `probe pi-profile present 40002 755 3 ${"b".repeat(64)}`,
+].join("\n");
+
+test("the probe's lines read as one person", () => {
+  const probe = parsePersonProbe(PROBE);
+  assert.equal(probe.uid, 40002);
+  assert.equal(probe.home, "/home/mabcdefgh");
+  assert.equal(probe.homeMode, "700");
+  assert.deepEqual(probe.processes, ["pi", "node"]);
+  assert.deepEqual(probe.logins.openai, {
+    present: true,
+    owner: 40002,
+    mode: "600",
+    keyLines: 1,
+    realPath: "/home/mabcdefgh/.mend/opencode/auth.json",
+  });
+  assert.equal(probe.piProfile.digest, "b".repeat(64));
+  assert.equal(parsePersonProbe("probe saved absent\nsize absent").saved, false);
+  assert.deepEqual(parsePersonProbe("probe pi-profile absent").piProfile, { present: false });
+});
+
+test("a person launch runs as the person, at home, on their own login and pi profile", () => {
+  const said = { uid: 40002, home: "/home/mabcdefgh" };
+  const verdicts = (overrides, probeText = PROBE) =>
+    Object.fromEntries(
+      personVerdicts({
+        probe: parsePersonProbe(probeText),
+        harness: "pi",
+        agentSaid: said,
+        piDigest: "b".repeat(64),
+        ...overrides,
+      }).map((verdict) => [verdict.name, verdict.ok]),
+    );
+  assert.deepEqual(verdicts({}), {
+    uid: true,
+    home: true,
+    processes: true,
+    agent_identity: true,
+    chatgpt_login: true,
+    pi_profile: true,
+  });
+  // B's pi beside A's: B's own profile, not A's, and another uid.
+  assert.deepEqual(verdicts({ otherPiDigest: "a".repeat(64), otherUid: 40001 }), {
+    uid: true,
+    home: true,
+    processes: true,
+    agent_identity: true,
+    chatgpt_login: true,
+    pi_profile: true,
+    pi_profile_not_other: true,
+  });
+  const onA = verdicts({
+    piDigest: "c".repeat(64),
+    otherPiDigest: "b".repeat(64),
+    otherUid: 40002,
+  });
+  assert.equal(onA.pi_profile, false);
+  assert.equal(onA.pi_profile_not_other, false);
+  assert.equal(onA.uid, false);
+  // Root's home, a login saved under the worktree, the agent elsewhere.
+  const wrong = verdicts(
+    { agentSaid: { uid: 0, home: "/root" } },
+    PROBE.replace("home-stat 40002 700", "home-stat 40002 755").replace(
+      "/home/mabcdefgh/.pi/agent/auth.json",
+      "/workspace/harness-home/people/b/.pi/agent/auth.json",
+    ),
+  );
+  assert.equal(wrong.home, false);
+  assert.equal(wrong.chatgpt_login, false);
+  assert.equal(wrong.agent_identity, false);
+  // A person with no profile has none delivered; one with no saved directory fails at once.
+  assert.equal(verdicts({ piDigest: null }).pi_profile, false);
+  assert.equal(
+    verdicts({ piDigest: null }, PROBE.replace(/probe pi-profile[^\n]*/, "probe pi-profile absent"))
+      .pi_profile,
+    true,
+  );
+  assert.deepEqual(verdicts({}, "probe saved absent"), { saved_dir: false });
+  // Claude has no ChatGPT login or pi profile to check.
+  const claude = personVerdicts({
+    probe: parsePersonProbe(PROBE),
+    harness: "claude",
+    agentSaid: said,
+  });
+  assert.deepEqual(
+    claude.map((verdict) => verdict.name),
+    ["uid", "home", "processes", "agent_identity"],
+  );
+});
+
+test("the agent's own uid and HOME are read from its screen, not from the prompt", () => {
+  assert.deepEqual(
+    agentIdentityOf("> echo ST-BENCH-ID $(id -u) $HOME\n ST-BENCH-ID 40001 /home/m1\n"),
+    {
+      uid: 40001,
+      home: "/home/m1",
+    },
+  );
+  assert.deepEqual(agentIdentityOf("│ST-BENCH-ID40001/home/m1│"), { uid: 40001, home: "/home/m1" });
+  assert.equal(agentIdentityOf("echo ST-BENCH-ID $(id -u) $HOME"), null);
+});
+
+test("the probe's pi profile digest is Mend's stored digest, node_modules left out", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "st-bench-profile-"));
+  try {
+    const files = [
+      { path: "settings.json", bytes: Buffer.from('{"packages":[]}\n') },
+      { path: "extensions/a b.ts", bytes: Buffer.from("export {}\n") },
+      { path: "root/mcp.json", bytes: Buffer.from("{}") },
+      { path: "Z.md", bytes: Buffer.from("upper case sorts first\n") },
+    ];
+    for (const file of files) {
+      mkdirSync(path.dirname(path.join(dir, file.path)), { recursive: true });
+      writeFileSync(path.join(dir, file.path), file.bytes);
+    }
+    // What the session installs is not part of it.
+    mkdirSync(path.join(dir, "node_modules/x"), { recursive: true });
+    writeFileSync(path.join(dir, "node_modules/x/index.js"), "1");
+    mkdirSync(path.join(dir, "extensions/node_modules"), { recursive: true });
+    writeFileSync(path.join(dir, "extensions/node_modules/y.js"), "2");
+    const out = execFileSync("sh", [
+      "-c",
+      `${PROFILE_DIGEST_SH}\nprintf '%s %s\\n' "$(profile_files "$1")" "$(profile_digest "$1")"`,
+      "st-bench",
+      dir,
+    ])
+      .toString()
+      .trim();
+    assert.equal(out, `4 ${profileDigestOf(files)}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the probes are shell the executor can parse, and reach it intact through the host", () => {
+  execFileSync("sh", ["-n", "-c", PERSON_PROBE_SH]);
+  execFileSync("sh", ["-n", "-c", SAVED_SIZES_SH]);
+  assert.throws(() => asPersonCommand("sealant-x", "a; rm -rf /", "true"), /not an id/);
+  // A docker that runs the command here: `stat` answers a uid, `exec -u <uid> <c> …` runs `…`.
+  const bin = mkdtempSync(path.join(tmpdir(), "st-bench-docker-"));
+  try {
+    writeFileSync(
+      path.join(bin, "docker"),
+      [
+        "#!/bin/sh",
+        "shift",
+        'if [ "$1" = "-u" ]; then echo "as $2" >&2; shift 2; fi',
+        "shift",
+        'case "$1" in stat) echo 40003;; *) exec "$@";; esac',
+      ].join("\n"),
+    );
+    chmodSync(path.join(bin, "docker"), 0o755);
+    const command = asPersonCommand(
+      "sealant-1",
+      "acc-1",
+      `printf '%s|%s\\n' "$1" "it's \\"quoted\\" $(echo ok)"`,
+    );
+    const out = execFileSync("sh", ["-c", command], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
+    }).toString();
+    assert.equal(out, `acc-1|it's "quoted" ok\n`);
+  } finally {
+    rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+// ─── growth per extra person ────────────────────────────────────────────────
+
+test("a saved directory splits into conversation state and the rest, machine state left out", () => {
+  const sized = classifySavedFiles(
+    [
+      "size 120000 ./.claude/projects/-workspace-repo/abc.jsonl",
+      "size 4000 ./.claude/history.jsonl",
+      "size 900000 ./codex-db/state_5.sqlite",
+      "size 30000 ./codex-db/state_5.sqlite-wal",
+      "size 32768 ./codex-db/state_5.sqlite-shm",
+      "size 5000000 ./codex-db/logs_1.sqlite",
+      "size 2000 ./conversations/s1/x.jsonl",
+      "size 700 ./.mend-saved/managed-skills.json",
+      "size 300 ./.mend-saved/agent-memory-delivered.json",
+      "size 10 ./.claude/projects-not-this/x",
+      "not a size line",
+    ].join("\n"),
+  );
+  assert.equal(sized.state, 120_000 + 4000 + 900_000 + 30_000 + 2000);
+  assert.equal(sized.beyond, 700 + 300 + 10);
+  assert.equal(sized.total, sized.state + sized.beyond);
+  assert.equal(sized.machine, 32_768 + 5_000_000);
+  assert.equal(sized.files, 8);
+  assert.deepEqual(sized.largestBeyond[0], { path: ".mend-saved/managed-skills.json", bytes: 700 });
+  assert.equal(classifySavedFiles("probe saved absent\nsize absent"), null);
+});
+
+test("the conversation state the bench counts is the one the sessions package saves", () => {
+  const source = readFileSync(
+    path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../packages/sessions/src/harness-layout.ts",
+    ),
+    "utf8",
+  );
+  const block = /export const PERSON_SAVED_STATE[\s\S]*?\n\];/.exec(source)?.[0] ?? "";
+  const saved = [...block.matchAll(/\{ path: "([^"]+)", kind: "(?:directory|file)" \}/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(saved.length > 10);
+  assert.deepEqual(PERSON_STATE_PATHS, saved);
+});
+
+// ─── a person with no ChatGPT login ─────────────────────────────────────────
+
+test("a pi or opencode with no ChatGPT login is said, from the session line or the accounts", () => {
+  assert.equal(
+    chatGptLoginSkipOf({
+      summary: "pi's ChatGPT login not written · no Codex account is connected",
+      accounts: null,
+    }),
+    "no ChatGPT login: no Codex account is connected",
+  );
+  assert.equal(
+    chatGptLoginSkipOf({ summary: null, accounts: [{ provider: "claude", status: "active" }] }),
+    "no ChatGPT login: no Codex account is connected",
+  );
+  assert.equal(
+    chatGptLoginSkipOf({ accounts: [{ provider: "codex", status: "invalid" }] }),
+    "no ChatGPT login: the Codex login needs reconnecting",
+  );
+  assert.equal(chatGptLoginSkipOf({ accounts: [{ provider: "codex", status: "active" }] }), null);
+  assert.equal(chatGptLoginSkipOf({ summary: "running · Claude", accounts: null }), null);
+});
+
+test("a skipped check is neither held nor failed", () => {
+  const checks = [];
+  tallyCheck(checks, "person.pi.joined.answers", null, "skipped: no ChatGPT login");
+  tallyCheck(checks, "person.pi.joined.answers", null, "skipped: no ChatGPT login");
+  assert.deepEqual(
+    [checks[0].passed, checks[0].failed, checks[0].skipped, checks[0].detail],
+    [0, 0, 2, "skipped: no ChatGPT login"],
+  );
+  assert.deepEqual(failedChecks({ checks }), []);
+  assert.match(
+    formatTable({ measures: {}, checks }),
+    /\| person\.pi\.joined\.answers \| 0 \| 0 \| 2 \| skipped: no ChatGPT login \|/,
+  );
+});
+
+const noLoginVerdicts = (probeText, overrides = {}) =>
+  Object.fromEntries(
+    personVerdicts({
+      probe: parsePersonProbe(probeText),
+      harness: "pi",
+      agentSaid: null,
+      piDigest: "b".repeat(64),
+      loginSkipped: "no ChatGPT login: no Codex account is connected",
+      ...overrides,
+    }).map((verdict) => [verdict.name, verdict.ok]),
+  );
+
+test("with no login of their own, a person's pi home must still be theirs and hold nobody's", () => {
+  const empty = PROBE.replace(
+    "probe login openai-codex present 40002 600 1",
+    "probe login openai-codex present 40002 600 0",
+  );
+  assert.deepEqual(noLoginVerdicts(empty), {
+    uid: true,
+    home: true,
+    processes: true,
+    agent_identity: null,
+    chatgpt_login: null,
+    chatgpt_login_nobody_else: true,
+    pi_profile: true,
+  });
+  // An entry there (the owner's, say) or a file in saved state fails it.
+  assert.equal(noLoginVerdicts(PROBE).chatgpt_login_nobody_else, false);
+  assert.equal(
+    noLoginVerdicts(
+      empty.replace("/home/mabcdefgh/.pi/agent/auth.json", "/workspace/harness-home/x/auth.json"),
+    ).chatgpt_login_nobody_else,
+    false,
+  );
+  assert.equal(
+    noLoginVerdicts(
+      PROBE.replace(/probe login openai-codex[^\n]*/, "probe login openai-codex absent"),
+    ).chatgpt_login_nobody_else,
+    true,
   );
 });

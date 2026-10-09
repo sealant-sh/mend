@@ -2,6 +2,8 @@
 // budgets and their comparison, and the tables. Nothing here reads the network, a clock or a file,
 // so all of it is unit-tested (lib.test.mjs).
 
+import { createHash } from "node:crypto";
+
 // ─── statistics ─────────────────────────────────────────────────────────────
 
 /** The q-quantile of an ascending array, interpolated between neighbours (R type 7, numpy's default). */
@@ -410,12 +412,19 @@ export const BUDGETS = {
   interactive: { spread: true, abs: 50, text: "noise: max(worst − median, 50 ms)" },
   resource: { pct: 0.05, abs: 0, text: "+5%" },
   api: { pct: 0.05, abs: 20, text: "+5% or +20 ms" },
+  // Fixed ceilings, checked on the run under test alone (a `shared` record has no hand-over and no
+  // second person's saved directory to compare against).
+  handover: { ceiling: 5000, text: "under 5 s" },
+  growth: { ceiling: 64 * 1024, text: "at most 64 KB" },
 };
+
+/** Whether a budget is a fixed ceiling rather than an allowance over a baseline. */
+const isCeiling = (budgetKey) => typeof BUDGETS[budgetKey]?.ceiling === "number";
 
 /** The increase a budget allows over one statistic of the baseline. */
 export const allowance = (budgetKey, before, stat) => {
   const budget = BUDGETS[budgetKey];
-  if (budget === undefined) return null;
+  if (budget === undefined || isCeiling(budgetKey)) return null;
   if (budget.spread === true) return Math.max(before.spread ?? 0, budget.abs);
   return Math.max((before[stat] ?? 0) * budget.pct, budget.abs);
 };
@@ -435,7 +444,8 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
     if (
       measure.budget === undefined ||
       measure.budget === null ||
-      BUDGETS[measure.budget] === undefined
+      BUDGETS[measure.budget] === undefined ||
+      isCeiling(measure.budget)
     ) {
       continue;
     }
@@ -470,6 +480,34 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
       });
     }
   }
+  // A ceiling is checked on the run under test, whatever the baseline holds: a measure either
+  // record budgets that way, and the other run lacks, is a miss.
+  const ceilings = new Map();
+  for (const record of [after, before]) {
+    for (const [name, measure] of Object.entries(record.measures ?? {})) {
+      if (isCeiling(measure.budget) && !ceilings.has(name)) ceilings.set(name, measure);
+    }
+  }
+  for (const [name, measure] of ceilings) {
+    const current = summarize(after.measures?.[name]?.samples ?? []);
+    const notRun = current.n === 0 ? notRunReasonOf(after, name) : null;
+    for (const stat of stats) {
+      const value = current.n === 0 ? null : current[stat];
+      const limit = BUDGETS[measure.budget].ceiling;
+      rows.push({
+        measure: name,
+        unit: measure.unit,
+        budget: measure.budget,
+        stat,
+        before: null,
+        after: value,
+        limit,
+        ok: value !== null && value <= limit,
+        missing: value === null,
+        ...(notRun === null ? {} : { notRun }),
+      });
+    }
+  }
   for (const [name, companion] of Object.entries(before.companions ?? {})) {
     const theirs = after.companions?.[name] ?? { measures: {} };
     const compared = compareResults(companion, theirs, { stats });
@@ -480,7 +518,565 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
       incomparable.push({ ...entry, measure: `${name}: ${entry.measure}` });
     }
   }
-  return { rows, misses: rows.filter((row) => !row.ok), incomparable };
+  return {
+    rows,
+    misses: rows.filter((row) => !row.ok),
+    incomparable,
+    label: describeComparison(before, after),
+    // A correctness check the run under test failed fails the comparison too: a fast launch that
+    // ran as the wrong person, or billed the wrong login, is not inside any budget.
+    checkFailures: failedChecks(after),
+  };
+};
+
+// ─── layouts and what a comparison is ───────────────────────────────────────
+
+/**
+ * The harness layout a record's launches asked for (`--layout`), or what the server's flag said
+ * when they asked for none (docs/adr/0016, decision 14). Null when neither says.
+ */
+export const layoutOf = (result) => {
+  const asked = result.options?.layout ?? result.target?.layout ?? null;
+  if (asked === "person" || asked === "shared") return asked;
+  return /^(person|shared)\b/.exec(result.target?.flag ?? "")?.[1] ?? null;
+};
+
+/**
+ * What a comparison stands for, in words, with what keeps it from standing for that. Gate P1
+ * (docs/adr/0016, "Method") is `person` launches against `shared` launches at the same commit, on
+ * the same instance, images and harness versions; `shared` against an older `shared` record is its
+ * named check; anything else is a plain before-and-after.
+ */
+const describeRecord = (result, layout) =>
+  `${layout ?? "layout unknown"} · ${result.target?.version ?? "version unknown"}${
+    result.target?.commit ? ` (${String(result.target.commit).slice(0, 9)})` : ""
+  }`;
+
+export const describeComparison = (before, after) => {
+  const layouts = [layoutOf(before), layoutOf(after)];
+  const versions = [before.target?.version ?? null, after.target?.version ?? null];
+  const warnings = [];
+  const sameVersion = versions[0] !== null && versions[0] === versions[1];
+  const sameCommit =
+    (before.target?.commit ?? null) === (after.target?.commit ?? null) || !before.target?.commit;
+  if (!sameVersion || !sameCommit) {
+    warnings.push(
+      `the two records are of different builds (${versions[0] ?? "?"} and ${versions[1] ?? "?"})`,
+    );
+  }
+  if ((before.target?.url ?? null) !== (after.target?.url ?? null)) {
+    warnings.push(
+      `the two records are of different instances (${before.target?.url} and ${after.target?.url})`,
+    );
+  }
+  if ((before.target?.project?.id ?? null) !== (after.target?.project?.id ?? null)) {
+    warnings.push("the two records ran on different projects");
+  }
+  if ((before.target?.workspaceImage ?? null) !== (after.target?.workspaceImage ?? null)) {
+    warnings.push(
+      `the workspace images differ (${before.target?.workspaceImage ?? "?"} and ${after.target?.workspaceImage ?? "?"})`,
+    );
+  }
+  for (const [harness, version] of Object.entries(after.target?.harnessVersions ?? {})) {
+    const theirs = before.target?.harnessVersions?.[harness];
+    if (theirs !== undefined && theirs !== version) {
+      warnings.push(`${harness} ran ${theirs} before and ${version} after`);
+    }
+  }
+  let kind = "before and after";
+  if (layouts[0] === "shared" && layouts[1] === "person") {
+    kind = "gate P1: person launches against shared launches";
+    if (!sameVersion || !sameCommit) kind += " (not the gate: not the same build)";
+  } else if (layouts[0] === "person" && layouts[1] === "shared") {
+    kind = "shared launches against person launches (reversed: the gate puts shared first)";
+  } else if (layouts[0] === "shared" && layouts[1] === "shared" && !sameVersion) {
+    kind = "gate P1's named check: shared launches against an earlier shared record";
+  } else if (layouts[0] !== null && layouts[0] === layouts[1]) {
+    kind = `${layouts[0]} launches, before and after`;
+  }
+  return {
+    kind,
+    before: describeRecord(before, layouts[0]),
+    after: describeRecord(after, layouts[1]),
+    layouts,
+    warnings,
+  };
+};
+
+// ─── correctness checks (recorded beside the timings, never as one) ─────────
+
+/** The checks a record failed. */
+export const failedChecks = (result) => (result.checks ?? []).filter((check) => check.failed > 0);
+
+/**
+ * One check observed once more: passes and failures are counted per check, with the first few
+ * failures' details kept, so ten rounds of a hand-over are ten observations of one check. `ok`
+ * null is a check that could not be made (its reason in `detail`): skipped, neither held nor
+ * failed.
+ */
+export const tallyCheck = (checks, name, ok, detail = null) => {
+  let entry = checks.find((check) => check.check === name);
+  if (entry === undefined) {
+    entry = { check: name, passed: 0, failed: 0, skipped: 0, detail: null, failures: [] };
+    checks.push(entry);
+  }
+  if (ok === null) {
+    entry.skipped = (entry.skipped ?? 0) + 1;
+    entry.detail ??= detail;
+  } else if (ok) {
+    entry.passed += 1;
+    if (detail !== null) entry.detail = detail;
+  } else {
+    entry.failed += 1;
+    if (detail !== null && entry.failures.length < 5) entry.failures.push(detail);
+  }
+  return entry;
+};
+
+// ─── a protocol turn (docs/adr/0016, decision 6) ────────────────────────────
+
+const AGENT_KINDS = new Set(["agent-pty", "agent-protocol", "agent-external"]);
+const LIVE_STATUSES = new Set(["starting", "running", "reachable", "unreachable"]);
+
+/** The agent processes of a session view that have not ended. */
+export const liveAgents = (processes) =>
+  (processes ?? []).filter(
+    (process) =>
+      AGENT_KINDS.has(process.kind) &&
+      (process.exitedAt === null || process.exitedAt === undefined) &&
+      LIVE_STATUSES.has(process.status),
+  );
+
+/** Whether a turn has ended (any way). */
+export const turnEnded = (turn) =>
+  ["completed", "interrupted", "failed", "cancelled"].includes(turn?.status);
+
+/**
+ * A turn's times, all on the server's clock and all from its creation (the submit as the server
+ * received it): to `startedAt` (the hand-over, when the sender changed), to the first thing the
+ * agent said or did for it (an item of that turn other than the person's message), and to its end
+ * when it completed. Null where the record does not say.
+ */
+export const turnTimes = (turn, items = []) => {
+  const created = Date.parse(turn.createdAt);
+  const since = (iso) => {
+    const at = iso === null || iso === undefined ? Number.NaN : Date.parse(iso);
+    return Number.isFinite(at) && Number.isFinite(created) ? at - created : null;
+  };
+  const first = items
+    .filter((item) => item.turnId === turn.id && item.kind !== "user-message")
+    .map((item) => item.createdAt)
+    .toSorted((a, b) => Date.parse(a) - Date.parse(b))[0];
+  return {
+    started: since(turn.startedAt),
+    firstOutput: first === undefined ? null : since(first),
+    completed: turn.status === "completed" ? since(turn.endedAt) : null,
+  };
+};
+
+/**
+ * What one steered turn must show (docs/adr/0016, decision 6): it ran on its sender's login
+ * (`billedUserId`), on a process that runs as its sender (`runsAs`), from the person expected
+ * (the owner, or someone else), with one agent at a time while it ran, and it answered.
+ */
+export const turnVerdicts = ({ turn, process, ownerId, fromOwner, maxLive, answer, items }) => {
+  const sender = turn.author ?? null;
+  const said = (items ?? [])
+    .filter((item) => item.turnId === turn.id && item.kind === "assistant-message")
+    .map((item) => item.text ?? "")
+    .join("\n");
+  return [
+    {
+      name: "sender",
+      ok: sender !== null && (fromOwner ? sender === ownerId : sender !== ownerId),
+      detail: `sent by ${sender ?? "nobody recorded"} (${fromOwner ? "the owner" : "another person"} expected)`,
+    },
+    {
+      name: "billed",
+      ok: sender !== null && turn.billedUserId === sender,
+      detail: `billed to ${turn.billedUserId ?? "nobody"}${turn.billedAccountName ? ` · ${turn.billedAccountName}` : ""}, sent by ${sender ?? "?"}`,
+    },
+    {
+      name: "runs_as",
+      ok: sender !== null && process !== null && process.runsAs === sender,
+      detail: `process ${process?.id?.slice(0, 8) ?? "not found"} runs as ${process?.runsAs ?? "nobody recorded"}, sent by ${sender ?? "?"}`,
+    },
+    {
+      name: "one_agent",
+      ok: maxLive <= 1,
+      detail: `at most ${maxLive} agent process(es) live at once while it ran`,
+    },
+    {
+      name: "completed",
+      ok: turn.status === "completed",
+      detail: `${turn.status}${turn.error ? `: ${turn.error}` : ""}`,
+    },
+    {
+      name: "answers",
+      ok: said.includes(answer),
+      detail: said.includes(answer) ? `answered ${answer}` : `no ${answer} in what it said`,
+    },
+  ];
+};
+
+// ─── a person in an executor (docs/adr/0016, decisions 1, 2 and 5) ───────────
+
+/**
+ * A pi profile's digest as Mend stores it (`piProfileDigest`, packages/db/src/repos/pi-profiles.ts):
+ * each file's path and the SHA-256 of its bytes, sorted by path. Mirrored here so the tests can
+ * check the shell version the probe runs against it.
+ */
+const sha256Hex = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+export const profileDigestOf = (files) =>
+  sha256Hex(
+    files
+      .map((file) => [file.path, sha256Hex(file.bytes)])
+      .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([file, digest]) => `${file}\u0000${digest}\n`)
+      .join(""),
+  );
+
+/**
+ * `profile_digest <dir>`: the same digest over a delivered profile directory, leaving out every
+ * `node_modules` directory (what the session installs, as the delivery's own comparison does).
+ * Prints only the digest and the file count: never a path or a byte of the files.
+ */
+export const PROFILE_DIGEST_SH = [
+  `profile_digest() {`,
+  `  ( cd "$1" && find . -type d -name node_modules -prune -o -type f -print | sed 's|^\\./||' | LC_ALL=C sort |`,
+  `    while IFS= read -r f; do printf '%s\\000%s\\n' "$f" "$(sha256sum < "$f" | cut -d' ' -f1)"; done | sha256sum | cut -d' ' -f1 )`,
+  `}`,
+  `profile_files() { ( cd "$1" && find . -type d -name node_modules -prune -o -type f -print | wc -l | tr -d ' ' ); }`,
+].join("\n");
+
+/** The saved directories of people, under the harness home every executor mounts. */
+export const PEOPLE_ROOT = "/workspace/harness-home/people";
+
+/**
+ * Run in the executor as the person (`asPersonCommand`), with their account id: their uid (the
+ * owner of their saved directory), their passwd name and home, the home's owner and mode, the
+ * names of the processes running as them, their pi and opencode ChatGPT logins (presence, owner,
+ * mode, whether the provider's key is there, and where the file really is) and the digest of the
+ * pi profile in their home. Nothing it prints is a secret: no file's contents, no environment.
+ */
+export const PERSON_PROBE_SH = [
+  PROFILE_DIGEST_SH,
+  `P="${PEOPLE_ROOT}/$1"`,
+  `if [ ! -d "$P" ]; then echo "probe saved absent"; exit 0; fi`,
+  `uid=$(stat -c %u "$P"); echo "probe uid $uid"`,
+  `ent=$(awk -F: -v u="$uid" '$3==u{print $1" "$6; exit}' /etc/passwd)`,
+  `if [ -z "$ent" ]; then echo "probe user none"; exit 0; fi`,
+  `echo "probe user $ent"; home=\${ent#* }`,
+  `[ -d "$home" ] && echo "probe home-stat $(stat -c '%u %a' "$home")"`,
+  `for s in /proc/[0-9]*/status; do u=$(awk '/^Uid:/{print $2; exit}' "$s" 2>/dev/null) || continue; ` +
+    `[ "$u" = "$uid" ] || continue; echo "probe proc $(awk '/^Name:/{print $2; exit}' "$s" 2>/dev/null)"; done`,
+  `login() { if [ -f "$1" ]; then echo "probe login $2 present $(stat -L -c '%u %a' "$1") $(grep -c "\\"$2\\"" "$1") $(readlink -f "$1")"; ` +
+    `else echo "probe login $2 absent"; fi; }`,
+  `login "$home/.pi/agent/auth.json" openai-codex`,
+  `login "$home/.local/share/opencode/auth.json" openai`,
+  `d="$home/.pi/agent/mend/profile"`,
+  `if [ -d "$d" ]; then echo "probe pi-profile present $(stat -c '%u %a' "$d") $(profile_files "$d") $(profile_digest "$d")"; ` +
+    `else echo "probe pi-profile absent"; fi`,
+].join("\n");
+
+/** What `PERSON_PROBE_SH` printed, as one object; null fields where it said nothing. */
+export const parsePersonProbe = (text) => {
+  const probe = {
+    saved: true,
+    uid: null,
+    name: null,
+    home: null,
+    homeOwner: null,
+    homeMode: null,
+    processes: [],
+    logins: {},
+    piProfile: null,
+  };
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    let match;
+    if (line === "probe saved absent") probe.saved = false;
+    else if ((match = /^probe uid (\d+)$/.exec(line))) probe.uid = Number(match[1]);
+    else if ((match = /^probe user (\S+) (\S+)$/.exec(line))) {
+      probe.name = match[1];
+      probe.home = match[2];
+    } else if ((match = /^probe home-stat (\d+) ([0-7]+)$/.exec(line))) {
+      probe.homeOwner = Number(match[1]);
+      probe.homeMode = match[2];
+    } else if ((match = /^probe proc (.+)$/.exec(line))) probe.processes.push(match[1]);
+    else if ((match = /^probe login (\S+) present (\d+) ([0-7]+) (\d+) (.+)$/.exec(line))) {
+      probe.logins[match[1]] = {
+        present: true,
+        owner: Number(match[2]),
+        mode: match[3],
+        keyLines: Number(match[4]),
+        realPath: match[5],
+      };
+    } else if ((match = /^probe login (\S+) absent$/.exec(line))) {
+      probe.logins[match[1]] = { present: false };
+    } else if (
+      (match = /^probe pi-profile present (\d+) ([0-7]+) (\d+) ([0-9a-f]{64})$/.exec(line))
+    ) {
+      probe.piProfile = {
+        present: true,
+        owner: Number(match[1]),
+        mode: match[2],
+        files: Number(match[3]),
+        digest: match[4],
+      };
+    } else if (line === "probe pi-profile absent") probe.piProfile = { present: false };
+  }
+  return probe;
+};
+
+/** The first person's uid in the reserved range (docs/adr/0016, decision 1: 40000 is the group). */
+export const FIRST_PERSON_UID = 40001;
+
+/** Each harness's ChatGPT login, as the probe names it (docs/adr/0016, decision 5). */
+const CHATGPT_LOGIN_OF = { pi: "openai-codex", opencode: "openai" };
+
+/**
+ * What a person launch must show in its executor (docs/adr/0016, decisions 1, 2 and 5): the agent
+ * runs as a uid in the person range with its own home (the agent's own `id -u` and `$HOME`, which
+ * only the agent can read, against the probe's passwd entry), the home is theirs and 0700, pi's
+ * profile is the person's own (`piDigest` from `GET /me/pi-profile`, null for none) and not
+ * `otherPiDigest`'s, and pi's and opencode's ChatGPT login is in their home, theirs, 0600, never
+ * under the saved worktree.
+ */
+export const personVerdicts = ({
+  probe,
+  harness,
+  agentSaid = null,
+  piDigest = undefined,
+  otherPiDigest = undefined,
+  otherUid = null,
+  loginSkipped = null,
+}) => {
+  const out = [];
+  const add = (name, ok, detail) => out.push({ name, ok, detail });
+  if (!probe.saved || probe.uid === null) {
+    add("saved_dir", false, "no saved directory for this person in the executor");
+    return out;
+  }
+  add(
+    "uid",
+    probe.uid >= FIRST_PERSON_UID && (otherUid === null || probe.uid !== otherUid),
+    `uid ${probe.uid}${otherUid === null ? "" : ` (the other person: ${otherUid})`}`,
+  );
+  add(
+    "home",
+    probe.home !== null &&
+      probe.home !== "/root" &&
+      probe.homeOwner === probe.uid &&
+      probe.homeMode === "700",
+    `home ${probe.home ?? "none"} · owner ${probe.homeOwner ?? "?"} · mode ${probe.homeMode ?? "?"}`,
+  );
+  add(
+    "processes",
+    probe.processes.length > 0,
+    probe.processes.length > 0
+      ? `runs ${[...new Set(probe.processes)].slice(0, 8).join(", ")}`
+      : "no process runs as this person",
+  );
+  if (agentSaid === null && loginSkipped !== null) {
+    add("agent_identity", null, `skipped: ${loginSkipped}, so the agent cannot answer`);
+  } else if (agentSaid === null) {
+    add("agent_identity", false, "the agent did not say its uid and HOME");
+  } else {
+    add(
+      "agent_identity",
+      agentSaid.uid === probe.uid && agentSaid.home === probe.home,
+      `the agent says uid ${agentSaid.uid} · HOME ${agentSaid.home}`,
+    );
+  }
+  const loginKey = CHATGPT_LOGIN_OF[harness];
+  if (loginKey !== undefined && loginSkipped !== null) {
+    // No login of their own: what is there must still be theirs and hold nobody's entry, never
+    // the owner's (Mend uses nobody else's login, decision 5).
+    const login = probe.logins[loginKey] ?? { present: false };
+    add("chatgpt_login", null, `skipped: ${loginSkipped}`);
+    add(
+      "chatgpt_login_nobody_else",
+      !login.present ||
+        (login.owner === probe.uid &&
+          login.keyLines === 0 &&
+          !login.realPath.startsWith("/workspace/")),
+      login.present
+        ? `${loginKey} file · owner ${login.owner} · mode ${login.mode} · ${login.keyLines > 0 ? "holds a provider entry" : "no provider entry"} · in ${login.realPath.startsWith("/workspace/") ? "saved state" : "the home"}`
+        : `no ${loginKey} login file`,
+    );
+  } else if (loginKey !== undefined) {
+    const login = probe.logins[loginKey] ?? { present: false };
+    add(
+      "chatgpt_login",
+      login.present &&
+        login.owner === probe.uid &&
+        login.mode === "600" &&
+        login.keyLines > 0 &&
+        !login.realPath.startsWith("/workspace/"),
+      login.present
+        ? `${loginKey} · owner ${login.owner} · mode ${login.mode} · ${login.keyLines > 0 ? "has the provider's entry" : "no entry for the provider"} · in ${login.realPath.startsWith("/workspace/") ? "saved state" : "the home"}`
+        : `no ${loginKey} login file`,
+    );
+  }
+  if (harness === "pi" && piDigest !== undefined) {
+    const profile = probe.piProfile ?? { present: false };
+    if (piDigest === null) {
+      add(
+        "pi_profile",
+        !profile.present,
+        profile.present
+          ? "a pi profile is there, and this person has none"
+          : "no profile, as this person has none",
+      );
+    } else {
+      add(
+        "pi_profile",
+        profile.present && profile.digest === piDigest && profile.owner === probe.uid,
+        profile.present
+          ? `${profile.files} file(s) · owner ${profile.owner} · ${profile.digest === piDigest ? "this person's profile" : "not this person's profile"}`
+          : "no profile delivered, and this person has one",
+      );
+    }
+    if (otherPiDigest !== undefined) {
+      if (otherPiDigest === null || otherPiDigest === piDigest) {
+        add(
+          "pi_profile_not_other",
+          true,
+          "cannot be told apart: the other person's profile is the same or absent",
+        );
+      } else {
+        add(
+          "pi_profile_not_other",
+          !(profile.present && profile.digest === otherPiDigest),
+          profile.present && profile.digest === otherPiDigest
+            ? "the other person's profile"
+            : "not the other person's profile",
+        );
+      }
+    }
+  }
+  return out;
+};
+
+/**
+ * Why a person's pi or opencode has no ChatGPT login to answer on, or null when it has one: the
+ * session line Mend writes when Core left the login out ("pi's ChatGPT login not written · no
+ * Codex account is connected"), else the person's connected accounts (`GET /me/sealant`) holding
+ * no active Codex account. Such an agent starts and cannot answer, so the bench does not wait.
+ */
+export const chatGptLoginSkipOf = ({ summary = null, accounts = null }) => {
+  const said = /login not written · ([^·\n]+)/.exec(summary ?? "");
+  if (said !== null) return `no ChatGPT login: ${said[1].trim()}`;
+  if (accounts === null) return null;
+  const codex = accounts.filter((account) => account.provider === "codex");
+  if (codex.length === 0) return "no ChatGPT login: no Codex account is connected";
+  if (!codex.some((account) => account.status === "active")) {
+    return "no ChatGPT login: the Codex login needs reconnecting";
+  }
+  return null;
+};
+
+/** The agent's own `ST-BENCH-ID <uid> <home>` line, its spaces drawn or not; null when absent. */
+export const agentIdentityOf = (screen) => {
+  const match = /ST-BENCH-ID\s*(\d+)\s*(\/[\w./-]*)/.exec(screen);
+  return match === null
+    ? null
+    : { uid: Number(match[1]), home: match[2].replace(/\/+$/, "") || "/" };
+};
+
+// ─── growth per extra person (docs/adr/0016, "Budgets") ─────────────────────
+
+/**
+ * A person's conversation state in their saved directory (decision 2, `PERSON_SAVED_STATE` in
+ * packages/sessions/src/harness-layout.ts, which a test keeps this in step with), their Codex
+ * databases (`codex-db`, its WAL included) and the shared conversations they own. Their memory lives
+ * inside these. Everything else in `P` is what the budget allows 64 KB for.
+ */
+export const PERSON_STATE_PATHS = [
+  ".claude/projects",
+  ".claude/plans",
+  ".claude/todos",
+  ".claude/tasks",
+  ".claude/agents",
+  ".claude/commands",
+  ".claude/skills",
+  ".claude/history.jsonl",
+  ".codex/sessions",
+  ".codex/archived_sessions",
+  ".codex/memories",
+  ".codex/rules",
+  ".codex/session_index.jsonl",
+  ".codex/history.jsonl",
+  ".pi/agent/sessions",
+  ".pi/agent/settings.json",
+  ".local/share/opencode",
+  ".local/state/opencode",
+];
+const PERSON_STATE_EXTRA = ["codex-db", "conversations"];
+
+/** Machine state, never saved (Delivery 3): Codex's logs database and every `*-shm`. */
+const isMachineState = (relative) =>
+  relative.startsWith("codex-db/logs_") || relative.endsWith("-shm");
+
+/** `size <bytes> ./<path>` for each file under a person's saved directory. */
+export const SAVED_SIZES_SH = [
+  `P="${PEOPLE_ROOT}/$1"`,
+  `if [ ! -d "$P" ]; then echo "size absent"; exit 0; fi`,
+  `cd "$P" && find . -type f -exec stat -c 'size %s %n' {} +`,
+].join("\n");
+
+/**
+ * A person's saved directory in bytes (machine state left out): all of it, their conversation
+ * state and memory, and the rest, with the largest of the rest named so a miss says what grew.
+ * Null when the directory is not there.
+ */
+export const classifySavedFiles = (text) => {
+  if (text.split("\n").some((line) => line.trim() === "size absent")) return null;
+  const totals = { total: 0, state: 0, beyond: 0, files: 0, machine: 0, largestBeyond: [] };
+  const beyond = [];
+  for (const line of text.split("\n")) {
+    const match = /^size (\d+) \.\/(.+)$/.exec(line.trim());
+    if (match === null) continue;
+    const bytes = Number(match[1]);
+    const relative = match[2];
+    if (isMachineState(relative)) {
+      totals.machine += bytes;
+      continue;
+    }
+    totals.files += 1;
+    totals.total += bytes;
+    const inState = [...PERSON_STATE_PATHS, ...PERSON_STATE_EXTRA].some(
+      (entry) => relative === entry || relative.startsWith(`${entry}/`),
+    );
+    if (inState) totals.state += bytes;
+    else {
+      totals.beyond += bytes;
+      beyond.push({ path: relative, bytes });
+    }
+  }
+  totals.largestBeyond = beyond.toSorted((a, b) => b.bytes - a.bytes).slice(0, 5);
+  return totals;
+};
+
+/**
+ * A script run in an executor through the host, as the person whose saved directory is
+ * `people/<accountId>` (its owner's uid: they own their home, and their processes' status is
+ * world-readable, so nothing leans on root's reach into a 0700 home). The script's text rides as
+ * base64, so no quoting of the host's shell or SSH touches it; it gets the account id as `$1`.
+ * When the person has no saved directory there it prints the absent lines of both probes.
+ */
+export const asPersonCommand = (container, accountId, script) => {
+  for (const arg of [container, accountId]) {
+    if (!/^[\w.:@-]+$/.test(String(arg))) throw new Error(`not an id or a name: ${arg}`);
+  }
+  const encoded = Buffer.from(script, "utf8").toString("base64");
+  return (
+    `uid=$(docker exec ${container} stat -c %u ${PEOPLE_ROOT}/${accountId} 2>/dev/null); ` +
+    `if [ -n "$uid" ]; then docker exec -u "$uid" ${container} sh -c "$(printf %s '${encoded}' | base64 -d)" st-bench ${accountId}; ` +
+    `else echo "probe saved absent"; echo "size absent"; fi`
+  );
 };
 
 /**
@@ -561,18 +1157,47 @@ export const formatTable = (result) => {
   for (const skipped of result.notRun ?? []) {
     lines.push(`| ${skipped.measure} | 0 | not run: ${skipped.reason} | | | |`);
   }
+  if ((result.checks ?? []).length > 0) lines.push("", formatChecks(result.checks));
   for (const [name, companion] of Object.entries(result.companions ?? {})) {
     lines.push("", `On project ${name}:`, "", formatTable(companion));
   }
   return lines.join("\n");
 };
 
+/** The correctness checks, which are not timings: how often each held, and what it saw. */
+export const formatChecks = (checks) => {
+  const lines = [
+    "Checks (observations, not timings):",
+    "",
+    "| Check | held | failed | skipped | observed |",
+    "| --- | --: | --: | --: | --- |",
+  ];
+  for (const check of checks.toSorted((a, b) => b.failed - a.failed)) {
+    const observed = check.failed > 0 ? check.failures.join("; ") : (check.detail ?? "");
+    lines.push(
+      `| ${check.check} | ${check.passed} | ${check.failed} | ${check.skipped ?? 0} | ${observed} |`,
+    );
+  }
+  return lines.join("\n");
+};
+
 /** The comparison as a table, misses first, with the verdict of each row in words. */
 export const formatComparison = (comparison) => {
-  const lines = [
+  const label = comparison.label ?? null;
+  const lines =
+    label === null
+      ? []
+      : [
+          label.kind,
+          `before: ${label.before}`,
+          `after:  ${label.after}`,
+          ...label.warnings.map((warning) => `warning: ${warning}`),
+          "",
+        ];
+  lines.push(
     "| Measure | stat | before | after | limit | |",
     "| --- | --- | --: | --: | --: | --- |",
-  ];
+  );
   const ordered = [...comparison.misses, ...comparison.rows.filter((row) => row.ok)];
   for (const row of ordered) {
     const verdict = row.missing
@@ -588,6 +1213,14 @@ export const formatComparison = (comparison) => {
   }
   for (const entry of comparison.incomparable ?? []) {
     lines.push(`| ${entry.measure} | | | | | not comparable: ${entry.reason} |`);
+  }
+  if ((comparison.checkFailures ?? []).length > 0) {
+    lines.push(
+      "",
+      "Failed checks of the run under test:",
+      "",
+      formatChecks(comparison.checkFailures),
+    );
   }
   return lines.join("\n");
 };
@@ -607,7 +1240,11 @@ export const SCENARIOS = [
   "api",
   "handover",
   "growth",
+  "person-checks",
 ];
+
+/** The scenarios that measure what only a `person` worktree has; they need `--layout person`. */
+export const PERSON_SCENARIOS = ["handover", "growth", "person-checks"];
 
 /** The scenario that produces a measure: what a re-run of a missed measure has to run. */
 export const scenarioOf = (measure) => {
@@ -622,12 +1259,13 @@ export const scenarioOf = (measure) => {
   if (head === "api" || head === "cli") return "api";
   if (head === "handover") return "handover";
   if (head === "growth") return "growth";
+  if (head === "person") return "person-checks";
   return null;
 };
 
 /** The harness a per-harness measure belongs to (`new.codex.…`, `stop.pi.…`), or null. */
 export const harnessOf = (measure) => {
-  const match = /^(?:new|stop|executor)\.([a-z]+)\./.exec(measure);
+  const match = /^(?:new|stop|executor|handover|growth|person)\.([a-z]+)\./.exec(measure);
   return match !== null && HARNESS_LIST.includes(match[1]) ? match[1] : null;
 };
 
@@ -695,6 +1333,11 @@ export const mergeResults = (base, extra, takes = null) => {
       ...extraNotRun,
     ],
     notes: [...(base.notes ?? []), ...(extra.notes ?? [])],
+    // A scenario run again stands for its checks too.
+    checks: [
+      ...(base.checks ?? []).filter((check) => takes !== null || !accept(check.check)),
+      ...(extra.checks ?? []).filter((check) => accept(check.check)),
+    ],
     imageBuilds: [...(base.imageBuilds ?? []), ...(extra.imageBuilds ?? [])],
     errors: [...(base.errors ?? []), ...(extra.errors ?? [])],
     merged: [
@@ -746,6 +1389,7 @@ export const parseOptions = (argv, now = Date.now()) => {
     typingRuns: 30,
     apiRuns: 20,
     secretFile: false,
+    layout: null,
     flag: null,
     out: null,
     stats: ["median", "p90"],
@@ -768,6 +1412,7 @@ export const parseOptions = (argv, now = Date.now()) => {
     "--typing-runs": (v) => (opts.typingRuns = positiveInt("--typing-runs", v)),
     "--api-runs": (v) => (opts.apiRuns = positiveInt("--api-runs", v)),
     "--flag": (v) => (opts.flag = v),
+    "--layout": (v) => (opts.layout = v),
     "--out": (v) => (opts.out = v),
     "--stats": (v) => (opts.stats = list(v)),
   };
@@ -808,6 +1453,9 @@ export const parseOptions = (argv, now = Date.now()) => {
     }
   }
   if (opts.harnesses.length === 0) throw new Error("--harnesses needs at least one harness");
+  if (opts.layout !== null && opts.layout !== "person" && opts.layout !== "shared") {
+    throw new Error(`--layout takes person or shared, not ${opts.layout}`);
+  }
   for (const stat of opts.stats) {
     if (!["median", "p90", "worst"].includes(stat)) throw new Error(`unknown statistic ${stat}`);
   }
