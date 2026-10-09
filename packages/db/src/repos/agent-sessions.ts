@@ -686,9 +686,10 @@ const toSessionView = (
   row: typeof agentSessions.$inferSelect & {
     readonly livePeople: unknown;
     readonly workspaceRetirement: unknown;
+    readonly workspaceLauncherUserId: unknown;
   },
 ): Session => {
-  const { livePeople, workspaceRetirement, ...session } = row;
+  const { livePeople, workspaceRetirement, workspaceLauncherUserId, ...session } = row;
   return new Session({
     ...session,
     workspaceImage:
@@ -699,6 +700,8 @@ const toSessionView = (
       Array.isArray(livePeople) && livePeople.length === 0 ? [] : decodeLivePeople(livePeople),
     workspaceRetirement:
       workspaceRetirement === null ? null : decodeRetirementState(workspaceRetirement),
+    workspaceLauncherUserId:
+      typeof workspaceLauncherUserId === "string" ? workspaceLauncherUserId : null,
   });
 };
 
@@ -731,11 +734,11 @@ type SessionBookkeepingColumns =
   | "executorResourceId"
   | "executorCreateKey"
   | "executorLaunchId";
-// `livePeople` and `workspaceRetirement` are read with the API's session list and view
-// (`sessionViewColumns`), not columns.
+// `livePeople`, `workspaceRetirement` and `workspaceLauncherUserId` are read with the API's
+// session list and view (`sessionViewColumns`), not columns.
 const sessionSeamIntact: ExactKeys<
   Omit<SessionRow, SessionBookkeepingColumns>,
-  Omit<Session, "livePeople" | "workspaceRetirement">
+  Omit<Session, "livePeople" | "workspaceRetirement" | "workspaceLauncherUserId">
 > = true;
 void sessionSeamIntact;
 
@@ -849,6 +852,11 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                   and sp.exited_at is null and sp.runs_as is not null) p), '[]'::json)`,
         workspaceRetirement: sql<unknown>`(select r.state from executor_retirements r
           where r.workspace_id = "agent_sessions"."sealant_workspace_id")`,
+        // Who launched the executor, as `executorSessionOf` finds it (0114's partial index).
+        workspaceLauncherUserId: sql<unknown>`(select e.owner_user_id from agent_sessions e
+          where e.sealant_workspace_id = "agent_sessions"."sealant_workspace_id"
+            and e.executor_launch_id is not null
+          order by e.executor_started_at desc nulls last limit 1)`,
       };
 
       const listActiveView = Effect.fn("SessionsRepo.listActiveView")(function* () {

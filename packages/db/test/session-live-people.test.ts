@@ -216,6 +216,40 @@ describe.skipIf(!reachable)("the people live in a session's executor, in Postgre
     });
   });
 
+  it("names who launched a session's executor, a joined session included, in the same query", async () => {
+    const launchers = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // Alice's launch made ws-person and Maria joined it (no launch of her own); Carol made hers.
+        yield* sql`
+          UPDATE agent_sessions SET executor_launch_id = id, executor_started_at = now()
+          WHERE id IN ('s-alice', 's-carol')`;
+        const sessions = yield* SessionsRepo;
+        const listed = yield* sessions.listActiveView();
+        const view = yield* sessions.viewById(SessionId.make("s-maria"));
+        const plain = yield* sessions.byId(SessionId.make("s-maria"));
+        yield* sql`
+          UPDATE agent_sessions SET executor_launch_id = NULL, executor_started_at = NULL
+          WHERE id IN ('s-alice', 's-carol')`;
+        return {
+          listed: Object.fromEntries(
+            listed.map((session) => [session.id, session.workspaceLauncherUserId]),
+          ),
+          view: view.workspaceLauncherUserId,
+          plain: plain.workspaceLauncherUserId,
+        };
+      }),
+    );
+    expect(launchers.listed).toEqual({
+      "s-alice": "alice",
+      "s-maria": "alice",
+      "s-carol": "carol",
+    });
+    expect(launchers.view).toBe("alice");
+    // Every other read leaves it empty.
+    expect(launchers.plain).toBeNull();
+  });
+
   it("reads the list and the view within the budget of the plain reads (+5% or +20 ms)", async () => {
     const timings = await run(
       Effect.gen(function* () {

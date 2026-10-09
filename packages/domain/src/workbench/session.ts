@@ -216,6 +216,17 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   /**
+   * Who launched the session's executor: the owner of the session whose own launch made it
+   * (`SessionsRepo.executorSessionOf`), which a joined session is not. Remote-SSH into the workspace
+   * admits that person only (docs/adr/0016), so an editor asks before it opens. Filled by the API's
+   * session list and view only, in the same query; null everywhere else, with no executor, and from
+   * older servers.
+   */
+  workspaceLauncherUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
    * Whether the harness left a conversation behind — a transcript Mend captured at settle or
    * found in the live harness home. False is a dead end: nothing to resume, nothing to hand
    * off, so the dashboard hides such settled sessions. Null until settle (or for rows the
