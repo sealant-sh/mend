@@ -8,6 +8,7 @@
 import { linuxHomeOf, type LinuxIdentity } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
+import { AGENT_MEMORY_INCOMING } from "./agent-memory.ts";
 import {
   ASIDE_FUNCTION,
   assertScriptSafe,
@@ -102,6 +103,11 @@ export type PersonRecord =
  * `~/.mend` (never saved). Each is printed as `mend-record <name> <base64>`, or
  * `mend-record <name> -` when it is not a plain file (or, for the paths, none is there). Folded
  * into one exec so a person's deliveries cost one read, whatever they deliver.
+ *
+ * It also clears a memory delivery's staged files an earlier start left behind (its exec failed
+ * after the staging): a start that finds the memory in place runs no program to clear them, and
+ * one that does not stages its own again. It runs under the person's delivery lock, before any
+ * staging of this start.
  */
 export const personRecordsExec = (
   places: PersonPlaces,
@@ -128,6 +134,7 @@ export const personRecordsExec = (
         `while IFS= read -r p; do if [ -e "$ms/$p" ] || [ -L "$ms/$p" ]; then printf '%s\\n' "$p"; fi; done); fi`,
       `if [ -n "$mp" ]; then printf 'mend-record memory-present '; printf '%s\\n' "$mp" | base64 | tr -d '\\n'; printf '\\n'; ` +
         `else printf 'mend-record memory-present -\\n'; fi`,
+      `mi=${q(`${places.saved}/${personSavedPathOf(AGENT_MEMORY_INCOMING)}`)}; if [ -e "$mi" ] || [ -L "$mi" ]; then rm -rf "$mi"; fi`,
       // The secret files' record is in the home's own `~/.mend`, read as `secretFilesDeliveredExec`
       // reads it: nothing through a link.
       `if [ -L ${q(`${places.home}/.mend`)} ]; then printf 'mend-record secret-files -\\n'; printf 'mend-record first-done -\\n'; ` +

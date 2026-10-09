@@ -316,6 +316,13 @@ describe("Codex's summary database", () => {
     const logged = await Effect.runPromise(codexDatabaseAsRead(db, wal, digest));
     expect([...(await Effect.runPromise(summarisedThreads(logged)))]).toEqual([[id(4), 1234]]);
     expect(Buffer.from(logged ?? []).equals(Buffer.from(db))).toBe(false);
+    // The main file as delivered, with summaries Codex wrote only to the log since: the log's rows.
+    const unchangedMain = await Effect.runPromise(
+      codexDatabaseAsRead(db, wal, createHash("sha256").update(db).digest("hex")),
+    );
+    expect([...(await Effect.runPromise(summarisedThreads(unchangedMain)))]).toEqual([
+      [id(4), 1234],
+    ]);
     const fresh = await Effect.runPromise(codexDatabaseAsRead(delivered, null, null));
     expect(Buffer.from(fresh ?? []).equals(Buffer.from(delivered))).toBe(false);
     expect(await Effect.runPromise(codexDatabaseAsRead(Buffer.from("torn"), null, "x"))).toBeNull();

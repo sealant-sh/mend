@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   AGENT_MEMORY_DELIVERED,
+  AGENT_MEMORY_INCOMING,
   deliverAgentMemoryExec,
   mapAgentMemoryPlan,
   planAgentMemory,
@@ -562,6 +563,18 @@ describe("a person's memory already in place (a same-person join)", () => {
     const places = placesIn(tmp());
     deliver(places.saved, memory);
     expect(inPlace(places, [stored(MEMORY, "- what Maria learned\n")])).toBe(false);
+  });
+
+  it("the one records read clears staged files an earlier start left, and the memory stays in place", () => {
+    const places = placesIn(tmp());
+    deliver(places.saved, memory);
+    // An earlier start staged its files and its exec never ran.
+    const incoming = path.join(places.saved, personSavedPathOf(AGENT_MEMORY_INCOMING));
+    fs.mkdirSync(path.join(incoming, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(incoming, ".claude/staged.md"), "- staged\n");
+    expect(inPlace(places, memory)).toBe(true);
+    expect(fs.existsSync(incoming)).toBe(false);
+    expect(fs.existsSync(path.join(places.saved, MEMORY))).toBe(true);
   });
 
   it("an empty memory delivered is in place; a record not written by the program is not", () => {
