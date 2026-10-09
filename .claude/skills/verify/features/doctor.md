@@ -1,13 +1,13 @@
 # Doctor and the debug bundle
 
 `mend doctor` reads this machine's setup and prints one line per fact: the server, the sign-in, the
-platform connection, each provider account, Mend's Claude grant when it keeps one, the projects,
-the provider CLIs on this machine, the exposure, the server host's user namespaces and this
-machine's Docker shutdown timeout. Many unfinished lines end with `→` and what to do next: a
-`mend` command, a provider's own login command, or an instruction in words. Some end with nothing.
-It changes nothing, and it exits `1` only when a line is `✗`. `mend doctor --bundle` writes the
-same facts and much more into one redacted `tar.gz` with mode 0600, for a bug report. The web
-Settings page shows the platform connection as its own panel, checked live.
+platform connection, each provider account, Mend's Claude grant when it keeps one, the projects, the
+provider CLIs on this machine, the exposure, the server host's user namespaces and this machine's
+Docker shutdown timeout. Many unfinished lines end with `→` and what to do next: a `mend` command, a
+provider's own login command, or an instruction in words. Some end with nothing. It changes nothing,
+and it exits `1` only when a line is `✗`. `mend doctor --bundle` writes the same facts and much more
+into one redacted `tar.gz` with mode 0600, for a bug report. The web Settings page shows the
+platform connection as its own panel, checked live.
 
 ## Sub-features
 
@@ -39,8 +39,8 @@ Preconditions:
 
 - Mend is healthy at `<web>`, the CLI is signed in to it (`mend login --url <web>`), and the browser
   is signed in for the web step.
-- The run knows the token `mend login` saved: read `token` from `$XDG_CONFIG_HOME/mend/cli.json`
-  (or `~/.config/mend/cli.json`) and keep it as `<token>` for the redaction check. Never print it in
+- The run knows the token `mend login` saved: read `token` from `$XDG_CONFIG_HOME/mend/cli.json` (or
+  `~/.config/mend/cli.json`) and keep it as `<token>` for the redaction check. Never print it in
   evidence.
 - `<evidence>` is the evidence directory the `verify` skill names, writable by the run.
 
@@ -57,9 +57,9 @@ Preconditions:
   code `0` unless a line is `✗`.
 - **Fix commands.** Pick a `○` or `✗` line that ends with `→ `, for example
   `○ codex       not connected → mend connect codex` or `○ projects    none adopted → mend adopt`.
-  What follows the arrow on those lines is a `mend` command that `mend help` lists. Other arrows
-  are the provider's own login (`claude setup-token`, `codex login`, `gh auth login` on the `cli`
-  lines) or an instruction in words (`start the Mend server`,
+  What follows the arrow on those lines is a `mend` command that `mend help` lists. Other arrows are
+  the provider's own login (`claude setup-token`, `codex login`, `gh auth login` on the `cli` lines)
+  or an instruction in words (`start the Mend server`,
   `serve it over https and set APP_URL to that origin`, `on the server's host: …`, the `docker`
   line's `set "shutdown-timeout": …`). Lines with no arrow at all exist too: `not checked`,
   `not on PATH`, `GET /projects → <status>`, `shutdown-timeout not observed · …`. Assert which kind
@@ -139,8 +139,8 @@ Preconditions:
 - The redactor is over-eager on purpose: any key containing `token`, `secret` or `password` and
   every `NAME=value` line is blanked. A blanked harmless value is expected, not a bug.
 - The web `Sealant connection` panel is a `section` with no `aria-labelledby`, so it has no region
-  role (`apps/web/src/routes/settings.tsx:1223`); scope to it through its heading. Its status word is
-  plain text, not `role="status"` (`settings.tsx:1245`); assert it with `getByText`. A finding.
+  role (`apps/web/src/routes/settings.tsx:1223`); scope to it through its heading. Its status word
+  is plain text, not `role="status"` (`settings.tsx:1245`); assert it with `getByText`. A finding.
 - The web says `Connected · observed`; the doctor's `sealant` line says `connected · <url>`. They
   are the same observation in two words; do not report a mismatch.
 - `Settings` appears in two primary navigations, one hidden by viewport width. Playwright skips the

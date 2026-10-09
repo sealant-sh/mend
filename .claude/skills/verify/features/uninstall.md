@@ -19,8 +19,8 @@ containers are named with the command that removes them, never removed.
 - `uninstall-home` revokes the device token and removes the sign-in, the SSH key and the managed
   `~/.ssh/config` block.
 - `uninstall-all` does both, server first.
-- `uninstall-leftovers` lists what stays and why: unowned volumes, workspace containers, other
-  files in the configuration directory.
+- `uninstall-leftovers` lists what stays and why: unowned volumes, workspace containers, other files
+  in the configuration directory.
 - `uninstall-yes` skips the question with `--yes`, which a run without a terminal requires.
 
 ## How to get to it (user POV)
@@ -42,10 +42,10 @@ Preconditions:
 - The CLI there is signed in to that disposable server with `mend login --url <url>`, so the device
   token the home steps revoke is a disposable one and the server that must answer the revocation is
   still up. `MEND_URL` and `MEND_TOKEN` are unset: the plan and the revocation use the effective CLI
-  URL, and `MEND_URL` overrides the saved one. Keep the saved token as `<token>` for the second view.
+  URL, and `MEND_URL` overrides the saved one. Keep the saved token as `<token>` for the second
+  view.
 - `<scratch>/home/.ssh/config` exists; it may hold a managed block from `mend ssh setup`.
-- The steps run in this order: the home scope while the server still answers, then the server
-  scope.
+- The steps run in this order: the home scope while the server still answers, then the server scope.
 
 - **Help page.** Run `mend help uninstall`. Stdout starts
   `mend uninstall · remove the server, this machine's Mend files, or both` and lists `--all`,
@@ -56,9 +56,9 @@ Preconditions:
   `mend: usage: mend uninstall [--all | --server | --home] [--yes] · "--everything" is not an option`,
   exit `1`.
 - **No terminal, no scope.** Run `mend uninstall < /dev/null; echo "exit $?"`. Stderr reads
-  `mend: usage: mend uninstall [--all | --server | --home] [--yes] · no terminal to ask on`, and
-  the echo prints `exit 1`. (Do not pipe the command into another: the pipeline would report the
-  last command's exit code, not mend's.)
+  `mend: usage: mend uninstall [--all | --server | --home] [--yes] · no terminal to ask on`, and the
+  echo prints `exit 1`. (Do not pipe the command into another: the pipeline would report the last
+  command's exit code, not mend's.)
 - **Plan only, home.** Run `mend uninstall --home < /dev/null; echo "exit $?"`. Stdout reads
   `mend uninstall · home`, then `  home     <scratch>/config/mend/cli.json (signed in to <url>)`,
   plus `<scratch>/config/mend/ssh` and `1 managed block in ~/.ssh/config` (or
@@ -66,14 +66,14 @@ Preconditions:
   reads `mend: non-interactive — pass --yes to remove`, and the echo prints `exit 1`.
 - **Remove the home files.** Run `mend uninstall --home --yes`. Stdout shows
   `revoked this terminal's device on <url>`, `removed <scratch>/config/mend/cli.json`, the SSH key
-  and managed-block removals when they existed, and `✓ this machine no longer holds Mend files`.
-  The configuration directory still holds the server's files, so a
+  and managed-block removals when they existed, and `✓ this machine no longer holds Mend files`. The
+  configuration directory still holds the server's files, so a
   `  kept · <scratch>/config/mend kept: … are not this CLI's (…)` line names them instead of a
   `removed <scratch>/config/mend` line. Exit code `0`.
 - **Revoked, second view.** The server still runs. Run
   `MEND_URL=<url> MEND_TOKEN=<token> mend doctor`. The first line reads `✓ server` and the second
-  `✗ signed in   token rejected → mend login`. Run `MEND_URL=<url> mend doctor` with no token in
-  the environment. The second line reads `✗ signed in   no token saved → mend login`. (Without
+  `✗ signed in   token rejected → mend login`. Run `MEND_URL=<url> mend doctor` with no token in the
+  environment. The second line reads `✗ signed in   no token saved → mend login`. (Without
   `MEND_URL` the CLI falls back to `http://localhost:3105`, since `cli.json` is gone.)
 - **Plan only, server.** Run `mend uninstall --server < /dev/null; echo "exit $?"`. Stdout reads
   `mend uninstall · server`, then `  server   Mend <v> at <url> · docker context <ctx>`,
@@ -89,7 +89,7 @@ Preconditions:
   `  1. everything · the server on this machine and this machine's Mend files`,
   `  2. the server only · containers, volumes, configuration, backups`,
   `  3. this machine's files only · sign-in, workspace ssh key, ~/.ssh/config block` and the prompt
-  `  1, 2 or 3: `. Send `tmux send-keys -t verify-uninstall 2 Enter`. The server plan prints, then
+  ` 1, 2 or 3:`. Send `tmux send-keys -t verify-uninstall 2 Enter`. The server plan prints, then
   `type delete to remove: `. Send `tmux send-keys -t verify-uninstall no Enter`. The screen shows
   `nothing removed` and `exit 0`.
 - **Remove the server.** Before it, run
@@ -98,8 +98,8 @@ Preconditions:
   `removed containers mend, postgres, garage and the Compose-owned volumes`,
   `removed volumes mend-store, mend-control, mend-garage`,
   `removed image ghcr.io/sealant-sh/mend:<v>`,
-  `removed <scratch>/config/mend/{identity.env, active, generations, backups}`, any
-  `  kept · …` lines, and `✓ the server is gone from this machine`. Exit code `0`.
+  `removed <scratch>/config/mend/{identity.env, active, generations, backups}`, any `  kept · …`
+  lines, and `✓ the server is gone from this machine`. Exit code `0`.
 - **Server gone, second view.** Run `mend server status`. Stderr reads
   `mend: No Mend server is configured. Run mend server setup explicitly to install one.`, exit `1`.
   Run `docker --context <ctx> volume ls --format '{{.Name}}'`. No `mend-store`, `mend-control` or
@@ -143,6 +143,5 @@ Preconditions:
 - A `mend doctor --bundle` archive saved under the default `<config>/mend/bundles/` keeps the
   configuration directory: the home scope reports it as kept and does not remove it.
 - With `--all` the device is revoked first (when a device id is saved), then the server goes, then
-  the home files. If the server
-  removal fails, the command exits `1` with the reason after removing the home files; read every
-  `kept ·` line before retrying.
+  the home files. If the server removal fails, the command exits `1` with the reason after removing
+  the home files; read every `kept ·` line before retrying.

@@ -36,8 +36,8 @@ same way, and an old-style preview moves to the `next` channel once with `--from
 - CLI: `mend help server` and `mend help server <subcommand>` for the pages.
 - Preview channel: `npm install --global @sealant/mend@next`, then `mend version`, then
   `mend server setup` (docs `getting-started/try-a-preview`, ADR 0015).
-- Web, TUI, desktop, mobile, VS Code and Slack: not a surface for this feature. The web app shows the
-  exposure the running server reports in its sidebar's `machine` block; that is the
+- Web, TUI, desktop, mobile, VS Code and Slack: not a surface for this feature. The web app shows
+  the exposure the running server reports in its sidebar's `machine` block; that is the
   [exposure](./exposure.md) feature.
 
 ## Driving it with verify
@@ -52,13 +52,13 @@ Preconditions:
 - Every `mend server` command in this recipe runs with `XDG_CONFIG_HOME=<scratch>/config` and
   `HOME=<scratch>/home`, both empty directories the run created. The installation's private
   configuration then lives under `<scratch>/config/mend`, never the owner's.
-- Either the host reaches GitHub releases and `ghcr.io` (an online setup downloads
-  `compose.v2.yaml` and `postgres-init.sh` for the CLI's version and pulls
-  `ghcr.io/sealant-sh/mend:<version>`), or `ghcr.io/sealant-sh/mend:<v>` (labelled
-  `org.opencontainers.image.version=<v>`), `postgres:17-alpine` and `dxflrs/garage:v2.4.1` are
-  preloaded and the run uses `--version <v> --assets-dir deploy/docker --offline`, as
-  `scripts/check-packaged-server.mjs` does. Below, `<v>` is the installed version and `<url>` is
-  `http://localhost:3105` unless `--port` changed it.
+- Either the host reaches GitHub releases and `ghcr.io` (an online setup downloads `compose.v2.yaml`
+  and `postgres-init.sh` for the CLI's version and pulls `ghcr.io/sealant-sh/mend:<version>`), or
+  `ghcr.io/sealant-sh/mend:<v>` (labelled `org.opencontainers.image.version=<v>`),
+  `postgres:17-alpine` and `dxflrs/garage:v2.4.1` are preloaded and the run uses
+  `--version <v> --assets-dir deploy/docker --offline`, as `scripts/check-packaged-server.mjs` does.
+  Below, `<v>` is the installed version and `<url>` is `http://localhost:3105` unless `--port`
+  changed it.
 - Ports 3105 and 2222 are free on the host, or the run passes free ones with `--port` and
   `--ssh-port`.
 
@@ -69,9 +69,8 @@ Preconditions:
   and `server upgrade`, followed by `see also`.
 - **Refusals before Docker.** Run `mend server`. Stderr reads
   `mend: usage: mend server <setup|status|start|stop|restart|logs|upgrade> [options]`, exit code
-  `1`. Run `mend server setup --bogus`. Stderr reads
-  `mend: Unknown server setup option "--bogus".`, exit code `1`. Run `mend server status`. Stderr
-  reads
+  `1`. Run `mend server setup --bogus`. Stderr reads `mend: Unknown server setup option "--bogus".`,
+  exit code `1`. Run `mend server status`. Stderr reads
   `mend: No Mend server is configured. Run mend server setup explicitly to install one.`, exit code
   `1`.
 - **Contradictions refused.** These need Docker: stdout first shows
@@ -117,7 +116,8 @@ Preconditions:
   `1`.
 - **Stop.** Run `mend server stop`. Stdout reads
   `Connections will be interrupted. Workspace containers and data are retained, but active work can lose connectivity and may need reconnection. Mend does not stop workspace containers.`
-  then `Mend, Postgres and Garage stopped. Volumes, configuration and workspace containers are retained.`
+  then
+  `Mend, Postgres and Garage stopped. Volumes, configuration and workspace containers are retained.`
   Run `mend server status`. It ends `Mend is stopped. No health claim was made.`, exit `0`.
   `docker volume ls` still lists `mend-store`, `mend-control` and `mend-garage`.
 - **Start.** Run `mend server start`. Stdout shows the `Starting Mend <v> containers…` line, then
@@ -125,9 +125,9 @@ Preconditions:
 - **Restart.** Run `mend server restart`. Stdout shows the interruption line, the starting line and
   `Mend <v> is reachable at <url>`. `mend server status` afterwards shows `postgres` and `garage`
   with an uptime older than `mend`'s.
-- **Lock.** While `mend server restart` runs in one PTY, run `mend server status` in another.
-  Stderr starts `mend: Server is busy: <scratch>/config/mend/` and says
-  `Never remove a live lock.`, exit `1`.
+- **Lock.** While `mend server restart` runs in one PTY, run `mend server status` in another. Stderr
+  starts `mend: Server is busy: <scratch>/config/mend/` and says `Never remove a live lock.`, exit
+  `1`.
 - **Upgrade refusals.** Run `mend server upgrade`. Stderr reads
   `mend: Upgrade requires --version TARGET. Use --version latest only to request the latest release explicitly.`
   Run `mend server upgrade --version 0.0.1`. Stderr starts
@@ -149,18 +149,18 @@ Preconditions:
   `Mend <v2> is reachable at <url>`, `Upgraded to <v2>. Retained database backup: <dir>`, and
   `Upgrade backups · removed <n> … · kept <k> (--keep-backups 2)`. `mend server status` reads
   `Pinned Mend <v2>` and the same declared posture as before.
-- **Next channel.** Only when a published `next` build is in reach: `npm install --global
-  @sealant/mend@next` on the disposable host, then `mend version`. The first line reads
-  `mend X.Y.Z-next.N`. Installing the CLI does not move a server that already exists: setup keeps
-  its pin. To see setup pin the next build, run `mend server setup` against a fresh install (a new
-  disposable host, or this one after [uninstall](./uninstall.md) removed the recipe's server, with
-  a new empty `XDG_CONFIG_HOME`); `mend server status` then reads `Pinned Mend X.Y.Z-next.N`. To
-  move the existing install instead, run `mend server upgrade --version X.Y.Z-next.N`, which is
-  refused as a downgrade when that is lower than its pin. A server on an old-style
-  `X.Y.Z-preview.K` asked for `X.Y.Z-next.N` without `--from-preview` is refused with the downgrade
-  line, which then names `--from-preview`; with it, stdout reads
-  `ghcr.io/sealant-sh/mend:<target> carries all <n> migrations this server applied.` before the
-  upgrade proceeds.
+- **Next channel.** Only when a published `next` build is in reach:
+  `npm install --global @sealant/mend@next` on the disposable host, then `mend version`. The first
+  line reads `mend X.Y.Z-next.N`. Installing the CLI does not move a server that already exists:
+  setup keeps its pin. To see setup pin the next build, run `mend server setup` against a fresh
+  install (a new disposable host, or this one after [uninstall](./uninstall.md) removed the recipe's
+  server, with a new empty `XDG_CONFIG_HOME`); `mend server status` then reads
+  `Pinned Mend X.Y.Z-next.N`. To move the existing install instead, run
+  `mend server upgrade --version X.Y.Z-next.N`, which is refused as a downgrade when that is lower
+  than its pin. A server on an old-style `X.Y.Z-preview.K` asked for `X.Y.Z-next.N` without
+  `--from-preview` is refused with the downgrade line, which then names `--from-preview`; with it,
+  stdout reads `ghcr.io/sealant-sh/mend:<target> carries all <n> migrations this server applied.`
+  before the upgrade proceeds.
 - **Proof.** Keep every command's transcript with stdout, stderr and exit code, under the
   sub-feature it proves. Keep `mend server status` before and after each mutation as the read-only
   second view, and `docker --context <ctx> volume ls` after `stop` and after `upgrade`. Report the
@@ -184,9 +184,9 @@ Preconditions:
   drivable only on a disposable host with a DNS name pointing at it; otherwise `status` reports
   `edge · <host> · container running · no certificate in Caddy's data yet · mend server logs shows what Caddy tried`.
   Take it away with `mend server setup --no-edge`, which prints that the edge is gone and how to
-  remove its certificate volumes. On an install that declares `public`, `--no-edge` alone is
-  refused with `--exposure public needs the edge: …`, because the saved exposure is kept; pass a
-  compatible one in the same command: `mend server setup --no-edge --exposure private`.
+  remove its certificate volumes. On an install that declares `public`, `--no-edge` alone is refused
+  with `--exposure public needs the edge: …`, because the saved exposure is kept; pass a compatible
+  one in the same command: `mend server setup --no-edge --exposure private`.
 - Setup's "first account must already exist" rule is checked as "an installation already exists"
   (`apps/cli/src/server-setup.ts:1800`). Once one setup has succeeded, `--edge` is accepted on a
   rerun even when no account has been created yet, though `mend help server setup` says the first

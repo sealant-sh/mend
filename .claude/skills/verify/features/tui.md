@@ -4,10 +4,10 @@ Bare `mend`, or `mend ui`, opens a full-screen dashboard of every project, workt
 the server, updating live. A sidebar on the left quarter stacks three sections, projects, worktrees
 and sessions; the one the keyboard is in stands open and the other two fold to one line. The session
 pane on the right shows the selected session's facts and the conversation record it has written.
-Moving the selection only navigates; single-letter verbs attach, resume, start, rename, review,
-open in the browser, stop, remove and refresh. `v` opens a review of the change in the terminal.
-While a session starts, and with `mend snake`, a game of snake fills the wait. Run inside a checkout
-that no project matches, the dashboard offers to adopt it. It needs Node 26 or newer.
+Moving the selection only navigates; single-letter verbs attach, resume, start, rename, review, open
+in the browser, stop, remove and refresh. `v` opens a review of the change in the terminal. While a
+session starts, and with `mend snake`, a game of snake fills the wait. Run inside a checkout that no
+project matches, the dashboard offers to adopt it. It needs Node 26 or newer.
 
 ## Sub-features
 
@@ -53,7 +53,8 @@ Preconditions:
   TypeScript source does not qualify. Without both, report that step unreachable.
 - tmux is installed. Every dashboard runs in its own session sized like a real terminal, started in
   a directory that is not a Git checkout (so no adopt offer appears), and wrapped so its exit code
-  stays on screen: `tmux new-session -d -s verify-tui -x 200 -y 50 'cd /tmp && mend ui; echo "exit $?"; sleep 600'`.
+  stays on screen:
+  `tmux new-session -d -s verify-tui -x 200 -y 50 'cd /tmp && mend ui; echo "exit $?"; sleep 600'`.
   Read the screen with `tmux capture-pane -p -t verify-tui` and wait for a string, never a fixed
   sleep.
 - No worktree named `verify-tui` exists in `<project>` (`mend worktrees --project <project>`).
@@ -65,15 +66,15 @@ Preconditions:
 - **Open.** Start the session above. The top line starts ` mend  <n> projects · <m> live` (or
   ` mend  1 project · <m> live` with a single project) and ends with `<web>`. The sidebar shows the
   `projects`, `worktrees` and `sessions · <n>` frames (the last reads plain `sessions` while no
-  worktree is selected), the
-  session pane's frame reads `session · read-only` (or `session` with nothing selected), and the
-  footer starts ` ↑↓ move · ←→ panes · a attach · r resume · n new session · w new worktree`.
+  worktree is selected), the session pane's frame reads `session · read-only` (or `session` with
+  nothing selected), and the footer starts
+  ` ↑↓ move · ←→ panes · a attach · r resume · n new session · w new worktree`.
 - **Navigate to the project.** Send `tmux send-keys -t verify-tui Left Left`. The projects section
-  opens and the footer reads ` ↑↓ move · → worktrees · n/w new worktree · ⇧R refresh · q quit`.
-  Send `j` or `k` until the row with `<project>` carries the `▌` gutter.
+  opens and the footer reads ` ↑↓ move · → worktrees · n/w new worktree · ⇧R refresh · q quit`. Send
+  `j` or `k` until the row with `<project>` carries the `▌` gutter.
 - **Session verbs refuse at the project tier.** Send `a`. The status line reads
   `select a session first · → opens worktrees`. Nothing attaches.
-- **New worktree: name.** Send `w`. A modal titled ` new worktree · <project> ` opens with rows
+- **New worktree: name.** Send `w`. A modal titled `new worktree · <project>` opens with rows
   `name`, `base` and `harness`, and the footer reads ` enter continue · esc cancel`. Send
   `tmux send-keys -t verify-tui -l verify-tui` then `Enter`.
 - **New worktree: base.** The footer reads
@@ -100,48 +101,48 @@ Preconditions:
   `tmux send-keys -t verify-tui -l "printf 'tui\n' > TUI.md"` and `Enter`. Send
   `tmux send-keys -t verify-tui C-]`. The dashboard returns and the status line reads
   `detached · <id8> keeps running`.
-- **Rename.** Send `e`. A modal titled ` label · shell <id8> ` opens. Send
+- **Rename.** Send `e`. A modal titled `label · shell <id8>` opens. Send
   `tmux send-keys -t verify-tui -l 'verify tui'` and `Enter`. The status line reads
   `labeled · verify tui`, and the session row now reads `verify tui`.
-- **Review.** Send `v`. The screen first reads `Loading the live change…` (or
-  `<error> · retrying`); wait it out. Then the first line reads
-  ` mend / <project> / review · shell <id8>`, then ` · syncing` while it refetches, then
-  ` · checkpoint recorded`. With the fixture above, the second line names `1 files` and `+1`, the
-  `files · 1` frame lists `TUI.md`, and the diff frame's title reads ` TUI.md · unified `. The footer starts
-  ` diff · ↑↓/jk lines · n/p files`. Send `w`; the diff title ends `· wrapped`. Send `Tab`; the
-  footer starts ` comments · ↑↓/jk move`. Send `r`; the status line reads
-  `Refreshing live change…`. Send `Escape`; the dashboard returns. If `v` instead reads
-  `this session has no reviewable change yet`, send `R` (status `refreshing…`) and try again once a
-  checkpoint exists.
+- **Review.** Send `v`. The screen first reads `Loading the live change…` (or `<error> · retrying`);
+  wait it out. Then the first line reads ` mend / <project> / review · shell <id8>`, then
+  ` · syncing` while it refetches, then ` · checkpoint recorded`. With the fixture above, the second
+  line names `1 files` and `+1`, the `files · 1` frame lists `TUI.md`, and the diff frame's title
+  reads `TUI.md · unified`. The footer starts ` diff · ↑↓/jk lines · n/p files`. Send `w`; the diff
+  title ends `· wrapped`. Send `Tab`; the footer starts ` comments · ↑↓/jk move`. Send `r`; the
+  status line reads `Refreshing live change…`. Send `Escape`; the dashboard returns. If `v` instead
+  reads `this session has no reviewable change yet`, send `R` (status `refreshing…`) and try again
+  once a checkpoint exists.
 - **Open in the browser.** Send `o`. The status line reads `opened · <web>/sessions/<id8>…`.
 - **Stop.** Send `K`. The status line reads `press ⇧K again to stop · verify tui`. Within five
   seconds send `K` again. It reads `stopped · verify tui · the record and review remain`, and the
   row's status settles. Once the row no longer reads `stopping`, send `K` again: the status line
   reads `nothing to stop · the session is settled`.
 - **Remove, armed only.** Send `D`. The status line reads
-  `press ⇧D again to remove session · verify tui · its record goes, the worktree stays`. Send nothing
-  for five seconds; a later `D` arms again instead of removing.
+  `press ⇧D again to remove session · verify tui · its record goes, the worktree stays`. Send
+  nothing for five seconds; a later `D` arms again instead of removing.
 - **Second view.** Outside the dashboard run `mend sessions --project <project> --all --json`. The
   `verify-tui` session is listed with `"harness": "shell"`, the label `verify tui` and a settled
   status. Run `mend worktrees --project <project>`. `verify-tui` is listed.
 - **Narrow terminal.** Run `tmux resize-window -t verify-tui -x 60 -y 50`. The sidebar takes the
-  whole width and a breadcrumb row reads `record hidden · → opens it`. Send `Enter` until the session
-  pane opens; it takes the whole width and the breadcrumb lists the selected project, worktree and
-  session separated by `▸`. Resize back with `-x 200`.
+  whole width and a breadcrumb row reads `record hidden · → opens it`. Send `Enter` until the
+  session pane opens; it takes the whole width and the breadcrumb lists the selected project,
+  worktree and session separated by `▸`. Resize back with `-x 200`.
 - **Quit.** Send `q`. The screen reads `exit 0`.
 - **Snake over the dashboard.** Run
   `tmux new-session -d -s verify-snake -x 200 -y 50 'cd /tmp && mend snake; echo "exit $?"; sleep 600'`.
-  A frame titled ` snake ` floats over the dashboard with `play snake while you wait · score 0` and
+  A frame titled `snake` floats over the dashboard with `play snake while you wait · score 0` and
   `arrows steer · space pauses · esc closes`. Send `Space`: `· paused`. Send `q`: the frame closes
   and the dashboard stays. Send `q` again: `exit 0`.
 - **Adopt from the dashboard.** In the clone of `<repo-url-2>`, run
   `tmux new-session -d -s verify-adopt -x 200 -y 50 'cd <clone> && mend ui; echo "exit $?"; sleep 600'`.
-  A modal titled ` adopt this repository URL? ` shows `<name> · not in the store yet`, the origin
-  URL, `auth  ▸ ambient · mend-key · bridge` and ` enter adopt · ←→ auth mode · esc not now`. Send
-  `Right`; the marker moves to `▸ mend-key` and its hint line changes. Send `Escape`; the status line
-  reads `not adopted · use mend adopt <url> any time`. To adopt instead, restart it and send `Enter`
-  with the mode the instance can clone with: the status line reads `adopting <name> · cloning into
-  the store ·`, then `adopted · <name> · w starts a worktree`, and `mend projects` lists `<name>`.
+  A modal titled `adopt this repository URL?` shows `<name> · not in the store yet`, the origin URL,
+  `auth  ▸ ambient · mend-key · bridge` and ` enter adopt · ←→ auth mode · esc not now`. Send
+  `Right`; the marker moves to `▸ mend-key` and its hint line changes. Send `Escape`; the status
+  line reads `not adopted · use mend adopt <url> any time`. To adopt instead, restart it and send
+  `Enter` with the mode the instance can clone with: the status line reads
+  `adopting <name> · cloning into the store ·`, then `adopted · <name> · w starts a worktree`, and
+  `mend projects` lists `<name>`.
 - **Node gate.** Run
   `tmux new-session -d -s verify-node -x 200 -y 50 '<node22> "$(command -v mend)" ui; echo "exit $?"; sleep 600'`.
   The screen reads
@@ -149,18 +150,19 @@ Preconditions:
   and `exit 1`.
 - **Proof.** Keep a `tmux capture-pane -p -t <session>` snapshot after every step, named by step,
   plus `tmux capture-pane -e -p` for the layout steps (the focused frame is drawn in the accent
-  colour). Keep the second-view JSON. Clean up with `mend worktrees rm verify-tui --force --project
-  <project>` and `tmux kill-session -t <session>` for each session this run started.
+  colour). Keep the second-view JSON. Clean up with
+  `mend worktrees rm verify-tui --force --project <project>` and `tmux kill-session -t <session>`
+  for each session this run started.
 
 ## Gotchas
 
 - The dashboard is a terminal UI with no accessibility tree. Every handle is a key and every proof
   is text on the screen. The focused section is marked only by colour and the `▌` gutter; read the
   footer to know which section has the keyboard, since each section's footer differs.
-- tmux key names: `Enter`, `Escape`, `Tab`, `BTab` (Shift+Tab), `Space`, `Up` `Down` `Left`
-  `Right`, `NPage` `PPage`, `C-]`. `⇧K`, `⇧D` and `⇧R` are sent as the capital letters `K`, `D`,
-  `R`. That opentui reads a capital letter from tmux as shift plus the letter is how the key table
-  is written; it has not been driven live.
+- tmux key names: `Enter`, `Escape`, `Tab`, `BTab` (Shift+Tab), `Space`, `Up` `Down` `Left` `Right`,
+  `NPage` `PPage`, `C-]`. `⇧K`, `⇧D` and `⇧R` are sent as the capital letters `K`, `D`, `R`. That
+  opentui reads a capital letter from tmux as shift plus the letter is how the key table is written;
+  it has not been driven live.
 - tmux holds a lone `Escape` for its `escape-time` before passing it on. Wait for the screen to
   change before the next key, or set `tmux set -s escape-time 0`.
 - In the worktree form, the base step's input appears only once the branch list has loaded; an
@@ -189,9 +191,10 @@ Preconditions:
   leaves the session running (`detached · <id8> keeps running`). The dashboard also returns when the
   attach is interrupted (the same `detached` line), when the connection drops
   (`disconnected · <id8> · refreshing session status`), when the server does not open the terminal
-  (`no answer · …`), or when the terminal ends (`terminal ended · <id8> · refreshing session status`,
-  for example after `exit` in the shell). Only the first leaves a live shell behind for certain. `MEND_DETACH_KEY=none` turns it
-  off, which a harness must not set.
+  (`no answer · …`), or when the terminal ends
+  (`terminal ended · <id8> · refreshing session status`, for example after `exit` in the shell).
+  Only the first leaves a live shell behind for certain. `MEND_DETACH_KEY=none` turns it off, which
+  a harness must not set.
 - `o` runs the machine's browser opener. On a headless host nothing opens, yet the status line still
   reads `opened · …`; it states the request, not a page load.
 - Removing a worktree whose change was never landed is refused by the server, and the status line

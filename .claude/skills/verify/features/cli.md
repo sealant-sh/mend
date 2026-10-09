@@ -114,8 +114,8 @@ Preconditions:
 - `mend man` runs `man -l` on a temporary file. BSD `man` on macOS has no `-l`; there the text page
   prints. Pass `MANPAGER=cat` in a harness so `man` does not wait for a pager. groff may print
   typographic dashes and quotes in a UTF-8 locale; match the man output on words, not bytes.
-- `man mend` without the `mend` prefix needs the npm package installed globally (it ships `man/`).
-  A CLI run from source has no installed man pages; report that path as unreachable, not failed.
+- `man mend` without the `mend` prefix needs the npm package installed globally (it ships `man/`). A
+  CLI run from source has no installed man pages; report that path as unreachable, not failed.
 - The completion hooks are a hand-written list that lags the catalog. The zsh command list and the
   bash word list (`apps/cli/src/main.ts:3862-3884`, `3915`) omit `login`, `logout`, `models`,
   `worktrees`, `workspace`, `secrets`, `dotfiles`, `env`, `ssh`, `invite`, `members`, `folder`,
