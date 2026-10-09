@@ -377,17 +377,18 @@ workspaces.create({ …, credentialsHome })
 - **How Mend uses it:** `credentialsHome = { path: /home/<launcher>, uid, gid: 40000 }` at create
   when the launch is `person`, `$HOME` when it is `shared` (decision 1 decides which before create);
   one POST before a person's first process in an executor, in parallel with their user, dotfiles and
-  deliveries; a refusal before anything is written when the needed provider is not connected or
-  `invalid` ("Connect Claude to start a session here"); DELETE when a person's last process ends,
-  retried, except the launcher's create-time home, which stays while the executor lives (their
-  Remote-SSH session uses it with no Mend process); reconciliation against `GET` at startup; one
-  re-POST after an authentication failure. Every POST is partial (`partial: true`): what the person
-  has connected is written, what Core leaves out (`skipped`) is not asked for again, a provider the
-  harness needs refuses the start, and a join is exactly one Core call. In a `person` executor Core
-  writes pi's and opencode's ChatGPT logins too (`pi` and `opencode` on the POST, made from the
-  person's Codex account), following opencode's link back into the home, and a release removes them
-  with the rest; the session line says when Core left one out. In a `shared` executor Mend's
-  ChatGPT-login program still writes the copies at `$HOME`, since a create cannot name them.
+  deliveries (a shell, which reads no login to start, starts without it and its POST runs beside
+  it); a refusal before anything is written when the needed provider is not connected or `invalid`
+  ("Connect Claude to start a session here"); DELETE when a person's last process ends, retried,
+  except the launcher's create-time home, which stays while the executor lives (their Remote-SSH
+  session uses it with no Mend process); reconciliation against `GET` at startup; one re-POST after
+  an authentication failure. Every POST is partial (`partial: true`): what the person has connected
+  is written, what Core leaves out (`skipped`) is not asked for again, a provider the harness needs
+  refuses the start, and a join is exactly one Core call. In a `person` executor Core writes pi's
+  and opencode's ChatGPT logins too (`pi` and `opencode` on the POST, made from the person's Codex
+  account), following opencode's link back into the home, and a release removes them with the rest;
+  the session line says when Core left one out. In a `shared` executor Mend's ChatGPT-login program
+  still writes the copies at `$HOME`, since a create cannot name them.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 
@@ -855,6 +856,10 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **No new Core call on the cold path:** `credentialsHome` at create. A join's `useradd` comes
   first; its Core call, dotfiles and deliveries then run in parallel, and only the agent start waits
   for them.
+- **A shell waits for no login.** An open workbench names more providers than its person's agent
+  wrote (Codex beside Claude, say), so their first shell in an executor would wait on a Core call:
+  0.3 to 0.4 s on the box (gate P1 at `0.36.0-next.648` and `652`). Once their home exists it starts
+  at once, and the missing logins are written beside it under the home's lock.
 - **A joiner's `install.sh` runs beside the agent,** not before it: the agent starts when the
   dotfiles' files are applied, and the session line says "install.sh running" until it ends. The
   launcher's runs before their agent, as it did at boot.

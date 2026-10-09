@@ -13354,6 +13354,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly agent: boolean;
           readonly resumeId?: string | null;
           readonly conversation?: boolean;
+          /** A shell: it starts once the home exists, its logins written beside it (`processAs`). */
+          readonly loginsBeside?: boolean;
         } = { agent: false },
       ): Effect.Effect<
         {
@@ -13383,6 +13385,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               harness,
               live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
               homeReady,
+              loginsBeside: options.loginsBeside === true,
             })
             .pipe(Effect.ensuring(Deferred.succeed(homeReady, null)));
           // Only an agent's start, or a person's first process here, delivers anything.
@@ -19352,12 +19355,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }, 0) + 1;
         // The image stamped at launch names the login shell this tab should run.
         const shellArgv = interactiveShellArgv(session.workspaceImage);
-        // A shell runs as the person who opened it (docs/adr/0016, decision 1).
+        // A shell runs as the person who opened it (docs/adr/0016, decision 1). It reads no login to
+        // start, so it waits for none: what it needs beyond their agent's is written beside it.
         const startAs = yield* startAsPerson(
           session,
           workspace,
           Effect.succeed(openedBy ?? session.ownerUserId),
           "shell",
+          { agent: false, loginsBeside: true },
         );
         const pty = yield* sealant.openSession(
           workspace,

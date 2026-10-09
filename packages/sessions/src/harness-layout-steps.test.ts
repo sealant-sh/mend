@@ -1175,6 +1175,119 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(JSON.stringify(result.started?.env)).not.toContain(aliceHome);
   });
 
+  it("a shell waits for no login: its first start in an executor writes what it lacks beside it (gate P1, 0.36.0-next.652)", async () => {
+    // Core's credentials POST takes 300 ms here (on the box, a person's first shell opened 0.3 to
+    // 0.4 s slower than a shared one's, at 648 and 652).
+    const CORE_POST_MS = 300;
+    const timed = (loginsBeside: boolean) => {
+      const core = coreCalls();
+      return withPersonExecutor(core, ({ steps, forks }) =>
+        Effect.gen(function* () {
+          const gate = yield* Deferred.make<void>();
+          core.postGate = gate;
+          yield* Effect.forkChild(
+            Effect.sleep(Duration.millis(CORE_POST_MS)).pipe(
+              Effect.andThen(Deferred.succeed(gate, undefined)),
+            ),
+          );
+          const shell = () =>
+            steps.processAs({
+              workspace,
+              launchId: "launch-1",
+              accountId: "user-alice",
+              sessionId: "sess-1",
+              worktreeId: "wt-1",
+              harness: "shell",
+              live: Effect.succeed(new Set(["user-alice"])),
+              loginsBeside,
+            });
+          const startedAt = Date.now();
+          const started = yield* shell();
+          const startMs = Date.now() - startedAt;
+          const postsAtStart = core.posts.length;
+          // What was started beside it runs to its end; a second shell then needs nothing.
+          for (const fork of forks.splice(0)) yield* fork;
+          yield* shell();
+          return { started, startMs, postsAtStart, forksLeft: forks.length };
+        }),
+      );
+    };
+    const beside = await timed(true);
+    const before = await timed(false);
+    // Alice's create wrote Claude and GitHub; the shell's open workbench also names Codex.
+    expect(before.postsAtStart).toBe(1);
+    expect(before.startMs).toBeGreaterThanOrEqual(CORE_POST_MS - 20);
+    // Beside it: the shell starts as Alice with no Core call on its path, and the write follows.
+    expect(beside.postsAtStart).toBe(0);
+    expect(beside.startMs).toBeLessThan(CORE_POST_MS / 3);
+    expect(beside.started?.user.name).toBe(before.started?.user.name);
+    expect(beside.started?.loginsLeftOut).toEqual([]);
+    expect(beside.forksLeft).toBe(0);
+  });
+
+  it("writes a shell's logins beside it under the home's lock, once, and never for a home it has to make", async () => {
+    const core = coreCalls();
+    const result = await withPersonExecutor(core, ({ steps, forks }) =>
+      Effect.gen(function* () {
+        const shell = (accountId: string) =>
+          steps.processAs({
+            workspace,
+            launchId: "launch-1",
+            accountId,
+            sessionId: "sess-1",
+            worktreeId: "wt-1",
+            harness: "shell",
+            live: Effect.succeed(new Set([accountId])),
+            loginsBeside: true,
+          });
+        yield* shell("user-alice");
+        const queued = forks.length;
+        for (const fork of forks.splice(0)) yield* fork;
+        yield* shell("user-alice");
+        // Maria has no home here yet: it is made, and her logins written, before her shell starts.
+        const postsBeforeMaria = core.posts.length;
+        yield* shell("user-maria");
+        return { queued, postsBeforeMaria, forks: forks.length };
+      }),
+    );
+    expect(result.queued).toBe(1);
+    expect(core.posts[0]?.logins).toEqual({ codex: true });
+    expect(result.postsBeforeMaria).toBe(1);
+    expect(core.posts[1]?.onBehalfOf).toBe("user-maria");
+    // Maria's worktree repair is the only work left to run beside her start.
+    expect(result.forks).toBe(1);
+  });
+
+  it("says a write beside a shell that failed, and leaves the shell running", async () => {
+    const core = coreCalls();
+    core.answer = () =>
+      new SealantPlatformError({
+        code: "home-busy-forever",
+        status: 500,
+        message: "Core is down",
+        cause: null,
+      });
+    const result = await withPersonExecutor(core, ({ steps, forks }) =>
+      Effect.gen(function* () {
+        const started = yield* steps.processAs({
+          workspace,
+          launchId: "launch-1",
+          accountId: "user-alice",
+          sessionId: "sess-1",
+          worktreeId: "wt-1",
+          harness: "shell",
+          live: Effect.succeed(new Set(["user-alice"])),
+          loginsBeside: true,
+        });
+        const ran = yield* Effect.exit(Effect.all(forks.splice(0)));
+        return { started, ran };
+      }),
+    );
+    expect(result.started).not.toBeNull();
+    expect(result.ran._tag).toBe("Success");
+    expect(core.posts).toHaveLength(1);
+  });
+
   it("tells a joiner's home ready once their user exists, before their logins are written; a later start at once", async () => {
     const core = coreCalls();
     const order: Array<string> = [];

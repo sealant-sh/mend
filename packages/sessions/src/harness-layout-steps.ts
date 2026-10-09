@@ -506,6 +506,13 @@ export interface HarnessLayoutSteps {
      * both (Performance). Never told in a shared executor; the caller completes it with null.
      */
     readonly homeReady?: Deferred.Deferred<PersonHome | null>;
+    /**
+     * The process reads none of its logins to start (a shell, anything that is not an agent): once
+     * the person's home exists, it starts at once and their logins are written beside it, not
+     * before it. Their first shell in an executor needs more providers than their agent's start
+     * wrote (`loginNeedOf`), and waited on that Core call (gate P1 at 0.36.0-next.652).
+     */
+    readonly loginsBeside?: boolean;
   }) => Effect.Effect<
     {
       readonly user: ProcessUser;
@@ -1463,6 +1470,7 @@ export const makeHarnessLayoutSteps = (deps: {
                 }).pipe(Effect.asVoid);
           if (!needsHome) yield* tellHomeReady(false);
           if (!needsHome && !needsLogins) return [];
+          if (!needsHome && input.loginsBeside === true) return "beside" as const;
           const homeMade = yield* Deferred.make<void>();
           let minted = false;
           // Their first process in this executor: their user, home and saved directory (one exec,
@@ -1547,6 +1555,37 @@ export const makeHarnessLayoutSteps = (deps: {
           return logins.success;
         }),
       );
+      if (leftOut === "beside") {
+        // Under the home's lock, like a start's write; whatever it leaves out, nothing refuses the
+        // process, which already runs, and a write that fails is said and asked again at the next
+        // start that needs it.
+        yield* deps.fork(
+          lockOf(key)
+            .withPermit(
+              writeLogins({
+                workspace: input.workspace,
+                launchId,
+                identity,
+                need,
+                homeMade: null,
+              }),
+            )
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning(
+                  "session engine: a person's logins were not written beside their process",
+                ).pipe(
+                  Effect.annotateLogs({
+                    workspaceId,
+                    home: linuxHomeOf(identity),
+                    message: error.message,
+                  }),
+                ),
+              ),
+              Effect.asVoid,
+            ),
+        );
+      }
       const last = lastIn.get(workspaceId);
       if (last !== undefined && last !== identity.accountId) {
         // Another person's process starts in the worktree: what earlier processes left without
@@ -1575,7 +1614,7 @@ export const makeHarnessLayoutSteps = (deps: {
       return {
         user: processUserOf(identity),
         env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
-        loginsLeftOut: leftOut.flatMap((skip) => {
+        loginsLeftOut: (leftOut === "beside" ? [] : leftOut).flatMap((skip) => {
           const words = loginLeftOutWords(skip);
           return words === null ? [] : [words];
         }),
