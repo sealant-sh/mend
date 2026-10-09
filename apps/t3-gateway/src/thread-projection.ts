@@ -251,12 +251,6 @@ const attachmentOf = (image: StoredImage): ChatAttachment => ({
   sizeBytes: image.sizeBytes,
 });
 
-/** The placed images of a sent message, as the gateway named them in the turn. */
-const placedOf = (images: ReadonlyArray<StoredImage>) =>
-  images.flatMap((image) =>
-    image.mendPath === null ? [] : [{ name: image.name, path: image.mendPath }],
-  );
-
 /** The turn item one Mend item is shown as, or null for one already shown another way. */
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
   const streaming = item.status === "in-progress";
@@ -461,8 +455,11 @@ const turnEntries = (
   const out: TurnEntries = { items: [], messages: [] };
   // A message the gateway sent with images: the person's words, and the images as attachments.
   const images = source.imagesOf(userMessageId);
-  const words = wordsOf(turn.input, placedOf(images));
-  const attachments = images.map(attachmentOf);
+  const words = wordsOf(
+    turn.input,
+    images.map((sent) => ({ name: sent.image.name, path: sent.path })),
+  );
+  const attachments = images.map((sent) => attachmentOf(sent.image));
 
   out.messages.push({
     createdBy: fromHarness ? "system" : "user",

@@ -176,13 +176,24 @@ message carries those ids, in the queue and across a restart.
   `POST /api/sessions/:id/images`, as the sender, and the turn names its path, as Mend's Slack
   runner does: `[image: screen.png · /workspace/…/paste/….png]`, then "Images from t3code are saved
   as files in the workspace, at the paths shown. Open a path to see the image." The agent opens the
-  file. A retry after "not live" places only what is not placed yet.
+  file. A placement holds for the session and the agent process it was made for: a retry after "not
+  live" places only what is not placed yet, and a new agent gets each image placed again.
 - Mend's rules are checked before anything reaches it: PNG, JPEG, GIF or WebP by their bytes, 8 MiB
-  each, ten to a message. A file that is not an image is refused.
-- The client sees its own words and the images as the message's attachments. It fetches an image
-  from `assets.createUrl`: `/api/assets/<token>/<name>`, a random token in the gateway's memory for
-  that person's one image, ten minutes, served without a bearer as an `<img>` asks.
-- An image attached to a message that was never sent is let go after a week.
+  each. A file that is not an image is refused.
+- A message (sent, launched or edited in the queue) carries at most ten images, each once, each one
+  the person attached in the same thread, however many uploads they came in.
+- The client sees its own words and, once Mend took the turn, the images that turn carried, as the
+  message's attachments; an image edited out of a queued message is not among them. It fetches an
+  image from `assets.createUrl`: `/api/assets/<token>/<name>`, a random token in the gateway's
+  memory for that person's one image, ten minutes, served without a bearer as an `<img>` asks. The
+  token is in the path, so these requests are neither logged nor traced.
+- An image attached to a message that was never sent is let go after a week: at start, and by each
+  person's hub every hour.
+- Where the file lands is the paste route's: under the workspace's harness home
+  (`/workspace/harness-home/paste/`), outside the worktree, written by Mend's workspace writer,
+  which does not run as the sending person under per-person homes (ADR 0016) and follows a symlinked
+  paste directory. A person-aware, contained placement is Mend's to add; the gateway does not work
+  around it.
 
 ### A queue that survives a restart
 
@@ -315,8 +326,9 @@ every turn a t3code client sends, and `thread_ids`, every thread a t3code client
 its session, the launch command and what the launch named; no secrets). `project_ids` stays empty.
 `queued_messages` and `queue_holds` keep each person's queues: text, ids, state, image ids and the
 sender's bearer session, never a device token. `images` keeps the images people attach, with where
-Mend placed each once sent. Mend's database is never touched. Losing the file loses pairings and
-t3code-side ids, never Mend records.
+Mend last placed each (session, agent process, path), and `sent_images` the images each sent message
+carried. Mend's database is never touched. Losing the file loses pairings and t3code-side ids, never
+Mend records.
 
 **The file holds every paired person's Mend device token in clear**, and the token acts as that
 person in Mend until the device is revoked. The gateway needs it usable: it calls Mend for a person

@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 
-import { AssetUrlsLive } from "./assets.ts";
+import { AssetTracingDisabledLive, AssetUrlsLive } from "./assets.ts";
 import { GatewayAuthLive } from "./auth.ts";
 import { GatewayConfig } from "./config.ts";
 import { GatewayEnvironmentLive } from "./environment.ts";
@@ -28,6 +28,7 @@ export const GatewayAppLive = GatewayRoutesLive.pipe(
   Layer.provide(ProjectionsLive),
   Layer.provideMerge(WebSocketTicketsLive),
   Layer.provideMerge(AssetUrlsLive),
+  Layer.provideMerge(AssetTracingDisabledLive),
   Layer.provideMerge(GatewayEnvironmentLive),
   Layer.provideMerge(MendClientFetchLive),
   Layer.provideMerge(GatewayStateLive),

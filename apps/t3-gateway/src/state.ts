@@ -97,8 +97,24 @@ export interface StoredImage {
   readonly name: string;
   readonly mimeType: string;
   readonly sizeBytes: number;
-  /** Where Mend placed it in the session's workspace, once the message was sent; null before. */
-  readonly mendPath: string | null;
+  /** Where Mend last placed it, for which session and agent; null before it was ever placed. */
+  readonly placement: ImagePlacement | null;
+}
+
+/**
+ * Where Mend placed an image (`POST /api/sessions/:id/images`): in one session's workspace, while
+ * one agent process ran there. Another session, or a new agent, places it again.
+ */
+export interface ImagePlacement {
+  readonly sessionId: string;
+  readonly processId: string;
+  readonly path: string;
+}
+
+/** An image as a sent message carried it: the selection and the path its turn named. */
+export interface SentImage {
+  readonly imageId: string;
+  readonly path: string;
 }
 
 export class GatewayStateError extends Schema.TaggedError<GatewayStateError>()(
@@ -225,17 +241,30 @@ export class GatewayState extends Context.Service<
       { readonly image: StoredImage; readonly bytes: Uint8Array } | null,
       GatewayStateError
     >;
-    /** Records where Mend placed an image in the session's workspace, and the message it went with. */
-    readonly recordImagePath: (
+    /** Records where Mend placed one of a person's images. */
+    readonly recordImagePlacement: (
+      mendUserId: string,
       imageId: string,
-      messageId: string,
-      mendPath: string,
+      placement: ImagePlacement,
     ) => Effect.Effect<void, GatewayStateError>;
+    /** Records the images a message carried when Mend took its turn, in order. */
+    readonly recordSentImages: (
+      mendUserId: string,
+      messageId: string,
+      images: ReadonlyArray<SentImage>,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Message id → the images it carried when sent, for each of a person's sent messages. */
+    readonly listSentImages: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, ReadonlyArray<SentImage>>, GatewayStateError>;
     /**
-     * Lets go of images older than `before` that were never sent and no kept message carries
-     * (a draft the client dropped).
+     * Lets go of images older than `before` that no sent message carried and no kept message
+     * carries (a draft the client dropped), a person's or everyone's, and answers which.
      */
-    readonly pruneImages: (before: number) => Effect.Effect<number, GatewayStateError>;
+    readonly pruneImages: (
+      before: number,
+      mendUserId: string | null,
+    ) => Effect.Effect<ReadonlyArray<string>, GatewayStateError>;
     /** The people who have a message kept that can still reach Mend: their hubs start with the gateway. */
     readonly peopleWithQueuedMessages: () => Effect.Effect<
       ReadonlyArray<BearerSession>,
@@ -374,10 +403,21 @@ const MIGRATIONS: ReadonlyArray<string> = [
     mime_type TEXT NOT NULL,
     size_bytes INTEGER NOT NULL,
     bytes BLOB NOT NULL,
+    placed_session_id TEXT,
+    placed_process_id TEXT,
     mend_path TEXT,
     created_at INTEGER NOT NULL
   );
   CREATE INDEX images_by_person ON images (mend_user_id, message_id);
+  CREATE TABLE sent_images (
+    mend_user_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    image_id TEXT NOT NULL,
+    mend_path TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, message_id, position)
+  );
+  CREATE INDEX sent_images_by_image ON sent_images (image_id);
   ALTER TABLE queued_messages ADD COLUMN image_ids TEXT NOT NULL DEFAULT '[]';
   `,
 ];
@@ -451,6 +491,8 @@ const ImageRow = Schema.Struct({
   name: Schema.String,
   mime_type: Schema.String,
   size_bytes: Schema.Number,
+  placed_session_id: Schema.NullOr(Schema.String),
+  placed_process_id: Schema.NullOr(Schema.String),
   mend_path: Schema.NullOr(Schema.String),
 });
 const decodeImageRows = Schema.decodeUnknownEffect(Schema.Array(ImageRow));
@@ -464,8 +506,19 @@ const storedImageOf = (row: typeof ImageRow.Type): StoredImage => ({
   name: row.name,
   mimeType: row.mime_type,
   sizeBytes: row.size_bytes,
-  mendPath: row.mend_path,
+  placement:
+    row.placed_session_id === null || row.placed_process_id === null || row.mend_path === null
+      ? null
+      : { sessionId: row.placed_session_id, processId: row.placed_process_id, path: row.mend_path },
 });
+const SentImageRow = Schema.Struct({
+  message_id: Schema.String,
+  image_id: Schema.String,
+  mend_path: Schema.String,
+});
+const decodeSentImageRows = Schema.decodeUnknownEffect(Schema.Array(SentImageRow));
+const ImageIdRow = Schema.Struct({ image_id: Schema.String });
+const decodeImageIdRows = Schema.decodeUnknownEffect(Schema.Array(ImageIdRow));
 
 const toBearerSession = (decoded: typeof SessionRow.Type): BearerSession => ({
   sessionId: decoded.session_id,
@@ -894,8 +947,8 @@ export const openGatewayState = (
         const insert = database.prepare(
           `INSERT OR REPLACE INTO images (
              image_id, mend_user_id, thread_id, message_id, position, name, mime_type, size_bytes,
-             bytes, mend_path, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             bytes, placed_session_id, placed_process_id, mend_path, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const image of images) {
           insert.run(
@@ -908,14 +961,16 @@ export const openGatewayState = (
             image.mimeType,
             image.sizeBytes,
             image.bytes,
-            image.mendPath,
+            image.placement?.sessionId ?? null,
+            image.placement?.processId ?? null,
+            image.placement?.path ?? null,
             at,
           );
         }
       });
 
     const IMAGE_COLUMNS =
-      "image_id, thread_id, message_id, position, name, mime_type, size_bytes, mend_path";
+      "image_id, thread_id, message_id, position, name, mime_type, size_bytes, placed_session_id, placed_process_id, mend_path";
 
     const listImages = (mendUserId: string) =>
       run("listImages", () =>
@@ -952,27 +1007,74 @@ export const openGatewayState = (
         ),
       );
 
-    const recordImagePath = (imageId: string, messageId: string, mendPath: string) =>
-      run("recordImagePath", () => {
+    const recordImagePlacement = (mendUserId: string, imageId: string, placement: ImagePlacement) =>
+      run("recordImagePlacement", () => {
         database
-          .prepare("UPDATE images SET mend_path = ?, message_id = ? WHERE image_id = ?")
-          .run(mendPath, messageId, imageId);
+          .prepare(
+            `UPDATE images SET placed_session_id = ?, placed_process_id = ?, mend_path = ?
+              WHERE mend_user_id = ? AND image_id = ?`,
+          )
+          .run(placement.sessionId, placement.processId, placement.path, mendUserId, imageId);
       });
 
-    const pruneImages = (before: number) =>
-      run("pruneImages", () => {
-        const result = database
+    const recordSentImages = (
+      mendUserId: string,
+      messageId: string,
+      images: ReadonlyArray<SentImage>,
+    ) =>
+      transaction("recordSentImages", () => {
+        database
+          .prepare("DELETE FROM sent_images WHERE mend_user_id = ? AND message_id = ?")
+          .run(mendUserId, messageId);
+        const insert = database.prepare(
+          `INSERT INTO sent_images (mend_user_id, message_id, position, image_id, mend_path)
+           VALUES (?, ?, ?, ?, ?)`,
+        );
+        images.forEach((image, position) => {
+          insert.run(mendUserId, messageId, position, image.imageId, image.path);
+        });
+      });
+
+    const listSentImages = (mendUserId: string) =>
+      run("listSentImages", () =>
+        database
+          .prepare(
+            `SELECT message_id, image_id, mend_path FROM sent_images
+              WHERE mend_user_id = ? ORDER BY message_id, position`,
+          )
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listSentImages", decodeSentImageRows)),
+        Effect.map((rows) => {
+          const byMessage = new Map<string, Array<SentImage>>();
+          for (const row of rows) {
+            const sent = byMessage.get(row.message_id) ?? [];
+            sent.push({ imageId: row.image_id, path: row.mend_path });
+            byMessage.set(row.message_id, sent);
+          }
+          const answer: ReadonlyMap<string, ReadonlyArray<SentImage>> = byMessage;
+          return answer;
+        }),
+      );
+
+    const pruneImages = (before: number, mendUserId: string | null) =>
+      run("pruneImages", () =>
+        database
           .prepare(
             `DELETE FROM images
-              WHERE created_at < ? AND mend_path IS NULL
+              WHERE created_at < ? AND (? IS NULL OR mend_user_id = ?)
+                AND NOT EXISTS (SELECT 1 FROM sent_images s WHERE s.image_id = images.image_id)
                 AND NOT EXISTS (
-                  SELECT 1 FROM queued_messages q
-                   WHERE q.mend_user_id = images.mend_user_id AND q.message_id = images.message_id
-                )`,
+                  SELECT 1 FROM queued_messages q, json_each(q.image_ids) j
+                   WHERE q.mend_user_id = images.mend_user_id AND j.value = images.image_id
+                )
+              RETURNING image_id`,
           )
-          .run(before);
-        return Number(result.changes);
-      });
+          .all(before, mendUserId, mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("pruneImages", decodeImageIdRows)),
+        Effect.map((rows) => rows.map((row) => row.image_id)),
+      );
 
     const peopleWithQueuedMessages = () =>
       run("peopleWithQueuedMessages", () =>
@@ -1011,7 +1113,9 @@ export const openGatewayState = (
       saveImages,
       listImages,
       imageBytes,
-      recordImagePath,
+      recordImagePlacement,
+      recordSentImages,
+      listSentImages,
       pruneImages,
       peopleWithQueuedMessages,
     };

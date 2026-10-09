@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as HttpMiddleware from "effect/unstable/http/HttpMiddleware";
 import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
@@ -16,7 +17,8 @@ import { GatewayState } from "./state.ts";
  * `attachment`, ADR 0012 phase 2). t3code's own server signs `/api/assets/<token>/<file name>`
  * and serves it without a bearer, because an `<img>` carries none; the gateway does the same with
  * a random token it keeps in memory: one person's one image, for ten minutes. A restart forgets
- * them, and the client asks again.
+ * them, and the client asks again. The token is the credential, and it is in the path, so these
+ * requests are neither logged nor traced (`AssetTracingDisabledLive`).
  */
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
@@ -87,26 +89,38 @@ export const AssetRouteLive: Layer.Layer<
     return HttpRouter.add(
       "GET",
       `${ASSET_ROUTE_PREFIX}/*`,
-      Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const url = HttpServerRequest.toURL(request);
-        if (Option.isNone(url)) return notFound();
-        const [token = ""] = url.value.pathname.slice(`${ASSET_ROUTE_PREFIX}/`.length).split("/");
-        const grant = yield* urls.resolve(token);
-        if (Option.isNone(grant)) return notFound();
-        const kept = yield* state
-          .imageBytes(grant.value.mendUserId, grant.value.imageId)
-          .pipe(Effect.orElseSucceed(() => null));
-        if (kept === null) return notFound();
-        return HttpServerResponse.uint8Array(kept.bytes, {
-          contentType: kept.image.mimeType,
-          headers: {
-            "cache-control": "private, max-age=600",
-            "x-content-type-options": "nosniff",
-            "content-disposition": "inline",
-          },
-        });
-      }),
+      // The path carries the credential: the request log would write it out.
+      HttpMiddleware.withLoggerDisabled(
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const url = HttpServerRequest.toURL(request);
+          if (Option.isNone(url)) return notFound();
+          const [token = ""] = url.value.pathname.slice(`${ASSET_ROUTE_PREFIX}/`.length).split("/");
+          const grant = yield* urls.resolve(token);
+          if (Option.isNone(grant)) return notFound();
+          const kept = yield* state
+            .imageBytes(grant.value.mendUserId, grant.value.imageId)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (kept === null) return notFound();
+          return HttpServerResponse.uint8Array(kept.bytes, {
+            contentType: kept.image.mimeType,
+            headers: {
+              "cache-control": "private, max-age=600",
+              "x-content-type-options": "nosniff",
+              "content-disposition": "inline",
+            },
+          });
+        }),
+      ),
     );
   }),
 );
+
+/** Whether a request is for an asset: its path carries a credential. */
+export const isAssetRequest = (request: HttpServerRequest.HttpServerRequest) =>
+  request.url.startsWith(`${ASSET_ROUTE_PREFIX}/`);
+
+/** No trace span for an asset request: a span records the path, and with it the credential. */
+export const AssetTracingDisabledLive: Layer.Layer<never> = Layer.succeed(
+  HttpMiddleware.TracerDisabledWhen,
+)(isAssetRequest);

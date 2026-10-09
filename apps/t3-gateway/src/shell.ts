@@ -88,8 +88,13 @@ export interface ThreadSource {
   readonly messageIds: ReadonlyMap<string, string>;
   /** Messages a t3code client sent that are not a Mend turn yet: the gateway's queue. */
   readonly pending: ReadonlyArray<PendingRun>;
-  /** The images a message the gateway sent carries, by the message's t3code id (`images.ts`). */
-  readonly imagesOf: (messageId: string) => ReadonlyArray<StoredImage>;
+  /**
+   * The images a message the gateway sent carried when Mend took its turn, by the message's
+   * t3code id (`images.ts`), each with the path its turn named.
+   */
+  readonly imagesOf: (
+    messageId: string,
+  ) => ReadonlyArray<{ readonly image: StoredImage; readonly path: string }>;
   /** An interrupt held the queue; nothing queued is sent until the client resumes it. */
   readonly queueHeld: boolean;
   /**

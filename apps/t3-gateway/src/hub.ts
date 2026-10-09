@@ -89,6 +89,8 @@ import {
   GatewayState,
   type BearerSession,
   type LaunchedThread,
+  type ImagePlacement,
+  type SentImage,
   type StoredImage,
   type ThreadLaunchOptions,
   type TurnIds,
@@ -824,10 +826,23 @@ export const makePersonHub = (input: {
         images.set(image.id, image);
       }
     }
-    const imagesOfMessage = (messageId: string): ReadonlyArray<StoredImage> =>
-      Array.from(images.values())
-        .filter((image) => image.messageId === messageId)
-        .toSorted((left, right) => left.position - right.position);
+    /** Message id → the images it carried when Mend took its turn: the final selection. */
+    const sentImages = new Map<string, ReadonlyArray<SentImage>>(
+      keeper === null
+        ? []
+        : yield* state.listSentImages(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read which images its messages carried", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, ReadonlyArray<SentImage>>())),
+            ),
+          ),
+    );
+    const imagesOfMessage = (messageId: string) =>
+      (sentImages.get(messageId) ?? []).flatMap((sent) => {
+        const image = images.get(sent.imageId);
+        return image === undefined ? [] : [{ image, path: sent.path }];
+      });
     const imagesOfIds = (ids: ReadonlyArray<string>): ReadonlyArray<StoredImage> =>
       ids.flatMap((id) => {
         const image = images.get(id);
@@ -1759,27 +1774,31 @@ export const makePersonHub = (input: {
         }
       });
 
-    /** `POST /turns` with the message: Mend answers its turn. */
     /**
-     * The message's images placed in the session's workspace (`POST /api/sessions/:id/images`),
-     * each once: a retry after "not live" places only what is not placed yet.
+     * The message's images placed in the session's workspace (`POST /api/sessions/:id/images`).
+     * A placement holds for the session and the agent it was made for: a retry after "not live"
+     * places only what is not placed yet, and a new agent, whose workspace may be another, gets
+     * each image placed again.
      */
     const placeImages = (sessionId: string, entry: Queueing.QueueEntry) =>
       Effect.forEach(entry.imageIds, (imageId) =>
         Effect.gen(function* () {
+          const processId = sourceOf(sessionId)?.agent.id ?? null;
           const known = images.get(imageId);
+          const placement = known?.placement ?? null;
           if (
             known !== undefined &&
-            known.mendPath !== null &&
-            known.messageId === entry.messageId
+            placement !== null &&
+            placement.sessionId === sessionId &&
+            placement.processId === processId
           ) {
-            return { name: known.name, path: known.mendPath };
+            return { imageId, name: known.name, path: placement.path };
           }
           const kept =
             keeper === null
               ? null
               : yield* state.imageBytes(keeper.id, imageId).pipe(Effect.orElseSucceed(() => null));
-          if (kept === null) {
+          if (kept === null || keeper === null) {
             return yield* new MendCommandRefused({
               operation: "POST /api/sessions/:id/images",
               status: 410,
@@ -1788,28 +1807,47 @@ export const makePersonHub = (input: {
             });
           }
           const placed = yield* mend.pasteImage(entry.token, sessionId, kept.bytes);
-          const image: StoredImage = {
-            ...kept.image,
-            messageId: entry.messageId,
-            mendPath: placed.path,
-          };
-          images.set(imageId, image);
-          yield* state.recordImagePath(imageId, entry.messageId, placed.path).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("t3 gateway could not record where Mend placed an image", {
-                cause: error.message,
-              }),
-            ),
-          );
-          return { name: image.name, path: placed.path };
+          if (processId !== null) {
+            const next: ImagePlacement = { sessionId, processId, path: placed.path };
+            images.set(imageId, { ...kept.image, placement: next });
+            yield* state.recordImagePlacement(keeper.id, imageId, next).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("t3 gateway could not record where Mend placed an image", {
+                  cause: error.message,
+                }),
+              ),
+            );
+          }
+          return { imageId, name: kept.image.name, path: placed.path };
         }),
       );
+
+    /** `POST /turns` with the message: Mend answers its turn. */
+    /** The images a message carried when Mend took its turn: what its turn named, in order. */
+    const keepSentImages = (
+      messageId: string,
+      placed: ReadonlyArray<{ readonly imageId: string; readonly path: string }>,
+    ) =>
+      Effect.suspend(() => {
+        if (placed.length === 0 || keeper === null) return Effect.void;
+        const sent = placed.map(({ imageId, path }): SentImage => ({ imageId, path }));
+        sentImages.set(messageId, sent);
+        return state.recordSentImages(keeper.id, messageId, sent).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("t3 gateway could not record a message's images", {
+              cause: error.message,
+            }),
+          ),
+        );
+      });
 
     const sendTurn = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
         const sent = yield* placeImages(sessionId, entry).pipe(
           Effect.flatMap((placed) =>
-            mend.submitTurn(entry.token, sessionId, turnInputOf(entry.text, placed)),
+            mend
+              .submitTurn(entry.token, sessionId, turnInputOf(entry.text, placed))
+              .pipe(Effect.map((turn) => ({ turn, placed }))),
           ),
           Effect.result,
         );
@@ -1817,7 +1855,8 @@ export const makePersonHub = (input: {
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
             if (sent._tag === "Success") {
-              yield* adopt(sessionId, entry, sent.success);
+              yield* keepSentImages(entry.messageId, sent.success.placed);
+              yield* adopt(sessionId, entry, sent.success.turn);
             } else if (
               sent.failure._tag === "MendCommandRefused" &&
               (sent.failure.tag === "ProtocolSessionNotLive" ||
@@ -2029,10 +2068,11 @@ export const makePersonHub = (input: {
             true,
           );
         }
-        const missing = unknownImage(command.imageIds);
-        if (missing !== undefined) {
-          return yield* refused(`Image ${missing} is not kept by this environment.`);
-        }
+        const selection = selectionRefusal(
+          command.imageIds,
+          (image) => sessionIdOf(image.threadId) === command.threadId,
+        );
+        if (selection !== null) return yield* refused(selection);
         return yield* locked(
           Effect.gen(function* () {
             if (sourceOf(command.threadId) === null) {
@@ -2367,10 +2407,11 @@ export const makePersonHub = (input: {
     const launch: ThreadCommands["launch"] = (request) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
-        const missing = unknownImage(request.message?.imageIds ?? []);
-        if (missing !== undefined) {
-          return yield* refused(`Image ${missing} is not kept by this environment.`);
-        }
+        const selection = selectionRefusal(
+          request.message?.imageIds ?? [],
+          (image) => image.threadId === request.threadId,
+        );
+        if (selection !== null) return yield* refused(selection);
         const known = Array.from(launched.values()).find(
           (thread) => thread.commandId === request.commandId,
         );
@@ -2527,7 +2568,7 @@ export const makePersonHub = (input: {
             name: upload.name,
             mimeType,
             sizeBytes: parsed.bytes.byteLength,
-            mendPath: null,
+            placement: null,
             bytes: parsed.bytes,
           });
         }
@@ -2544,9 +2585,31 @@ export const makePersonHub = (input: {
         return kept.map(messageImageOf);
       });
 
-    /** The first of these ids the person has no image for, if any. */
-    const unknownImage = (imageIds: ReadonlyArray<string>): string | undefined =>
-      imageIds.find((imageId) => !images.has(imageId));
+    /**
+     * Why a message may not carry these images, or null when it may: each is one of the person's,
+     * attached in this thread, named once, and a message carries at most ten (each at most Mend's
+     * 8 MiB, so at most 80 MiB), however many uploads they came in.
+     */
+    const selectionRefusal = (
+      imageIds: ReadonlyArray<string>,
+      inThread: (image: StoredImage) => boolean,
+    ): string | null => {
+      if (imageIds.length > MAX_IMAGES_PER_MESSAGE) {
+        return `A message carries at most ${MAX_IMAGES_PER_MESSAGE} images.`;
+      }
+      if (new Set(imageIds).size !== imageIds.length) return "A message names each image once.";
+      let bytes = 0;
+      for (const imageId of imageIds) {
+        const image = images.get(imageId);
+        if (image === undefined) return `Image ${imageId} is not kept by this environment.`;
+        if (!inThread(image)) return `Image ${imageId} was attached in another thread.`;
+        bytes += image.sizeBytes;
+      }
+      if (bytes > MAX_IMAGES_PER_MESSAGE * MEND_IMAGE_MAX_BYTES) {
+        return "The images of a message are larger than Mend takes for one message.";
+      }
+      return null;
+    };
 
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
@@ -2555,12 +2618,16 @@ export const makePersonHub = (input: {
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
-      editQueued: (threadId, runId, text, imageIds) =>
-        imageIds !== undefined && unknownImage(imageIds) !== undefined
-          ? refused(`Image ${unknownImage(imageIds) ?? ""} is not kept by this environment.`)
-          : changeQueue(sessionIdOf(threadId), (queue) =>
-              Queueing.edit(queue, runId, text, imageIds),
-            ),
+      editQueued: (threadId, runId, text, imageIds) => {
+        const sessionId = sessionIdOf(threadId);
+        const selection =
+          imageIds === undefined
+            ? null
+            : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
+        return selection !== null
+          ? refused(selection)
+          : changeQueue(sessionId, (queue) => Queueing.edit(queue, runId, text, imageIds));
+      },
       reorderQueued: (threadId, runId, beforeRunId) =>
         changeQueue(sessionIdOf(threadId), (queue) => Queueing.reorder(queue, runId, beforeRunId)),
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),
@@ -2709,6 +2776,31 @@ export const makePersonHub = (input: {
         );
       });
 
+    // Images the person attached to a message never sent (a dropped draft) go after a week; the
+    // hub looks once it starts and then every hour, and forgets what went.
+    if (keeper !== null) {
+      const pruneDrafts = Effect.suspend(() =>
+        state.pruneImages(Date.now() - UNSENT_IMAGE_TTL_MS, keeper.id),
+      ).pipe(
+        Effect.flatMap((gone) =>
+          locked(
+            Effect.sync(() => {
+              for (const imageId of gone) images.delete(imageId);
+            }),
+          ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning("t3 gateway could not let go of unsent images", {
+            cause: error.message,
+          }),
+        ),
+      );
+      yield* Effect.forkIn(
+        pruneDrafts.pipe(Effect.repeat(Schedule.spaced(IMAGE_PRUNE_INTERVAL))),
+        hubScope,
+      );
+    }
+
     return {
       shellSnapshot,
       subscribeShell,
@@ -2763,6 +2855,9 @@ const messageImageOf = (image: StoredImage): MessageImage => ({
   mimeType: image.mimeType,
   sizeBytes: image.sizeBytes,
 });
+
+/** How often a hub looks for images attached to a message never sent. */
+const IMAGE_PRUNE_INTERVAL = "1 hour";
 
 /** How long an image attached to a message that was never sent is kept. */
 const UNSENT_IMAGE_TTL_MS = 7 * 24 * 60 * 60_000;
@@ -2939,17 +3034,16 @@ export const ProjectionsLive: Layer.Layer<
         Effect.logError("t3 gateway could not read its kept queues", { cause: error.message }),
       ),
     );
-    yield* Effect.forkScoped(restoreQueues);
-    // Images a client attached to a message it never sent (a dropped draft) go after a week.
-    yield* Effect.forkScoped(
-      state.pruneImages(Date.now() - UNSENT_IMAGE_TTL_MS).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("t3 gateway could not let go of unsent images", {
-            cause: error.message,
-          }),
-        ),
+    // Dropped drafts of everyone, before any hub holds its images in memory; a hub then looks
+    // after its own person's every hour.
+    yield* state.pruneImages(Date.now() - UNSENT_IMAGE_TTL_MS, null).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("t3 gateway could not let go of unsent images", {
+          cause: error.message,
+        }),
       ),
     );
+    yield* Effect.forkScoped(restoreQueues);
 
     const refuseDevice = (userId: string, deviceToken: string) =>
       tokensOf(userId).refuse(deviceToken);
