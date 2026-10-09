@@ -184,7 +184,7 @@ describe("editing and reordering the queue", () => {
   );
 });
 
-const queueOf = (...states: ReadonlyArray<"queued" | "sending">): ThreadQueue => {
+const queueOf = (...states: ReadonlyArray<"queued" | "launching" | "sending">): ThreadQueue => {
   const queue = emptyQueue();
   states.forEach((state, index) => {
     const entry = newEntry({
@@ -219,5 +219,14 @@ describe("the queue's own rules", () => {
     assert.isTrue(edit(queue, "run-1", "new"));
     assert.strictEqual(queue.entries[1]?.text, "new");
     assert.deepStrictEqual(order(queue), ["run-0", "run-1"]);
+  });
+
+  it("moves the only waiting message to the end behind what is on its way, never ahead of it", () => {
+    const sending = queueOf("sending", "queued");
+    assert.isTrue(reorder(sending, "run-1", null));
+    assert.deepStrictEqual(order(sending), ["run-0", "run-1"]);
+    const launching = queueOf("launching", "queued");
+    assert.isTrue(reorder(launching, "run-1", null));
+    assert.deepStrictEqual(order(launching), ["run-0", "run-1"]);
   });
 });

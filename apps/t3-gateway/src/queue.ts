@@ -226,9 +226,10 @@ export const edit = (queue: ThreadQueue, runId: string, text: string): boolean =
 };
 
 /**
- * Moves a waiting message right before another waiting one, or after the last waiting one when
- * `beforeRunId` is null (`queued-run.reorder`, as t3code's own server places it). Messages on their
- * way or settled keep their places. False when either is not waiting.
+ * Moves a waiting message right before another waiting one, or, when `beforeRunId` is null, after
+ * the last one still waiting or on its way (`queued-run.reorder`, as t3code's own server places
+ * it): never ahead of a message on its way. Messages on their way or settled keep their places.
+ * False when either is not waiting.
  */
 export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string | null): boolean => {
   const entry = waiting(queue, runId);
@@ -237,10 +238,7 @@ export const reorder = (queue: ThreadQueue, runId: string, beforeRunId: string |
   const target = beforeRunId === null ? null : waiting(queue, beforeRunId);
   if (target === undefined) return false;
   const rest = queue.entries.filter((candidate) => candidate !== entry);
-  const at =
-    target === null
-      ? rest.findLastIndex((candidate) => candidate.state === "queued") + 1
-      : rest.indexOf(target);
+  const at = target === null ? rest.findLastIndex(canProgress) + 1 : rest.indexOf(target);
   queue.entries = [...rest.slice(0, at), entry, ...rest.slice(at)];
   return true;
 };
