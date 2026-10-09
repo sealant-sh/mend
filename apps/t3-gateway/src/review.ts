@@ -19,9 +19,10 @@ import type { BearerSession } from "./state.ts";
  * t3code's changes panel over Mend's change (ADR 0012, "Concepts": the changes panel is the
  * change, one per worktree). `review.getDiffPreview` names the thread's worktree as its `cwd`; the
  * gateway answers with one `branch-range` source, the change against its base, from
- * `GET /api/changes/:id/diff`, read as the person. Mend serves the change as a patch, so
- * `review.getDiffFileContents` can rebuild only files the patch holds whole (added or deleted);
- * whole files of a modified one wait for phase 3's worktree read.
+ * `GET /api/changes/:id/diff`, read as the person. `review.getDiffFileContents` rebuilds a file
+ * the patch holds whole (added or deleted) from the patch; a changed or renamed one is read whole
+ * from the worktree (`GET /api/worktrees/:id/contents`): the old side at the worktree's first
+ * checkpoint, where the change starts, and the new side as the worktree stands.
  */
 
 const unsupported = (operation: string, detail: string) =>
@@ -236,10 +237,7 @@ export const makeReviewHandlers = (input: {
     Effect.gen(function* () {
       const operation = "review.getDiffFileContents";
       if (request.changeType !== "new" && request.changeType !== "deleted") {
-        return yield* unsupported(
-          operation,
-          "Mend serves the change as a patch; whole files of a changed file are not available yet.",
-        );
+        return yield* wholeFiles(operation, request);
       }
       const { diff } = yield* changeAt(operation, request.cwd);
       const file = splitPatch(diff.diff).find((candidate) =>
@@ -254,6 +252,54 @@ export const makeReviewHandlers = (input: {
         request.changeType === "new"
           ? { oldContents: "", newContents: wholeSide(file.patch, "+") }
           : { oldContents: wholeSide(file.patch, "-"), newContents: "" };
+      return result;
+    });
+
+  /** One side of a changed file, read whole from the worktree as the person. */
+  const sideOf = (operation: string, worktreeId: string, path: string, at: string | null) =>
+    mend.worktreeContents(session.deviceToken, worktreeId, { path, at }).pipe(
+      Effect.mapError((error) => unsupported(operation, error.message)),
+      Effect.flatMap(({ file }) => {
+        if (file === null || file.contents === null) {
+          return Effect.fail(unsupported(operation, `${path} is binary, or not there.`));
+        }
+        if (file.truncated) {
+          return Effect.fail(
+            unsupported(operation, `${path} is larger than the 1 MiB Mend shows of a file.`),
+          );
+        }
+        return Effect.succeed(file.contents);
+      }),
+    );
+
+  /** A changed or renamed file: before, at the worktree's first checkpoint; after, as it stands. */
+  const wholeFiles = (operation: string, request: ReviewDiffFileContentsInput) =>
+    Effect.gen(function* () {
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError((error) => unsupported(operation, error.message)));
+      if (location === null || location.worktreeId === null) {
+        return yield* unsupported(
+          operation,
+          `No Mend thread of yours works in ${request.cwd}, or its worktree has no change yet.`,
+        );
+      }
+      const worktreeId = location.worktreeId;
+      const chain = yield* mend
+        .worktreeCheckpoints(session.deviceToken, worktreeId)
+        .pipe(Effect.mapError((error) => unsupported(operation, error.message)));
+      const start = chain.find((checkpoint) => checkpoint.ordinal === 0);
+      if (start === undefined) {
+        return yield* unsupported(operation, "Mend has no starting checkpoint for this worktree.");
+      }
+      const [oldContents, newContents] = yield* Effect.all(
+        [
+          sideOf(operation, worktreeId, request.oldPath, start.id),
+          sideOf(operation, worktreeId, request.newPath, null),
+        ],
+        { concurrency: 2 },
+      );
+      const result: ReviewDiffFileContentsResult = { oldContents, newContents };
       return result;
     });
 

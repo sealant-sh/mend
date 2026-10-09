@@ -301,6 +301,28 @@ export const MendRangeDiff = Schema.Struct({
 });
 export type MendRangeDiff = typeof MendRangeDiff.Type;
 
+/** `WorktreeContents` in @mend/api-contracts, from `GET /api/worktrees/:id/contents`. */
+export const MendWorktreeContents = Schema.Struct({
+  file: Schema.NullOr(
+    Schema.Struct({
+      path: Schema.String,
+      contents: Schema.NullOr(Schema.String),
+      size: Schema.Number,
+      truncated: Schema.Boolean,
+      binary: Schema.Boolean,
+    }),
+  ),
+  search: Schema.NullOr(
+    Schema.Struct({
+      matches: Schema.Array(
+        Schema.Struct({ path: Schema.String, line: Schema.Number, text: Schema.String }),
+      ),
+      truncated: Schema.Boolean,
+    }),
+  ),
+});
+export type MendWorktreeContents = typeof MendWorktreeContents.Type;
+
 /** `RemovalReport` in @mend/api-contracts, from `DELETE /api/sessions/:id`. */
 export const MendRemovalReport = Schema.Struct({
   removed: Schema.Boolean,

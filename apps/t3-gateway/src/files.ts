@@ -1,6 +1,13 @@
 import {
   ProjectListEntriesError,
+  ProjectReadFileError,
+  ProjectSearchContentsError,
   ProjectSearchEntriesError,
+  type ProjectContentMatch,
+  type ProjectReadFileInput,
+  type ProjectReadFileResult,
+  type ProjectSearchContentsInput,
+  type ProjectSearchContentsResult,
   type ProjectEntry,
   type ProjectListEntriesInput,
   type ProjectListEntriesResult,
@@ -124,6 +131,35 @@ export const searchEntries = (
   };
 };
 
+/** JavaScript's escape for a literal in a pattern. */
+const escapeLiteral = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Where a line matches, as t3code highlights it: the same query git ran, in JavaScript. A regex
+ * JavaScript cannot read highlights nothing; the line still matched.
+ */
+export const matchRangesOf = (
+  text: string,
+  query: Pick<ProjectSearchContentsInput, "query" | "caseSensitive" | "wholeWord" | "useRegex">,
+): ProjectContentMatch["matchRanges"] => {
+  const source = query.useRegex ? query.query : escapeLiteral(query.query);
+  let pattern: RegExp;
+  try {
+    pattern = new RegExp(
+      query.wholeWord ? `\\b(?:${source})\\b` : source,
+      query.caseSensitive ? "g" : "gi",
+    );
+  } catch {
+    return [];
+  }
+  const ranges: Array<{ readonly start: number; readonly end: number }> = [];
+  for (const match of text.matchAll(pattern)) {
+    if (match[0].length === 0) break;
+    ranges.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return ranges;
+};
+
 /** A directory's own children; `""` is the root. Without one, every entry, as older clients ask. */
 export const listEntries = (
   entries: ReadonlyArray<ProjectEntry>,
@@ -219,5 +255,114 @@ export const makeFileHandlers = (input: {
     );
   };
 
-  return { searchEntries: searchEntriesAt, listEntries: listEntriesAt };
+  /** The thread's worktree at `cwd`; the project's root has none to read. */
+  const worktreeAt = (cwd: string) =>
+    hub.locationOf(cwd).pipe(Effect.map((location) => location?.worktreeId ?? null));
+
+  const readFileAt = (request: ProjectReadFileInput) => {
+    const failed = (
+      failure: "workspace_path_outside_root" | "path_not_file" | "binary_file" | "operation_failed",
+    ) =>
+      new ProjectReadFileError({ cwd: request.cwd, relativePath: request.relativePath, failure });
+    return Effect.gen(function* () {
+      const worktreeId = yield* worktreeAt(request.cwd).pipe(
+        Effect.mapError(() => failed("operation_failed")),
+      );
+      if (worktreeId === null) return yield* failed("workspace_path_outside_root");
+      const answer = yield* mend
+        .worktreeContents(session.deviceToken, worktreeId, { path: request.relativePath, at: null })
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "MendNotFound"
+              ? failed("path_not_file")
+              : error._tag === "MendCommandRefused"
+                ? failed("workspace_path_outside_root")
+                : failed("operation_failed"),
+          ),
+        );
+      const file = answer.file;
+      if (file === null) return yield* failed("path_not_file");
+      if (file.binary || file.contents === null) return yield* failed("binary_file");
+      const result: ProjectReadFileResult = {
+        relativePath: request.relativePath,
+        contents: file.contents,
+        byteLength: file.size,
+        truncated: file.truncated,
+      };
+      return result;
+    });
+  };
+
+  const searchContentsAt = (request: ProjectSearchContentsInput) => {
+    const failed = (
+      detail: string,
+      failure: "workspace_root_not_found" | "search_index_search_failed",
+    ) =>
+      new ProjectSearchContentsError({
+        cwd: request.cwd,
+        queryLength: request.query.length,
+        limit: request.limit,
+        failure,
+        detail,
+      });
+    const search = (worktreeId: string, regex: boolean) =>
+      mend.worktreeContents(session.deviceToken, worktreeId, {
+        query: request.query,
+        caseSensitive: request.caseSensitive,
+        wholeWord: request.wholeWord,
+        regex,
+        limit: Math.min(request.limit, 500),
+      });
+    return Effect.gen(function* () {
+      const worktreeId = yield* worktreeAt(request.cwd).pipe(
+        Effect.mapError((error) => failed(error.message, "search_index_search_failed")),
+      );
+      if (worktreeId === null) {
+        return yield* failed(
+          "Only a thread's worktree is searched; the project's root has no files of its own.",
+          "workspace_root_not_found",
+        );
+      }
+      // A regex git cannot read is searched as text, and the client is told so, as t3code does.
+      const first = yield* search(worktreeId, request.useRegex).pipe(Effect.result);
+      const fellBack =
+        request.useRegex && first._tag === "Failure" && first.failure._tag === "MendCommandRefused"
+          ? first.failure.message
+          : null;
+      const answer =
+        fellBack === null
+          ? first._tag === "Success"
+            ? first.success
+            : yield* Effect.fail(failed(first.failure.message, "search_index_search_failed"))
+          : yield* search(worktreeId, false).pipe(
+              Effect.mapError((error) => failed(error.message, "search_index_search_failed")),
+            );
+      const lines = answer.search ?? { matches: [], truncated: false };
+      const asTyped = { ...request, useRegex: request.useRegex && fellBack === null };
+      const result: ProjectSearchContentsResult = {
+        matches: lines.matches.flatMap((match) =>
+          match.line < 1
+            ? []
+            : [
+                {
+                  path: match.path,
+                  lineNumber: match.line,
+                  lineContent: match.text,
+                  matchRanges: matchRangesOf(match.text, asTyped),
+                },
+              ],
+        ),
+        truncated: lines.truncated,
+        ...(fellBack === null ? {} : { regexFallbackError: fellBack }),
+      };
+      return result;
+    });
+  };
+
+  return {
+    searchEntries: searchEntriesAt,
+    listEntries: listEntriesAt,
+    readFile: readFileAt,
+    searchContents: searchContentsAt,
+  };
 };

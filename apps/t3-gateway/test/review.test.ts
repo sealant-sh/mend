@@ -118,19 +118,41 @@ describe("review", () => {
           newContents: "# New\nWritten by the agent.\n",
         });
 
-        // A changed file's whole contents are not in a patch: a typed refusal, never a defect.
-        const changed = yield* Effect.exit(
+        // A changed file is read whole from the worktree: before, at its first checkpoint; after,
+        // as it stands.
+        const worktreeId = mend.workbench.sessions.get("session-1")?.worktreeId ?? "";
+        const start = mend.workbench.addCheckpoint("session-1", "session-start");
+        mend.workbench.fileContents.set(start, new Map([["src/app.ts", "export const a = 1;\n"]]));
+        mend.workbench.fileContents.set(
+          worktreeId,
+          new Map([["src/app.ts", "export const a = 2;\n"]]),
+        );
+        const changed = yield* rpc[WS_METHODS.reviewGetDiffFileContents]({
+          cwd,
+          sourceKind: "branch-range",
+          changeType: "change",
+          baseRef: null,
+          headRef: null,
+          oldPath: "src/app.ts",
+          newPath: "src/app.ts",
+        });
+        assert.deepStrictEqual(changed, {
+          oldContents: "export const a = 1;\n",
+          newContents: "export const a = 2;\n",
+        });
+        // A file the worktree does not have: a typed refusal, never a defect.
+        const gone = yield* Effect.exit(
           rpc[WS_METHODS.reviewGetDiffFileContents]({
             cwd,
             sourceKind: "branch-range",
             changeType: "change",
             baseRef: null,
             headRef: null,
-            oldPath: "src/app.ts",
-            newPath: "src/app.ts",
+            oldPath: "src/gone.ts",
+            newPath: "src/gone.ts",
           }),
         );
-        assert.strictEqual(failureTag(changed), "VcsUnsupportedOperationError");
+        assert.strictEqual(failureTag(gone), "VcsUnsupportedOperationError");
 
         // A directory no thread of theirs works in.
         const elsewhere = yield* Effect.exit(

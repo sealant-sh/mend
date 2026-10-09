@@ -226,10 +226,11 @@ longer steer the session.
 `review.getDiffPreview` and `review.getDiffFileContents` (`src/review.ts`) show the thread's change:
 the `cwd` t3code names is the thread's `worktreePath`, and the answer is one `branch-range` source,
 the change against its base, from `GET /api/changes/:id/diff` read as the person. A preview for one
-file is that file's section of the patch. Mend serves the change as a patch, so whole contents (for
-expanding a hunk) come back only for files the patch holds whole, added or deleted; a changed file
-answers `VcsUnsupportedOperationError` until phase 3's worktree read. Whitespace is never ignored:
-Mend's change diff has no such option.
+file is that file's section of the patch. Whole contents (for expanding a hunk) come from the patch
+for a file it holds whole, added or deleted; a changed or renamed file is read whole from Mend's
+`GET /api/worktrees/:id/contents`: before, at the worktree's first checkpoint, where the change
+starts, and after, as the worktree stands. A binary file, or one past the 1 MiB Mend shows, answers
+`VcsUnsupportedOperationError`. Whitespace is never ignored: Mend's change diff has no such option.
 
 ### Per-turn diffs
 
@@ -327,6 +328,19 @@ branch for the project's root, both under Mend's visibility rules. Any other `cw
   tree a file past the cut cannot be found or browsed here, and every search or directory listing
   over a cut list says `truncated`, even when nothing matched, so the composer never presents it as
   complete.
+
+### Reading and searching files
+
+`projects.readFile` and `projects.searchContents` (t3code's file preview and content search) read a
+thread's worktree as it stands through Mend's `GET /api/worktrees/:id/contents`, as the person.
+
+- A file comes back as text, at most 1 MiB of it (`truncated` says so); a binary file answers
+  `binary_file`, a missing one `path_not_file`, a path Mend refuses (outside the worktree, `.git`)
+  `workspace_path_outside_root`.
+- A search matches across the worktree, untracked files included and ignored ones not, up to 500
+  lines. The gateway marks where each line matched, as t3code highlights it. A regex git cannot read
+  is searched as text and answers `regexFallbackError`, as t3code's own server does.
+- The project's root (its store path) has no files of its own to read or search.
 
 ### VCS status
 
