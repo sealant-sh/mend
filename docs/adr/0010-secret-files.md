@@ -7,6 +7,10 @@ below are the ones this document adds.
 Amended 2026-10-06 by [ADR 0016](0016-per-person-harness-homes.md) §11, amending decision 3 below:
 each person has their own Linux user, and each person's set is written into that user's home, as
 that user, a joiner's included. A steered turn runs as the steerer's user, with the steerer's files.
+Per-person executors are the default since ADR 0016's Delivery 21; the join rule in decision 3 now
+holds only in an executor that shares one home (`MEND_HARNESS_LAYOUT=shared`, or a worktree whose
+image cannot run per person), where it still keeps a joiner's files out of the holder's home (ADR
+0016, Delivery 22).
 
 ## Context
 
@@ -65,17 +69,18 @@ base64 (`workspace-files.ts`).
    executor, and a session joining a worktree another person's session holds runs in that person's
    executor, so it receives no secret files of its own there, nor does any later run of that session
    in that executor (a resume, a follow-up), and the session line names the files not written
-   (superseded by ADR 0016 §7: a joiner receives their own set in their own home). Whose home an
-   executor is comes from whose launch made it, never from how a run reached it; when Mend cannot
-   say, nothing is written. The server unseals the set once per launch and holds the bytes only for
-   that write. Each file lands 0600, its directory made 0700 when missing, staged beside the target
-   under the delivery's own stamp and renamed into place; a delivery cut short removes its staging
-   files. What was written is recorded at `~/.mend/secret-files`, sealed with the machine key and
-   bound to the workspace, each file with the digest of its bytes; the next delivery into that home
-   removes a recorded file the person no longer keeps, only while it still holds those bytes, never
-   through a link, and a record that does not unseal or is another workspace's says nothing.
-   Best-effort like skills: an agent without its files still starts, and the session line says which
-   were not written and why.
+   (superseded in a per-person executor by ADR 0016 §7 and §11: a joiner receives their own set in
+   their own home; it stands in an executor that shares one home). Whose home an executor is comes
+   from whose launch made it, never from how a run reached it; when Mend cannot say, nothing is
+   written. The server unseals the set once per launch and holds the bytes only for that write. Each
+   file lands 0600, its directory made 0700 when missing, staged beside the target under the
+   delivery's own stamp and renamed into place; a delivery cut short removes its staging files. What
+   was written is recorded at `~/.mend/secret-files`, sealed with the machine key and bound to the
+   workspace, each file with the digest of its bytes; the next delivery into that home removes a
+   recorded file the person no longer keeps, only while it still holds those bytes, never through a
+   link, and a record that does not unseal or is another workspace's says nothing. Best-effort like
+   skills: an agent without its files still starts, and the session line says which were not written
+   and why.
 
 4. **Never captured, by construction and by refusal.**
    - By construction: a secret file goes into the executor's own `$HOME`, which no capture root,
@@ -158,13 +163,18 @@ base64 (`workspace-files.ts`).
   (which took several), plus one round trip from the executor to Mend inside it.
 - The deliveries made before 2026-10-06 are stored in Core in plaintext until Core purges them.
 - A file on a path dotfiles turned into a symlink is not written; the session summary names it.
-- In capture mode, the executor of a leased worktree is one person's home. A second person's session
+- In capture mode, an executor that shares one home is one person's home. A second person's session
   joining it runs beside the holder's files and without its own; this was already true of the
-  holder's provider logins, and secret files do not widen it.
+  holder's provider logins, and secret files do not widen it. In a per-person executor (ADR 0016) a
+  joiner has their own home and their own files.
 - A lost `secrets.key` loses project secrets and secret files alike: enter them again.
 - Running sessions keep the files they have; a removed file is removed from the next launch on.
 
 ## Decision log
+
+- 2026-10-09 (ADR 0016, Deliveries 21 and 22): per-person executors are the default, and there each
+  joiner receives their own set in their own home. The join rule below (2026-10-03, 2026-10-05) is
+  kept for executors that share one home, which the `shared` opt-out and the fallbacks still start.
 
 - 2026-10-06: secret files and the pi profile leave exec argv for a single-use pickup ticket
   redeemed over the session channel (review of mend#552/#553, P1-1). Core's purge and argv redaction
