@@ -164,7 +164,25 @@ agent up) is taken as under way, and the message waits for the agent. Every wait
 `queued-run.reorder` moves one before another waiting message, or after the last one, as t3code's
 own server places it. A message on its way to Mend, or settled, is neither rewritten nor moved.
 
-Steering mid-turn, images and holding a message for later are refused.
+Steering mid-turn and holding a message for later are refused.
+
+### Images
+
+t3code hands the gateway a message's images as data URLs (`assets.persistChatAttachments`, its path
+for a server without upload URLs). The gateway keeps each in its state file and answers an id; the
+message carries those ids, in the queue and across a restart.
+
+- When the message goes out, each image is placed in the session's workspace with Mend's
+  `POST /api/sessions/:id/images`, as the sender, and the turn names its path, as Mend's Slack
+  runner does: `[image: screen.png · /workspace/…/paste/….png]`, then "Images from t3code are saved
+  as files in the workspace, at the paths shown. Open a path to see the image." The agent opens the
+  file. A retry after "not live" places only what is not placed yet.
+- Mend's rules are checked before anything reaches it: PNG, JPEG, GIF or WebP by their bytes, 8 MiB
+  each, ten to a message. A file that is not an image is refused.
+- The client sees its own words and the images as the message's attachments. It fetches an image
+  from `assets.createUrl`: `/api/assets/<token>/<name>`, a random token in the gateway's memory for
+  that person's one image, ten minutes, served without a bearer as an `<img>` asks.
+- An image attached to a message that was never sent is let go after a week.
 
 ### A queue that survives a restart
 
@@ -223,7 +241,7 @@ The opening message goes through the queue: the queue launches the session
 `POST /api/sessions/:id/turns` once Mend reports the agent running, so the run is the message's
 exact turn. The launch answers as soon as the session exists, and the thread is in the shell, by the
 client's own thread id, with its message in it: t3code's client opens a launched thread only once
-its shell shows one. Images in the opening message are refused until the gateway sends images.
+its shell shows one. The opening message's images go with it, as any message's do (see Images).
 
 A launched thread keeps the id its client gave it: `thread_ids` in the state file maps it to its
 session, for the person who launched it only, and every method that names a thread takes that id.
@@ -295,9 +313,10 @@ One `node:sqlite` file the gateway owns: the environment id, bearer sessions (th
 and the Mend device token it stands for), and the id maps: `run_ids` and `message_ids`, filled by
 every turn a t3code client sends, and `thread_ids`, every thread a t3code client launched (its id,
 its session, the launch command and what the launch named; no secrets). `project_ids` stays empty.
-`queued_messages` and `queue_holds` keep each person's queues: text, ids, state and the sender's
-bearer session, never a device token. Mend's database is never touched. Losing the file loses
-pairings and t3code-side ids, never Mend records.
+`queued_messages` and `queue_holds` keep each person's queues: text, ids, state, image ids and the
+sender's bearer session, never a device token. `images` keeps the images people attach, with where
+Mend placed each once sent. Mend's database is never touched. Losing the file loses pairings and
+t3code-side ids, never Mend records.
 
 **The file holds every paired person's Mend device token in clear**, and the token acts as that
 person in Mend until the device is revoked. The gateway needs it usable: it calls Mend for a person

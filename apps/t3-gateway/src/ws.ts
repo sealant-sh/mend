@@ -16,6 +16,7 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as RpcServer from "effect/unstable/rpc/RpcServer";
 
+import { AssetUrls } from "./assets.ts";
 import { GatewayAuth, type AuthenticatedBearer } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal } from "./http-errors.ts";
@@ -96,9 +97,15 @@ const protocolIncompatible = () =>
 export const WebSocketRouteLive: Layer.Layer<
   never,
   never,
-  HttpRouter.HttpRouter | GatewayAuth | WebSocketTickets | GatewayEnvironment | Projections
+  | HttpRouter.HttpRouter
+  | GatewayAuth
+  | WebSocketTickets
+  | GatewayEnvironment
+  | Projections
+  | AssetUrls
 > = Layer.unwrap(
   Effect.gen(function* () {
+    const assetUrls = yield* AssetUrls;
     const auth = yield* GatewayAuth;
     const tickets = yield* WebSocketTickets;
     const environment = yield* GatewayEnvironment;
@@ -150,6 +157,7 @@ export const WebSocketRouteLive: Layer.Layer<
           Effect.provideService(RpcServer.Protocol, tracked),
           Effect.provide(gatewayRpcHandlersLayer(bearer.session, hub)),
           Effect.provideService(GatewayEnvironment, environment),
+          Effect.provideService(AssetUrls, assetUrls),
           Effect.forkScoped,
         );
         // Mend refusing the socket's device token (revoked) closes the socket, whichever token

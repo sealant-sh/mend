@@ -650,6 +650,25 @@ export class FakeWorkbench {
           );
         });
       }
+      if (method === "POST" && sub === "images") {
+        return body().then((value) => {
+          record(value);
+          if (this.control.get(id) === false) return notOwner();
+          const agent = this.agents.get(id);
+          if (agent === undefined || agent.exitedAt !== null) {
+            return json(409, { _tag: "SessionNotLive", id });
+          }
+          const payload = typeof value === "object" && value !== null ? value : {};
+          const encoded = Object.entries(payload).find(([key]) => key === "contentsBase64")?.[1];
+          const bytes = Buffer.from(typeof encoded === "string" ? encoded : "", "base64");
+          if (bytes.byteLength === 0) {
+            return json(422, { _tag: "PastedImageRejected", message: "not an image" });
+          }
+          this.pastedImages += 1;
+          const placed = `/workspace/harness-home/paste/20261010-090000-${this.pastedImages}.png`;
+          return json(200, { path: placed, mediaType: "image/png", bytes: bytes.byteLength });
+        });
+      }
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
         return body().then((value) => {
           record(value);
@@ -842,6 +861,8 @@ export class FakeWorkbench {
     return json(200, { ...session });
   }
 
+  /** How many images were pasted into workspaces. */
+  pastedImages = 0;
   /** Every launch Mend took, with what it named. */
   readonly launches: Array<{ readonly sessionId: string; readonly body: object }> = [];
 

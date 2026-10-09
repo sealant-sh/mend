@@ -36,10 +36,19 @@ import { GatewayConfig } from "./config.ts";
 import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import {
+  detectImageType,
+  MAX_IMAGES_PER_MESSAGE,
+  MEND_IMAGE_MAX_BYTES,
+  type MessageImage,
+  newAttachmentId,
+  parseDataUrl,
+  turnInputOf,
+} from "./images.ts";
+import {
   MendClient,
+  MendCommandRefused,
   MendDeviceRefused,
   type MendCommand,
-  type MendCommandRefused,
   type MendRequestResponse,
   type MendNotFound,
   type MendUnavailable,
@@ -80,6 +89,7 @@ import {
   GatewayState,
   type BearerSession,
   type LaunchedThread,
+  type StoredImage,
   type ThreadLaunchOptions,
   type TurnIds,
 } from "./state.ts";
@@ -178,6 +188,22 @@ export interface PersonHub {
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
   /**
+   * Keeps the images a client attaches to a message (`assets.persistChatAttachments`) until the
+   * message is sent; answers each as the message will carry it.
+   */
+  readonly persistImages: (input: {
+    readonly threadId: string;
+    readonly messageId: string;
+    readonly uploads: ReadonlyArray<{
+      readonly name: string;
+      readonly mimeType: string;
+      readonly sizeBytes: number;
+      readonly dataUrl: string;
+    }>;
+  }) => Effect.Effect<ReadonlyArray<MessageImage>, ThreadCommandRefused>;
+  /** One of the person's images, or null when it is not theirs. */
+  readonly imageOf: (imageId: string) => MessageImage | null;
+  /**
    * The change of the thread whose worktree is at `worktreePath` (what t3code's review calls its
    * `cwd`), or null when no thread of the person's is there or its worktree has no change yet.
    */
@@ -216,6 +242,8 @@ export interface ThreadCommands {
     readonly commandId: string;
     readonly messageId: string;
     readonly text: string;
+    /** Images kept with `persistImages`, by id. */
+    readonly imageIds: ReadonlyArray<string>;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /** Interrupts a running run, or takes back a queued one; `holdQueue` holds what is queued. */
   readonly interrupt: (input: {
@@ -234,6 +262,7 @@ export interface ThreadCommands {
     threadId: string,
     runId: string,
     text: string,
+    imageIds?: ReadonlyArray<string>,
   ) => Effect.Effect<number, ThreadCommandFailure>;
   /** Moves a waiting message before another, or last (`queued-run.reorder`). */
   readonly reorderQueued: (
@@ -294,7 +323,11 @@ export interface ThreadLaunch {
   readonly label: string | null;
   readonly workspace: ThreadWorkspace;
   readonly options: ThreadLaunchOptions;
-  readonly message: { readonly messageId: string; readonly text: string } | null;
+  readonly message: {
+    readonly messageId: string;
+    readonly text: string;
+    readonly imageIds: ReadonlyArray<string>;
+  } | null;
 }
 
 export interface LaunchedThreadId {
@@ -773,6 +806,34 @@ export const makePersonHub = (input: {
           ),
         );
       });
+
+    /**
+     * The person's images (`images.ts`), without their bytes: by id, and by the message that
+     * carries them. Bytes are read from the state file only to place an image in Mend or to serve
+     * it to the person.
+     */
+    const images = new Map<string, StoredImage>();
+    if (keeper !== null) {
+      for (const image of yield* state.listImages(keeper.id).pipe(
+        Effect.catch((error) =>
+          Effect.logError("t3 gateway could not read its kept images", {
+            cause: error.message,
+          }).pipe(Effect.as([])),
+        ),
+      )) {
+        images.set(image.id, image);
+      }
+    }
+    const imagesOfMessage = (messageId: string): ReadonlyArray<StoredImage> =>
+      Array.from(images.values())
+        .filter((image) => image.messageId === messageId)
+        .toSorted((left, right) => left.position - right.position);
+    const imagesOfIds = (ids: ReadonlyArray<string>): ReadonlyArray<StoredImage> =>
+      ids.flatMap((id) => {
+        const image = images.get(id);
+        return image === undefined ? [] : [image];
+      });
+
     /** Writes every queue that changed since it was last kept. */
     const keepQueues = Effect.suspend(() =>
       Effect.forEach(Array.from(queues), ([sessionId, queue]) => keepQueue(sessionId, queue), {
@@ -926,10 +987,12 @@ export const makePersonHub = (input: {
             requests: conversation.requests,
             runIds: ids?.runIds ?? NO_IDS,
             messageIds: ids?.messageIds ?? NO_IDS,
+            imagesOf: imagesOfMessage,
             pending: (queue?.entries ?? []).map((queued) => ({
               runId: queued.runId,
               messageId: queued.messageId,
               text: queued.text,
+              images: imagesOfIds(queued.imageIds),
               requestedAt: queued.requestedAt,
               state: Queueing.pendingStateOf(queued),
               error: queued.error,
@@ -1697,9 +1760,59 @@ export const makePersonHub = (input: {
       });
 
     /** `POST /turns` with the message: Mend answers its turn. */
+    /**
+     * The message's images placed in the session's workspace (`POST /api/sessions/:id/images`),
+     * each once: a retry after "not live" places only what is not placed yet.
+     */
+    const placeImages = (sessionId: string, entry: Queueing.QueueEntry) =>
+      Effect.forEach(entry.imageIds, (imageId) =>
+        Effect.gen(function* () {
+          const known = images.get(imageId);
+          if (
+            known !== undefined &&
+            known.mendPath !== null &&
+            known.messageId === entry.messageId
+          ) {
+            return { name: known.name, path: known.mendPath };
+          }
+          const kept =
+            keeper === null
+              ? null
+              : yield* state.imageBytes(keeper.id, imageId).pipe(Effect.orElseSucceed(() => null));
+          if (kept === null) {
+            return yield* new MendCommandRefused({
+              operation: "POST /api/sessions/:id/images",
+              status: 410,
+              tag: "ImageGone",
+              detail: "An image of this message is no longer kept by the gateway.",
+            });
+          }
+          const placed = yield* mend.pasteImage(entry.token, sessionId, kept.bytes);
+          const image: StoredImage = {
+            ...kept.image,
+            messageId: entry.messageId,
+            mendPath: placed.path,
+          };
+          images.set(imageId, image);
+          yield* state.recordImagePath(imageId, entry.messageId, placed.path).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not record where Mend placed an image", {
+                cause: error.message,
+              }),
+            ),
+          );
+          return { name: image.name, path: placed.path };
+        }),
+      );
+
     const sendTurn = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const sent = yield* mend.submitTurn(entry.token, sessionId, entry.text).pipe(Effect.result);
+        const sent = yield* placeImages(sessionId, entry).pipe(
+          Effect.flatMap((placed) =>
+            mend.submitTurn(entry.token, sessionId, turnInputOf(entry.text, placed)),
+          ),
+          Effect.result,
+        );
         yield* locked(
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
@@ -1707,7 +1820,9 @@ export const makePersonHub = (input: {
               yield* adopt(sessionId, entry, sent.success);
             } else if (
               sent.failure._tag === "MendCommandRefused" &&
-              sent.failure.tag === "ProtocolSessionNotLive"
+              (sent.failure.tag === "ProtocolSessionNotLive" ||
+                // An image needs the live workspace too.
+                sent.failure.tag === "SessionNotLive")
             ) {
               // Mend says the agent is not live though the row may still read it running: retry
               // only after a backoff and a fresh read, until the send deadline.
@@ -1914,6 +2029,10 @@ export const makePersonHub = (input: {
             true,
           );
         }
+        const missing = unknownImage(command.imageIds);
+        if (missing !== undefined) {
+          return yield* refused(`Image ${missing} is not kept by this environment.`);
+        }
         return yield* locked(
           Effect.gen(function* () {
             if (sourceOf(command.threadId) === null) {
@@ -1940,6 +2059,7 @@ export const makePersonHub = (input: {
                   requestedAt: new Date().toISOString(),
                   token: command.session.deviceToken,
                   sender: command.session.sessionId,
+                  imageIds: command.imageIds,
                 }),
               );
               return true;
@@ -2194,6 +2314,7 @@ export const makePersonHub = (input: {
               requestedAt: new Date().toISOString(),
               token,
               sender: request.session.sessionId,
+              imageIds: message.imageIds,
             }),
           );
         };
@@ -2246,6 +2367,10 @@ export const makePersonHub = (input: {
     const launch: ThreadCommands["launch"] = (request) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
+        const missing = unknownImage(request.message?.imageIds ?? []);
+        if (missing !== undefined) {
+          return yield* refused(`Image ${missing} is not kept by this environment.`);
+        }
         const known = Array.from(launched.values()).find(
           (thread) => thread.commandId === request.commandId,
         );
@@ -2364,6 +2489,65 @@ export const makePersonHub = (input: {
         return yield* locked(Effect.sync(() => sequence));
       });
 
+    // ─── Images ────────────────────────────────────────────────────────────
+
+    const imageOf = (imageId: string): MessageImage | null => {
+      const image = images.get(imageId);
+      return image === undefined ? null : messageImageOf(image);
+    };
+
+    const persistImages: PersonHub["persistImages"] = (request) =>
+      Effect.gen(function* () {
+        if (keeper === null) return yield* refused("Images need a paired person to keep them for.");
+        if (request.uploads.length > MAX_IMAGES_PER_MESSAGE) {
+          return yield* refused(`A message carries at most ${MAX_IMAGES_PER_MESSAGE} images.`);
+        }
+        const kept: Array<StoredImage & { readonly bytes: Uint8Array }> = [];
+        for (const [position, upload] of request.uploads.entries()) {
+          const parsed = parseDataUrl(upload.dataUrl);
+          if (parsed === null || parsed.mimeType !== upload.mimeType.toLowerCase()) {
+            return yield* refused(`${upload.name} is not an image payload.`);
+          }
+          if (parsed.bytes.byteLength !== upload.sizeBytes) {
+            return yield* refused(`${upload.name}'s size does not match its payload.`);
+          }
+          if (parsed.bytes.byteLength > MEND_IMAGE_MAX_BYTES) {
+            return yield* refused(`${upload.name} is larger than Mend's 8 MiB for an image.`);
+          }
+          // Mend reads the format from the bytes, as here: a PNG, JPEG, GIF or WebP.
+          const mimeType = detectImageType(parsed.bytes);
+          if (mimeType === null) {
+            return yield* refused(`${upload.name} is not a PNG, JPEG, GIF or WebP image.`);
+          }
+          kept.push({
+            id: newAttachmentId(),
+            threadId: request.threadId,
+            messageId: request.messageId,
+            position,
+            name: upload.name,
+            mimeType,
+            sizeBytes: parsed.bytes.byteLength,
+            mendPath: null,
+            bytes: parsed.bytes,
+          });
+        }
+        yield* state.saveImages(keeper.id, kept, Date.now()).pipe(
+          Effect.mapError(
+            () =>
+              new ThreadCommandRefused({
+                reason: "The gateway could not keep the images.",
+                authorization: false,
+              }),
+          ),
+        );
+        for (const { bytes: _bytes, ...image } of kept) images.set(image.id, image);
+        return kept.map(messageImageOf);
+      });
+
+    /** The first of these ids the person has no image for, if any. */
+    const unknownImage = (imageIds: ReadonlyArray<string>): string | undefined =>
+      imageIds.find((imageId) => !images.has(imageId));
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
@@ -2371,8 +2555,12 @@ export const makePersonHub = (input: {
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
-      editQueued: (threadId, runId, text) =>
-        changeQueue(sessionIdOf(threadId), (queue) => Queueing.edit(queue, runId, text)),
+      editQueued: (threadId, runId, text, imageIds) =>
+        imageIds !== undefined && unknownImage(imageIds) !== undefined
+          ? refused(`Image ${unknownImage(imageIds) ?? ""} is not kept by this environment.`)
+          : changeQueue(sessionIdOf(threadId), (queue) =>
+              Queueing.edit(queue, runId, text, imageIds),
+            ),
       reorderQueued: (threadId, runId, beforeRunId) =>
         changeQueue(sessionIdOf(threadId), (queue) => Queueing.reorder(queue, runId, beforeRunId)),
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),
@@ -2528,6 +2716,8 @@ export const makePersonHub = (input: {
       subscribeThread: (threadId: string, afterSequence?: number) =>
         subscribeThread(sessionIdOf(threadId), afterSequence),
       isRefused: tokens.isRefused,
+      persistImages,
+      imageOf,
       refusal: tokens.refusal,
       mend,
       commands,
@@ -2566,6 +2756,16 @@ const QUEUE_NOT_KEPT =
 /** Why a message the state file could not keep was not sent. */
 const NOT_KEPT =
   "The gateway could not write this message to its state file, so it did not send it. Send it again.";
+
+const messageImageOf = (image: StoredImage): MessageImage => ({
+  id: image.id,
+  name: image.name,
+  mimeType: image.mimeType,
+  sizeBytes: image.sizeBytes,
+});
+
+/** How long an image attached to a message that was never sent is kept. */
+const UNSENT_IMAGE_TTL_MS = 7 * 24 * 60 * 60_000;
 
 /** How many sequences a hub reserves at a time (`reserveSequences`). */
 const SEQUENCE_BLOCK = 1_000_000;
@@ -2740,6 +2940,16 @@ export const ProjectionsLive: Layer.Layer<
       ),
     );
     yield* Effect.forkScoped(restoreQueues);
+    // Images a client attached to a message it never sent (a dropped draft) go after a week.
+    yield* Effect.forkScoped(
+      state.pruneImages(Date.now() - UNSENT_IMAGE_TTL_MS).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("t3 gateway could not let go of unsent images", {
+            cause: error.message,
+          }),
+        ),
+      ),
+    );
 
     const refuseDevice = (userId: string, deviceToken: string) =>
       tokensOf(userId).refuse(deviceToken);

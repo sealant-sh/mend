@@ -236,6 +236,13 @@ export const MendWorktreeListing = Schema.Struct({
   worktrees: Schema.Array(Schema.Struct({ name: Schema.String })),
 });
 
+/** `PastedImage` in @mend/api-contracts, from `POST /api/sessions/:id/images`. */
+export const MendPastedImage = Schema.Struct({
+  /** The file as the session's workspace sees it: what the turn names. */
+  path: Schema.String,
+});
+export type MendPastedImage = typeof MendPastedImage.Type;
+
 /** `RemovalReport` in @mend/api-contracts, from `DELETE /api/sessions/:id`. */
 export const MendRemovalReport = Schema.Struct({
   removed: Schema.Boolean,

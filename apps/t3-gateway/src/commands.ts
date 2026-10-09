@@ -130,8 +130,8 @@ export const dispatchCommand = (
 
   switch (command.type) {
     case "message.dispatch": {
-      if (command.attachments.length > 0) {
-        return refuse("Mend's t3code gateway does not send images or files yet.");
+      if (command.attachments.some((attachment) => attachment.type !== "image")) {
+        return refuse("Mend's t3code gateway sends images, not other files.");
       }
       const mode = command.dispatchMode.type;
       if (mode === "steer_active" || mode === "restart_active") {
@@ -142,7 +142,9 @@ export const dispatchCommand = (
       if (mode === "defer_start") {
         return refuse("Mend's t3code gateway does not hold a message back for later.");
       }
-      if (command.text.trim().length === 0) return refuse("The message is empty.");
+      if (command.text.trim().length === 0 && command.attachments.length === 0) {
+        return refuse("The message is empty.");
+      }
       return answered(
         hub.commands.send({
           session,
@@ -150,6 +152,7 @@ export const dispatchCommand = (
           commandId: command.commandId,
           messageId: command.messageId,
           text: command.text,
+          imageIds: command.attachments.map((attachment) => attachment.id),
         }),
       );
     }
@@ -166,12 +169,23 @@ export const dispatchCommand = (
       return answered(hub.commands.cancelQueued(command.threadId, command.runId));
     case "queue.resume":
       return answered(hub.commands.resumeQueue(command.threadId));
-    case "queued-run.edit":
-      if (command.attachments !== undefined && command.attachments.length > 0) {
-        return refuse("Mend's t3code gateway does not send images or files yet.");
+    case "queued-run.edit": {
+      const attachments = command.attachments;
+      if (attachments?.some((attachment) => attachment.type !== "image") === true) {
+        return refuse("Mend's t3code gateway sends images, not other files.");
       }
-      if (command.text.trim().length === 0) return refuse("The message is empty.");
-      return answered(hub.commands.editQueued(command.threadId, command.runId, command.text));
+      if (command.text.trim().length === 0 && (attachments?.length ?? 0) === 0) {
+        return refuse("The message is empty.");
+      }
+      return answered(
+        hub.commands.editQueued(
+          command.threadId,
+          command.runId,
+          command.text,
+          attachments?.map((attachment) => attachment.id),
+        ),
+      );
+    }
     case "queued-run.reorder":
       return answered(
         hub.commands.reorderQueued(command.threadId, command.runId, command.beforeRunId),

@@ -16,6 +16,7 @@ import {
   MendEventPointer,
   MendItem,
   MendProject,
+  MendPastedImage,
   MendProjectDetail,
   MendRemovalReport,
   MendRequest,
@@ -292,6 +293,15 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
     ) => MendCommand<MendRemovalReport>;
+    /**
+     * `POST /api/sessions/:id/images`: an image placed in the session's live workspace; Mend
+     * answers the path the agent sees. Steering rights, 8 MiB, PNG, JPEG, GIF or WebP.
+     */
+    readonly pasteImage: (
+      deviceToken: string,
+      sessionId: string,
+      bytes: Uint8Array,
+    ) => MendCommand<MendPastedImage>;
     /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
     readonly submitTurn: (
       deviceToken: string,
@@ -344,6 +354,7 @@ const decodeWorktreeListing = Schema.decodeUnknownEffect(MendWorktreeListing);
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
 const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
+const decodePastedImage = Schema.decodeUnknownEffect(MendPastedImage);
 const MendErrorBody = Schema.Struct({
   _tag: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
@@ -693,6 +704,18 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "DELETE /api/sessions/:id",
         );
 
+      const pasteImage = (deviceToken: string, sessionId: string, bytes: Uint8Array) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/images",
+            `/api/sessions/${encodeURIComponent(sessionId)}/images`,
+            deviceToken,
+            { contentsBase64: Buffer.from(bytes).toString("base64") },
+            decodePastedImage,
+          ),
+          "POST /api/sessions/:id/images",
+        );
+
       const interruptTurn = (deviceToken: string, turnId: string) =>
         command(
           "POST /api/turns/:id/interrupt",
@@ -806,6 +829,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         labelSession,
         stopSession,
         removeSession,
+        pasteImage,
         submitTurn,
         launchProtocol,
         interruptTurn,

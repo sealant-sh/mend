@@ -6,6 +6,7 @@ import {
   TurnItemId,
   type ProviderThreadId,
   type ThreadId,
+  type ChatAttachment,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderCapabilities,
@@ -20,6 +21,7 @@ import {
 } from "@mend/t3-contracts";
 import type * as DateTime from "effect/DateTime";
 
+import { wordsOf } from "./images.ts";
 import type { MendItem, MendRequest, MendTurn } from "./mend-workbench.ts";
 import { harnessProvider } from "./server-config.ts";
 import {
@@ -38,6 +40,7 @@ import {
   worktreePathOf,
   type ThreadSource,
 } from "./shell.ts";
+import type { StoredImage } from "./state.ts";
 
 /**
  * One thread in full (ADR 0012, "Concepts"): the session, a run per turn, the turn's input as a
@@ -238,6 +241,21 @@ interface Base {
 }
 
 const userItemIdOf = (runId: RunId): TurnItemId => TurnItemId.make(`input:${runId}`);
+
+/** An image a message carries, as t3code shows it (`ChatImageAttachment`). */
+const attachmentOf = (image: StoredImage): ChatAttachment => ({
+  type: "image",
+  id: image.id,
+  name: image.name,
+  mimeType: image.mimeType,
+  sizeBytes: image.sizeBytes,
+});
+
+/** The placed images of a sent message, as the gateway named them in the turn. */
+const placedOf = (images: ReadonlyArray<StoredImage>) =>
+  images.flatMap((image) =>
+    image.mendPath === null ? [] : [{ name: image.name, path: image.mendPath }],
+  );
 
 /** The turn item one Mend item is shown as, or null for one already shown another way. */
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
@@ -441,6 +459,10 @@ const turnEntries = (
   const userMessageId = userMessageIdOf(source, turn);
   const created = utc(turn.createdAt);
   const out: TurnEntries = { items: [], messages: [] };
+  // A message the gateway sent with images: the person's words, and the images as attachments.
+  const images = source.imagesOf(userMessageId);
+  const words = wordsOf(turn.input, placedOf(images));
+  const attachments = images.map(attachmentOf);
 
   out.messages.push({
     createdBy: fromHarness ? "system" : "user",
@@ -450,8 +472,8 @@ const turnEntries = (
     runId,
     nodeId: null,
     role: fromHarness ? "system" : "user",
-    text: turn.input,
-    attachments: [],
+    text: words,
+    attachments,
     streaming: false,
     createdAt: created,
     updatedAt: created,
@@ -476,8 +498,8 @@ const turnEntries = (
     type: "user_message",
     messageId: userMessageId,
     inputIntent: "turn_start",
-    text: turn.input,
-    attachments: [],
+    text: words,
+    attachments,
   });
 
   type Entry =
@@ -622,7 +644,7 @@ const pendingEntries = (
     nodeId: null,
     role: "user",
     text: entry.text,
-    attachments: [],
+    attachments: entry.images.map(attachmentOf),
     streaming: false,
     createdAt: requested,
     updatedAt: requested,
@@ -649,7 +671,7 @@ const pendingEntries = (
     inputIntent:
       entry.state === "queued" || entry.state === "cancelled" ? "queued_turn" : "turn_start",
     text: entry.text,
-    attachments: [],
+    attachments: entry.images.map(attachmentOf),
   });
   if (entry.state === "failed") {
     out.items.push({

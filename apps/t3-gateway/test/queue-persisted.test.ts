@@ -447,6 +447,7 @@ const stored = (state: StoredQueue["entries"][number]["state"], sender = "bearer
   state,
   error: state === "failed" ? "Mend refused it." : null,
   launches: state === "launching" ? 1 : 0,
+  imageIds: [],
 });
 
 describe("what a restart makes of each message", () => {
