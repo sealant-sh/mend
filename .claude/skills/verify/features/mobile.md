@@ -37,7 +37,8 @@ is what a verification run drives.
 - `mobile-settings` shows the pairing, `Test connection`, `Pair another machine`, `Unpair`, the
   Advanced token path, Theme, Text size, notifications and the secret files list.
 - `mobile-rename-delete` renames or deletes a session by sliding its row left.
-- `mobile-split` puts two sessions side by side on a screen at least 600 dp on its short side.
+- `mobile-split` shows two sessions side by side in landscape or stacked in portrait when the
+  screen's short side is at least 600 dp; compact screens show only the focused pane.
 
 ## How to get to it (user POV)
 
@@ -106,8 +107,10 @@ Preconditions:
 - **Projects.** Run `await page.getByRole("tab", { name: "Projects" }).click()`. The screen reads
   `Projects` and `<n> adopted`, then a panel per project with its name, its default branch and
   adopted sha, the field `worktree name — e.g. fix-auth (empty = auto)`, and one row per harness,
-  `claude` and `codex`, each with its model summary and `Start`. Tap a harness name to open its
-  `model`, `thinking`, `base` and (codex) `priority` chips.
+  `claude` and `codex`, each with its model summary and `Start`. Tap a harness name to expand
+  its options. `model` appears when the catalog offers models, `thinking` when the selected model
+  offers more than one effort choice, `base` when branches have been returned, and `priority`
+  when the harness supports fast mode (codex).
 - **Start a conversation.** In `<project>`'s panel run
   `await page.getByRole("textbox", { name: "worktree name — e.g. fix-auth (empty = auto)" }).first().fill("verify-phone")`,
   then click the `Start` of the `claude` row (the first `Start` in that panel). The app opens
@@ -115,8 +118,11 @@ Preconditions:
   and at the bottom the field `Message the session…` with `Send`.
 - **Send a turn.** Run
   `await page.getByRole("textbox", { name: "Message the session…" }).fill("List the files in this repository and change nothing.")`
-  and `await page.getByText("Send", { exact: true }).click()`. The turn appears with its input, then
-  the agent's items; while it works, `working…` shows and a `Stop` button sits beside `Send`.
+  and `await page.getByText("Send", { exact: true }).click()`. The turn appears with its input;
+  while it runs, `working…` shows and a `Stop` button sits beside `Send`.
+  Check the composer, turn input and non-markdown items separately from assistant prose and plan
+  text, which are unsupported on the web build and show `Error parsing markdown`. Report those
+  markdown items as unreachable with that reason.
   `mend sessions --project <project> --json` lists the session with `"harness": "claude"`.
 - **Header actions.** Run `await page.goto("<expo>/session/<id>")` for the `mend run` session. The
   header shows its title and line, and icon buttons named by their action:
@@ -168,8 +174,10 @@ Preconditions:
 - Most controls are `Pressable`s without a role. React Native Web renders them as focusable `div`s
   with no `button` role, so `getByRole("button")` finds only the few that set one: the session
   header's icon buttons (`Review the change`, `Diff`, `Shell`, `More actions`, …), `Now` in the
-  wide rail, `Close <title>`, `Attach an image`, `Remove <image>`, `Close the split` and the
-  `Open pull request <n> on GitHub` links. Every `EvButton` (`Pair`, `Start`, `Send`, `Comment`,
+  wide rail, `Close <title>`, `Attach an image`, `Remove <image>` and `Close the split`.
+  Pull request links use
+  `page.getByRole("link", { name: "Open pull request <n> on GitHub" })`
+  (`components/session-row.tsx:134`). Every `EvButton` (`Pair`, `Start`, `Send`, `Comment`,
   `Send review`, `Clear settled`, `Test connection`, …), the chips, the Segmented choices, the
   `Advanced` row, the session rows and the diff lines are reached by text only. Finding:
   `components/button.tsx:47`, `components/start-session.tsx:34`, `:128`,
@@ -187,11 +195,14 @@ Preconditions:
   `Diff`, `Shell`), and the session and review screens hide that header.
 - `Start` repeats for every harness of every project; nothing scopes it but order (claude, then
   codex, panel by panel). With more than one project, locate the panel by its project name first.
-- Every confirmation goes through `Alert.alert`, which does nothing on React Native Web: on the web
-  build `Stop session`, `Replace this workspace now`, the shell's `Stop` and the image chooser behind
-  `Attach an image` open nothing and do nothing. Stop sessions with `mend stop <id8>` in a web run,
-  and report those controls as unreachable there. Sources: `components/session-pane.tsx:305`, `:332`,
-  `app/terminal/[id].tsx:24`, `components/session-workspace.tsx:199`, `components/composer.tsx:181`.
+- `Stop session`, `Replace this workspace now`, the shell's `Stop` and the image chooser behind
+  `Attach an image` use `Alert.alert`, which does nothing on React Native Web. These controls open
+  nothing and do nothing on the web build. `Clear settled` and row deletion confirm in place with
+  a second tap (`Remove <n>?` and `Really?`), so they do not share that limitation. Stop sessions
+  with `mend stop <id8>` in a web run, and report the Alert-based controls as unreachable there.
+  Sources: `components/session-pane.tsx:305`, `:332`, `app/terminal/[id].tsx:24`,
+  `components/session-workspace.tsx:199`, `components/composer.tsx:181`;
+  second-tap confirmations: `components/clear-settled.tsx:20`, `components/session-row.tsx:193`.
 - The terminal is a native libghostty surface with a WebView fallback; neither runs on the web
   build, which shows `React Native WebView does not support this platform.`
   (`components/ghostty-terminal.tsx:288`). Drive `/tty-embed` in a browser instead, and say which
@@ -201,9 +212,12 @@ Preconditions:
   token in the browser's storage), push notifications (`Enable notifications` answers
   `unavailable` with `push rides the native app, not the web build`), haptics, the native terminal,
   and OTA updates.
-- Assistant prose renders through `react-native-nitro-markdown`, a native module. Whether it renders
-  on the web build was not checked from source; if the conversation fails to draw on the web, report
-  it unreachable with that reason.
+- Assistant prose and plan text are unsupported on the web build. Nitro's web implementation
+  throws on access; the markdown renderer catches the parser failure and shows
+  `Error parsing markdown`. Product gap. Sources:
+  `react-native-nitro-modules/src/turbomodule/NativeNitroModules.web.ts:3`,
+  `react-native-nitro-markdown/src/markdown.tsx:644`, `components/protocol-conversation.tsx:167`,
+  `:189`. Check the conversation controls and non-markdown items separately.
 - Rename and delete are only on a row's slide-left actions (`Rename`, `Delete` → `Really?`). A mouse
   drag may not trigger the swipe on the web build; rename a session with the CLI or the web app when
   it does not, and report the swipe as unreachable.

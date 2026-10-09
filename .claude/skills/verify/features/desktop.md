@@ -67,15 +67,18 @@ Preconditions:
 - Mend is healthy at `<web>` and `<project>` is adopted (see [Adopt a project](./adopt-project.md)).
 - The repository's dependencies are installed (`pnpm install` at the root). The host has a display;
   on a headless host the app needs a virtual one (for example Xvfb).
-- A scratch directory `<scratch>` holds this run's state. The CLI under test signed in with it:
-  `XDG_CONFIG_HOME=<scratch>/config mend login --url <web>`. The app then reads that credential
-  file, never the owner's `~/.config/mend/cli.json`.
+- A scratch directory `<scratch>` holds this run's state. First run
+  `mkdir -p <scratch>/config/mend` so neither credential resolver falls back to the owner's
+  `~/.mend`. Sign in with
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend login --url <web>`.
+  Every CLI invocation and the app launch below use that scratch environment and clear any
+  inherited `MEND_TOKEN`. The app reads `<scratch>/config/mend/cli.json`.
 - A settled session in `<project>` holds a change:
-  `XDG_CONFIG_HOME=<scratch>/config mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`.
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`.
   Note its id `<id>` and the worktree name `<run-worktree>` from the `✓ worktree` line.
 - No worktree named `verify-desk` exists in `<project>`.
 - Start the app with its own profile and a debugging port, and record its PID:
-  `XDG_CONFIG_HOME=<scratch>/config MEND_USER_DATA=<scratch>/desktop MEND_URL=<web> pnpm --filter @mend/desktop dev --remoteDebuggingPort 9222`.
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_USER_DATA=<scratch>/desktop MEND_URL=<web> pnpm --filter @mend/desktop dev --remoteDebuggingPort 9222`.
   It is ready when `curl -s http://127.0.0.1:9222/json/version` answers and `/json/list` lists a
   page target.
 
@@ -85,7 +88,9 @@ Preconditions:
   (`page.getByRole("navigation", { name: "Projects and sessions" })`), and the titlebar reads `Mend`
   and `· cockpit · <n> sessions live`. Without a credential the window shows `#/connect` instead,
   with the heading `Connect to your Mend server` and `Not signed in to a Mend server yet.`.
-- **Sign in from the app (fresh credential only).** With an empty `<scratch>/config`, run
+- **Sign in from the app (alternative fresh-credential run).** Create
+  `<scratch>/config/mend` first, leave it without `cli.json`, and launch the app with the scratch
+  environment above instead of signing in with the CLI. Run
   `await page.getByRole("textbox", { name: "Server URL" }).fill("<web>")` and
   `await page.getByRole("button", { name: "Sign in with the browser" }).click()`. The form shows
   `Approve in the browser if it shows this code`, the code, a button named by the authorize URL, and
@@ -117,10 +122,13 @@ Preconditions:
 - **Type in the terminal.** Run
   `await page.getByRole("textbox", { name: "Terminal input" }).focus()` and
   `await page.keyboard.type("printf 'desktop\\n' > DESKTOP.md\n")`. The shell runs the line; the
-  output draws on the terminal canvas (take a screenshot). Run `mend worktrees --project <project>`:
+  output draws on the terminal canvas (take a screenshot). Run
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend worktrees --project <project>`:
   `verify-desk` is listed with its `shell` session.
-- **Supporting shell tab.** Press `Control+Shift+T`. A second tab opens for a supporting shell; its
-  header reads `<label> · session worktree · mend/verify-desk` with the buttons `rename` and
+- **Supporting shell tab.** Run
+  `await page.getByRole("button", { name: "+", exact: true }).click()` (or press
+  `Control+Shift+T`). The button reads `…` while opening. A second tab opens for a supporting shell;
+  its header reads `<label> · session worktree · mend/verify-desk` with the buttons `rename` and
   `detach tab`. Right-click that tab's button (`click({ button: "right" })`); a menu opens with
   `Detach tab` and `Stop shell`. Click `Stop shell`: the item now reads `Stop the process group?`.
   Click it again. The tab closes and the tree no longer lists that shell under the session.
@@ -132,7 +140,7 @@ Preconditions:
   with the session's branch; with nothing running it reads `No Services in this session.`, and under
   `Recipes` either the recipes from `mend.toml` with `Run`, or `No recipes declared in mend.toml.`.
   Close it with
-  `page.getByRole("complementary", { name: "Session Services" }).getByRole("button", { name: "Close" })`.
+  `await page.getByRole("complementary", { name: "Session Services" }).getByRole("button", { name: "Close" }).click()`.
 - **Palette.** Press `Control+Shift+P`. A dialog named `Sessions` opens with focus in its search
   field. Type `<run-worktree>` and press `Enter`. The dialog closes and the `run · …` session's tab
   is focused.
@@ -174,7 +182,9 @@ Preconditions:
 - **Stop the shell session.** Back in the cockpit, right-click the tree row whose name starts
   `shell · mend/verify-desk`. The menu holds `Open`, `Services`, `Copy branch` and `Stop`. Click
   `Stop`; it reads `Stop the shell?`; click again. The row's status word turns to its settled word,
-  and `mend sessions --project <project> --all --json` shows the session settled.
+  and
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend sessions --project <project> --all --json`
+  shows the session settled.
 - **Proof.** Capture `await page.locator("body").ariaSnapshot()` and `await page.screenshot({ path })`
   of the cockpit with the live shell tab, of the replay with its scrubber, of the review page, and
   of the Land sheet. Keep the `mend run`, `mend worktrees` and `mend sessions --json` transcripts
@@ -182,9 +192,11 @@ Preconditions:
 
 ## Gotchas
 
-- The app reads and writes the CLI's credential file and watches it. Without `XDG_CONFIG_HOME`
-  pointed at scratch it uses the owner's `~/.config/mend/cli.json`, and `sign out` there revokes the
-  owner's device and empties the CLI's token too. Always launch with a scratch `XDG_CONFIG_HOME`.
+- The app reads and writes the CLI's credential file and watches it. Both clients fall back to
+  the owner's `~/.mend` when `<scratch>/config/mend` is missing. Create that directory before
+  either client starts, use the scratch environment for every CLI invocation and the app launch,
+  and unset inherited `MEND_TOKEN`. Signing out of an owner's credential file revokes that device
+  and empties the CLI's token too.
 - The app holds a single-instance lock on its profile. A second launch without `MEND_USER_DATA`
   quits at once and raises the owner's window instead. `Alt+Space` is a global shortcut; the run's
   instance takes it only when no other app holds it.
@@ -195,12 +207,12 @@ Preconditions:
 - The terminal draws on a canvas marked `aria-hidden`; its text is not in the accessibility tree.
   Prove terminal output with a screenshot, or with the session's record and the files it wrote.
   The `Terminal input` textarea has `pointer-events: none`: use `.focus()`, not `.click()`.
-- The tab bar's new-shell button has no accessible name: its only text is `+` (its `title`,
-  `New shell in focused session (Ctrl+Shift+T)`, is not its name). Use `Control+Shift+T`. Finding:
-  `components/tab-bar.tsx:91`.
-- Tab buttons have no label: their name is the tab number run together with the title
-  (`1shell · mend/verify-desk`). Match with a regular expression on the title. Finding:
-  `components/tab-bar.tsx:61`.
+- The tab bar's new-shell button is named `+`, changing to `…` while opening. These are weak
+  names; its `title`, `New shell in focused session (Ctrl+Shift+T)`, is a description.
+  Source: `components/tab-bar.tsx:91`.
+- Tab buttons have no explicit label: their computed name separates the tab number and title
+  with a space (`1 shell · mend/verify-desk`). Match with a regular expression on the title.
+  Source: `components/tab-bar.tsx:61`.
 - Tree and inbox rows have no label either. A session row's name is the title (`<harness> · <label
   or branch>`) followed by the status word or a relative time; a project row's name is the project
   name, its default branch and, collapsed, its row count. Auto-naming can replace the branch with a

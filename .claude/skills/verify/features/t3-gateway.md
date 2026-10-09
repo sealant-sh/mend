@@ -31,7 +31,7 @@ starts the gateway: someone runs it beside a Mend server.
 - `t3-thread` serves one thread in full and keeps it live from Mend's event stream.
 - `t3-commands` takes `message.dispatch` (queued, relaunching a stopped agent), `run.interrupt`,
   `queued-run.cancel`, `queue.resume`, `runtime-request.respond` and `thread.user-input.dismiss`.
-- `t3-review` serves the thread's change as `review.getDiffPreview` and `getDiffFileContents`.
+- `t3-review` serves the thread's change as `review.getDiffPreview` and `review.getDiffFileContents`.
 - `t3-revoke` ends the bearer when the device is revoked in Mend.
 
 ## How to get to it (user POV)
@@ -42,12 +42,14 @@ starts the gateway: someone runs it beside a Mend server.
   `MEND_T3_GATEWAY_PORT` (`3120`), `MEND_T3_GATEWAY_STATE_PATH`
   (`$XDG_STATE_HOME/mend/t3-gateway/state.sqlite`), `MEND_T3_GATEWAY_LABEL` (`Mend`).
 - t3code clients (desktop, mobile, web): add a remote environment with the gateway's host and a Mend
-  pairing code, or open `http://<gateway>/pair#token=<code>` (t3code's own pairing link).
+  pairing code, or paste `http://<gateway>/pair#token=<code>` into t3code's pairing input.
+  The URL is pairing input for t3code; the gateway serves no `/pair` page.
 - Web: Settings → Devices mints the pairing code, and lists the paired client as
   `t3code · <client label>` with its revoke (see [Pairing devices](./pairing-devices.md)).
 - CLI: `mend pair` mints a pairing code (`✓ pairing code <code>`); the gateway takes that code as its
   credential.
-- HTTP: every route above answers `curl`.
+- HTTP: the descriptor, authentication and orchestration snapshot routes answer `curl`.
+  The `/pair#token=…` URL is not an HTTP route; `/ws` is the socket endpoint.
 - Docs: `apps/t3-gateway/README.md` and `docs/adr/0012-t3code-gateway.md`. The docs site has no page
   for it yet.
 
@@ -94,15 +96,25 @@ Preconditions:
   checked before the ticket, so the ticket is not spent by this request.
 - **Refusals.** Run
   `curl -s -i <gw>/api/auth/pairing-links -H "authorization: Bearer <access_token>"`. Status `403`
-  with `"code":"insufficient_scope"`. `POST /api/auth/browser-session` answers `401` with
-  `"code":"auth_invalid"`: the gateway offers bearer tokens only.
+  with `"code":"insufficient_scope"`. Run
+  `curl -s -i -X POST <gw>/api/auth/browser-session -H "Content-Type: application/json" -d '{"credential":"not-a-browser-credential"}'`.
+  Status `401` with `"code":"auth_invalid"`; the gateway offers bearer tokens only. The request
+  needs a non-empty JSON `credential` to reach that refusal.
 - **Shell.** Run
   `curl -s <gw>/api/orchestration/shell -H "authorization: Bearer <access_token>" -H "x-t3-orchestration-protocol: 2"`.
   The JSON holds `projects` (one per project the person sees, `workspaceRoot` the store path) and
   `threads` (one per claude or codex conversation session; PTY sessions, `mend run` sessions and
   other harnesses are absent).
-- **Thread, follow-up, interrupt, approvals, diff.** `not drivable yet` (no t3code client in the
-  stack; the RPC is t3code's Effect RPC over `/ws`). End state when driven from t3code: the thread
+- **Thread snapshots (HTTP).** Take `<threadId>` from the shell's `threads` list. Run
+  `curl -s -i <gw>/api/orchestration/threads/<threadId> -H "authorization: Bearer <access_token>" -H "x-t3-orchestration-protocol: 2"`.
+  Status `200`; the JSON holds the thread's projection with its turns and items. Run
+  `curl -s -i <gw>/api/orchestration/threads/<threadId>/bounded -H "authorization: Bearer <access_token>" -H "x-t3-orchestration-protocol: 2"`.
+  Status `200`; it holds the full thread with `"historyCursor":null` and `"hasMoreHistory":false`.
+  The history route requires a non-empty cursor, though this gateway never hands one out. Run
+  `curl -s -i --get <gw>/api/orchestration/threads/<threadId>/history --data-urlencode cursor=verify -H "authorization: Bearer <access_token>" -H "x-t3-orchestration-protocol: 2"`.
+  Status `200`; it holds `"items":[]`, `"nextCursor":null` and `"hasMoreHistory":false`.
+- **Client thread view, follow-up, interrupt, approvals, diff.** `not drivable yet` (no t3code
+  client in the stack; the RPC is t3code's Effect RPC over `/ws`). End state when driven from t3code: the thread
   shows the session's turns and items; a sent message becomes a turn in Mend
   (`GET /api/sessions/<id>/turns`, or the session page on the web); an idle-stopped session is
   launched again first; an interrupt ends the open turn; an approval answered in t3code reads as

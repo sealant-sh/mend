@@ -86,10 +86,13 @@ Preconditions:
   `mend projects` lists it.
 - **New session.** `not drivable yet`. Run `Mend: New Session…` (or `+` in the view). The quick
   pick offers `$(terminal) Workbench`, `$(sparkle) Claude agent`, `$(sparkle) Codex agent` and
-  `$(settings-gear) Agent with options…`. For an agent, the input asks
-  `What should the agent do? Empty opens the harness without a prompt.`; with options it then asks
-  `Harness` (`Claude`, `Codex`, `opencode`, `pi`), `Model`, `Thinking` and `Permissions`
-  (`Skip permission prompts`, `Ask before acting`) and the base. End state: a progress notification
+  `$(settings-gear) Agent with options…`. The quick Claude and Codex choices ask
+  `What should the agent do? Empty opens the harness without a prompt.`. `Agent with options…`
+  asks `What should the session do? Leave empty to open the harness without a prompt.`, then
+  `Harness` (`Claude`, `Codex`, `opencode`, `pi`). `Model` is asked only when the catalog offers
+  models, and `Thinking` only when the selected model offers more than one effort choice.
+  `Permissions` (`Skip permission prompts`, `Ask before acting`) follows; a new worktree also asks
+  `Base branch or commit`. End state: a progress notification
   `Starting <harness>…`, then the workspace opens in a Remote - SSH window, and
   `mend sessions --project <project> --json` lists the new session.
 - **New session in this worktree.** `not drivable yet`. On a session row run
@@ -114,8 +117,11 @@ Preconditions:
 - **Stop.** `not drivable yet`. Run `Mend: Stop session` on a live session. End state: the modal
   `Stop <session>?` (`The worktree and reviewable change remain.`) with `Stop session`; then
   `mend sessions --project <project> --all --json` shows it settled.
-- **Open in Mend.** `not drivable yet`. Run `Mend: Open in Mend` on a session or a project. End
-  state: the browser opens `<web>/sessions/<id>` or `<web>/projects/<id>`.
+- **Open in Mend.** `not drivable yet`. Run the session row's `Mend: Open in Mend` action. End
+  state: the browser opens `<web>/sessions/<id>`. To open the current folder's project, run
+  `Mend: Open in Mend` from the Command Palette in that project's folder. End state:
+  `<web>/projects/<id>`. From a session workspace the palette opens its session instead; with
+  no current session or project it opens `<web>`. Projects have no row action for this command.
 - **URI.** `not drivable yet`. Open `vscode://sealant-sh.mend/open?session=<id>`. End state: the same
   as opening the session, with the takeover question when Mend runs its agent elsewhere.
 - **Proof.** For the build: the two commands with stdout, stderr and exit code, and a listing of
