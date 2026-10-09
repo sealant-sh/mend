@@ -16,6 +16,7 @@ import {
   MendEventPointer,
   MendItem,
   MendProject,
+  MendFileListing,
   MendPastedImage,
   MendProjectDetail,
   MendRemovalReport,
@@ -260,6 +261,16 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       projectId: string,
     ) => MendRead<ReadonlyArray<string>>;
+
+    /**
+     * `GET /api/projects/:id/files?session=`: every file of the session's worktree, or, with no
+     * session, of the project's default branch. Mend checks the project's visibility.
+     */
+    readonly projectFiles: (
+      deviceToken: string,
+      projectId: string,
+      sessionId: string | null,
+    ) => MendRead<MendFileListing>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
     readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
     /**
@@ -355,6 +366,7 @@ const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
 const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
 const decodePastedImage = Schema.decodeUnknownEffect(MendPastedImage);
+const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
 const MendErrorBody = Schema.Struct({
   _tag: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
@@ -600,6 +612,16 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeWorktreeListing,
         ).pipe(Effect.map((listing) => listing.worktrees.map((worktree) => worktree.name)));
 
+      const projectFiles = (deviceToken: string, projectId: string, sessionId: string | null) =>
+        read(
+          "GET /api/projects/:id/files",
+          `/api/projects/${encodeURIComponent(projectId)}/files${
+            sessionId === null ? "" : `?session=${encodeURIComponent(sessionId)}`
+          }`,
+          deviceToken,
+          decodeFileListing,
+        );
+
       const changeDiff = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/diff",
@@ -824,6 +846,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         workspaceRetirement,
         changeDiff,
         worktreeNames,
+
+        projectFiles,
         createSession,
         joinWorktree,
         labelSession,

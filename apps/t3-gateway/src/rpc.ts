@@ -50,6 +50,7 @@ import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 import { AssetUrls } from "./assets.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
+import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
@@ -92,6 +93,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.launchThread,
   WS_METHODS.assetsCreateUrl,
   WS_METHODS.assetsPersistChatAttachments,
+  WS_METHODS.projectsSearchEntries,
+  WS_METHODS.projectsListEntries,
   WS_METHODS.reviewGetDiffPreview,
   WS_METHODS.reviewGetDiffFileContents,
 ]);
@@ -239,6 +242,7 @@ export const makeGatewayRpcHandlers = ({
   const { mend } = hub;
   const { descriptor, paths } = environment;
   const review = makeReviewHandlers({ hub, mend, session });
+  const files = makeFileHandlers({ hub, mend, session });
 
   /** The socket's own device token, checked on every call, then the scope it needs. */
   const authorize = (bearer: BearerSession, requiredScope: AuthEnvironmentScope) =>
@@ -633,10 +637,12 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.subscribeProjectClones]: () => Stream.never,
 
     // ── Projects and files ──────────────────────────────────────────────────
-    [WS_METHODS.projectsListEntries]: () => refuse(WS_METHODS.projectsListEntries, READ),
+    [WS_METHODS.projectsListEntries]: (input) =>
+      authorize(session, READ).pipe(Effect.andThen(files.listEntries(input))),
     [WS_METHODS.projectsReadFile]: () => refuse(WS_METHODS.projectsReadFile, READ),
     [WS_METHODS.projectsSearchContents]: () => refuse(WS_METHODS.projectsSearchContents, READ),
-    [WS_METHODS.projectsSearchEntries]: () => refuse(WS_METHODS.projectsSearchEntries, READ),
+    [WS_METHODS.projectsSearchEntries]: (input) =>
+      authorize(session, READ).pipe(Effect.andThen(files.searchEntries(input))),
     [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile, OPERATE),
     [WS_METHODS.projectsEnsureScratch]: () =>
       Effect.fail(
