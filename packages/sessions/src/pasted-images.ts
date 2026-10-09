@@ -121,8 +121,9 @@ export const pastedImageWorkspacePath = (name: string): string =>
  * Where a paste goes in a live workspace, and what keeps it there (`ContainedPlacement`). A shared
  * executor: the harness home's `paste/`, written as root, a new directory 0755 and the file 0644,
  * as before. A person executor (docs/adr/0016): the sender's own saved directory, written as them;
- * a new `paste/` is the group's (`mend`), group-writable and setgid like a shared conversation
- * (decision 2), so a process of anyone in the workspace reads the file, which is 0640.
+ * a new `paste/` is 0770 and the file 0640, both in the group `mend` (every person's own group),
+ * so a process of anyone in the workspace reads it. No setgid bit: `mkdir` cannot set one, and the
+ * writer changes the mode of no directory after making it (mend#615 review, finding 2).
  */
 export const pastedImagePlacement = (
   name: string,
@@ -138,7 +139,7 @@ export const pastedImagePlacement = (
   const saved = savedDirOf(HARNESS_HOME_MOUNT_PATH, person);
   return {
     path: posix.join(saved, PASTED_IMAGE_DIR, name),
-    within: { root: saved, directoryMode: 0o2770, fileMode: 0o640 },
+    within: { root: saved, directoryMode: 0o770, fileMode: 0o640 },
   };
 };
 
@@ -227,9 +228,14 @@ const codeOf = (error: unknown): string =>
  * `bytes` as `<within.root>/<directories…>/<name>` on this machine, kept there as the workspace's
  * writer keeps a file (`SCRIPT_CONTAINED_PUT_FUNCTION`): the root entered at its real path, each
  * directory below it opened through no link (through the last one's descriptor where `/proc` has
- * it), one missing made `directoryMode` and one already there left as it is, the file staged
- * exclusively through no link and renamed into place while its directory is still where its path
- * says. Null once written; else why not, naming paths only.
+ * it), one missing made with `directoryMode` in its `mkdir` (under this process's umask, as before)
+ * and no directory's mode changed after the fact, so one put in place of a new directory keeps its
+ * own (mend#615 review, finding 2). The file is staged exclusively through no link, set `fileMode`
+ * through its own descriptor, and renamed into place within the directory that was entered. Null
+ * only when, after the rename, that directory is still where its path says and the path holds the
+ * staged file; otherwise the file is taken back out and why is answered, naming paths only
+ * (finding 1). Without `/proc` (macOS) each step goes by its literal path, and the same check after
+ * the rename still refuses a file that did not land where its path says.
  */
 export const writeContained = (
   within: ContainedPlacement,
@@ -272,14 +278,12 @@ export const writeContained = (
   try {
     for (const part of directories) {
       let next: number;
-      let made = false;
       try {
         next = fs.openSync(at(part), enterFlags);
       } catch (error) {
         if (codeOf(error) !== "ENOENT") return `${linkOrNot(part)}: ${shown}/${part}`;
         try {
-          fs.mkdirSync(at(part), { mode: 0o700 });
-          made = true;
+          fs.mkdirSync(at(part), { mode: within.directoryMode });
         } catch (mkdirError) {
           if (codeOf(mkdirError) !== "EEXIST") {
             return `could not make ${shown}/${part} (${codeOf(mkdirError)})`;
@@ -291,25 +295,11 @@ export const writeContained = (
           return `${linkOrNot(part)}: ${shown}/${part}`;
         }
       }
-      try {
-        if (made) fs.fchmodSync(next, within.directoryMode);
-      } catch (error) {
-        fs.closeSync(next);
-        return `could not set the mode of ${shown}/${part} (${codeOf(error)})`;
-      }
       fs.closeSync(dfd);
       dfd = next;
       literal = `${literal}/${part}`;
       shown = `${shown}/${part}`;
     }
-    const staging = `.mend-part-${randomBytes(8).toString("hex")}`;
-    const unstage = () => {
-      try {
-        fs.unlinkSync(at(staging));
-      } catch {
-        // Nothing staged, or gone already.
-      }
-    };
     const expected = path.join(real, ...directories);
     const inPlace = () => {
       try {
@@ -318,26 +308,49 @@ export const writeContained = (
         return false;
       }
     };
+    const moved = "its directory moved during the write";
+    if (!inPlace()) return moved;
+    const staging = `.mend-part-${randomBytes(8).toString("hex")}`;
+    const unstage = () => {
+      try {
+        fs.unlinkSync(at(staging));
+      } catch {
+        // Nothing staged, or gone already.
+      }
+    };
     let fd: number | undefined;
+    let staged: fs.Stats;
     try {
       fd = fs.openSync(at(staging), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
       fs.writeFileSync(fd, bytes);
       fs.fchmodSync(fd, within.fileMode);
+      staged = fs.fstatSync(fd);
     } catch (error) {
       if (fd !== undefined) unstage();
       return `could not write (${codeOf(error)})`;
     } finally {
       if (fd !== undefined) fs.closeSync(fd);
     }
-    if (!inPlace()) {
-      unstage();
-      return "its directory moved during the write";
-    }
+    const ours = (stat: fs.Stats) => stat.dev === staged.dev && stat.ino === staged.ino;
     try {
       fs.renameSync(at(staging), at(name));
     } catch (error) {
       unstage();
       return `could not write (${codeOf(error)})`;
+    }
+    let landed = false;
+    try {
+      landed = inPlace() && ours(fs.lstatSync(path.join(expected, name)));
+    } catch {
+      landed = false;
+    }
+    if (!landed) {
+      try {
+        if (ours(fs.lstatSync(at(name)))) fs.unlinkSync(at(name));
+      } catch {
+        // Gone already.
+      }
+      return moved;
     }
     return null;
   } finally {

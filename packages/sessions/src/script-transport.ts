@@ -176,10 +176,15 @@ export const SCRIPT_PINNED_PUT_FUNCTION = `const pinnedPut = (dir, name, staging
  * `target`, `fileMode`, else why not, naming paths only. `target` must be a plain absolute path
  * below `root`. `root` is entered at its real path, and every directory below it is opened through
  * no link (`O_NOFOLLOW`), each next one through the descriptor of the last (`/proc/self/fd/<n>/…`),
- * so a link planted anywhere below `root` refuses the write instead of leading it elsewhere. A
- * directory missing is made and set `directoryMode` through its own descriptor; one already there
- * keeps its mode. The file is staged exclusively, never through a link, set `fileMode`, and renamed
- * into place only while the directory it is in is still the one its path names under `root`.
+ * so a link planted anywhere below `root` refuses the write instead of leading it elsewhere; with no
+ * `/proc/self/fd` nothing is written. A directory missing is made with `directoryMode` in the one
+ * `mkdir` (the umask cleared around it), so the mode of no directory is ever changed after the
+ * fact: one put in place of the new directory keeps its own (mend#615 review, finding 2; `mkdir`
+ * sets no setgid bit). The file is staged exclusively, never through a link, set `fileMode` through
+ * its own descriptor, and renamed into place within the pinned directory, wherever that directory
+ * is by then. Only when, after the rename, the pinned directory is still at the path `target` names
+ * and that path holds the staged file is it answered `null`; otherwise the file is taken back out
+ * of the pinned directory and the write refused (finding 1: a directory moved while it is written).
  */
 export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, directoryMode, fileMode, target, bytes) => {
   const c = fs.constants;
@@ -194,52 +199,54 @@ export const SCRIPT_CONTAINED_PUT_FUNCTION = `const containedPut = (root, direct
   let dfd;
   try { dfd = fs.openSync(real, c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW); } catch { return "could not enter " + root; }
   const proc = (fd) => "/proc/self/fd/" + fd;
-  const pinned = fs.existsSync(proc(dfd));
-  let literal = real;
   let shown = root;
-  const at = (entry) => (pinned ? proc(dfd) : literal) + "/" + entry;
+  const at = (entry) => proc(dfd) + "/" + entry;
   const linked = (entry) => { try { return fs.lstatSync(at(entry)).isSymbolicLink(); } catch { return false; } };
   const enter = (entry) => fs.openSync(at(entry), c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW);
   try {
+    if (!fs.existsSync(proc(dfd))) return "no /proc/self/fd here to keep the write inside " + root;
     for (const part of parts) {
       let next;
-      let made = false;
       try { next = enter(part); } catch (error) {
         if (error.code !== "ENOENT") return (linked(part) ? "a link: " : "not a directory: ") + shown + "/" + part;
-        try { fs.mkdirSync(at(part), 0o700); made = true; } catch (mkdirError) {
+        const mask = process.umask(0);
+        try { fs.mkdirSync(at(part), directoryMode & 0o777); } catch (mkdirError) {
           if (mkdirError.code !== "EEXIST") return "could not make " + shown + "/" + part + " (" + (mkdirError.code || "error") + ")";
-        }
+        } finally { process.umask(mask); }
         try { next = enter(part); } catch { return (linked(part) ? "a link: " : "not a directory: ") + shown + "/" + part; }
-      }
-      try { if (made) fs.fchmodSync(next, directoryMode); } catch (error) {
-        try { fs.closeSync(next); } catch {}
-        return "could not set the mode of " + shown + "/" + part + " (" + (error.code || "error") + ")";
       }
       try { fs.closeSync(dfd); } catch {}
       dfd = next;
-      literal = literal + "/" + part;
       shown = shown + "/" + part;
     }
+    const expected = path.join(real, ...parts);
+    const inPlace = () => { try { return fs.readlinkSync(proc(dfd)) === expected; } catch { return false; } };
+    const moved = "its directory moved during the write";
+    if (!inPlace()) return moved;
     const staging = ".mend-part-" + require("crypto").randomBytes(8).toString("hex");
     const unstage = () => { try { fs.unlinkSync(at(staging)); } catch {} };
-    const expected = parts.length === 0 ? real : (real === "/" ? "" : real) + "/" + parts.join("/");
-    const inPlace = () => {
-      try { return (pinned ? fs.readlinkSync(proc(dfd)) : fs.realpathSync(literal)) === expected; } catch { return false; }
-    };
     let fd;
+    let staged;
     try {
       fd = fs.openSync(at(staging), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
       let done = 0;
       while (done < bytes.length) done += fs.writeSync(fd, bytes, done, bytes.length - done);
       fs.fchmodSync(fd, fileMode);
+      staged = fs.fstatSync(fd);
     } catch (error) {
       if (fd !== undefined) unstage();
       return "could not write (" + (error.code || "error") + ")";
     } finally {
       if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
     }
-    if (!inPlace()) { unstage(); return "its directory moved during the write"; }
+    const ours = (stat) => stat.dev === staged.dev && stat.ino === staged.ino;
     try { fs.renameSync(at(staging), at(name)); } catch (error) { unstage(); return "could not write (" + (error.code || "error") + ")"; }
+    let landed = false;
+    try { landed = inPlace() && ours(fs.lstatSync(path.join(expected, name))); } catch {}
+    if (!landed) {
+      try { if (ours(fs.lstatSync(at(name)))) fs.unlinkSync(at(name)); } catch {}
+      return moved;
+    }
     return null;
   } finally {
     try { fs.closeSync(dfd); } catch {}

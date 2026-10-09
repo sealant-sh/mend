@@ -28126,6 +28126,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     readonly state?: HarnessLayoutsMemoryState;
     /** How long a start waits for a person's dotfiles apply; 120 s unless a test says. */
     readonly dotfilesApplyBound?: Duration.Duration;
+    /** How long a person's logins stay after their start before the idle check releases them. */
+    readonly loginReleaseGrace?: Duration.Duration;
     /** The join itself, when the test drives it (a waited install.sh). */
     readonly joinWith?: (
       engine: SessionEngine["Service"],
@@ -28225,6 +28227,9 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           ...(options.dotfilesApplyBound === undefined
             ? {}
             : { dotfilesApplyBound: options.dotfilesApplyBound }),
+          ...(options.loginReleaseGrace === undefined
+            ? {}
+            : { loginReleaseGrace: options.loginReleaseGrace }),
         },
         ...options.layers,
       },
@@ -28369,8 +28374,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
       expect(own).toMatch(new RegExp(`^${P_LAUNCHER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
       expect(steered).toMatch(new RegExp(`^${P_JOINER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
       expect(pastes(run, from)).toEqual([
-        { user: LAUNCHER, within: `C2770:640:${P_LAUNCHER}`, path: own, session: holder },
-        { user: JOINER, within: `C2770:640:${P_JOINER}`, path: steered, session: holder },
+        { user: LAUNCHER, within: `C770:640:${P_LAUNCHER}`, path: own, session: holder },
+        { user: JOINER, within: `C770:640:${P_JOINER}`, path: steered, session: holder },
       ]);
       // Maria's user and home were made before her paste, by root, as prepare makes anyone.
       expect(
@@ -28381,6 +28386,50 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           ),
       ).toBe(true);
     });
+
+    /**
+     * mend#615 review, finding 3: a paste is no process, so no exit released the logins and Mend
+     * token a first paste wrote into its sender's home. The idle check releases them once the
+     * start's grace has passed, whether the write was placed or refused.
+     */
+    it.each([
+      { write: "placed", fails: false },
+      { write: "refused", fails: true },
+    ])(
+      "releases a first paste's logins once its grace has passed, the write $write",
+      async ({ fails }) => {
+        let outcome: string | null = null;
+        const run = await launchAndJoin({
+          join: null,
+          loginReleaseGrace: Duration.millis(10),
+          exec: (argv) =>
+            fails &&
+            named(argv, "mend-write") &&
+            argv.some((part) => part.startsWith(`C770:640:${P_JOINER}`))
+              ? { exitCode: 3, stdout: "", stderr: "mend-write: not written\n" }
+              : undefined,
+          inspect: (engine, world, ids, current) =>
+            Effect.gen(function* () {
+              const processes = world.processes.size;
+              const placed = yield* engine
+                .storePastedImage(ids.holder, PNG, MARIA)
+                .pipe(Effect.result);
+              outcome = placed._tag;
+              // Maria's home was made for the paste and her logins written there; no process of
+              // hers was recorded.
+              expect(current.calls).toContain(`post:${MARIA}:/home/${JOINER}`);
+              expect(world.processes.size).toBe(processes);
+              yield* until(
+                () => current.calls.includes(`delete:/home/${JOINER}`),
+                "Maria's logins released",
+              );
+            }),
+        });
+        expect(outcome).toBe(fails ? "Failure" : "Success");
+        // Alice's own home, the launcher's, is never released by it.
+        expect(run.calls).not.toContain(`delete:/home/${LAUNCHER}`);
+      },
+    );
 
     it("is written as root, inside the harness home, in a shared executor", async () => {
       let seen: { readonly from: number; readonly path: string } | null = null;

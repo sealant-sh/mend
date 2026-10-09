@@ -389,8 +389,8 @@ describe("writeFilesPickupExec", () => {
       expect(modeOf(kept)).toBe(0o644);
       expect(modeOf(root)).toBe(0o700);
 
-      // A person's saved directory (docs/adr/0016): a new `paste/` the group's, setgid, and the
-      // image 0640, whatever the writer's umask.
+      // A person's saved directory (docs/adr/0016): a new `paste/` 0770 and the image 0640,
+      // whatever the writer's umask.
       const saved = path.join(root, "people", "maria");
       fs.mkdirSync(saved, { recursive: true });
       fs.chmodSync(saved, 0o710);
@@ -402,7 +402,7 @@ describe("writeFilesPickupExec", () => {
           'umask 077 && exec "$@"',
           "mend-as-person",
           ...writeFilesPickupExec(
-            [{ path: made, within: { root: saved, directoryMode: 0o2770, fileMode: 0o640 } }],
+            [{ path: made, within: { root: saved, directoryMode: 0o770, fileMode: 0o640 } }],
             channel.mint([{ path: made, bytes: PNG }]),
           ),
         ],
@@ -410,7 +410,7 @@ describe("writeFilesPickupExec", () => {
       );
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
-      expect(modeOf(path.join(saved, "paste"))).toBe(0o2770);
+      expect(modeOf(path.join(saved, "paste"))).toBe(0o770);
       expect(modeOf(made)).toBe(0o640);
       expect(modeOf(saved)).toBe(0o710);
       expect(new Uint8Array(fs.readFileSync(made))).toEqual(PNG);
@@ -426,7 +426,7 @@ describe("writeFilesPickupExec", () => {
             path: "/workspace/harness-home/people/u1/paste/a.png",
             within: {
               root: "/workspace/harness-home/people/u1",
-              directoryMode: 0o2770,
+              directoryMode: 0o770,
               fileMode: 0o640,
             },
           },
@@ -435,7 +435,7 @@ describe("writeFilesPickupExec", () => {
       );
       expect(argv.slice(4)).toEqual([
         "ticket-1",
-        "C2770:640:/workspace/harness-home/people/u1",
+        "C770:640:/workspace/harness-home/people/u1",
         "/workspace/harness-home/people/u1/paste/a.png",
       ]);
     });

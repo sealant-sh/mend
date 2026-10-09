@@ -124,7 +124,7 @@ describe("pastedImagePlacement", () => {
       path: `${HARNESS_HOME_MOUNT_PATH}/people/user-maria/paste/a.png`,
       within: {
         root: `${HARNESS_HOME_MOUNT_PATH}/people/user-maria`,
-        directoryMode: 0o2770,
+        directoryMode: 0o770,
         fileMode: 0o640,
       },
     });
