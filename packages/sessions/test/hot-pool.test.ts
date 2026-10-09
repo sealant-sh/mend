@@ -122,6 +122,20 @@ describe("hotFingerprint", () => {
     );
   });
 
+  it("leaves a person standby's dotfiles out: they are resolved at claim, so a change to them does not drain it (review of mend#596, N7)", () => {
+    const person: { readonly layout: "person"; readonly imageKey: string } = {
+      layout: "person",
+      imageKey: "digest:sha256:a\u0000docker",
+    };
+    const changed: HotFingerprintInputs = {
+      ...base,
+      applyDotfiles: !base.applyDotfiles,
+      dotfiles: { ...base.dotfiles, snapshotSha: "f".repeat(40) },
+    };
+    expect(hotFingerprint(changed, person)).toBe(hotFingerprint(base, person));
+    expect(hotFingerprint(changed, SHARED)).not.toBe(hotFingerprint(base, SHARED));
+  });
+
   it("changes when a linked project's root changes, not when its bound worktree does", () => {
     const relinked = hotFingerprint(
       {
