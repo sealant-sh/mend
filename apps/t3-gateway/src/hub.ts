@@ -628,9 +628,36 @@ export const makePersonHub = (input: {
     const sessionIdOf = (threadId: string): string => sessionOfThread.get(threadId) ?? threadId;
     /**
      * Sessions deleted through the gateway that Mend keeps until their workspace has stopped
-     * (`RemovalReport.leftover`): hidden at once, as t3code's client already dropped them.
+     * (`RemovalReport.leftover`): hidden at once, as t3code's client already dropped them, and kept
+     * in the state file so a restart does not bring them back.
      */
-    const removing = new Set<string>();
+    const removing = new Set<string>(
+      launcher === null
+        ? []
+        : yield* state.listRemovals(launcher).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read its pending removals", {
+                cause: error.message,
+              }).pipe(Effect.as<ReadonlyArray<string>>([])),
+            ),
+          ),
+    );
+    /** Forgets the removals Mend has finished: it no longer lists the session. */
+    const removed = (sessionIds: ReadonlyArray<string>) =>
+      launcher === null
+        ? Effect.void
+        : Effect.forEach(
+            sessionIds,
+            (sessionId) =>
+              state.dropRemoval(launcher, sessionId).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("t3 gateway could not forget a finished removal", {
+                    cause: error.message,
+                  }),
+                ),
+              ),
+            { discard: true },
+          );
     /**
      * Sessions just created for a launch that no project read has shown yet: hidden, and their
      * queue left alone, until one does, so the client never sees the thread without its message
@@ -1101,9 +1128,9 @@ export const makePersonHub = (input: {
           for (const entry of entries) projects.set(entry.project.id, entry);
           const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
           seen(present);
-          for (const sessionId of removing) {
-            if (!present.has(sessionId)) removing.delete(sessionId);
-          }
+          const finished = Array.from(removing).filter((sessionId) => !present.has(sessionId));
+          for (const sessionId of finished) removing.delete(sessionId);
+          yield* removed(finished);
           active = facts;
           applyRetirements(retired);
           conversations.clear();
@@ -1179,12 +1206,14 @@ export const makePersonHub = (input: {
               seen(entry.sessions.map((session) => session.id));
             }
             const kept = new Set(entry?.sessions.map((session) => session.id) ?? []);
+            const finished: Array<string> = [];
             for (const session of previous?.sessions ?? []) {
               if (kept.has(session.id)) continue;
               conversations.delete(session.id);
               adoptedTurns.delete(session.id);
-              removing.delete(session.id);
+              if (removing.delete(session.id)) finished.push(session.id);
             }
+            yield* removed(finished);
             for (const [sessionId, conversation] of read) {
               if (conversation !== null) {
                 conversations.set(sessionId, withAdopted(sessionId, conversation));
@@ -2045,6 +2074,16 @@ export const makePersonHub = (input: {
               ),
             ),
         );
+        if (!report.removed && launcher !== null) {
+          // Kept before the thread goes, so a restart never brings it back.
+          yield* state.keepRemoval(launcher, sessionId, Date.now()).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not keep a pending removal", {
+                cause: error.message,
+              }),
+            ),
+          );
+        }
         yield* locked(
           Effect.gen(function* () {
             // Mend keeps the row until its workspace has stopped; t3code's client has let it go.
@@ -2053,7 +2092,8 @@ export const makePersonHub = (input: {
             yield* publishAll;
           }),
         );
-        if (report.removed && launcher !== null) {
+        // The client's id for the thread goes with it, removed now or once its workspace stops.
+        if (launcher !== null) {
           yield* state.forgetThread(launcher, sessionId).pipe(
             Effect.catch((error) =>
               Effect.logWarning("t3 gateway could not forget a deleted thread", {

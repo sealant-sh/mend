@@ -111,6 +111,11 @@ export class FakeWorkbench {
   readonly agents = new Map<string, FakeProcess>();
   readonly changes = new Map<string, string>();
   readonly control = new Map<string, boolean>();
+  /**
+   * Session id → whether the person owns it. Mend gives the label and the delete to the owner
+   * only; a shared-control steerer may stop the session but not rename or delete it.
+   */
+  readonly ownership = new Map<string, boolean>();
   readonly turns = new Map<string, Array<FakeTurn>>();
   readonly items = new Map<string, Array<FakeItem>>();
   readonly requests = new Map<string, Array<FakeRequest>>();
@@ -201,6 +206,8 @@ export class FakeWorkbench {
     readonly permissionMode?: "bypass" | "ask";
     readonly live?: boolean;
     readonly steer?: boolean;
+    /** Defaults to `steer`: a session the person can't steer is not theirs. */
+    readonly own?: boolean;
     readonly changeId?: string | null;
   }): FakeSession {
     const harness = input.harness ?? "codex";
@@ -242,6 +249,7 @@ export class FakeWorkbench {
       input.changeId === undefined ? `change-${input.id}` : (input.changeId ?? ""),
     );
     this.control.set(session.id, input.steer ?? true);
+    this.ownership.set(session.id, input.own ?? input.steer ?? true);
     this.turns.set(session.id, []);
     this.items.set(session.id, []);
     this.requests.set(session.id, []);
@@ -536,7 +544,7 @@ export class FakeWorkbench {
       if (method === "POST" && sub === "label") {
         return body().then((value) => {
           record(value);
-          if (this.control.get(id) === false) return notOwner();
+          if (this.ownership.get(id) === false) return notOwner();
           const payload = typeof value === "object" && value !== null ? value : {};
           const label =
             "label" in payload && typeof payload.label === "string" ? payload.label.trim() : "";
@@ -556,7 +564,7 @@ export class FakeWorkbench {
       }
       if (method === "DELETE" && sub === undefined) {
         record(undefined);
-        if (this.control.get(id) === false) return notOwner();
+        if (this.ownership.get(id) === false) return notOwner();
         const agent = this.agents.get(id);
         if (agent !== undefined && agent.exitedAt === null) {
           return json(409, { _tag: "SessionActive", id });
@@ -575,7 +583,7 @@ export class FakeWorkbench {
         return json(200, {
           session,
           control: {
-            own: true,
+            own: this.ownership.get(id) ?? true,
             steer: this.control.get(id) ?? true,
             stop: true,
             toggleSharedControl: true,
@@ -880,6 +888,7 @@ export class FakeWorkbench {
       joined === undefined ? `change-${id}` : (this.changes.get(joined.id) ?? ""),
     );
     this.control.set(id, true);
+    this.ownership.set(id, true);
     this.turns.set(id, []);
     this.items.set(id, []);
     this.requests.set(id, []);

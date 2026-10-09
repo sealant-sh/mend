@@ -207,7 +207,12 @@ theirs answers t3code's authorization error.
 t3code's client sends `provider-session.detach` before it deletes a thread with a live agent. Mend
 keeps the session's worktree and change after a delete, as it does for every session it removes.
 When Mend keeps the session until its workspace has stopped (`removed: false`), the gateway hides it
-at once: the client has already let it go.
+at once: the client has already let it go. The state file keeps it hidden across a restart
+(`pending_removals`) until Mend no longer lists it.
+
+Mend lets a person with shared control stop the owner's session but not delete it. Their delete in
+t3code stops the owner's live session first (the client's `provider-session.detach`), and then
+answers t3code's authorization error.
 
 ## Run it
 
