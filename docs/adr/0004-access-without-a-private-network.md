@@ -159,6 +159,20 @@ Required to start `public`, and `observed` unless marked:
     operator declared the executor network private (`MEND_EXECUTOR_NETWORK=private`), which is
     reported as `declared`.
 
+Required to start `public`, and `declared` when it applies:
+
+- **workspace-ssh**: the workspace SSH gateway published apart from the web port
+  (`mend server setup --ssh-bind`, which sets `MEND_SSH_PUBLISHED`). An edge carries HTTPS only, so
+  a published SSH port is a second way in beside it, outside the private-backend contract the edge
+  gives the web tier. Not published apart, or published on loopback, reads `observed`. Published
+  anywhere else it is `open` until the operator, having tried the port from each network that should
+  not reach it, names `workspace-ssh` in `MEND_EXPOSURE_DECLARED`; it then reads `declared`, "this
+  process cannot check it". The gateway admits registered keys only, and a workspace only for its
+  launcher; that is behaviour, and who can reach the port is not visible from inside.
+  `mend server setup` refuses `--exposure public` with SSH published beyond loopback until
+  `--declare workspace-ssh`, and says what it observed from its own machine (each address tried, and
+  whether an SSH banner answered), never more. Added 2026-10-10 with `--ssh-bind` (mend#620).
+
 Not observable by this build. Reported, never inferred, and they do not block start:
 
 11. **core-private**: Core, its registry and the database are not reachable from the Internet. What
@@ -171,9 +185,10 @@ Not observable by this build. Reported, never inferred, and they do not block st
     no version of its own (`dev`) has nothing a reassessment could name, and stays `open`.
 
 Items 11 and 12 stay `open` until the operator, having verified them from outside, names them in
-`MEND_EXPOSURE_DECLARED` (the chart's `exposure.declared`); they then read `declared`, with the
-words "this process cannot check it". Nothing else can be declared: an item this process can read is
-read, never taken on someone's word, and naming one there refuses to start.
+`MEND_EXPOSURE_DECLARED` (the chart's `exposure.declared`, setup's `--declare`); they then read
+`declared`, with the words "this process cannot check it". Besides them only `workspace-ssh` can be
+declared, as above. Nothing else can be declared: an item this process can read is read, never taken
+on someone's word, and naming one there refuses to start.
 
 "Nothing open" means every item was observed, is carried by the build, or was declared by the
 operator. It is a report of what was observed and stated. It is not a statement that the instance is

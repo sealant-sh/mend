@@ -34,12 +34,16 @@ import {
   EXPOSURES,
   type Exposure,
   healthPosture,
+  DECLARABLE_ITEMS,
+  type DeclarableItem,
+  isDeclarableItem,
   isExposure,
   isTenancy,
   observedEdgeLine,
   observedPostureLines,
   parseEdgeHost,
   postureEnvLines,
+  publishedAddress,
   renderPostureOverlay,
   type Tenancy,
   TENANCIES,
@@ -132,6 +136,19 @@ export interface ServerSetupRuntime {
    * its dockerd argv and daemon.json (`docker-shutdown.ts`). Absent: setup does not read them.
    */
   readonly dockerDaemonFacts?: (infoStdout: string | null) => DockerDaemonFacts;
+  /**
+   * Try workspace SSH where `--ssh-bind` published it, from this machine: the bind itself, or each
+   * of this machine's addresses for an unspecified bind. Each answer is the SSH banner read, or null
+   * when nothing answered. Absent: setup says where it is published and observes nothing.
+   */
+  readonly probeSsh?: (bind: string, port: number) => Promise<ReadonlyArray<SshProbe>>;
+}
+
+/** One address workspace SSH was tried at, and what answered there. */
+export interface SshProbe {
+  readonly address: string;
+  /** The first line the gateway sent (`SSH-2.0-…`), or null when nothing answered in time. */
+  readonly banner: string | null;
 }
 
 /** Observable result of a server command. Expected lifecycle failures do not reject. */
@@ -159,6 +176,8 @@ interface SetupOptions {
   /** `--exposure`, `--tenancy`: the posture declared; omitted keeps the saved one. */
   readonly exposure: Exposure | undefined;
   readonly tenancy: Tenancy | undefined;
+  /** `--declare <item>`, repeatable: gate items verified from outside. `none` clears; omitted keeps. */
+  readonly declared: ReadonlyArray<DeclarableItem> | undefined;
 }
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
@@ -200,6 +219,11 @@ export interface ServerConfig {
   readonly exposure?: Exposure;
   /** `MEND_TENANCY` as declared on this install; absent, the server's default (`single`). */
   readonly tenancy?: Tenancy;
+  /**
+   * `MEND_EXPOSURE_DECLARED`: the gate items the operator states they verified from outside
+   * (`--declare`). Absent when none.
+   */
+  readonly declared?: ReadonlyArray<DeclarableItem>;
 }
 
 /** The Garage image the bundle pins; `checkLocalImages` preloads it like Postgres's. */
@@ -314,6 +338,7 @@ const SETUP_FLAGS = new Set([
   "--no-edge",
   "--exposure",
   "--tenancy",
+  "--declare",
 ]);
 
 const parseExposure = (value: string): Exposure => {
@@ -326,6 +351,23 @@ const parseTenancy = (value: string): Tenancy => {
   if (!isTenancy(value))
     throw setupError(`--tenancy must be one of ${TENANCIES.join(", ")}, not "${value}".`);
   return value;
+};
+
+/** `--declare` values: each a declarable gate item, or `none` alone, which clears the list. */
+const parseDeclared = (values: ReadonlyArray<string>): ReadonlyArray<DeclarableItem> => {
+  if (values.length === 1 && values[0] === "none") return [];
+  return [
+    ...new Set(
+      values.map((value) => {
+        if (!isDeclarableItem(value)) {
+          throw setupError(
+            `--declare takes ${DECLARABLE_ITEMS.join(", ")} or none, not "${value}". Every other gate item is observed by the server, never stated.`,
+          );
+        }
+        return value;
+      }),
+    ),
+  ];
 };
 
 const parseEdge = (value: string): string => {
@@ -353,7 +395,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     const [value, valueIndex] = nextFlagValue(args, index, flag);
     index = valueIndex;
     const previous = values.get(flag) ?? [];
-    if (flag !== "--origin" && previous.length > 0) {
+    if (flag !== "--origin" && flag !== "--declare" && previous.length > 0) {
       throw setupError(`${flag} may be supplied only once.`);
     }
     previous.push(value);
@@ -367,6 +409,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const edge = flagValue("--edge");
   const exposure = flagValue("--exposure");
   const tenancy = flagValue("--tenancy");
+  const declared = values.get("--declare");
   if (edge !== undefined && values.has("--no-edge"))
     throw setupError("--edge and --no-edge contradict each other.");
   return {
@@ -385,6 +428,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     noEdge: values.has("--no-edge"),
     exposure: exposure === undefined ? undefined : parseExposure(exposure),
     tenancy: tenancy === undefined ? undefined : parseTenancy(tenancy),
+    declared: declared === undefined ? undefined : parseDeclared(declared),
   };
 };
 
@@ -446,15 +490,19 @@ const resolveAppUrl = (
   if (existing?.edgeHost !== undefined) {
     return parseHttpOrigin(options.url ?? `http://localhost:${appPort}`, "--url");
   }
-  // A saved URL that names the old port moves with --port, on any host: left behind, it would
-  // send every client (the browser, `mend login`, VS Code) to a port nothing publishes.
+  // A saved URL that points at the app port directly (plain http, the port written out: the LAN or
+  // tailnet case) moves with --port, on any host: left behind, it would send every client (the
+  // browser, `mend login`, VS Code) to a port nothing publishes. An https origin, or one whose port
+  // is implicit, is an endpoint in front of Mend that --port does not move, so it stays.
   const saved = existing === null ? null : new URL(existing.appUrl);
-  const savedNamesOldPort =
+  const savedPointsAtOldPort =
     saved !== null &&
     existing !== null &&
     options.appPort !== undefined &&
-    Number(saved.port || (saved.protocol === "https:" ? 443 : 80)) === existing.appPort;
-  if (saved !== null && savedNamesOldPort) saved.port = String(appPort);
+    saved.protocol === "http:" &&
+    saved.port !== "" &&
+    Number(saved.port) === existing.appPort;
+  if (saved !== null && savedPointsAtOldPort) saved.port = String(appPort);
   const fallback = saved === null ? `http://localhost:${appPort}` : saved.origin;
   return parseHttpOrigin(options.url ?? fallback, "--url");
 };
@@ -483,6 +531,7 @@ const checkPosture = (
   ports: { readonly appPort: number; readonly sshPort: number },
   edgeHost: string | undefined,
   exposure: Exposure | undefined,
+  declared: ReadonlyArray<DeclarableItem>,
 ): void => {
   if (edgeHost !== undefined && [ports.appPort, ports.sshPort].some((p) => p === 80 || p === 443)) {
     throw setupError(
@@ -509,6 +558,12 @@ const checkPosture = (
       "--exposure loopback contradicts a non-loopback --ssh-bind: the SSH port is published beyond this machine.",
     );
   }
+  // The server refuses a public start while the gate's workspace-ssh item is open: say so here.
+  if (exposure === "public" && !isLoopbackBind(sshBind) && !declared.includes("workspace-ssh")) {
+    throw setupError(
+      `--exposure public with workspace SSH published on ${publishedAddress(sshBind, ports.sshPort)} beside the edge needs a statement Mend cannot observe: who reaches that port. Check it from each network that should not reach it, then add --declare workspace-ssh; or publish SSH on loopback.`,
+    );
+  }
   if (exposure === "public" && edgeHost === undefined) {
     throw setupError(
       "--exposure public needs the edge: add --edge <host>. Without it nothing sets MEND_TRUSTED_PROXIES or an https origin, and the server refuses to start as public.",
@@ -530,6 +585,7 @@ const validateExposure = (
   | "edgeHost"
   | "exposure"
   | "tenancy"
+  | "declared"
 > => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
@@ -555,7 +611,8 @@ const validateExposure = (
   const edgeHost = options.noEdge ? undefined : (options.edge ?? existing?.edgeHost);
   const exposure = options.exposure ?? existing?.exposure;
   const tenancy = options.tenancy ?? existing?.tenancy;
-  checkPosture(bind, sshBind ?? bind, { appPort, sshPort }, edgeHost, exposure);
+  const declared = options.declared ?? existing?.declared ?? [];
+  checkPosture(bind, sshBind ?? bind, { appPort, sshPort }, edgeHost, exposure, declared);
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
   if (edgeHost === undefined)
@@ -576,6 +633,7 @@ const validateExposure = (
     ...(edgeHost === undefined ? {} : { edgeHost }),
     ...(exposure === undefined ? {} : { exposure }),
     ...(tenancy === undefined ? {} : { tenancy }),
+    ...(declared.length === 0 ? {} : { declared }),
   };
 };
 
@@ -615,6 +673,19 @@ const parseServerConfig = (raw: string): ServerConfig => {
   if (tenancy !== undefined && !isTenancy(tenancy)) {
     throw setupError(`Server config is corrupt: tenancy must be one of ${TENANCIES.join(", ")}.`);
   }
+  const declaredField = fields.get("declared");
+  if (
+    declaredField !== undefined &&
+    (!Array.isArray(declaredField) ||
+      !declaredField.every((item) => typeof item === "string" && isDeclarableItem(item)))
+  ) {
+    throw setupError(
+      `Server config is corrupt: declared must be an array of ${DECLARABLE_ITEMS.join(", ")}.`,
+    );
+  }
+  const declared = Array.isArray(declaredField)
+    ? declaredField.filter((item): item is DeclarableItem => isDeclarableItem(String(item)))
+    : [];
   const config: ServerConfig = {
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
@@ -638,6 +709,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ...(edgeHost === undefined ? {} : { edgeHost }),
     ...(exposure === undefined ? {} : { exposure }),
     ...(tenancy === undefined ? {} : { tenancy }),
+    ...(declared.length === 0 ? {} : { declared }),
   };
   if (
     config.schemaVersion !== CONFIG_SCHEMA_VERSION ||
@@ -667,6 +739,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     noEdge: false,
     exposure: config.exposure,
     tenancy: config.tenancy,
+    declared: config.declared,
   });
   return config;
 };
@@ -1783,6 +1856,32 @@ const startCompose = async (
   if (compose.status !== 0) throw commandFailure("Mend containers did not start", compose);
 };
 
+/**
+ * What this machine observed of workspace SSH published apart from the web port: where it was
+ * tried and what answered. It says nothing about who else can reach it; that is the network's, and
+ * the gate's workspace-ssh item reports it as declared or open.
+ */
+const sshPublicationLine = async (
+  runtime: ServerSetupRuntime,
+  config: ServerConfig,
+): Promise<string | null> => {
+  if (config.sshBind === undefined || isLoopbackBind(config.sshBind)) return null;
+  const published = publishedAddress(config.sshBind, config.sshPort);
+  if (runtime.probeSsh === undefined) return null;
+  const probes = await runtime.probeSsh(config.sshBind, config.sshPort);
+  const observed =
+    probes.length === 0
+      ? "this machine has no address to try it at"
+      : probes
+          .map((probe) =>
+            probe.banner === null
+              ? `${publishedAddress(probe.address, config.sshPort)} did not answer`
+              : `${publishedAddress(probe.address, config.sshPort)} answers (${probe.banner})`,
+          )
+          .join(", ");
+  return `Workspace SSH is published on ${published}. From this machine: ${observed}. Who else reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.`;
+};
+
 /** What setup says once the edge's container is up: what Caddy does next, and where to read it. */
 const edgeStartedLine = (config: ServerConfig): string | null =>
   config.edgeHost === undefined
@@ -1898,6 +1997,8 @@ const setupServer = async (
   runtime.writeLine(reachableLine(config));
   const edgeStarted = edgeStartedLine(config);
   if (edgeStarted !== null) runtime.writeLine(edgeStarted);
+  const sshPublication = await sshPublicationLine(runtime, config);
+  if (sshPublication !== null) runtime.writeLine(sshPublication);
   if (existing?.config.edgeHost !== undefined && config.edgeHost === undefined) {
     runtime.writeLine(
       `The edge for ${existing.config.edgeHost} is gone. Its certificate volumes stay until you remove them: docker --context ${config.dockerContext} volume rm mend_mend-edge-data mend_mend-edge-config`,
@@ -2788,7 +2889,42 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     writeLine: (line) => process.stdout.write(`${line}\n`),
     dockerDaemonFacts: hostDockerDaemonFacts,
     readLogin: (configDir) => savedLogin(configDir, environment),
+    probeSsh: probeSshFromHere,
   };
+};
+
+/** The first line a TCP listener sends within the time given, or null. */
+const bannerAt = (host: string, port: number, timeoutMs: number): Promise<string | null> =>
+  new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    const finish = (banner: string | null) => {
+      socket.destroy();
+      resolve(banner);
+    };
+    socket.setTimeout(timeoutMs, () => finish(null));
+    socket.once("data", (bytes: Buffer) =>
+      finish(bytes.toString("utf8").split(/\r?\n/)[0]?.trim() ?? ""),
+    );
+    socket.once("error", () => finish(null));
+  });
+
+/** `probeSsh` on this machine: the bind, or this machine's own addresses for an unspecified one. */
+const probeSshFromHere = async (bind: string, port: number): Promise<ReadonlyArray<SshProbe>> => {
+  const unspecified = bind === "0.0.0.0" || bind === "::";
+  const addresses = unspecified
+    ? Object.values(os.networkInterfaces())
+        .flatMap((entries) => entries ?? [])
+        .filter(
+          (entry) =>
+            !entry.internal &&
+            (entry.family === "IPv4" || (bind === "::" && !entry.address.startsWith("fe80"))),
+        )
+        .map((entry) => entry.address)
+        .slice(0, 4)
+    : [bind];
+  return Promise.all(
+    addresses.map(async (address) => ({ address, banner: await bannerAt(address, port, 3_000) })),
+  );
 };
 
 /**

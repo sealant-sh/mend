@@ -953,6 +953,32 @@ describe("mend server setup", () => {
     expect(readEnv(activeFile(forwarded, "server.env")).get("APP_URL")).toBe(
       "http://mend-mini.local:8080",
     );
+
+    // An https origin is an endpoint in front of Mend (a TLS terminator of the operator's own),
+    // which --port does not move: not when it names the old port, not when its port is implicit.
+    const cases: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+      [["--port", "3105", "--url", "https://mini.example:3105"], "https://mini.example:3105"],
+      [["--port", "443", "--url", "https://mini.example"], "https://mini.example"],
+      [["--port", "80", "--url", "http://mini.example"], "http://mini.example"],
+    ];
+    for (const [first, kept] of cases) {
+      const directory = temporaryDirectory("port-kept");
+      expect(
+        await serverCommand(
+          ["setup", "--bind", "0.0.0.0", ...first],
+          makeRuntime({ configDir: directory }).runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      expect(
+        await serverCommand(
+          ["setup", "--port", "3205"],
+          makeRuntime({ configDir: directory }).runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      const env = readEnv(activeFile(directory, "server.env"));
+      expect(env.get("APP_URL")).toBe(kept);
+      expect(env.get("MEND_PORT")).toBe("3205");
+    }
   });
 
   it("publishes workspace SSH with --ssh-bind while an edge keeps the web port on loopback", async () => {
@@ -1006,6 +1032,99 @@ describe("mend server setup", () => {
       expect(result).toMatchObject({ _tag: "error", message: expect.stringContaining(message) });
       expect(fs.existsSync(path.join(refused.runtime.configDir, "active"))).toBe(false);
     }
+  });
+
+  it("hands workspace SSH published beside a public edge to the exposure gate, and starts public only once it is declared", async () => {
+    const configDir = temporaryDirectory("ssh-gate");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    // Public, with SSH on every interface beside the edge, and nobody stated who reaches it.
+    const undeclared = makeRuntime({ configDir });
+    const refused = await serverCommand(
+      ["setup", "--edge", "mend.example.test", "--exposure", "public", "--ssh-bind", "0.0.0.0"],
+      undeclared.runtime,
+    );
+    expect(refused).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("add --declare workspace-ssh"),
+    });
+    expect(undeclared.commands.some(([, args]) => args.includes("up"))).toBe(false);
+
+    // Declared: the statement and where SSH is published both reach the mend container.
+    const declared = makeRuntime({ configDir });
+    const probed: Array<string> = [];
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--edge",
+          "mend.example.test",
+          "--exposure",
+          "public",
+          "--ssh-bind",
+          "0.0.0.0",
+          "--declare",
+          "workspace-ssh",
+          "--declare",
+          "core-private",
+        ],
+        {
+          ...declared.runtime,
+          probeSsh: async (bind, port) => {
+            probed.push(`${bind}:${port}`);
+            return [
+              { address: "192.168.1.20", banner: "SSH-2.0-sealant-gateway" },
+              { address: "100.64.0.7", banner: null },
+            ];
+          },
+        },
+      ),
+    ).toEqual({ _tag: "ok" });
+    const env = readEnv(activeFile(configDir, "server.env"));
+    expect(env.get("MEND_SSH_PUBLISHED")).toBe("0.0.0.0:2222");
+    expect(env.get("MEND_EXPOSURE_DECLARED")).toBe("workspace-ssh,core-private");
+    const overlay = fs.readFileSync(activeFile(configDir, "compose.posture.yaml"), "utf8");
+    expect(overlay).toContain("MEND_SSH_PUBLISHED: ${MEND_SSH_PUBLISHED:?");
+    expect(overlay).toContain("MEND_EXPOSURE_DECLARED: ${MEND_EXPOSURE_DECLARED:?");
+    expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
+      { sshBind: "0.0.0.0", declared: ["workspace-ssh", "core-private"] },
+    );
+    // What this machine observed, and only that: never a verdict about who else reaches it.
+    expect(probed).toEqual(["0.0.0.0:2222"]);
+    expect(declared.lines).toContain(
+      "Workspace SSH is published on 0.0.0.0:2222. From this machine: 192.168.1.20:2222 answers (SSH-2.0-sealant-gateway), 100.64.0.7:2222 did not answer. Who else reaches it is up to the network and its firewall; mend operator exposure reports it as workspace-ssh.",
+    );
+    for (const line of declared.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
+
+    // Kept across a rerun; taking the declaration away while SSH stays published is refused again.
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_EXPOSURE_DECLARED")).toBe(
+      "workspace-ssh,core-private",
+    );
+    expect(
+      await serverCommand(["setup", "--declare", "none"], makeRuntime({ configDir }).runtime),
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--declare workspace-ssh") });
+    // SSH back on loopback: nothing to declare, and none of it in the environment.
+    expect(
+      await serverCommand(
+        ["setup", "--ssh-bind", "127.0.0.1", "--declare", "none"],
+        makeRuntime({ configDir }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const after = readEnv(activeFile(configDir, "server.env"));
+    expect(after.has("MEND_SSH_PUBLISHED")).toBe(false);
+    expect(after.has("MEND_EXPOSURE_DECLARED")).toBe(false);
+
+    const invalid = makeRuntime();
+    expect(await serverCommand(["setup", "--declare", "budgets"], invalid.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        "--declare takes core-private, edge-tls, workspace-ssh or none",
+      ),
+    });
   });
 
   it("refuses --ssh-bind with a release whose compose publishes SSH on --bind only", async () => {
