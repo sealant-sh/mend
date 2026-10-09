@@ -263,6 +263,56 @@ describe.skipIf(!reachable)("per-person harness homes, in Postgres", () => {
     );
   });
 
+  it("lets a probe that checked a no again replace only that no (review 2 of mend#582, N1)", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* HarnessLayoutsRepo;
+        const no = (missing: ReadonlyArray<string>) =>
+          repo.recordCapability({
+            imageKey: "img2",
+            runtime: "docker",
+            person: false,
+            missing,
+            confirmed: true,
+          });
+        const probedYes = (replacing: ReadonlyArray<string>) =>
+          repo.recordCapability({
+            imageKey: "img2",
+            runtime: "docker",
+            person: true,
+            missing: [],
+            confirmed: false,
+            replacing,
+          });
+        yield* no(["no ACLs on /workspace"]);
+        // The no it checked was replaced meanwhile: the newer answer stays.
+        yield* no(["no-new-privileges is set, so no one's sudo works"]);
+        yield* probedYes(["no ACLs on /workspace"]);
+        expect(yield* repo.capabilityOf("img2", "docker")).toMatchObject({
+          person: false,
+          missing: ["no-new-privileges is set, so no one's sudo works"],
+        });
+        yield* no(["no ACLs on /workspace"]);
+        yield* probedYes(["no ACLs on /workspace"]);
+        expect(yield* repo.capabilityOf("img2", "docker")).toMatchObject({
+          person: true,
+          missing: [],
+          confirmed: false,
+        });
+        // Never over a yes.
+        yield* repo.recordCapability({
+          imageKey: "img2",
+          runtime: "docker",
+          person: false,
+          missing: ["no sudo"],
+          confirmed: false,
+          replacing: [],
+        });
+        expect(yield* repo.capabilityOf("img2", "docker")).toMatchObject({ person: true });
+      }),
+    );
+  });
+
   // Runs last: the person launches above are recorded.
   it("says a layout is recorded once a person launch is", async () => {
     expect(await run(Effect.flatMap(HarnessLayoutsRepo, (repo) => repo.anyRecorded()))).toBe(true);

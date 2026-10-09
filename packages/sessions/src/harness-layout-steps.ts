@@ -51,6 +51,8 @@ import {
   personPrepareScript,
   personProcessEnv,
   processUserOf,
+  recheckOf,
+  runtimeLayoutObstacle,
   staticLayoutObstacle,
   worktreeRepairScript,
 } from "./harness-layout.ts";
@@ -120,6 +122,11 @@ export type LaunchLayout =
       readonly reason: string | null;
       /** Prepare runs the image probe and records what it found. */
       readonly probe: boolean;
+      /**
+       * The recorded "no" the probe checks again (its reasons, compared when the probe's answer
+       * replaces it); null where nothing was recorded, and the answer is only a first guess.
+       */
+      readonly replaces?: ReadonlyArray<string> | null;
       readonly imageKey: string | null;
       readonly runtime: string;
       readonly recorded: boolean;
@@ -325,6 +332,8 @@ export interface HarnessLayoutSteps {
     readonly harness: Harness;
     /** Whether the worktree's head capture holds `harness/people/` (read only when needed). */
     readonly headHasPeople: Effect.Effect<boolean>;
+    /** The launch claimed a standby, whose claim found it would run shared (`standbyMayServe`). */
+    readonly standby?: boolean;
     /**
      * Whether the launcher keeps dotfiles this project applies: read only when the flag would make
      * a fresh worktree person and the platform cannot apply dotfiles as a person yet.
@@ -389,6 +398,8 @@ export interface HarnessLayoutSteps {
       readonly harness: Harness;
       readonly launcherHasDotfiles?: Effect.Effect<boolean>;
     },
+    /** Whether the worktree's head holds `harness/people/`, read only with the flag `person`. */
+    headHasPeople?: Effect.Effect<boolean>,
   ) => Effect.Effect<boolean>;
   /**
    * One identity pickup ticket per person prepare may make (docs/adr/0016, decision 4), by
@@ -807,25 +818,55 @@ export const makeHarnessLayoutSteps = (deps: {
         capability: { person: false, missing: [obstacle], source: "static" } as const,
         imageKey: imageLayoutKeyOf(image, null),
         runtime: "unknown",
+        replaces: null,
       };
     }
     const report = yield* platform.imageReport({ ownerUserId, image, harness });
     const imageKey = imageLayoutKeyOf(image, report.digest);
     const runtime = report.runtime ?? "unknown";
-    // Mend's record of what a prepare found wins over Core's report for the same image.
+    // A runtime Core runs no person on (Kubernetes, Cloudflare): ruled out before any launch, so
+    // none is refused at create to learn it (review 2 of mend#582, N3).
+    const ruledOut = runtimeLayoutObstacle(report.runtime);
+    if (ruledOut !== null) {
+      return {
+        capability: { person: false, missing: [ruledOut], source: "static" } as const,
+        imageKey,
+        runtime,
+        replaces: null,
+      };
+    }
+    const core: LayoutCapability =
+      report.person !== null
+        ? { person: report.person, missing: report.missing, source: "core" }
+        : UNKNOWN_CAPABILITY;
+    // Mend's record of what a prepare found wins over Core's report for the same image, but for
+    // a shared probe's unconfirmed "yes" against Core's explicit "no".
     const recorded = yield* repo.capabilityOf(imageKey, runtime);
-    const capability: LayoutCapability =
-      recorded !== null
-        ? {
-            person: recorded.person,
-            missing: recorded.missing,
-            source: "mend",
-            confirmed: recorded.confirmed,
-          }
-        : report.person !== null
-          ? { person: report.person, missing: report.missing, source: "core" }
-          : UNKNOWN_CAPABILITY;
-    return { capability, imageKey, runtime };
+    if (recorded === null || (recorded.person && !recorded.confirmed && report.person === false)) {
+      return { capability: core, imageKey, runtime, replaces: null };
+    }
+    if (recorded.person) {
+      const capability: LayoutCapability = {
+        person: true,
+        missing: recorded.missing,
+        source: "mend",
+        confirmed: recorded.confirmed,
+      };
+      return { capability, imageKey, runtime, replaces: null };
+    }
+    // A "no" a shared launch may check again (review 2 of mend#582, N1): never against Core's
+    // explicit "no", and never over what only a per-person executor sees.
+    const now = yield* Clock.currentTimeMillis;
+    const recheck =
+      report.person !== false && recheckOf(recorded.missing, now - recorded.observedAt.getTime());
+    const capability: LayoutCapability = {
+      person: false,
+      missing: recorded.missing,
+      source: "mend",
+      confirmed: recorded.confirmed,
+      recheck,
+    };
+    return { capability, imageKey, runtime, replaces: recheck ? recorded.missing : null };
   });
 
   const membersOf = Effect.fn("HarnessLayoutSteps.membersOf")(function* (
@@ -856,7 +897,7 @@ export const makeHarnessLayoutSteps = (deps: {
       // where the flag is on and the worktree has no record.
       const headHasPeople =
         worktree.layout === null && flag === "person" ? yield* input.headHasPeople : false;
-      const { capability, imageKey, runtime } = yield* capabilityFor(
+      const { capability, imageKey, runtime, replaces } = yield* capabilityFor(
         yield* input.image,
         input.ownerUserId,
         input.harness,
@@ -880,6 +921,7 @@ export const makeHarnessLayoutSteps = (deps: {
         headHasPeople,
         capability,
         dotfilesBlocked,
+        ...(input.standby === true ? { standby: true } : {}),
       });
       if (decision.kind === "refuse") return yield* layoutRefused(decision.message);
       if (decision.layout === "shared") {
@@ -899,6 +941,7 @@ export const makeHarnessLayoutSteps = (deps: {
           source: decision.source,
           reason: decision.reason,
           probe: decision.probe,
+          replaces: decision.probe ? replaces : null,
           imageKey,
           runtime,
           recorded: true,
@@ -982,7 +1025,14 @@ export const makeHarnessLayoutSteps = (deps: {
     // Retired only on an answer a per-person executor gave (its prepare, or Core's create): a
     // shared probe's yes, or Core's build report, is a prediction, and replacing a live
     // executor on one could replace it into a refusal (review of mend#582, finding 1).
-    return person && capability.source === "mend" && capability.confirmed === true;
+    // A worktree already person (or asked for per person) runs person next as a fact, not a
+    // prediction (decision 14; review 2 of mend#582, N2).
+    return (
+      person &&
+      (worktree.layout === "person" ||
+        worktree.requested === "person" ||
+        (capability.source === "mend" && capability.confirmed === true))
+    );
   });
 
   const freshLaunchPerson: HarnessLayoutSteps["freshLaunchPerson"] = Effect.fn(
@@ -999,11 +1049,13 @@ export const makeHarnessLayoutSteps = (deps: {
   // person worktree, the operator's person, a fresh worktree predicted person) launches cold.
   const standbyMayServe: HarnessLayoutSteps["standbyMayServe"] = Effect.fn(
     "HarnessLayoutSteps.standbyMayServe",
-  )(function* (worktreeId, fresh) {
+  )(function* (worktreeId, fresh, headHasPeople) {
     if (flag !== "person" && nothingRecorded()) return true;
     const worktree = yield* repo.worktreeLayout(worktreeId);
     if (worktree.layout !== null || worktree.requested === "person") return false;
     if (flag !== "person" || worktree.requested === "shared") return true;
+    // A head that holds `people/` is person whatever the record says (decision 14).
+    if (headHasPeople !== undefined && (yield* headHasPeople)) return false;
     return !(yield* freshLaunchPerson(fresh));
   });
 
@@ -1016,13 +1068,18 @@ export const makeHarnessLayoutSteps = (deps: {
       const report = parseLayoutReport(input.stdout);
       if (report.probed && layout.imageKey !== null) {
         // A prediction: a shared executor cannot see what only a per-person one meets, so it is
-        // recorded only where nothing is, and nothing is retired on it.
+        // recorded only where nothing is, or over the "no" it checked again, and nothing is
+        // retired on it.
         yield* repo.recordCapability({
           imageKey: layout.imageKey,
           runtime: layout.runtime,
           person: report.missing.length === 0,
           missing: report.missing,
           confirmed: false,
+          // A "no" checked again is replaced, only while it is still the one checked.
+          ...(layout.replaces === null || layout.replaces === undefined
+            ? {}
+            : { replacing: layout.replaces }),
         });
       }
       yield* repo.confirm(input.launchId);

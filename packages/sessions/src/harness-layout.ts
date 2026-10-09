@@ -43,6 +43,11 @@ export interface LayoutCapability {
    * owner map. A shared launch's probe is a prediction, and nothing is retired on one.
    */
   readonly confirmed?: boolean;
+  /**
+   * A "no" a shared launch may check again (`recheckOf`): every reason one is something a shared
+   * workspace can see, or it is a passing failure more than a day old. Its answer replaces the "no".
+   */
+  readonly recheck?: boolean;
 }
 
 export const UNKNOWN_CAPABILITY: LayoutCapability = { person: null, missing: [], source: null };
@@ -58,6 +63,8 @@ export interface LayoutDecisionInput {
   /** The worktree's head capture holds `harness/people/`: person, record or not. */
   readonly headHasPeople: boolean;
   readonly capability: LayoutCapability;
+  /** The launch claimed a standby, whose claim found it would run shared. */
+  readonly standby?: boolean;
   /**
    * The launcher has dotfiles and the platform cannot apply them as a person yet
    * (`PersonLayoutPlatform.dotfilesUser`): a worktree with no layout yet runs `shared`, as decision
@@ -150,6 +157,19 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
   if (input.flag === "shared") {
     return { kind: "launch", layout: "shared", source: "flag", reason: null, probe: false };
   }
+  // A standby this session claimed, on a worktree nothing makes person: its claim found the
+  // launch would run shared, and it stands, whatever was learnt about the image since (a probe
+  // racing the claim). The standby runs one person, so it takes the launch rather than failing
+  // it (review 2 of mend#582, N7); its prepare checks the image as a cold shared launch's does.
+  if (input.standby === true) {
+    return {
+      kind: "launch",
+      layout: "shared",
+      source: "capability",
+      reason: STANDBY_REASON,
+      probe: capability.person === null || capability.recheck === true,
+    };
+  }
   if (capability.person === true && input.dotfilesBlocked === true) {
     return {
       kind: "launch",
@@ -163,15 +183,16 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
     return { kind: "launch", layout: "person", source: "flag", onMissing: "fallback" };
   }
   if (capability.person === false) {
-    // Never probed over a known "no": a shared executor cannot see what only a per-person one
-    // meets (no-new-privileges, the owner map), so its "yes" would undo Core's or a person
-    // prepare's answer, and launches would alternate (review of mend#582, finding 1).
+    // Probed over only where a shared executor can see every reason (`recheckOf`): it cannot
+    // see what only a per-person one meets (no-new-privileges, the owner map), so its "yes"
+    // there would undo Core's or a person prepare's answer, and launches would alternate
+    // (review of mend#582, finding 1).
     return {
       kind: "launch",
       layout: "shared",
       source: "capability",
       reason: `this image cannot run per-person users (${capability.missing.join(", ")}), so this workspace takes one person`,
-      probe: false,
+      probe: capability.recheck === true,
     };
   }
   // Unknown means shared: the launch runs as before and its prepare records the answer, so the
@@ -195,6 +216,66 @@ export const KUBERNETES_LAYOUT_OBSTACLE =
 
 /** Why a project keeps no standby for an owner whose fresh worktrees run per person. */
 export const HOT_POOL_PER_PERSON_COLD = "per-person workspaces launch cold";
+
+/** Why a session served by a standby runs shared (`decideHarnessLayout`'s `standby`). */
+export const STANDBY_REASON =
+  "a standby workspace serves this session, and a standby takes one person";
+
+/** Why no Cloudflare sandbox runs per person: Core runs no process as a user there. */
+export const CLOUDFLARE_LAYOUT_OBSTACLE = "Cloudflare sandboxes cannot run per-person users";
+
+/**
+ * Core's workspace runtimes where per-person homes cannot run, whatever the image (Core's
+ * no-new-privileges and no-process-user runtimes): ruled out before any launch, so no launch is
+ * refused at create to learn it (review 2 of mend#582, N3).
+ */
+export const runtimeLayoutObstacle = (runtime: string | null): string | null =>
+  runtime === "k8s" || runtime === "k3s"
+    ? KUBERNETES_LAYOUT_OBSTACLE
+    : runtime === "cloudflare"
+      ? CLOUDFLARE_LAYOUT_OBSTACLE
+      : null;
+
+/**
+ * The reasons a shared workspace's probe sees for itself (`layoutProbeScript` without the
+ * no-new-privileges check): a "no" made only of these is checked again by the next shared launch.
+ */
+const VISIBLE_TO_A_SHARED_PROBE: ReadonlyArray<RegExp> = [
+  /^no (sudo|useradd|setfacl|setpriv)$/,
+  /^its sealantd cannot run processes as a user$/,
+  /^(uid|gid) \d+ is taken in this image$/,
+  /^(group|user) \S+ is taken in this image$/,
+  /^no ACLs on \/workspace$/,
+];
+
+/**
+ * A person prepare's failures that may pass (a user that could not be made, an image that could
+ * not be checked): a "no" made of these, or of reasons a shared probe sees, expires after a day.
+ */
+const PASSING: ReadonlyArray<RegExp> = [
+  /^the users could not be made$/,
+  /^the image could not be checked$/,
+  // A person who could not be made (`parseLayoutReport`): `<name> could not be made`, `<name>: …`.
+  /^m[a-z2-7]{8}(:| |$)/,
+];
+
+/** How long a "no" made of passing failures is kept before a shared launch checks again. */
+export const PASSING_NO_KEPT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a recorded "no" may be checked again by a shared launch (review 2 of mend#582, N1):
+ * every reason is one a shared probe sees (it is checked again at once), or every reason is one
+ * of those or a passing failure and the answer is a day old. Never over what only a per-person
+ * executor or Core sees: no-new-privileges, an owner map refused, a runtime ruled out, the
+ * workspace's own refusal to run processes as a user.
+ */
+export const recheckOf = (missing: ReadonlyArray<string>, ageMs: number): boolean => {
+  if (missing.length === 0) return true;
+  const visible = (word: string) => VISIBLE_TO_A_SHARED_PROBE.some((pattern) => pattern.test(word));
+  if (missing.every(visible)) return true;
+  const passing = (word: string) => visible(word) || PASSING.some((pattern) => pattern.test(word));
+  return missing.every(passing) && ageMs >= PASSING_NO_KEPT_MS;
+};
 
 /** Why a fresh worktree whose launcher has dotfiles runs shared until the verb ships. */
 export const DOTFILES_BLOCK_REASON =
@@ -420,7 +501,11 @@ export const assertScriptSafe = (identity: LinuxIdentity): void => {
   if (!SAFE_LOGIN.test(identity.name)) {
     throw new Error(`login name ${JSON.stringify(identity.name)} is not one Mend allocates`);
   }
-  if (identity.uid <= LINUX_UID_RANGE.first || identity.uid > LINUX_UID_RANGE.last) {
+  if (
+    !Number.isInteger(identity.uid) ||
+    identity.uid <= LINUX_UID_RANGE.first ||
+    identity.uid > LINUX_UID_RANGE.last
+  ) {
     throw new Error(
       `uid ${identity.uid} is outside ${LINUX_UID_RANGE.first}–${LINUX_UID_RANGE.last}`,
     );

@@ -68,10 +68,30 @@ runs with a shared home, and the session says why.
 
 Core records what each image can do when it builds it, and Mend records what each executor's prepare
 found, per image digest and runtime. When neither knows yet, the launch runs with a shared home and
-its prepare checks the image, so the next launch on that image can run per person. That check runs
-in a shared workspace, which cannot see what only a per-person one meets, so it only fills in an
-unknown: it never replaces an answer Core or a per-person workspace gave. A workspace started before
-0.36 is replaced (below) only once a per-person workspace has run on that image.
+its prepare checks the image, so the next launch on that image can run per person. A workspace
+started before 0.36 is replaced (below) only once a per-person workspace has run on that image, or
+on a worktree that already runs per person.
+
+A shared workspace's check cannot see what only a per-person workspace meets, so Mend weighs a
+remembered "no" by its reasons:
+
+- **Reasons a shared workspace sees** (no `sudo`, `useradd`, `setfacl` or `setpriv`, no ACLs on
+  `/workspace`, a sealantd without the capabilities, a uid or name taken): the next shared launch
+  checks again, and its answer replaces the "no". Fixing the image heals on its own.
+- **A person who could not be made, or an image that could not be checked:** kept for a day, then
+  checked again.
+- **No-new-privileges, an owner map refused, a runtime that cannot run per person (Kubernetes,
+  Cloudflare), or Core's own "no":** kept until the image's digest changes. After fixing the host
+  (removing `"no-new-privileges": true` from `daemon.json`, say), clear Mend's answer for the image
+  in Postgres, and the next launch checks again:
+
+  ```sql
+  SELECT image_key, runtime, missing, observed_at FROM image_layout_capabilities WHERE NOT person;
+  DELETE FROM image_layout_capabilities WHERE image_key = '<image_key>' AND runtime = '<runtime>';
+  ```
+
+Core reports the runtime it places each image on; on Kubernetes (`k8s`, `k3s`) and Cloudflare
+sandboxes every new worktree runs with a shared home before any launch is tried.
 
 **nix images take one person.** Their passwd is in the read-only store, which cannot hold a setuid
 `sudo`. A custom image without `sudo`, `useradd` or ACL support also takes one person.

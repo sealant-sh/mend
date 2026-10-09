@@ -11,11 +11,13 @@ stays per person whatever the setting.
 
 Where a workspace cannot run per person, a new worktree runs with one shared home and the session
 says why: a nix image, an image without `sudo`, an image Core reports it cannot run that way, a
-Kubernetes workspace runtime (no one's `sudo` works under `allowPrivilegeEscalation: false`), and a
-Docker host that sets no-new-privileges, which a per-person workspace now checks before it makes
-anyone. Mend no longer probes over an answer it already has: a shared workspace's check of an image
-fills in only what nobody knew, and Mend replaces an older shared workspace only on an answer a
-per-person workspace gave.
+Kubernetes or Cloudflare workspace runtime (ruled out before any launch, so none is refused to learn
+it), and a Docker host that sets no-new-privileges, which a per-person workspace now checks before
+it makes anyone. A remembered "no" is checked again by the next shared launch when a shared
+workspace can see every reason (no `sudo`, no ACLs and the like), and after a day when a person
+could not be made; a "no" from no-new-privileges, an owner map refused or Core is kept until the
+image changes. Mend replaces an older shared workspace when its worktree already runs per person, or
+once a per-person workspace has run on the image.
 
 Hot sessions keep their standby workspaces wherever launches run with a shared home. Where a new
 worktree would run per person, no standby can serve it (a standby starts as one person before any

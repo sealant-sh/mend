@@ -1413,4 +1413,17 @@ benchmark once more, before 0.36 is tagged.
   once per capture, not on every launch. The `/root` relocation already ran only in `shared`
   executors. A loopback server on the capture store runs per person by default, as the layout
   follows capability, not exposure.
+- 2026-10-09, after the second review of mend#582: a recorded "no" is weighed by its reasons. One
+  made only of what a shared probe sees (sudo, useradd, setfacl, setpriv, ACLs, sealantd's
+  capabilities, a uid or name taken) is checked again by the next shared launch, whose answer
+  replaces exactly that "no" (compare-and-set on its reasons); one that also names a person who
+  could not be made, or an image that could not be checked, is checked again after a day; one naming
+  no-new-privileges, an owner map refused, a runtime ruled out or the workspace's own refusal, or
+  met by Core's explicit "no", is kept until the digest changes, and Core's "no" beats a probe's
+  unconfirmed "yes". Core's runtimes `k8s`, `k3s` and `cloudflare` are ruled out before any launch.
+  A worktree already person retires its shared executor on its own record, confirmed or not, and
+  migration 0119 keeps a "yes" confirmed where a confirmed person launch ran on the image. A claimed
+  standby's shared decision stands at launch against what was learnt of the image since (`decide`'s
+  `standby`), so a claim never fails its session over a race; a head holding `people/` keeps
+  standbys away, and a claimed standby's prepare runs the probe a cold shared launch would.
 - Open: gate B's history record.

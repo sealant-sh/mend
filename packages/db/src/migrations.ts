@@ -3303,13 +3303,22 @@ const preReleaseExecutorsMigration = Effect.gen(function* () {
  * per-person executor (its prepare, or Core's create refusing the owner map). A shared launch's
  * probe cannot see what only a per-person executor meets (no-new-privileges, the owner map), so
  * its "yes" is a prediction: it never replaces an answer already recorded, and no executor is
- * retired on it. Rows recorded before this release count as unconfirmed.
+ * retired on it. Rows recorded before this release count as unconfirmed, but for a "yes" on an
+ * image a confirmed person launch ran on.
  */
 const imageLayoutConfirmedMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     ALTER TABLE image_layout_capabilities
       ADD COLUMN confirmed boolean NOT NULL DEFAULT false`;
+  // A "yes" a per-person executor already gave stands confirmed: an image that has run a
+  // confirmed person launch keeps its retirements going after the upgrade (review 2 of
+  // mend#582, N2).
+  yield* sql`
+    UPDATE image_layout_capabilities c SET confirmed = true
+    WHERE c.person
+      AND EXISTS (SELECT 1 FROM executor_layouts l
+                  WHERE l.image_key = c.image_key AND l.layout = 'person' AND l.confirmed)`;
 });
 
 export const migrations = {

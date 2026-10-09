@@ -15491,6 +15491,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   harness: platformShape(session.harness).harness,
                   image: launchImage,
                   headHasPeople: headHoldsPeople(session.worktreeId),
+                  // A claimed standby's claim found this launch runs shared, and it stands.
+                  ...(adopted !== null && claimedEntry !== null ? { standby: true } : {}),
                   // Decision 1's fallback for dotfiles until the platform applies them per person.
                   launcherHasDotfiles: launchImage.pipe(
                     Effect.flatMap((image) => dotfilesNotPerPerson(project, image, ownerUserId)),
@@ -15499,8 +15501,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 })
                 .pipe(settleOnFailure);
         if (adopted !== null && claimedEntry !== null && launchLayout.layout === "person") {
-          // A standby runs as one person and never serves a person worktree (`standbyMayServe`);
-          // one claimed before the worktree turned person goes, and the launch asks again.
+          // A standby runs as one person and never serves a person worktree (`standbyMayServe`),
+          // and its claim's shared decision stands against what was learnt of the image since
+          // (`decide`'s `standby`). Only a worktree that became person between the claim and now
+          // (another session's first person launch) reaches here: it goes, and the launch asks
+          // again.
           yield* drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(Effect.ignore);
           const error = new SealantPlatformError({
             code: "harness_layout_refused",
@@ -15787,7 +15792,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // (e2e9 F-B: an exec on an unclaimed standby clears sealantd's unclaimed marker). A
             // replan onto a saved head runs no setup command (review 2026-09-28 (15) #1).
             // A standby runs the shared layout (`standbyMayServe` keeps it from a person
-            // worktree): nothing about the layout is prepared here.
+            // worktree). Its prepare checks the image when the decision asked, as a cold shared
+            // launch's does, so launches served by standbys learn it too (review 2 of mend#582,
+            // N7).
             setupSkippedFrom = (yield* prepareExecutor({
               sessionId,
               workspace: provisioned.workspace,
@@ -15798,6 +15805,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
               abandon: abandonExecutor,
               warmHarness: session.harness,
+              ...(launchLayout.layout === "shared" && launchLayout.recorded
+                ? {
+                    layout: {
+                      launch: launchLayout,
+                      launchId: standbyLaunch,
+                      worktreeId: session.worktreeId,
+                      fallback: { credentials: undefined, harness: session.harness, dotfiles: [] },
+                    },
+                  }
+                : {}),
             })).setupSkippedFrom;
           }
         }
@@ -21086,6 +21103,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           !(yield* layoutSteps.standbyMayServe(
             worktree.id,
             freshLayoutInput(project, ownerUserId, platformShape(input.harness).harness),
+            headHoldsPeople(worktree.id),
           ))
         ) {
           return null;
