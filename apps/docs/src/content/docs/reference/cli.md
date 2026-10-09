@@ -90,7 +90,7 @@ it installs runs as `private` and `single`.
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `mend adopt [git-url] [--name <name>] [--auth <mode>] [--private\|--shared]`                  | Clone a network Git repository into the store; with no URL, the current checkout's `origin`                  |
 | `mend refresh [project]`                                                                      | Fetch origin's branches into the store so new sessions base on current tips                                  |
-| `mend projects`                                                                               | List adopted projects and their live sessions                                                                |
+| `mend projects [--json]`                                                                      | List adopted projects and their live sessions; `--json` for scripts                                          |
 | `mend env load [file] [--secret [A,B]] [--project <name>]`                                    | Load dotenv values into project configuration and secrets                                                    |
 | `mend env show [--project <name>]`                                                            | List configuration, secret, and cluster-binding names; never secret values                                   |
 | `mend env cluster add secret\|configmap <name>`, `remove <kind>/<name>`, `sa <name>\|--clear` | Bind Kubernetes Secrets, ConfigMaps, and a service account to a project's workspaces; Mend stores names only |
@@ -468,12 +468,15 @@ selection and host-key verification.
 | `mend service restart <name-or-id>`                                           | Start another attempt for a supervised Service                              |
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
-`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, and `--no-connect`. On
-a server that is not this machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`, and
-the dashboard tunnel the session's live Services declared `--http` or `--https` to this machine's
-loopback while attached, on the Service's own port when it is free. One line each says where it
-opens (`web → http://localhost:5173`); a Service that stops closes its tunnel, and detaching closes
-them all. `--no-tunnel` opts out.
+`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, and
+`--no-connect`. Mend holds the start for up to a minute until the port answers; with `--wait` the
+exit status says how that ended, `0` once it answered and `1` when it did not, and the Service keeps
+running either way. `--wait` takes TCP ports only: UDP has no probe. On a server that is not this
+machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`, and the dashboard tunnel the
+session's live Services declared `--http` or `--https` to this machine's loopback while attached, on
+the Service's own port when it is free. One line each says where it opens
+(`web → http://localhost:5173`); a Service that stops closes its tunnel, and detaching closes them
+all. `--no-tunnel` opts out.
 
 Read [Development services](/guides/services/) for network and authentication boundaries.
 

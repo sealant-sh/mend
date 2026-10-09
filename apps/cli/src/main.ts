@@ -2148,9 +2148,23 @@ const autoConnect = async (config: CliConfig, service: ServiceDto): Promise<void
   await tunnelServices(config, [service], null);
 };
 
+/**
+ * `--wait`: the server already holds the start until the port answers, for up to a minute. With
+ * the flag the exit status says how that ended: 0 once the port answered, 1 when it did not (the
+ * Service keeps running). UDP has no probe, so nothing could be waited for.
+ */
+const failUnlessAnswered = (service: ServiceDto, wait: boolean): void => {
+  if (!wait || service.status === "reachable") return;
+  const name = service.label ?? service.id.slice(0, 8);
+  fail(
+    `nothing answered on :${service.workspacePort} · ${service.status} · the Service keeps running · mend service logs ${name}`,
+  );
+};
+
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage = usageOf("service run");
+  const wait = (dashdash === -1 ? args : args.slice(0, dashdash)).includes("--wait");
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
   if (dashdash === -1) {
@@ -2173,6 +2187,9 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
           : `no recipe named "${name}" — declared: ${known}`,
       );
     }
+    if (wait && recipe.protocol === "udp") {
+      return fail(`--wait needs a TCP port: ${recipe.name} is UDP, which has no probe`);
+    }
     const service = await withSpinner(
       recipe.command === null
         ? `adopting ${recipe.name} on :${recipe.port}…`
@@ -2187,6 +2204,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
     printServiceEndpoint(config, service, tunneling);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+    failUnlessAnswered(service, wait);
     if (tunneling) await autoConnect(config, service);
     return;
   }
@@ -2205,8 +2223,15 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (http && https) return fail(usage);
   const browserScheme = https ? ("https" as const) : http ? ("http" as const) : null;
   if (protocol === "udp" && browserScheme !== null) return fail(usage);
+  if (protocol === "udp" && wait) {
+    return fail("--wait needs a TCP port: UDP has no probe, so nothing could be waited for");
+  }
+  // A flag absent reads -1: its "value" index must not shadow a session named first on the line.
   const prefix = head.find(
-    (a, i) => !a.startsWith("--") && i !== portFlag + 1 && i !== nameFlag + 1,
+    (a, i) =>
+      !a.startsWith("--") &&
+      (portFlag === -1 || i !== portFlag + 1) &&
+      (nameFlag === -1 || i !== nameFlag + 1),
   );
   const session = await resolveLiveSession(config, prefix, "service run");
 
@@ -2226,6 +2251,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
   printServiceEndpoint(config, service, tunneling);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+  failUnlessAnswered(service, wait);
   if (tunneling) await autoConnect(config, service);
 };
 
@@ -4728,23 +4754,56 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
 
 // ─── projects · sessions: the workbench at a glance ─────────────────────────
 
-const projectsCommand = async (config: CliConfig) => {
+/** What `mend projects --json` prints, stable for scripts like `mend sessions --json`. */
+interface ProjectsJson {
+  readonly version: 1;
+  readonly projects: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly originUrl: string | null;
+    readonly defaultBranch: string;
+    readonly storePath: string;
+    /** Live sessions in the project. */
+    readonly liveSessions: number;
+    /** The current directory is inside this project. */
+    readonly current: boolean;
+  }>;
+}
+
+const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const unknown = args.find((arg) => arg !== "--json");
+  if (unknown !== undefined) return fail(`unknown argument ${unknown} · ${usageOf("projects")}`);
   const [projects, active] = await Promise.all([
     api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects"),
     api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions"),
   ]);
-  if (projects.length === 0) {
-    say(dim("no adopted projects — mend adopt brings one in"));
-    return;
-  }
   const liveByProject = new Map<string, number>();
   for (const session of active) {
     liveByProject.set(session.projectId, (liveByProject.get(session.projectId) ?? 0) + 1);
   }
-  const nameWidth = Math.max(...projects.map((p) => p.name.length));
-  const branchWidth = Math.max(...projects.map((p) => p.defaultBranch.length));
   // The cwd's project is marked — the same resolution mend claude|shell use.
   const here = matchProjectByCwd(projects, cwdFacts(process.cwd()));
+  if (args.includes("--json")) {
+    printJson({
+      version: 1,
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        originUrl: project.originUrl,
+        defaultBranch: project.defaultBranch,
+        storePath: project.storePath,
+        liveSessions: liveByProject.get(project.id) ?? 0,
+        current: project.id === here?.id,
+      })),
+    } satisfies ProjectsJson);
+    return;
+  }
+  if (projects.length === 0) {
+    say(dim("no adopted projects — mend adopt brings one in"));
+    return;
+  }
+  const nameWidth = Math.max(...projects.map((p) => p.name.length));
+  const branchWidth = Math.max(...projects.map((p) => p.defaultBranch.length));
   for (const project of projects) {
     const live = liveByProject.get(project.id) ?? 0;
     const liveLabel = live > 0 ? green(`${live} live`) : dim("—");
@@ -5425,7 +5484,7 @@ const main = async () => {
     case "rejoin":
       return withAgentShare(config, () => rejoinCommand(config, rest));
     case "projects":
-      return projectsCommand(config);
+      return projectsCommand(config, rest);
     case "refresh":
       return refreshCommand(config, rest);
     case "land":

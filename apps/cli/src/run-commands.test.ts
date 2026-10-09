@@ -9,9 +9,9 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 /**
- * `mend run`, `mend logs` and `mend wait`, spawned from source against a fake server. stdin is
- * /dev/null on every run, and no assertion times the CLI: a loaded runner may leave it unscheduled
- * for seconds (mend#587).
+ * `mend run`, `mend logs`, `mend wait`, `mend projects --json` and `mend service run --wait`,
+ * spawned from source against a fake server. stdin is /dev/null on every run, and no assertion
+ * times the CLI: a loaded runner may leave it unscheduled for seconds (mend#587).
  */
 
 const spawning = { timeout: 60_000 };
@@ -702,4 +702,80 @@ describe("review of mend#610", spawning, () => {
       }
     },
   );
+});
+
+describe("--json and --wait", spawning, () => {
+  it("mend projects --json prints JSON, not the table", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === "GET /api/sessions") json(response, [session]);
+      else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["projects", "--json"]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        version: 1,
+        projects: [
+          {
+            id: project.id,
+            name: project.name,
+            originUrl: project.originUrl,
+            defaultBranch: "main",
+            storePath: project.storePath,
+            liveSessions: 1,
+            current: false,
+          },
+        ],
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait exits 1 when the port did not answer, and the Service stays", async () => {
+    const view = {
+      service: {
+        id: "service-1",
+        sessionId,
+        name: "web",
+        workspacePort: 3000,
+        transport: "tcp",
+        browserScheme: null,
+        currentAttemptId: "attempt-1",
+      },
+      attempts: [
+        {
+          id: "attempt-1",
+          argv: ["pnpm", "dev"],
+          status: "running",
+          exitedAt: null,
+          sealantSessionId: "pty-2",
+        },
+      ],
+      currentForward: { id: "forward-1", hostPort: 41000, state: "bound" },
+      latestObservation: { forwardId: "forward-1", state: "unreachable" },
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
+      endpoints: [],
+    };
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `POST /api/sessions/${sessionId}/services/run`) json(response, view);
+      else response.writeHead(404).end();
+    });
+    try {
+      const args = ["service", "run", sessionId.slice(0, 8), "--port", "3000"];
+      const waited = await runCli(fake.url, [...args, "--wait", "--", "pnpm", "dev"]);
+      expect(waited.code).toBe(1);
+      expect(waited.stderr).toContain("nothing answered on :3000 · unreachable");
+      expect(fake.routes).not.toContain("POST /api/services/service-1/stop");
+      const unwaited = await runCli(fake.url, [...args, "--", "pnpm", "dev"]);
+      expect(unwaited.code, unwaited.stderr).toBe(0);
+    } finally {
+      await fake.close();
+    }
+  });
 });
