@@ -86,11 +86,11 @@ const startFakeMend = async (
   const upgraded = new Promise<void>((resolve) => {
     notifyUpgraded = resolve;
   });
-  let upgrades = 0;
+  const upgradeUrls: Array<string> = [];
   const upgradedSockets = new Set<Duplex>();
   const server = createServer(handleHttp);
   server.on("upgrade", (request, socket) => {
-    upgrades += 1;
+    upgradeUrls.push(request.url ?? "");
     upgradedSockets.add(socket);
     socket.once("close", () => upgradedSockets.delete(socket));
     acceptWebSocket(request, socket);
@@ -113,7 +113,10 @@ const startFakeMend = async (
   return {
     endFrameSent,
     upgraded,
-    upgradeCount: () => upgrades,
+    upgradeCount: () => upgradeUrls.length,
+    /** The session each upgrade asked for, in order. */
+    upgradedSessions: () =>
+      upgradeUrls.map((url) => new URL(url, "http://fake").searchParams.get("session")),
     url: `http://127.0.0.1:${address.port}`,
     close: async () => {
       for (const socket of upgradedSockets) socket.destroy();
@@ -138,6 +141,8 @@ const startCli = (
       MEND_DETACH_KEY: "none",
       ...env,
     },
+    // stdin is /dev/null on every run, whatever terminal vitest itself has, so the CLI never
+    // sees a terminal here and an attach always says so once on stderr.
     stdio: ["ignore", "pipe", "pipe"],
     ...(cwd === undefined ? {} : { cwd }),
   });
@@ -164,17 +169,24 @@ const waitFor = async (predicate: () => boolean, timeoutMs = 15_000): Promise<vo
   }
 };
 
-const expectFastExit = async (
+/**
+ * The CLI exits 0 once it has what it waits for. The fake holds the transport open and never
+ * answers a close handshake, so a CLI that waits on anything after the end frame (the close, a
+ * settle read) never exits; the bound only turns that hang into a failure that says so. It is
+ * not a stopwatch: this clock also counts the time a loaded runner leaves the child unscheduled,
+ * and 750 ms of that failed CI (actions run 37981053820).
+ */
+const expectExit = async (
   exited: Promise<{ readonly kind: "exit"; readonly code: number | null }>,
-  stderr: () => string,
+  output: () => string,
 ) => {
   const outcome = await Promise.race([
     exited,
     new Promise<{ readonly kind: "timeout" }>((resolve) =>
-      setTimeout(() => resolve({ kind: "timeout" }), 750),
+      setTimeout(() => resolve({ kind: "timeout" }), 10_000),
     ),
   ]);
-  expect(outcome, stderr()).toEqual({ kind: "exit", code: 0 });
+  expect(outcome, output()).toEqual({ kind: "exit", code: 0 });
 };
 
 describe("mend adopt", spawning, () => {
@@ -210,8 +222,11 @@ describe("Mend CLI session selection", spawning, () => {
 
     try {
       await fake.endFrameSent;
-      await expectFastExit(cli.exited, cli.stderr);
+      await expectExit(cli.exited, () => cli.stdout() + cli.stderr());
+      expect(fake.upgradedSessions()).toEqual([session.id]);
       expect(cli.stdout()).toContain("attaching to");
+      expect(cli.stdout()).toContain("session ended");
+      expect(cli.stderr()).not.toContain("mend attach <session-id-prefix>");
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();
@@ -324,7 +339,7 @@ describe("Mend CLI session exit", spawning, () => {
 
     try {
       await fake.endFrameSent;
-      await expectFastExit(cli.exited, cli.stderr);
+      await expectExit(cli.exited, cli.stderr);
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();
@@ -350,7 +365,7 @@ describe("Mend CLI session exit", spawning, () => {
     try {
       await fake.endFrameSent;
       lifecycleEnded = true;
-      await expectFastExit(cli.exited, cli.stderr);
+      await expectExit(cli.exited, cli.stderr);
       expect(postEndRequests).toEqual([]);
     } finally {
       cli.child.kill("SIGKILL");
@@ -379,10 +394,10 @@ describe("Mend CLI session lifecycle", spawning, () => {
     const cli = startCli(fake.url, ["codex", "--project", project.name, "--detach"]);
 
     try {
-      // The fast-exit race starts once the fake saw the launch land: the CLI's
+      // The exit check starts once the fake saw the launch land: the CLI's
       // cold start (node boot + type stripping) is CI-speed, not under test.
       await waitFor(() => routes.includes(`POST /api/sessions/${session.id}/launch`));
-      await expectFastExit(cli.exited, cli.stderr);
+      await expectExit(cli.exited, cli.stderr);
       expect(fake.upgradeCount()).toBe(0);
       expect(routes).not.toContain("GET /api/settings"); // the flag decides — no read
       expect(cli.stdout()).toContain(`mend attach ${session.id.slice(0, 8)}`);
@@ -422,7 +437,7 @@ describe("Mend CLI session lifecycle", spawning, () => {
 
     try {
       await fake.endFrameSent;
-      await expectFastExit(cli.exited, cli.stderr);
+      await expectExit(cli.exited, cli.stderr);
       expect(routes).not.toContain(`POST /api/sessions/${session.id}/stop`);
     } finally {
       cli.child.kill("SIGKILL");
@@ -495,7 +510,7 @@ describe("a long launch", spawning, () => {
 
     try {
       await Promise.race([fake.endFrameSent, cli.exited]);
-      await expectFastExit(cli.exited, () => cli.stdout() + cli.stderr());
+      await expectExit(cli.exited, () => cli.stdout() + cli.stderr());
       expect(cli.stderr()).not.toContain("cannot reach");
       expect(cli.stdout()).toContain("starting · preparing the workspace");
     } finally {
