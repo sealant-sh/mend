@@ -751,6 +751,10 @@ export class FakeWorkbench {
         return json(404, { _tag: "NotFound" });
       });
     }
+    if (method === "GET" && collection === "changes" && sub === "stats") {
+      const stats = this.stats.get(id);
+      return stats === undefined ? json(404, { _tag: "NotFound" }) : json(200, stats);
+    }
     if (method === "GET" && collection === "changes" && sub === "diff") {
       const diff = this.diffs.get(id);
       if (diff === undefined) return json(404, { _tag: "NotFound" });
@@ -891,6 +895,9 @@ export class FakeWorkbench {
   readonly files = new Map<string, ReadonlyArray<string>>();
   /** How many files `GET /api/projects/:id/files` lists before it cuts (Mend's is 20,000). */
   fileListingLimit = 20_000;
+
+  /** `GET /api/changes/:id/stats`, by change id. */
+  readonly stats = new Map<string, { files: number; additions: number; deletions: number }>();
   /** How many images were pasted into workspaces. */
   pastedImages = 0;
   /** The Mend account a request's bearer belongs to (set by the fake Mend that pairs devices). */

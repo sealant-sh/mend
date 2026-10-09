@@ -304,6 +304,22 @@ branch for the project's root, both under Mend's visibility rules. Any other `cw
   over a cut list says `truncated`, even when nothing matched, so the composer never presents it as
   complete.
 
+### VCS status
+
+`subscribeVcsStatus` and `vcs.refreshStatus` (`src/vcs.ts`) answer for a thread's worktree from the
+change Mend keeps for it (`GET /api/changes/:id/stats`), read as the person.
+
+| t3code                                   | From Mend                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `refName`, `isDefaultRef`                | the session's branch; the project's root is its default branch                 |
+| `branchChanges`, `hasWorkingTreeChanges` | the change's totals: the worktree against its base                             |
+| `workingTree.files`                      | empty: Mend's stats carry no per-file lines; the changes panel lists the files |
+| `hasPrimaryRemote`                       | the project was adopted from an origin                                         |
+| the remote half                          | none: Mend tracks no upstream for a session's branch (landing is its own step) |
+
+The stream sends a snapshot, then the local half again when the thread changes in the shell, at most
+once a second and only when it moved.
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:

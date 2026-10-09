@@ -56,6 +56,7 @@ import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { makeServerConfig, makeWelcome, providersFromMend } from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
+import { makeVcsHandlers } from "./vcs.ts";
 
 /**
  * The `/ws` half of a t3code environment: every method of t3code's `WsRpcGroup` (ADR 0012, "The
@@ -95,6 +96,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.assetsPersistChatAttachments,
   WS_METHODS.projectsSearchEntries,
   WS_METHODS.projectsListEntries,
+  WS_METHODS.subscribeVcsStatus,
+  WS_METHODS.vcsRefreshStatus,
   WS_METHODS.reviewGetDiffPreview,
   WS_METHODS.reviewGetDiffFileContents,
 ]);
@@ -243,6 +246,7 @@ export const makeGatewayRpcHandlers = ({
   const { descriptor, paths } = environment;
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
+  const vcs = makeVcsHandlers({ hub, mend, session });
 
   /** The socket's own device token, checked on every call, then the scope it needs. */
   const authorize = (bearer: BearerSession, requiredScope: AuthEnvironmentScope) =>
@@ -715,10 +719,11 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.attachmentsDelete]: () => refuse(WS_METHODS.attachmentsDelete, OPERATE),
 
     // ── VCS and git ─────────────────────────────────────────────────────────
+    // The thread's change, as Mend keeps it (`vcs.ts`).
     [WS_METHODS.subscribeVcsStatus]: (input) =>
-      Stream.fail(gitManager(WS_METHODS.subscribeVcsStatus, input.cwd)),
+      Stream.unwrap(authorize(session, READ).pipe(Effect.as(vcs.subscribeStatus(input)))),
     [WS_METHODS.vcsRefreshStatus]: (input) =>
-      Effect.fail(gitManager(WS_METHODS.vcsRefreshStatus, input.cwd)),
+      authorize(session, READ).pipe(Effect.andThen(vcs.refreshStatus(input))),
     [WS_METHODS.gitRunStackedAction]: (input) =>
       Stream.fail(gitManager(WS_METHODS.gitRunStackedAction, input.cwd)),
     [WS_METHODS.gitResolvePullRequest]: (input) =>
