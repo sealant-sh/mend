@@ -19,11 +19,6 @@ could not be made; a "no" from no-new-privileges, an owner map refused or Core i
 image changes. Mend replaces an older shared workspace when its worktree already runs per person, or
 once a per-person workspace has run on the image.
 
-Hot sessions keep their standby workspaces wherever launches run with a shared home. Where a new
-worktree would run per person, no standby can serve it (a standby starts as one person before any
-worktree is known), so Mend keeps none for that person, drains the ready ones, and the Hot sessions
-card says `no standby · per-person workspaces launch cold`.
-
 A per-person workspace's first setup sends one short line per member of the organization instead of
 a copy of its script per member, so an organization of any size stays far below Linux's limit on a
 command's length (before, about 13 people passed it, and the Mend helper and Git transport were not

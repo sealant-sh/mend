@@ -110,8 +110,9 @@ export interface HeldHome {
  * sealantd's capture owner map (docs/adr/0016, decision 8): who each restored
  * `people/<account id>` belongs to, and whose the worktree and its git directory are. Core's
  * `WorkspaceCaptureOwnerMap` (sealant#333), carried as a capture source's `ownerMap`; uids are
- * 40001–49999. sealantd reads it only at boot, so an executor keeps the map it booted with: a
- * person launch never claims a standby (`standbyMayServe`), and a claim names the map it expects
+ * 40001–49999. sealantd reads it only at boot, so an executor keeps the map it booted with, and
+ * its replan restores under it: a person standby boots with its owner's alone and serves only a
+ * worktree that map is complete for (`standbyLayoutFor`), and a claim names the map it expects
  * (`captureReplan({ expectedOwnerMap })`).
  */
 export type CaptureOwnerMap = WorkspaceCaptureOwnerMap;

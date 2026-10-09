@@ -572,6 +572,7 @@ describe.skipIf(!reachable)("organizations", () => {
             worktreeId: null,
             ownerUserId: owner,
             fingerprint: "fp",
+            harnessLayout: owner === "carol" ? "person" : "shared",
             worktree: null,
             branch: null,
             baseSha: null,
@@ -585,6 +586,7 @@ describe.skipIf(!reachable)("organizations", () => {
           owners,
           bob: bobClaim?.id ?? null,
           carol: carolClaim?.id ?? null,
+          carolLayout: carolClaim?.harnessLayout ?? null,
           carolAgain: carolAgain?.id ?? null,
         };
       }),
@@ -593,6 +595,8 @@ describe.skipIf(!reachable)("organizations", () => {
       owners: ["alice", "carol"],
       bob: null,
       carol: "hot-carol",
+      // The layout the standby booted in rides its row (docs/adr/0016, per-person standbys).
+      carolLayout: "person",
       carolAgain: null,
     });
   });

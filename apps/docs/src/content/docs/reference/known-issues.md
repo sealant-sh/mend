@@ -356,6 +356,15 @@ is used by the other person's `git push`.
 - A custom image that installs toolchains under `/root` keeps them root's: they run for everyone,
   and each person's own installs land in their home.
 
+### Hot sessions
+
+- A [Hot sessions](/guides/project-environment/#hot-sessions) standby serves only its owner's
+  session in a new worktree they started. A session in a worktree that has already run per person,
+  or in a worktree someone else started, starts cold.
+- A standby keeps the image answer it started on. When Mend learns something new about the image (a
+  new digest, or that it cannot run per person), ready standbys of the old answer are replaced, and
+  one already claimed runs the launch in the layout it started in.
+
 ### There is no way back from per-person
 
 A worktree that has run per person always runs per person. Setting `MEND_HARNESS_LAYOUT=shared`

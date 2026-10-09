@@ -1443,4 +1443,23 @@ benchmark once more, before 0.36 is tagged.
   same-person join 3, another person's 4, resume 6, against the shared layout's 13, 4, 3 and 13,
   unchanged). ADR 0010's join rule and the Known issues name the layout they apply to. These items
   go when the `shared` layout takes one person per executor, or goes.
+- 2026-10-09, per-person standbys (after Delivery 21, for 0.36 at the owner's request): a standby
+  boots in the layout its owner's fresh worktrees are predicted to run in. A person standby is
+  created with the owner's identity ensured at warm time, `credentialsHome` for their home, no
+  dotfiles at boot and the owner map `{gid: 40000, worktreeUid: owner, people: [owner]}`, so
+  sealantd boots it per person (no no-new-privileges, sealantd#148). sealantd reads the map only at
+  boot, and its replan restores under it (`CaptureRuntime::replan` → `materialize_delta` →
+  `materialize_targets()`, whose `owners` is the boot config's; the worktree root is given to its
+  owner and group on every materialize, and a reused file is re-owned), so no platform change was
+  needed; the claim names the same map (`captureReplan`'s `expectedOwnerMap`), which Core compares.
+  The layout is on the hot row (`hot_workspaces.harness_layout`, migration 0120) and, for a person
+  standby, in the fingerprint with the image answer it booted on, so a claim takes only a standby of
+  the layout `standbyLayoutFor` predicts for the worktree; that map is complete only for a worktree
+  with no layout, no `people/` in its head, and the launcher as its change owner, so anything else
+  launches cold. At claim, `decide`'s `standby` names the standby's layout, which stands (a person
+  standby whose image is found unable since falls back to shared in it, as a cold person launch
+  does); its owner's dotfiles are resolved beside the replan, and its prepare is a cold person
+  launch's. A reconcile that cannot ask the control plane keeps the pool as it is. A replan that
+  fails goes cold under a layout decided for the cold executor's own launch. The Hot sessions status
+  no longer carries a cold reason.
 - Open: gate B's history record.

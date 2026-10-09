@@ -32,6 +32,8 @@ const base: HotFingerprintInputs = {
   links: [{ name: "api", rootPath: "/store/api/worktrees" }],
 };
 
+const SHARED: { readonly layout: "shared" } = { layout: "shared" };
+
 describe("hotFingerprint", () => {
   it("is stable across skill, reference, and mount ordering", () => {
     const reordered: HotFingerprintInputs = {
@@ -40,7 +42,7 @@ describe("hotFingerprint", () => {
       references: base.references.toReversed(),
       mounts: base.mounts.toReversed(),
     };
-    expect(hotFingerprint(reordered)).toBe(hotFingerprint(base));
+    expect(hotFingerprint(reordered, SHARED)).toBe(hotFingerprint(base, SHARED));
   });
 
   it("changes when any create-time input changes", () => {
@@ -97,23 +99,41 @@ describe("hotFingerprint", () => {
         mounts: [{ name: "notes", hostPath: "/home/u/notes", readOnly: false }],
       },
     ];
-    const seen = new Set([hotFingerprint(base)]);
+    const seen = new Set([hotFingerprint(base, SHARED)]);
     for (const variant of variants) {
-      const fingerprint = hotFingerprint(variant);
+      const fingerprint = hotFingerprint(variant, SHARED);
       expect(seen.has(fingerprint)).toBe(false);
       seen.add(fingerprint);
     }
   });
 
-  it("changes when a linked project's root changes, not when its bound worktree does", () => {
-    const relinked = hotFingerprint({
-      ...base,
-      links: [{ name: "api", rootPath: "/store/api-fork/worktrees" }],
+  it("is unchanged for a shared standby, and names a person standby's layout and the image answer it booted on (docs/adr/0016)", () => {
+    const person = hotFingerprint(base, {
+      layout: "person",
+      imageKey: "digest:sha256:a\u0000docker",
     });
-    expect(relinked).not.toBe(hotFingerprint(base));
+    expect(person).not.toBe(hotFingerprint(base, SHARED));
+    expect(
+      hotFingerprint(base, { layout: "person", imageKey: "digest:sha256:b\u0000docker" }),
+    ).not.toBe(person);
+    // A shared standby warmed before per-person standbys is still claimed: its hash is the same.
+    expect(hotFingerprint(base, SHARED)).toBe(
+      "858de71759eb5f7d1af3c4d71ba15adb35a2a17c56c0fabb8fc6792c4f5a450f",
+    );
+  });
+
+  it("changes when a linked project's root changes, not when its bound worktree does", () => {
+    const relinked = hotFingerprint(
+      {
+        ...base,
+        links: [{ name: "api", rootPath: "/store/api-fork/worktrees" }],
+      },
+      SHARED,
+    );
+    expect(relinked).not.toBe(hotFingerprint(base, SHARED));
     // The worktree bound at launch is not a create-time input, so it is not in the inputs at all.
-    expect(hotFingerprint({ ...base, links: [...base.links].toReversed() })).toBe(
-      hotFingerprint(base),
+    expect(hotFingerprint({ ...base, links: [...base.links].toReversed() }, SHARED)).toBe(
+      hotFingerprint(base, SHARED),
     );
   });
 });

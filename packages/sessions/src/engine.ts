@@ -324,12 +324,18 @@ import {
   platformKeyOf,
   runInstallCommand,
 } from "./dependency-cache.ts";
-import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
+import {
+  DotfilesCloner,
+  DotfilesResolveError,
+  type ResolvedDotfilesArchive,
+  snapshotArchive,
+} from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HarnessLayoutConfig,
   type LaunchLayout,
+  type StandbyLayout,
   type PersonHome,
   type PrepareOutcome,
   SHARED_AS_BEFORE,
@@ -339,7 +345,6 @@ import {
 } from "./harness-layout-steps.ts";
 import {
   gitAuthorConfigText,
-  HOT_POOL_PER_PERSON_COLD,
   identityFilesOf,
   KUBERNETES_LAYOUT_OBSTACLE,
   PEOPLE_DIR,
@@ -857,6 +862,27 @@ const withHarnessBootstrap = (
  * A launch's dotfiles record with every source it resolved said not applied for `reason` (none
  * without one), beside what was already left out.
  */
+/** A person standby's dotfiles at warm: none, resolved at its claim (`provisionWorkspace`). */
+const NO_DOTFILES = {
+  repository: null,
+  snapshotSha: null,
+  archives: [],
+  notApplied: [],
+};
+
+/**
+ * The capture owner map a person standby boots with (docs/adr/0016, per-person standbys): its
+ * owner alone, as the worktree's owner and its one person. Complete for any worktree a person
+ * standby serves (`standbyLayoutFor`): no `people/` in its head, and its change owner is the
+ * launcher, who is the standby's owner. The claim names the same map (`captureReplan`'s
+ * `expectedOwnerMap`), which Core compares with the one the standby booted with.
+ */
+const standbyOwnerMapOf = (owner: LinuxIdentity): CaptureOwnerMap => ({
+  gid: MEND_GROUP.gid,
+  worktreeUid: owner.uid,
+  people: [{ id: owner.accountId, uid: owner.uid }],
+});
+
 const withDotfilesNotApplied = (
   notApplied: ReadonlyArray<SessionDotfilesNotApplied>,
   resolved: { readonly repository: object | null; readonly snapshotSha: string | null },
@@ -2041,14 +2067,6 @@ export class SessionEngine extends Context.Service<
      * hot-sessions count itself, the image, dotfiles, skills, env, secrets, references, or mounts.
      */
     readonly reconcileHotSessions: (projectId: ProjectId) => Effect.Effect<void>;
-    /**
-     * Why the project keeps no standby for this person, observed: their fresh worktrees run per
-     * person, which no standby serves (docs/adr/0016, Delivery 21). Null when standbys are kept.
-     */
-    readonly hotSessionsColdReason: (
-      project: Project,
-      ownerUserId: string,
-    ) => Effect.Effect<string | null>;
     /** Snapshot the worktree now — review-open and user-mark come through here. */
     readonly checkpointNow: (
       sessionId: SessionId,
@@ -10467,9 +10485,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * to it: a person launch asks for the launcher's logins in their own home.
          */
         readonly layout?: { readonly launch: LaunchLayout; readonly worktreeId: WorktreeId };
+        /**
+         * A person standby (docs/adr/0016, per-person standbys): booted before any worktree is
+         * known, in its owner's per-person posture: their logins in their own home, no dotfiles
+         * at boot, and the owner map naming them alone (`standbyOwnerMapOf`). Everything else of
+         * a person launch runs at claim.
+         */
+        readonly standbyPerson?: Extract<LaunchLayout, { readonly layout: "person" }>;
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
-        const launchLayout = input.layout?.launch ?? SHARED_AS_BEFORE;
+        const launchLayout = input.layout?.launch ?? input.standbyPerson ?? SHARED_AS_BEFORE;
         // What the project inherits: its organization's defaults over the instance's.
         const settings = yield* settingsRepo.forOrganization(project.organizationId);
         const report = <A, E extends { readonly message: string }>(
@@ -10571,9 +10596,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           snapshotSha: dotfilesSnapshotSha,
           archives: dotfilesArchives,
           notApplied: dotfilesNotApplied,
-        } = personLaunch && !personPlatform.dotfilesUser
-          ? yield* dotfilesNotPerPerson(project, workspaceImage, ownerUserId)
-          : yield* resolveDotfiles(sessionId, project, workspaceImage, ownerUserId);
+        } = input.standbyPerson !== undefined
+          ? // Resolved at claim, applied as the owner once prepare has made them.
+            NO_DOTFILES
+          : personLaunch && !personPlatform.dotfilesUser
+            ? yield* dotfilesNotPerPerson(project, workspaceImage, ownerUserId)
+            : yield* resolveDotfiles(sessionId, project, workspaceImage, ownerUserId);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
         // Secrets are unsealed here — the only place Mend ever holds their plaintext — and ride
@@ -10665,9 +10693,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // source: sealantd restores each person's saved directory as theirs and the worktree to
         // the group. A shared launch sends none, and builds or reads nothing for one.
         const ownerMap =
-          launchLayout.layout === "person" && input.layout !== undefined
-            ? yield* captureOwnerMapOf(launchLayout, input.layout.worktreeId)
-            : null;
+          input.standbyPerson !== undefined
+            ? standbyOwnerMapOf(input.standbyPerson.launcher)
+            : launchLayout.layout === "person" && input.layout !== undefined
+              ? yield* captureOwnerMapOf(launchLayout, input.layout.worktreeId)
+              : null;
         const withLayoutOptions = (options: CreateOptions): CreateOptions =>
           ownerMap === null ? options : personPlatform.withOwnerMap(options, ownerMap);
         // A person launch's logins go into the launcher's own home, never `$HOME` and the
@@ -11231,7 +11261,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           environmentManifest: entry.environment,
           referenceMounts: entry.referenceMounts,
           extraMounts: entry.extraMounts,
-          // A standby was created as one person, before any worktree (docs/adr/0016).
+          // What prepare finds at claim: a person standby's runs after its replan
+          // (docs/adr/0016).
           executorLayout: "shared" as const,
           layoutFallback: null,
           opencodeRestored: [],
@@ -11248,16 +11279,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const replanClaimedStandby = Effect.fn("SessionEngine.replanClaimedStandby")(function* (
         session: Session,
         workspace: Workspace,
+        /** The owner map the standby booted with (`standbyOwnerMapOf`); null for a shared one. */
+        expectedOwnerMap: CaptureOwnerMap | null,
       ) {
         if (capture === null) return null;
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         // Read under the claim's lease: the head this replan plans, unless the daemon names it.
         const headBefore = yield* restoredCaptureOf(session.worktreeId);
-        // A standby boots with no owner map and serves only shared launches (`standbyMayServe`):
-        // the claim says it expects none, so Core refuses one booted with a map
+        // sealantd reads the owner map only at boot (sealant#333) and its replan restores under
+        // that map (`materialize_delta`), so the claim names the map it expects: none for a
+        // shared standby, its owner's for a person one. Core refuses any other
         // (`owner-map-mismatch`) before its daemon is reached, and the launch goes cold.
         const outcome = yield* sealant
-          .captureReplan(workspace, { expectedOwnerMap: null })
+          .captureReplan(workspace, { expectedOwnerMap })
           .pipe(Effect.timeoutOption(STANDBY_REPLAN_TIMEOUT), Effect.result);
         const annotations = {
           sessionId: session.id,
@@ -15475,24 +15509,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 .pipe(Effect.map((settings) => settings.workspaceImage))
             : Effect.succeed(project.workspaceImage),
         );
-        const launchLayout: LaunchLayout =
+        const decideLayout = (layoutLaunchId: string, standby: HarnessLayout | null) =>
           capture === null
-            ? SHARED_AS_BEFORE
-            : yield* layoutSteps
+            ? Effect.succeed(SHARED_AS_BEFORE)
+            : layoutSteps
                 .decide({
                   worktreeId: session.worktreeId,
                   sessionId,
-                  launchId:
-                    adopted !== null && claimedEntry !== null
-                      ? standbyLaunchIdOf(claimedEntry.id)
-                      : coldLaunchKey,
+                  launchId: layoutLaunchId,
                   ownerUserId,
                   organizationId: project.organizationId,
                   harness: platformShape(session.harness).harness,
                   image: launchImage,
                   headHasPeople: headHoldsPeople(session.worktreeId),
-                  // A claimed standby's claim found this launch runs shared, and it stands.
-                  ...(adopted !== null && claimedEntry !== null ? { standby: true } : {}),
+                  // A claimed standby's claim found this launch runs in the layout it booted
+                  // in, and that stands.
+                  ...(standby === null ? {} : { standby }),
                   // Decision 1's fallback for dotfiles until the platform applies them per person.
                   launcherHasDotfiles: launchImage.pipe(
                     Effect.flatMap((image) => dotfilesNotPerPerson(project, image, ownerUserId)),
@@ -15500,18 +15532,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
                 })
                 .pipe(settleOnFailure);
-        if (adopted !== null && claimedEntry !== null && launchLayout.layout === "person") {
-          // A standby runs as one person and never serves a person worktree (`standbyMayServe`),
-          // and its claim's shared decision stands against what was learnt of the image since
-          // (`decide`'s `standby`). Only a worktree that became person between the claim and now
-          // (another session's first person launch) reaches here: it goes, and the launch asks
-          // again.
+        let launchLayout: LaunchLayout =
+          adopted !== null && claimedEntry !== null
+            ? yield* decideLayout(standbyLaunchIdOf(claimedEntry.id), claimedEntry.harnessLayout)
+            : yield* decideLayout(coldLaunchKey, null);
+        if (
+          adopted !== null &&
+          claimedEntry !== null &&
+          launchLayout.layout !== claimedEntry.harnessLayout
+        ) {
+          // A standby serves only a launch decided in the layout it booted in
+          // (`standbyLayoutFor`), and its claim's decision stands against what was learnt of the
+          // image since (`decide`'s `standby`). Only a shared standby on a worktree that became
+          // person between the claim and now (another session's first person launch) reaches
+          // here: it goes, and the launch asks again.
           yield* drainHotWorkspace(claimedEntry, { keepWorktree: true }).pipe(Effect.ignore);
           const error = new SealantPlatformError({
             code: "harness_layout_refused",
             status: 409,
             message:
-              "the standby claimed for this session runs as one person, and this worktree runs per person; start the session again",
+              claimedEntry.harnessLayout === "shared"
+                ? "the standby claimed for this session runs as one person, and this worktree runs per person; start the session again"
+                : "the standby claimed for this session runs each person as their own user, and this launch runs as one person; start the session again",
             cause: null,
           });
           yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
@@ -15719,6 +15761,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let executorStartedAt =
           adopted !== null && claimedEntry !== null ? claimedEntry.createdAt : new Date();
         let provisioned = adopted ?? (yield* provisionCold(coldLaunchKey));
+        let claimedPerson: {
+          readonly executorLayout: HarnessLayout;
+          readonly layoutFallback: string | null;
+          readonly opencodeRestored: ReadonlyArray<LinuxIdentity>;
+          readonly personDotfiles: ReadonlyArray<ResolvedDotfilesArchive>;
+          readonly dotfiles: SessionDotfiles;
+        } | null = null;
         // Capture mode, a claimed standby (`hot-pool.ts` "Capture-mode standby"): its executor
         // booted on the project base under a placeholder; `capture.replan` makes it fetch the
         // plan again — the channel answers this session's worktree, the epoch the claim took
@@ -15736,7 +15785,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           launchId = standbyLaunch;
           yield* acceptExecutor(provisioned.workspace, standbyLaunch);
           yield* hotWorkspaces.remove(claimedEntry.id);
-          const replanned = yield* replanClaimedStandby(session, provisioned.workspace);
+          // A person standby applied no dotfiles at boot: its owner's are resolved beside the
+          // replan, off its critical path, and applied as them once prepare has made them.
+          const standbyDotfiles =
+            launchLayout.layout === "person"
+              ? yield* Effect.forkChild(
+                  personPlatform.dotfilesUser
+                    ? resolveDotfiles(sessionId, project, provisioned.workspaceImage, ownerUserId)
+                    : dotfilesNotPerPerson(project, provisioned.workspaceImage, ownerUserId),
+                )
+              : null;
+          const replanned = yield* replanClaimedStandby(
+            session,
+            provisioned.workspace,
+            launchLayout.layout === "person" ? standbyOwnerMapOf(launchLayout.launcher) : null,
+          );
           if (replanned === null) {
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
               force: true,
@@ -15771,6 +15834,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             executorCreated = false;
             const fallbackKey = executorCreateKeyFor(sessionId, new Date());
+            // A cold launch of its own: its layout is decided for its own executor, as any cold
+            // launch's is, never carried over from the standby's.
+            launchLayout = yield* decideLayout(fallbackKey, null);
             launchClaim = yield* capture.repo
               .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS, fallbackKey)
               .pipe(
@@ -15791,11 +15857,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // Claimed: what a cold launch runs right after its create runs now, and not before
             // (e2e9 F-B: an exec on an unclaimed standby clears sealantd's unclaimed marker). A
             // replan onto a saved head runs no setup command (review 2026-09-28 (15) #1).
-            // A standby runs the shared layout (`standbyMayServe` keeps it from a person
-            // worktree). Its prepare checks the image when the decision asked, as a cold shared
-            // launch's does, so launches served by standbys learn it too (review 2 of mend#582,
-            // N7).
-            setupSkippedFrom = (yield* prepareExecutor({
+            // A shared standby's prepare checks the image when the decision asked, as a cold
+            // shared launch's does, so launches served by standbys learn it too (review 2 of
+            // mend#582, N7). A person standby's is a cold person launch's: it makes the launcher's
+            // user, checks the restore gave the worktree to the group, and on a wrong prediction
+            // falls back to shared with the launcher's logins in `/root` (docs/adr/0016).
+            const dotfiles = standbyDotfiles === null ? null : yield* Fiber.join(standbyDotfiles);
+            const prepared = yield* prepareExecutor({
               sessionId,
               workspace: provisioned.workspace,
               workspaceImage: provisioned.workspaceImage,
@@ -15805,19 +15873,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
               abandon: abandonExecutor,
               warmHarness: session.harness,
-              ...(launchLayout.layout === "shared" && launchLayout.recorded
+              ...(launchLayout.layout === "person" ||
+              (launchLayout.layout === "shared" && launchLayout.recorded)
                 ? {
                     layout: {
                       launch: launchLayout,
                       launchId: standbyLaunch,
                       worktreeId: session.worktreeId,
-                      fallback: { credentials: undefined, harness: session.harness, dotfiles: [] },
+                      fallback: {
+                        // What the standby's create asked for (`platformShape("shell")`).
+                        credentials:
+                          launchLayout.layout === "person"
+                            ? platformShape("shell").credentialAttempts[0]
+                            : undefined,
+                        harness: session.harness,
+                        dotfiles: (dotfiles?.archives ?? []).map((archive) => ({
+                          data: archive.data,
+                          manager: archive.manager,
+                          bootstrap: archive.bootstrap,
+                        })),
+                      },
                     },
                   }
                 : {}),
-            })).setupSkippedFrom;
+            });
+            setupSkippedFrom = prepared.setupSkippedFrom;
+            if (dotfiles !== null) {
+              claimedPerson = {
+                executorLayout: prepared.layout,
+                layoutFallback: prepared.fallback,
+                opencodeRestored: prepared.opencode,
+                personDotfiles: prepared.layout === "person" ? dotfiles.archives : [],
+                dotfiles: {
+                  repository:
+                    dotfiles.repository === null
+                      ? null
+                      : { url: dotfiles.repository.url, ref: dotfiles.repository.ref },
+                  snapshotSha: dotfiles.snapshotSha,
+                  notApplied: withDotfilesNotApplied(
+                    dotfiles.notApplied,
+                    { repository: dotfiles.repository, snapshotSha: dotfiles.snapshotSha },
+                    prepared.dotfilesNotApplied,
+                  ),
+                },
+              };
+            }
           }
         }
+        // A claimed person standby's layout, as its prepare found it, and its owner's dotfiles,
+        // resolved at claim; anything else as provisioned.
+        const launched =
+          claimedPerson === null ? provisioned : { ...provisioned, ...claimedPerson };
         const { workspace, workspaceImage, environmentManifest } = provisioned;
         // A standby claimed outside capture mode is the session's from here on, as a cold create
         // is from its accepted create (`acceptExecutor`).
@@ -15847,20 +15953,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Stamped alongside the image: what this session ACTUALLY launched with — the repo
         // url+ref that was cloned and the exact snapshot sha the store packed (for a hot
         // workspace: whatever the prewarm actually applied).
-        yield* sessions.setDotfiles(sessionId, provisioned.dotfiles);
+        yield* sessions.setDotfiles(sessionId, launched.dotfiles);
         // The owner's git author (docs/GIT-ACCESS.md, "Git author"), for a cold workspace and a
         // claimed standby alike: system config, written before the harness starts, so dotfiles
         // and repository config still decide over it.
         // In a person-layout executor no `git config --system user.*` is written: each person's
         // author went into their own `~/.config/git/config` when their user was made
         // (docs/adr/0016, decision 4), the launcher's at prepare.
-        if (provisioned.executorLayout !== "person") {
+        if (launched.executorLayout !== "person") {
           yield* applyGitAuthor(sessionId, workspace, ownerUserId);
         }
         // In a person-layout executor every delivery is the launcher's own, into their own home,
         // as them (docs/adr/0016, Delivery 15, `deliverToPerson`): nothing goes into `/root` or the
         // shared harness home, which nobody's process reads there.
-        const personExecutor = provisioned.executorLayout === "person";
+        const personExecutor = launched.executorLayout === "person";
         // Mend's default shell profile, beside it and for the same launches: dotfiles were
         // applied at boot, so only a file they left absent is written.
         if (!personExecutor) {
@@ -16053,8 +16159,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 agent: true,
                 harness: interactiveShell ? "shell" : session.harness,
                 dotfiles: {
-                  archives: provisioned.personDotfiles,
-                  record: provisioned.dotfiles,
+                  archives: launched.personDotfiles,
+                  record: launched.dotfiles,
                 },
                 resumeId:
                   manifest !== null && manifest.harness === session.harness
@@ -16072,7 +16178,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             session.harness === "opencode" && !interactiveShell
               ? launchLayout.launcher.accountId
               : null;
-          for (const person of provisioned.opencodeRestored) {
+          for (const person of launched.opencodeRestored) {
             // The launcher's own opencode was scrubbed before it starts; it holds the database now.
             if (person.accountId === scrubbedBeforeStart) continue;
             yield* Effect.forkIn(
@@ -16208,8 +16314,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Per-person harness homes (docs/adr/0016): in a person-layout executor the launcher's
         // processes run as their own user, made at prepare (so this adds no exec). Elsewhere
         // nothing changes: the agent and the install run as root.
-        const executorLayout = provisioned.executorLayout;
-        const layoutFallback: string | null = provisioned.layoutFallback;
+        const executorLayout = launched.executorLayout;
+        const layoutFallback: string | null = launched.layoutFallback;
         const startAs =
           executorLayout === "person"
             ? yield* layoutSteps
@@ -20745,7 +20851,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         project: Project,
         ownerUserId: string,
         fingerprint: string,
+        standby: StandbyLayout,
       ) {
+        // A person standby boots in its owner's per-person posture (docs/adr/0016, per-person
+        // standbys): their Linux identity is made before the create, which names it.
+        const standbyPerson =
+          standby.layout === "shared"
+            ? null
+            : yield* harnessLayouts.ensureIdentity(ownerUserId).pipe(
+                Effect.map(
+                  (launcher): Extract<LaunchLayout, { readonly layout: "person" }> => ({
+                    layout: "person",
+                    source: "flag",
+                    onMissing: "fallback",
+                    launcher,
+                    members: [],
+                    imageKey: standby.imageKey,
+                    runtime: standby.runtime,
+                  }),
+                ),
+                Effect.catch((error) =>
+                  Effect.logWarning(
+                    "session engine: person standby not warmed · no Linux identity for its owner",
+                  ).pipe(
+                    Effect.annotateLogs({ projectId: project.id, error: String(error) }),
+                    Effect.as(null),
+                  ),
+                ),
+              );
+        if (standby.layout === "person" && standbyPerson === null) return false;
         const sessionId = SessionId.make(crypto.randomUUID());
         // A skeleton is a STANDBY workspace (ADR-0001): it mounts the project's worktrees root
         // and no worktree of its own. The claiming session brings whichever worktree it needs —
@@ -20760,6 +20894,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           worktreeId: null,
           ownerUserId,
           fingerprint,
+          harnessLayout: standby.layout,
           worktree: null,
           branch: null,
           baseSha: null,
@@ -20810,6 +20945,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   createKey: { key: standbyLaunchIdOf(sessionId), onAsking: Effect.void },
                   // Nothing executes in a capture-mode standby before its claim (e2e9 F-B).
                   deferPreparation: true,
+                  ...(standbyPerson === null ? {} : { standbyPerson }),
                 }),
           });
           // Capture mode: the note is written at claim, as every launch writes it; an exec here
@@ -20890,20 +21026,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       };
 
       /**
-       * Whether this owner's standbys could never be claimed: capture mode, and their fresh
-       * worktrees' launches predicted per person. A failed read keeps the pool as it was.
+       * The layout this owner's standbys boot in (docs/adr/0016, per-person standbys): the one
+       * their fresh worktrees' launches are predicted to run in. Null when it cannot be told now.
+       * Outside capture mode every launch runs as before.
        */
-      const standbysUnclaimableFor = (project: Project, ownerUserId: string) =>
+      const standbyLayoutOf = (project: Project, ownerUserId: string) =>
         capture === null
-          ? Effect.succeed(false)
-          : layoutSteps
-              .freshLaunchPerson(
-                freshLayoutInput(project, ownerUserId, platformShape("shell").harness),
-              )
-              .pipe(Effect.orElseSucceed(() => false));
-
-      /** Owners whose standbys are skipped, logged once each until that changes. */
-      const coldOwnersLogged = new Set<string>();
+          ? Effect.succeed<StandbyLayout | null>({ layout: "shared" })
+          : layoutSteps.freshLaunchLayout(
+              freshLayoutInput(project, ownerUserId, platformShape("shell").harness),
+            );
 
       /** One reconcile pass; callers serialize through `requestHotReconcile`. */
       const reconcileHotPoolOnce = Effect.fn("SessionEngine.reconcileHotPoolOnce")(function* (
@@ -20937,24 +21069,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // fingerprint the project resolves to for them.
         const owners = target === 0 ? [] : yield* hotPoolOwners(project);
         const fingerprints = new Map<string, string>();
+        const layouts = new Map<string, StandbyLayout>();
         const unreadable = new Set<string>();
         for (const owner of owners) {
-          // A standby boots as one person before any worktree is known, so it never serves a
-          // launch predicted per person (`standbyMayServe`): for an owner whose fresh worktrees
-          // run per person none is kept, and what they held drains. Where launches run shared (an
-          // image or runtime that cannot run per person, `MEND_HARNESS_LAYOUT=shared`) the pool
-          // is kept (docs/adr/0016, Delivery 21).
-          if (yield* standbysUnclaimableFor(project, owner)) {
-            const key = `${projectId}:${owner}`;
-            if (!coldOwnersLogged.has(key)) {
-              coldOwnersLogged.add(key);
-              yield* Effect.logInfo(
-                `session engine: warm skipped · ${HOT_POOL_PER_PERSON_COLD}`,
-              ).pipe(Effect.annotateLogs({ projectId, ownerUserId: owner }));
-            }
+          // A standby boots before any worktree is known, in the layout its owner's fresh
+          // worktrees are predicted to run in (docs/adr/0016, per-person standbys): shared where
+          // they run shared (an image or runtime that cannot run per person,
+          // `MEND_HARNESS_LAYOUT=shared`), person, booted as its owner, where they run per
+          // person. The layout and the image answer it rests on are in the fingerprint, so a
+          // standby of the other layout drains and the claim never takes it.
+          const standby = yield* standbyLayoutOf(project, owner);
+          if (standby === null) {
+            yield* Effect.logInfo(
+              "session engine: hot pool · the layout could not be told · entries kept as they are",
+            ).pipe(Effect.annotateLogs({ projectId, ownerUserId: owner }));
+            unreadable.add(owner);
             continue;
           }
-          coldOwnersLogged.delete(`${projectId}:${owner}`);
           const inputs = yield* hotInputsFor(project, owner).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: hot pool inputs unreadable").pipe(
@@ -20964,7 +21095,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           if (inputs === null) unreadable.add(owner);
-          else fingerprints.set(owner, hotFingerprint(inputs));
+          else {
+            fingerprints.set(owner, hotFingerprint(inputs, standby));
+            layouts.set(owner, standby);
+          }
         }
         const survivors = new Map<string, Array<HotWorkspace>>();
         for (const entry of entries) {
@@ -21015,9 +21149,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             else yield* drainHotWorkspace(entry);
           }
           while (count < target) {
-            const provisioned = yield* provisionHotWorkspace(project, owner, fingerprint).pipe(
-              asSealantUser(owner),
-            );
+            const provisioned = yield* provisionHotWorkspace(
+              project,
+              owner,
+              fingerprint,
+              layouts.get(owner) ?? { layout: "shared" },
+            ).pipe(asSealantUser(owner));
             // A failure leaves its row `failed` for the setup page; the next trigger retries.
             if (!provisioned) break;
             count += 1;
@@ -21096,21 +21233,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Only the owner's own standby serves the session, and only while they may run here.
         const ownerUserId = input.ownerUserId;
         if (ownerUserId === null) return null;
-        // A standby is created as one person before any worktree is known (docs/adr/0016): it
-        // never serves a worktree that runs, or is predicted to run, per person.
-        if (
-          capture !== null &&
-          !(yield* layoutSteps.standbyMayServe(
-            worktree.id,
-            freshLayoutInput(project, ownerUserId, platformShape(input.harness).harness),
-            headHoldsPeople(worktree.id),
-          ))
-        ) {
-          return null;
+        // A standby is created before any worktree is known, in one layout (docs/adr/0016): it
+        // serves a worktree with no layout yet whose launch is predicted to run in that layout,
+        // which the fingerprint carries, so a standby of the other layout is never claimed. A
+        // worktree already person goes cold.
+        const standby =
+          capture === null
+            ? { layout: "shared" as const }
+            : yield* layoutSteps.standbyLayoutFor(
+                worktree.id,
+                freshLayoutInput(project, ownerUserId, platformShape(input.harness).harness),
+                headHoldsPeople(worktree.id),
+              );
+        if (standby === null) return null;
+        // A person standby's owner map names its owner as the worktree's: it serves only a
+        // worktree whose change owner they are (the first session's owner), or will be.
+        if (standby.layout === "person") {
+          const changeOwner = changeOwnerOf(yield* sessions.listForWorktree(worktree.id));
+          if (changeOwner !== null && changeOwner !== ownerUserId) return null;
         }
         if (!(yield* mayRunIn(organizations, project, ownerUserId))) return null;
         const inputs = yield* hotInputsFor(project, ownerUserId);
-        const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs), ownerUserId);
+        const entry = yield* hotWorkspaces.claim(
+          project.id,
+          hotFingerprint(inputs, standby),
+          ownerUserId,
+        );
         if (entry === null) return null;
         if (capture !== null) {
           // Capture 0 first (a worktree made before captures has no chain yet), then the lease
@@ -22050,12 +22198,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         reconcileHotSessions: requestHotReconcile,
-        hotSessionsColdReason: (project, ownerUserId) =>
-          project.hotSessions === 0
-            ? Effect.succeed(null)
-            : standbysUnclaimableFor(project, ownerUserId).pipe(
-                Effect.map((cold) => (cold ? HOT_POOL_PER_PERSON_COLD : null)),
-              ),
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
         landingCheckpoint: (sessionId, trigger) =>
           owned(sessionId)(landingCheckpoint(sessionId, trigger)),

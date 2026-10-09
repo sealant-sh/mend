@@ -66,9 +66,20 @@ const encodeWorkspaceImage = Schema.encodeSync(WorkspaceImage);
 const byName = <T extends { readonly name: string }>(items: ReadonlyArray<T>): ReadonlyArray<T> =>
   items.toSorted((a, b) => a.name.localeCompare(b.name));
 
-/** Stable content hash of the create-time-fixed inputs; key order is fixed by construction. */
-export const hotFingerprint = (inputs: HotFingerprintInputs): string => {
+/**
+ * Stable content hash of the create-time-fixed inputs; key order is fixed by construction. A
+ * person standby's layout and the image answer it booted on are part of it (docs/adr/0016,
+ * per-person standbys): booted in its owner's per-person posture, it serves only a launch
+ * predicted per person on that answer. A shared standby's hash is what it was before them.
+ */
+export const hotFingerprint = (
+  inputs: HotFingerprintInputs,
+  standby: { readonly layout: "shared" } | { readonly layout: "person"; readonly imageKey: string },
+): string => {
   const canonical = {
+    ...(standby.layout === "person"
+      ? { harnessLayout: { layout: standby.layout, imageKey: standby.imageKey } }
+      : {}),
     // Bump when launch preparation changes in a way an already-running standby cannot inherit.
     // v1 relocates every harness directory into sealantd's configured capture root before launch;
     // v2 relocates pi's `.pi` too (a standby made before it would leave pi's state ephemeral).

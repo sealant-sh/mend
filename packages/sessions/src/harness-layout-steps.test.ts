@@ -7,6 +7,7 @@ import {
 } from "@mend/db";
 import { OrganizationId, WorktreeId, defaultWorkspaceImage } from "@mend/domain";
 import {
+  CONTROL_PLANE_UNREADABLE,
   type HomeLogins,
   type LoginProvider,
   type LoginSkip,
@@ -302,7 +303,7 @@ const decideInput = (launchId: string, worktree = "wt-1") => ({
   headHasPeople: Effect.succeed(false),
 });
 
-/** What a fresh worktree of Alice's is predicted on (`freshLaunchPerson`, `standbyMayServe`). */
+/** What a fresh worktree of Alice's is predicted on (`freshLaunchLayout`, `standbyLayoutFor`). */
 const freshInput = {
   ownerUserId: "user-alice",
   image: Effect.succeed(defaultWorkspaceImage),
@@ -380,14 +381,14 @@ describe("the default against images and runtimes that cannot run per person (re
               worktreeId: WorktreeId.make(worktree),
               ...freshInput,
             }),
-            standby: yield* steps.standbyMayServe(WorktreeId.make(worktree), freshInput),
+            standby: yield* steps.standbyLayoutFor(WorktreeId.make(worktree), freshInput),
           });
         }
         return {
           runs,
           recorded: [...state.capabilities.values()],
           worktrees: [...state.worktrees.values()].filter((wt) => wt.layout !== null),
-          fresh: yield* steps.freshLaunchPerson(freshInput),
+          fresh: yield* steps.freshLaunchLayout(freshInput),
         };
       }),
     );
@@ -396,12 +397,12 @@ describe("the default against images and runtimes that cannot run per person (re
         layout: "shared",
         probe: false,
         retire: false,
-        standby: true,
+        standby: { layout: "shared" },
       })),
     );
     expect(result.recorded).toEqual([]);
     expect(result.worktrees).toEqual([]);
-    expect(result.fresh).toBe(false);
+    expect(result.fresh).toEqual({ layout: "shared" });
   });
 
   it("a Kubernetes runtime is known without asking: shared, no probe, Core not asked", async () => {
@@ -435,7 +436,7 @@ describe("the default against images and runtimes that cannot run per person (re
           ...settleInput("launch-1", probedYes, "wt-1"),
         });
         const predicted = {
-          fresh: yield* steps.freshLaunchPerson(freshInput),
+          fresh: (yield* steps.freshLaunchLayout(freshInput))?.layout,
           retire: yield* steps.nextLaunchPerson({
             worktreeId: WorktreeId.make("wt-1"),
             ...freshInput,
@@ -463,7 +464,7 @@ describe("the default against images and runtimes that cannot run per person (re
     );
     expect(result).toEqual({
       first: true,
-      predicted: { fresh: true, retire: false },
+      predicted: { fresh: "person", retire: false },
       second: "person",
       retire: true,
       recorded: [{ person: true, confirmed: true }],
@@ -678,12 +679,15 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
-        const claimed = yield* steps.decide({ ...decideInput("launch-standby"), standby: true });
+        const claimed = yield* steps.decide({
+          ...decideInput("launch-standby"),
+          standby: "shared",
+        });
         const plain = yield* steps.decide(decideInput("launch-cold", "wt-2"));
         return {
           claimed,
           plain: plain.layout,
-          withPeople: yield* steps.standbyMayServe(
+          withPeople: yield* steps.standbyLayoutFor(
             WorktreeId.make("wt-3"),
             freshInput,
             Effect.succeed(true),
@@ -693,7 +697,51 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     );
     expect(result.claimed).toMatchObject({ layout: "shared", reason: STANDBY_REASON });
     expect(result.plain).toBe("person");
-    expect(result.withPeople).toBe(false);
+    expect(result.withPeople).toBeNull();
+  });
+
+  it("a claimed person standby's person decision stands against a no learnt since: its prepare checks the image and falls back, never fails the launch (N7)", async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const state = makeHarnessLayoutsMemoryState();
+        const { steps } = yield* stepsWith("person", state, {
+          platform: platformOf(coreCalls(), {
+            report: { digest: "sha256:img", runtime: "docker", person: true, missing: [] },
+          }),
+        });
+        const before = yield* steps.freshLaunchLayout(freshInput);
+        // A cold launch's prepare finds the image cannot run it, between the claim and its launch.
+        const cold = yield* steps.decide(decideInput("launch-cold", "wt-2"));
+        yield* steps.settlePrepare({
+          layout: cold,
+          ...settleInput("launch-cold", "mend-layout probed\nmend-layout missing sudo\n", "wt-2"),
+        });
+        const claimed = yield* steps.decide({
+          ...decideInput("launch-standby"),
+          standby: "person",
+        });
+        return {
+          before,
+          after: yield* steps.freshLaunchLayout(freshInput),
+          claimed: claimed.layout === "person" ? claimed.onMissing : claimed.layout,
+        };
+      }),
+    );
+    expect(result.before).toMatchObject({ layout: "person", runtime: "docker" });
+    expect(result.after).toEqual({ layout: "shared" });
+    expect(result.claimed).toBe("fallback");
+  });
+
+  it("the layout cannot be told while the control plane cannot be asked: the pool keeps what it has (N7)", async () => {
+    const fresh = await Effect.runPromise(
+      Effect.gen(function* () {
+        const { steps } = yield* stepsWith("person", makeHarnessLayoutsMemoryState(), {
+          platform: platformOf(coreCalls(), { controlPlaneObstacle: CONTROL_PLANE_UNREADABLE }),
+        });
+        return yield* steps.freshLaunchLayout(freshInput);
+      }),
+    );
+    expect(fresh).toBeNull();
   });
 });
 
@@ -738,7 +786,7 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
         const before = yield* stepsWith("shared", state);
         yield* before.steps.decide(decideInput("launch-live"));
         yield* before.steps.mayRunPerson(WorktreeId.make("wt-1"));
-        yield* before.steps.standbyMayServe(WorktreeId.make("wt-1"), freshInput);
+        yield* before.steps.standbyLayoutFor(WorktreeId.make("wt-1"), freshInput);
         // Mend restarts: a new process, its cache empty, the launch still live.
         const after = yield* stepsWith("shared", state);
         const layouts = [
@@ -746,7 +794,7 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
           yield* after.steps.layoutOfLaunch("launch-from-before"),
         ];
         const runsPerson = yield* after.steps.mayRunPerson(WorktreeId.make("wt-1"));
-        const standby = yield* after.steps.standbyMayServe(WorktreeId.make("wt-1"), freshInput);
+        const standby = yield* after.steps.standbyLayoutFor(WorktreeId.make("wt-1"), freshInput);
         yield* after.steps.decide(decideInput("launch-next"));
         return { layouts, runsPerson, standby, reads: [...before.reads, ...after.reads] };
       }),
@@ -754,7 +802,7 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
     expect(result).toEqual({
       layouts: ["shared", "shared"],
       runsPerson: false,
-      standby: true,
+      standby: { layout: "shared" },
       reads: [],
     });
   });
@@ -969,7 +1017,7 @@ describe("a control plane that cannot run the person layout (review of mend#569,
 });
 
 describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
-  it("a launch that could be person never claims a standby: its owner map is read only at boot", async () => {
+  it("a standby serves a fresh worktree in the layout its launch is predicted, and no worktree already person or asked for per person: its owner map is read only at boot", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const flagOn = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
@@ -985,14 +1033,19 @@ describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
         const off = yield* stepsWith("shared", makeHarnessLayoutsMemoryState());
         const wt = WorktreeId.make("wt-1");
         return [
-          yield* flagOn.steps.standbyMayServe(wt, freshInput),
-          yield* recorded.steps.standbyMayServe(wt, freshInput),
-          yield* operator.steps.standbyMayServe(wt, freshInput),
-          yield* off.steps.standbyMayServe(wt, freshInput),
+          yield* flagOn.steps.standbyLayoutFor(wt, freshInput),
+          yield* recorded.steps.standbyLayoutFor(wt, freshInput),
+          yield* operator.steps.standbyLayoutFor(wt, freshInput),
+          yield* off.steps.standbyLayoutFor(wt, freshInput),
         ];
       }),
     );
-    expect(result).toEqual([false, false, false, true]);
+    expect(result).toEqual([
+      { layout: "person", imageKey: expect.any(String), runtime: expect.any(String) },
+      null,
+      null,
+      { layout: "shared" },
+    ]);
   });
 });
 
