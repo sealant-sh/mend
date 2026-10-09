@@ -21,6 +21,8 @@ import type { BearerSession } from "./state.ts";
  * - `message.dispatch`: queued by the gateway and sent as a turn once nothing is open, or as the
  *   opening turn of a relaunch when the session's agent has stopped.
  * - `run.interrupt`, `queued-run.cancel`, `queue.resume`: Mend's interrupt and the gateway's queue.
+ * - `queued-run.edit`, `queued-run.reorder`: a message still waiting in the gateway's queue; one on
+ *   its way to Mend is never rewritten.
  * - `runtime-request.respond`, `thread.user-input.dismiss`: Mend's request answers; a dismissal
  *   answers `cancel`.
  * - `thread.metadata.update` with only a title: the session's name in Mend (its owner's to set).
@@ -164,6 +166,16 @@ export const dispatchCommand = (
       return answered(hub.commands.cancelQueued(command.threadId, command.runId));
     case "queue.resume":
       return answered(hub.commands.resumeQueue(command.threadId));
+    case "queued-run.edit":
+      if (command.attachments !== undefined && command.attachments.length > 0) {
+        return refuse("Mend's t3code gateway does not send images or files yet.");
+      }
+      if (command.text.trim().length === 0) return refuse("The message is empty.");
+      return answered(hub.commands.editQueued(command.threadId, command.runId, command.text));
+    case "queued-run.reorder":
+      return answered(
+        hub.commands.reorderQueued(command.threadId, command.runId, command.beforeRunId),
+      );
     case "runtime-request.respond":
       if (command.decision !== undefined) {
         return respond(command.threadId, command.requestId, {
