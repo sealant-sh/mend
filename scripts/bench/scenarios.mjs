@@ -10,14 +10,26 @@ import {
   attachTerminal,
   executorOf,
   executorResources,
+  harnessVersionIn,
   imageOfExecutor,
   mendLogBetween,
 } from "./host.mjs";
 import {
+  agentIdentityOf,
+  asPersonCommand,
+  chatGptLoginSkipOf,
+  inCleanupScope,
   builtWithin,
+  classifySavedFiles,
+  compactedBetween,
+  compactionsOf,
+  lastRequestTokensOf,
+  LAST_REQUEST_SH,
   deliveryWindow,
   execCount,
   harnessVersionOf,
+  liveAgents,
+  overOwn,
   firstExecAt,
   milestonesOf,
   parseContainerDisk,
@@ -27,17 +39,31 @@ import {
   parseMemUsage,
   parseMendLog,
   parseSealantdLog,
+  parsePersonProbe,
+  PERSON_PROBE_SH,
+  PERSON_SCENARIOS,
+  personVerdicts,
+  personVerdictsSkipped,
+  PROTOCOL_HARNESSES,
   restoreOf,
+  roundConversationOf,
+  SAVED_SIZES_SH,
   sshRemoteOf,
   stagedBytesOf,
   stepsOf,
   stripAnsi,
+  tallyCheck,
+  turnEnded,
+  turnTimes,
+  turnVerdicts,
   usageLimitOf,
 } from "./lib.mjs";
 
 export const HARNESSES = ["claude", "codex", "pi", "opencode"];
 export const PREFIX = "st-bench-";
-const SECRET_PATH = ".st-bench-secret";
+/** The benchmark's secret file, one per run (`.st-bench-secret-<run id>`), so runs never share it. */
+const SECRET_PREFIX = ".st-bench-secret";
+const secretPathOf = (rid) => `${SECRET_PREFIX}-${rid}`;
 
 const runLocal = (command) =>
   promisify(execFile)("sh", ["-c", command], { timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
@@ -65,6 +91,15 @@ export const makeRecorder = (result, log) => ({
     result.errors.push({ scenario, message: errorText(error), at: new Date().toISOString() });
     log(`error · ${scenario} · ${errorText(error)}`);
   },
+  /**
+   * A correctness observation, never a timing: tallied per check, failures logged. `ok` null is a
+   * check that could not be made, with its reason.
+   */
+  check: (name, ok, detail = null) => {
+    tallyCheck((result.checks ??= []), name, ok, detail);
+    if (ok === false) log(`check failed · ${name}${detail === null ? "" : ` · ${detail}`}`);
+    if (ok === null) log(`check skipped · ${name}${detail === null ? "" : ` · ${detail}`}`);
+  },
 });
 
 // ─── the session helpers ────────────────────────────────────────────────────
@@ -73,7 +108,12 @@ export const makeRecorder = (result, log) => ({
 const local = (ctx, iso) =>
   iso === null || iso === undefined ? null : Date.parse(iso) - ctx.clockOffsetMs;
 
-const createSession = async (ctx, { harness, name, label, api = ctx.api }) => {
+/**
+ * A session in the worktree `name`: a new worktree, or a join of the live one. `layout` is the
+ * operator's `harnessLayout` (docs/adr/0016, decision 14), sent only for a start that makes its
+ * worktree; a join takes the worktree's.
+ */
+const createSession = async (ctx, { harness, name, label, api = ctx.api, layout = null }) => {
   const started = Date.now();
   const { value: session, ms } = await api.call("POST", `/projects/${ctx.project.id}/sessions`, {
     harness,
@@ -81,6 +121,7 @@ const createSession = async (ctx, { harness, name, label, api = ctx.api }) => {
     name,
     base: null,
     autoLand: false,
+    ...(layout === null ? {} : { harnessLayout: layout }),
   });
   ctx.created.sessions.add(session.id);
   ctx.created.worktrees.set(session.worktree, session.worktreeId);
@@ -115,12 +156,26 @@ const waitForAgent = async (ctx, sessionId, sinceMs, timeoutMs = 600_000, api = 
  * null. A harness that says its account hit a usage or rate limit will not answer: the wait ends
  * there, with its words in `limit`.
  */
-const waitForAnswer = async (ctx, processId, answer, timeoutMs = 180_000) => {
+const waitForAnswer = async (ctx, processId, answer, timeoutMs = 180_000, api = ctx.api) =>
+  waitForOutput(
+    ctx,
+    processId,
+    (plain) => plain.includes(answer) || plain.replace(/\s+/g, "").includes(answer),
+    timeoutMs,
+    api,
+  );
+
+/**
+ * Reads the agent's recorded output until `seen(plain text)` returns something truthy: the local
+ * time it was seen (`at`) and what `seen` returned (`value`), or `at` null. A usage limit ends the
+ * wait, with its words in `limit`.
+ */
+const waitForOutput = async (ctx, processId, seen, timeoutMs = 180_000, api = ctx.api) => {
   const deadline = Date.now() + timeoutMs;
   let from = "0";
   let text = "";
   while (Date.now() < deadline) {
-    const page = await ctx.api.get(`/processes/${processId}/logs?from=${from}&limit=500`);
+    const page = await api.get(`/processes/${processId}/logs?from=${from}&limit=500`);
     for (const chunk of page.chunks ?? []) {
       text += Buffer.from(chunk.dataBase64, "base64").toString("utf8");
     }
@@ -128,15 +183,14 @@ const waitForAnswer = async (ctx, processId, answer, timeoutMs = 180_000) => {
     const plain = stripAnsi(text);
     const version = harnessVersionOf(plain);
     if (version !== null) ctx.result.target.harnessVersions[version.harness] = version.version;
-    if (plain.includes(answer) || plain.replace(/\s+/g, "").includes(answer)) {
-      return { at: Date.now(), limit: null };
-    }
+    const value = seen(plain);
+    if (value) return { at: Date.now(), value, limit: null };
     const limit = usageLimitOf(plain);
-    if (limit !== null) return { at: null, limit };
-    if (page.status === "exited") return { at: null, limit: null };
+    if (limit !== null) return { at: null, value: null, limit };
+    if (page.status === "exited") return { at: null, value: null, limit: null };
     await sleep(250);
   }
-  return { at: null, limit: null };
+  return { at: null, value: null, limit: null };
 };
 
 /**
@@ -395,11 +449,30 @@ const newSession = async (ctx, harness, run) => {
   const answer = String(a + b);
   const prompt = `What is ${a} + ${b}? Reply with only the number. Do not use any tools.`;
   const name = `${PREFIX}${ctx.rid}-${harness}-${run}`;
-  const { session, startedAt, createMs } = await createSession(ctx, { harness, name, label: name });
+  const { session, startedAt, createMs } = await createSession(ctx, {
+    harness,
+    name,
+    label: name,
+    layout: ctx.opts.layout,
+  });
   ctx.log(`${harness} #${run} · created ${session.id.slice(0, 8)} · worktree ${name}`);
   const { ms: launchMs } = await ctx.api.call("POST", `/sessions/${session.id}/launch`, { prompt });
   const { detail, agent } = await waitForAgent(ctx, session.id, startedAt);
   const outputAt = local(ctx, agent.firstOutputAt);
+  // A launch that ran in another layout than the one asked for (a person launch the server put
+  // in a shared home, say, or one that runs as someone other than its launcher) is not a launch of
+  // that layout: kept apart, and the check fails.
+  const ran = agent.runsAs === null || agent.runsAs === undefined ? "shared" : "person";
+  const otherLayout =
+    ctx.opts.layout !== null &&
+    (ran !== ctx.opts.layout || (ran === "person" && agent.runsAs !== session.ownerUserId));
+  if (ctx.opts.layout !== null) {
+    ctx.rec.check(
+      `new.${harness}.layout`,
+      !otherLayout,
+      `asked ${ctx.opts.layout}, the agent runs as ${runsAsWords(agent.runsAs, session.ownerUserId)}`,
+    );
+  }
   // The answer is watched for from here, while the executor is sized beside it: the sampling
   // never delays when the answer is seen.
   const answering = waitForAnswer(ctx, agent.id, answer);
@@ -410,8 +483,12 @@ const newSession = async (ctx, harness, run) => {
   await recordResources(ctx, `executor.${harness}`, container, "resource");
   const built = await imageBuiltDuring(ctx, container, `${harness} #${run}`, startedAt, outputAt);
   // A launch that waited for its workspace image to be built is kept apart, unbudgeted.
-  const prefix = built === null ? `new.${harness}` : `new.${harness}.image_built`;
-  const budget = built === null ? "start" : null;
+  const prefix = otherLayout
+    ? `new.${harness}.other_layout`
+    : built === null
+      ? `new.${harness}`
+      : `new.${harness}.image_built`;
+  const budget = built === null && !otherLayout ? "start" : null;
   const firstOutput = outputAt - startedAt;
   ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", budget);
   ctx.rec.sample(`new.${harness}.create_call`, createMs, "ms");
@@ -423,6 +500,8 @@ const newSession = async (ctx, harness, run) => {
   }
   ctx.log(`${harness} #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
   const answered = await answering;
+  // After the answer and the sizes, so it never runs inside a measured window.
+  await noteHarnessVersion(ctx, container, harness, session.ownerUserId);
   if (answered.at !== null) {
     ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms", budget);
     ctx.rec.sample(`${prefix}.output_to_answer`, answered.at - outputAt, "ms");
@@ -495,6 +574,13 @@ const joinOtherPerson = async (ctx, primary, run) => {
     await ctx.api2.call("POST", `/sessions/${session.id}/launch`, {});
     const { detail, agent } = await waitForAgent(ctx, session.id, startedAt, 600_000, ctx.api2);
     joined = true;
+    if (ctx.opts.layout === "person") {
+      ctx.rec.check(
+        "join.other.runs_as",
+        agent.runsAs === session.ownerUserId,
+        `the joiner's agent runs as ${runsAsWords(agent.runsAs, session.ownerUserId)}`,
+      );
+    }
     await recordJoin(ctx, "join.other", "join-other", { startedAt, session, detail, agent, run });
   } finally {
     // A join that failed is stopped too: otherwise the server keeps the launch waiting on the
@@ -700,6 +786,668 @@ const resume = async (ctx, primary, run) => {
   };
 };
 
+// ─── per person (docs/adr/0016; need `--layout person`) ─────────────────────
+
+const seconds = (value) =>
+  value === null || value === undefined ? "–" : `${(value / 1000).toFixed(1)} s`;
+
+const sumPrompt = (a, b) =>
+  `What is ${a} + ${b}? Reply with only the number. Do not use any tools.`;
+
+/**
+ * A seed turn of the hand-over's conversation: real reading, so the conversation reaches a
+ * realistic size and a login's prompt cache matters (docs/adr/0016's hand-over row: "a
+ * conversation of realistic size").
+ */
+export const seedPrompt = (k) =>
+  `Turn ${k} of building context. Run this command; it prints two files of the repository:\n\n` +
+  `git ls-files -z | xargs -0 stat -c '%s %n' 2>/dev/null | awk '$1 >= 8000 && $1 <= 32000 { print $2 }' | ` +
+  `grep -vE '(lock|\\.min\\.|\\.map$|\\.svg$|\\.snap$|\\.json$)' | sort | sed -n '${2 * k - 1},${2 * k}p'\n\n` +
+  `Read each of those files in full with your tools (each is at most 32 KB; read nothing else), ` +
+  `then summarize each in one paragraph. Do not change any file.`;
+
+/** The prompt whose answer is the agent's own uid and HOME, which only the agent can read. */
+const IDENTITY_PROMPT =
+  "Run this shell command and reply with only its output, on one line: echo ST-BENCH-ID $(id -u) $HOME";
+
+/** How long an agent with no ChatGPT login of its own is still watched for an answer. */
+const NO_LOGIN_WATCH_MS = 150_000;
+
+const listTurns = async (api, sessionId) => {
+  const value = await api.get(`/sessions/${sessionId}/turns`);
+  return Array.isArray(value) ? value : (value?.turns ?? []);
+};
+
+/** Every item of one turn (the session's items, paged by their change-feed cursor). */
+const turnItems = async (api, sessionId, turnId) => {
+  const out = [];
+  let after = 0;
+  for (let page = 0; page < 100; page += 1) {
+    const value = await api.get(`/sessions/${sessionId}/items?after=${after}&limit=500`);
+    const items = Array.isArray(value) ? value : (value?.items ?? []);
+    out.push(...items.filter((item) => item.turnId === turnId));
+    if (items.length < 500) break;
+    after = Math.max(after, ...items.map((item) => item.seq ?? 0));
+  }
+  return out;
+};
+
+/**
+ * Polls one turn until it ends, watching the session's agent processes meanwhile: the turn, the
+ * session as it read then, and the most agent processes seen live at once (polled every 250 ms:
+ * an overlap shorter than that can be missed).
+ */
+const waitForTurn = async (ctx, sessionId, turnId, timeoutMs = 600_000) => {
+  const deadline = Date.now() + timeoutMs;
+  let maxLive = 0;
+  for (;;) {
+    const [turns, detail] = await Promise.all([
+      listTurns(ctx.api, sessionId),
+      ctx.api.get(`/sessions/${sessionId}`),
+    ]);
+    maxLive = Math.max(maxLive, liveAgents(detail.processes).length);
+    const turn = turns.find((candidate) => candidate.id === turnId);
+    if (turn !== undefined && turnEnded(turn)) return { turn, detail, maxLive };
+    if (Date.now() > deadline) {
+      throw new Error(
+        `turn ${turnId.slice(0, 8)} did not end within ${timeoutMs / 1000} s (${turn?.status ?? "not listed"})`,
+      );
+    }
+    await sleep(250);
+  }
+};
+
+/**
+ * One turn sent to a shared conversation and timed on the server's clock from its submit: to its
+ * start (a process claimed it), to the agent's first item for it (the ADR's "first output") and to
+ * its end, all unbudgeted here; the budget is on the round's difference (`handoverOn`). Its
+ * sender, payer, process user and the one-agent rule are checked. Its times, for that difference.
+ */
+const steeredTurn = async (ctx, { session, harness, kind, api, round }) => {
+  const { rec } = ctx;
+  const a = 4000 + 13 * round + 101 * ["to_other", "back", "own"].indexOf(kind);
+  const b = 5000 + 7 * round + HARNESSES.indexOf(harness);
+  const answer = String(a + b);
+  const prefix = `handover.${harness}.${kind}`;
+  const { value: submitted, ms } = await api.call("POST", `/sessions/${session.id}/turns`, {
+    input: sumPrompt(a, b),
+  });
+  const { turn, detail, maxLive } = await waitForTurn(ctx, session.id, submitted.id);
+  const items = await turnItems(ctx.api, session.id, turn.id);
+  const times = turnTimes(turn, items);
+  rec.sample(`${prefix}.submit_call`, ms, "ms");
+  rec.sample(`${prefix}.started`, times.started, "ms");
+  rec.sample(`${prefix}.first_output`, times.firstOutput, "ms");
+  rec.sample(`${prefix}.completed`, times.completed, "ms");
+  const process = (detail.processes ?? []).find((entry) => entry.id === turn.processId) ?? null;
+  for (const verdict of turnVerdicts({
+    turn,
+    process,
+    ownerId: session.ownerUserId,
+    fromOwner: kind !== "to_other",
+    maxLive,
+    answer,
+    items,
+  })) {
+    rec.check(`${prefix}.${verdict.name}`, verdict.ok, verdict.detail);
+  }
+  ctx.log(
+    `${prefix} #${round} · started ${seconds(times.started)} · first output ${seconds(times.firstOutput)} · completed ${seconds(times.completed)}`,
+  );
+  return times;
+};
+
+/** The launch's own turn, the owner's: the earliest, once it has ended. */
+const launchTurn = async (ctx, sessionId, timeoutMs = 900_000) => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const [earliest] = (await listTurns(ctx.api, sessionId)).toSorted(
+      (a, b) => a.ordinal - b.ordinal,
+    );
+    if (earliest !== undefined && turnEnded(earliest)) return earliest;
+    if (Date.now() > deadline) throw new Error("the launch's turn did not end in time");
+    await sleep(500);
+  }
+};
+
+/**
+ * The size of the session's conversation now: the prompt of its last model request, in tokens,
+ * and the compactions its transcript records, read as the owner in the executor from the
+ * transcript of the conversation the session's agent holds (its `providerSessionId`, which the
+ * protocol host records when the harness says it is ready), wherever it is (`LAST_REQUEST_SH`):
+ * never another, older conversation's. `{ tokens: null }` without the host, before the harness
+ * named its conversation, or when the transcript does not say.
+ */
+const conversationSize = async (ctx, session, container) => {
+  if (ctx.host === null || container === null) return { tokens: null, compactions: null };
+  const detail = await ctx.api.get(`/sessions/${session.id}`).catch(() => null);
+  const conversation =
+    detail?.currentAgent?.providerSessionId ?? detail?.session?.providerSessionId ?? null;
+  if (conversation === null || !/^[\w-]+$/.test(conversation)) {
+    return { tokens: null, compactions: null };
+  }
+  const out = await ctx.host
+    .shell(asPersonCommand(container, session.ownerUserId, LAST_REQUEST_SH, [conversation]))
+    .catch(() => "");
+  return { tokens: lastRequestTokensOf(out), compactions: compactionsOf(out) };
+};
+
+/**
+ * The conversation grown before the rounds to a realistic, bounded size (docs/adr/0016's "a
+ * conversation of realistic size"): turns of the owner's, each reading two files of 8 to 32 KB
+ * named by a fixed command (never "the largest", which on Mend's own repository is over a megabyte
+ * and overruns every window), until the last request's prompt reaches `--handover-context-tokens`
+ * (default 45,000) or `--handover-seed-turns` (default 8) have run. The size recorded is the last
+ * request's prompt in this session's own transcript, not a turn's summed usage. With the host, a
+ * size that cannot be read fails the seed (and the hand-over on this harness), so the rounds never
+ * run on a conversation of unknown size; without it the turns run to the cap and the size is not
+ * run. The size and compaction count after the seed.
+ */
+const seedConversation = async (ctx, session, harness, container) => {
+  let size = { tokens: null, compactions: null };
+  let turns = 0;
+  for (let k = 1; k <= ctx.opts.handoverSeedTurns; k += 1) {
+    const { value: submitted } = await ctx.api.call("POST", `/sessions/${session.id}/turns`, {
+      input: seedPrompt(k),
+    });
+    const { turn } = await waitForTurn(ctx, session.id, submitted.id, 900_000);
+    turns = k;
+    ctx.rec.check(
+      `handover.${harness}.seed.completed`,
+      turn.status === "completed",
+      `${turn.status}${turn.error ? `: ${turn.error}` : ""}`,
+    );
+    const now = await conversationSize(ctx, session, container);
+    if (container !== null && now.tokens === null) {
+      ctx.rec.check(
+        `handover.${harness}.seed.size_read`,
+        false,
+        `the size of this session's conversation could not be read from its transcript after seed turn ${k}`,
+      );
+      throw new Error(
+        `handover.${harness}: the seed's size could not be read, so the rounds would run on a conversation of unknown size`,
+      );
+    }
+    if (compactedBetween(size.tokens, now.tokens)) {
+      ctx.rec.check(
+        `handover.${harness}.seed.not_compacted`,
+        false,
+        `the conversation shrank from ${size.tokens} to ${now.tokens} tokens while it was grown`,
+      );
+    }
+    size = now.tokens === null ? size : now;
+    if (size.tokens !== null && size.tokens >= ctx.opts.handoverContextTokens) break;
+  }
+  if (size.tokens === null) {
+    ctx.rec.notRun(
+      `handover.${harness}.conversation_input_tokens`,
+      "the conversation's size is read from its transcript in the executor: needs the host",
+    );
+  } else {
+    ctx.rec.check(`handover.${harness}.seed.size_read`, true, `${size.tokens} tokens`);
+    ctx.rec.sample(`handover.${harness}.conversation_input_tokens`, size.tokens, "count");
+  }
+  ctx.log(
+    `handover.${harness} · conversation grown in ${turns} turn(s) · ${size.tokens ?? "unknown"} input tokens on its last request`,
+  );
+  return size;
+};
+
+/**
+ * The steering hand-over (docs/adr/0016, decision 6) on one protocol harness: a person-layout
+ * protocol session of the first account, its conversation grown to a realistic size, shared
+ * control on; then `runs` rounds of a turn by the second account (the hand-over to their
+ * process), one by the owner (the hand-back) and one more by the owner (no hand-over).
+ *
+ * The ADR's row (docs/adr/0016, "Budgets"):
+ *
+ *   | Steering hand-over (send to first output, nothing in the background; both Core calls and
+ *   | Codex re-index included; a conversation of realistic size) | under 5 s more than the same
+ *   | turn sent by the process's own person |
+ *
+ * so each round's hand-over and hand-back are budgeted as their send-to-first-output less the
+ * same round's own turn's (`first_output_over_own`, at most 5 s at the median and the p90).
+ * Submit to start is kept beside it, unbudgeted.
+ */
+const handoverOn = async (ctx, harness) => {
+  const name = `${PREFIX}${ctx.rid}-handover-${harness}`;
+  const { session } = await createSession(ctx, { harness, name, label: name, layout: "person" });
+  ctx.log(`handover.${harness} · created ${session.id.slice(0, 8)} · worktree ${name}`);
+  try {
+    await ctx.api.call("POST", `/sessions/${session.id}/launch`, {
+      mode: "protocol",
+      prompt: sumPrompt(1200, 3400),
+    });
+    const first = await launchTurn(ctx, session.id);
+    const launched = await ctx.api.get(`/sessions/${session.id}`);
+    const firstProcess = (launched.processes ?? []).find((p) => p.id === first.processId) ?? null;
+    ctx.rec.check(
+      `handover.${harness}.launch.runs_as`,
+      firstProcess !== null && firstProcess.runsAs === session.ownerUserId,
+      `the launch's process runs as ${runsAsWords(firstProcess?.runsAs, session.ownerUserId)}`,
+    );
+    ctx.rec.check(
+      `handover.${harness}.launch.completed`,
+      first.status === "completed",
+      first.status,
+    );
+    const container = ctx.host === null ? null : await executorOf(ctx.host, session.id);
+    let size = await seedConversation(ctx, session, harness, container);
+    await ctx.api.put(`/sessions/${session.id}/shared-control`, { enabled: true });
+    for (let round = 1; round <= ctx.opts.runs; round += 1) {
+      // Each turn's conversation size after it. A shrink at a steered turn with no compaction in the
+      // transcript is the conversation lost at the hand-over: a failure. A recorded compaction, or a
+      // shrink at the own turn, discards the round (its differences are not the hand-over's). A
+      // size that could not be read says nothing either way: the round is kept, and the check is
+      // skipped, never held.
+      const sizes = [];
+      const measured = async (times) => {
+        sizes.push(await conversationSize(ctx, session, container));
+        return times;
+      };
+      const to = await measured(
+        await steeredTurn(ctx, { session, harness, kind: "to_other", api: ctx.api2, round }),
+      );
+      const back = await measured(
+        await steeredTurn(ctx, { session, harness, kind: "back", api: ctx.api, round }),
+      );
+      const own = await measured(
+        await steeredTurn(ctx, { session, harness, kind: "own", api: ctx.api, round }),
+      );
+      const trail = [size, ...sizes];
+      const verdict = roundConversationOf(
+        trail.map((entry) => entry.tokens),
+        trail.map((entry) => entry.compactions),
+      );
+      for (const entry of sizes) {
+        ctx.rec.sample(`handover.${harness}.round_context_tokens`, entry.tokens, "count");
+      }
+      size = sizes.findLast((entry) => entry.tokens !== null) ?? size;
+      const words = trail.map((entry) => entry.tokens ?? "?").join(" → ");
+      for (const kind of ["to_other", "back"]) {
+        if (verdict.unread) {
+          ctx.rec.check(
+            `handover.${harness}.${kind}.conversation_kept`,
+            null,
+            `round ${round}: a size could not be read (${words} tokens)`,
+          );
+        } else {
+          ctx.rec.check(
+            `handover.${harness}.${kind}.conversation_kept`,
+            !verdict.lost.includes(kind),
+            verdict.lost.includes(kind)
+              ? `round ${round}: conversation lost at the hand-over (${words} tokens, no compaction in the transcript)`
+              : `round ${round}: ${words} tokens`,
+          );
+        }
+      }
+      if (verdict.unread) {
+        ctx.rec.check(
+          `handover.${harness}.round_not_compacted`,
+          null,
+          `round ${round}: a size could not be read (${words} tokens), so compaction cannot be told`,
+        );
+      } else if (verdict.compacted && verdict.lost.length === 0) {
+        ctx.rec.check(
+          `handover.${harness}.round_not_compacted`,
+          null,
+          `round ${round} discarded: the conversation was compacted (${words} tokens)`,
+        );
+        ctx.rec.note(`handover.${harness} #${round}: compacted, its differences discarded`);
+        continue;
+      } else {
+        ctx.rec.check(`handover.${harness}.round_not_compacted`, true, `${words} tokens`);
+      }
+      for (const [kind, times] of [
+        ["to_other", to],
+        ["back", back],
+      ]) {
+        ctx.rec.sample(
+          `handover.${harness}.${kind}.first_output_over_own`,
+          overOwn(times.firstOutput, own.firstOutput),
+          "ms",
+          "handover",
+        );
+      }
+    }
+  } finally {
+    await removeWorktree(ctx, session.worktreeId).catch((error) =>
+      ctx.rec.error(`cleanup · handover.${harness}`, error),
+    );
+  }
+};
+
+/** The harnesses the second person runs (`--second-person-harnesses`, else `--harnesses`). */
+const secondPersonHarnesses = (ctx) =>
+  (ctx.opts.secondPersonHarnesses ?? ctx.opts.harnesses).filter((harness) =>
+    ctx.opts.harnesses.includes(harness),
+  );
+
+const handover = async (ctx) => {
+  const harnesses = secondPersonHarnesses(ctx).filter((harness) =>
+    PROTOCOL_HARNESSES.includes(harness),
+  );
+  if (harnesses.length === 0) {
+    ctx.rec.notRun(
+      "handover.*",
+      "no protocol harness (claude, codex) among the second person's harnesses",
+    );
+    return;
+  }
+  for (const harness of harnesses) {
+    await handoverOn(ctx, harness).catch((error) => ctx.rec.error(`handover.${harness}`, error));
+  }
+};
+
+/** The harnesses that answer on the person's ChatGPT login (docs/adr/0016, decision 5). */
+const CHATGPT_HARNESSES = ["pi", "opencode"];
+
+/**
+ * Why this session's pi or opencode has no ChatGPT login of its sender's, or null: the session
+ * line, else the person's connected accounts. Null for every other harness.
+ */
+const chatGptLoginSkip = async (ctx, harness, sessionId, api) => {
+  if (!CHATGPT_HARNESSES.includes(harness)) return null;
+  const detail = await api.get(`/sessions/${sessionId}`).catch(() => null);
+  const identity = await api.get("/me/sealant").catch(() => null);
+  return chatGptLoginSkipOf({
+    summary: detail?.session?.summary ?? null,
+    accounts: identity?.accounts ?? null,
+  });
+};
+
+/** A person's launch into a new person worktree or a join of one, to its first output. */
+const personLaunch = async (ctx, { harness, name, api, prompt, layout = null }) => {
+  const { session, startedAt } = await createSession(ctx, {
+    harness,
+    name,
+    label: api === ctx.api ? name : `${name}-other`,
+    api,
+    layout,
+  });
+  await api.call("POST", `/sessions/${session.id}/launch`, { prompt });
+  const { agent } = await waitForAgent(ctx, session.id, startedAt, 600_000, api);
+  return { session, agent };
+};
+
+/**
+ * Growth per extra person (docs/adr/0016, "Budgets"), per harness, `runs` rounds on fresh
+ * worktrees: a person worktree with the first account's conversation, then the second account's
+ * own session there with theirs, and the second person's saved directory sized as them, machine
+ * state left out: all of it, their conversation state and memory, and the rest, which the budget
+ * holds to 64 KB. A round whose second person never answered (no ChatGPT login of their own, or
+ * no answer) holds no conversation: it goes under `growth.<harness>.no_conversation.*`,
+ * unbudgeted, so the budgeted measure stays missing rather than passing on an empty directory.
+ */
+const growthOn = async (ctx, harness, run) => {
+  const { rec } = ctx;
+  const name = `${PREFIX}${ctx.rid}-growth-${harness}-${run}`;
+  const ask = (k) => {
+    const a = 6000 + 17 * k + 31 * run + HARNESSES.indexOf(harness);
+    return { prompt: sumPrompt(a, 2000), answer: String(a + 2000) };
+  };
+  const firstAsk = ask(1);
+  const first = await personLaunch(ctx, {
+    harness,
+    name,
+    api: ctx.api,
+    prompt: firstAsk.prompt,
+    layout: "person",
+  });
+  let second = null;
+  try {
+    await waitForAnswer(ctx, first.agent.id, firstAsk.answer);
+    const container = await executorOf(ctx.host, first.session.id);
+    if (container === null) throw new Error("the executor was not found on the host");
+    await noteHarnessVersion(ctx, container, harness, first.session.ownerUserId);
+    const size = async (accountId) =>
+      classifySavedFiles(
+        await ctx.host.shell(asPersonCommand(container, accountId, SAVED_SIZES_SH)),
+      );
+    const secondAsk = ask(2);
+    second = await personLaunch(ctx, {
+      harness,
+      name,
+      api: ctx.api2,
+      prompt: secondAsk.prompt,
+    });
+    if (second.session.worktreeId !== first.session.worktreeId) {
+      throw new Error("the second account's session did not join the first one's worktree");
+    }
+    const skip = await chatGptLoginSkip(ctx, harness, second.session.id, ctx.api2);
+    // With no login of their own the agent is still watched, for less: an answer is a failure.
+    const answered = await waitForAnswer(
+      ctx,
+      second.agent.id,
+      secondAsk.answer,
+      skip === null ? 180_000 : NO_LOGIN_WATCH_MS,
+      ctx.api2,
+    );
+    if (skip === null) {
+      rec.check(
+        `growth.${harness}.second_answers`,
+        answered.at !== null,
+        answered.at !== null ? "answered" : (answered.limit ?? "no answer within 3 min"),
+      );
+    } else if (answered.at !== null) {
+      rec.check(
+        `growth.${harness}.answered_without_login`,
+        false,
+        `the second person's agent answered with no ChatGPT login of its own (${skip})`,
+      );
+    } else {
+      rec.check(`growth.${harness}.second_answers`, null, `skipped: ${skip}`);
+    }
+    // Let the harness write its state out after the answer.
+    await sleep(5000);
+    const firstSize = await size(first.session.ownerUserId);
+    const secondSize = await size(second.session.ownerUserId);
+    if (secondSize === null) {
+      rec.check(`growth.${harness}.saved_dir`, false, "no saved directory for the second person");
+      return;
+    }
+    const conversed = answered.at !== null;
+    const prefix = conversed ? `growth.${harness}` : `growth.${harness}.no_conversation`;
+    rec.sample(`${prefix}.extra_person_bytes`, secondSize.total, "bytes");
+    rec.sample(`${prefix}.extra_person_state_bytes`, secondSize.state, "bytes");
+    rec.sample(
+      `${prefix}.extra_person_beyond_state_bytes`,
+      secondSize.beyond,
+      "bytes",
+      conversed ? "growth" : null,
+    );
+    rec.sample(`${prefix}.extra_person_machine_state_bytes`, secondSize.machine, "bytes");
+    if (firstSize !== null) rec.sample(`${prefix}.first_person_bytes`, firstSize.total, "bytes");
+    if (!conversed) {
+      rec.notRun(
+        `growth.${harness}.extra_person_beyond_state_bytes`,
+        `the second person's agent held no conversation (${skip ?? "no answer"}); sized under growth.${harness}.no_conversation, unbudgeted`,
+      );
+    }
+    if (secondSize.beyond > 64 * 1024) {
+      rec.note(
+        `growth.${harness} #${run}: ${secondSize.beyond} bytes beyond conversation state; largest: ${secondSize.largestBeyond.map((entry) => `${entry.path} ${entry.bytes}`).join(", ")}`,
+      );
+    }
+    ctx.log(
+      `${prefix} #${run} · the second person's saved directory ${secondSize.total} bytes · ${secondSize.beyond} beyond conversation state`,
+    );
+  } finally {
+    if (second !== null) {
+      await stopAndSettle(ctx, second.session.id, 600_000, ctx.api2).catch((error) =>
+        ctx.log(`growth.${harness} · the second session's stop: ${error.message}`),
+      );
+    }
+    await removeWorktree(ctx, first.session.worktreeId).catch((error) =>
+      rec.error(`cleanup · growth.${harness}`, error),
+    );
+  }
+};
+
+const growth = async (ctx) => {
+  for (let run = 1; run <= ctx.opts.runs; run += 1) {
+    for (const harness of secondPersonHarnesses(ctx)) {
+      await growthOn(ctx, harness, run).catch((error) =>
+        ctx.rec.error(`growth.${harness} #${run}`, error),
+      );
+    }
+  }
+};
+
+/** Who `runsAs` names, in a record's words. */
+const runsAsWords = (runsAs, accountId) =>
+  runsAs === null || runsAs === undefined
+    ? "root (shared)"
+    : runsAs === accountId
+      ? "the person"
+      : "someone else";
+
+/**
+ * What one person's agent shows in its executor: the API's `runsAs`, the agent's own answer
+ * (its uid and HOME), and the probe as that person (uid range, home, the harness's process,
+ * logins, pi profile). Recorded as checks under `prefix`; without the host, the executor's are
+ * recorded as skipped. A pi or opencode with no ChatGPT login of the person's is not waited on
+ * for long, and an answer from it fails.
+ */
+const checkPerson = async (ctx, prefix, { harness, session, agent, container, api, other }) => {
+  const { rec } = ctx;
+  const accountId = session.ownerUserId;
+  rec.check(
+    `${prefix}.runs_as`,
+    agent.runsAs === accountId,
+    `the agent runs as ${runsAsWords(agent.runsAs, accountId)}`,
+  );
+  const loginSkipped = await chatGptLoginSkip(ctx, harness, session.id, api);
+  const said = await waitForOutput(
+    ctx,
+    agent.id,
+    (plain) => agentIdentityOf(plain) ?? agentIdentityOf(plain.replace(/\s+/g, "")),
+    loginSkipped === null ? 240_000 : NO_LOGIN_WATCH_MS,
+    api,
+  );
+  if (loginSkipped === null) {
+    rec.check(
+      `${prefix}.answers`,
+      said.at !== null,
+      said.at !== null ? "the first turn answered" : (said.limit ?? "no answer within 4 min"),
+    );
+  } else if (said.at !== null) {
+    rec.check(
+      `${prefix}.answers`,
+      false,
+      `answered with no ChatGPT login of its own (${loginSkipped})`,
+    );
+  } else {
+    rec.check(`${prefix}.answers`, null, `skipped: ${loginSkipped}`);
+  }
+  if (container === null) {
+    const reason =
+      ctx.host === null
+        ? "no access to the server's host (pass --ssh or run there)"
+        : "the executor was not found on the host";
+    for (const verdict of personVerdictsSkipped({ harness, joined: other !== null }, reason)) {
+      rec.check(`${prefix}.${verdict.name}`, verdict.ok, verdict.detail);
+    }
+    return null;
+  }
+  await noteHarnessVersion(ctx, container, harness, accountId);
+  const probe = parsePersonProbe(
+    await ctx.host.shell(asPersonCommand(container, accountId, PERSON_PROBE_SH)),
+  );
+  const profile = harness === "pi" ? await api.get("/me/pi-profile").catch(() => null) : null;
+  for (const verdict of personVerdicts({
+    probe,
+    harness,
+    agentSaid: said.value || null,
+    piDigest: harness === "pi" ? (profile?.profile?.digest ?? null) : undefined,
+    otherPiDigest: other?.piDigest,
+    otherUid: other?.uid ?? null,
+    loginSkipped,
+  })) {
+    rec.check(`${prefix}.${verdict.name}`, verdict.ok, verdict.detail);
+  }
+  return { uid: probe.uid, piDigest: profile?.profile?.digest ?? null };
+};
+
+/**
+ * Per-person correctness (docs/adr/0016, decisions 1, 2 and 5), recorded as checks, never as
+ * timings: for each harness a person launch whose agent must run as a uid of the person range
+ * with its own home and answer; pi's profile must be the person's own; pi's and opencode's
+ * ChatGPT login must be in their home. For pi, the second account then joins, and its pi must
+ * have its own profile and not the first account's.
+ */
+const personChecksOn = async (ctx, harness) => {
+  const name = `${PREFIX}${ctx.rid}-check-${harness}`;
+  const first = await personLaunch(ctx, {
+    harness,
+    name,
+    api: ctx.api,
+    prompt: IDENTITY_PROMPT,
+    layout: "person",
+  });
+  let joined = null;
+  try {
+    const container = ctx.host === null ? null : await executorOf(ctx.host, first.session.id);
+    const firstPerson = await checkPerson(ctx, `person.${harness}`, {
+      harness,
+      session: first.session,
+      agent: first.agent,
+      container,
+      api: ctx.api,
+      other: null,
+    });
+    if (harness !== "pi") return;
+    if (!secondPersonHarnesses(ctx).includes("pi")) {
+      ctx.rec.notRun("person.pi.joined.*", "pi is not among the second person's harnesses");
+      return;
+    }
+    if (ctx.api2 === null) {
+      ctx.rec.notRun("person.pi.joined.*", "no second account (pass --second-token-file)");
+      return;
+    }
+    joined = await personLaunch(ctx, { harness, name, api: ctx.api2, prompt: IDENTITY_PROMPT });
+    if (joined.session.worktreeId !== first.session.worktreeId) {
+      throw new Error("the second account's pi session did not join the first one's worktree");
+    }
+    await checkPerson(ctx, "person.pi.joined", {
+      harness,
+      session: joined.session,
+      agent: joined.agent,
+      container,
+      api: ctx.api2,
+      other: firstPerson ?? { uid: null, piDigest: undefined },
+    });
+  } finally {
+    if (joined !== null) {
+      await stopAndSettle(ctx, joined.session.id, 600_000, ctx.api2).catch((error) =>
+        ctx.log(`person.pi.joined · stop: ${error.message}`),
+      );
+    }
+    await removeWorktree(ctx, first.session.worktreeId).catch((error) =>
+      ctx.rec.error(`cleanup · person.${harness}`, error),
+    );
+  }
+};
+
+const personChecks = async (ctx) => {
+  for (const harness of ctx.opts.harnesses) {
+    await personChecksOn(ctx, harness).catch((error) => ctx.rec.error(`person.${harness}`, error));
+  }
+};
+
+/**
+ * A harness's version from its executor (`<harness> --version`), once per harness, so a record says
+ * the pi and opencode versions it ran without the interactive scenario's shell. As the person
+ * (`accountId`) in a person executor, so nothing is written into root's home; as root in a shared
+ * one. Called outside every measured window.
+ */
+const noteHarnessVersion = async (ctx, container, harness, accountId = null) => {
+  if (ctx.host === null || container === null) return;
+  if (harness in ctx.result.target.harnessVersions) return;
+  const version = await harnessVersionIn(ctx.host, container, harness, accountId).catch(() => null);
+  if (version !== null) ctx.result.target.harnessVersions[harness] = version;
+};
+
 // ─── cleanup ────────────────────────────────────────────────────────────────
 
 /** Stops every live session of a worktree and removes it (forced: its change is ours to drop). */
@@ -708,22 +1456,30 @@ const removeWorktree = async (ctx, worktreeId) => {
   if (detail === null) return;
   for (const session of detail.sessions ?? []) {
     if (session.settledAt === null) {
-      await stopAndSettle(ctx, session.id, 900_000).catch((error) =>
-        ctx.rec.error(`cleanup · stop ${session.id.slice(0, 8)}`, error),
-      );
+      // The second account's session in a worktree of the first is stopped by its owner when the
+      // first account may not.
+      await stopAndSettle(ctx, session.id, 900_000)
+        .catch((error) => {
+          if (ctx.api2 === null || !(error instanceof ApiError) || error.status !== 403)
+            throw error;
+          return stopAndSettle(ctx, session.id, 900_000, ctx.api2);
+        })
+        .catch((error) => ctx.rec.error(`cleanup · stop ${session.id.slice(0, 8)}`, error));
     }
   }
   await ctx.api.delete(`/worktrees/${worktreeId}?force=true`);
 };
 
 /**
- * Every `st-bench-` worktree of the project, this run's or a crashed one's, stopped and removed;
- * the benchmark's secret file removed. Never touches anything without the prefix.
+ * The worktrees of one run (`st-bench-<run id>-…`), or with `all` every `st-bench-` worktree of
+ * the project, stopped and removed; the benchmark's secret file removed when this run put it there
+ * (or with `all`). Never touches anything without the prefix, and without `all` never another
+ * run's: a bench run or a `cleanup` beside a gate run leaves the gate's sessions alone.
  */
-export const cleanupAll = async (ctx) => {
+export const cleanupAll = async (ctx, { all = false } = {}) => {
   const listing = await ctx.api.get(`/projects/${ctx.project.id}/worktrees`);
   for (const worktree of listing.worktrees ?? []) {
-    if (!worktree.name.startsWith(PREFIX)) continue;
+    if (!inCleanupScope(worktree.name, ctx.rid, all)) continue;
     try {
       await removeWorktree(ctx, worktree.id);
       ctx.log(`cleanup · removed worktree ${worktree.name}`);
@@ -731,14 +1487,24 @@ export const cleanupAll = async (ctx) => {
       ctx.rec.error(`cleanup · worktree ${worktree.name}`, error);
     }
   }
+  // This run's secret file (one a hard quit left included), or with `all` every run's; never
+  // another run's otherwise.
   const secrets = await ctx.api.get("/me/secret-files").catch(() => ({ files: [] }));
   for (const file of secrets.files ?? []) {
-    if (file.path === SECRET_PATH) {
+    const ours = all
+      ? file.path === SECRET_PREFIX || file.path.startsWith(`${SECRET_PREFIX}-`)
+      : typeof ctx.rid === "string" && file.path === secretPathOf(ctx.rid);
+    if (ours) {
       await ctx.api
-        .delete(`/me/secret-files?path=${encodeURIComponent(SECRET_PATH)}`)
+        .delete(`/me/secret-files?path=${encodeURIComponent(file.path)}`)
+        .then(() => ctx.log(`cleanup · removed secret file ${file.path}`))
         .catch((error) => ctx.rec.error("cleanup · secret file", error));
     }
   }
+  remoteRefsNote(ctx);
+};
+
+const remoteRefsNote = (ctx) => {
   if (ctx.created.remoteRefs.size > 0) {
     ctx.rec.note(
       `remote branches pushed and not deleted, remove by hand: ${[...ctx.created.remoteRefs].join(", ")}`,
@@ -750,13 +1516,14 @@ export const cleanupAll = async (ctx) => {
 
 /** Puts the benchmark's secret file in place so its delivery is timed; false when one was there. */
 const placeSecretFile = async (ctx) => {
+  const path = secretPathOf(ctx.rid);
   const existing = await ctx.api.get("/me/secret-files");
-  if ((existing.files ?? []).some((file) => file.path === SECRET_PATH)) {
-    ctx.rec.note(`a secret file at ${SECRET_PATH} already exists; left as it is`);
+  if ((existing.files ?? []).some((file) => file.path === path)) {
+    ctx.rec.note(`a secret file at ${path} already exists; left as it is`);
     return;
   }
   await ctx.api.put("/me/secret-files", {
-    path: SECRET_PATH,
+    path,
     encoding: "utf8",
     contents: "st-bench: a secret file to time its delivery\n",
   });
@@ -784,36 +1551,74 @@ const secondAccountBlocker = async (ctx) => {
  * first harness when `new` is not selected: it is then just the live session the other scenarios
  * need), measures what rides on it, stops it (the Stop's save) and removes its worktree. The first
  * harness's session also carries the joins, the resume and, on the first run, the interactive and
- * API scenarios, which repeat inside themselves.
+ * API scenarios, which repeat inside themselves. Then the per-person scenarios (hand-over, growth,
+ * person checks), each on person worktrees of its own; they need `--layout person`, and the
+ * hand-over and growth a second account.
  */
 export const runAll = async (ctx) => {
   const { opts, rec } = ctx;
   const selected = (scenario) => opts.only.includes(scenario);
   if (opts.secretFile) await placeSecretFile(ctx);
-  if (selected("handover")) {
-    rec.notRun(
-      "handover.first_output",
-      "no per-person steering at this commit (ADR 0016 decision 6); measured once it lands",
-    );
-  }
-  if (selected("growth")) {
-    rec.notRun("growth.per_person_bytes", "needs a second person's conversations in one worktree");
-  }
   let otherBlocker = null;
-  if (selected("join-other")) {
+  if (selected("join-other") || selected("handover") || selected("growth")) {
     otherBlocker = await secondAccountBlocker(ctx);
-    if (otherBlocker !== null) {
-      rec.notRun("join.other.first_output", otherBlocker);
-      ctx.log(`join-other · not run: ${otherBlocker}`);
+  }
+  if (selected("join-other") && otherBlocker !== null) {
+    rec.notRun("join.other.first_output", otherBlocker);
+    ctx.log(`join-other · not run: ${otherBlocker}`);
+    if (opts.layout === "person") {
+      (ctx.result.blocked ??= []).push({ scenario: "join-other", reason: otherBlocker });
     }
   }
-  // Nothing selected needs a session (only what cannot run yet): launch nothing.
+  // What only a person worktree has, each with what it needs; run after the launches.
+  const perPerson = PERSON_SCENARIOS.filter(selected).filter((scenario) => {
+    const measure = { handover: "handover.*", growth: "growth.*", "person-checks": "person.*" }[
+      scenario
+    ];
+    const blocker =
+      opts.layout !== "person"
+        ? "per-person only: run with --layout person"
+        : scenario !== "person-checks" && otherBlocker !== null
+          ? otherBlocker
+          : scenario === "growth" && ctx.host === null
+            ? "sizes a saved directory in the executor: needs the server's host (pass --ssh or run there)"
+            : null;
+    // person-checks runs without the host (the API's checks), its executor checks skipped; the run
+    // still says it could not check what the gate needs.
+    if (
+      blocker === null &&
+      scenario === "person-checks" &&
+      ctx.host === null &&
+      opts.layout === "person"
+    ) {
+      (ctx.result.blocked ??= []).push({
+        scenario,
+        reason: "its executor checks need the server's host (pass --ssh or run there)",
+      });
+    }
+    if (blocker !== null) {
+      rec.notRun(measure, blocker);
+      ctx.log(`${scenario} · not run: ${blocker}`);
+      // Asked of a person run and not run: the run says so in its exit code (`bench.mjs run`).
+      if (opts.layout === "person") (ctx.result.blocked ??= []).push({ scenario, reason: blocker });
+    }
+    return blocker === null;
+  });
   const launches = opts.only.some(
     (scenario) =>
-      !["handover", "growth"].includes(scenario) &&
-      !(scenario === "join-other" && otherBlocker !== null),
+      !PERSON_SCENARIOS.includes(scenario) && !(scenario === "join-other" && otherBlocker !== null),
   );
-  if (!launches) return;
+  if (launches) await runLaunches(ctx, otherBlocker);
+  for (const scenario of perPerson) {
+    const run = { handover, growth, "person-checks": personChecks }[scenario];
+    await run(ctx).catch((error) => rec.error(scenario, error));
+  }
+};
+
+/** The launch scenarios (`new` and what rides on its sessions), `runs` times. */
+const runLaunches = async (ctx, otherBlocker) => {
+  const { opts, rec } = ctx;
+  const selected = (scenario) => opts.only.includes(scenario);
   const primaryHarness = opts.harnesses[0];
   const harnesses = selected("new") || selected("stop") ? opts.harnesses : [primaryHarness];
   for (let run = 1; run <= opts.runs; run += 1) {

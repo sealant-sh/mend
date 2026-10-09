@@ -307,3 +307,34 @@ export const imageOfExecutor = async (host, container) => {
   const [id, created] = out.trim().split(/\s+/);
   return id === undefined || id === "" ? null : { id, created: created ?? null };
 };
+
+/**
+ * A harness's version as its executor's binary says it (`<harness> --version`), or null: as the
+ * person whose saved directory is `people/<accountId>` when there is one (a person executor),
+ * else as root.
+ */
+export const harnessVersionIn = async (host, container, harness, accountId = null) => {
+  if (!["claude", "codex", "pi", "opencode"].includes(harness)) return null;
+  if (accountId !== null && !/^[\w.:@-]+$/.test(accountId)) return null;
+  const user =
+    accountId === null
+      ? ""
+      : `uid=$(docker exec ${container} stat -c %u /workspace/harness-home/people/${accountId} 2>/dev/null); `;
+  const out = await host.shell(
+    `${user}docker exec ${accountId === null ? "" : '${uid:+-u "$uid"} '}${container} sh -c '${harness} --version 2>&1 | head -3'; true`,
+    { timeoutMs: 60_000 },
+  );
+  return /\d+\.\d+\.\d+(?:[-+][\w.]+)?/.exec(out)?.[0] ?? null;
+};
+
+/**
+ * The commit the Mend server's image was built from: its `org.opencontainers.image.revision`
+ * label (.github/workflows/image.yml), or null when the image carries none.
+ */
+export const mendImageCommit = async (host, container) => {
+  const out = await host.shell(
+    `docker inspect ${container} --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null; true`,
+  );
+  const commit = out.trim();
+  return /^[0-9a-f]{7,40}$/.test(commit) ? commit : null;
+};
