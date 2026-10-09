@@ -1,19 +1,18 @@
 # T3 gateway
 
-The T3 gateway (`apps/t3-gateway`, ADR 0012) puts a t3code environment in front of Mend, so
-t3code's desktop, mobile and web clients can add Mend as a remote environment. A person pairs a
-t3code client with a Mend pairing code; the gateway claims the code, keeps the Mend device token,
-and gives the client a bearer of its own. To the client it is a t3code server; to Mend it is an
-ordinary client of `/api` acting as the person who paired, so Mend's access rules apply unchanged.
-In phase 1 (what this branch holds) a person sees their projects and their claude and codex
-conversation sessions as threads, watches turns live, sends follow-ups (relaunching an idle-stopped
-agent), interrupts, answers approvals and questions, and reads the change's diff. Nothing in Mend
-starts the gateway: someone runs it beside a Mend server.
+The T3 gateway (`apps/t3-gateway`, ADR 0012) puts a t3code environment in front of Mend, so t3code's
+desktop, mobile and web clients can add Mend as a remote environment. A person pairs a t3code client
+with a Mend pairing code; the gateway claims the code, keeps the Mend device token, and gives the
+client a bearer of its own. To the client it is a t3code server; to Mend it is an ordinary client of
+`/api` acting as the person who paired, so Mend's access rules apply unchanged. In phase 1 (what
+this branch holds) a person sees their projects and their claude and codex conversation sessions as
+threads, watches turns live, sends follow-ups (relaunching an idle-stopped agent), interrupts,
+answers approvals and questions, and reads the change's diff. Nothing in Mend starts the gateway:
+someone runs it beside a Mend server.
 
 ## Sub-features
 
-- `t3-run` starts the gateway beside a Mend server, on loopback by default, with its own state
-  file.
+- `t3-run` starts the gateway beside a Mend server, on loopback by default, with its own state file.
 - `t3-descriptor` answers `GET /.well-known/t3/environment` with a persisted environment id and
   orchestration protocol 2.
 - `t3-pair` exchanges a Mend pairing code for a gateway bearer at `POST /oauth/token`; the device
@@ -31,25 +30,26 @@ starts the gateway: someone runs it beside a Mend server.
 - `t3-thread` serves one thread in full and keeps it live from Mend's event stream.
 - `t3-commands` takes `message.dispatch` (queued, relaunching a stopped agent), `run.interrupt`,
   `queued-run.cancel`, `queue.resume`, `runtime-request.respond` and `thread.user-input.dismiss`.
-- `t3-review` serves the thread's change as `review.getDiffPreview` and `review.getDiffFileContents`.
+- `t3-review` serves the thread's change as `review.getDiffPreview` and
+  `review.getDiffFileContents`.
 - `t3-revoke` ends the bearer when the device is revoked in Mend.
 
 ## How to get to it (user POV)
 
 - Gateway host: `MEND_T3_GATEWAY_MEND_URL=<api> pnpm --filter @mend/t3-gateway start` (the bin
   `mend-t3-gateway`, `node src/bin.ts`). Variables: `MEND_T3_GATEWAY_MEND_URL` (default
-  `http://127.0.0.1:3101`, Mend's API), `MEND_T3_GATEWAY_HOST` (`127.0.0.1`),
-  `MEND_T3_GATEWAY_PORT` (`3120`), `MEND_T3_GATEWAY_STATE_PATH`
-  (`$XDG_STATE_HOME/mend/t3-gateway/state.sqlite`), `MEND_T3_GATEWAY_LABEL` (`Mend`).
+  `http://127.0.0.1:3101`, Mend's API), `MEND_T3_GATEWAY_HOST` (`127.0.0.1`), `MEND_T3_GATEWAY_PORT`
+  (`3120`), `MEND_T3_GATEWAY_STATE_PATH` (`$XDG_STATE_HOME/mend/t3-gateway/state.sqlite`),
+  `MEND_T3_GATEWAY_LABEL` (`Mend`).
 - t3code clients (desktop, mobile, web): add a remote environment with the gateway's host and a Mend
-  pairing code, or paste `http://<gateway>/pair#token=<code>` into t3code's pairing input.
-  The URL is pairing input for t3code; the gateway serves no `/pair` page.
+  pairing code, or paste `http://<gateway>/pair#token=<code>` into t3code's pairing input. The URL
+  is pairing input for t3code; the gateway serves no `/pair` page.
 - Web: Settings → Devices mints the pairing code, and lists the paired client as
   `t3code · <client label>` with its revoke (see [Pairing devices](./pairing-devices.md)).
-- CLI: `mend pair` mints a pairing code (`✓ pairing code <code>`); the gateway takes that code as its
-  credential.
-- HTTP: the descriptor, authentication and orchestration snapshot routes answer `curl`.
-  The `/pair#token=…` URL is not an HTTP route; `/ws` is the socket endpoint.
+- CLI: `mend pair` mints a pairing code (`✓ pairing code <code>`); the gateway takes that code as
+  its credential.
+- HTTP: the descriptor, authentication and orchestration snapshot routes answer `curl`. The
+  `/pair#token=…` URL is not an HTTP route; `/ws` is the socket endpoint.
 - Docs: `apps/t3-gateway/README.md` and `docs/adr/0012-t3code-gateway.md`. The docs site has no page
   for it yet.
 
@@ -65,12 +65,12 @@ Preconditions:
   `MEND_T3_GATEWAY_MEND_URL=<api> MEND_T3_GATEWAY_STATE_PATH=<scratch>/t3/state.sqlite pnpm --filter @mend/t3-gateway start`.
   It is ready when `curl -s http://127.0.0.1:3120/.well-known/t3/environment` answers. The gateway
   is written `<gw>` below.
-- For the shell steps, at least one claude or codex session runs as a conversation (started from
-  the phone, the desktop's `Conversation` mode, or Slack). The t3code client itself is
+- For the shell steps, at least one claude or codex session runs as a conversation (started from the
+  phone, the desktop's `Conversation` mode, or Slack). The t3code client itself is
   `not drivable yet`: the verify stack has no t3code client.
 
-- **Descriptor.** Run `curl -s <gw>/.well-known/t3/environment`. The JSON holds an
-  `environmentId`, `"label":"Mend"`, a `platform`, `serverVersion` `<t3code tag>+mend.<n>`,
+- **Descriptor.** Run `curl -s <gw>/.well-known/t3/environment`. The JSON holds an `environmentId`,
+  `"label":"Mend"`, a `platform`, `serverVersion` `<t3code tag>+mend.<n>`,
   `"orchestrationProtocolVersion":2` and `"capabilities":{"repositoryIdentity":false}`. Stop and
   start the gateway; the `environmentId` is the same.
 - **Unauthenticated session.** Run `curl -s <gw>/api/auth/session`. The JSON reads
@@ -114,16 +114,16 @@ Preconditions:
   `curl -s -i --get <gw>/api/orchestration/threads/<threadId>/history --data-urlencode cursor=verify -H "authorization: Bearer <access_token>" -H "x-t3-orchestration-protocol: 2"`.
   Status `200`; it holds `"items":[]`, `"nextCursor":null` and `"hasMoreHistory":false`.
 - **Client thread view, follow-up, interrupt, approvals, diff.** `not drivable yet` (no t3code
-  client in the stack; the RPC is t3code's Effect RPC over `/ws`). End state when driven from t3code: the thread
-  shows the session's turns and items; a sent message becomes a turn in Mend
+  client in the stack; the RPC is t3code's Effect RPC over `/ws`). End state when driven from
+  t3code: the thread shows the session's turns and items; a sent message becomes a turn in Mend
   (`GET /api/sessions/<id>/turns`, or the session page on the web); an idle-stopped session is
   launched again first; an interrupt ends the open turn; an approval answered in t3code reads as
   answered on the web; the changes panel shows the change's patch.
 - **Revoke.** On the web, revoke `t3code · verify` in Settings → Devices. Run the authenticated
   session `curl` again: it reads `"authenticated":false`.
-- **Proof.** Keep every `curl` with its status line and body, the `mend pair` transcript, the
-  `stat` line, a screenshot of Settings → Devices listing `t3code · verify`, and the gateway's
-  stdout and stderr. Stop the gateway by its PID and delete `<scratch>/t3`.
+- **Proof.** Keep every `curl` with its status line and body, the `mend pair` transcript, the `stat`
+  line, a screenshot of Settings → Devices listing `t3code · verify`, and the gateway's stdout and
+  stderr. Stop the gateway by its PID and delete `<scratch>/t3`.
 
 ## Gotchas
 

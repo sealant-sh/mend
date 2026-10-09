@@ -14,8 +14,8 @@ linking their Mend account through a one-time link. Review stays in Mend.
   tokens, `Check and connect`; replaces or removes it.
 - `slack-display` sets the app's `Default harness`, `Agent messages`, `Diffs`,
   `Slack Connect channels` and `Land automatically`.
-- `slack-link` links a Slack user to a Mend account through `/slack/link/<code>`; `Unlink`, and
-  an owner's `Links` list with `Remove…`.
+- `slack-link` links a Slack user to a Mend account through `/slack/link/<code>`; `Unlink`, and an
+  owner's `Links` list with `Remove…`.
 - `slack-default-project` sets `Your default project` for mentions that name none.
 - `slack-mention` starts a session from `@mend <request>` with inline (`key=value`) or plain
   options.
@@ -26,16 +26,16 @@ linking their Mend account through a one-time link. Review stays in Mend.
 - `slack-follow-up` takes a later `@mend` in the thread as a follow-up, an answer, a resume or (with
   `new`) another session.
 - `slack-commands` answers `@mend help`, `@mend settings`, `@mend list`, `@mend new <request>`.
-- `slack-auto-land` lands a completed turn that asked for a change, unless the project, `autopr=`
-  or the app setting says otherwise; otherwise offers `Push and open pull request` to the owner.
+- `slack-auto-land` lands a completed turn that asked for a change, unless the project, `autopr=` or
+  the app setting says otherwise; otherwise offers `Push and open pull request` to the owner.
 
 ## How to get to it (user POV)
 
 - Web: Settings → Slack (`/settings#slack`). Owners see the app section (connect, display settings,
   `Links`); everyone in an organization sees `Your Slack link` and `Your default project`. Nothing
   renders for an account in no organization.
-- Web: `/slack/link/<code>`, opened from the `Link your Mend account` button Mend sends privately
-  to an unlinked Slack user.
+- Web: `/slack/link/<code>`, opened from the `Link your Mend account` button Mend sends privately to
+  an unlinked Slack user.
 - Web: a project's `Land when a turn completes` setting decides before anything Slack says (see
   [Land a change](./land-change.md) and [Project settings](./project-settings.md)).
 - Slack: `@mend <request>` in a channel thread or at the top of a channel, a direct message to the
@@ -44,8 +44,7 @@ linking their Mend account through a one-time link. Review stays in Mend.
   `Other…` list, `Review in Mend`, and `Push and open pull request` /
   `Push and update pull request`.
 - Mobile: Settings → notifications has the switch `Sessions started from Slack`.
-- CLI: none. Docs: `apps/docs/src/content/docs/integrations/slack.md`; ADR
-  `docs/adr/0006-slack.md`.
+- CLI: none. Docs: `apps/docs/src/content/docs/integrations/slack.md`; ADR `docs/adr/0006-slack.md`.
 
 ## Driving it with verify
 
@@ -83,8 +82,8 @@ Preconditions:
   to Slack, `Slack did not answer for the …: …. Nothing was saved.`. The panel still offers
   `Connect a Slack app`.
 - **Your Slack link, no app (drivable).** Under `Your Slack link` the panel reads
-  `Slack is not connected to this organization.` and offers no `Unlink` and no `Your default
-  project`.
+  `Slack is not connected to this organization.` and offers no `Unlink` and no
+  `Your default project`.
 - **A link code that does not work (drivable).** Run
   `await page.goto("<web>/slack/link/not-a-real-code")`. The heading reads `This link does not work`
   (`page.getByRole("heading", { name: "This link does not work" })`), with
@@ -100,41 +99,39 @@ Preconditions:
   sentence, for example `Land automatically` off reads
   `A completed turn pushes nothing. The thread offers the owner “Push and open pull request”.`, and
   the audit log records the change (`slack.settings_changed`).
-- **Mention and link.** `not drivable yet` (needs Slack). An unlinked user's `@mend fix the flaky
-  login test` gets a reply only they see with `Link your Mend account`. End state on the web:
-  `/slack/link/<code>` shows the Slack person as the heading, `<slack user id> · <team> · expires
-  <time>`, `runs once linked` with the request, and the button `Link <person> to my account`;
-  pressing it reads
+- **Mention and link.** `not drivable yet` (needs Slack). An unlinked user's
+  `@mend fix the flaky login test` gets a reply only they see with `Link your Mend account`. End
+  state on the web: `/slack/link/<code>` shows the Slack person as the heading,
+  `<slack user id> · <team> · expires <time>`, `runs once linked` with the request, and the button
+  `Link <person> to my account`; pressing it reads
   `Linked in <team>. Mend runs your request and answers in the thread.` with `Slack settings`.
   Settings → Slack then reads `Linked as Slack user <id> in <team>.` with `Unlink`.
 - **Project choice and the thread.** `not drivable yet` (needs Slack). End state in Slack: ⏳ on the
-  request, a status message such as
-  `<project> · from the thread · claude · running · mend/<name>` naming which source decided
-  (`named in the request`, `the thread's session`, `from a link in the thread`, `from the thread`,
-  `channel default`, `personal default`, `picked`), and ✅ or ❌ when it settles. When nothing
-  answers, buttons for the likeliest projects and `Other…`, which only the requester can press. In
-  Mend, the session is the requester's and runs `claude` or `codex` in protocol mode
-  (`mend sessions --all --json`).
+  request, a status message such as `<project> · from the thread · claude · running · mend/<name>`
+  naming which source decided (`named in the request`, `the thread's session`,
+  `from a link in the thread`, `from the thread`, `channel default`, `personal default`, `picked`),
+  and ✅ or ❌ when it settles. When nothing answers, buttons for the likeliest projects and
+  `Other…`, which only the requester can press. In Mend, the session is the requester's and runs
+  `claude` or `codex` in protocol mode (`mend sessions --all --json`).
 - **Follow-up, commands and landing.** `not drivable yet` (needs Slack). A second `@mend` in the
   thread is a turn on the thread's latest session; `@mend new …` starts another; `help`, `list` and
   `settings` answer privately. With `Land automatically` on, a completed turn that asked for a
-  change adds `pushed · mend/<name> · pull request #<n> · opened` to the status message; Mend's
-  Land panel shows the same landing (see [Land a change](./land-change.md)).
-- **Proof.** For the drivable steps, capture the Slack panel
-  (`await slack.ariaSnapshot()` and a screenshot) before and after each refused connect, and the
-  link page. Report every Slack-side step as `not drivable yet: no Slack workspace in the verify
-  stack`.
+  change adds `pushed · mend/<name> · pull request #<n> · opened` to the status message; Mend's Land
+  panel shows the same landing (see [Land a change](./land-change.md)).
+- **Proof.** For the drivable steps, capture the Slack panel (`await slack.ariaSnapshot()` and a
+  screenshot) before and after each refused connect, and the link page. Report every Slack-side step
+  as `not drivable yet: no Slack workspace in the verify stack`.
 
 ## Gotchas
 
-- The Slack panel is a `section` with an `id` but no accessible name, so it is not a region, and
-  its buttons share names with other panels on the settings page: `Copy` (devices, git key),
-  `Remove…` (organization members), `On` and `Off` (instance defaults). Scope by
-  `section#slack`, Mend's own anchor (the link page navigates to it). Finding:
+- The Slack panel is a `section` with an `id` but no accessible name, so it is not a region, and its
+  buttons share names with other panels on the settings page: `Copy` (devices, git key), `Remove…`
+  (organization members), `On` and `Off` (instance defaults). Scope by `section#slack`, Mend's own
+  anchor (the link page navigates to it). Finding:
   `apps/web/src/components/organization-settings.tsx:75`.
-- Inside the panel, the four display settings each have an `On` and an `Off` button with nothing
-  to tell them apart but order, and `Default harness`'s choices are named only by the harness. The
-  rows are not groups. Finding: `apps/web/src/components/slack-settings.tsx:378`, `:355`.
+- Inside the panel, the four display settings each have an `On` and an `Off` button with nothing to
+  tell them apart but order, and `Default harness`'s choices are named only by the harness. The rows
+  are not groups. Finding: `apps/web/src/components/slack-settings.tsx:378`, `:355`.
 - The token fields are password inputs, so they are not textboxes; reach them with
   `getByLabel("app-level token")` and `getByLabel("bot token")`, which their wrapping labels name.
 - `Your default project` is a select named by its `aria-label`; it appears only once the

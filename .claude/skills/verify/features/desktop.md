@@ -67,12 +67,11 @@ Preconditions:
 - Mend is healthy at `<web>` and `<project>` is adopted (see [Adopt a project](./adopt-project.md)).
 - The repository's dependencies are installed (`pnpm install` at the root). The host has a display;
   on a headless host the app needs a virtual one (for example Xvfb).
-- A scratch directory `<scratch>` holds this run's state. First run
-  `mkdir -p <scratch>/config/mend` so neither credential resolver falls back to the owner's
-  `~/.mend`. Sign in with
-  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend login --url <web>`.
-  Every CLI invocation and the app launch below use that scratch environment and clear any
-  inherited `MEND_TOKEN`. The app reads `<scratch>/config/mend/cli.json`.
+- A scratch directory `<scratch>` holds this run's state. First run `mkdir -p <scratch>/config/mend`
+  so neither credential resolver falls back to the owner's `~/.mend`. Sign in with
+  `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend login --url <web>`. Every
+  CLI invocation and the app launch below use that scratch environment and clear any inherited
+  `MEND_TOKEN`. The app reads `<scratch>/config/mend/cli.json`.
 - A settled session in `<project>` holds a change:
   `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`.
   Note its id `<id>` and the worktree name `<run-worktree>` from the `✓ worktree` line.
@@ -88,25 +87,24 @@ Preconditions:
   (`page.getByRole("navigation", { name: "Projects and sessions" })`), and the titlebar reads `Mend`
   and `· cockpit · <n> sessions live`. Without a credential the window shows `#/connect` instead,
   with the heading `Connect to your Mend server` and `Not signed in to a Mend server yet.`.
-- **Sign in from the app (alternative fresh-credential run).** Create
-  `<scratch>/config/mend` first, leave it without `cli.json`, and launch the app with the scratch
-  environment above instead of signing in with the CLI. Run
+- **Sign in from the app (alternative fresh-credential run).** Create `<scratch>/config/mend` first,
+  leave it without `cli.json`, and launch the app with the scratch environment above instead of
+  signing in with the CLI. Run
   `await page.getByRole("textbox", { name: "Server URL" }).fill("<web>")` and
   `await page.getByRole("button", { name: "Sign in with the browser" }).click()`. The form shows
   `Approve in the browser if it shows this code`, the code, a button named by the authorize URL, and
   `waiting for approval · open until <time> · nothing is granted until someone approves`. Approve
   that URL in the web browser as in [Sign in](./sign-in.md). The window moves to the cockpit and
   `<scratch>/config/mend/cli.json` holds `url`, `token` and `deviceId`.
-- **Rail faces.** Run
-  `const faces = page.getByRole("group", { name: "Sidebar face" })`. Its button `tree` has
-  `aria-pressed="true"`. Run `await page.keyboard.press("Control+Shift+B")`. The button `inbox` is
-  pressed and the rail shows the scope pill `All projects`, the active rows and the `settled` shelf.
-  Press `Control+Shift+B` again to return to the tree.
+- **Rail faces.** Run `const faces = page.getByRole("group", { name: "Sidebar face" })`. Its button
+  `tree` has `aria-pressed="true"`. Run `await page.keyboard.press("Control+Shift+B")`. The button
+  `inbox` is pressed and the rail shows the scope pill `All projects`, the active rows and the
+  `settled` shelf. Press `Control+Shift+B` again to return to the tree.
 - **Expand the project.** Run
   `const projectRow = page.getByRole("navigation", { name: "Projects and sessions" }).getByRole("button", { name: new RegExp("^<project>") })`.
   The focused project's tree starts open; when its `aria-expanded` is `false`, click it. With
-  `aria-expanded="true"` the tree shows `sessions` with `<live>/<total>` and a row whose name
-  starts `run · ` for the `mend run` session.
+  `aria-expanded="true"` the tree shows `sessions` with `<live>/<total>` and a row whose name starts
+  `run · ` for the `mend run` session.
 - **Open the launcher.** Run
   `await page.getByRole("button", { name: "New session in <project>" }).click()`. A dialog named
   `New session in <project>` opens, headed `New session · <project>`, with focus in the worktree
@@ -125,13 +123,13 @@ Preconditions:
   output draws on the terminal canvas (take a screenshot). Run
   `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend worktrees --project <project>`:
   `verify-desk` is listed with its `shell` session.
-- **Supporting shell tab.** Run
-  `await page.getByRole("button", { name: "+", exact: true }).click()` (or press
-  `Control+Shift+T`). The button reads `…` while opening. A second tab opens for a supporting shell;
-  its header reads `<label> · session worktree · mend/verify-desk` with the buttons `rename` and
-  `detach tab`. Right-click that tab's button (`click({ button: "right" })`); a menu opens with
-  `Detach tab` and `Stop shell`. Click `Stop shell`: the item now reads `Stop the process group?`.
-  Click it again. The tab closes and the tree no longer lists that shell under the session.
+- **Supporting shell tab.** Run `await page.getByRole("button", { name: "+", exact: true }).click()`
+  (or press `Control+Shift+T`). The button reads `…` while opening. A second tab opens for a
+  supporting shell; its header reads `<label> · session worktree · mend/verify-desk` with the
+  buttons `rename` and `detach tab`. Right-click that tab's button (`click({ button: "right" })`); a
+  menu opens with `Detach tab` and `Stop shell`. Click `Stop shell`: the item now reads
+  `Stop the process group?`. Click it again. The tab closes and the tree no longer lists that shell
+  under the session.
 - **Mark a checkpoint.** On the `verify-desk` session tab, run
   `await page.getByRole("button", { name: "mark checkpoint" }).click()`. It reads `marking…`, then
   `mark checkpoint` again.
@@ -148,9 +146,9 @@ Preconditions:
   with a scrubber: the group `Replay checkpoints` holds one button per checkpoint, named
   `Replay from checkpoint <i>, seq <seq>`, the label reads `▶ replay · from seq <seq> · …`, and the
   fact line states how the process ended (for example `exited · observed`). The group `Record view`
-  switches between `terminal` and `conversation`. When the record holds no terminal output the
-  label reads `no terminal output recorded to replay`. Click a checkpoint button: the label names
-  that checkpoint and the replay restarts from its sequence.
+  switches between `terminal` and `conversation`. When the record holds no terminal output the label
+  reads `no terminal output recorded to replay`. Click a checkpoint button: the label names that
+  checkpoint and the replay restarts from its sequence.
 - **Review in the app.** Run
   `await page.getByRole("button", { name: "review the change" }).click()`. It reads
   `opening Review…`, then the URL hash becomes `#/review/<change>/<slice>`. The heading is the
@@ -161,15 +159,16 @@ Preconditions:
 - **Comment on the change.** Run
   `await page.getByRole("button", { name: "Comment on change" }).click()`, then
   `await page.getByRole("textbox", { name: "Describe what you observed or want changed." }).fill("Say why VERIFY.md exists.")`
-  and `await page.getByRole("button", { name: "Add comment" }).click()`. A comment card appears
-  with `Mark addressed` and `Dismiss`, and the toolbar button reads `comment → 1`. Run
+  and `await page.getByRole("button", { name: "Add comment" }).click()`. A comment card appears with
+  `Mark addressed` and `Dismiss`, and the toolbar button reads `comment → 1`. Run
   `await page.getByRole("button", { name: "← Workbench" }).click()` to return.
-- **Land sheet.** On the `run · …` tab, run `await page.getByRole("button", { name: "land", exact: true }).click()`.
-  The complementary region `Land the change` opens. Its region `What Mend observed` reads
+- **Land sheet.** On the `run · …` tab, run
+  `await page.getByRole("button", { name: "land", exact: true }).click()`. The complementary region
+  `Land the change` opens. Its region `What Mend observed` reads
   `not landed · nothing pushed from Mend yet`, and its region `Land this change` holds the land
   button (`Push and open pull request`, or `Push to origin` with the reason when origin is not on
-  GitHub). Do not press it unless the origin is disposable (see
-  [Land a change](./land-change.md)). Close with the sheet's `Close`.
+  GitHub). Do not press it unless the origin is disposable (see [Land a change](./land-change.md)).
+  Close with the sheet's `Close`.
 - **Settings.** Run `await page.getByRole("link", { name: "Settings" }).click()` (or press
   `Control+Comma`). The heading `Settings` shows, with the headings `Terminal`, `Appearance`,
   `Workbench`, `Connection`, `Connected accounts` and `Keyboard`. Run
@@ -185,18 +184,18 @@ Preconditions:
   and
   `env -u MEND_TOKEN XDG_CONFIG_HOME=<scratch>/config MEND_URL=<web> mend sessions --project <project> --all --json`
   shows the session settled.
-- **Proof.** Capture `await page.locator("body").ariaSnapshot()` and `await page.screenshot({ path })`
-  of the cockpit with the live shell tab, of the replay with its scrubber, of the review page, and
-  of the Land sheet. Keep the `mend run`, `mend worktrees` and `mend sessions --json` transcripts
-  and the app's stdout.
+- **Proof.** Capture `await page.locator("body").ariaSnapshot()` and
+  `await page.screenshot({ path })` of the cockpit with the live shell tab, of the replay with its
+  scrubber, of the review page, and of the Land sheet. Keep the `mend run`, `mend worktrees` and
+  `mend sessions --json` transcripts and the app's stdout.
 
 ## Gotchas
 
-- The app reads and writes the CLI's credential file and watches it. Both clients fall back to
-  the owner's `~/.mend` when `<scratch>/config/mend` is missing. Create that directory before
-  either client starts, use the scratch environment for every CLI invocation and the app launch,
-  and unset inherited `MEND_TOKEN`. Signing out of an owner's credential file revokes that device
-  and empties the CLI's token too.
+- The app reads and writes the CLI's credential file and watches it. Both clients fall back to the
+  owner's `~/.mend` when `<scratch>/config/mend` is missing. Create that directory before either
+  client starts, use the scratch environment for every CLI invocation and the app launch, and unset
+  inherited `MEND_TOKEN`. Signing out of an owner's credential file revokes that device and empties
+  the CLI's token too.
 - The app holds a single-instance lock on its profile. A second launch without `MEND_USER_DATA`
   quits at once and raises the owner's window instead. `Alt+Space` is a global shortcut; the run's
   instance takes it only when no other app holds it.
@@ -205,18 +204,19 @@ Preconditions:
   opened tab.
 - Stop the app by the PID recorded at launch. Never `pkill -f electron` or a bare `mend` pattern.
 - The terminal draws on a canvas marked `aria-hidden`; its text is not in the accessibility tree.
-  Prove terminal output with a screenshot, or with the session's record and the files it wrote.
-  The `Terminal input` textarea has `pointer-events: none`: use `.focus()`, not `.click()`.
-- The tab bar's new-shell button is named `+`, changing to `…` while opening. These are weak
-  names; its `title`, `New shell in focused session (Ctrl+Shift+T)`, is a description.
-  Source: `components/tab-bar.tsx:91`.
-- Tab buttons have no explicit label: their computed name separates the tab number and title
-  with a space (`1 shell · mend/verify-desk`). Match with a regular expression on the title.
-  Source: `components/tab-bar.tsx:61`.
-- Tree and inbox rows have no label either. A session row's name is the title (`<harness> · <label
-  or branch>`) followed by the status word or a relative time; a project row's name is the project
-  name, its default branch and, collapsed, its row count. Auto-naming can replace the branch with a
-  label after the first prompt. Finding: `components/sidebar.tsx:135`, `:456`, `components/inbox-rail.tsx:564`.
+  Prove terminal output with a screenshot, or with the session's record and the files it wrote. The
+  `Terminal input` textarea has `pointer-events: none`: use `.focus()`, not `.click()`.
+- The tab bar's new-shell button is named `+`, changing to `…` while opening. These are weak names;
+  its `title`, `New shell in focused session (Ctrl+Shift+T)`, is a description. Source:
+  `components/tab-bar.tsx:91`.
+- Tab buttons have no explicit label: their computed name separates the tab number and title with a
+  space (`1 shell · mend/verify-desk`). Match with a regular expression on the title. Source:
+  `components/tab-bar.tsx:61`.
+- Tree and inbox rows have no label either. A session row's name is the title
+  (`<harness> · <label or branch>`) followed by the status word or a relative time; a project row's
+  name is the project name, its default branch and, collapsed, its row count. Auto-naming can
+  replace the branch with a label after the first prompt. Finding: `components/sidebar.tsx:135`,
+  `:456`, `components/inbox-rail.tsx:564`.
 - The launcher's worktree name field, prompt and base field have no label: their names come from
   placeholders (`worktree name — e.g. fix-auth (empty = auto)`, `What should the session do?`, and
   the project's default branch). The harness, model and settings pills, and the inbox scope pill,
@@ -238,9 +238,10 @@ Preconditions:
   does not implement `window.prompt`; check whether any dialog appears before relying on it, and
   report it as a finding if none does.
 - In the review, the line numbers come from `@pierre/diffs` inside a shadow root and have no
-  accessible name, as on the web; clicking one opens the line composer. The comment composer and
-  the follow-up instruction are named only by placeholders (`Describe what you observed or want
-  changed.`, `Select comments, then assemble an editable instruction.`). Findings:
+  accessible name, as on the web; clicking one opens the line composer. The comment composer and the
+  follow-up instruction are named only by placeholders
+  (`Describe what you observed or want changed.`,
+  `Select comments, then assemble an editable instruction.`). Findings:
   `components/review-diff.tsx:183`, `routes/review.$changeId.$sliceId.tsx:1090`, `:996`.
 - The review toolbar's `title` texts (`Next file (])`, `Next hunk (J)`) are descriptions; the
   buttons' names are their text (`file →`, `hunk →`). The `Context` select's name comes from its
@@ -249,8 +250,8 @@ Preconditions:
   (`command · leave empty to adopt a listening port`, `port`, `name`), and its scheme select has no
   name at all. Finding: `components/services-sheet.tsx:483`, `:491`, `:494`, `:495`.
 - Settings: the font family field is named only by its placeholder `"JetBrains Mono"`; the three
-  provider rows each have a `Connect` button with the same name and no region to scope by; the
-  token field is a password input named only by its placeholder. Findings: `routes/settings.tsx:127`,
+  provider rows each have a `Connect` button with the same name and no region to scope by; the token
+  field is a password input named only by its placeholder. Findings: `routes/settings.tsx:127`,
   `:404`, `:439`.
 - The Services sub-view of a scoped inbox says a session declares a Service in its `mend.services`
   file; Services are declared in `mend.toml`, as the Services sheet itself says. Copy finding:
@@ -259,14 +260,14 @@ Preconditions:
   offers `pi` (`lib/app-settings.ts:4`). Docs drift.
 - The app cannot adopt a project or edit project settings yet (BRIEF.md milestone M4). An empty tree
   says `no projects — adopt one with mend adopt`.
-- `land`, `landing` and the strip under the header appear only once the session has a change and
-  its landing record answers. `Check GitHub`, `Check origin` and `Refresh pull request` follow the
-  same rules as on the web (see [Land a change](./land-change.md)).
+- `land`, `landing` and the strip under the header appear only once the session has a change and its
+  landing record answers. `Check GitHub`, `Check origin` and `Refresh pull request` follow the same
+  rules as on the web (see [Land a change](./land-change.md)).
 - A conversation (protocol-mode) session shows the composer `Message the session…` with `Send` and,
   while a turn is open, `Interrupt`; approvals read `Allow once`, `Allow for session`, `Decline`.
   Starting one needs `Runs as` → `Conversation` in the launcher's settings menu and a connected
   provider. Its composer and answer fields are named only by placeholders. Findings:
   `components/conversation.tsx:431`, `:258`.
 - `sign out · revokes this device when it is one, removes the token` on the Connect screen and
-  `Sign out` in Settings revoke the device on the server. Sign out only in a run whose credential
-  is scratch.
+  `Sign out` in Settings revoke the device on the server. Sign out only in a run whose credential is
+  scratch.

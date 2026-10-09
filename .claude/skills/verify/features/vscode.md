@@ -4,10 +4,10 @@ The Mend extension for VS Code (`apps/vscode`) lists a person's projects and ses
 `Projects and sessions` view and opens a session inside its workspace over SSH: the editor's files
 are the session's worktree, and its integrated terminal runs in the workspace, where Mend observes a
 `claude` or `codex` started there. From the view a person starts a session (a workbench shell, a
-Claude or Codex agent, or an agent with options), starts another session in the same worktree,
-makes a worktree without an agent, takes over an agent Mend is running elsewhere so the
-conversation continues in the editor's terminal, stops a session, and opens it in Mend's web app.
-The extension is not published; it is built and installed from source.
+Claude or Codex agent, or an agent with options), starts another session in the same worktree, makes
+a worktree without an agent, takes over an agent Mend is running elsewhere so the conversation
+continues in the editor's terminal, stops a session, and opens it in Mend's web app. The extension
+is not published; it is built and installed from source.
 
 ## Sub-features
 
@@ -60,13 +60,13 @@ The extension is not published; it is built and installed from source.
 
 Preconditions:
 
-- Mend is healthy at `<web>`, `mend login --url <web>` has been run in the same `XDG_CONFIG_HOME` the
-  editor would use, and `<project>` is adopted.
+- Mend is healthy at `<web>`, `mend login --url <web>` has been run in the same `XDG_CONFIG_HOME`
+  the editor would use, and `<project>` is adopted.
 - The server reports a workspace SSH gateway (see [Workspace SSH](./workspace-ssh.md)).
-- The verify stack has no VS Code harness, and the extension is not on the Marketplace. Every
-  step below except the build is `not drivable yet`: it needs a VS Code 1.100+ window with this
-  `.vsix` installed and Microsoft's Remote - SSH, driven by a person or a VS Code test runner the
-  stack does not have. A run reports each of them with that reason.
+- The verify stack has no VS Code harness, and the extension is not on the Marketplace. Every step
+  below except the build is `not drivable yet`: it needs a VS Code 1.100+ window with this `.vsix`
+  installed and Microsoft's Remote - SSH, driven by a person or a VS Code test runner the stack does
+  not have. A run reports each of them with that reason.
 
 - **Build and package (drivable).** Run `pnpm --filter mend build`, then
   `pnpm --filter mend package`. Both exit `0`; `apps/vscode/dist/extension.js` and
@@ -80,27 +80,27 @@ Preconditions:
 - **View.** `not drivable yet`. Open the Mend view. End state: the tree shows `Needs you` (only
   while a session waits) and `Projects`, each project with its default branch as description and
   each session with its status; the status bar shows `Mend: <project> · <n> sessions`.
-- **Adopt.** `not drivable yet`. Run `Mend: Adopt a project…`; the input titled
-  `Adopt a project` asks `Git clone URL` (placeholder `https://github.com/owner/repository.git`),
-  then `Project name`. End state: a notification `Adopting <name>…`, then `Adopted <name>.`, and
-  `mend projects` lists it.
-- **New session.** `not drivable yet`. Run `Mend: New Session…` (or `+` in the view). The quick
-  pick offers `$(terminal) Workbench`, `$(sparkle) Claude agent`, `$(sparkle) Codex agent` and
+- **Adopt.** `not drivable yet`. Run `Mend: Adopt a project…`; the input titled `Adopt a project`
+  asks `Git clone URL` (placeholder `https://github.com/owner/repository.git`), then `Project name`.
+  End state: a notification `Adopting <name>…`, then `Adopted <name>.`, and `mend projects` lists
+  it.
+- **New session.** `not drivable yet`. Run `Mend: New Session…` (or `+` in the view). The quick pick
+  offers `$(terminal) Workbench`, `$(sparkle) Claude agent`, `$(sparkle) Codex agent` and
   `$(settings-gear) Agent with options…`. The quick Claude and Codex choices ask
-  `What should the agent do? Empty opens the harness without a prompt.`. `Agent with options…`
-  asks `What should the session do? Leave empty to open the harness without a prompt.`, then
-  `Harness` (`Claude`, `Codex`, `opencode`, `pi`). `Model` is asked only when the catalog offers
-  models, and `Thinking` only when the selected model offers more than one effort choice.
-  `Permissions` (`Skip permission prompts`, `Ask before acting`) follows; a new worktree also asks
-  `Base branch or commit`. End state: a progress notification
-  `Starting <harness>…`, then the workspace opens in a Remote - SSH window, and
-  `mend sessions --project <project> --json` lists the new session.
+  `What should the agent do? Empty opens the harness without a prompt.`. `Agent with options…` asks
+  `What should the session do? Leave empty to open the harness without a prompt.`, then `Harness`
+  (`Claude`, `Codex`, `opencode`, `pi`). `Model` is asked only when the catalog offers models, and
+  `Thinking` only when the selected model offers more than one effort choice. `Permissions`
+  (`Skip permission prompts`, `Ask before acting`) follows; a new worktree also asks
+  `Base branch or commit`. End state: a progress notification `Starting <harness>…`, then the
+  workspace opens in a Remote - SSH window, and `mend sessions --project <project> --json` lists the
+  new session.
 - **New session in this worktree.** `not drivable yet`. On a session row run
   `Mend: New session in this worktree…`. End state: a second session in the same worktree
   (`mend worktrees --project <project>` lists both under one worktree).
-- **New worktree without an agent.** `not drivable yet`. Run
-  `Mend: New worktree without an agent…`; it asks `Name this manual change`, then
-  `Base branch or commit`. End state: the worktree exists (`mend worktrees`) and opens.
+- **New worktree without an agent.** `not drivable yet`. Run `Mend: New worktree without an agent…`;
+  it asks `Name this manual change`, then `Base branch or commit`. End state: the worktree exists
+  (`mend worktrees`) and opens.
 - **Open a session.** `not drivable yet`. Click a live session. End state: on first use the modal
   `Set up workspace SSH?` with `Set up`; then a Remote - SSH window on
   `ssh-remote+<user prefix>-<workspace id>@<host>` at `/workspace/repo`. A settled session first
@@ -120,14 +120,15 @@ Preconditions:
 - **Open in Mend.** `not drivable yet`. Run the session row's `Mend: Open in Mend` action. End
   state: the browser opens `<web>/sessions/<id>`. To open the current folder's project, run
   `Mend: Open in Mend` from the Command Palette in that project's folder. End state:
-  `<web>/projects/<id>`. From a session workspace the palette opens its session instead; with
-  no current session or project it opens `<web>`. Projects have no row action for this command.
-- **URI.** `not drivable yet`. Open `vscode://sealant-sh.mend/open?session=<id>`. End state: the same
-  as opening the session, with the takeover question when Mend runs its agent elsewhere.
+  `<web>/projects/<id>`. From a session workspace the palette opens its session instead; with no
+  current session or project it opens `<web>`. Projects have no row action for this command.
+- **URI.** `not drivable yet`. Open `vscode://sealant-sh.mend/open?session=<id>`. End state: the
+  same as opening the session, with the takeover question when Mend runs its agent elsewhere.
 - **Proof.** For the build: the two commands with stdout, stderr and exit code, and a listing of
-  `apps/vscode/mend-0.1.0.vsix`. For the rest, report `not drivable yet: no VS Code harness in the
-  verify stack` per step; the CLI's `mend sessions --json` and `mend worktrees --json` are the second
-  view once a person has driven a step.
+  `apps/vscode/mend-0.1.0.vsix`. For the rest, report
+  `not drivable yet: no VS Code harness in the verify stack` per step; the CLI's
+  `mend sessions --json` and `mend worktrees --json` are the second view once a person has driven a
+  step.
 
 ## Gotchas
 
