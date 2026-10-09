@@ -64,6 +64,24 @@ export type LaunchPlan =
 
 const refusedPlan = (message: string): LaunchPlan => ({ kind: "refused", message });
 
+/** Mend's own longest session name (the namer's `MAX_LABEL_LENGTH`). */
+export const MEND_LABEL_LIMIT = 60;
+/** The name of a launched thread with neither a title nor words. */
+const UNNAMED_LABEL = "t3code thread";
+
+/**
+ * A session label from text: its first line with words, whitespace collapsed, cut to Mend's limit
+ * on its own; null when the text has no words.
+ */
+export const labelOf = (text: string): string | null => {
+  const line = text
+    .split("\n")
+    .map((candidate) => candidate.replace(/\s+/g, " ").trim())
+    .find((candidate) => candidate.length > 0);
+  if (line === undefined) return null;
+  return line.length <= MEND_LABEL_LIMIT ? line : line.slice(0, MEND_LABEL_LIMIT).trimEnd();
+};
+
 /** What a launch input asks of Mend, or why Mend cannot do it. */
 export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan => {
   const strategy = input.workspaceStrategy;
@@ -110,8 +128,13 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
       threadId: input.threadId ?? null,
       projectId: input.projectId,
       harness: provider.harness,
-      // A title t3code asks to generate is its first message: Mend names the session itself.
-      label: input.generateTitle === true ? null : input.title,
+      // A launched session is never unnamed: a title t3code asks to generate starts as the first
+      // line of the first message; a title the client generates later renames it (#591).
+      label:
+        labelOf(input.generateTitle === true ? text : input.title) ??
+        labelOf(input.title) ??
+        labelOf(text) ??
+        UNNAMED_LABEL,
       workspace:
         strategy.type === "worktree"
           ? { kind: "new", base: strategy.baseRef, name: worktreeNameOf(strategy.branch) }

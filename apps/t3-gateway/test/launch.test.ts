@@ -20,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
-import { planLaunch, worktreeNameOf } from "../src/launch.ts";
+import { labelOf, MEND_LABEL_LIMIT, planLaunch, worktreeNameOf } from "../src/launch.ts";
 import { openGatewayState } from "../src/state.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
@@ -240,7 +240,8 @@ describe("orchestration.launchThread", () => {
           assert.strictEqual(created.length, 1);
           assert.deepStrictEqual(created[0]?.body, {
             harness: "codex",
-            label: null,
+            // t3code asked to generate the title: the first line of the first message names it.
+            label: "Add a health check",
             name: "health-check",
             base: "main",
             mode: "protocol",
@@ -439,6 +440,18 @@ describe("orchestration.launchThread", () => {
 });
 
 describe("planLaunch", () => {
+  it("never leaves a session unnamed: the first line with words, cut to Mend's limit", () => {
+    assert.strictEqual(labelOf("\n  Fix   the parser \nand its tests"), "Fix the parser");
+    const long = labelOf("word ".repeat(40)) ?? "";
+    assert.isAtMost(long.length, MEND_LABEL_LIMIT);
+    assert.isFalse(long.endsWith(" "));
+    assert.isNull(labelOf("  \n "));
+    const plan = planLaunch(
+      launchInput({ title: "", initialMessage: undefined, generateTitle: true }),
+    );
+    assert.strictEqual(plan.kind === "launch" ? plan.launch.label : null, "t3code thread");
+  });
+
   it("names a worktree from the branch the client asked for, when Mend can take the name", () => {
     assert.strictEqual(worktreeNameOf("t3code/Fix the Parser"), "fix-the-parser");
     assert.strictEqual(worktreeNameOf("feature/x"), "x");
