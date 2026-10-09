@@ -5,17 +5,17 @@ Fedora, Ubuntu or Nix) with a login shell and portable package names, or a custo
 extra packages and setup commands, plus a Docker service switch. The definition resolves project
 override, then organization default, then instance default. A user overrides it on the project's
 Setup tab, owners set the organization's default and the operator the instance's in Settings. Mend
-asks the platform to resolve every package on save and refuses the save naming each package it could
-not resolve. The next launch that needs a new image builds it, and the session says so while it
-builds.
+asks the platform to resolve every managed OS-family package on save and refuses the save naming
+each package it could not resolve. Custom bases keep package names unchanged without catalog
+resolution. The next launch that needs a new image builds it, and the session says so while it builds.
 
 ## Sub-features
 
 - `image-project-override` saves a project override from the Setup tab's `Workspace image` panel
   (`os family` or `custom image`).
 - `image-packages` takes packages one per line, for a family or as a custom base's extra packages.
-- `image-setup-commands` takes a custom base's setup commands, one per line, run on a worktree's
-  first launch.
+- `image-setup-commands` takes a custom base's setup commands, one per line, run when a new
+  executor starts without a restored capture.
 - `image-rejections` refuses a save and names each package Sealant could not resolve or does not
   support for the family.
 - `image-use-default` returns a project to what it inherits.
@@ -68,13 +68,15 @@ Preconditions:
 - **Custom base.** Open `Edit…`, choose `custom image`. The textboxes `Base image reference`
   (placeholder `node:22-bookworm`) and `Setup commands` appear and `Save override` is disabled
   while the base is empty. Fill `Base image reference` with `node:22-bookworm` and `Setup commands`
-  with `echo setup-ran > /tmp/setup-ran`, then save. The line reads
+  with `echo setup-ran > /tmp/setup-ran`. Clear the textbox `Packages` with
+  `await section("Workspace image").getByRole("textbox", { name: "Packages", exact: true }).fill("")`
+  before saving; switching modes kept the Arch package list. The line reads
   `custom · node:22-bookworm · project override`.
 - **Build state.** Start a session that needs the new image:
   `mend run --project <project> -- sh -c 'cat /tmp/setup-ran > IMAGE.txt'` with stdout not a TTY.
   While the platform builds, and when it reports the phase, stdout prints launch lines such as
-  `  building the workspace image · step <n>/<m>`; the session page's summary paragraph reads the
-  same words, and its `Terminal` pane reads
+  `  starting · building the workspace image · step <n>/<m>`; the session page's summary paragraph
+  reads `building the workspace image · step <n>/<m>`, and its `Terminal` pane reads
   `provisioning workspace — a first launch builds the harness image (can take minutes)…`. The run
   ends with `✓ session completed · recorded · checkpoint taken`, and its change adds `IMAGE.txt`
   holding `setup-ran`, which only the setup command wrote.
@@ -122,11 +124,17 @@ Preconditions:
   `getByRole("textbox")` inside it, and treat a label-based miss as this finding.
 - The project editor checks package syntax only on the server; the Settings editors refuse bad
   syntax before saving (`Unsupported package syntax: <entry>`).
-- A saved definition stores each package as the catalog id it resolved to, so an alias can come
-  back renamed.
-- Setup commands run on a worktree's first launch only. A resume, a new session in the same
-  worktree, or a standby claimed onto a worktree with saves runs none, and its line says
-  `running · setup skipped · restored from capture <n>`. Use a fresh worktree to prove them.
+- A managed OS-family definition stores each package as the catalog id it resolved to, so an
+  alias can come back renamed. Custom-image packages keep their names and are checked only when
+  the platform builds the image. Clear `Packages` when switching from a family to a custom base,
+  or supply packages valid for that base's package manager.
+- A newly provisioned executor skips non-empty custom setup commands only when it restores a
+  worktree capture numbered `1` or later. The launch summary then includes
+  `setup skipped · restored from capture <n>`; the CLI can show
+  `running · setup skipped · restored from capture <n>`. A resume or a new session in that
+  worktree can take this path. Outside capture mode, another executor runs setup again even in
+  an existing worktree. A resume that reuses a retained workspace does not provision another
+  executor or rerun its setup. Use a fresh worktree to prove setup execution.
 - A build happens only when no image for the definition exists yet; it can take minutes ("about 8
   minutes" after an update). Wait for the phase words, never a fixed sleep, and expect a second
   launch with the same definition to skip the build.

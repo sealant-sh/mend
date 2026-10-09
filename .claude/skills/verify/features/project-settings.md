@@ -65,9 +65,11 @@ Preconditions:
   `tmux new-session -d -s fg -x 200 -y 50 'mend claude "List the files and change nothing." --name verify-fg --project <project>'`,
   wait until `mend sessions --project <project> --json` lists `verify-fg` live, then
   `tmux kill-session -t fg`. `mend sessions --project <project> --all --json` shows that session
-  settled: the launching `mend` exited, so it stopped. Set `Sessions` back to `inherit` and repeat
+  settled: the launching `mend` exited, so it stopped. Select project `on` with
+  `await section("Sessions").getByRole("button", { name: "on", exact: true }).click()` and repeat
   with `--name verify-bg`: after `tmux kill-session` the session stays live. Stop it with
-  `mend stop <id8>`.
+  `mend stop <id8>` and restore `inherit`. A positive case using `inherit` instead requires the
+  inherited organization or instance background value to be on.
 - **Review automation.** Run
   `await row(section("Review automation"), "Name the session", "off").getByRole("button", { name: "off", exact: true }).click()`.
   The row's `off` takes the chosen style; no attribute reports it (see Gotchas). Set it back to

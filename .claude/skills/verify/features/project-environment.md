@@ -42,6 +42,9 @@ Preconditions:
 - `mend env show --project <project>` prints `  nothing stored — load a file: mend env load`.
 - A scratch file `/tmp/verify-env/verify.env` holds three lines: `CLI_MODE=from-cli`,
   `CLI_API_TOKEN=cli-secret` and `MEND_X=1`.
+- `/tmp/verify-env/import.env` holds `IMPORT_MODE=from-file` and
+  `IMPORT_API_TOKEN=import-secret`, one per line. The paste step needs a Chromium context
+  with clipboard permissions on `<web>`. These are disposable fixture values.
 - Steps below scope controls to one Setup section, because sections have no region role (see
   Gotchas):
   `const section = (name) => page.locator("section").filter({ has: page.getByRole("heading", { name, exact: true }) })`.
@@ -74,6 +77,28 @@ Preconditions:
 - **Read back.** In `section("Configuration")`, a list item holds `APP_MODE` and `verify-mode`
   with buttons `Copy`, `Edit` and `Remove`. In `section("Secrets")`, a list item holds
   `STRIPE_API_KEY` and `value set · updated <time>` with `Replace` and `Remove`, and no value.
+- **Paste a .env (`env-import`).** Reload Setup so the composer has one blank row. Run
+  `await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(page.url()).origin })`,
+  `await page.evaluate(() => navigator.clipboard.writeText("PASTE_MODE=from-paste\nPASTE_API_TOKEN=paste-secret\n"))`,
+  then `await section("Add variables").getByRole("textbox", { name: "Key 1", exact: true }).press("ControlOrMeta+V")`.
+  The keys `Key 1` and `Key 2` read `PASTE_MODE` and `PASTE_API_TOKEN`; the fields labelled
+  `Value 1` and `Value 2` hold `from-paste` and `paste-secret` and remain password inputs.
+  Both rows read `→ secret`. Click the composer's only `switch`; it reports
+  `aria-checked="false"`, and only `PASTE_MODE` changes to `→ configuration · plaintext`.
+  Choose `getByRole("button", { name: "Save 2", exact: true })` in the composer. The report
+  reads `Saved 2`, with `PASTE_MODE · configuration · plaintext · created` and
+  `PASTE_API_TOKEN · secret · created`; the rows clear. Reload Setup. `Configuration` lists
+  `PASTE_MODE` with `from-paste`; `Secrets` lists `PASTE_API_TOKEN` with `value set` and no value.
+- **Import a .env file (`env-import`).** Reload Setup for a blank composer. Start
+  `const imported = page.waitForEvent("filechooser")`, click
+  `await section("Add variables").getByRole("button", { name: "Import .env", exact: true }).click()`,
+  then `await (await imported).setFiles("/tmp/verify-env/import.env")`.
+  Wait until `Key 1` and `Key 2` read `IMPORT_MODE` and `IMPORT_API_TOKEN`; `Value 1` and
+  `Value 2` hold `from-file` and `import-secret` and remain password inputs. Both rows read
+  `→ secret`. Click the composer's `switch` to turn `Sensitive` off and choose `Save 2`.
+  The report reads `Saved 2`, with `IMPORT_MODE · configuration · plaintext · created` and
+  `IMPORT_API_TOKEN · secret · created`; the rows clear. Reload Setup. `Configuration` lists
+  `IMPORT_MODE` with `from-file`; `Secrets` lists `IMPORT_API_TOKEN` with `value set` and no value.
 - **Rename a variable.** Run
   `await section("Configuration").getByRole("listitem").filter({ hasText: "APP_MODE" }).getByRole("button", { name: "Edit" }).click()`,
   then `getByRole("textbox", { name: "Name" })` = `APP_STAGE` and
@@ -111,7 +136,8 @@ Preconditions:
 - **Not inherited.** Go to `<web>/settings`. No panel there holds variables or secrets; the
   `Workspace environment` panels are the image (see [Workspace images](./workspace-images.md)).
 - **Proof.** Save `await page.locator("body").ariaSnapshot()` and a screenshot of Setup showing the
-  `Configuration` and `Secrets` lists and the composer report, plus the `mend env load`,
+  `Configuration` and `Secrets` lists and the composer report, the expanded paste and file-import
+  rows before saving and both saved lists after reload, plus the `mend env load`,
   `mend env show` and `mend run` transcripts with exit codes, and the review page showing
   `ENV.txt`.
 
