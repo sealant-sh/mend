@@ -11,7 +11,7 @@ import {
 } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 
-import { makeReplayLog } from "../src/replay.ts";
+import { makeReplayLog, makeSequencer } from "../src/replay.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
@@ -161,16 +161,68 @@ describe("replay after a sequence", () => {
 
 describe("the replay log", () => {
   it("answers what came after a sequence it covers, and nothing it does not", () => {
-    const log = makeReplayLog<string>(2, 10);
-    log.push(11, "a");
-    log.push(12, "b");
+    const log = makeReplayLog<string>({ capacity: 2, maxBytes: 1_000 }, 10);
+    log.push(11, "a", 1);
+    log.push(12, "b", 1);
     assert.deepStrictEqual(log.since(10, 12), ["a", "b"]);
     assert.deepStrictEqual(log.since(12, 12), []);
     assert.isNull(log.since(13, 12));
     assert.isNull(log.since(9, 12));
     // Full: the oldest goes, and so does the floor.
-    log.push(13, "c");
+    log.push(13, "c", 1);
     assert.isNull(log.since(10, 13));
     assert.deepStrictEqual(log.since(11, 13), ["b", "c"]);
+  });
+
+  it("holds no more than its byte budget: what it lets go is answered with a snapshot", () => {
+    const log = makeReplayLog<string>({ capacity: 128, maxBytes: 100 }, 0);
+    log.push(1, "small", 10);
+    log.push(2, "large", 80);
+    assert.deepStrictEqual(log.since(0, 2), ["small", "large"]);
+    log.push(3, "more", 20);
+    assert.isNull(log.since(0, 3));
+    assert.deepStrictEqual(log.since(1, 3), ["large", "more"]);
+    // One change past the budget on its own is not kept either.
+    log.push(4, "huge", 500);
+    assert.isNull(log.since(3, 4));
+    assert.deepStrictEqual(log.since(4, 4), []);
+  });
+});
+
+describe("a hub's sequences", () => {
+  it("stamps from its blocks, jumps to the next one, and owns only what it reserved", () => {
+    const sequencer = makeSequencer({ start: 100, end: 104 });
+    assert.strictEqual(sequencer.current(), 100);
+    assert.isTrue(sequencer.owns(100));
+    assert.strictEqual(sequencer.next(), 101);
+    assert.isNull(sequencer.wants());
+    assert.strictEqual(sequencer.next(), 102);
+    assert.strictEqual(sequencer.wants(), 104);
+    // Another hub took 104 to 107 in between.
+    sequencer.add({ start: 108, end: 112 });
+    assert.isNull(sequencer.wants());
+    assert.strictEqual(sequencer.next(), 103);
+    assert.strictEqual(sequencer.next(), 108);
+    assert.isFalse(sequencer.owns(105));
+    assert.isTrue(sequencer.owns(103));
+    assert.isTrue(sequencer.owns(108));
+    assert.isFalse(sequencer.overran());
+  });
+
+  it("owns nothing once it ran past every reservation, and says so once", () => {
+    const sequencer = makeSequencer({ start: 0, end: 2 });
+    sequencer.next();
+    assert.strictEqual(sequencer.next(), 2);
+    assert.isFalse(sequencer.owns(1));
+    assert.isNull(sequencer.wants());
+    assert.isTrue(sequencer.overran());
+    assert.isFalse(sequencer.overran());
+  });
+
+  it("owns nothing without a reservation", () => {
+    const sequencer = makeSequencer(null);
+    assert.strictEqual(sequencer.next(), 1);
+    assert.isFalse(sequencer.owns(0));
+    assert.isNull(sequencer.wants());
   });
 });

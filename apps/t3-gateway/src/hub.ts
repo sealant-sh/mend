@@ -61,8 +61,10 @@ import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
 import {
   makeReplayLog,
-  SHELL_REPLAY_CAPACITY,
-  THREAD_REPLAY_CAPACITY,
+  makeSequencer,
+  SHELL_REPLAY_LIMITS,
+  type SequenceBlock,
+  THREAD_REPLAY_LIMITS,
   type ReplayLog,
 } from "./replay.ts";
 import {
@@ -343,6 +345,8 @@ interface Printed<A> {
 /** A thread someone is watching: its items, kept current, and what was last sent of it. */
 interface Watch {
   count: number;
+  /** Counts the times its subscribers all left: only the latest such time's grace may end it. */
+  idle: number;
   readonly items: Map<string, MendItem>;
   /** The highest item change-feed cursor read so far. */
   cursor: number;
@@ -812,37 +816,47 @@ export const makePersonHub = (input: {
      */
     const retirements = new Map<string, MendWorkspaceRetirement | null>();
     /**
-     * The hub's sequence, from a reservation in the state file (`reserveSequences`): never one a
-     * client was given by an earlier hub of this person, so a resume after a sequence is answered
-     * by replay only when this hub stamped it. Without a reservation, nothing is replayed.
+     * The hub's sequences come in blocks reserved from the state file (`reserveSequences`): one
+     * high-water mark for the whole gateway, seeded from the clock, so no hub ever stamps a
+     * sequence a client was given by another (an earlier hub of this person's, another person's,
+     * or a gateway before replay, which counted from 0). A resume is answered by replay only after
+     * a sequence in one of this hub's blocks. Without a reservation, nothing is replayed.
      */
-    const personId = input.viewer?.id ?? null;
-    const reserved =
-      personId === null
-        ? null
-        : yield* state.reserveSequences(personId, 0, SEQUENCE_BLOCK).pipe(
-            Effect.catch((error) =>
-              Effect.logError("t3 gateway could not reserve sequences", {
-                cause: error.message,
-              }).pipe(Effect.as(null)),
-            ),
-          );
-    let sequence = reserved ?? 0;
-    let reservedUpTo = sequence + SEQUENCE_BLOCK;
-    const replays = reserved !== null;
-    /** Reserves more before the hub runs out of what it holds. */
-    const extendSequences = Effect.suspend(() =>
-      personId === null || !replays || sequence < reservedUpTo - SEQUENCE_BLOCK / 2
-        ? Effect.void
-        : state.reserveSequences(personId, reservedUpTo, SEQUENCE_BLOCK).pipe(
-            Effect.tap((start) => Effect.sync(() => (reservedUpTo = start + SEQUENCE_BLOCK))),
-            Effect.asVoid,
-            Effect.catch((error) =>
-              Effect.logError("t3 gateway could not reserve sequences", { cause: error.message }),
-            ),
-          ),
-    );
-    const shellLog = makeReplayLog<ShellDelta>(SHELL_REPLAY_CAPACITY, sequence);
+    const reserveBlock = (from: number) =>
+      state.reserveSequences(from, SEQUENCE_BLOCK).pipe(
+        Effect.map((start): SequenceBlock => ({ start, end: start + SEQUENCE_BLOCK })),
+        Effect.catch((error) =>
+          Effect.logError("t3 gateway could not reserve sequences", {
+            cause: error.message,
+          }).pipe(Effect.as(null)),
+        ),
+      );
+    const sequencer = makeSequencer(input.viewer === null ? null : yield* reserveBlock(0));
+    let sequence = sequencer.current();
+    /** The next sequence: the next in this block, or the first of the next one. */
+    const nextSequence = (): number => {
+      sequence = sequencer.next();
+      return sequence;
+    };
+    /** Reserves the next block once half of this one is used, and says when it could not. */
+    const extendSequences = Effect.suspend(() => {
+      if (sequencer.overran()) {
+        return Effect.logError(
+          "t3 gateway ran out of reserved sequences: resumes get a snapshot until the hub restarts",
+        );
+      }
+      const from = sequencer.wants();
+      if (from === null) return Effect.void;
+      return reserveBlock(from).pipe(
+        Effect.tap((block) =>
+          Effect.sync(() => {
+            if (block !== null) sequencer.add(block);
+          }),
+        ),
+        Effect.asVoid,
+      );
+    });
+    const shellLog = makeReplayLog<ShellDelta>(SHELL_REPLAY_LIMITS, sequence);
     let shellProjects = new Map<string, Printed<OrchestrationProjectShell>>();
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const shellChanges = makeFanout<ShellDelta>();
@@ -945,6 +959,8 @@ export const makePersonHub = (input: {
     /** Diffs the shell against what was last sent and publishes the changes, sequenced. */
     const publishShell = Effect.gen(function* () {
       const deltas: Array<ShellDelta> = [];
+      /** Each delta's encoded size, for the replay log's budget. */
+      const sizes: Array<number> = [];
       const nextProjects = new Map<string, Printed<OrchestrationProjectShell>>();
       for (const entry of projects.values()) {
         const value = projectShellOf(entry.project);
@@ -977,37 +993,41 @@ export const makePersonHub = (input: {
 
       for (const [id, next] of nextProjects) {
         if (shellProjects.get(id)?.print === next.print) continue;
-        deltas.push({ kind: "project.updated", sequence: ++sequence, project: next.value });
+        deltas.push({ kind: "project.updated", sequence: nextSequence(), project: next.value });
+        sizes.push(next.print.length);
       }
       for (const [id, next] of nextThreads) {
         if (shellThreads.get(id)?.print === next.print) continue;
         deltas.push({
           kind: "thread.updated",
-          sequence: ++sequence,
+          sequence: nextSequence(),
           location: "active",
           thread: next.value,
         });
+        sizes.push(next.print.length);
       }
       for (const [id, previous] of shellThreads) {
         if (nextThreads.has(id)) continue;
         deltas.push({
           kind: "thread.removed",
-          sequence: ++sequence,
+          sequence: nextSequence(),
           location: "active",
           threadId: previous.value.id,
         });
+        sizes.push(REMOVAL_BYTES);
       }
       for (const [id, previous] of shellProjects) {
         if (nextProjects.has(id)) continue;
         deltas.push({
           kind: "project.removed",
-          sequence: ++sequence,
+          sequence: nextSequence(),
           projectId: previous.value.id,
         });
+        sizes.push(REMOVAL_BYTES);
       }
       shellProjects = nextProjects;
       shellThreads = nextThreads;
-      for (const delta of deltas) shellLog.push(delta.sequence, delta);
+      deltas.forEach((delta, index) => shellLog.push(delta.sequence, delta, sizes[index] ?? 0));
       if (deltas.length > 0) yield* shellChanges.publish(deltas);
     });
 
@@ -1020,7 +1040,7 @@ export const makePersonHub = (input: {
     });
 
     const eventBase = () => ({
-      id: EventId.make(`event:${++sequence}`),
+      id: EventId.make(`event:${nextSequence()}`),
       occurredAt: DateTime.makeUnsafe(Date.now()),
     });
 
@@ -1033,14 +1053,17 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         const watch = watches.get(sessionId);
         /** Publishes the thread's changes, and keeps them for a client that resumes. */
-        const publish = (changes: ReadonlyArray<ThreadChange>) => {
-          for (const change of changes) {
+        const publish = (changes: ReadonlyArray<readonly [ThreadChange, number]>) => {
+          for (const [change, bytes] of changes) {
             watch?.log?.push(
               change.kind === "event" ? change.sequence : change.snapshotSequence,
               change,
+              bytes,
             );
           }
-          return threadChanges.publish(changes.map((change) => ({ threadId: sessionId, change })));
+          return threadChanges.publish(
+            changes.map(([change]) => ({ threadId: sessionId, change })),
+          );
         };
         const source = sourceOf(sessionId);
         if (source === null) {
@@ -1048,16 +1071,19 @@ export const makePersonHub = (input: {
             const base = eventBase();
             const thread = watch.thread;
             yield* publish([
-              {
-                kind: "event",
-                sequence,
-                event: {
-                  ...base,
-                  threadId: thread.id,
-                  type: "thread.deleted",
-                  payload: { ...thread, deletedAt: base.occurredAt },
+              [
+                {
+                  kind: "event",
+                  sequence,
+                  event: {
+                    ...base,
+                    threadId: thread.id,
+                    type: "thread.deleted",
+                    payload: { ...thread, deletedAt: base.occurredAt },
+                  },
                 },
-              },
+                REMOVAL_BYTES,
+              ],
             ]);
             watch.prints = null;
             watch.thread = null;
@@ -1073,26 +1099,34 @@ export const makePersonHub = (input: {
         watch.thread = built.projection.thread;
         // The baseline a first subscriber's snapshot shows: what follows it is kept for replay.
         if (previous === null) {
-          watch.log = replays ? makeReplayLog(THREAD_REPLAY_CAPACITY, sequence) : null;
+          watch.log = sequencer.owns(sequence)
+            ? makeReplayLog(THREAD_REPLAY_LIMITS, sequence)
+            : null;
           return built.projection;
         }
 
         // Something the client holds went away: a fresh snapshot replaces it.
         if (Array.from(previous.keys()).some((key) => !prints.has(key))) {
           yield* publish([
-            { kind: "snapshot", snapshotSequence: ++sequence, projection: built.projection },
+            [
+              { kind: "snapshot", snapshotSequence: nextSequence(), projection: built.projection },
+              built.entities.reduce((total, entity) => total + entity.print.length, 0),
+            ],
           ]);
           return built.projection;
         }
-        const changes: Array<ThreadChange> = [];
+        const changes: Array<readonly [ThreadChange, number]> = [];
         for (const entity of built.entities) {
           if (previous.get(entity.key) === entity.print) continue;
           const base = eventBase();
-          changes.push({
-            kind: "event",
-            sequence,
-            event: entity.event({ ...base, threadId: built.projection.thread.id }),
-          });
+          changes.push([
+            {
+              kind: "event",
+              sequence,
+              event: entity.event({ ...base, threadId: built.projection.thread.id }),
+            },
+            entity.print.length,
+          ]);
         }
         if (changes.length > 0) yield* publish(changes);
         return built.projection;
@@ -2361,7 +2395,7 @@ export const makePersonHub = (input: {
         const start = yield* locked(
           Effect.sync((): ShellSubscription["start"] => {
             const deltas =
-              afterSequence === undefined || !replays
+              afterSequence === undefined || !sequencer.owns(afterSequence)
                 ? null
                 : shellLog.since(afterSequence, sequence);
             return deltas === null
@@ -2408,6 +2442,7 @@ export const makePersonHub = (input: {
             }
             const fresh: Watch = {
               count: 1,
+              idle: 0,
               items: new Map(),
               cursor: 0,
               prints: null,
@@ -2422,10 +2457,12 @@ export const makePersonHub = (input: {
             Effect.suspend(() => {
               held.count -= 1;
               if (held.count > 0) return Effect.void;
+              // A subscriber that came and went since leaves its own full grace.
+              const idle = ++held.idle;
               return Effect.sleep(WATCH_GRACE).pipe(
                 Effect.andThen(
                   Effect.sync(() => {
-                    if (held.count === 0 && watches.get(threadId) === held)
+                    if (held.count === 0 && held.idle === idle && watches.get(threadId) === held)
                       watches.delete(threadId);
                   }),
                 ),
@@ -2446,7 +2483,7 @@ export const makePersonHub = (input: {
             // What the client missed is taken before catching up: the catch-up's own changes
             // reach it through `published`.
             const missed =
-              afterSequence === undefined || watch.log === null
+              afterSequence === undefined || watch.log === null || !sequencer.owns(afterSequence)
                 ? null
                 : watch.log.since(afterSequence, sequence);
             mergeItems(watch, read);
@@ -2532,6 +2569,8 @@ const NOT_KEPT =
 
 /** How many sequences a hub reserves at a time (`reserveSequences`). */
 const SEQUENCE_BLOCK = 1_000_000;
+/** What a removal costs the replay log: an id and a tag. */
+const REMOVAL_BYTES = 128;
 /** How long a thread stays watched after its last subscriber: a reconnect resumes it by replay. */
 const WATCH_GRACE = "2 minutes";
 

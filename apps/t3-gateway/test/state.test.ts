@@ -129,3 +129,21 @@ describe("the state file's permissions", () => {
     ),
   );
 });
+
+describe("sequence reservations", () => {
+  it.effect("start at the clock, above any sequence a gateway gave before it kept one", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const state = yield* openGatewayState(":memory:");
+        const before = Date.now();
+        const first = yield* state.reserveSequences(0, 1_000);
+        assert.isAtLeast(first, before);
+        // One mark for the whole gateway: the next reservation, any person's, starts past it.
+        const second = yield* state.reserveSequences(0, 1_000);
+        assert.strictEqual(second, first + 1_000);
+        const asked = yield* state.reserveSequences(second + 5_000, 10);
+        assert.strictEqual(asked, second + 5_000);
+      }),
+    ),
+  );
+});

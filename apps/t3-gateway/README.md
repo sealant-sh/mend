@@ -63,17 +63,22 @@ of pointers for one thing is one read. After the stream drops, the hub reconnect
 reads everything again.
 
 Each read rebuilds the t3code entities (`src/shell.ts`), encodes them through the vendored schemas,
-and sends only what changed, each change stamped with the hub's next sequence. Sequences come from a
-reservation per person in the state file, so no hub ever stamps one an earlier hub of the same
-person stamped, across restarts too.
+and sends only what changed, each change stamped with the hub's next sequence. Sequences come in
+blocks of a million from one high-water mark for the whole gateway, kept in the state file and
+seeded from the clock, so no hub ever stamps one another hub stamped: an earlier hub of the same
+person, another person's, or a gateway from before replay, which counted from 0. A hub reserves its
+next block when half of one is used; blocks are not contiguous, as other hubs reserve in between. A
+hub that runs out with none reserved (the state file refused every reservation) stamps on, says so
+in its log, and answers every resume with a snapshot from then on.
 
 ### Replay after a sequence
 
 A client that subscribes with `afterSequence` gets only what changed after it, when the hub still
-holds it: the last 1,000 shell changes, and the last 128 changes of each watched thread (t3code's
-own limits). Any other sequence (older than that, from an earlier hub, or ahead of the hub) gets a
-fresh snapshot, which t3code always takes as a reset. A thread stays watched for two minutes after
-its last subscriber, so a client that reconnects resumes it without reloading it.
+holds it: the last 1,000 shell changes, at most 8 MiB encoded, and the last 128 changes of each
+watched thread, at most 1 MiB encoded (t3code's own limits; t3code has no byte limit for the shell).
+Any other sequence (older than that, from another hub, or ahead of the hub) gets a fresh snapshot,
+which t3code always takes as a reset. A thread stays watched for two minutes after its last
+subscriber leaves, so a client that reconnects resumes it without reloading it.
 
 | t3code                                                         | From Mend                                                                                                       |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |

@@ -184,13 +184,13 @@ export class GatewayState extends Context.Service<
       GatewayStateError
     >;
     /**
-     * Reserves `count` of a person's sequences at or above `from` and answers where they start:
-     * every sequence their hub stamps comes from a reservation, so none is stamped twice across
-     * the hub's lifetimes and the gateway's restarts, and a client resuming after a sequence from
-     * before is never answered wrongly.
+     * Reserves `count` sequences at or above `from`, from one high-water mark for the whole
+     * gateway, and answers where they start: every sequence a hub stamps comes from a reservation,
+     * so none is stamped twice across hubs, people and restarts, and a client resuming after a
+     * sequence from another hub is never answered by replay. The mark starts at the clock (in
+     * milliseconds), above any sequence a gateway gave before it kept one: those counted from 0.
      */
     readonly reserveSequences: (
-      mendUserId: string,
       from: number,
       count: number,
     ) => Effect.Effect<number, GatewayStateError>;
@@ -321,6 +321,9 @@ const MIGRATIONS: ReadonlyArray<string> = [
   );
   `,
 ];
+
+/** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
+const SEQUENCE_HIGH = "sequence_high";
 
 const UserVersionRow = Schema.Struct({ user_version: Schema.Number });
 const MetaRow = Schema.Struct({ value: Schema.String });
@@ -776,17 +779,17 @@ export const openGatewayState = (
         }));
       });
 
-    const reserveSequences = (mendUserId: string, from: number, count: number) =>
+    const reserveSequences = (from: number, count: number) =>
       run("reserveSequences", () => {
-        const key = `sequence_high:${mendUserId}`;
         database.exec("BEGIN IMMEDIATE");
         try {
-          const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(key);
-          const high = row === undefined ? 0 : Number(Schema.decodeUnknownSync(MetaRow)(row).value);
+          const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(SEQUENCE_HIGH);
+          const high =
+            row === undefined ? Date.now() : Number(Schema.decodeUnknownSync(MetaRow)(row).value);
           const start = Math.max(high, from);
           database
             .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
-            .run(key, String(start + count));
+            .run(SEQUENCE_HIGH, String(start + count));
           database.exec("COMMIT");
           return start;
         } catch (error) {
