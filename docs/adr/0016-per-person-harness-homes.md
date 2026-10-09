@@ -573,7 +573,8 @@ A person who starts a session in a worktree where another person's session runs 
 processes in the same executor, as their own user: home, logins, dotfiles, git and Mend identity, pi
 profile, skills, memory, secret files, saved directory. Two people work live in one worktree, on one
 change. ADR 0010's "a joiner receives no secret files of its own" and ADR 0009's "what a joined
-agent writes goes to the executor's owner" no longer hold.
+agent writes goes to the executor's owner" no longer hold in a person executor; they still hold in
+an executor that shares one home (Delivery 22 as built).
 
 ### 8. Saving and restoring per person (sealantd)
 
@@ -668,8 +669,10 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   index; `withholdCodexThreadsExec` goes. A shared session's processes use
   `CODEX_SQLITE_HOME=H/.codex`, so a conversation in `C` enters no person's saved index (decision
   6).
-- **Goes:** the hand-over at launch, its forced capture, `.mend/agent-memory-owner`, new
-  `agent_memory_homes` writes. The table stays for the migration until 0.37.
+- **Goes** from person executors, which never run any of it: the hand-over at launch, its forced
+  capture, `.mend/agent-memory-owner`, new `agent_memory_homes` writes. The table stays for the
+  migration until 0.37. An executor that shares one home (the `shared` opt-out and every fallback)
+  keeps all of it, since its one home still takes several people (Delivery 22 as built).
 
 ### 10. Remote-SSH and processes Mend does not start
 
@@ -874,7 +877,8 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **The worktree repair is asynchronous:** one exec after another person's process starts, never
   awaited by it; its walk of the worktree (`node_modules` included) costs disk reads, not latency.
 - **Removed from the launch path:** mend#528's hand-over (a capture read, an `sh` exec and a forced
-  capture), the Codex withholding exec, and the migration (server-side).
+  capture), the Codex withholding exec, and the migration (server-side). A `shared` launch keeps the
+  first two (Delivery 22 as built).
 
 ### Method
 
@@ -1226,7 +1230,8 @@ flipped to take the `shared` record. Both records are checked in.
 22. **Mend · removing what is dead.** The hand-over at launch, withholding, the owner record,
     `agent_memory_homes` writes (reads stay for 19 until 0.37), joiner memory flags; ADR 0010's join
     rule; stale Known issues. The credential tables stay. L, ~−1,500 / +200. Perf: fewer execs on
-    the launch path; the budget tests lowered to match.
+    the launch path; the budget tests lowered to match. As built, S: the `shared` layout stays an
+    opt-out and a fallback, and every item here is its own (Decision log, 2026-10-09).
 
 Then the box with the default flipped: two people in one worktree editing the same files, a join, a
 steered Claude and Codex conversation with a sub-agent and a background task in flight, `ssh` and a
@@ -1426,4 +1431,16 @@ benchmark once more, before 0.36 is tagged.
   standby's shared decision stands at launch against what was learnt of the image since (`decide`'s
   `standby`), so a claim never fails its session over a race; a head holding `people/` keeps
   standbys away, and a claimed standby's prepare runs the probe a cold shared launch would.
+- 2026-10-09, Delivery 22 as built: nothing in its list is dead. Each item is how a home shared by
+  several people keeps one person's memory and files from another, and Delivery 21 kept that home
+  reachable: the operator's `MEND_HARNESS_LAYOUT=shared`, and every fallback on a fresh worktree (a
+  nix image, no `sudo`, no-new-privileges, a Kubernetes runtime). The memory hand-over at launch and
+  its forced capture, `.mend/agent-memory-owner`, the `agent_memory_homes` writes (the hand-over's
+  pending record and its settling, which the next hand-over and the migration's read both need),
+  Codex withholding, a joiner's Codex memory flags and ADR 0010's join rule all stay, and run only
+  in `shared` executors, as they did; a person launch has never run them. The credential tables and
+  every column stay. The unit budget for a person launch is lowered to what it execs (cold 6, a
+  same-person join 3, another person's 4, resume 6, against the shared layout's 13, 4, 3 and 13,
+  unchanged). ADR 0010's join rule and the Known issues name the layout they apply to. These items
+  go when the `shared` layout takes one person per executor, or goes.
 - Open: gate B's history record.

@@ -23981,14 +23981,19 @@ const recordedBeforeStart = (state: HarnessLayoutsMemoryState): HarnessLayoutsMe
 };
 
 describe("per-person harness homes (docs/adr/0016)", () => {
-  // Today's counts (main at 4ccbaa2cd, measured with this same scenario): what the flag off must
-  // keep, and what a person launch may not exceed (Performance, CI guards).
+  // The shared layout's counts (main at 4ccbaa2cd, measured with this same scenario): what the
+  // `MEND_HARNESS_LAYOUT=shared` opt-out must keep (Performance, CI guards). Its memory hand-over,
+  // withholding and delivery into the one home stay (Delivery 22): a shared home still takes
+  // several people.
   const BUDGET = { cold: 13, sameJoin: 4, otherJoin: 3, resume: 13 } as const;
+  // The default layout's counts (Delivery 22, measured with this same scenario): a person launch
+  // runs none of the shared home's steps, and may not grow back toward them.
+  const PERSON_BUDGET = { cold: 6, sameJoin: 3, otherJoin: 4, resume: 6 } as const;
   const LAUNCHER = linuxLoginNameOf("user-fixture");
   const JOINER = linuxLoginNameOf(MARIA);
   const IMAGE = "digest:sha256:img\u0000docker";
 
-  it("with the flag off costs nothing: today's execs, no home, no user, nothing recorded", async () => {
+  it("the shared opt-out costs what it did: its execs, no home, no user, nothing recorded", async () => {
     const state = makeHarnessLayoutsMemoryState();
     const same = await coldJoinResume({ flag: "shared", joiner: "user-fixture", state });
     const other = await coldJoinResume({ flag: "shared", joiner: MARIA, state });
@@ -24009,7 +24014,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(state.identities.size).toBe(0);
   });
 
-  it("a person launch runs as the launcher's own user, in no more execs than today", async () => {
+  it("a person launch runs as the launcher's own user, in no more execs than its budget", async () => {
     const state = makeHarnessLayoutsMemoryState();
     const calls: Array<string> = [];
     const run = await coldJoinResume({
@@ -24019,9 +24024,9 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       platform: personPlatform(calls, { person: true }),
       exec: answerLayout(LAYOUT_READY),
     });
-    expect(run.cold).toBeLessThanOrEqual(BUDGET.cold);
-    expect(run.join).toBeLessThanOrEqual(BUDGET.sameJoin);
-    expect(run.resume).toBeLessThanOrEqual(BUDGET.resume);
+    expect(run.cold).toBeLessThanOrEqual(PERSON_BUDGET.cold);
+    expect(run.join).toBeLessThanOrEqual(PERSON_BUDGET.sameJoin);
+    expect(run.resume).toBeLessThanOrEqual(PERSON_BUDGET.resume);
     // The create commits to the layout: the launcher's logins into their own home.
     expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
     // Users and homes are made in the executor's first exec, beside the helper install.
@@ -24055,6 +24060,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       exec: answerLayout(LAYOUT_READY),
     });
     expect(other.join - same.join).toBeLessThanOrEqual(2);
+    expect(other.join).toBeLessThanOrEqual(PERSON_BUDGET.otherJoin);
     expect(other.joinPersonHomes).toBe(1);
     expect(other.joinRepairs).toBe(1);
     // Maria's agent runs as Maria; the launcher's as the launcher.

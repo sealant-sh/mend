@@ -107,20 +107,22 @@ When a repository has a `.opencode` directory, opencode installs its own plugin 
 startup, and a lockfile committed in it can change. That edit shows up in the session's change like
 any other.
 
-opencode's database is saved with the session as its conversation, and in a remote workspace the
-next session in the worktree, anyone's, opens it. A login you make inside opencode to the opencode
+opencode's database is saved with the session as its conversation. In a
+[per-person workspace](#per-person-workspaces) it is its owner's alone, and Mend deletes a login
+made inside opencode when opencode exits. In a remote workspace that shares one home, the next
+session in the worktree, anyone's, opens it: a login you make inside opencode to the opencode
 console or to one of its integrations is kept in that database, so it travels with it. The logins
-Mend gives opencode (your ChatGPT login) never go there. Sign in to the console or integrations only
-in a worktree nobody else uses. In a [per-person workspace](#per-person-workspaces) opencode's
-database is its owner's alone, and Mend deletes such a login when opencode exits.
+Mend gives opencode (your ChatGPT login) never go there. In such a workspace, sign in to the console
+or integrations only in a worktree nobody else uses.
 
 In a remote workspace, opencode keeps the logins of the MCP servers it signs in to in a file Mend
 keeps out of what the session saves, when Mend starts opencode:
 
 - An MCP sign-in lasts only as long as that workspace. Resuming the session on a new workspace asks
   for it again.
-- People joined on one workspace share that file. One person's opencode uses MCP sign-ins the other
-  made there.
+- In a workspace that shares one home, people joined on it share that file. One person's opencode
+  uses MCP sign-ins the other made there. In a per-person workspace the file is in each person's own
+  home.
 - An opencode you start by hand in a session's shell writes that file into saved state until the
   platform leaves it out too (sealantd#136). The next session in the worktree then removes it unread
   before it starts, but the earlier saved states still hold it.
@@ -160,9 +162,12 @@ A session that is already running keeps the profile it started with.
 
 ## A pi started outside a pi session can run the last pi session's profile
 
-In a remote workspace a worktree's agent state is shared by its sessions. Every pi session Mend
-starts, fresh or in a workspace where no pi is running, is set up to run on its owner's pi profile
-or on none, and does not start when that cannot be done.
+Applies to workspaces that share one home. In a [per-person workspace](#per-person-workspaces) a
+`pi` you type runs in your own home, on nothing of anyone else's.
+
+In a workspace that shares one home, a worktree's agent state is shared by its sessions. Every pi
+session Mend starts, fresh or in a workspace where no pi is running, is set up to run on its owner's
+pi profile or on none, and does not start when that cannot be done.
 
 `pi` typed in the terminal of a session that is not a pi session (a shell, Claude Code, Codex) is
 not set up: it loads whatever profile the last pi session in the worktree left, that person's
@@ -297,8 +302,8 @@ project. The web app and the phone do not show it yet.
 ## Per-person workspaces
 
 Applies to workspaces where each person runs as their own Linux user: by default, every new worktree
-whose image can run per person (`MEND_HARNESS_LAYOUT=person`), and every worktree that has run that
-way once. See [Per-person workspaces](/operate/per-person-workspaces/).
+whose image can run per person (unless the operator sets `MEND_HARNESS_LAYOUT=shared`), and every
+worktree that has run that way once. See [Per-person workspaces](/operate/per-person-workspaces/).
 
 Everyone in a per-person workspace has passwordless sudo, which runs as root: anyone working there,
 and their agents, can read and change each other's files, logins included.
