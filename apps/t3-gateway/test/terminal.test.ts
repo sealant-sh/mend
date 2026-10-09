@@ -180,6 +180,62 @@ describe("the terminal", () => {
 });
 
 describe("the terminal socket", () => {
+  it.live("stops the shell it opened when the ticket fails, and keeps no terminal of it", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        mend.tty.ticketFailures = 1;
+        const { rpc } = yield* pairAndConnect(mend, "TICKET-DOWN");
+        const exit = yield* Effect.exit(
+          rpc[WS_METHODS.terminalOpen]({ threadId: "session-1", terminalId: "term-1", cwd: CWD }),
+        );
+        assert.isTrue(Exit.isFailure(exit));
+        // Mend opened the shell before the ticket failed: it is stopped, not left running.
+        assert.strictEqual(mend.tty.shells.size, 1);
+        assert.isFalse(Array.from(mend.tty.shells.values()).some((shell) => shell.running));
+        // A second try opens a fresh shell, and only that one runs.
+        const opened = yield* rpc[WS_METHODS.terminalOpen]({
+          threadId: "session-1",
+          terminalId: "term-1",
+          cwd: CWD,
+        });
+        assert.strictEqual(opened.status, "running");
+        assert.strictEqual(
+          Array.from(mend.tty.shells.values()).filter((shell) => shell.running).length,
+          1,
+        );
+      }),
+    ),
+  );
+
+  it.live("stops every shell and socket of the person's terminals when their hub goes", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      setup(mend);
+      yield* Effect.gen(function* () {
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "HUB-GOES");
+            const opened = yield* rpc[WS_METHODS.terminalOpen]({
+              threadId: "session-1",
+              terminalId: "term-1",
+              cwd: CWD,
+            });
+            assert.strictEqual(opened.status, "running");
+          }),
+        );
+        // The client is gone; the hub outlives it briefly, then goes, and its terminals with it.
+        yield* eventually(
+          () => !Array.from(mend.tty.shells.values()).some((shell) => shell.running),
+          "the shell to be stopped",
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(gatewayTestLayer(mend.url, ":memory:", { hubIdleTimeToLive: "100 millis" })),
+      );
+    }),
+  );
+
   it("is Mend's /api/tty on its origin, as a WebSocket URL, for exactly the process", () => {
     assert.strictEqual(
       ttyUrlOf(new URL("https://mend.example/"), "shell-1", "tkt"),

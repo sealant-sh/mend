@@ -79,6 +79,8 @@ export class FakeTty {
   readonly resizes: Array<{ readonly cols: number; readonly rows: number }> = [];
   /** Every `/api/tty` upgrade's outcome, without the ticket. */
   readonly upgrades: Array<"accepted" | "refused"> = [];
+  /** How many `tty` ticket requests to answer 503 before minting again. */
+  ticketFailures = 0;
   private readonly sockets = new Map<string, Duplex>();
   private shellCount = 0;
 
@@ -134,6 +136,10 @@ export class FakeTty {
         known.running = false;
         this.end(id);
         return json(200, { id, sessionId: known.sessionId, kind: "shell" });
+      }
+      if (this.ticketFailures > 0) {
+        this.ticketFailures -= 1;
+        return json(503, { _tag: "ServiceUnavailable" });
       }
       const payload = typeof value === "object" && value !== null ? value : {};
       const entries = Object.fromEntries(Object.entries(payload));

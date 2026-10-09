@@ -68,6 +68,8 @@ interface Terminal {
   processId: string | null;
   updatedAt: string;
   sequence: number;
+  /** Who opened it: whose token stops its shell in Mend when the hub goes. */
+  readonly openedBy: BearerSession;
   /** The socket's scope while it is open: closing it closes the socket. */
   scope: Scope.Closeable | null;
   writer: Socket.Writer | null;
@@ -345,11 +347,29 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
         processId: null,
         updatedAt: new Date().toISOString(),
         sequence: terminals.get(keyOf(input.threadId, input.terminalId))?.sequence ?? 0,
+        openedBy: session,
         scope: null,
         writer: null,
       };
-      yield* connect(session, terminal, sessionId, input);
-      terminals.set(keyOf(input.threadId, input.terminalId), terminal);
+      // Kept before Mend opens the shell, so `close` and the hub's end always find it; a failure
+      // anywhere after the shell opened (ticket, socket, interruption) stops that shell again,
+      // and the terminal held before, if any, is kept as it was.
+      const key = keyOf(input.threadId, input.terminalId);
+      const previous = terminals.get(key);
+      terminals.set(key, terminal);
+      yield* connect(session, terminal, sessionId, input).pipe(
+        Effect.onError(() =>
+          disconnect(session, terminal).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                if (terminals.get(key) !== terminal) return;
+                if (previous === undefined) terminals.delete(key);
+                else terminals.set(key, previous);
+              }),
+            ),
+          ),
+        ),
+      );
       return terminal;
     });
 
@@ -508,12 +528,14 @@ export const makeTerminals = (host: TerminalHost): Terminals => {
     events.subscribe(() => true),
   );
 
-  const closeAll = Effect.forEach(
-    Array.from(terminals.values()),
-    (terminal) => disconnect(null, terminal),
-    {
-      discard: true,
-    },
+  // The terminals as they are when the hub goes, not when it was made: each socket closed and
+  // each shell stopped in Mend, with the token of the person who opened it.
+  const closeAll = Effect.suspend(() =>
+    Effect.forEach(
+      Array.from(terminals.values()),
+      (terminal) => disconnect(terminal.openedBy, terminal),
+      { discard: true },
+    ),
   );
 
   return {

@@ -379,7 +379,9 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
   Mend's `{"t":"end"}`, or the socket closing, is the terminal exiting.
 - Terminals are the person's, shared by their sockets, with the last 512 KiB of output kept for a
   client that attaches again. `terminal.close` stops the shell in Mend. A hub that goes closes its
-  terminals' sockets.
+  terminals' sockets and stops their shells in Mend, each with the token of the person who opened
+  it. A terminal is kept from before Mend opens its shell: a ticket or socket that fails after, or
+  an open that is interrupted, stops that shell rather than leave it running.
 
 ## Run it
 
