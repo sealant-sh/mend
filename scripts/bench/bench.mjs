@@ -74,7 +74,9 @@
 //   install · running" line and one "· completed"/"· exited" line (else its measures are not run,
 //   with why). Its time is `<prefix>.install` for every install; the engine's count of fetches pnpm
 //   retried (`install_fetch_retries`) splits clean installs (`install_clean`, none retried) from
-//   stalled ones. A clean install holds the person's own cost (the install runs as the launcher,
+//   stalled ones. An install the engine ran again with pnpm's defaults ("retried with defaults",
+//   between the two lines) is one install over both runs, counted in `install_reruns` and kept out
+//   of `install_clean`. A clean install holds the person's own cost (the install runs as the launcher,
 //   with their login profile, the store under /var/cache, default ACLs on each new file), so it is
 //   budgeted (+5% or +1 s), and gate P1 needs at least 5 per harness per layout; stalled installs
 //   are counted per layout and reported. With no count in the line (older builds) `install_clean`

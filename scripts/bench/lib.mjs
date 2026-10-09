@@ -275,6 +275,8 @@ export const NO_HOST = "no access to the server's host (pass --ssh or run there)
 
 const INSTALL_RUNNING = /^dependency install · running\b/;
 const INSTALL_ENDED = /^dependency install · (?:completed|exited)\b/;
+/** The engine's line before it runs a failed install once more with pnpm's defaults (mend#585). */
+const INSTALL_RERUN = /^dependency install · retried with defaults\b/;
 /** What the engine says when a launch ran no install: a tree restored, skipped, or not run. */
 const INSTALL_NONE =
   /^(?:dependency tree observed|dependency install skipped|dependency install did not run)/;
@@ -318,9 +320,11 @@ export const fetchRetriesOf = (line) => installEndOf(line).fetchRetries;
 /**
  * The dependency install inside a launch, from every engine line of its window
  * (`engineLinesOf`, nothing deduplicated):
- * - `{ kind: "ran", ms, exited, exitCode, fetchRetries }`: exactly one "dependency install ·
- *   running" and one end ("· completed" or "· exited"), the end after it; `ms` between them,
- *   `exited` when the install failed, `fetchRetries` null when the line has no count;
+ * - `{ kind: "ran", ms, exited, exitCode, fetchRetries, reruns, why }`: exactly one "dependency
+ *   install · running" and one end ("· completed" or "· exited"), the end after it; `ms` between
+ *   them, `exited` when the install failed, `fetchRetries` null when the line has no count,
+ *   `reruns` the "retried with defaults" lines between them (the install run once more with
+ *   pnpm's defaults, which `ms` covers), `why` the running line's reason;
  * - `{ kind: "none", ms: 0, restored }`: no install, as the engine said (`restored` when it saw
  *   the head's dependency tree for the platform, else an install skipped or not run);
  * - `{ kind: "unknown", reason }`: the log shows neither, or not exactly one install.
@@ -348,15 +352,26 @@ export const installOf = (lines) => {
   if (end.at < start.at) {
     return { kind: "unknown", reason: "the install's end line precedes its running line" };
   }
+  // A re-run with pnpm's defaults is the same install: its line falls between the one running
+  // line and the one end line, which then says the last run's exit and both runs' retries.
+  const reruns = lines.filter((line) => INSTALL_RERUN.test(line.name));
+  if (reruns.some((line) => line.at < start.at || line.at > end.at)) {
+    return {
+      kind: "unknown",
+      reason: 'a "retried with defaults" line falls outside the install\'s running and end lines',
+    };
+  }
   const { exitCode, fetchRetries } = installEndOf(end);
   const why = installWhyOf(start);
   return {
     kind: "ran",
+    // Both runs, when it was run again.
     ms: end.at - start.at,
     // A non-zero exit fails the install whatever the line's word, as does "exited".
     exited: /^dependency install · exited/.test(end.name) || (exitCode !== null && exitCode !== 0),
     exitCode,
     fetchRetries,
+    reruns: Math.max(reruns.length, end.fields?.retriedWithDefaults === true ? 1 : 0),
     why,
   };
 };
@@ -629,17 +644,22 @@ export const CLEAN_INSTALL_FLOOR = 5;
 
 const CLEAN_INSTALL = /^new\.[a-z]+\.install_clean$/;
 
-/** How a launch's installs split: all, clean, stalled (a fetch retried), unknown count, failed. */
+/**
+ * How a launch's installs split: all, clean, stalled (a fetch retried), run again with pnpm's
+ * defaults (`rerun`, stalled too), unknown count, failed.
+ */
 export const installsOf = (result, prefix) => {
   const n = (name) => summarize(result.measures?.[`${prefix}.${name}`]?.samples ?? []).n;
   const retries = result.measures?.[`${prefix}.install_fetch_retries`]?.samples ?? [];
   const failed = (result.checks ?? []).find(
     (check) => check.check === `${prefix}.install_succeeded`,
   );
+  const reruns = result.measures?.[`${prefix}.install_reruns`]?.samples ?? [];
   return {
     installs: n("install"),
     clean: n("install_clean"),
     stalled: retries.filter((value) => value > 0).length,
+    rerun: reruns.filter((value) => value > 0).length,
     unknown: n("install") - retries.length,
     failed: failed?.failed ?? 0,
   };
@@ -660,7 +680,11 @@ const shortSeriesOf = (result, name, who) => {
   const apart = [];
   if (clean) {
     const installs = installsOf(result, name.replace(/\.install_clean$/, ""));
-    if (installs.stalled > 0) apart.push(`${installs.stalled} stalled: a fetch retried`);
+    if (installs.stalled > 0) {
+      apart.push(
+        `${installs.stalled} stalled: a fetch retried${installs.rerun > 0 ? `, ${installs.rerun} of them run again with pnpm's defaults` : ""}`,
+      );
+    }
     if (installs.unknown > 0) apart.push(`${installs.unknown} with no retry count`);
     if (installs.failed > 0) apart.push(`${installs.failed} failed`);
   }
@@ -2155,13 +2179,13 @@ export const formatComparison = (comparison) => {
       "",
       "Dependency installs (before → after; stalled: a fetch retried, kept out of the budget):",
       "",
-      "| Launch | installs | clean | stalled | no retry count | failed |",
-      "| --- | --: | --: | --: | --: | --: |",
+      "| Launch | installs | clean | stalled | re-run with defaults | no retry count | failed |",
+      "| --- | --: | --: | --: | --: | --: | --: |",
     );
     for (const row of comparison.installs) {
       const pair = (key) => `${row.before[key]} → ${row.after[key]}`;
       lines.push(
-        `| ${row.prefix} | ${pair("installs")} | ${pair("clean")} | ${pair("stalled")} | ${pair("unknown")} | ${pair("failed")} |`,
+        `| ${row.prefix} | ${pair("installs")} | ${pair("clean")} | ${pair("stalled")} | ${pair("rerun")} | ${pair("unknown")} | ${pair("failed")} |`,
       );
     }
   }

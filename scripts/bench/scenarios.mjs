@@ -327,8 +327,10 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
 };
 
 /**
- * A launch's dependency install (`installOf`): its time for every install (`<prefix>.install`),
- * the fetches pnpm retried, and a clean install's time (`<prefix>.install_clean`, none retried),
+ * A launch's dependency install (`installOf`): its time for every install (`<prefix>.install`,
+ * both runs when it was run again with pnpm's defaults), the fetches pnpm retried, the re-runs
+ * (`install_reruns`), and a clean install's time (`<prefix>.install_clean`: none retried, none
+ * run again),
  * which holds the person's own cost and carries `budget`. A stalled install's time is the public
  * registry's: counted, noted, kept out of the budget. With no count in the engine's line,
  * `install_clean` is not run. `check` names the install's check (`new.codex`,
@@ -355,8 +357,13 @@ export const recordInstall = (ctx, prefix, install, budget, check, label) => {
     return;
   }
   ctx.rec.sample(`${prefix}.install_fetch_retries`, install.fetchRetries, "count");
+  ctx.rec.sample(`${prefix}.install_reruns`, install.reruns, "count");
   if (install.exited) return;
-  if (install.fetchRetries === 0) {
+  if (install.reruns > 0) {
+    ctx.rec.note(
+      `${label}: the install was run again with pnpm's defaults (${install.fetchRetries} fetch retries over both runs, ${(install.ms / 1000).toFixed(1)} s); kept out of ${prefix}.install_clean`,
+    );
+  } else if (install.fetchRetries === 0) {
     ctx.rec.sample(`${prefix}.install_clean`, install.ms, "ms", budget);
   } else {
     ctx.rec.note(

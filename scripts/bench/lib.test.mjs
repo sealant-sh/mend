@@ -49,6 +49,7 @@ import {
   installEndOf,
   installOf,
   installsOf,
+  engineLinesOf,
   installWhyOf,
   reinstallReasonsOf,
   reinstallSharesOf,
@@ -2173,6 +2174,7 @@ test("a launch's install is exactly one running line to one end line, with its r
     exited: false,
     exitCode: 0,
     fetchRetries: 2,
+    reruns: 0,
     why: null,
   });
   const exited = launchLines([
@@ -2185,6 +2187,7 @@ test("a launch's install is exactly one running line to one end line, with its r
     exited: true,
     exitCode: 1,
     fetchRetries: null,
+    reruns: 0,
     why: null,
   });
   // A resume whose head carries a tree for its platform, or an install skipped: none.
@@ -2294,12 +2297,13 @@ const recording = () => {
 
 test("every install is recorded; a clean one carries the budget, a stalled one is counted apart", () => {
   const { result, ctx } = recording();
-  const ran = (ms, fetchRetries, exited = false) => ({
+  const ran = (ms, fetchRetries, exited = false, reruns = 0) => ({
     kind: "ran",
     ms,
     exited,
     exitCode: exited ? 1 : 0,
     fetchRetries,
+    reruns,
   });
   recordInstall(ctx, "new.codex", ran(12_000, 0), "start", "new.codex", "codex #1");
   recordInstall(ctx, "new.codex", ran(70_000, 2), "start", "new.codex", "codex #2");
@@ -2325,6 +2329,22 @@ test("every install is recorded; a clean one carries the budget, a stalled one i
     installs: 4,
     clean: 2,
     stalled: 1,
+    rerun: 0,
+    unknown: 0,
+    failed: 1,
+  });
+  // Run again with pnpm's defaults after a shortened run failed on retries: one install, both
+  // runs' time, kept out of install_clean even when the count would read clean.
+  recordInstall(ctx, "new.codex", ran(31_000, 3, false, 1), "start", "new.codex", "codex #5");
+  recordInstall(ctx, "new.codex", ran(30_000, 0, false, 1), "start", "new.codex", "codex #6");
+  assert.deepEqual(result.measures["new.codex.install_clean"].samples, [12_000, 13_000]);
+  assert.deepEqual(result.measures["new.codex.install_reruns"].samples, [0, 0, 0, 0, 1, 1]);
+  assert.match(result.notes.at(-1), /codex #6: the install was run again with pnpm's defaults/);
+  assert.deepEqual(installsOf(result, "new.codex"), {
+    installs: 6,
+    clean: 2,
+    stalled: 2,
+    rerun: 2,
     unknown: 0,
     failed: 1,
   });
@@ -2574,13 +2594,13 @@ test("installs are counted per layout and reported; a failed one fails the gate 
   assert.deepEqual(result.installs, [
     {
       prefix: "new.codex",
-      before: { installs: 10, clean: 10, stalled: 1, unknown: 0, failed: 0 },
-      after: { installs: 10, clean: 10, stalled: 2, unknown: 0, failed: 0 },
+      before: { installs: 10, clean: 10, stalled: 1, rerun: 0, unknown: 0, failed: 0 },
+      after: { installs: 10, clean: 10, stalled: 2, rerun: 0, unknown: 0, failed: 0 },
     },
   ]);
   assert.match(
     formatComparison(result),
-    /\| new\.codex \| 10 → 10 \| 10 → 10 \| 1 → 2 \| 0 → 0 \| 0 → 0 \|/,
+    /\| new\.codex \| 10 → 10 \| 10 → 10 \| 1 → 2 \| 0 → 0 \| 0 → 0 \| 0 → 0 \|/,
   );
   assert.equal(comparisonFails(result), false);
   // A failed install in the person record is a failed check; in the shared one, a layout failure.
@@ -2790,4 +2810,75 @@ test("why a resume reinstalled is what the engine's running line says, tallied p
     formatComparison(compareResults(shared, completePerson())),
     /Why resumes reinstalled before: 2 × the saved head held no dependency tree \(needed: linux-x64-glibc\); 1 × the engine's line gave no reason\./,
   );
+});
+
+test("an install run again with pnpm's defaults is one install from its running line to its end", () => {
+  const SESSION_ID = "s-rerun";
+  const at = (s) => `2026-10-09T10:00:${String(s).padStart(2, "0")}.000000000Z`;
+  const entry = (s, message, fields) => [
+    `${at(s)} [10:00:${String(s).padStart(2, "0")}.000] INFO (#7): ${message} {`,
+    ...fields.map((line) => `${at(s)}   ${line}`),
+    `${at(s)} }`,
+  ];
+  const blocks = parseMendLog(
+    [
+      ...entry(1, "session engine: dependency install · running", [
+        `sessionId: '${SESSION_ID}',`,
+        "platform: 'linux-x64-glibc',",
+        "capturedFor: [],",
+        "command: 'pnpm install --frozen-lockfile'",
+      ]),
+      ...entry(18, "session engine: dependency install · retried with defaults", [
+        `sessionId: '${SESSION_ID}',`,
+        "exit: 1,",
+        "fetchRetries: 2",
+      ]),
+      ...entry(41, "session engine: dependency install · completed · exit 0 · fetch retries 3", [
+        `sessionId: '${SESSION_ID}',`,
+        "fetchRetries: 3,",
+        "retriedWithDefaults: true",
+      ]),
+    ].join("\n"),
+  );
+  const window = { sessionId: SESSION_ID, fromMs: 0, toMs: Date.parse(at(59)) };
+  const install = installOf(engineLinesOf(blocks, window));
+  assert.deepEqual(install, {
+    kind: "ran",
+    ms: 40_000,
+    exited: false,
+    exitCode: 0,
+    fetchRetries: 3,
+    reruns: 1,
+    why: "the saved head held no dependency tree (needed: linux-x64-glibc)",
+  });
+  // The step names: the end line without its exit and its retries (mend#585).
+  assert.deepEqual(
+    milestonesOf(blocks, window).map((m) => m.name),
+    [
+      "dependency install · running",
+      "dependency install · retried with defaults",
+      "dependency install · completed",
+    ],
+  );
+  // The end line's own flag counts a re-run whose line the window missed.
+  const flagged = installOf(
+    engineLinesOf(blocks, window).filter((line) => !line.name.includes("retried")),
+  );
+  assert.equal(flagged.reruns, 1);
+  // A re-run line outside the install's pair is not this install.
+  const late = parseMendLog(
+    [
+      ...entry(1, "session engine: dependency install · running", [`sessionId: '${SESSION_ID}'`]),
+      ...entry(10, "session engine: dependency install · exited · exit 1 · fetch retries 2", [
+        `sessionId: '${SESSION_ID}'`,
+      ]),
+      ...entry(12, "session engine: dependency install · retried with defaults", [
+        `sessionId: '${SESSION_ID}'`,
+      ]),
+    ].join("\n"),
+  );
+  assert.deepEqual(installOf(engineLinesOf(late, window)), {
+    kind: "unknown",
+    reason: 'a "retried with defaults" line falls outside the install\'s running and end lines',
+  });
 });
