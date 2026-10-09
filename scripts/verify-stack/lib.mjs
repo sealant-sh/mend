@@ -120,22 +120,28 @@ export function digestOf(...parts) {
 const short = (tree) => tree.slice(0, 12);
 
 /**
- * The images a stack builds. Upstream images are tagged by their source tree, so the same tree is
- * built once per Docker daemon. Mend's image is tagged by its tree and every upstream image id,
+ * What a source's images are built from: its tree, or, when packages packed from another
+ * repository's source were added to its context, a digest of the tree and those packages.
+ */
+export const buildKey = (source) => source.buildKey ?? source.tree;
+
+/**
+ * The images a stack builds. Upstream images are tagged by their build key (the source tree, plus
+ * any packages linked in), so the same source is built once per Docker daemon. Mend's image is tagged by its tree and every upstream image id,
  * because the bundle copies them in. `mend server setup` pins `ghcr.io/sealant-sh/mend:<version>`
  * (deploy/docker/compose.v2.yaml), so the bundle carries that name: a `-verify.` version is never
  * published, so the name cannot meet a release.
  */
 export function imageNames({ mend, sealant, sealantd }, { cliVersion, upstreamIds }) {
-  const core = sealant.kind === "pinned" ? null : short(sealant.tree);
-  const daemon = sealantd.kind === "pinned" ? null : short(sealantd.tree);
-  const bundle = digestOf(mend.tree, ...upstreamIds).slice(0, 12);
+  const core = sealant.kind === "pinned" ? null : short(buildKey(sealant));
+  const daemon = sealantd.kind === "pinned" ? null : short(buildKey(sealantd));
+  const bundle = digestOf(buildKey(mend), ...upstreamIds).slice(0, 12);
   return {
     sealantd: daemon === null ? null : `mend-verify/sealantd:${daemon}`,
     sealantApi: core === null ? null : `mend-verify/sealant-api:${core}`,
     sealantWorker: core === null ? null : `mend-verify/sealant-worker:${core}`,
     sealantSshGateway: core === null ? null : `mend-verify/sealant-ssh-gateway:${core}`,
-    cli: `mend-verify/mend-cli:${short(mend.tree)}`,
+    cli: `mend-verify/mend-cli:${short(buildKey(mend))}`,
     version: verifyVersion(cliVersion, bundle),
     mend: `ghcr.io/sealant-sh/mend:${verifyVersion(cliVersion, bundle)}`,
   };
@@ -500,4 +506,69 @@ export function manualRemoval(items) {
   ]
     .filter(([, ids]) => ids.length > 0)
     .map(([command, ids]) => `${command} ${ids.join(" ")}`);
+}
+
+// ─── packages from source ───────────────────────────────────────────────────
+
+/** Where a derived build context keeps the packages packed from another repository's source. */
+export const VENDOR_DIR = ".verify-stack/packages";
+
+/** `sealant-runtime-client-0.20.0.tgz` (what `pnpm pack` names it) → `@sealant/runtime-client`. */
+export function tarballPackage(filename) {
+  const match = /^sealant-([a-z][a-z0-9-]*?)-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.tgz$/.exec(
+    filename,
+  );
+  if (!match) throw new Error(`not a packed @sealant package: ${filename}`);
+  return { name: `@sealant/${match[1]}`, version: match[2] };
+}
+
+/**
+ * The pnpm overrides that make a repository install packages packed from source. `consumers` limits
+ * an override to the packages that declare the dependency (`parent>name`); without it the override
+ * applies to every dependency of that name. Each points at the tarball inside the context.
+ */
+export function packageOverrides(tarballs, consumers = null) {
+  const overrides = {};
+  for (const file of tarballs) {
+    const { name } = tarballPackage(file);
+    const spec = `file:./${VENDOR_DIR}/${file}`;
+    const parents = consumers?.[name];
+    if (consumers === null) overrides[name] = spec;
+    else for (const parent of parents ?? []) overrides[`${parent}>${name}`] = spec;
+  }
+  return overrides;
+}
+
+/**
+ * Which of Core's packages track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`): those are
+ * the ones a sealantd change reaches when it merges, so those are the ones the stack points at
+ * sealantd's source. A package pinned to an older stable line (`^0.6.0`) keeps what it pins, as Core
+ * ships it. The packed runtime-client depends on runtime-protocol by its exact version, so that edge
+ * follows too.
+ */
+export function runtimeConsumers(manifests) {
+  const consumers = {};
+  for (const manifest of manifests)
+    for (const [name, spec] of Object.entries(manifest.dependencies ?? {}))
+      if (
+        /^@sealant\/runtime-(client|protocol)$/.test(name) &&
+        /^npm:@sealant\/runtime-[a-z]+-next@/.test(spec)
+      )
+        (consumers[name] ??= []).push(manifest.name);
+  if (consumers["@sealant/runtime-client"])
+    (consumers["@sealant/runtime-protocol"] ??= []).push("@sealant/runtime-client");
+  return consumers;
+}
+
+/**
+ * pnpm-workspace.yaml with `overrides` added: under the file's own `overrides:` block when it has
+ * one, else as a new block at the end. Keys are quoted; an existing key of the same name is left
+ * for pnpm to refuse, which names the clash instead of hiding it.
+ */
+export function withOverrides(yaml, overrides) {
+  const lines = Object.entries(overrides).map(([key, spec]) => `  "${key}": ${spec}`);
+  if (lines.length === 0) return yaml;
+  const block = /^overrides:[ \t]*$/m;
+  if (block.test(yaml)) return yaml.replace(block, (head) => `${head}\n${lines.join("\n")}`);
+  return `${yaml.replace(/\n*$/, "\n")}\noverrides:\n${lines.join("\n")}\n`;
 }

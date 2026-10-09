@@ -30,6 +30,10 @@ import {
   RELAY_CONTAINER,
   STACK_LABEL,
   STATE_VOLUME,
+  packageOverrides,
+  runtimeConsumers,
+  tarballPackage,
+  withOverrides,
   verifyVersion,
 } from "./lib.mjs";
 
@@ -428,4 +432,66 @@ test("a teardown removes what was recorded and has the stack's shape, and follow
     ["relay"],
   );
   assert.deepEqual(bare.volumes, []);
+});
+
+test("a packed tarball names its package", () => {
+  assert.deepEqual(tarballPackage("sealant-sdk-0.38.1.tgz"), {
+    name: "@sealant/sdk",
+    version: "0.38.1",
+  });
+  assert.deepEqual(tarballPackage("sealant-runtime-client-0.20.0-next.154.tgz"), {
+    name: "@sealant/runtime-client",
+    version: "0.20.0-next.154",
+  });
+  assert.equal(tarballPackage("sealant-api-contracts-0.38.1.tgz").name, "@sealant/api-contracts");
+  assert.throws(() => tarballPackage("evil-1.0.0.tgz"));
+  assert.throws(() => tarballPackage("sealant-sdk-latest.tgz"));
+});
+
+test("only Core's packages on sealantd's next line follow sealantd's source", () => {
+  const consumers = runtimeConsumers([
+    {
+      name: "@sealant/workspaces",
+      dependencies: {
+        "@sealant/runtime-client": "npm:@sealant/runtime-client-next@0.20.0-next.154",
+        "@sealant/runtime-protocol": "npm:@sealant/runtime-protocol-next@0.20.0-next.154",
+      },
+    },
+    {
+      name: "@sealant/ssh-gateway",
+      dependencies: { "@sealant/runtime-client": "^0.6.0", "@sealant/runtime-protocol": "^0.6.0" },
+    },
+    { name: "@sealant/api" },
+  ]);
+  assert.deepEqual(consumers, {
+    "@sealant/runtime-client": ["@sealant/workspaces"],
+    "@sealant/runtime-protocol": ["@sealant/workspaces", "@sealant/runtime-client"],
+  });
+  assert.deepEqual(
+    packageOverrides(
+      ["sealant-runtime-client-0.20.0.tgz", "sealant-runtime-protocol-0.20.0.tgz"],
+      consumers,
+    ),
+    {
+      "@sealant/workspaces>@sealant/runtime-client":
+        "file:./.verify-stack/packages/sealant-runtime-client-0.20.0.tgz",
+      "@sealant/workspaces>@sealant/runtime-protocol":
+        "file:./.verify-stack/packages/sealant-runtime-protocol-0.20.0.tgz",
+      "@sealant/runtime-client>@sealant/runtime-protocol":
+        "file:./.verify-stack/packages/sealant-runtime-protocol-0.20.0.tgz",
+    },
+  );
+  assert.deepEqual(Object.keys(packageOverrides(["sealant-sdk-1.0.0.tgz"])), ["@sealant/sdk"]);
+});
+
+test("overrides join the workspace file's own block, or start one", async () => {
+  const mend = await readFile(new URL("../../pnpm-workspace.yaml", import.meta.url), "utf8");
+  const joined = withOverrides(mend, { "@sealant/sdk": "file:./x.tgz" });
+  assert.equal(joined.match(/^overrides:/gm).length, 1);
+  assert.match(joined, /^overrides:\n {2}"@sealant\/sdk": file:\.\/x\.tgz\n {2}"@effect/m);
+  assert.equal(
+    withOverrides("packages:\n  - a\n", { b: "file:./b.tgz" }),
+    'packages:\n  - a\n\noverrides:\n  "b": file:./b.tgz\n',
+  );
+  assert.equal(withOverrides("packages: []\n", {}), "packages: []\n");
 });
