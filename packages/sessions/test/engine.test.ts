@@ -258,6 +258,7 @@ import type {
 } from "@sealant/sdk";
 import {
   Cause,
+  ConfigProvider,
   Context,
   Deferred,
   Duration,
@@ -22152,6 +22153,80 @@ describe("automatic install", () => {
                           stderr: "",
                         }
                       : { exitCode: 1, stdout: `${RETRY}\n`, stderr: GIVE_UP }
+                    : argv[2] === PNPM
+                      ? { exitCode: 0, stdout: "Done in 20.2s using pnpm v10.32.1\n", stderr: "" }
+                      : undefined,
+            },
+          }),
+        },
+      );
+    });
+  }
+
+  // The server's npm mirror (`MEND_NPM_MIRROR_URL`): the install script carries it, and a run that
+  // failed on the mirror runs again as written, so it reaches the registry itself.
+  for (const mirrored of ["completes", "fails on the mirror"] as const) {
+    it(`with the server's npm mirror, the install goes through it; ${mirrored === "completes" ? "it completes" : "it fails on the mirror and runs again without it"}`, async () => {
+      const PNPM = "pnpm install --frozen-lockfile";
+      const MIRROR = "http://npm-mirror:4873/";
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const logs: string[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const project = world.projects.get(session.projectId);
+            if (project === undefined) throw new Error("project missing");
+            world.projects.set(project.id, new Project({ ...project, installCommand: PNPM }));
+            // What `mend server setup`'s mirrors overlay hands the server.
+            yield* engine
+              .launch(session.id, ["codex"])
+              .pipe(
+                Effect.provideService(
+                  ConfigProvider.ConfigProvider,
+                  ConfigProvider.fromEnv({ env: { MEND_NPM_MIRROR_URL: MIRROR } }),
+                ),
+              );
+            const installs = execCalls
+              .filter((argv) => argv[0] === "sh" && argv[1] === "-lc")
+              .map((argv) => argv[2])
+              .filter((script) => script === installScript(PNPM, MIRROR) || script === PNPM);
+            const fellBack = logs.some((line) =>
+              line.includes("dependency install · retried without the npm mirror"),
+            );
+            expect(installs).toEqual(
+              mirrored === "completes"
+                ? [installScript(PNPM, MIRROR)]
+                : [installScript(PNPM, MIRROR), PNPM],
+            );
+            expect(fellBack).toBe(mirrored !== "completes");
+            expect(
+              logs.some((line) => line.includes("dependency install · completed · exit 0")),
+            ).toBe(true);
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            execCalls,
+            captureOps: {
+              exec: (argv) =>
+                (argv[2] ?? "").startsWith("uname -s; uname -m;")
+                  ? { exitCode: 0, stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n", stderr: "" }
+                  : argv[2] === installScript(PNPM, MIRROR)
+                    ? mirrored === "completes"
+                      ? {
+                          exitCode: 0,
+                          stdout: "Done in 6.1s using pnpm v10.32.1\n",
+                          stderr: `mend: npm mirror · used · ${MIRROR}\n`,
+                        }
+                      : {
+                          exitCode: 1,
+                          stdout: "",
+                          stderr: `mend: npm mirror · used · ${MIRROR}\n ERR_PNPM_FETCH_502  GET ${MIRROR}a/-/a-1.0.0.tgz: Bad Gateway - 502\n`,
+                        }
                     : argv[2] === PNPM
                       ? { exitCode: 0, stdout: "Done in 20.2s using pnpm v10.32.1\n", stderr: "" }
                       : undefined,
