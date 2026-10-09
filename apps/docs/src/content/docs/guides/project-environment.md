@@ -191,6 +191,25 @@ places, both under its own control:
   that cache. A cold launch restores the session's saved state and, when that has no tree for its
   platform, runs the install command.
 
+When the command is a plain `pnpm install`, Mend shortens pnpm's network waits for that install
+only. pnpm gives up on a registry connection that has been silent for 15 s (its default is 60 s) and
+waits 2 s before the first retry and at most 10 s between retries (defaults 10 s and 60 s). The
+timeout counts silence, not total time, so a large tarball on a slow link still downloads. One
+stalled download costs about 17 s instead of about 70 s. pnpm 10 and earlier apply the timeout only
+until the registry starts answering. Mend also turns off pnpm's update check for that install. If
+the shortened install fails and pnpm reported retries, for example because a registry or proxy
+always takes longer than 15 s to answer, Mend runs the command once more exactly as written, with
+pnpm's defaults.
+
+Settings already in place take precedence: `fetch-timeout`, `fetch-retry-mintimeout` or
+`fetch-retry-maxtimeout` passed in the command itself, set in the repository's `.npmrc` or
+`pnpm-workspace.yaml`, in your user config (`~/.npmrc`, or the file `NPM_CONFIG_USERCONFIG` names)
+or pnpm config, in the image's global `npmrc`, or in the environment. Mend runs npm, Yarn, Bun and
+any other custom command exactly as written. The server log line for the install ends with the
+number of download retries pnpm reported, for example
+`dependency install · completed · exit 0 · fetch retries 1`. A rerun with pnpm's defaults is logged
+on its own line, `dependency install · retried with defaults`.
+
 Off, Mend runs no install command for the project, in a session or in the install session; an agent
 can install by hand. A dependency tree already in the session's saved state, or in the shared cache
 a standby workspace starts from, is restored either way. Turning it off keeps the custom command. In

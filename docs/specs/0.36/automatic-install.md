@@ -172,8 +172,20 @@ relaunch and the install job's own session. The project is read fresh at each la
 5. Command: `project.installCommand`, else
    `detectInstallCommand(git ls-tree --name-only <session.baseSha>)` from the bare store. None:
    skip, logged.
-6. Run `sh -lc <command>` with cwd `/workspace/repo` through `sealant.exec`, as the session's owner.
-   Log `dependency install · completed|exited · exit <n>` (stderr's last 400 characters on failure).
+6. Run `sh -lc <script>` with cwd `/workspace/repo` through `sealant.exec`, as the session's owner
+   (`runInstallCommand`, `dependency-cache.ts`). The script is the command itself, except for a
+   plain one-line `pnpm install` (`installScript`). That one gets `--fetch-timeout=15000` and the
+   environment `npm_config_update_notifier=false` and fetch-retry waits of 2 s and at most 10 s
+   (under `npm_config_` and `pnpm_config_`). Each is added only when nothing sets it already: the
+   command itself, the environment, `.npmrc`, `pnpm-workspace.yaml`, the user config
+   (`NPM_CONFIG_USERCONFIG` or `~/.npmrc`), the user's pnpm config, or a global npmrc
+   (`NPM_CONFIG_GLOBALCONFIG`, the npm prefix's or node's prefix's `etc/npmrc`,
+   `/usr/local/etc/npmrc`, `/etc/npmrc`). If that run exits non-zero and its output reported fetch
+   retries, log `dependency install · retried with defaults` and run `sh -lc <command>` once more,
+   as written. Log `dependency install · completed|exited · exit <n> · fetch retries <k>` with the
+   last run's exit, where `k` counts, across both runs, the output lines that report a download
+   about to be retried (`Will retry in`, or a warning naming a timeout or a reset); give-up lines
+   and HTTP refusals are not counted (the last run's stderr, its last 400 characters, on failure).
 7. A nonzero exit does not fail the launch. Any error is logged as `dependency install did not run`,
    and the agent starts.
 
@@ -392,7 +404,7 @@ ssh … "docker exec mend-postgres-1 psql -U mend -d mend -Atc \
 - `session engine: dependency install skipped · automatic install off`
 - `… dependency tree observed for this platform`
 - `… dependency install · running { command }`
-- `… dependency install · completed|exited · exit N`
+- `… dependency install · completed|exited · exit N · fetch retries K`
 - `dependency-install: shared cache promoted { platform, captureId, packs }`
 - `dependency cache: the record under this platform names another platform's tree · not served`
 
