@@ -669,6 +669,48 @@ export const makePersonHub = (input: {
       for (const sessionId of sessionIds) opening.delete(sessionId);
     };
     const queues = new Map<string, Queueing.ThreadQueue>();
+    /**
+     * Session id → its queue as the state file last kept it (ADR 0012, "State"): a queue is written
+     * when it changed, and a restart brings back what was kept for this person.
+     */
+    const keptQueues = new Map<string, string>();
+    const keeper = input.viewer;
+    if (keeper !== null) {
+      for (const restored of yield* state.loadQueues(keeper.id).pipe(
+        Effect.catch((error) =>
+          Effect.logError("t3 gateway could not read its kept queues", {
+            cause: error.message,
+          }).pipe(Effect.as([])),
+        ),
+      )) {
+        const queue = Queueing.restoredQueue(
+          restored.queue,
+          (sender) => restored.senders.get(sender) ?? null,
+        );
+        queues.set(restored.sessionId, queue);
+        keptQueues.set(restored.sessionId, JSON.stringify(restored.queue));
+      }
+    }
+    /** Writes every queue that changed since it was last kept. */
+    const keepQueues = Effect.suspend(() =>
+      keeper === null
+        ? Effect.void
+        : Effect.forEach(
+            Array.from(queues),
+            ([sessionId, queue]) => {
+              const stored = Queueing.storedOf(queue);
+              const print = JSON.stringify(stored);
+              if (keptQueues.get(sessionId) === print) return Effect.void;
+              return state.saveQueue(keeper.id, sessionId, stored).pipe(
+                Effect.tap(() => Effect.sync(() => keptQueues.set(sessionId, print))),
+                Effect.catch((error) =>
+                  Effect.logError("t3 gateway could not keep a queue", { cause: error.message }),
+                ),
+              );
+            },
+            { discard: true },
+          ),
+    );
     const handledCommands = new Set<string>();
 
     const projects = new Map<string, ProjectEntry>();
@@ -974,6 +1016,7 @@ export const makePersonHub = (input: {
       return retain(now);
     });
     const publishAll = Effect.suspend(() => settleQueues).pipe(
+      Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
       Effect.andThen(publishThreads),
       Effect.andThen(holdWhileBusy),
@@ -1285,10 +1328,14 @@ export const makePersonHub = (input: {
     const deferredKeys = new Set<string>();
     /** The first full read is done: what arrived during it is read again. */
     const markLoaded = Effect.suspend(() => {
+      const first = !loaded;
       loaded = true;
       const keys = Array.from(deferredKeys);
       deferredKeys.clear();
-      return Effect.forEach(keys, (key) => requestRefresh(key), { discard: true });
+      return Effect.forEach(keys, (key) => requestRefresh(key), { discard: true }).pipe(
+        // A queue kept across a restart waited for this read: it moves now.
+        Effect.andThen(first && queues.size > 0 ? locked(publishAll) : Effect.void),
+      );
     });
     const loadLock = Semaphore.makeUnsafe(1);
     /** The first full read, made once by whoever needs it first; a failure is theirs to see. */
@@ -1656,6 +1703,7 @@ export const makePersonHub = (input: {
         for (const queue of queues.values()) {
           Queueing.failAll(queue, "Every device of this person was revoked in Mend.");
         }
+        yield* keepQueues;
         yield* publishShell;
         yield* publishThreads;
         busy = false;
@@ -1705,6 +1753,7 @@ export const makePersonHub = (input: {
                 text: command.text,
                 requestedAt: new Date().toISOString(),
                 token: command.session.deviceToken,
+                sender: command.session.sessionId,
               }),
             );
             yield* publishAll;
@@ -1936,6 +1985,7 @@ export const makePersonHub = (input: {
               text: message.text,
               requestedAt: new Date().toISOString(),
               token,
+              sender: request.session.sessionId,
             }),
           );
         };
@@ -2250,6 +2300,9 @@ const OPENING_READ_RETRY = "500 millis";
 const OPENING_READ_ATTEMPTS = 3;
 const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
+/** How long a kept queue waits before its person's hub reads Mend again after a failed read. */
+const QUEUE_RESTORE_RETRY = "30 seconds";
+
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";
 
@@ -2359,20 +2412,56 @@ export const ProjectionsLive: Layer.Layer<
       idleTimeToLive: config.hubIdleTimeToLive ?? HUB_IDLE_TTL,
     });
 
-    const hub = (session: BearerSession) =>
-      Effect.suspend(() => {
-        const userId = session.mendUser.id;
-        viewers.set(userId, { id: userId, name: session.mendUser.name });
-        const tokens = known.get(userId) ?? new Set<string>();
-        tokens.add(session.deviceToken);
-        known.set(userId, tokens);
-        // A person who pairs again after every device was revoked gets a fresh hub.
-        const done = exhausted.get(userId);
-        if (done !== undefined && Deferred.isDoneUnsafe(done) && liveOf(userId).length > 0) {
-          exhausted.delete(userId);
-        }
-        return RcMap.get(hubs, userId);
-      });
+    /** Makes the gateway hold a bearer's device token for its person. */
+    const know = (session: BearerSession) => {
+      const userId = session.mendUser.id;
+      viewers.set(userId, { id: userId, name: session.mendUser.name });
+      const tokens = known.get(userId) ?? new Set<string>();
+      tokens.add(session.deviceToken);
+      known.set(userId, tokens);
+      // A person who pairs again after every device was revoked gets a fresh hub.
+      const done = exhausted.get(userId);
+      if (done !== undefined && Deferred.isDoneUnsafe(done) && liveOf(userId).length > 0) {
+        exhausted.delete(userId);
+      }
+      return userId;
+    };
+
+    const hub = (session: BearerSession) => Effect.suspend(() => RcMap.get(hubs, know(session)));
+
+    /**
+     * After a restart, every person with a kept message that can still reach Mend gets their hub
+     * back without waiting for a client: it reads Mend once, and holds itself while the message is
+     * on its way (`retain`). Mend not answering yet is tried again; nothing kept is lost meanwhile.
+     */
+    const restoreQueues = Effect.gen(function* () {
+      const senders = yield* state.peopleWithQueuedMessages();
+      const people = new Set(senders.map(know));
+      yield* Effect.forEach(
+        people,
+        (userId) =>
+          Effect.scoped(
+            RcMap.get(hubs, userId).pipe(Effect.flatMap((held) => held.shellSnapshot)),
+          ).pipe(
+            // A device Mend refused will not come back; only Mend not answering is waited out.
+            Effect.retry({
+              schedule: Schedule.spaced(QUEUE_RESTORE_RETRY),
+              while: (error) => error._tag === "MendUnavailable",
+            }),
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not bring a kept queue back", {
+                cause: error.message,
+              }),
+            ),
+          ),
+        { concurrency: 4, discard: true },
+      );
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.logError("t3 gateway could not read its kept queues", { cause: error.message }),
+      ),
+    );
+    yield* Effect.forkScoped(restoreQueues);
 
     const refuseDevice = (userId: string, deviceToken: string) =>
       tokensOf(userId).refuse(deviceToken);
