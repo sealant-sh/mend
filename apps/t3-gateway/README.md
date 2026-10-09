@@ -338,8 +338,11 @@ thread's worktree as it stands through Mend's `GET /api/worktrees/:id/contents`,
   `binary_file`, a missing one `path_not_file`, a path Mend refuses (outside the worktree, `.git`)
   `workspace_path_outside_root`.
 - A search matches across the worktree, untracked files included and ignored ones not, up to 500
-  lines. The gateway marks where each line matched, as t3code highlights it. A regex git cannot read
-  is searched as text and answers `regexFallbackError`, as t3code's own server does.
+  lines. The gateway marks where each line matched, as t3code highlights it: a literal with
+  `indexOf`, a regex in a worker stopped after 250 ms (`src/highlight.ts`), so the client's regex
+  never runs on the gateway's thread; lines a stopped worker did not finish come without highlights.
+  A regex git cannot read is searched as text and answers `regexFallbackError`, as t3code's own
+  server does.
 - The project's root (its store path) has no files of its own to read or search.
 
 ### VCS status

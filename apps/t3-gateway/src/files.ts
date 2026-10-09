@@ -3,7 +3,6 @@ import {
   ProjectReadFileError,
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
-  type ProjectContentMatch,
   type ProjectReadFileInput,
   type ProjectReadFileResult,
   type ProjectSearchContentsInput,
@@ -17,6 +16,7 @@ import {
 import * as Effect from "effect/Effect";
 
 import type { GatedMend } from "./device-gate.ts";
+import { highlightLines } from "./highlight.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
 import type { MendFileListing } from "./mend-workbench.ts";
 import type { BearerSession } from "./state.ts";
@@ -129,35 +129,6 @@ export const searchEntries = (
     entries: ranked.slice(0, input.limit),
     truncated: sourceTruncated || ranked.length > input.limit,
   };
-};
-
-/** JavaScript's escape for a literal in a pattern. */
-const escapeLiteral = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/**
- * Where a line matches, as t3code highlights it: the same query git ran, in JavaScript. A regex
- * JavaScript cannot read highlights nothing; the line still matched.
- */
-export const matchRangesOf = (
-  text: string,
-  query: Pick<ProjectSearchContentsInput, "query" | "caseSensitive" | "wholeWord" | "useRegex">,
-): ProjectContentMatch["matchRanges"] => {
-  const source = query.useRegex ? query.query : escapeLiteral(query.query);
-  let pattern: RegExp;
-  try {
-    pattern = new RegExp(
-      query.wholeWord ? `\\b(?:${source})\\b` : source,
-      query.caseSensitive ? "g" : "gi",
-    );
-  } catch {
-    return [];
-  }
-  const ranges: Array<{ readonly start: number; readonly end: number }> = [];
-  for (const match of text.matchAll(pattern)) {
-    if (match[0].length === 0) break;
-    ranges.push({ start: match.index, end: match.index + match[0].length });
-  }
-  return ranges;
 };
 
 /** A directory's own children; `""` is the root. Without one, every entry, as older clients ask. */
@@ -339,19 +310,19 @@ export const makeFileHandlers = (input: {
             );
       const lines = answer.search ?? { matches: [], truncated: false };
       const asTyped = { ...request, useRegex: request.useRegex && fellBack === null };
+      const kept = lines.matches.filter((match) => match.line >= 1);
+      // Never the client's regex on the gateway's thread (`highlight.ts`).
+      const ranges = yield* highlightLines(
+        kept.map((match) => match.text),
+        asTyped,
+      );
       const result: ProjectSearchContentsResult = {
-        matches: lines.matches.flatMap((match) =>
-          match.line < 1
-            ? []
-            : [
-                {
-                  path: match.path,
-                  lineNumber: match.line,
-                  lineContent: match.text,
-                  matchRanges: matchRangesOf(match.text, asTyped),
-                },
-              ],
-        ),
+        matches: kept.map((match, index) => ({
+          path: match.path,
+          lineNumber: match.line,
+          lineContent: match.text,
+          matchRanges: ranges[index] ?? [],
+        })),
         truncated: lines.truncated,
         ...(fellBack === null ? {} : { regexFallbackError: fellBack }),
       };

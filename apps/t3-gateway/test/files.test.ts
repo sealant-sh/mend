@@ -5,7 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 
-import { entriesOf, listEntries, matchRangesOf, matchScore, searchEntries } from "../src/files.ts";
+import { entriesOf, listEntries, matchScore, searchEntries } from "../src/files.ts";
+import { highlightLines } from "../src/highlight.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
@@ -226,6 +227,10 @@ describe("reading and searching a worktree's files", () => {
   );
 });
 
+/** One line's highlights. */
+const one = (text: string, asked: Parameters<typeof highlightLines>[1]) =>
+  highlightLines([text], asked).pipe(Effect.map((lines) => lines[0]));
+
 describe("matching", () => {
   it("ranks the name's start, then the name, then the path, then the letters in order", () => {
     assert.strictEqual(matchScore("src/parser.ts", "pars"), 0);
@@ -235,19 +240,42 @@ describe("matching", () => {
     assert.isNull(matchScore("README.md", "pars"));
   });
 
-  it("highlights what a search matched, as asked", () => {
-    const query = { query: "pa.se", caseSensitive: false, wholeWord: false, useRegex: false };
-    assert.deepStrictEqual(matchRangesOf("pa.se parse", query), [{ start: 0, end: 5 }]);
-    assert.deepStrictEqual(matchRangesOf("pa.se parse", { ...query, useRegex: true }), [
-      { start: 0, end: 5 },
-      { start: 6, end: 11 },
-    ]);
-    assert.deepStrictEqual(
-      matchRangesOf("parser parse", { ...query, query: "parse", wholeWord: true }),
-      [{ start: 7, end: 12 }],
-    );
-    assert.deepStrictEqual(matchRangesOf("x", { ...query, query: "(", useRegex: true }), []);
-  });
+  it.effect("highlights what a search matched, as asked", () =>
+    Effect.gen(function* () {
+      const query = { query: "pa.se", caseSensitive: false, wholeWord: false, useRegex: false };
+      assert.deepStrictEqual(yield* one("pa.se parse", query), [{ start: 0, end: 5 }]);
+      assert.deepStrictEqual(yield* one("Pa.Se", query), [{ start: 0, end: 5 }]);
+      assert.deepStrictEqual(yield* one("pa.se parse", { ...query, useRegex: true }), [
+        { start: 0, end: 5 },
+        { start: 6, end: 11 },
+      ]);
+      assert.deepStrictEqual(
+        yield* one("parser parse", { ...query, query: "parse", wholeWord: true }),
+        [{ start: 7, end: 12 }],
+      );
+      assert.deepStrictEqual(yield* one("x", { ...query, query: "(", useRegex: true }), []);
+    }),
+  );
+
+  it.live("never runs the client's regex on the gateway's thread: a slow one is stopped", () =>
+    Effect.gen(function* () {
+      // `(a+)+$` on this line takes JavaScript's engine seconds (review 605-1).
+      const line = `${"a".repeat(27)}!a`;
+      const query = { query: "(a+)+$", caseSensitive: true, wholeWord: false, useRegex: true };
+      let ticks = 0;
+      const timer = setInterval(() => {
+        ticks += 1;
+      }, 10);
+      const started = performance.now();
+      const ranges = yield* highlightLines([line, "aa"], query);
+      const took = performance.now() - started;
+      clearInterval(timer);
+      // Answered within the budget, unhighlighted, and the loop kept running meanwhile.
+      assert.isBelow(took, 2_000);
+      assert.deepStrictEqual(ranges, [[], []]);
+      assert.isAbove(ticks, 5);
+    }),
+  );
 
   it("filters by kind and images, and says when it cut the list", () => {
     const entries = entriesOf(FILES);
