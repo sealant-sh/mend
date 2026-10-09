@@ -70,6 +70,30 @@ export const parseContainerDisk = (text) => parseDockerSize((text ?? "").split("
 /** `docker stats` MemUsage ("1.094GiB / 39.17GiB") → the used bytes. */
 export const parseMemUsage = (text) => parseDockerSize((text ?? "").split("/")[0]);
 
+/**
+ * A container's cgroup `memory.stat` as the parts `docker stats` adds up: `anon` (processes' own
+ * memory), `activeFile` (page cache it counts; the inactive part it leaves out), `shmem` (tmpfs
+ * and shared memory) and `kernel`. cgroup v2's names, v1's (`total_*`) where v2's are absent.
+ * Null for a part the text does not hold.
+ */
+export const parseMemoryStat = (text) => {
+  const values = new Map();
+  for (const line of (text ?? "").split("\n")) {
+    const match = /^(\w+)\s+(\d+)$/.exec(line.trim());
+    if (match !== null) values.set(match[1], Number(match[2]));
+  }
+  const first = (...names) => {
+    for (const name of names) if (values.has(name)) return values.get(name);
+    return null;
+  };
+  return {
+    anon: first("anon", "total_rss"),
+    activeFile: first("active_file", "total_active_file"),
+    shmem: first("shmem", "total_shmem"),
+    kernel: first("kernel"),
+  };
+};
+
 // ─── Mend's log (docker logs -t of the Mend container) ──────────────────────
 
 const VALUE = /('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|[^,{}\s][^,{}]*)/;
@@ -160,6 +184,22 @@ export const execCount = (blocks, workspaceId, fromMs, toMs) =>
       http !== null &&
       http.method === "POST" &&
       http.url === `/v1/workspaces/${workspaceId}/exec` &&
+      block.at >= fromMs &&
+      block.at <= toMs
+    );
+  }).length;
+
+/**
+ * How many times the engine wrote a person's logins into a workspace between two instants (Core's
+ * `POST /v1/workspaces/:id/credentials`, docs/adr/0016 decision 5).
+ */
+export const credentialWriteCount = (blocks, workspaceId, fromMs, toMs) =>
+  blocks.filter((block) => {
+    const http = httpOf(block);
+    return (
+      http !== null &&
+      http.method === "POST" &&
+      http.url === `/v1/workspaces/${workspaceId}/credentials` &&
       block.at >= fromMs &&
       block.at <= toMs
     );
@@ -268,6 +308,26 @@ export const deliveryWindow = (milestones) => {
     before.at(-1);
   if (start === undefined) return null;
   return ends.at(-1).at - start.at;
+};
+
+/**
+ * Why a launch has no delivery window (`deliveryWindow`), from what its milestones say. The engine
+ * logs a delivery only when it writes something: a person's memory already in place from their
+ * earlier start in the executor, an executor that shares one home (it writes nothing for another
+ * person's join), and a person who holds no memory or secret file for the project all leave none.
+ */
+export const noDeliveryReasonOf = (milestones) => {
+  const said = (prefix) => (milestones ?? []).some((m) => m.name.startsWith(prefix));
+  if (said("agent memory · already in place")) {
+    return "nothing to deliver: the person's memory was already in place from their earlier start in this executor";
+  }
+  if (said("secret files not written · the executor is another person's")) {
+    return "nothing delivered: an executor that shares one home writes no memory or secret files for another person's join (ADR 0009, ADR 0010 decision 3)";
+  }
+  if (!said("agent memory ·") && !said("secret file")) {
+    return "nothing delivered: the launch logged no memory or secret-file delivery (the person holds none for this project, or the live executor already had them)";
+  }
+  return "the delivery milestones were not in the log";
 };
 
 /** What a measure that needs the server's log says when the bench cannot read it. */
@@ -743,14 +803,31 @@ const rowOf = ({ name, measure, before: beforeValue, limit, current, stat, notRu
 export const compareResults = (
   before,
   after,
-  { stats = ["median", "p90"], secondPersonHarnesses = null, companion = false } = {},
+  {
+    stats = ["median", "p90"],
+    secondPersonHarnesses = null,
+    companion = false,
+    // A companion compared under gate P1: the gate's measures it holds (`heldByCompanions`), and
+    // its series held to the gate's floors.
+    gateMeasures = null,
+  } = {},
 ) => {
   const rows = [];
   const incomparable = [];
   const sampledBefore = resourcesSampledAt(before);
   const sampledAfter = resourcesSampledAt(after);
   const gate = !companion && layoutOf(before) === "shared" && layoutOf(after) === "person";
-  const required = requiredOf(after, { gate, secondPersonHarnesses });
+  // Under the gate, what a companion of the record's run holds is compared there, not missed here.
+  const held = heldByCompanions(
+    requiredOf(after, { gate, secondPersonHarnesses }),
+    gate ? sameRunCompanionsOf(after) : [],
+  );
+  const required = held.left;
+  for (const entry of gateMeasures ?? []) {
+    if (!required.measures.some((known) => known.measure === entry.measure)) {
+      required.measures.push(entry);
+    }
+  }
   for (const [name, recorded] of Object.entries(before.measures ?? {})) {
     const measure = { ...recorded, budget: budgetOf(name, recorded) };
     if (
@@ -879,7 +956,11 @@ export const compareResults = (
   for (const name of companionNames) {
     const ours = before.companions?.[name] ?? { measures: {} };
     const theirs = after.companions?.[name] ?? { measures: {} };
-    const compared = compareResults(ours, theirs, { stats, companion: true });
+    const compared = compareResults(ours, theirs, {
+      stats,
+      companion: true,
+      gateMeasures: gate ? (held.byCompanion.get(name) ?? []) : null,
+    });
     for (const row of compared.rows) {
       rows.push({ ...row, measure: `${name}: ${row.measure}` });
     }
@@ -898,9 +979,10 @@ export const compareResults = (
   }
   // Under the gate, a series shorter than its floor (rounds discarded as compacted, launches kept
   // apart, growth rounds that held no conversation) is a miss: a median of one round is not the
-  // ADR's ten-run gate.
-  if (gate) {
+  // ADR's ten-run gate. A companion's rows are held to it inside its own comparison.
+  if (gate || gateMeasures !== null) {
     for (const row of rows) {
+      if (companionNames.has(row.measure.split(": ")[0])) continue;
       const short =
         shortSeriesOf(after, row.measure, "the record under test") ??
         (row.before === null ? null : shortSeriesOf(before, row.measure, "the baseline"));
@@ -1206,6 +1288,10 @@ export const requiredOf = (result, { gate = false, secondPersonHarnesses = null 
  * record's `--only`/`--harnesses` left out, and a person record whose second person ran fewer
  * harnesses than the gate asks of them.
  */
+/** The harnesses a record's second person ran. */
+const secondPersonRanBy = (result) =>
+  result.options?.secondPersonHarnesses ?? result.options?.harnesses ?? [];
+
 export const gateScopeGaps = (before, after, secondPersonHarnesses = null) => {
   const gaps = [];
   const launch = SCENARIOS.filter((scenario) => !PERSON_SCENARIOS.includes(scenario));
@@ -1213,29 +1299,117 @@ export const gateScopeGaps = (before, after, secondPersonHarnesses = null) => {
     ["the shared record", before, launch],
     ["the person record", after, SCENARIOS],
   ]) {
-    const only = result.options?.only ?? [];
+    // A scenario a companion of the same run ran counts as run (`companionMismatchOf`).
+    const only = new Set([
+      ...(result.options?.only ?? []),
+      ...sameRunCompanionsOf(result).flatMap(([, companion]) => companion.options?.only ?? []),
+    ]);
     const harnesses = result.options?.harnesses ?? [];
-    const notRun = scenarios.filter((scenario) => !only.includes(scenario));
+    const notRun = scenarios.filter((scenario) => !only.has(scenario));
     if (notRun.length > 0) gaps.push(`${who} did not run ${notRun.join(", ")}`);
     const absent = GATE_HARNESSES.filter((harness) => !harnesses.includes(harness));
     if (absent.length > 0) gaps.push(`${who} did not run ${absent.join(", ")}`);
+    for (const [name, companion] of Object.entries(result.companions ?? {})) {
+      const mismatch = companionMismatchOf(result, companion);
+      if (mismatch.length > 0) {
+        gaps.push(`${who}'s companion on ${name} is not of its run: ${mismatch.join("; ")}`);
+      }
+    }
   }
   for (const [who, result] of [
     ["the shared record", before],
     ["the person record", after],
   ]) {
-    const runs = result.options?.runs ?? null;
-    if (runs !== null && runs < 10) {
-      gaps.push(`${who} ran ${runs} round(s); the gate runs at least 10 (docs/adr/0016, "Method")`);
+    for (const [name, counted] of [[null, result], ...sameRunCompanionsOf(result)]) {
+      const runs = counted.options?.runs ?? null;
+      if (runs !== null && runs < 10) {
+        gaps.push(
+          `${name === null ? who : `${who}'s companion on ${name}`} ran ${runs} round(s); the gate runs at least 10 (docs/adr/0016, "Method")`,
+        );
+      }
     }
   }
+  // Companions of one name on both sides compare like the main records: one project, one image,
+  // the same harness versions.
+  for (const [name, ours] of Object.entries(before.companions ?? {})) {
+    const theirs = after.companions?.[name];
+    if (theirs === undefined) continue;
+    const { differs } = describeComparison(ours, theirs, { companion: true });
+    if (differs.length > 0) gaps.push(`the companions on ${name} differ: ${differs.join("; ")}`);
+  }
+  // What the second person ran, per scenario of theirs: every harness any record of the run (the
+  // record itself, or a companion of its run) ran it with. They ran a harness when every scenario
+  // of theirs that was run has it; one nobody ran is a gap above.
+  const records = [after, ...sameRunCompanionsOf(after).map(([, companion]) => companion)];
+  const perScenario = [...PERSON_SCENARIOS, "join-other"]
+    .map((scenario) =>
+      records
+        .filter((result) => (result.options?.only ?? []).includes(scenario))
+        .flatMap(secondPersonRanBy),
+    )
+    .filter((harnesses) => harnesses.length > 0);
+  const ran =
+    perScenario.length === 0
+      ? secondPersonRanBy(after)
+      : perScenario.reduce((all, one) => all.filter((harness) => one.includes(harness)));
   const second = secondPersonHarnesses ?? GATE_HARNESSES;
-  const ran = after.options?.secondPersonHarnesses ?? after.options?.harnesses ?? [];
   const short = second.filter((harness) => !ran.includes(harness));
   if (short.length > 0) {
     gaps.push(`the person record's second person did not run ${short.join(", ")}`);
   }
   return gaps;
+};
+
+/**
+ * Why a companion is not of the same run as the record it is kept in (`withCompanion`), in words;
+ * empty when it is. Of the same run: the same layout, instance, Mend build (the image's id, else
+ * the commit, else the version), workspace image and harness versions; only the project differs.
+ * Under gate P1 a companion of the same run counts toward the gate's set (`requiredOf`), and one
+ * that is not makes the comparison "not the gate".
+ */
+export const companionMismatchOf = (main, companion) => {
+  const reasons = [];
+  const layouts = [layoutOf(main), layoutOf(companion)];
+  if (layouts[0] !== layouts[1]) {
+    reasons.push(`it ran the ${layouts[1] ?? "unknown"} layout, the record ${layouts[0] ?? "?"}`);
+  }
+  const { differs } = describeComparison(main, companion, { companion: true });
+  return [...reasons, ...differs.filter((reason) => reason !== "different projects")];
+};
+
+/** A record's companions of its own run (`companionMismatchOf`), as `[name, record]` pairs. */
+export const sameRunCompanionsOf = (result) =>
+  Object.entries(result.companions ?? {}).filter(
+    ([, companion]) => companionMismatchOf(result, companion).length === 0,
+  );
+
+/**
+ * What of `required` a companion of the record's run holds: a measure it has samples of, a check
+ * it saw hold. Those are compared there, against the baseline's companion of that name; the rest
+ * stays the record's own to carry.
+ */
+const companionHas = (companion, name) =>
+  summarize(companion.measures?.[name]?.samples ?? []).n > 0;
+const companionHolds = (companion, name) =>
+  (companion.checks ?? []).some((check) => check.check === name && check.passed > 0);
+const heldByCompanions = (required, companions) => {
+  const measures = new Map();
+  for (const entry of required.measures) {
+    const holder = companions.find(([, companion]) => companionHas(companion, entry.measure));
+    if (holder !== undefined) {
+      measures.set(holder[0], [...(measures.get(holder[0]) ?? []), entry]);
+    }
+  }
+  const held = new Set([...measures.values()].flat().map((entry) => entry.measure));
+  return {
+    left: {
+      measures: required.measures.filter((entry) => !held.has(entry.measure)),
+      checks: required.checks.filter(
+        (name) => !companions.some(([, companion]) => companionHolds(companion, name)),
+      ),
+    },
+    byCompanion: measures,
+  };
 };
 
 // ─── layouts and what a comparison is ───────────────────────────────────────

@@ -97,6 +97,19 @@
 //   with `launch_call_capped` (1 when the call took the whole window) and a note per capped call.
 // - The answer is watched for from the first output on, while the executor is sized beside it.
 // - A merge stamps each executor size with the point its own record sampled it at (`sampledAt`).
+// - Beside each executor's memory, its cgroup's `memory.stat` parts (`memory_anon_bytes`, the
+//   processes' own; `memory_active_file_bytes`, page cache the total counts; `memory_shmem_bytes`;
+//   `memory_kernel_bytes`), unbudgeted, so a difference in the total can be told apart.
+// - Each shell open counts the person's logins the engine wrote into the executor during it
+//   (`shell.open_credential_writes`, Core's credentials POST), unbudgeted.
+// - The different-person join gets memory of its own: when the second account holds none in the
+//   project, a memory file of the run is imported for it (removed after), in both layouts, so a
+//   person executor's join delivers it and its delivery is timed (`join.other.delivery`,
+//   unbudgeted: an executor that shares one home delivers nothing to another person's join).
+//   `--secret-file` gives the second account the run's secret file too. A launch that delivered
+//   nothing says why (memory already in place, another person's shared home, nothing held).
+// - `companion` keeps only a record of the same run (layout, instance, Mend image, workspace image,
+//   harness versions); under gate P1 what such a companion ran and holds counts toward the set.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -106,6 +119,7 @@ import { fileURLToPath } from "node:url";
 
 import { makeApi, makeHost, mendImageCommit } from "./host.mjs";
 import {
+  companionMismatchOf,
   compareResults,
   comparisonFails,
   failedChecks,
@@ -188,11 +202,14 @@ gate P1 (docs/adr/0016): person launches against shared launches at one commit
   a miss, and the baseline's errors fail it too. A per-round series (launches and Stops, the
   hand-over's differences, growth, joins, resumes) that kept fewer than 80% of its rounds, or
   fewer than 5, is a miss (SHORT), and a record of fewer than 10 rounds is not the gate. A
-  companion record's failed checks and errors count, on either side. Ceiling budgets (the hand-over's 5 s over the own
-  turn, growth's 64 KB) are checked on the record under test alone. It also fails on a failed or
-  unverified check and on an error in the record under test. It says what it does not cover: P1's
-  restore wall time on the box's largest worktree, interleaved between the layouts. The last line
-  is the verdict; exit 0 only when it says passed
+  companion of the same run (\`companion\`: same layout, instance, Mend image, workspace image and
+  harness versions, another project) counts toward the set: what it ran and holds is compared
+  against the baseline's companion of that name, under the same floors; one of another run makes
+  it "not the gate". A companion's failed checks and errors count, on either side. Ceiling
+  budgets (the hand-over's 5 s over the own turn, growth's 64 KB) are checked on the record under
+  test alone. It also fails on a failed or unverified check and on an error in the record under
+  test. It says what it does not cover: P1's restore wall time on the box's largest worktree,
+  interleaved between the layouts. The last line is the verdict; exit 0 only when it says passed
 
 what the record keeps apart
   executor sizes              taken at each launch's first output; memory_after_answer_bytes is what
@@ -464,7 +481,16 @@ const main = async () => {
       return;
     }
     case "companion": {
-      const joined = withCompanion(readJson(opts.args[0]), readJson(opts.args[1]));
+      const kept = readJson(opts.args[0]);
+      const other = readJson(opts.args[1]);
+      // Only a record of the same run stands in for what the main record did not run.
+      const mismatch = companionMismatchOf(kept, other);
+      if (mismatch.length > 0) {
+        log(`not of the same run, not kept: ${mismatch.join("; ")}`);
+        process.exitCode = 1;
+        return;
+      }
+      const joined = withCompanion(kept, other);
       writeJson(opts.out, joined);
       process.stdout.write(`${formatTable(joined)}\n`);
       log(`with companion · ${opts.out}`);

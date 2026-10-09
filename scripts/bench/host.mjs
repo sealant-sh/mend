@@ -275,18 +275,25 @@ export const executorOf = async (host, sessionId) => {
   return names.at(-1) ?? null;
 };
 
-/** The executor's writable layer and memory, its Docker sidecar's beside it. */
+const MEMORY_STAT_MARK = "--st-bench-memory-stat--";
+
+/**
+ * The executor's writable layer and memory, its Docker sidecar's beside it, and the executor's
+ * cgroup `memory.stat` (`parseMemoryStat`).
+ */
 export const executorResources = async (host, container) => {
   const disk = await host.shell(
     `docker ps -s --filter name=^${container}$ --format '{{.Size}}'; docker ps -s --filter name=^${container}-docker$ --format '{{.Size}}'`,
     { timeoutMs: 300_000 },
   );
+  // The executor's own memory.stat beside its stats: what the total is made of.
   const memory = await host.shell(
-    `docker stats --no-stream --format '{{.Name}}|{{.MemUsage}}' ${container} ${container}-docker 2>/dev/null; true`,
+    `docker stats --no-stream --format '{{.Name}}|{{.MemUsage}}' ${container} ${container}-docker 2>/dev/null; echo ${MEMORY_STAT_MARK}; docker exec ${container} cat /sys/fs/cgroup/memory.stat 2>/dev/null; true`,
   );
+  const [stats, memoryStat = ""] = memory.split(MEMORY_STAT_MARK);
   const [mainDisk, sidecarDisk] = disk.split("\n");
   const byName = Object.fromEntries(
-    memory
+    stats
       .split("\n")
       .filter((line) => line.includes("|"))
       .map((line) => line.split("|")),
@@ -296,6 +303,7 @@ export const executorResources = async (host, container) => {
     sidecarDisk,
     mainMemory: byName[container],
     sidecarMemory: byName[`${container}-docker`],
+    mainMemoryStat: memoryStat,
   };
 };
 

@@ -25,7 +25,9 @@ import {
   compactionsOf,
   lastRequestTokensOf,
   LAST_REQUEST_SH,
+  credentialWriteCount,
   deliveryWindow,
+  noDeliveryReasonOf,
   execCount,
   harnessVersionOf,
   liveAgents,
@@ -44,6 +46,7 @@ import {
   parseDrainLine,
   parseImageLine,
   parseMemUsage,
+  parseMemoryStat,
   parseMendLog,
   parseSealantdLog,
   parsePersonProbe,
@@ -71,6 +74,12 @@ export const PREFIX = "st-bench-";
 /** The benchmark's secret file, one per run (`.st-bench-secret-<run id>`), so runs never share it. */
 const SECRET_PREFIX = ".st-bench-secret";
 const secretPathOf = (rid) => `${SECRET_PREFIX}-${rid}`;
+/**
+ * The joiner's memory file, one per run: Claude's auto memory (`AGENT_MEMORY_ROOTS`), so a
+ * different person's join has their own memory to deliver, as a real joiner does.
+ */
+const JOINER_MEMORY_DIR = ".claude/projects/-workspace-repo/memory";
+const joinerMemoryPathOf = (rid) => `${JOINER_MEMORY_DIR}/${PREFIX}${rid}.md`;
 
 const runLocal = (command) =>
   promisify(execFile)("sh", ["-c", command], { timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
@@ -308,14 +317,17 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   const delivery = deliveryWindow(milestones);
   if (delivery !== null) {
     // A join that launched cold, or a launch that waited for an image build, is kept apart,
-    // unbudgeted, like its first output.
+    // unbudgeted, like its first output. A different person's join is unbudgeted too: an executor
+    // that shares one home delivers nothing to it, so the person layout's has no counterpart; its
+    // cost is inside the join's first output, which is budgeted.
     const apart =
       prefix.endsWith(".cold") ||
       prefix.endsWith(".image_built") ||
-      prefix.endsWith(".unclassified");
+      prefix.endsWith(".unclassified") ||
+      prefix.startsWith("join.other");
     rec.sample(`${prefix}.delivery`, delivery, "ms", apart ? null : "delivery");
   } else {
-    rec.notRun(`${prefix}.delivery`, "the delivery milestones were not in the log");
+    rec.notRun(`${prefix}.delivery`, noDeliveryReasonOf(milestones));
   }
   const memory = milestones.find((m) => m.name === "agent memory · delivered");
   if (memory !== undefined && typeof memory.fields.written === "number") {
@@ -436,6 +448,17 @@ const recordResources = async (ctx, name, container, budget) => {
   ctx.rec.sample(`${name}.disk_bytes`, parseContainerDisk(resources.mainDisk), "bytes", budget);
   ctx.rec.sample(`${name}.memory_bytes`, parseMemUsage(resources.mainMemory), "bytes", budget);
   ctx.rec.sample(`${name}.sidecar_memory_bytes`, parseMemUsage(resources.sidecarMemory), "bytes");
+  // What the memory is made of, unbudgeted: the processes' own (`anon`) against the page cache
+  // the total counts (`active_file`), tmpfs (`shmem`) and the kernel's.
+  const parts = parseMemoryStat(resources.mainMemoryStat);
+  for (const [part, value] of [
+    ["anon", parts.anon],
+    ["active_file", parts.activeFile],
+    ["shmem", parts.shmem],
+    ["kernel", parts.kernel],
+  ]) {
+    if (value !== null) ctx.rec.sample(`${name}.memory_${part}_bytes`, value, "bytes");
+  }
 };
 
 /** A Stop, as steps: the save (the drain's "saved · terminating"), the settle, what was uploaded. */
@@ -706,8 +729,11 @@ const interactive = async (ctx, primary) => {
   const { rec, opts } = ctx;
   const sessionId = primary.session.id;
   let shell = null;
+  const opens = [];
   for (let k = 1; k <= opts.interactiveRuns; k += 1) {
+    const fromMs = Date.now();
     const opened = await openShell(ctx, sessionId);
+    opens.push({ fromMs, toMs: Date.now() });
     rec.sample("shell.open", opened.openMs, "ms", "interactive");
     rec.sample("shell.open_call", opened.callMs, "ms");
     if (k < opts.interactiveRuns) {
@@ -718,6 +744,29 @@ const interactive = async (ctx, primary) => {
     }
   }
   ctx.log(`shell · ${opts.interactiveRuns} opens`);
+  // The logins each open waited for: a person's shell needs more providers than their agent's
+  // create wrote (`loginNeedOf`), so their first shell in an executor may write them first.
+  if (ctx.host !== null) {
+    try {
+      const detail = await ctx.api.get(`/sessions/${sessionId}`);
+      const workspaceId = detail.session.sealantWorkspaceId;
+      const blocks = await mendBlocks(ctx, opens[0].fromMs, opens.at(-1).toMs + 1000);
+      for (const open of opens) {
+        rec.sample(
+          "shell.open_credential_writes",
+          workspaceId === null
+            ? null
+            : credentialWriteCount(blocks, workspaceId, open.fromMs, open.toMs),
+          "count",
+        );
+      }
+    } catch (error) {
+      rec.notRun(
+        "shell.open_credential_writes",
+        `the server's log was not read: ${errorText(error)}`,
+      );
+    }
+  }
   // The agent's own terminal, as a client attaches to it: ticket, socket, the first frame.
   for (let k = 1; k <= opts.interactiveRuns; k += 1) {
     const started = performance.now();
@@ -1629,17 +1678,40 @@ export const cleanupAll = async (ctx, { all = false } = {}) => {
     }
   }
   // This run's secret file (one a hard quit left included), or with `all` every run's; never
-  // another run's otherwise.
-  const secrets = await ctx.api.get("/me/secret-files").catch(() => ({ files: [] }));
-  for (const file of secrets.files ?? []) {
-    const ours = all
-      ? file.path === SECRET_PREFIX || file.path.startsWith(`${SECRET_PREFIX}-`)
-      : typeof ctx.rid === "string" && file.path === secretPathOf(ctx.rid);
-    if (ours) {
-      await ctx.api
-        .delete(`/me/secret-files?path=${encodeURIComponent(file.path)}`)
-        .then(() => ctx.log(`cleanup · removed secret file ${file.path}`))
-        .catch((error) => ctx.rec.error("cleanup · secret file", error));
+  // another run's otherwise. Either account's: the joiner gets one too.
+  for (const [who, api] of [
+    ["", ctx.api],
+    [" (the second account's)", ctx.api2 ?? null],
+  ]) {
+    if (api === null) continue;
+    const secrets = await api.get("/me/secret-files").catch(() => ({ files: [] }));
+    for (const file of secrets.files ?? []) {
+      const ours = all
+        ? file.path === SECRET_PREFIX || file.path.startsWith(`${SECRET_PREFIX}-`)
+        : typeof ctx.rid === "string" && file.path === secretPathOf(ctx.rid);
+      if (ours) {
+        await api
+          .delete(`/me/secret-files?path=${encodeURIComponent(file.path)}`)
+          .then(() => ctx.log(`cleanup · removed secret file ${file.path}${who}`))
+          .catch((error) => ctx.rec.error("cleanup · secret file", error));
+      }
+    }
+  }
+  // The joiner's memory file of this run, or with `all` every run's, in this project.
+  if ((ctx.api2 ?? null) !== null) {
+    const memory = await ctx.api2
+      .get(`/projects/${ctx.project.id}/memory`)
+      .catch(() => ({ files: [] }));
+    for (const file of memory.files ?? []) {
+      const ours = all
+        ? file.path.startsWith(`${JOINER_MEMORY_DIR}/${PREFIX}`)
+        : typeof ctx.rid === "string" && file.path === joinerMemoryPathOf(ctx.rid);
+      if (ours) {
+        await ctx.api2
+          .delete(`/projects/${ctx.project.id}/memory/file?path=${encodeURIComponent(file.path)}`)
+          .then(() => ctx.log(`cleanup · removed the joiner's memory file ${file.path}`))
+          .catch((error) => ctx.rec.error("cleanup · joiner memory", error));
+      }
     }
   }
   remoteRefsNote(ctx);
@@ -1655,20 +1727,47 @@ const remoteRefsNote = (ctx) => {
 
 // ─── the plan ───────────────────────────────────────────────────────────────
 
-/** Puts the benchmark's secret file in place so its delivery is timed; false when one was there. */
-const placeSecretFile = async (ctx) => {
+/** Puts the benchmark's secret file in place for one account so its delivery is timed. */
+const placeSecretFile = async (ctx, api = ctx.api) => {
   const path = secretPathOf(ctx.rid);
-  const existing = await ctx.api.get("/me/secret-files");
+  const existing = await api.get("/me/secret-files");
   if ((existing.files ?? []).some((file) => file.path === path)) {
     ctx.rec.note(`a secret file at ${path} already exists; left as it is`);
     return;
   }
-  await ctx.api.put("/me/secret-files", {
+  await api.put("/me/secret-files", {
     path,
     encoding: "utf8",
     contents: "st-bench: a secret file to time its delivery\n",
   });
-  ctx.created.secretFile = true;
+  if (api === ctx.api) ctx.created.secretFile = true;
+};
+
+/**
+ * Gives the joiner memory of their own in the project, so a different person's join delivers it
+ * as a real joiner's does (docs/adr/0016, decisions 7 and 9) and its delivery is timed; without
+ * it, the second account holds none and the join delivers nothing. Imported for this run only
+ * (removed by `cleanupAll`); none is added when the joiner already holds memory there. Both
+ * layouts get it, so the two joins differ by the layout alone: one that shares a home delivers
+ * nothing to another person's join.
+ */
+const seedJoinerMemory = async (ctx) => {
+  const memory = await ctx.api2.get(`/projects/${ctx.project.id}/memory`);
+  if ((memory.files ?? []).length > 0) {
+    ctx.rec.note(
+      `the second account holds ${memory.files.length} memory file(s) in ${ctx.project.name}: its joins deliver those, none added`,
+    );
+    return;
+  }
+  await ctx.api2.post(`/projects/${ctx.project.id}/memory/import`, {
+    files: [
+      {
+        path: joinerMemoryPathOf(ctx.rid),
+        encoding: "utf8",
+        contents: `# st-bench\n\nA memory file of benchmark run ${ctx.rid}, so a join by this person delivers memory.\n`,
+      },
+    ],
+  });
 };
 
 /** Whether the second account can reach the project at all; the reason when it cannot. */
@@ -1703,6 +1802,10 @@ export const runAll = async (ctx) => {
   let otherBlocker = null;
   if (selected("join-other") || selected("handover") || selected("growth")) {
     otherBlocker = await secondAccountBlocker(ctx);
+  }
+  if (selected("join-other") && otherBlocker === null) {
+    await seedJoinerMemory(ctx);
+    if (opts.secretFile) await placeSecretFile(ctx, ctx.api2);
   }
   if (selected("join-other") && otherBlocker !== null) {
     rec.notRun("join.other.first_output", otherBlocker);

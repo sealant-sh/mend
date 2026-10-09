@@ -8,6 +8,11 @@ import { fileURLToPath } from "node:url";
 
 import {
   agentIdentityOf,
+  companionMismatchOf,
+  credentialWriteCount,
+  noDeliveryReasonOf,
+  parseMemoryStat,
+  PERSON_SCENARIOS,
   compactionsOf,
   expectedSamplesOf,
   roundConversationOf,
@@ -2066,6 +2071,12 @@ test("F3/F4: a shrink at a steered turn is a lost conversation; an unread size p
   );
 });
 
+/** A companion's target: the main record's run, on the configs project. */
+const configsTarget = (layout) => ({
+  ...layoutRecord(layout, "1", {}).target,
+  project: { name: "configs", id: "c" },
+});
+
 test("F5: a companion's failed checks, errors and unverified checks count, on either side", () => {
   const companionPerson = () =>
     layoutRecord(
@@ -2073,7 +2084,7 @@ test("F5: a companion's failed checks, errors and unverified checks count, on ei
       "1",
       { "join.other.first_output": { unit: "ms", budget: "join-other", samples: tenOf(20_000) } },
       {
-        target: { project: { name: "configs", id: "c" } },
+        target: configsTarget("person"),
         options: { layout: "person", only: ["join-other"], harnesses: ["claude"] },
       },
     );
@@ -2083,7 +2094,7 @@ test("F5: a companion's failed checks, errors and unverified checks count, on ei
       "1",
       { "join.other.first_output": { unit: "ms", budget: "join-other", samples: tenOf(19_000) } },
       {
-        target: { project: { name: "configs", id: "c" } },
+        target: configsTarget("shared"),
         options: { layout: "shared", only: ["join-other"], harnesses: ["claude"] },
       },
     );
@@ -2126,6 +2137,204 @@ test("F5: a companion's failed checks, errors and unverified checks count, on ei
     ),
     false,
   );
+});
+
+/**
+ * Gate P1 as the box runs it: each layout's launches on Mend's own project, and the scenarios that
+ * need a project both accounts see (the different-person join; the hand-over, growth and the
+ * person checks) on another one, kept as a companion (`withCompanion`).
+ */
+const isPair = (name) => /^(join\.other|handover|growth|person)\./.test(name);
+const pick = (entries, keep) => Object.fromEntries(Object.entries(entries).filter(keep));
+const splitGate = (secondPersonHarnesses = null) => {
+  const pairScenarios = ["join-other", ...PERSON_SCENARIOS];
+  const launchOnly = SCENARIOS.filter((scenario) => !pairScenarios.includes(scenario));
+  const person = completePerson(secondPersonHarnesses);
+  const shared = sharedBaseline();
+  const personMain = {
+    ...person,
+    measures: pick(person.measures, ([name]) => !isPair(name)),
+    checks: person.checks.filter((check) => !isPair(check.check)),
+    options: { ...person.options, only: launchOnly },
+  };
+  const personPair = {
+    ...person,
+    target: configsTarget("person"),
+    measures: pick(person.measures, ([name]) => isPair(name)),
+    checks: person.checks.filter((check) => isPair(check.check)),
+    options: { ...person.options, only: pairScenarios },
+  };
+  const sharedMain = {
+    ...shared,
+    measures: pick(shared.measures, ([name]) => !isPair(name)),
+    options: { ...shared.options, only: launchOnly },
+  };
+  const sharedPair = {
+    ...shared,
+    target: configsTarget("shared"),
+    measures: pick(shared.measures, ([name]) => isPair(name)),
+    options: { ...shared.options, only: ["join-other"] },
+  };
+  return { personMain, personPair, sharedMain, sharedPair };
+};
+
+test("gate P1: a companion of the same run counts toward the set, compared there", () => {
+  const { personMain, personPair, sharedMain, sharedPair } = splitGate();
+  // Without the companions, the records ran less than the gate's set.
+  const alone = compareResults(sharedMain, personMain);
+  assert.match(alone.label.kind, /not the gate: the shared record did not run join-other/);
+  assert.ok(alone.misses.some((row) => row.measure === "join.other.first_output"));
+  assert.ok(alone.checksNotVerified.some((entry) => entry.check === "person.claude.runs_as"));
+  // With them, it is the gate, and it passes: each held measure is compared on the companion.
+  const together = compareResults(
+    withCompanion(sharedMain, sharedPair),
+    withCompanion(personMain, personPair),
+  );
+  assert.deepEqual(together.label.differs, []);
+  assert.deepEqual(together.misses, []);
+  assert.deepEqual(together.checksNotVerified, []);
+  assert.equal(comparisonFails(together), false);
+  assert.ok(
+    together.rows.some((row) => row.measure === "configs: join.other.first_output" && row.ok),
+  );
+  assert.ok(
+    together.rows.some(
+      (row) => row.measure === "configs: growth.pi.extra_person_beyond_state_bytes",
+    ),
+  );
+  assert.ok(!together.rows.some((row) => row.measure === "join.other.first_output"));
+  // The companion's series are held to the gate's floors.
+  const short = structuredClone(personPair);
+  short.measures["join.other.first_output"].samples = [20_000, 20_000, 20_000];
+  const shortened = compareResults(
+    withCompanion(sharedMain, sharedPair),
+    withCompanion(personMain, short),
+  );
+  assert.ok(
+    shortened.misses.some((row) => row.measure === "configs: join.other.first_output" && row.short),
+  );
+  // A measure only the person companion holds, which the shared companion lacks, is a miss there.
+  const lacking = compareResults(
+    withCompanion(sharedMain, { ...sharedPair, measures: {} }),
+    withCompanion(personMain, personPair),
+  );
+  assert.ok(
+    lacking.misses.some((row) => row.measure === "configs: join.other.first_output" && row.missing),
+  );
+});
+
+test("gate P1: a companion of another run neither counts nor passes", () => {
+  const { personMain, personPair, sharedMain, sharedPair } = splitGate();
+  const other = structuredClone(personPair);
+  other.target.mendImage = "mend:next sha256:bbbbbbbbbbbb";
+  assert.deepEqual(companionMismatchOf(personMain, other), [
+    "the Mend images differ (sha256:aaaaaaaaaaaa and sha256:bbbbbbbbbbbb)",
+  ]);
+  assert.deepEqual(companionMismatchOf(personMain, personPair), []);
+  const wrongLayout = structuredClone(personPair);
+  wrongLayout.options.layout = "shared";
+  wrongLayout.target.layout = "shared";
+  assert.match(companionMismatchOf(personMain, wrongLayout)[0], /ran the shared layout/);
+  const result = compareResults(
+    withCompanion(sharedMain, sharedPair),
+    withCompanion(personMain, other),
+  );
+  assert.ok(
+    result.label.differs.some((reason) =>
+      /the person record's companion on configs is not of its run: the Mend images differ/.test(
+        reason,
+      ),
+    ),
+  );
+  assert.ok(
+    result.label.differs.some((reason) => /the person record did not run join-other/.test(reason)),
+  );
+  assert.ok(result.misses.some((row) => row.measure === "join.other.first_output"));
+  assert.equal(comparisonFails(result), true);
+});
+
+test("gate P1: the partial gate's second person may run in the companion alone", () => {
+  const { personMain, personPair, sharedMain, sharedPair } = splitGate(["claude"]);
+  personMain.options.secondPersonHarnesses = null;
+  personPair.options.secondPersonHarnesses = ["claude"];
+  const result = compareResults(
+    withCompanion(sharedMain, sharedPair),
+    withCompanion(personMain, personPair),
+    { secondPersonHarnesses: ["claude"] },
+  );
+  assert.deepEqual(result.label.differs, []);
+  assert.equal(comparisonFails(result), false);
+  // The full gate asks the companion's second person for all four.
+  assert.ok(
+    gateScopeGaps(
+      withCompanion(sharedMain, sharedPair),
+      withCompanion(personMain, personPair),
+    ).includes("the person record's second person did not run codex, pi, opencode"),
+  );
+});
+
+const milestone = (name) => ({ name, at: 0, level: "INFO", fields: {} });
+
+test("a launch with no delivery says why: in place, another person's home, nothing held", () => {
+  assert.match(
+    noDeliveryReasonOf([milestone("agent memory · already in place")]),
+    /already in place/,
+  );
+  assert.match(
+    noDeliveryReasonOf([milestone("secret files not written · the executor is another person's")]),
+    /shares one home writes no memory or secret files for another person's join/,
+  );
+  assert.match(
+    noDeliveryReasonOf([
+      milestone("capture mode · joining the lease holder"),
+      milestone("pickup redeemed"),
+    ]),
+    /logged no memory or secret-file delivery/,
+  );
+  assert.match(
+    noDeliveryReasonOf([milestone("agent memory · handed over")]),
+    /the delivery milestones were not in the log/,
+  );
+  assert.match(noDeliveryReasonOf(null), /logged no memory/);
+});
+
+test("an executor's memory is split into its processes', page cache, tmpfs and kernel", () => {
+  assert.deepEqual(
+    parseMemoryStat(
+      "anon 1000\nfile 5000\nactive_file 3000\ninactive_file 2000\nshmem 7\nkernel 40\n",
+    ),
+    { anon: 1000, activeFile: 3000, shmem: 7, kernel: 40 },
+  );
+  assert.deepEqual(parseMemoryStat("total_rss 9\ntotal_active_file 8\ntotal_shmem 1\n"), {
+    anon: 9,
+    activeFile: 8,
+    shmem: 1,
+    kernel: null,
+  });
+  assert.deepEqual(parseMemoryStat(""), {
+    anon: null,
+    activeFile: null,
+    shmem: null,
+    kernel: null,
+  });
+});
+
+const responseLine = (time, url, method = "POST") => ({
+  at: time,
+  message: "Sent HTTP response",
+  fields: { "http.method": method, "http.url": url, "http.status": 200 },
+});
+
+test("a person's logins written into a workspace are counted in a window", () => {
+  const blocks = [
+    responseLine(10, "/v1/workspaces/w/credentials"),
+    responseLine(20, "/v1/workspaces/w/exec"),
+    responseLine(30, "/v1/workspaces/other/credentials"),
+    responseLine(40, "/v1/workspaces/w/credentials", "GET"),
+    responseLine(50, "/v1/workspaces/w/credentials"),
+  ];
+  assert.equal(credentialWriteCount(blocks, "w", 0, 100), 2);
+  assert.equal(credentialWriteCount(blocks, "w", 11, 100), 1);
 });
 
 test("F6: the second person's harnesses are never empty and always hold the hand-over", () => {
