@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -108,19 +108,25 @@ const startFake = async (handle: Handler) => {
   };
 };
 
-const runCli = async (url: string, args: ReadonlyArray<string>) => {
-  const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
-  const child = spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
-    env: {
-      ...process.env,
-      NODE_COMPILE_CACHE: compileCache,
-      MEND_URL: url,
-      MEND_TOKEN: "",
-      MEND_DETACH_KEY: "none",
-    },
+const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
+
+const cliEnv = (url: string) => ({
+  ...process.env,
+  NODE_COMPILE_CACHE: compileCache,
+  MEND_URL: url,
+  MEND_TOKEN: "",
+  MEND_DETACH_KEY: "none",
+});
+
+const spawnCli = (url: string, args: ReadonlyArray<string>) =>
+  spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
+    env: cliEnv(url),
     stdio: ["ignore", "pipe", "pipe"],
     cwd: os.tmpdir(),
   });
+
+const runCli = async (url: string, args: ReadonlyArray<string>) => {
+  const child = spawnCli(url, args);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => {
@@ -345,4 +351,247 @@ describe("mend logs and mend wait", spawning, () => {
       await fake.close();
     }
   });
+});
+
+/** 16 KiB of one letter per page, so a lost or reordered page shows. */
+const chunkOf = (index: number) => Buffer.alloc(16 * 1024, 0x41 + (index % 26));
+
+describe("review of mend#610", spawning, () => {
+  it("delivers every byte of 4 MiB of output to a slow reader, then exits with the code", async () => {
+    const pages = 256;
+    let logsDone = false;
+    const secondPage = Promise.withResolvers<void>();
+    const fake = await startFake(
+      launchRoutes(
+        () => ({ session, currentAgent: logsDone ? ended(0) : command, processes: [command] }),
+        (from) => {
+          const index = Number(from);
+          if (index === 1) secondPage.resolve();
+          if (index >= pages) {
+            logsDone = true;
+            return logPage(String(pages), "exited");
+          }
+          return {
+            ...logPage(String(index + 1), index + 1 < pages ? "running" : "exited"),
+            chunks: [{ sequence: from, dataBase64: chunkOf(index).toString("base64") }],
+          };
+        },
+      ),
+    );
+    const child = spawnCli(fake.url, ["run", "--project", project.name, "--", "generate"]);
+    // Nothing is read until the CLI has asked for its second page: the pipe is full meanwhile.
+    child.stdout.pause();
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    const closed = once(child, "close");
+    try {
+      await secondPage.promise;
+      // Then a slow reader, 20 ms a read: the CLI must wait for it, however long it takes. (It
+      // paces the reader; nothing here measures the CLI.)
+      const received: Array<Buffer> = [];
+      child.stdout.on("data", (chunk: Buffer) => {
+        received.push(chunk);
+        child.stdout.pause();
+        setTimeout(() => child.stdout.resume(), 20);
+      });
+      child.stdout.resume();
+      const [code] = await closed;
+      const output = Buffer.concat(received);
+      expect(output.length, stderr).toBe(pages * 16 * 1024);
+      expect(
+        output.equals(Buffer.concat(Array.from({ length: pages }, (_, i) => chunkOf(i)))),
+      ).toBe(true);
+      expect(code, stderr).toBe(0);
+    } finally {
+      child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("fails the run when output could not be delivered, and says the command's own code", async () => {
+    let failed = false;
+    const fake = await startFake((route, request, response) => {
+      if (route.startsWith(`GET /api/processes/${command.id}/logs?from=1&`)) {
+        failed = true;
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(JSON.stringify({ message: "record store unavailable" }));
+        return;
+      }
+      launchRoutes(
+        () => ({ session, currentAgent: failed ? ended(0) : command, processes: [command] }),
+        () => logPage("1", "running", "first page\n"),
+      )(route, request, response);
+    });
+    try {
+      const result = await runCli(fake.url, ["run", "--project", project.name, "--", "make"]);
+      expect(result.stdout).toBe("first page\n");
+      expect(result.code, result.stderr).toBe(1);
+      expect(result.stderr).toContain("exited · code 0 · recorded");
+      expect(result.stderr).toContain("output not delivered · record store unavailable");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("--detach --json reports a command already observed ended as ended, with its code", async () => {
+    const fake = await startFake(
+      launchRoutes(
+        () => ({
+          session: { ...session, status: "completed" },
+          currentAgent: ended(3),
+          processes: [ended(3)],
+        }),
+        () => logPage("0", "exited"),
+      ),
+    );
+    try {
+      const result = await runCli(fake.url, [
+        "run",
+        "--project",
+        project.name,
+        "--detach",
+        "--json",
+        "--",
+        "false",
+      ]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        processId: command.id,
+        status: "exited",
+        exitCode: 3,
+      });
+      expect(result.stderr).toContain("ended before detaching · exited · code 3");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend wait --timeout bounds retries through gateway failures, and --json reads nothing more", async () => {
+    let reads = 0;
+    const fake = await startFake((route, _request, response) => {
+      if (route === `GET /api/sessions/${sessionId}`) {
+        reads += 1;
+        // The session is found and read running once; every read after fails at the gateway.
+        if (reads <= 2) json(response, { session, currentAgent: command });
+        else response.writeHead(502).end();
+      } else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["wait", sessionId, "--timeout", "2", "--json"]);
+      expect(result.code, result.stderr).toBe(124);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        sessionId,
+        processId: command.id,
+        status: "running",
+        exitCode: null,
+      });
+      const atExit = reads;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reads).toBe(atExit);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend wait does not take the previous process's end while a resume is starting", async () => {
+    let reads = 0;
+    const previous = ended(0);
+    const next = { ...command, id: "process-2", sealantSessionId: "pty-2" };
+    const fake = await startFake((route, _request, response) => {
+      if (route === `GET /api/sessions/${sessionId}`) {
+        reads += 1;
+        json(
+          response,
+          reads <= 2
+            ? { session: { ...session, status: "starting" }, currentAgent: previous }
+            : {
+                session: { ...session, status: "idle" },
+                currentAgent: { ...next, status: "exited", exitCode: 5, exitedAt: "now" },
+              },
+        );
+      } else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["wait", sessionId]);
+      expect(result.code, result.stderr).toBe(5);
+      expect(reads).toBeGreaterThanOrEqual(3);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  const python = spawnSync("python3", ["-c", "import pty"]).status === 0;
+  it.skipIf(!python)(
+    "puts a terminal back when Ctrl+C stops watching output that set its modes",
+    async () => {
+      const modes = "\x1b[?1049h\x1b[?25l\x1b[?1000h";
+      const fake = await startFake(
+        launchRoutes(
+          () => ({ session, currentAgent: command, processes: [command] }),
+          (from) => (from === "0" ? logPage("1", "running", modes) : logPage("1", "running")),
+        ),
+      );
+      // A real terminal: the CLI's stdout and stderr are a pty, its stdin /dev/null. SIGINT goes
+      // once the modes have reached the terminal.
+      const driver = [
+        "import base64, os, pty, signal, subprocess, sys",
+        "master, slave = pty.openpty()",
+        "child = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave)",
+        "os.close(slave)",
+        "out = b''",
+        "sent = False",
+        "while True:",
+        "    try:",
+        "        data = os.read(master, 65536)",
+        "    except OSError:",
+        "        break",
+        "    if not data:",
+        "        break",
+        "    out += data",
+        "    if not sent and b'\\x1b[?1049h' in out:",
+        "        child.send_signal(signal.SIGINT)",
+        "        sent = True",
+        "code = child.wait()",
+        "print(code)",
+        "print(base64.b64encode(out).decode())",
+      ].join("\n");
+      const child = spawn(
+        "python3",
+        [
+          "-c",
+          driver,
+          process.execPath,
+          "--experimental-strip-types",
+          entrypoint,
+          "run",
+          "--project",
+          project.name,
+          "--",
+          "top",
+        ],
+        { env: cliEnv(fake.url), stdio: ["ignore", "pipe", "pipe"], cwd: os.tmpdir() },
+      );
+      let printed = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        printed += chunk.toString();
+      });
+      try {
+        await once(child, "close");
+        const [code, encoded] = printed.trim().split("\n");
+        const terminal = Buffer.from(encoded ?? "", "base64").toString();
+        expect(code, terminal).toBe("130");
+        const enabled = terminal.indexOf("\x1b[?1049h");
+        expect(enabled).toBeGreaterThanOrEqual(0);
+        expect(terminal.lastIndexOf("\x1b[?1049l")).toBeGreaterThan(enabled);
+        expect(terminal.lastIndexOf("\x1b[?25h")).toBeGreaterThan(enabled);
+        expect(terminal.lastIndexOf("\x1b[?1000l")).toBeGreaterThan(enabled);
+        expect(terminal).toContain("stopped watching · the command keeps running");
+      } finally {
+        child.kill("SIGKILL");
+        await fake.close();
+      }
+    },
+  );
 });

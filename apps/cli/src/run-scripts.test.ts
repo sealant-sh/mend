@@ -16,16 +16,26 @@ import {
 } from "./run-scripts.ts";
 import { MendRequestError } from "./server-request.ts";
 
-/** A clock that only moves when the code under test sleeps: no wall time in these tests. */
+/**
+ * A clock that only moves when a sleep the code under test waits on runs out: no wall time in
+ * these tests. A sleep runs out on the next turn of the event loop; one aborted before then never
+ * moves the clock, as a cleared timer never fires.
+ */
 const fakeClock = () => {
   let now = 0;
   const slept: Array<number> = [];
   return {
     now: () => now,
-    sleep: async (ms: number) => {
-      slept.push(ms);
-      now += ms;
-    },
+    sleep: (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        setImmediate(() => {
+          if (signal?.aborted !== true) {
+            slept.push(ms);
+            now += ms;
+          }
+          resolve();
+        });
+      }),
     slept,
   };
 };
@@ -142,7 +152,7 @@ describe("followLogs", () => {
         if (next === undefined) throw new Error(`no page from ${from}`);
         return next;
       },
-      write: (bytes) => {
+      write: async (bytes) => {
         written += Buffer.from(bytes).toString();
       },
       ...clock,
@@ -161,7 +171,7 @@ describe("followLogs", () => {
       from: "0",
       follow: false,
       read: async () => reads.shift() ?? page("1", "running"),
-      write: (bytes) => {
+      write: async (bytes) => {
         written += Buffer.from(bytes).toString();
       },
       ...clock,
@@ -182,7 +192,7 @@ describe("followLogs", () => {
         if (calls === 1) throw new MendRequestError("http", "bad gateway", 502);
         return page("0", "exited");
       },
-      write: () => undefined,
+      write: async () => undefined,
       ...clock,
     });
     expect(last.status).toBe("exited");
@@ -193,7 +203,7 @@ describe("followLogs", () => {
         read: async () => {
           throw new MendRequestError("http", "not found", 404);
         },
-        write: () => undefined,
+        write: async () => undefined,
         ...fakeClock(),
       }),
     ).rejects.toThrow("not found");
@@ -209,7 +219,8 @@ describe("waitForCommand", () => {
     ];
     const outcome = await waitForCommand({
       read: async () => reads.shift() ?? detailOf("running", running),
-      timeoutMs: null,
+      processId: null,
+      deadline: null,
       ...clock,
     });
     expect(outcome).toEqual({
@@ -218,15 +229,122 @@ describe("waitForCommand", () => {
     });
   });
 
-  it("gives up when the timeout passes, never sleeping past it", async () => {
+  it("gives up when the deadline passes, never sleeping past it, with the last read", async () => {
     const clock = fakeClock();
     const outcome = await waitForCommand({
       read: async () => detailOf("running", running),
-      timeoutMs: 2500,
+      processId: null,
+      deadline: 2500,
       ...clock,
     });
-    expect(outcome).toEqual({ kind: "timeout" });
+    expect(outcome).toEqual({ kind: "timeout", last: detailOf("running", running) });
     expect(clock.slept).toEqual([1000, 1000, 500]);
+  });
+
+  it("bounds retries by the deadline: gateway failures past it time out, never end", async () => {
+    const clock = fakeClock();
+    // Five seconds of gateway failures, then a read that would say the command succeeded.
+    const outcome = await waitForCommand({
+      read: async () => {
+        if (clock.now() < 5000) throw new MendRequestError("http", "bad gateway", 502);
+        return detailOf("idle", { ...running, status: "exited", exitCode: 0, exitedAt: "now" });
+      },
+      processId: null,
+      deadline: 1000,
+      ...clock,
+    });
+    expect(outcome).toEqual({ kind: "timeout", last: null });
+    expect(clock.now()).toBe(1000);
+  });
+
+  it("bounds a read in flight by the deadline", async () => {
+    const clock = fakeClock();
+    const outcome = await waitForCommand({
+      read: () => new Promise<CommandDetail>(() => undefined),
+      processId: null,
+      deadline: 1000,
+      ...clock,
+    });
+    expect(outcome).toEqual({ kind: "timeout", last: null });
+    expect(clock.now()).toBe(1000);
+  });
+
+  it("does not take the previous process's end while a resume is starting", async () => {
+    const clock = fakeClock();
+    const previous = { ...running, status: "exited", exitCode: 0, exitedAt: "before" };
+    const next = { ...running, id: "process-2", sealantSessionId: "pty-2" };
+    const reads = [
+      detailOf("starting", previous, [previous]),
+      detailOf("running", next, [previous, next]),
+      detailOf("idle", { ...next, status: "exited", exitCode: 4, exitedAt: "now" }, [previous]),
+    ];
+    const outcome = await waitForCommand({
+      read: async () => reads.shift() ?? detailOf("running", next),
+      processId: null,
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toEqual({
+      kind: "ended",
+      end: { processId: "process-2", status: "exited", exitCode: 4 },
+    });
+  });
+
+  it("bound to a process, waits for that process alone", async () => {
+    const clock = fakeClock();
+    const previous = { ...running, status: "exited", exitCode: 0, exitedAt: "before" };
+    const next = { ...running, id: "process-2", sealantSessionId: "pty-2" };
+    const nextEnded = { ...next, status: "exited", exitCode: 9, exitedAt: "now" };
+    const reads = [
+      detailOf("idle", previous, [previous, next]),
+      detailOf("idle", previous, [previous, nextEnded]),
+    ];
+    const outcome = await waitForCommand({
+      read: async () => reads.shift() ?? detailOf("running", next),
+      processId: "process-2",
+      deadline: null,
+      ...clock,
+    });
+    expect(outcome).toEqual({
+      kind: "ended",
+      end: { processId: "process-2", status: "exited", exitCode: 9 },
+    });
+  });
+});
+
+/** One turn of the event loop. */
+const turn = () => new Promise((resolve) => setImmediate(resolve));
+
+describe("followLogs back-pressure", () => {
+  it("reads the next page only once the last page's bytes were written", async () => {
+    const clock = fakeClock();
+    const events: Array<string> = [];
+    const pages = [page("1", "running", "a"), page("2", "exited", "b"), page("2", "exited")];
+    const held: Array<() => void> = [];
+    const done = followLogs({
+      from: "0",
+      follow: false,
+      read: async (from) => {
+        events.push(`read ${from}`);
+        return pages.shift() ?? page("2", "exited");
+      },
+      write: (bytes) =>
+        new Promise<void>((resolve) => {
+          events.push(`write ${Buffer.from(bytes).toString()}`);
+          held.push(resolve);
+        }),
+      ...clock,
+    });
+    // The first write is held: no second read until it is released.
+    while (held.length === 0) await turn();
+    await turn();
+    expect(events).toEqual(["read 0", "write a"]);
+    held.shift()?.();
+    while (held.length === 0) await turn();
+    await turn();
+    expect(events).toEqual(["read 0", "write a", "read 1", "write b"]);
+    held.shift()?.();
+    expect(await done).toEqual({ next: "2", status: "exited" });
   });
 });
 
@@ -260,8 +378,8 @@ describe("arguments", () => {
   });
 
   it("parses mend wait", () => {
-    expect(parseWaitArgs(["3f2a", "--timeout", "1.5", "--json"])).toEqual({
-      args: { session: "3f2a", timeoutMs: 1500, json: true },
+    expect(parseWaitArgs(["3f2a", "--timeout", "1.5", "--json", "--process", "p1"])).toEqual({
+      args: { session: "3f2a", process: "p1", timeoutMs: 1500, json: true },
     });
     expect(parseWaitArgs(["--timeout", "0"])).toEqual({
       error: "--timeout takes a number of seconds above 0",

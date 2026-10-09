@@ -85,8 +85,10 @@ import {
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
 import {
+  beforeDeadline,
   type CommandDetail,
   type CommandEnd,
+  commandEndOf,
   endLine,
   exitStatusOf,
   followLogs,
@@ -94,6 +96,7 @@ import {
   parseLogsArgs,
   parseWaitArgs,
   pickProcess,
+  processRowOf,
   runArgvIssue,
   WAIT_TIMED_OUT,
   waitForCommand,
@@ -1411,13 +1414,7 @@ const attachTty = async (
       // remotely; the local terminal must come back to shell sanity, or every
       // keystroke after a detach arrives as CSI-u junk. A reattach replays
       // the session from 0, which re-establishes whatever the TUI had set.
-      process.stdout.write(
-        "\x1b[<u\x1b[=0;1u" + // pop the kitty keyboard stack, then force flags 0
-          "\x1b[?2004l" + // bracketed paste off
-          "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" + // mouse reporting off
-          "\x1b[?1049l" + // leave the alternate screen (no-op when already left)
-          "\x1b[?25h", // show the cursor
-      );
+      process.stdout.write(TERMINAL_MODES_RESET);
     }
     process.stdin.pause();
     if (ws !== null && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
@@ -1425,6 +1422,17 @@ const attachTty = async (
     stopHerdrHint();
   }
 };
+
+/**
+ * What brings this terminal back to shell sanity after a remote program's bytes set its modes: the
+ * kitty keyboard protocol, bracketed paste, mouse reporting, the alternate screen, a hidden cursor.
+ */
+const TERMINAL_MODES_RESET =
+  "\x1b[<u\x1b[=0;1u" + // pop the kitty keyboard stack, then force flags 0
+  "\x1b[?2004l" + // bracketed paste off
+  "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" + // mouse reporting off
+  "\x1b[?1049l" + // leave the alternate screen (no-op when already left)
+  "\x1b[?25h"; // show the cursor
 
 /**
  * Which lifecycle the launching CLI enforces. Background (the default): every
@@ -3982,15 +3990,113 @@ const completionsCommand = (args: ReadonlyArray<string>) => {
 
 // ─── supervised run: platform workspace + PTY + record ──────────────────────
 
-/** A sleep for the run, logs and wait loops: a plain timer, nothing else holds the process. */
-const pause = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+/** A sleep for the run, logs and wait loops; an abort ends it early and clears its timer. */
+const pause = (ms: number, signal?: AbortSignal): Promise<void> => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const timer = setTimeout(resolve, ms);
+  signal?.addEventListener(
+    "abort",
+    () => {
+      clearTimeout(timer);
+      resolve();
+    },
+    { once: true },
+  );
+  return promise;
+};
+
+const clock = { sleep: pause, now: Date.now };
 
 /** Print one JSON value on stdout, as the other --json commands do. */
 const printJson = (value: unknown): void => {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+};
+
+// ─── recorded output on this terminal ───────────────────────────────────────
+
+/** Whether recorded bytes reached this terminal, which may have set its modes. */
+let outputOnTerminal = false;
+let stdoutErrorsHandled = false;
+
+/**
+ * Put the terminal back once recorded output may have changed its modes, as an attach does on
+ * its way out. Only on a terminal: redirected output gets no bytes of Mend's.
+ */
+const restoreTerminal = (): void => {
+  if (!outputOnTerminal || process.stdout.isTTY !== true) return;
+  outputOnTerminal = false;
+  process.stdout.write(`${TERMINAL_MODES_RESET}\x1b[0m`);
+};
+// Every way out, `fail` and an uncaught error included: a terminal write is synchronous here.
+process.once("exit", restoreTerminal);
+
+/**
+ * Hand recorded bytes to stdout and resolve once they are written: a reader slower than the record
+ * holds the next page back, and nothing queues up in memory. A reader that went away (EPIPE)
+ * rejects.
+ */
+const writeOutput = (bytes: Uint8Array): Promise<void> => {
+  if (process.stdout.isTTY === true) outputOnTerminal = true;
+  // A closed pipe also arrives as an `error` event; the write's callback already reports it.
+  if (!stdoutErrorsHandled) {
+    stdoutErrorsHandled = true;
+    process.stdout.on("error", () => undefined);
+  }
+  return new Promise((resolve, reject) => {
+    process.stdout.write(bytes, (error) => {
+      if (error === null || error === undefined) resolve();
+      else reject(error);
+    });
+  });
+};
+
+/** Resolves once everything written to `stream` before it has left this process. */
+const flushed = (stream: NodeJS.WriteStream): Promise<void> =>
+  new Promise((resolve) => {
+    if (stream.destroyed || !stream.writable) resolve();
+    else stream.write("", () => resolve());
+  });
+
+/**
+ * Exit once stdout and stderr have flushed: `process.exit` drops whatever a pipe has not taken
+ * yet, which cut 4 MiB of output to 64 KiB under a slow reader (review of mend#610).
+ */
+const exitFlushed = async (code: number): Promise<never> => {
+  restoreTerminal();
+  await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
+  process.exit(code);
+};
+
+/** `fail`, after what was written so far has flushed. */
+const failFlushed = (message: string): Promise<never> => {
+  process.stderr.write(`mend: ${message}\n`);
+  return exitFlushed(1);
+};
+
+/**
+ * While output streams to this CLI, a signal stops watching: the terminal is put back, the line
+ * says the command keeps running, and the CLI exits 128 + the signal. Returns the undo.
+ */
+const stopWatchingOnSignal = (sessionId: string): (() => void) => {
+  const signals: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
+    ["SIGHUP", 129],
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ];
+  const handlers = signals.map(([signal, code]) => {
+    const handler = () => {
+      say("");
+      say(
+        `${amber("·")} stopped watching · the command keeps running · mend logs ${sessionId.slice(0, 8)} --follow`,
+      );
+      void exitFlushed(code);
+    };
+    process.on(signal, handler);
+    return () => process.off(signal, handler);
+  });
+  return () => {
+    for (const undo of handlers) undo();
+  };
 };
 
 /** One page of a process's recorded terminal output. */
@@ -4007,18 +4113,25 @@ const writeProcessLogs = (config: CliConfig, processId: string, from: string, fo
     from,
     follow,
     read: (cursor) => readLogPage(config, processId, cursor),
-    write: (bytes) => process.stdout.write(bytes),
-    sleep: pause,
-    now: Date.now,
+    write: writeOutput,
+    ...clock,
   });
 
-/** Read the session until its command has ended, or `timeoutMs` passes. */
-const waitForSessionCommand = (config: CliConfig, sessionId: string, timeoutMs: number | null) =>
+/**
+ * Read the session until its command has ended, or the deadline passes. `processId` binds the wait
+ * to one process: the one `mend run` started, or one a script names.
+ */
+const waitForSessionCommand = (
+  config: CliConfig,
+  sessionId: string,
+  processId: string | null,
+  deadline: number | null,
+) =>
   waitForCommand({
     read: () => request<CommandDetail>(config, "GET", `/sessions/${sessionId}`),
-    timeoutMs,
-    sleep: pause,
-    now: Date.now,
+    processId,
+    deadline,
+    ...clock,
   });
 
 /** What `mend run --json` and `mend wait --json` print about a session's command. */
@@ -4029,7 +4142,7 @@ interface RunJson {
   readonly worktree: string;
   readonly branch: string;
   readonly url: string;
-  /** The process's status: `running` when detached, then how it ended (`exited`, `stopped`). */
+  /** The process's status as last observed: `running`, then how it ended (`exited`, `stopped`). */
   readonly status: string;
   /** The command's exit code, once it ended and the platform reported one. */
   readonly exitCode: number | null;
@@ -4051,18 +4164,43 @@ const runJsonOf = (
   exitCode: state.exitCode,
 });
 
-/** Say how the command ended and exit with its code. */
+/** A process's state as one read observed it: its row's, else the session's. */
+const observedState = (
+  detail: CommandDetail | null,
+  processId: string | null,
+  fallback: string,
+): { readonly status: string; readonly exitCode: number | null } => {
+  if (detail === null) return { status: fallback, exitCode: null };
+  const row =
+    (processId === null ? undefined : processRowOf(detail, processId)) ?? detail.currentAgent;
+  return row === null
+    ? { status: detail.session.status, exitCode: null }
+    : { status: row.status, exitCode: row.exitCode };
+};
+
+/**
+ * Say how the command ended and exit with its code, once stdout has flushed. Output that could not
+ * be delivered fails the CLI too (1 when the command itself succeeded): a script must not read an
+ * empty or cut stdout as the command's whole output. The command's own code is still said.
+ */
 const exitWithCommandEnd = (
   config: CliConfig,
   session: SessionDto,
   end: CommandEnd,
   json: boolean,
-): never => {
-  const code = exitStatusOf(end);
-  say(`${code === 0 ? green("✓") : amber("·")} ${endLine(end)} · recorded`);
+  undelivered: string | null = null,
+): Promise<never> => {
+  const commandCode = exitStatusOf(end);
+  const code = undelivered !== null && commandCode === 0 ? 1 : commandCode;
+  say(`${commandCode === 0 ? green("✓") : amber("·")} ${endLine(end)} · recorded`);
+  if (undelivered !== null) {
+    say(
+      `${amber("·")} output not delivered · ${undelivered} · read it with mend logs ${session.id.slice(0, 8)}`,
+    );
+  }
   say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
   if (json) printJson(runJsonOf(config, session, end.processId, end));
-  process.exit(code);
+  return exitFlushed(code);
 };
 
 /**
@@ -4096,14 +4234,29 @@ const supervisedRun = async (
   }
   const detail =
     ranAndEnded ?? (await api<CommandDetail>(config, "GET", `/sessions/${session.id}`));
+  // The process this run started: its end, and nothing else, is the run's end.
   const processId = detail.currentAgent?.id ?? null;
   const id8 = session.id.slice(0, 8);
   if (options.detach) {
-    say(`${green("✓ recording")} · running detached · session ${dim(id8)}`);
-    say(`${cobalt("  output")} · mend logs ${id8} --follow`);
-    say(`${cobalt("  wait")} · mend wait ${id8}`);
+    // What was observed, a command that already ended included.
+    const ended = commandEndOf(detail, processId);
+    if (ended === null) {
+      say(`${green("✓ recording")} · running detached · session ${dim(id8)}`);
+      say(`${cobalt("  output")} · mend logs ${id8} --follow`);
+      say(`${cobalt("  wait")} · mend wait ${id8}`);
+    } else {
+      say(`${amber("·")} ended before detaching · ${endLine(ended)} · session ${dim(id8)}`);
+      say(`${cobalt("  output")} · mend logs ${id8}`);
+    }
     if (options.json) {
-      printJson(runJsonOf(config, session, processId, { status: "running", exitCode: null }));
+      printJson(
+        runJsonOf(
+          config,
+          session,
+          processId,
+          ended ?? observedState(detail, processId, detail.session.status),
+        ),
+      );
     }
     return;
   }
@@ -4111,21 +4264,21 @@ const supervisedRun = async (
     `${green("✓ recording")} · ${argv[0] ?? "command"} · workspace mounts the worktree · Ctrl+C stops watching, not the command`,
   );
   say("");
+  let undelivered: string | null = null;
+  if (!options.json) stopWatchingOnSignal(session.id);
   if (processId !== null && !options.json) {
-    await writeProcessLogs(config, processId, "0", true).catch((error: unknown) => {
-      say(
-        amber(
-          `output not read · ${error instanceof Error ? error.message : String(error)} · mend logs ${id8}`,
-        ),
-      );
-    });
+    try {
+      await writeProcessLogs(config, processId, "0", true);
+    } catch (error) {
+      undelivered = error instanceof Error ? error.message : String(error);
+    }
   }
-  const waited = await waitForSessionCommand(config, session.id, null).catch((error: unknown) =>
-    fail(error instanceof Error ? error.message : String(error)),
+  const waited = await waitForSessionCommand(config, session.id, processId, null).catch(
+    (error: unknown) => failFlushed(error instanceof Error ? error.message : String(error)),
   );
-  if (waited.kind === "timeout") return fail("the wait ended without a timeout");
+  if (waited.kind === "timeout") return failFlushed("the wait ended without a timeout");
   say("");
-  exitWithCommandEnd(config, session, waited.end, options.json);
+  await exitWithCommandEnd(config, session, waited.end, options.json, undelivered);
 };
 
 /**
@@ -4173,47 +4326,75 @@ const logsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
       `session ${session.id.slice(0, 8)} · this process has no recorded terminal (an adopted port, or a server older than process ids)`,
     );
   }
+  if (follow) stopWatchingOnSignal(session.id);
   try {
     const last = await writeProcessLogs(config, target.id, from, follow);
+    restoreTerminal();
     if (follow) say(dim(`\nrecord ended · ${last.status} · next sequence ${last.next}`));
   } catch (error) {
-    return fail(error instanceof Error ? error.message : String(error));
+    return failFlushed(
+      `output not delivered · ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
+  await exitFlushed(0);
 };
 
 /**
- * `mend wait [session] [--timeout <seconds>] [--json]`: return once the session's command has
- * ended, with its exit code; 124 when the timeout passes first, and the command keeps running.
+ * `mend wait [session] [--timeout <seconds>] [--process <id>] [--json]`: return once the session's
+ * command has ended, with its exit code; 124 when the timeout passes first, and the command keeps
+ * running. The timeout is one deadline over everything: finding the session, every read and retry,
+ * and what `--json` prints, which is the last observation and never a further read.
  */
 const waitCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   chromeToStderr();
   const parsed = parseWaitArgs(args);
   if ("error" in parsed) return fail(`${parsed.error} · ${usageOf("wait")}`);
-  const { session: word, timeoutMs, json } = parsed.args;
-  const session =
-    word === null
-      ? await resolveLiveSession(config, undefined, "wait")
-      : await resolveAnySession(config, word);
-  const waited = await waitForSessionCommand(config, session.id, timeoutMs).catch(
-    (error: unknown) => fail(error instanceof Error ? error.message : String(error)),
-  );
-  if (waited.kind === "timeout") {
+  const { session: word, timeoutMs, json, process: processPrefix } = parsed.args;
+  const deadline = timeoutMs === null ? null : clock.now() + timeoutMs;
+  const after = `${Math.round((timeoutMs ?? 0) / 1000)} s`;
+  const timedOut = async (
+    session: SessionDto | null,
+    processId: string | null,
+    last: CommandDetail | null,
+  ): Promise<never> => {
     say(
-      `${amber("·")} session ${session.id.slice(0, 8)} · still running after ${Math.round((timeoutMs ?? 0) / 1000)} s · the command keeps running`,
+      session === null
+        ? `${amber("·")} no session found within ${after}`
+        : `${amber("·")} session ${session.id.slice(0, 8)} · still running after ${after} · the command keeps running`,
     );
-    if (json) {
-      const detail = await api<CommandDetail>(config, "GET", `/sessions/${session.id}`);
-      // Still running: the process's own status, and the exit status (124) says the wait gave up.
+    if (json && session !== null) {
+      // The last observation: the process waited for, else the one that read named.
+      const observed = processId ?? last?.currentAgent?.id ?? null;
       printJson(
-        runJsonOf(config, session, detail.currentAgent?.id ?? null, {
-          status: detail.currentAgent?.status ?? detail.session.status,
-          exitCode: null,
-        }),
+        runJsonOf(config, session, observed, observedState(last, observed, session.status)),
       );
     }
-    process.exit(WAIT_TIMED_OUT);
+    return exitFlushed(WAIT_TIMED_OUT);
+  };
+  const resolved = await beforeDeadline(
+    word === null ? resolveLiveSession(config, undefined, "wait") : resolveAnySession(config, word),
+    clock,
+    deadline,
+  );
+  if (!resolved.done) return timedOut(null, null, null);
+  const session = resolved.value;
+  let processId: string | null = null;
+  if (processPrefix !== null) {
+    const read = await beforeDeadline(
+      api<CommandDetail>(config, "GET", `/sessions/${session.id}`),
+      clock,
+      deadline,
+    );
+    if (!read.done) return timedOut(session, null, null);
+    const picked = pickProcess(read.value, processPrefix);
+    if ("error" in picked) return fail(`session ${session.id.slice(0, 8)} · ${picked.error}`);
+    processId = picked.process.id ?? null;
   }
-  exitWithCommandEnd(config, session, waited.end, json);
+  const waited = await waitForSessionCommand(config, session.id, processId, deadline).catch(
+    (error: unknown) => failFlushed(error instanceof Error ? error.message : String(error)),
+  );
+  if (waited.kind === "timeout") return timedOut(session, processId, waited.last);
+  await exitWithCommandEnd(config, session, waited.end, json);
 };
 
 // ─── continue: pick up a pending follow-up ──────────────────────────────────

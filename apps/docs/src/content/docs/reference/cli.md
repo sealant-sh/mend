@@ -175,26 +175,34 @@ the command's output alone:
 out=$(mend run --project api -- git log -1 --format=%H)
 ```
 
-`Ctrl+C` stops watching; the command keeps running. `--detach` returns as soon as it runs. `--json`
-prints one JSON object on stdout in place of the output: `sessionId`, `processId`, `worktree`,
-`branch`, `url`, `status`, and `exitCode`, which is `null` until the command ended. With `--detach`
-it is printed once the command runs; without, once it ended. Pick the session up again with
-`mend logs` and `mend wait`:
+`Ctrl+C` stops watching, exits `130` and puts back the terminal modes the command's output set
+(alternate screen, hidden cursor, mouse, keyboard); the command keeps running. Output that could not
+be given in full, because the server refused a read or the reader went away, fails `mend run` with
+exit `1` even when the command succeeded, and stderr says the command's own code.
+
+`--detach` returns as soon as the command runs. `--json` prints one JSON object on stdout in place
+of the output: `sessionId`, `processId`, `worktree`, `branch`, `url`, and the process's `status` and
+`exitCode` as last observed (`exitCode` is `null` until it ended). With `--detach` it is printed
+once the command runs, and says so when it already ended; without, once it ended. Pick the session
+up again with `mend logs` and `mend wait`:
 
 ```sh
 id=$(mend run --detach --json -- pnpm test | jq -r .sessionId)
 mend logs "$id" --follow
-mend wait "$id" --timeout 900   # exits with the test run's exit code
+mend wait "$id" --timeout 900   # exits with the test run's exit code, or 124
 ```
 
-| Command                                                          | Purpose                                                                                          |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `mend logs [session] [--follow] [--from <seq>] [--process <id>]` | Print a session's recorded terminal output on stdout; settled sessions count                     |
-| `mend wait [session] [--timeout <seconds>] [--json]`             | Return once the session's command ended, with its exit code; `124` when the timeout passes first |
+| Command                                                               | Purpose                                                                                          |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `mend logs [session] [--follow] [--from <seq>] [--process <id>]`      | Print a session's recorded terminal output on stdout; settled sessions count                     |
+| `mend wait [session] [--timeout <seconds>] [--process <id>] [--json]` | Return once the session's command ended, with its exit code; `124` when the timeout passes first |
 
 `mend logs` reads the session's command (or agent) by default, and another of its processes, a shell
 or a Service attempt, with `--process` and a prefix of its id. `--follow` keeps printing until the
 process ends. `mend wait` exits with the code the platform reported, or `1` when it reported none.
+While a launch or a resume is starting, the previous process's end does not count; `--process` binds
+the wait to one process, the `processId` that `mend run --json` prints. `--timeout` covers
+everything, finding the session and every read and retry; `--json` then prints the last state read.
 Both take the session id, a prefix of it, or the worktree's name.
 
 The platform takes a command of at most 64 words, none of them empty and none starting or ending

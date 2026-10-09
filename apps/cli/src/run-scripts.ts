@@ -94,6 +94,21 @@ export const pickProcess = (
 
 const SETTLED: ReadonlySet<string> = new Set(["completed", "failed", "stopped"]);
 
+/**
+ * The row of one process in a session read: the current agent or one of its processes. Where
+ * both list it, a row that says it ended wins: the end is the fact being waited for.
+ */
+export const processRowOf = (
+  detail: CommandDetail,
+  processId: string,
+): CommandProcess | undefined => {
+  const rows = [
+    ...(detail.currentAgent === null ? [] : [detail.currentAgent]),
+    ...(detail.processes ?? []),
+  ].filter((row) => row.id === processId);
+  return rows.find((row) => row.exitedAt !== null) ?? rows[0];
+};
+
 /** How a session's command ended, as the server observed it. */
 export interface CommandEnd {
   readonly processId: string | null;
@@ -106,13 +121,33 @@ export interface CommandEnd {
  * The command's end, or null while it runs: its process ended, or the session settled (a launch
  * that failed before anything ran, an executor that was lost). A session that reads `idle` while a
  * shell holds the workspace is answered by its command's own row.
+ *
+ * With `processId`, only that process's end counts: the one `mend run` started, or the one a
+ * script named. Without it, a session that is `starting` (a launch or a resume under way) has not
+ * ended, whatever its current agent says: until the new process's row exists, the current agent is
+ * the previous one, already exited.
  */
-export const commandEndOf = (detail: CommandDetail): CommandEnd | null => {
+export const commandEndOf = (
+  detail: CommandDetail,
+  processId: string | null = null,
+): CommandEnd | null => {
+  const settled = SETTLED.has(detail.session.status);
+  if (processId !== null) {
+    const target = processRowOf(detail, processId);
+    if (target !== undefined && target.exitedAt !== null) {
+      return { processId, status: target.status, exitCode: target.exitCode };
+    }
+    if (settled) {
+      return { processId, status: detail.session.status, exitCode: target?.exitCode ?? null };
+    }
+    return null;
+  }
+  if (detail.session.status === "starting") return null;
   const agent = detail.currentAgent;
   if (agent !== null && agent.exitedAt !== null) {
     return { processId: agent.id ?? null, status: agent.status, exitCode: agent.exitCode };
   }
-  if (SETTLED.has(detail.session.status)) {
+  if (settled) {
     return {
       processId: agent?.id ?? null,
       status: detail.session.status,
@@ -148,28 +183,76 @@ const isRefusal = (error: unknown): boolean =>
   (error.status === null || !GATEWAY_STATUSES.has(error.status));
 
 interface Clock {
-  readonly sleep: (ms: number) => Promise<void>;
+  /** Resolves after `ms`, or at once, early, when `signal` aborts. */
+  readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly now: () => number;
   /** How long reads may fail in a row before giving up. */
   readonly unreachableAfterMs?: number;
   readonly pollMs?: number;
 }
 
+/** What a bounded step came to: its value, or the deadline passed first. */
+export type Bounded<T> = { readonly done: true; readonly value: T } | { readonly done: false };
+
+/**
+ * `work`, unless the deadline (on `clock`'s time) passes first. Null waits for it. A step the
+ * deadline beat is left to finish on its own; nothing reads its answer.
+ */
+export const beforeDeadline = async <T>(
+  work: Promise<T>,
+  clock: Pick<Clock, "now" | "sleep">,
+  deadline: number | null,
+): Promise<Bounded<T>> => {
+  if (deadline === null) return { done: true, value: await work };
+  const left = deadline - clock.now();
+  if (left <= 0) {
+    work.catch(() => undefined);
+    return { done: false };
+  }
+  // The deadline's timer goes as soon as the work answers: nothing waits on it after.
+  const timer = new AbortController();
+  try {
+    return await Promise.race([
+      work.then((value): Bounded<T> => ({ done: true, value })),
+      clock.sleep(left, timer.signal).then((): Bounded<T> => ({ done: false })),
+    ]);
+  } finally {
+    timer.abort();
+  }
+};
+
 /**
  * One read, retried while it fails without an answer (a timeout, an edge cutting it, a restart)
- * for up to `unreachableAfterMs`. A refusal is thrown at once.
+ * for up to `unreachableAfterMs`. A refusal is thrown at once. The deadline bounds every attempt,
+ * in flight or not, and every pause between them.
  */
-const readThrough = async <T>(read: () => Promise<T>, clock: Clock): Promise<T> => {
+const readThrough = async <T>(
+  read: () => Promise<T>,
+  clock: Clock,
+  deadline: number | null,
+): Promise<Bounded<T>> => {
   const unreachableAfterMs = clock.unreachableAfterMs ?? 60_000;
   const since = clock.now();
   for (;;) {
     try {
-      return await read();
+      return await beforeDeadline(read(), clock, deadline);
     } catch (error) {
       if (isRefusal(error) || clock.now() - since >= unreachableAfterMs) throw error;
-      await clock.sleep(clock.pollMs ?? 1000);
+      const pause =
+        deadline === null
+          ? (clock.pollMs ?? 1000)
+          : Math.min(clock.pollMs ?? 1000, deadline - clock.now());
+      if (pause <= 0) return { done: false };
+      await clock.sleep(pause);
     }
   }
+};
+
+/** The value of a read no deadline bounds. */
+const unbounded = async <T>(read: () => Promise<T>, clock: Clock): Promise<T> => {
+  const got = await readThrough(read, clock, null);
+  if (!got.done) throw new Error("a read with no deadline timed out");
+  return got.value;
 };
 
 // ─── recorded output ────────────────────────────────────────────────────────
@@ -187,7 +270,11 @@ export interface FollowLogsOptions extends Clock {
   /** Keep reading until the process ends; false prints what is recorded now and returns. */
   readonly follow: boolean;
   readonly read: (from: string) => Promise<LogPage>;
-  readonly write: (bytes: Uint8Array) => void;
+  /**
+   * Resolves once the bytes are handed on (for stdout: written to the pipe or the terminal), so a
+   * slow reader holds the next page back instead of letting output queue up in memory.
+   */
+  readonly write: (bytes: Uint8Array) => Promise<void>;
   /**
    * Once the process ended, how many reads in a row must find nothing new before the follow
    * stops: the last output can reach the record a moment after the exit does.
@@ -209,8 +296,8 @@ export const followLogs = async (
   let quiet = 0;
   for (;;) {
     const from = cursor;
-    const page = await readThrough(() => options.read(from), options);
-    for (const chunk of page.chunks) options.write(Buffer.from(chunk.dataBase64, "base64"));
+    const page = await unbounded(() => options.read(from), options);
+    for (const chunk of page.chunks) await options.write(Buffer.from(chunk.dataBase64, "base64"));
     const advanced = page.nextFrom !== cursor;
     cursor = page.nextFrom;
     // More may be recorded already: read again at once.
@@ -231,26 +318,33 @@ export const followLogs = async (
 
 export type WaitOutcome =
   | { readonly kind: "ended"; readonly end: CommandEnd }
-  | { readonly kind: "timeout" };
+  /** The deadline passed first; `last` is the last read that answered, if any did. */
+  | { readonly kind: "timeout"; readonly last: CommandDetail | null };
 
 export interface WaitOptions extends Clock {
   readonly read: () => Promise<CommandDetail>;
-  /** Null waits as long as the command runs. */
-  readonly timeoutMs: number | null;
+  /** Only this process's end counts (`commandEndOf`); null takes the session's command. */
+  readonly processId: string | null;
+  /**
+   * When to give up, on the clock's time; null waits as long as the command runs. One deadline
+   * for every read, retry and pause: nothing outlives it.
+   */
+  readonly deadline: number | null;
 }
 
-/** Read the session until its command has ended, or the timeout passes. */
+/** Read the session until its command has ended, or the deadline passes. */
 export const waitForCommand = async (options: WaitOptions): Promise<WaitOutcome> => {
   const pollMs = options.pollMs ?? 1000;
-  const started = options.now();
+  let last: CommandDetail | null = null;
   for (;;) {
-    const end = commandEndOf(await readThrough(options.read, options));
+    const got = await readThrough(options.read, options, options.deadline);
+    if (!got.done) return { kind: "timeout", last };
+    last = got.value;
+    const end = commandEndOf(got.value, options.processId);
     if (end !== null) return { kind: "ended", end };
     const left =
-      options.timeoutMs === null
-        ? pollMs
-        : Math.min(pollMs, options.timeoutMs - (options.now() - started));
-    if (left <= 0) return { kind: "timeout" };
+      options.deadline === null ? pollMs : Math.min(pollMs, options.deadline - options.now());
+    if (left <= 0) return { kind: "timeout", last };
     await options.sleep(left);
   }
 };
@@ -266,6 +360,8 @@ export interface LogsArgs {
 
 export interface WaitArgs {
   readonly session: string | null;
+  /** `--process <id>`: wait for this process's end, not the session's current command. */
+  readonly process: string | null;
   /** Milliseconds; null waits as long as the command runs. */
   readonly timeoutMs: number | null;
   readonly json: boolean;
@@ -324,9 +420,9 @@ export const parseLogsArgs = (args: ReadonlyArray<string>): Parsed<LogsArgs> => 
   };
 };
 
-/** `mend wait [session] [--timeout <seconds>] [--json]`. */
+/** `mend wait [session] [--timeout <seconds>] [--process <id>] [--json]`. */
 export const parseWaitArgs = (args: ReadonlyArray<string>): Parsed<WaitArgs> => {
-  const split = splitArgs(args, ["--timeout"], ["--json"]);
+  const split = splitArgs(args, ["--timeout", "--process"], ["--json"]);
   if ("error" in split) return split;
   const timeout = split.values.get("--timeout");
   const seconds = timeout === undefined ? null : Number(timeout);
@@ -336,6 +432,7 @@ export const parseWaitArgs = (args: ReadonlyArray<string>): Parsed<WaitArgs> => 
   return {
     args: {
       session: split.session,
+      process: split.values.get("--process") ?? null,
       timeoutMs: seconds === null ? null : Math.ceil(seconds * 1000),
       json: split.on.has("--json"),
     },
