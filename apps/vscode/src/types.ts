@@ -131,6 +131,8 @@ export interface SessionDetail {
   readonly session: Session;
   readonly processes: ReadonlyArray<SessionProcess>;
   readonly currentAgent: SessionProcess | null;
+  /** The worktree's change once it has one: what review opens. Null before, and from older servers. */
+  readonly changeId: string | null;
 }
 
 /** Joining an existing worktree: the new session becomes another conversation inside it. */

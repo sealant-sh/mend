@@ -7,14 +7,21 @@ Code — run `claude` or `codex` yourself in the terminal, Mend observes and rec
 **Claude/Codex agent** on a prompt. Either way a window opens inside the session's workspace. Click
 any existing session to open it the same way.
 
-- Browse projects and sessions from the Mend Activity Bar view.
+- Browse projects and sessions from the Mend Activity Bar view, updated live.
 - Open a session's workspace over SSH, through the Mend server's workspace gateway.
+- Open a session's terminal in a VS Code terminal tab, over Mend's terminal connection (no SSH).
 - Start Claude or Codex sessions without building harness arguments in the extension.
-- Open the canonical session and review surfaces in Mend.
+- Open the session's change in Mend's review, and the session itself in Mend.
 
 The extension reads the same `~/.config/mend/cli.json` connection used by the Mend CLI. Run
-`Mend: Connect to server` to override it. Remote opening requires the Microsoft Remote SSH
+`Mend: Connect to server` to override it: enter the server URL as this machine reaches it, then sign
+in with the browser (the `mend login` walk; approve at `<server>/authorize`), paste a device token,
+or use none for a local server. The token is kept in VS Code's secret storage. `Mend: Sign out`
+revokes a browser sign-in's token and forgets it. Remote opening requires the Microsoft Remote SSH
 extension.
+
+The end-to-end check against a server on another address is
+`MEND_TEST_VERSION=<preloaded image tag> node scripts/vscode-remote-acceptance.mjs`.
 
 The extension is not published to the Visual Studio Marketplace. Build a `.vsix` with
 `pnpm --filter mend build` followed by `pnpm --filter mend package`, and install it with

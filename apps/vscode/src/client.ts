@@ -174,6 +174,7 @@ const parseSessionProcess = (value: unknown): SessionProcess => {
 const parseSessionDetail = (value: unknown): SessionDetail => {
   if (!isRecord(value)) throw new Error("Mend returned an invalid session detail.");
   const currentAgent = value["currentAgent"];
+  const change = value["change"];
   return {
     session: parseSession(value["session"]),
     processes: parseArray(value["processes"], parseSessionProcess, "processes"),
@@ -181,10 +182,17 @@ const parseSessionDetail = (value: unknown): SessionDetail => {
       currentAgent === null || currentAgent === undefined
         ? null
         : parseSessionProcess(currentAgent),
+    changeId: isRecord(change) && typeof change["id"] === "string" ? change["id"] : null,
   };
 };
 
 export { MendApiError } from "./mend-http.js";
+
+/**
+ * The event stream sends a comment heartbeat every 25 seconds (apps/api/src/routes/events.ts); a
+ * stream silent for longer than two of them is treated as gone and opened again.
+ */
+export const EVENT_STREAM_STALL_MS = 60_000;
 
 /** Small authenticated client for the extension's project and session jobs. */
 export class MendClient {
@@ -449,20 +457,37 @@ export class MendClient {
   private async eventLoop(signal: AbortSignal, onEvent: () => void): Promise<void> {
     let delay = 1_000;
     while (!signal.aborted) {
+      // One stream per attempt. A stream that goes quiet past the heartbeat is dead (a Mac mini
+      // asleep, a laptop that changed networks): nothing closes it, so the watchdog does.
+      const attempt = new AbortController();
+      const abortAttempt = () => attempt.abort();
+      signal.addEventListener("abort", abortAttempt, { once: true });
+      let watchdog: NodeJS.Timeout | undefined;
+      const feed = () => {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(abortAttempt, EVENT_STREAM_STALL_MS);
+      };
       try {
         const connection = await this.connections.get();
         const headers = new Headers({ accept: "text/event-stream" });
         if (connection.token !== null) headers.set("authorization", `Bearer ${connection.token}`);
-        const response = await fetch(`${connection.url}/api/events`, { headers, signal });
+        feed();
+        const response = await fetch(`${connection.url}/api/events`, {
+          headers,
+          signal: attempt.signal,
+        });
         if (!response.ok || response.body === null)
           throw new Error(`events responded ${response.status}`);
         delay = 1_000;
+        // Whatever changed while no stream was open was never announced: read it all again.
+        onEvent();
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        while (!signal.aborted) {
+        while (!attempt.signal.aborted) {
           const chunk = await reader.read();
           if (chunk.done) break;
+          feed();
           buffer += decoder.decode(chunk.value, { stream: true });
           let boundary = buffer.indexOf("\n\n");
           while (boundary !== -1) {
@@ -474,6 +499,10 @@ export class MendClient {
         }
       } catch {
         if (signal.aborted) return;
+      } finally {
+        clearTimeout(watchdog);
+        signal.removeEventListener("abort", abortAttempt);
+        attempt.abort();
       }
       await wait(delay, undefined, { signal }).catch(() => undefined);
       delay = Math.min(delay * 2, 15_000);
