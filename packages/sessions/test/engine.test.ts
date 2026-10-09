@@ -276,6 +276,7 @@ import { installScript } from "../src/dependency-cache.ts";
 import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
+  NO_PAGER_ENV,
   OPENCODE_CAPTURED_SEED,
   OPENCODE_SEED,
   PI_PERSON_SEED,
@@ -6239,11 +6240,13 @@ describe("SessionEngine", () => {
           });
           yield* engine.launch(session.id, ["codex"]);
 
-          // Configuration rides `env`, secrets are unsealed into `secretEnv` — exactly once.
+          // Configuration rides `env`, secrets are unsealed into `secretEnv` — exactly once. The
+          // project's own PAGER wins over Mend's.
           expect(created).toHaveLength(1);
           expect(created[0]?.env).toEqual({
             ...HARNESS_UPDATES_OFF_ENV,
             APP_MODE: "review",
+            PAGER: "less -R",
             PORT: "3000",
           });
           expect(created[0]?.secretEnv).toEqual({
@@ -6253,7 +6256,7 @@ describe("SessionEngine", () => {
           // The run's manifest carries revisions + NAMES; no value or sealed value anywhere.
           const [run] = [...world.sessionRuns.values()];
           expect(run?.environmentRevision).toBe(4);
-          expect(run?.environmentVariableNames).toEqual(["APP_MODE", "PORT"]);
+          expect(run?.environmentVariableNames).toEqual(["APP_MODE", "PAGER", "PORT"]);
           expect(run?.secretRevision).toBe(2);
           expect(run?.secretNames).toEqual(["DATABASE_URL", "STRIPE_API_KEY"]);
           expect(JSON.stringify([...world.sessionRuns.values()], bigintSafe)).not.toContain(
@@ -6263,7 +6266,10 @@ describe("SessionEngine", () => {
         }),
       {
         sealantLayer: sealantLaunchLayer(created),
-        environment: () => ({ revision: 4, variables: { PORT: "3000", APP_MODE: "review" } }),
+        environment: () => ({
+          revision: 4,
+          variables: { PORT: "3000", APP_MODE: "review", PAGER: "less -R" },
+        }),
         secrets: () => ({
           revision: 2,
           secrets: { STRIPE_API_KEY: "sk_live_x", DATABASE_URL: "postgres://u:hunter2@h/db" },
@@ -6375,7 +6381,7 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("passes only the harnesses' update switches as env when the project store is empty", async () => {
+  it("passes only the harnesses' update switches and no pager as env when the project store is empty", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
       (world, tmp) =>
@@ -6391,8 +6397,9 @@ describe("SessionEngine", () => {
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
-          // The harnesses' self-updaters are off in every workspace, whatever the project sets.
-          expect(created[0]?.env).toEqual(HARNESS_UPDATES_OFF_ENV);
+          // The harnesses' self-updaters are off in every workspace, whatever the project sets, and
+          // nothing pages: the images carry no `less`.
+          expect(created[0]?.env).toEqual({ ...HARNESS_UPDATES_OFF_ENV, PAGER: "cat" });
           expect(created[0]?.secretEnv).toBeUndefined();
           expect(created[0]?.envFrom).toBeUndefined();
           expect(created[0]?.kubernetes).toBeUndefined();
@@ -6429,7 +6436,11 @@ describe("SessionEngine", () => {
           });
           yield* engine.launch(session.id, ["codex"]);
           expect(created).toHaveLength(1);
-          expect(created[0]?.env).toEqual({ ...HARNESS_UPDATES_OFF_ENV, APP_MODE: "review" });
+          expect(created[0]?.env).toEqual({
+            ...HARNESS_UPDATES_OFF_ENV,
+            ...NO_PAGER_ENV,
+            APP_MODE: "review",
+          });
           expect(created[0]?.secretEnv).toEqual({ API_KEY: "old" });
 
           // Edit while live: a shell in the running workspace triggers no create and no re-read.
@@ -6451,6 +6462,7 @@ describe("SessionEngine", () => {
           expect(created).toHaveLength(2);
           expect(created[1]?.env).toEqual({
             ...HARNESS_UPDATES_OFF_ENV,
+            ...NO_PAGER_ENV,
             APP_MODE: "prod",
             NEW_VAR: "1",
           });

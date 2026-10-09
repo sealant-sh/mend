@@ -12,6 +12,7 @@ import {
   CODEX_TRUST_SEED,
   COPY_REFRESH_TOKEN,
   HARNESS_UPDATES_OFF_ENV,
+  NO_PAGER_ENV,
   OPENCODE_CAPTURED_SEED,
   OPENCODE_PERSON_SEED,
   OPENCODE_SEED,
@@ -88,6 +89,21 @@ describe("claude onboarding seed", () => {
       { encoding: "utf8", env: { ...process.env, HOME: home, DISABLE_AUTOUPDATER: "" } },
     );
     expect(result.stdout).toBe("updater off: 1\n");
+  });
+
+  it("pages through cat, and leaves GIT_PAGER to a person's own git config", () => {
+    expect(NO_PAGER_ENV).toEqual({ PAGER: "cat" });
+    // git reads GIT_PAGER before core.pager, PAGER after it: a person's pager stays theirs.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-pager-"));
+    const git = (env: Readonly<Record<string, string>>) =>
+      spawnSync("git", ["var", "GIT_PAGER"], {
+        encoding: "utf8",
+        env: { PATH: process.env["PATH"] ?? "", HOME: home, GIT_CONFIG_NOSYSTEM: "1", ...env },
+      }).stdout.trim();
+    expect(git(NO_PAGER_ENV)).toBe("cat");
+    fs.writeFileSync(path.join(home, ".gitconfig"), "[core]\n\tpager = delta\n");
+    expect(git(NO_PAGER_ENV)).toBe("delta");
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it("names every harness's own update switch for the workspace's environment", () => {
