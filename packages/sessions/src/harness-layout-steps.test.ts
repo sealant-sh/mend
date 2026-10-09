@@ -229,6 +229,8 @@ const stepsWith = (
     readonly forks?: Array<Effect.Effect<void>>;
     readonly grace?: Duration.Duration;
     readonly runtimeObstacle?: string;
+    /** How long each exec takes; it says `exec-done:` in the log once it has. */
+    readonly execTakes?: Duration.Duration;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -255,10 +257,14 @@ const stepsWith = (
           const execs = options.execs;
           return execs === undefined
             ? Effect.die("not in test")
-            : Effect.sync(() => {
+            : Effect.gen(function* () {
                 const script = argv[0] === "sh" ? (argv[2] ?? "") : argv.join(" ");
                 execs.push({ script, user: execOptions?.user?.name ?? null });
                 options.log?.push(`exec:${execOptions?.user?.name ?? "root"}`);
+                if (options.execTakes !== undefined) {
+                  yield* Effect.sleep(options.execTakes);
+                  options.log?.push(`exec-done:${execOptions?.user?.name ?? "root"}`);
+                }
                 return { exitCode: 0, stdout: "", stderr: "", run: execRun };
               });
         },
@@ -1053,6 +1059,15 @@ describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
 const refusedOf = (fields: { code: string; status: number; provider?: string; message: string }) =>
   refusedAccountOf(new SealantPlatformError({ ...fields, cause: null }));
 
+/** Core's answer to a write whose script exited 1 (the box, 2026-10-09, mend 0.36.0-next.652). */
+const unconfirmed = (home: string) =>
+  new SealantPlatformError({
+    code: "WorkspaceBadGatewayError",
+    status: 502,
+    message: `The workspace's executor did not confirm the write into ${home}: the write exited with 1. The home's record is unchanged (it holds nothing); put again, or release it.`,
+    cause: null,
+  });
+
 describe("logins per person (docs/adr/0016, decision 5)", () => {
   interface Executor {
     readonly steps: ReturnType<typeof makeHarnessLayoutSteps>;
@@ -1071,7 +1086,11 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
   const withPersonExecutor = <A, E>(
     core: CoreCalls,
     then: (executor: Executor) => Effect.Effect<A, E>,
-    options: { readonly grace?: Duration.Duration; readonly prepared?: boolean } = {},
+    options: {
+      readonly grace?: Duration.Duration;
+      readonly prepared?: boolean;
+      readonly execTakes?: Duration.Duration;
+    } = {},
   ) =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -1087,6 +1106,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
           revoked,
           forks,
           grace: options.grace ?? Duration.zero,
+          ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
         });
         const layout = yield* first.steps.decide(decideInput("launch-1"));
         const alice = yield* first.repo.ensureIdentity("user-alice");
@@ -1107,6 +1127,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
                 revoked,
                 forks,
                 grace: options.grace ?? Duration.zero,
+                ...(options.execTakes === undefined ? {} : { execTakes: options.execTakes }),
               })).steps
             : first.steps;
         return yield* then({ steps, repo: first.repo, execs, log, revoked, forks, state });
@@ -1356,19 +1377,96 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     }
   });
 
-  it("asks again once the home is made when its POST raced the useradd that makes it", async () => {
+  it("a first steer by a person with no process in the executor yet writes their logins only once their user and home are confirmed", async () => {
     const core = coreCalls();
-    core.answer = (index) =>
-      index === 0
-        ? new SealantPlatformError({
-            code: "home-unusable",
-            status: 409,
-            message: "home is not a directory yet",
-            cause: null,
-          })
-        : null;
-    await withPersonExecutor(core, ({ steps }) => start(steps, "user-maria"));
-    expect(core.posts).toHaveLength(2);
+    const result = await withPersonExecutor(
+      core,
+      ({ steps, repo, log, execs }) =>
+        Effect.gen(function* () {
+          const maria = yield* repo.ensureIdentity("user-maria");
+          const before = log.length;
+          // As Core's write did on the box: run beside the exec still making her, it exits 1.
+          core.answer = () =>
+            log.slice(before).includes("exec-done:root")
+              ? null
+              : unconfirmed(`/home/${maria.name}`);
+          const started = yield* start(steps, "user-maria");
+          return { maria, started, steps: log.slice(before), execs };
+        }),
+      { execTakes: Duration.millis(50) },
+    );
+    // Her home exec ran to its end first, then exactly one write, which Core confirmed.
+    expect(result.steps.filter((line) => !line.startsWith("mint:"))).toEqual([
+      "exec:root",
+      "exec-done:root",
+    ]);
+    expect(core.posts).toHaveLength(1);
+    expect(core.calls).toEqual([`post:user-maria:/home/${result.maria.name}`]);
+    expect(result.execs.at(-1)?.script).toContain(`mend_person ${result.maria.name}`);
+    expect(result.started?.user.name).toBe(result.maria.name);
+  });
+
+  it("a write that fails without refusing a login is asked once more after her home is ensured, then refused with words, never anyone else's", async () => {
+    for (const [answers, posts, refusedWith] of [
+      // Once: ensured again, asked again, and the start goes on.
+      [["unconfirmed", "write"], 2, null],
+      // A home not usable yet: likewise.
+      [["home-unusable", "write"], 2, null],
+      // Twice: refused, after exactly one more ask.
+      [["unconfirmed", "unconfirmed"], 2, "Asked twice; nothing was started for"],
+    ] as const) {
+      const core = coreCalls();
+      const result = await withPersonExecutor(core, ({ steps, repo, log, execs }) =>
+        Effect.gen(function* () {
+          const maria = yield* repo.ensureIdentity("user-maria");
+          core.answer = (index) => {
+            const answer = answers[index];
+            return answer === "unconfirmed"
+              ? unconfirmed(`/home/${maria.name}`)
+              : answer === "home-unusable"
+                ? new SealantPlatformError({
+                    code: "home-unusable",
+                    status: 409,
+                    message: "home is not a directory yet",
+                    cause: null,
+                  })
+                : null;
+          };
+          const before = execs.length;
+          const outcome = yield* start(steps, "user-maria").pipe(Effect.result);
+          return {
+            maria,
+            outcome,
+            homeExecs: execs.slice(before).map((exec) => exec.script),
+            log: [...log],
+          };
+        }),
+      );
+      expect(core.posts).toHaveLength(posts);
+      // Every write was hers, into her home: never the launcher's.
+      expect(
+        core.calls.every((call) => call === `post:user-maria:/home/${result.maria.name}`),
+      ).toBe(true);
+      // Her first exec (with her pickup), then the ensure before the second write (without).
+      expect(result.homeExecs).toHaveLength(2);
+      expect(result.homeExecs[1]).toContain(`mend_person ${result.maria.name}`);
+      expect(result.homeExecs[0]).toContain("t".repeat(43));
+      expect(result.homeExecs[1]).not.toContain("t".repeat(43));
+      if (refusedWith === null) {
+        expect(result.outcome._tag).toBe("Success");
+        continue;
+      }
+      if (result.outcome._tag !== "Failure") return expect.fail("the start was not refused");
+      expect(result.outcome.failure.code).toBe("person_login_not_written");
+      expect(result.outcome.failure.message).toContain(
+        `${result.maria.name}'s logins could not be written into this workspace`,
+      );
+      expect(result.outcome.failure.message).toContain(`${refusedWith} ${result.maria.name}.`);
+      // The token minted for her start goes with it.
+      expect(result.log.filter((line) => line.startsWith("revoke:"))).toEqual([
+        "revoke:user-maria",
+      ]);
+    }
   });
 
   it("releases a person's logins once nothing of theirs runs: Core's files, ChatGPT logins included, and their token", async () => {

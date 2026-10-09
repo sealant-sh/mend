@@ -481,12 +481,15 @@ export interface HarnessLayoutSteps {
   /**
    * The user a person's process starts as in a person-layout executor, made there first when it
    * is their first process (one exec), with their own logins written into their home before it
-   * starts (one Core call, beside that exec), and the worktree repair started when the person
-   * differs from the last one whose process started there (one exec, never awaited). Refused
-   * when Core left the harness's own provider out of that call (not connected, needs
-   * reconnecting, or its file unusable), what it did write recorded for the release that follows,
-   * and when the launch is unknown in a worktree that runs per person (never run as root there).
-   * Null in a shared executor: the process runs as root, as before.
+   * starts (one Core call, once that exec confirmed the user and home), and the worktree repair
+   * started when the person differs from the last one whose process started there (one exec,
+   * never awaited). A write that fails without refusing a login is asked once more, after the
+   * user and home are ensured again; failing again, the start is refused. Refused when Core left
+   * the harness's own provider out of that call (not connected, needs reconnecting, or its file
+   * unusable), what it did write recorded for the release that follows, and when the launch is
+   * unknown in a worktree that runs per person (never run as root there). Never another
+   * person's process or login in its place. Null in a shared executor: the process runs as root,
+   * as before.
    */
   readonly processAs: (input: {
     readonly workspace: Workspace;
@@ -503,7 +506,8 @@ export interface HarnessLayoutSteps {
     /**
      * Told once the person's user and home exist in the executor, before their logins are
      * written (decision 5): their deliveries run beside that write, and only the start waits for
-     * both (Performance). Never told in a shared executor; the caller completes it with null.
+     * both (Performance). Never told in a shared executor, or for a start refused before its
+     * home exec confirmed them; the caller completes it with null.
      */
     readonly homeReady?: Deferred.Deferred<PersonHome | null>;
   }) => Effect.Effect<
@@ -1334,17 +1338,16 @@ export const makeHarnessLayoutSteps = (deps: {
    * join is exactly one Core call. Core writes what the person has connected and answers what it
    * left out: an optional provider left out is not asked for again; a required one refuses the
    * process with Core's reason, and what the POST did write is recorded held, so the release
-   * that follows a refused start reaches it. A POST that raced the `useradd` making the home
-   * (`home-unusable`) is asked again once the home is made; one Core answered `home-busy` is asked
-   * again shortly. Any other failure leaves the home recorded as held (Core may have written it),
-   * so a release still reaches it. Run under the home's lock.
+   * that follows a refused start reaches it. One Core answered `home-busy` is asked again
+   * shortly. Any other failure leaves the home recorded as held (Core may have written it), so a
+   * release still reaches it, and is `person_login_not_written`. Run under the home's lock, once
+   * the person's user and home exist (`processAs`).
    */
   const writeLogins = Effect.fn("HarnessLayoutSteps.writeLogins")(function* (input: {
     readonly workspace: Workspace;
     readonly launchId: string | null;
     readonly identity: LinuxIdentity;
     readonly need: LoginNeed;
-    readonly homeMade: Deferred.Deferred<void> | null;
   }) {
     const { identity, need } = input;
     const people = executorOf(input.workspace.id, input.launchId).people;
@@ -1365,8 +1368,7 @@ export const makeHarnessLayoutSteps = (deps: {
     for (const [provider, choice] of choices) logins[provider] = choice;
     const home = linuxHomeOf(identity);
     let busy = 0;
-    let waitedForHome = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       const written = yield* platform
         .postCredentials(input.workspace, {
           onBehalfOf: identity.accountId,
@@ -1391,11 +1393,6 @@ export const makeHarnessLayoutSteps = (deps: {
       if (error.code === "home-busy" && busy < 3) {
         busy++;
         yield* Effect.sleep(Duration.millis(200 * busy));
-        continue;
-      }
-      if (error.code === "home-unusable" && input.homeMade !== null && !waitedForHome) {
-        waitedForHome = true;
-        yield* Deferred.await(input.homeMade);
         continue;
       }
       keepHeldFor(input.workspace.id, input.launchId, identity);
@@ -1443,7 +1440,7 @@ export const makeHarnessLayoutSteps = (deps: {
       const need = loginNeedOf(input.harness);
       // The start's whole make-and-POST holds the home's lock, so a release or the startup
       // reconciliation never runs between what it reads and what it writes (review of mend#564,
-      // P2-1); the make and the POST still run beside each other inside it.
+      // P2-1).
       const leftOut = yield* lockOf(key).withPermit(
         Effect.gen(function* () {
           startedAt.set(key, yield* Clock.currentTimeMillis);
@@ -1463,12 +1460,30 @@ export const makeHarnessLayoutSteps = (deps: {
                 }).pipe(Effect.asVoid);
           if (!needsHome) yield* tellHomeReady(false);
           if (!needsHome && !needsLogins) return [];
-          const homeMade = yield* Deferred.make<void>();
           let minted = false;
-          // Their first process in this executor: their user, home and saved directory (one exec,
-          // idempotent, so a server restart that forgot costs one more and changes nothing).
-          // Their Mend token and git author ride the same exec through a pickup (decision 4): no
-          // exec of their own, and neither in its arguments.
+          /**
+           * Their user, home and saved directory (`personHomeScript`, idempotent, so a server
+           * restart that forgot costs one more exec and changes nothing), and whatever rides with
+           * it; confirmed only by its exit.
+           */
+          const homeExec = (after: string) =>
+            Effect.gen(function* () {
+              const result = yield* sealant.exec(input.workspace, [
+                "sh",
+                "-c",
+                `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n${after}`,
+              ]);
+              if (result.exitCode !== 0) {
+                return yield* new SealantPlatformError({
+                  code: "person_user_not_made",
+                  status: null,
+                  message: `${identity.name} could not be made in this workspace: ${result.stderr.trim()}`,
+                  cause: null,
+                });
+              }
+            });
+          // Their first process in this executor: one exec, whose Mend token and git author ride
+          // through a pickup (decision 4): no exec of their own, and neither in its arguments.
           const makeHome = Effect.gen(function* () {
             if (!needsHome) return;
             const ticket = yield* deps.identityTicket({
@@ -1478,36 +1493,40 @@ export const makeHarnessLayoutSteps = (deps: {
               person: identity,
             });
             minted = true;
-            const result = yield* sealant
-              .exec(input.workspace, [
-                "sh",
-                "-c",
-                `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
-                  identityPickupScript([{ person: identity, ticket }]),
-              ])
-              .pipe(Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))));
-            if (result.exitCode !== 0) {
-              return yield* new SealantPlatformError({
-                code: "person_user_not_made",
-                status: null,
-                message: `${identity.name} could not be made in this workspace: ${result.stderr.trim()}`,
-                cause: null,
-              });
-            }
+            yield* homeExec(identityPickupScript([{ person: identity, ticket }])).pipe(
+              Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))),
+            );
             made.add(identity.accountId);
             madeIn.set(workspaceId, made);
             yield* tellHomeReady(true);
-          }).pipe(Effect.ensuring(Deferred.succeed(homeMade, undefined)));
-          // Their own logins, beside it (decision 5): one Core call, which makes the home for them
-          // when it gets there first. Nobody else's login is ever read or written for them.
+          });
+          // Their own logins (decision 5), one Core call, only once the exec above confirmed their
+          // user and home: Core's write and the making of the home never touch it at once (the
+          // box, 2026-10-09: a first steer's write raced `useradd` and the skeleton copy, and
+          // exited 1). A write that failed without refusing a login (unconfirmed, a home not
+          // usable) is asked once more, after the home is ensured again; then the start is
+          // refused. Nobody else's login is ever read or written for them.
+          const write = writeLogins({ workspace: input.workspace, launchId, identity, need });
           const writeThem = needsLogins
-            ? writeLogins({
-                workspace: input.workspace,
-                launchId,
-                identity,
-                need,
-                homeMade: needsHome ? homeMade : null,
-              })
+            ? write.pipe(
+                Effect.catch((error) =>
+                  error.code !== "person_login_not_written"
+                    ? Effect.fail(error)
+                    : homeExec(":").pipe(
+                        Effect.andThen(write),
+                        Effect.mapError((again) =>
+                          again.code === "person_login_not_written"
+                            ? new SealantPlatformError({
+                                code: again.code,
+                                status: again.status,
+                                message: `${again.message} Asked twice; nothing was started for ${identity.name}.`,
+                                cause: again,
+                              })
+                            : again,
+                        ),
+                      ),
+                ),
+              )
             : Effect.succeed<ReadonlyArray<LoginSkip>>([]);
           /**
            * A start that did not finish (refused, or interrupted): the Mend token its home exec
@@ -1525,10 +1544,9 @@ export const makeHarnessLayoutSteps = (deps: {
               new Date((yield* Clock.currentTimeMillis) + 1),
             );
           });
-          const [home, logins] = yield* Effect.all(
-            [makeHome.pipe(Effect.result), writeThem.pipe(Effect.result)],
-            { concurrency: 2 },
-          ).pipe(
+          return yield* makeHome.pipe(
+            Effect.andThen(writeThem),
+            Effect.tapError(() => undoMinted),
             // Interrupted mid-write (a client that went away): Core may have written, so the home
             // is recorded held for a release to reach, and the token minted for it goes.
             Effect.onInterrupt(() =>
@@ -1538,13 +1556,6 @@ export const makeHarnessLayoutSteps = (deps: {
               }),
             ),
           );
-          // A refused login says what to connect; it wins over anything the home exec said.
-          if (logins._tag === "Failure") {
-            yield* undoMinted;
-            return yield* logins.failure;
-          }
-          if (home._tag === "Failure") return yield* home.failure;
-          return logins.success;
         }),
       );
       const last = lastIn.get(workspaceId);

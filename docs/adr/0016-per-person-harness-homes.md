@@ -369,25 +369,29 @@ workspaces.create({ …, credentialsHome })
   the directory, copies nothing from `/etc/skel` and changes no owner, so Mend copies the skeleton
   in without replacing anything and gives the user everything in the home (`chown -hR`) before any
   process runs as them. A POST into a home that does not exist yet is refused (`home-unusable`), so
-  a joiner's POST runs beside their `useradd` only once POST takes the same `{ uid, gid }` and makes
-  a missing home as create does; until then Mend makes the joiner's user first and posts after it.
+  Mend makes the joiner's user and home first and posts once that exec has exited 0. POST takes the
+  same `{ uid, gid }` and makes a missing home as create does, but it never runs beside the
+  `useradd` and the skeleton copy: on the box (2026-10-09) the two together exited 1 on a first
+  steer.
 - **Authorisation.** A service key acting for the workspace's owner may write any `onBehalfOf`
   person's login. Mend enforces that a login goes only into that person's home, or into a
   conversation home while that person's process is about to run there (decision 6).
 - **How Mend uses it:** `credentialsHome = { path: /home/<launcher>, uid, gid: 40000 }` at create
   when the launch is `person`, `$HOME` when it is `shared` (decision 1 decides which before create);
-  one POST before a person's first process in an executor, in parallel with their user, dotfiles and
-  deliveries; a refusal before anything is written when the needed provider is not connected or
-  `invalid` ("Connect Claude to start a session here"); DELETE when a person's last process ends,
-  retried, except the launcher's create-time home, which stays while the executor lives (their
-  Remote-SSH session uses it with no Mend process); reconciliation against `GET` at startup; one
-  re-POST after an authentication failure. Every POST is partial (`partial: true`): what the person
-  has connected is written, what Core leaves out (`skipped`) is not asked for again, a provider the
-  harness needs refuses the start, and a join is exactly one Core call. In a `person` executor Core
-  writes pi's and opencode's ChatGPT logins too (`pi` and `opencode` on the POST, made from the
-  person's Codex account), following opencode's link back into the home, and a release removes them
-  with the rest; the session line says when Core left one out. In a `shared` executor Mend's
-  ChatGPT-login program still writes the copies at `$HOME`, since a create cannot name them.
+  one POST before a person's first process in an executor, after their user and home are made and in
+  parallel with their dotfiles and deliveries, asked once more after the home is ensured again when
+  it fails without refusing a login, then the start refused; a refusal before anything is written
+  when the needed provider is not connected or `invalid` ("Connect Claude to start a session here");
+  DELETE when a person's last process ends, retried, except the launcher's create-time home, which
+  stays while the executor lives (their Remote-SSH session uses it with no Mend process);
+  reconciliation against `GET` at startup; one re-POST after an authentication failure. Every POST
+  is partial (`partial: true`): what the person has connected is written, what Core leaves out
+  (`skipped`) is not asked for again, a provider the harness needs refuses the start, and a join is
+  exactly one Core call. In a `person` executor Core writes pi's and opencode's ChatGPT logins too
+  (`pi` and `opencode` on the POST, made from the person's Codex account), following opencode's link
+  back into the home, and a release removes them with the rest; the session line says when Core left
+  one out. In a `shared` executor Mend's ChatGPT-login program still writes the copies at `$HOME`,
+  since a create cannot name them.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 
@@ -1470,4 +1474,14 @@ benchmark once more, before 0.36 is tagged.
   to run shared (a runtime ruled out, Core's "no", or Mend's record of one), so shared standbys keep
   serving. A person standby's fingerprint leaves out the dotfiles inputs, which it resolves at
   claim.
+- 2026-10-10, after the P1 gate on the box (benchmark 1ju0v2, 0.36.0-next.652): the first turn a
+  second person sent into the owner's session failed. Their hand-over ran the exec that makes their
+  user and home beside Core's POST of their logins (both started within 3 ms), and Core's write
+  exited 1. A person's logins are now posted only once that exec has exited 0. A POST that fails
+  without refusing a login is asked once more, after the user and home are ensured again (the same
+  idempotent script, with no token pickup), and a second failure refuses the start in words. The
+  failed turn never ran on the owner's process or login: a hand-over prepares the sender's user,
+  home and logins before it stops anything, and a failure fails the waiting turn unsent. A first
+  steer or join now waits for the POST after the exec (about 140 ms on the box) instead of beside
+  it.
 - Open: gate B's history record.
