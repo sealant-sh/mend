@@ -55,7 +55,10 @@ Preconditions:
   the instance's operator. `mend members` prints `<org> · 1 member`.
 - A second CLI identity for the invited account, written `<member>`, uses its own config directory:
   `mkdir -p /tmp/verify-member/mend`, then prefix its commands with
-  `XDG_CONFIG_HOME=/tmp/verify-member`. Its browser is a second Playwright context (`memberPage`).
+  `XDG_CONFIG_HOME=/tmp/verify-member`. `MEND_TOKEN` and `MEND_URL` must be unset in the shell that
+  runs either identity: the CLI reads them before its config file (`apps/cli/src/main.ts:327-331`),
+  so an inherited `MEND_TOKEN` makes both identities the same account. Its browser is a second
+  Playwright context (`memberPage`).
 - `<project>` is adopted by `<owner>` as `private`; `<project>-shared` is adopted by `<owner>` with
   `mend adopt <repo-url> --name <project>-shared --shared`.
 
@@ -73,8 +76,9 @@ Preconditions:
   `await page.getByRole("group", { name: "Role" }).getByRole("button", { name: "member" }).click()`,
   then `await page.getByRole("button", { name: "New link" }).click()`. The button reads
   `Creating…`, then a box says `Copy it now. The link is not shown again. It works once and expires <day>.`
-  with the link and the buttons `Copy` and `Done`. Choose `Done`. Revoke the `revoke-me` row's
-  `Revoke` (see Gotchas). The row leaves the open list and a summary `1 spent` appears.
+  with the link and the buttons `Copy` and `Done`. Choose `Done`. Run
+  `await page.locator("#invitations > div:last-child > div").filter({ hasText: "revoke-me@example.invalid" }).getByRole("button", { name: "Revoke" }).click()`
+  (a CSS scope; see Gotchas). The row leaves the open list and a summary `1 spent` appears.
 - **Open a link that is not one.** Run `await memberPage.goto("<web>/join/not-a-token")`. The
   heading `This link is not an invitation` is visible.
 - **Join.** Run `await memberPage.goto("<web>/join/<token>")` with the CLI's link. The heading is
@@ -109,15 +113,20 @@ Preconditions:
   on `<owner>`'s row (the only one with that button). An alert reads
   `An organization needs an owner. Make someone else an owner before this one steps down.`
 - **Role change.** Run `await page.getByRole("button", { name: "Make owner" }).click()`. The
-  `<member>` row reads `… · owner · joined <day>`. Run the same row's `Make member` to restore it
-  (now two buttons share that name; scope to the row as in Gotchas).
+  `<member>` row reads `… · owner · joined <day>`. Restore it: two buttons are now named
+  `Make member`, so run
+  `await page.locator("#members > div:last-child > div").filter({ hasText: "verify-member@example.invalid" }).getByRole("button", { name: "Make member" }).click()`.
 - **Password reset link.** Run `await page.getByRole("button", { name: "Reset password" }).click()`.
   A line reads `A password reset link for <member>. Setting a password with it signs them out everywhere.`
   above a one-time link to `/reset/<token>`. The reset page itself is mapped in
   [sign-in.md](./sign-in.md). Choose `Done`.
 - **Leave a private project behind.** As `<member>`, adopt one:
   `XDG_CONFIG_HOME=/tmp/verify-member mend adopt <repo-url> --name <project>-left --auth ambient`.
-  Stdout ends `  visible to only you`.
+  Stdout contains the line `  visible to only you`.
+- **Give the member a live session.** If `<member>` has `mend connect claude`, run
+  `XDG_CONFIG_HOME=/tmp/verify-member mend claude "List the files and change nothing." --name verify-removed --project <project>-shared --detach`
+  and note `<m8>`. `mend sessions --project <project>-shared` (as `<owner>`) lists it live. Without
+  a provider, skip this step and report the session-stop effect of removal unreachable.
 - **Remove the member.** Keep `memberPage` open on `<web>/`. As `<owner>`, run
   `await page.getByRole("button", { name: "Remove…" }).click()`. A group named `Remove <member>?`
   lists the three removal facts. Run
@@ -127,7 +136,13 @@ Preconditions:
   `This account no longer belongs to an organization on this Mend. Its sessions are being stopped; their work so far is kept.`
 - **Removed CLI.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend projects`. It is refused (the
   removal revokes every way the account signs in); expect exit code `1` with
-  `mend: unauthorized at <web> — the saved token was rejected; run: mend login`.
+  `mend: unauthorized at <web> — the saved token was rejected; run: mend login`. This wording is
+  the CLI's for any rejected token; that a removed account's token is rejected comes from the
+  removal code's comment, not from a traced request.
+- **Their session stopped, work kept.** If the live-session step ran, run
+  `mend sessions --project <project>-shared --all --json` as `<owner>`. The `verify-removed`
+  session is no longer live, and its `reviewUrl` still opens the session page. Stopping is
+  asynchronous (checkpoint, then stop); poll the listing rather than sleeping.
 - **Take over.** Reload `<web>/settings`. The heading `Projects without a creator` is visible, with a
   row `<project>-left` reading `private · adopted <day>`. Run
   `await page.getByRole("button", { name: "Take over…" }).click()`, then
@@ -152,11 +167,16 @@ Preconditions:
   That is a finding: the sections need a label.
 - Member row buttons carry no member name: `Make owner`, `Make member`, `Reset password`, `Remove…`
   and `Leave…` (`organization-settings.tsx:262-282`). They are unique only in a two-person
-  organization. With more members, scope by the row's text:
-  `page.locator("div").filter({ hasText: "verify-member@example.invalid" }).getByRole("button", { name: "Remove…" })`.
-  That is a finding.
-- `Revoke` on each open invitation carries no email or role (`organization-settings.tsx:458`). Scope
-  by the row's text as above. That is a finding.
+  organization. The rows have no role (plain `div`s inside the panel's body,
+  `organization-settings.tsx:249`), so there is no ARIA scope. Scope with CSS to the panel body's
+  direct children, filtered by email:
+  `page.locator("#members > div:last-child > div").filter({ hasText: "<email>" })`. A plain
+  `page.locator("div").filter({ hasText })` also matches the ancestor that holds every row and
+  fails strict mode. That is a finding: the rows need a role and a name.
+- `Revoke` on each open invitation carries no email or role (`organization-settings.tsx:458`), and
+  the invitation rows have no role either (`organization-settings.tsx:448`). Scope with
+  `page.locator("#invitations > div:last-child > div").filter({ hasText: "<email>" })`. That is a
+  finding.
 - `Take over…` carries no project name (`organization-settings.tsx:749`); its confirmation
   `Take over <name>` does.
 - The minted link is a plain `<code>` element with no label (`organization-settings.tsx:357`). Read

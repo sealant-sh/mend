@@ -4,7 +4,7 @@ The operator is an instance role, held by the first account registered on an emp
 administers the machine and has no default read access to organization content. Its acts on
 organizations run from the terminal, under `mend operator`: list organizations with their member and
 owner counts, create one (multi tenancy only), rename one, print a one-time owner invitation, make an
-existing member an owner, and print a one-time password reset link for any account. Every one of
+existing member an owner, and print a one-time password reset link for any active account that belongs to an organization. Every one of
 them refuses an account without the role, and each act on an organization lands in that
 organization's audit log, where its owners read it.
 
@@ -16,7 +16,8 @@ organization's audit log, where its owners read it.
 - `org-rename` renames an organization.
 - `org-invite-owner` prints a one-time link that makes whoever opens it an owner.
 - `grant-owner` makes an existing member an owner.
-- `reset-link` prints a one-time password reset link for an account; its page is `/reset/<token>`.
+- `reset-link` prints a one-time password reset link for an active account that belongs to an
+  organization; its page is `/reset/<token>`.
 - `operator-only` refuses every `mend operator` command for an account without the role.
 - `operator-audit` records each act in the organization's audit log.
 - `instance-defaults` shows the operator, and only the operator, the `instance · operator`
@@ -73,7 +74,9 @@ Preconditions:
   `password reset for <member-email> · works once · expires <YYYY-MM-DD>`. Opening it in a
   signed-out browser shows the heading `Set a new password`; setting one there is mapped in
   [sign-in.md](./sign-in.md).
-- **Reset a stranger.** Run `mend operator reset-link nobody@example.invalid`. Exit code `1`, stderr
+- **Reset a stranger.** Run `mend operator reset-link nobody@example.invalid`. The same refusal
+  answers an account in no organization, a removed member's included
+  (`apps/api/src/routes/operator.ts:195-199`). Exit code `1`, stderr
   `mend: No active account in an organization has that email.`
 - **Owners read what the operator did.** As `<owner>` in the browser, go to `<web>/settings`. The
   `Audit log` lists `<owner> issued a password reset link for <member>, as the operator`,

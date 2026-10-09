@@ -31,7 +31,7 @@ as upgrade tickets: single use, thirty seconds, one target.
   beside what it observed, and, for the operator, both gates (mapped in [server.md](./server.md)).
 - CLI: `mend server setup --exposure <loopback|private|public>` and `--tenancy <single|multi>`
   declare the posture on the Docker install (mapped in [server.md](./server.md)).
-- Web: the sidebar's machine block, at widths of 1024 px and more, reads
+- Web: the sidebar's machine block, displayed at widths of 1024 px and more, reads
   `exposure · <declared> · <http|https>` and `· via proxy` when the request came through a trusted
   proxy.
 - HTTP: `GET <web>/api/health` (no sign-in) carries `exposure` and `tenancyGate`.
@@ -86,8 +86,11 @@ Preconditions:
   `<id>: <detail> (<fix>)`, and ends
   `Start with MEND_EXPOSURE=private behind a network you control admission to, or close them.`
   Restart without it and confirm `/api/health` answers.
-- **Budget refuses new work, stops nothing.** Restart with `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS=1`.
-  Start one live session:
+- **Budget refuses new work, stops nothing.** The ceiling counts every unsettled session the
+  account holds, in every project (`apps/api/src/session-budgets.ts:34`). Before the restart, run
+  `mend sessions --json` and record the number of sessions listed (`<n0>`); stop them, or this step
+  measures a different ceiling. With `<n0>` at `0`, restart with
+  `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS=1` and start one live session:
   `mend claude "List the files and change nothing." --name verify-budget-1 --project <project> --detach`.
   Then run
   `mend claude "List the files and change nothing." --name verify-budget-2 --project <project> --detach`.
@@ -97,8 +100,11 @@ Preconditions:
   still reads `budgets` as observed (a positive number is set).
 - **A budget off is a gate item.** Restart with `MEND_BUDGET_ACCOUNT_TERMINALS=0`.
   `mend operator exposure` shows `· budgets  open …`.
-- **Upgrade ticket.** With the CLI's saved token `<token>` (from `$XDG_CONFIG_HOME/mend/cli.json`,
-  default `~/.config/mend/cli.json`) and a live session `<id>`, run
+- **Upgrade ticket.** With the CLI's saved token `<token>` and a live session `<id>`, run the
+  following. The token is in `cli.json` under `$XDG_CONFIG_HOME/mend` (default `~/.config/mend`),
+  except that the CLI uses `~/.mend/cli.json` when the preferred directory does not exist and
+  `~/.mend` does (`apps/cli/src/main.ts:306-313`); `MEND_TOKEN`, when set, overrides both. Read the
+  file the CLI actually uses.
   `curl -s -X POST <web>/api/upgrade-tickets -H "Authorization: Bearer <token>" -H "content-type: application/json" -d '{"target":"tty-embed","session":"<id>"}'`.
   The JSON has `ticket` and `"expiresInSeconds": 30`. Run it with `{"target":"service-tunnel"}`:
   status `400`, with the message `a service-tunnel ticket needs service`.
@@ -126,22 +132,31 @@ Preconditions:
   never block a start.
 - `/api/health` gives counts for exposure but names the failing multi mode gate items in
   `tenancyGate.failing` (an open question in ADR 0004, left as released).
-- The sidebar's exposure line is a plain paragraph in the `lg` sidebar
-  (`apps/web/src/components/shell.tsx:186-191`); below 1024 px it is not rendered. Its `title`
-  holds the host's address kinds. It has no role or name; use `getByText`.
+- The sidebar's exposure line is an unnamed paragraph (`apps/web/src/components/shell.tsx:186`).
+  The sidebar is always rendered but hidden by CSS below 1024 px (`hidden … lg:flex`,
+  `shell.tsx:34`), so at a narrow viewport `getByText` finds it but it is not visible. Use a wide
+  viewport and assert visibility. Its `title` holds the host's address kinds.
 - `mend operator exposure` and `mend operator gate` have no `--json`. Assert lines by their item id.
 - Budget request windows are in memory per API process; a restart resets them. Session ceilings are
   counted from the database and can be overshot by the number of requests in flight.
-- A budget refusal answers `429` with `budget`, `limit`, `retryAfterSeconds` and `message`. The
-  CLI prints the message only. Ceilings have no retry time: they free when the account's own work
-  settles.
+- Refusals differ by budget. Request windows (per address, per credential, sign-in attempts) and
+  count ceilings (live sessions, launches in flight, open event streams, terminals, tunnels, key
+  bridges) answer `429`; a request body whose declared `Content-Length` is over its limit answers
+  `413` unread (`apps/api/src/request-budgets.ts:187`); an over-size WebSocket frame closes the
+  socket with code `1009` and reason `frame over budget` (`apps/api/src/socket-budgets.ts:58`). The
+  `429` and `413` bodies carry `budget`, `limit`, `retryAfterSeconds` and `message`; the CLI prints
+  the message only. Ceilings have no retry time: they free when the account's own work settles. A
+  `mend pull` bundle over `MEND_BUDGET_BUNDLE_BYTES` is refused inside the landing route; its exact
+  status was not traced here.
 - The bearer-in-URL check runs before the upgrade; the exact status of a plain GET without upgrade
   headers was not read from source. Send the upgrade headers as above.
 - `MEND_TENANCY=multi` refuses to start while any gate item is open, with
   `MEND_TENANCY=multi is refused: the multi mode gate …`; `MEND_TENANCY=single` refuses while more
   than one organization exists. A run in `single` never sees the multi refusal unless it restarts
   with `multi`.
-- Upgrade tickets are spent by one use and expire after thirty seconds; a ticket in a proof artifact
-  is already dead, but redact it anyway.
+- Upgrade tickets are single use and expire after thirty seconds. That comes from source
+  (`packages/api-contracts/src/upgrade-tickets.ts`); the recipe mints a ticket and checks
+  `expiresInSeconds`, but does not exercise reuse or expiry. Redact tickets in proof artifacts
+  anyway.
 - The coverage table lists exposure as CLI only; the web sidebar line and `/api/health` are also
   user-visible.

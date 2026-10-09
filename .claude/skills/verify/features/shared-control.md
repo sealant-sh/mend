@@ -35,9 +35,9 @@ dropped. The owner, or an organization owner, turns it off.
 - Desktop: the terminal pane's header strip shows the same `Shared control` group for the owner, and
   a strip with `<owner> shares control of this session.` and `Turn off`, or
   `Only <owner> steers this session. …`, for everyone else.
-- Mobile: the session screen reads
+- Mobile: the session screen (`/session/<id>`) reads
   `only the owner steers this session · you can read it and review the change` for a viewer who
-  cannot steer, and the terminal's read-only line. No switch.
+  cannot steer, and, while control is shared, the terminal's read-only line. No switch.
 - Slack: an `@mend` follow-up in a thread from someone other than the owner is a steered turn,
   refused unless shared control is on (`not drivable yet`: no Slack workspace in the verify stack).
 - VS Code and the TUI offer no switch.
@@ -96,13 +96,27 @@ Preconditions:
 - **opencode is refused.** If `<member>` has an opencode session `<oc8>`, run
   `XDG_CONFIG_HOME=/tmp/verify-member mend session share <oc8> on --yes`. Exit code `1`, stderr
   `mend: opencode sessions are one person's. Shared control is not available for them; start your own session in this worktree.`
-- **Desktop.** With the desktop app attached over CDP and `<member>`'s session open as a terminal
-  pane (see [desktop.md](./desktop.md); `win` is the window's page from
-  `chromium.connectOverCDP`), run
+- **Desktop.** Sign the desktop app in as `<member>`, the session's owner: the switch renders only
+  for the owner (`apps/desktop/src/renderer/src/components/terminal-pane.tsx:396`). Attach over
+  CDP and open `<member>`'s session as a terminal pane (see [desktop.md](./desktop.md); `win` is
+  the window's page from `chromium.connectOverCDP`), then run
   `await win.getByRole("group", { name: "Shared control" }).getByRole("button", { name: "On", exact: true }).click()`.
   An alert dialog named `Turn on shared control?` opens
   (`win.getByRole("alertdialog", { name: "Turn on shared control?" })`) with `Keep it off` and
-  `Turn on`. Choose `Turn on`; `On` reports `aria-pressed="true"`. Turn it off with `Off`.
+  `Turn on`. Choose `Turn on`; `On` reports `aria-pressed="true"`. Turn it off with `Off`. Signed in
+  as `<owner>` instead, the same pane shows no group, but a strip reading
+  `Only <member> steers this session. You can read the record and review the change.` while off,
+  and `<member> shares control of this session.` with `Turn off` while on.
+- **Mobile.** Run the Expo app on the web (`pnpm --filter @mend/mobile web`, written
+  `<mobile-web>`) in a 390x844 Playwright context, paired as `<owner>` (see
+  [pairing-devices.md](./pairing-devices.md) and [mobile.md](./mobile.md)). With shared control
+  off, go to `<mobile-web>/session/<id>`. The text
+  `only the owner steers this session · you can read it and review the change` is visible
+  (`mobile.getByText("only the owner steers this session · you can read it and review the change")`).
+  Turn shared control on as `<member>` (CLI step above) and reload: that line is gone and, while
+  the agent runs, the terminal reads
+  `This session runs in a terminal. Only <member> types here; they can continue it as a conversation.`
+  Capture `ariaSnapshot()` and a screenshot of both states.
 - **Second view.** Reload `page` (`<owner>`) on `/sessions/<id>`: the header line matches the last
   state set. In `<web>/settings`, the `Audit log` lists
   `<member> shared control of session <id>`, `<owner> turned off shared control of session <id>` and
@@ -117,10 +131,13 @@ Preconditions:
 - The line beside the switch, the dialog's body and the CLI's second line depend on the worktree's
   layout. Where each person runs as themselves (per-person homes, the default):
   `Each turn runs on its sender's login. From now until this session ends, the agent uses no one's personal memory or instructions. The conversation so far, including what your agent loaded before, becomes visible to whoever steers.`
-  Where the workspace shares one home: `Each turn runs on your provider logins and Git access, whoever sends it.`
-  (the dialog prefixes it with
-  `Everyone who can see this project can send turns, answer approvals and interrupt.`). Assert the
-  wording the layout implies; see [per-person-homes.md](./per-person-homes.md).
+  That is also the whole dialog body in that layout. Where the workspace shares one home, the line
+  beside the switch and the CLI's second line read
+  `Each turn runs on your provider logins and Git access, whoever sends it.`, and only in that
+  layout does the dialog body prefix it with
+  `Everyone who can see this project can send turns, answer approvals and interrupt.`
+  (`packages/domain/src/workbench/shared-workspace.ts:84-86`). Assert the wording the layout
+  implies; see [per-person-homes.md](./per-person-homes.md).
 - `On` needs `exact: true`: Playwright's name match is a substring match by default.
 - The web page has no box to send a turn. A steered turn comes from a conversation session on the
   desktop or the phone, from Slack, or as review comments sent back
@@ -132,7 +149,8 @@ Preconditions:
   (`apps/cli/src/main.ts:4455`, `main.ts:4551`). The web session page and the audit log are the
   second views. That is a product gap.
 - The header facts (`runs as <owner> · shared control on`), the viewer lines and the terminal's
-  read-only line are plain text, not `role="status"`. Assert them with `getByText`.
+  read-only line are plain text, not `role="status"`. Assert them with `getByText`. On mobile they
+  are unlabelled `Text` elements; assert their text.
 - The desktop switch keeps `On` disabled with `session view not read yet` until the session view
   has answered; wait for it before clicking.
 - An organization owner never sees `On`: only the session's owner turns it on. `Turn off` appears

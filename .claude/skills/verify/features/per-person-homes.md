@@ -40,8 +40,12 @@ on one shared home; a worktree that has run per person stays per person.
   waiting lines under each live row. `mend shell <prefix>` opens a shell as the caller's own user.
 - TUI: `n` on a worktree opens `new session in <worktree> · pick a harness` with the join line; the
   session pane lists the shared-workspace and waiting lines.
-- Desktop, mobile and VS Code show the shared-workspace line on a session; VS Code also shows the
-  join and waiting lines. Not driven by this map.
+- Desktop: a strip above a session's terminal pane shows the shared-workspace line; a
+  conversation shows the waiting line under its turns.
+- Mobile: the session screen (`/session/<id>`) shows the shared-workspace line; a conversation
+  shows the waiting line under its turns.
+- VS Code: the session tree shows the join, shared-workspace and waiting lines (`not drivable yet`:
+  no VS Code harness in the verify stack, and the extension is unpublished).
 - Server: `MEND_HARNESS_LAYOUT` (`person` unless set, or `shared`), read at start.
 
 ## Driving it with verify
@@ -94,16 +98,40 @@ Preconditions:
 - **No way back.** With the server still on `shared`, start another session in `verify-pp`:
   `mend claude "List the files and change nothing." --worktree verify-pp --project <project>-shared --detach`.
   Its `mend shell`, as above, prints a uid from 40001 to 49999: the worktree stays per person.
-- **Waiting line (conversation sessions only).** In a per-person worktree, with shared control on
-  ([shared-control.md](./shared-control.md)) on a conversation session whose agent runs background
-  work for one person while another sends a turn, the session page shows
+- **TUI join line.** Run
+  `tmux new-session -d -s verify-pp-tui -x 200 -y 50 'XDG_CONFIG_HOME=/tmp/verify-member mend ui'`.
+  Select `<project>-shared` in the projects section and `verify-pp` in the worktrees section (keys
+  in [tui.md](./tui.md)), then `tmux send-keys -t verify-pp-tui n`. `tmux capture-pane -p -t verify-pp-tui`
+  shows `new session in verify-pp · pick a harness` and the join line, wrapped, naming `<owner>`.
+  Send `Escape` to close the picker without starting anything, and `q` to quit.
+- **TUI session pane.** In the same dashboard, select `<member>`'s live `verify-pp` session. The
+  session pane lists `Shared workspace with <owner> · each of you runs as yourself · …`, wrapped.
+- **Desktop.** Attach the desktop app over CDP, signed in as `<owner>` (see
+  [desktop.md](./desktop.md)), and open `<owner>`'s `verify-pp` session as a terminal pane. The
+  strip above it reads
+  `Shared workspace with <member> · each of you runs as yourself · either of you can read the other's files.`
+  (`win.getByText(/^Shared workspace with /)`).
+- **Mobile.** On the Expo web app (`<mobile-web>`, 390x844, paired as `<owner>`; see
+  [mobile.md](./mobile.md)), go to `<mobile-web>/session/<a-id>`. The same line is visible
+  (`mobile.getByText(/^Shared workspace with /)`).
+- **Waiting line (conversation sessions only; partly specified).** This step needs, in a
+  per-person worktree, a conversation (protocol) session with shared control on
+  ([shared-control.md](./shared-control.md)), whose agent is running background work (a background
+  task, a sub-agent, a goal) for one person when a second person sends a turn. This map has no exact
+  procedure to make an agent start background work or to enqueue the second turn: the web cannot
+  start a conversation, and a turn comes from the desktop or phone conversation, Slack or a review
+  sent back. When that state exists, the session page shows
   `page.getByRole("status").filter({ hasText: /^Waits for / })`, for example
-  `Waits for <owner>'s 2 background tasks to finish before <member>'s turn starts.`, and, for the
-  owner, the list `Work the turn waits for` with an `End` button per item. Report this step
-  unreachable when no conversation session is available; the web cannot start one.
+  `Waits for <owner>'s 2 background tasks to finish before <member>'s turn starts.` The list
+  `Work the turn waits for`, with an `End` button per item, shows only to the session's owner or the
+  person the work runs as, and only when at least one item can be ended
+  (`apps/web/src/components/shared-workspace.tsx:62`); with no endable item the status shows alone.
+  The desktop and mobile conversations show the same words under their turns. Report this step
+  unreachable when the state cannot be made.
 - **Proof.** Capture the open `New session in verify-pp` menu, `/sessions/<a-id>` with the
   shared-workspace line visible (`ariaSnapshot()` and a screenshot), the `mend claude --worktree`
-  and `mend sessions` transcripts, and both tmux captures of `id`. Restart the server without
+  and `mend sessions` transcripts, both tmux captures of `id`, the TUI picker and session pane
+  captures, and the desktop and mobile `ariaSnapshot()` with the shared-workspace line. Restart the server without
   `MEND_HARNESS_LAYOUT` and stop every session the run started (`mend stop <a8>`,
   `XDG_CONFIG_HOME=/tmp/verify-member mend stop <b8>`, and the rest by id).
 
@@ -112,9 +140,13 @@ Preconditions:
 - The join line in the `New session` menu is a plain paragraph inside the menu, not a menu item
   (`apps/web/src/components/project-detail/new-worktree-session.tsx:89`). Assert it with
   `getByRole("menu").getByText(…)`. The composer's join line is a plain paragraph too
-  (`apps/web/src/components/session-composer.tsx:196`). Neither has a role or name.
-- The shared-workspace line on the session page is a plain paragraph
-  (`apps/web/src/routes/sessions.$sessionId.tsx:311`). Use `getByText`.
+  (`apps/web/src/components/session-composer.tsx:196`). Both are unnamed paragraphs; assert their
+  text.
+- The shared-workspace line on the session page is an unnamed paragraph
+  (`apps/web/src/routes/sessions.$sessionId.tsx:311`); on the desktop it is a `span` in a strip
+  (`apps/desktop/src/renderer/src/components/workspace-facts.tsx:68`), and on mobile an unlabelled
+  `Text`. Use `getByText`. The desktop strip truncates long lines visually; the full text is in the
+  DOM and in its `title`.
 - Each `End` button on the waiting line is named only `End`
   (`apps/web/src/components/shared-workspace.tsx:85`); with several items they are ambiguous. Scope
   by the item's text (`<kind> · <description>`). That is a finding.
