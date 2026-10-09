@@ -1346,7 +1346,7 @@ async function main() {
     },
   );
   console.log(
-    `OBSERVED capture flush · completed · observed for the session: head ${flush.headN}, registered ${flush.registered}, pending ${flush.pending}`,
+    `OBSERVED capture flush · completed · observed for the session: head ${flush.headN}, registered ${flush.registered}, pending ${flush.pending}, why ${flush.why}`,
   );
   if (detail.currentAgent.exitCode === null)
     console.log(

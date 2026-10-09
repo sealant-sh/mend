@@ -670,6 +670,7 @@ test("flush evidence matches only this session's completed report", () => {
     registered: 3,
     uploadedObjects: 14,
     fenced: false,
+    why: "checkpoint · turn-boundary",
   });
   assert.equal(flushReportEvidence(report("other", "completed", complete), sessionId), false);
   assert.equal(flushReportEvidence(report(sessionId, "partial", complete), sessionId), false);

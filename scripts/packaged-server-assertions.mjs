@@ -199,12 +199,16 @@ export function flushReportEvidence(logText, sessionId) {
       const found = body.match(new RegExp(`\\b${key}: (true|false)\\b`));
       return found === null ? undefined : found[1] === "true";
     };
+    // Which flush answered (`checkpoint · turn-boundary`, `planned stop`, …): engine words, kept
+    // only when they are plain words, so the CI log says what the next stage queued behind.
+    const why = body.match(/\bwhy: '([\w ·-]{1,60})'/)?.[1] ?? "unknown";
     const report = {
       headN: number("headN"),
       pending: number("pending"),
       registered: number("registered"),
       uploadedObjects: number("uploadedObjects"),
       fenced: flag("fenced"),
+      why,
     };
     assert.ok(
       Number.isInteger(report.pending) &&
