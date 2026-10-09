@@ -28338,7 +28338,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     const pastes = (run: DeliveryRun, from: number) =>
       run.execs.flatMap((argv, index) => {
         const command = commandOf(argv);
-        const marker = command.findIndex((part) => part.startsWith("C"));
+        // Past the ticket (`command[4]`), which may itself start with a `C`.
+        const marker = command.findIndex((part, at) => at > 4 && part.startsWith("C"));
         return index >= from && command[3] === "mend-write" && marker > 4
           ? [
               {
@@ -28388,20 +28389,22 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     });
 
     /**
-     * mend#615 review, finding 3: a paste is no process, so no exit released the logins and Mend
-     * token a first paste wrote into its sender's home. The idle check releases them once the
-     * start's grace has passed, whether the write was placed or refused.
+     * mend#615 review, finding 3: a first paste ran a person's whole first start (their logins
+     * written, their deliveries) though no process of theirs ever ran, and nothing released it. A
+     * paste makes only their user, home and Mend token, and revokes the token once the write is
+     * over, whether it was placed or refused.
      */
     it.each([
       { write: "placed", fails: false },
       { write: "refused", fails: true },
     ])(
-      "releases a first paste's logins once its grace has passed, the write $write",
+      "makes only a first sender's user, home and token, and revokes the token after, the write $write",
       async ({ fails }) => {
-        let outcome: string | null = null;
+        const tokenEvents: Array<string> = [];
+        let seen: { readonly from: number; readonly outcome: string } | null = null;
         const run = await launchAndJoin({
           join: null,
-          loginReleaseGrace: Duration.millis(10),
+          layers: { tokenEvents },
           exec: (argv) =>
             fails &&
             named(argv, "mend-write") &&
@@ -28410,26 +28413,80 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
               : undefined,
           inspect: (engine, world, ids, current) =>
             Effect.gen(function* () {
+              const from = current.execs.length;
               const processes = world.processes.size;
               const placed = yield* engine
                 .storePastedImage(ids.holder, PNG, MARIA)
                 .pipe(Effect.result);
-              outcome = placed._tag;
-              // Maria's home was made for the paste and her logins written there; no process of
-              // hers was recorded.
-              expect(current.calls).toContain(`post:${MARIA}:/home/${JOINER}`);
               expect(world.processes.size).toBe(processes);
-              yield* until(
-                () => current.calls.includes(`delete:/home/${JOINER}`),
-                "Maria's logins released",
-              );
+              seen = { from, outcome: placed._tag };
             }),
         });
+        if (seen === null) throw new Error("nothing pasted");
+        const { from, outcome } = seen;
         expect(outcome).toBe(fails ? "Failure" : "Success");
-        // Alice's own home, the launcher's, is never released by it.
-        expect(run.calls).not.toContain(`delete:/home/${LAUNCHER}`);
+        const after: DeliveryRun = {
+          ...run,
+          execs: run.execs.slice(from),
+          users: run.users.slice(from),
+        };
+        // No login of Maria's was written, and nothing was delivered to her: the one exec as her is
+        // the write itself.
+        expect(run.calls.some((call) => call.startsWith(`post:${MARIA}:`))).toBe(false);
+        expect(asWho(after, () => true).filter((who) => who === JOINER)).toEqual([JOINER]);
+        expect(asWho(after, (argv) => named(argv, "mend-write"))).toEqual([JOINER]);
+        // Her user and home were made by root, once.
+        expect(
+          after.execs.filter(
+            (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
+          ),
+        ).toHaveLength(1);
+        // Her token went with the write; Alice's, whose home was already made, did not.
+        expect(
+          tokenEvents.filter(
+            (event) => event.startsWith("revokePerson:") && event.endsWith(`:${MARIA}`),
+          ),
+        ).toHaveLength(1);
+        expect(
+          tokenEvents.some(
+            (event) => event.startsWith("revokePerson:") && event.endsWith(":user-fixture"),
+          ),
+        ).toBe(false);
       },
     );
+
+    it("leaves a sender's first start whole: their join after a paste is made and delivered to as a first one", async () => {
+      let pasted = 0;
+      const run = await launchAndJoin({
+        layers: people,
+        joinWith: (engine, world, joined, current) =>
+          Effect.gen(function* () {
+            // Maria pastes into Alice's live session before she starts anything here.
+            const holder = [...world.sessions.values()].find(
+              (session) => session.ownerUserId === "user-fixture",
+            );
+            if (holder === undefined) throw new Error("no holder");
+            yield* engine.storePastedImage(holder.id, PNG, MARIA);
+            pasted = current.execs.length;
+            yield* engine.launch(joined, ["claude"]);
+          }),
+      });
+      const joinPart: DeliveryRun = {
+        ...run,
+        execs: run.execs.slice(pasted),
+        users: run.users.slice(pasted),
+      };
+      // Her join made her again (a new token) and ran her first-process deliveries as her.
+      expect(
+        joinPart.execs.some(
+          (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
+        ),
+      ).toBe(true);
+      for (const delivery of ["mend-skills", "mend-secret-files", "mend-write-absent"]) {
+        expect(asWho(joinPart, (argv) => named(argv, delivery))).toContain(JOINER);
+      }
+      expect(run.calls).toContain(`post:${MARIA}:/home/${JOINER}`);
+    });
 
     it("is written as root, inside the harness home, in a shared executor", async () => {
       let seen: { readonly from: number; readonly path: string } | null = null;

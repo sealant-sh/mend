@@ -14888,53 +14888,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const checked = yield* checkPastedImage(bytes);
         const workspace = yield* workspaceForSupportingProcess(session);
-        // A person executor (docs/adr/0016): the write runs as the sender, made there first if
-        // this is the first thing they do in it, as any process of theirs would be. Null: a shared
+        // A person executor (docs/adr/0016): the write runs as the sender. If nothing of theirs
+        // was made here yet, only their user, home and Mend token are: no logins, no deliveries,
+        // and the token goes once the write is over (mend#615 review, finding 3). Null: a shared
         // executor, where it runs as root, as before.
-        const started = yield* startAsPerson(session, workspace, Effect.succeed(sender), "shell");
-        // A paste is no process: nothing's exit releases the logins and Mend token a first paste
-        // wrote into the sender's home. The idle check does, once the start's grace has passed,
-        // whatever the write did, unless something of theirs runs here by then (mend#615 review,
-        // finding 3).
-        const released =
-          started === null
-            ? Effect.void
-            : releaseIdleLogins(SealantWorkspaceId.make(workspace.id), workspace);
-        return yield* Effect.gen(function* () {
-          const [identity] = started === null ? [] : yield* harnessLayouts.identitiesOf([sender]);
-          if (started !== null && identity === undefined) {
-            return yield* new PastedImageError({
-              reason: "write-failed",
-              message: "Could not place the image in the workspace: your user there is not known.",
-            });
-          }
-          const as: PersonExec | undefined =
-            started === null || identity === undefined
-              ? undefined
-              : {
-                  person: identity,
-                  user: started.user,
-                  sessionId: session.id,
-                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, identity),
-                };
-          const placement = pastedImagePlacement(checked.name, as === undefined ? null : sender);
-          yield* writeWorkspaceFiles(
-            session,
-            workspace,
-            [{ path: placement.path, bytes, within: placement.within }],
-            "workspace-files",
-            as,
-          ).pipe(
-            Effect.mapError(
-              (error) =>
-                new PastedImageError({
-                  reason: "write-failed",
-                  message: `Could not place the image in the workspace: ${error.message}`,
-                }),
-            ),
-          );
-          return { path: placement.path, mediaType: checked.mediaType, bytes: bytes.byteLength };
-        }).pipe(Effect.ensuring(released));
+        const home = yield* layoutSteps.homeForWrite({
+          workspace,
+          launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
+          accountId: sender,
+          sessionId: session.id,
+          worktreeId: session.worktreeId,
+          live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
+        });
+        const as: PersonExec | undefined =
+          home === null
+            ? undefined
+            : {
+                person: home.identity,
+                user: home.user,
+                sessionId: session.id,
+                places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, home.identity),
+              };
+        const placement = pastedImagePlacement(checked.name, as === undefined ? null : sender);
+        yield* writeWorkspaceFiles(
+          session,
+          workspace,
+          [{ path: placement.path, bytes, within: placement.within }],
+          "workspace-files",
+          as,
+        ).pipe(
+          Effect.mapError(
+            (error) =>
+              new PastedImageError({
+                reason: "write-failed",
+                message: `Could not place the image in the workspace: ${error.message}`,
+              }),
+          ),
+          Effect.ensuring(home === null ? Effect.void : home.done),
+        );
+        return { path: placement.path, mediaType: checked.mediaType, bytes: bytes.byteLength };
       });
 
       // ─── Repositories in a session (docs/adr/0010) ─────────────────────────────────────────

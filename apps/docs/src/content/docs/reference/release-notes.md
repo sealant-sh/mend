@@ -45,9 +45,13 @@ and their agents, can read and change each other's files, logins included.
   memory and secret files go into each person's home, as that person. A joiner's `install.sh` runs
   beside their agent unless **Start my agents after install.sh** is on.
 - **Pasted images.** An image is written as the person who pasted it, into
-  `/workspace/harness-home/people/<account id>/paste/`. In every layout the write follows no link
-  and changes the mode of no directory already there: a `paste` directory that is a link is refused,
-  where before it led a root write, and a 0755 `chmod`, outside the harness home.
+  `/workspace/harness-home/people/<account id>/paste/`. A first paste makes only that person's user,
+  home and Mend token. It writes none of their logins and delivers nothing, and the token is revoked
+  once the image is written. In every layout the write follows no link and never changes the mode of
+  a directory. A `paste` directory that is a link is refused; before, it led a root write, and a
+  0755 `chmod`, outside the harness home. A directory moved while the image is written is refused
+  too. Slack images go the same way, as the person who asked; on the capture store a request that
+  starts a session attaches none (see [Known issues](/reference/known-issues/)).
 - **Readers.** Conversations and memory are read back per person, for the person each process ran
   as.
 - **Shared steering.** Under shared control each turn runs on its sender's login, in one shared

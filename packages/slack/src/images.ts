@@ -36,7 +36,12 @@ export type ThreadImageSkip =
   /** Slack gave no URL for it, or did not return it. */
   | "unreadable"
   /** Mend could not write it into the session's harness home. */
-  | "not-stored";
+  | "not-stored"
+  /**
+   * The session has no running workspace to place it in: a captured session not running yet (its
+   * opening turn is written before its workspace exists), or not running any more.
+   */
+  | "not-live";
 
 /** What became of one image of the turn. */
 export type ThreadImage =
@@ -99,6 +104,8 @@ export const imageSkipWords = (reason: ThreadImageSkip, limits: ThreadImageLimit
       return "Slack did not return the file";
     case "not-stored":
       return "Mend could not store the file";
+    case "not-live":
+      return "the session has no running workspace to place it in yet";
   }
 };
 

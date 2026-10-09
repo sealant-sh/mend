@@ -192,9 +192,11 @@ starts. A person's live process, Services included, keeps their user's logins he
   else, `people/*/` included (`HARNESS_CREDENTIALS`, sealantd#136 and #144). It stays in `R` and
   ends with the executor. Mend's per-person saved records are `P/.mend-saved/`, addressed by their
   absolute path, never through `~/.mend`. An image a person pastes is written as them into
-  `P/paste/` (group `mend`, 0770 when made; the image 0640, so another person's agent reads it), by
-  a writer that enters no link below `P` and changes the mode of no directory already there
-  (mend#597 review, finding 2).
+  `P/paste/` (0770 when made, the image 0640, both group `mend`, so another person's agent reads
+  it). The writer enters no link below `P`, never changes a directory's mode, and refuses a write
+  whose directory moved meanwhile (mend#597 review, finding 2; mend#615 review, findings 1 and 2). A
+  first paste makes only the person's user, home and Mend token, writes none of their logins,
+  delivers nothing, and revokes the token once the image is written (mend#615 review, finding 3).
 
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,

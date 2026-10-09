@@ -299,6 +299,19 @@ conversations are not imported: a conversation needs its paths rewritten to resu
 `mend memory`, `mend memory show` and `mend memory rm` list, print and remove your memory for a
 project. The web app and the phone do not show it yet.
 
+## Images on a Slack request that starts a session are not attached on the capture store
+
+A Slack mention that starts a session on the capture store (the default `mend server setup`) does
+not attach its images. Mend writes the opening turn, with each image's path, before the session's
+workspace exists, and nothing is mounted from the server into a captured workspace. So there is
+nowhere to put the file yet. The turn and the requester's note say
+`not attached · the session has no running workspace to place it in yet`. Images on a follow-up to a
+running session are attached, as the person who asked (in a per-person workspace, in their own saved
+directory). Before 0.36 such images were written on the server and silently never reached the
+workspace. On a co-located store nothing changed: the images are attached when the session starts.
+
+Send the images again in a follow-up once the session is running.
+
 ## Per-person workspaces
 
 Applies to workspaces where each person runs as their own Linux user: by default, every new worktree

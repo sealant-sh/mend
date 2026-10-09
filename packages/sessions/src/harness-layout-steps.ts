@@ -521,6 +521,34 @@ export interface HarnessLayoutSteps {
     SealantPlatformError
   >;
   /**
+   * The user a one-off write of a person's (a pasted image) runs as in a person-layout executor:
+   * their user, home and Mend token only, made as root makes anyone (`personHomeScript` with their
+   * identity pickup; one exec) when nothing of theirs was made here yet. None of their logins is
+   * written, nothing is delivered (no dotfiles or install.sh, skills, secret files or shell
+   * profile) and the worktree repair does not start: the write needs only to run as them and redeem
+   * its pickup with their own token. The person is not recorded as made, so their first process
+   * here still makes them and gets its first-process deliveries. `done` revokes the token this made
+   * once the write is over, unless a start of theirs was asked for since or something of theirs
+   * runs here (it then belongs to that start, and its release). Null in a shared executor; refused
+   * where `processAs` refuses.
+   */
+  readonly homeForWrite: (input: {
+    readonly workspace: Workspace;
+    readonly launchId: string | null;
+    readonly accountId: string;
+    readonly sessionId: string;
+    readonly worktreeId: string;
+    /** Who has a live process in the executor: read only when `done` has a token to revoke. */
+    readonly live: Effect.Effect<ReadonlySet<string>>;
+  }) => Effect.Effect<
+    {
+      readonly identity: LinuxIdentity;
+      readonly user: ProcessUser;
+      readonly done: Effect.Effect<void>;
+    } | null,
+    SealantPlatformError
+  >;
+  /**
    * Whether Mend holds a home in this executor that an idle check could release: answered from
    * memory, so an exit in a shared executor, or one with only its launcher, reads nothing more.
    */
@@ -1418,6 +1446,84 @@ export const makeHarnessLayoutSteps = (deps: {
     });
   });
 
+  const homeForWrite: HarnessLayoutSteps["homeForWrite"] = Effect.fn(
+    "HarnessLayoutSteps.homeForWrite",
+  )(function* (input) {
+    if (input.launchId === null) {
+      // As `processAs`: never as root in a worktree that runs per person.
+      if (
+        !nothingRecorded() &&
+        (yield* repo.worktreeLayout(WorktreeId.make(input.worktreeId))).layout === "person"
+      ) {
+        return yield* layoutRefused(UNKNOWN_LAUNCH_REFUSAL);
+      }
+      return null;
+    }
+    const launchId = input.launchId;
+    if ((yield* layoutOfLaunch(launchId)) !== "person") return null;
+    const identity = yield* repo
+      .ensureIdentity(input.accountId)
+      .pipe(Effect.mapError((error) => layoutRefused(error.message)));
+    const workspaceId = input.workspace.id;
+    const key = homeKey(workspaceId, linuxHomeOf(identity));
+    const user = processUserOf(identity);
+    const minted = yield* lockOf(key).withPermit(
+      Effect.gen(function* () {
+        if (madeIn.get(workspaceId)?.has(identity.accountId) === true) return null;
+        const ticket = yield* deps.identityTicket({
+          sessionId: input.sessionId,
+          worktreeId: input.worktreeId,
+          launchId,
+          person: identity,
+        });
+        const result = yield* sealant
+          .exec(input.workspace, [
+            "sh",
+            "-c",
+            `${personHomeScript(identity, { harnessHome: deps.harnessHome })}\n` +
+              identityPickupScript([{ person: identity, ticket }]),
+          ])
+          .pipe(Effect.ensuring(Effect.sync(() => deps.discardTicket(ticket))));
+        const madeAt = yield* Clock.currentTimeMillis;
+        if (result.exitCode !== 0) {
+          yield* deps.revokePersonToken(launchId, identity.accountId, new Date(madeAt + 1));
+          return yield* new SealantPlatformError({
+            code: "person_user_not_made",
+            status: null,
+            message: `${identity.name} could not be made in this workspace: ${result.stderr.trim()}`,
+            cause: null,
+          });
+        }
+        return madeAt;
+      }),
+    );
+    const done =
+      minted === null
+        ? Effect.void
+        : lockOf(key)
+            .withPermit(
+              Effect.gen(function* () {
+                // A start of theirs since the write's own make: the token is that start's now.
+                if ((startedAt.get(key) ?? Number.NEGATIVE_INFINITY) >= minted) return;
+                if (madeIn.get(workspaceId)?.has(identity.accountId) === true) return;
+                if ((yield* input.live).has(identity.accountId)) return;
+                yield* deps.revokePersonToken(
+                  launchId,
+                  identity.accountId,
+                  new Date((yield* Clock.currentTimeMillis) + 1),
+                );
+              }),
+            )
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning(
+                  "session engine: the Mend token a one-off write made was not revoked",
+                ).pipe(Effect.annotateLogs({ workspaceId, cause: String(cause) })),
+              ),
+            );
+    return { identity, user, done };
+  });
+
   const processAs: HarnessLayoutSteps["processAs"] = Effect.fn("HarnessLayoutSteps.processAs")(
     function* (input) {
       if (input.launchId === null) {
@@ -1892,6 +1998,7 @@ export const makeHarnessLayoutSteps = (deps: {
     refusedOwnerMap,
     layoutOfLaunch,
     processAs,
+    homeForWrite,
     holdsReleasable,
     releaseIdle,
     relogin,
