@@ -92,6 +92,54 @@ OrbStack need separate observations; one passing combination does not prove the 
 5. Test an explicit separate SSH hostname if supported. It must not change Better Auth's origin
    policy or trust arbitrary forwarded headers.
 
+### VS Code on a MacBook, Mend on a Mac mini (0.36)
+
+The Linux stand-in is `scripts/vscode-remote-acceptance.mjs` (the guide is
+`apps/docs/src/content/docs/operate/mac-mini-vscode.md`). On the real machines, about 30 minutes.
+Write down what each step printed.
+
+On the **Mac mini** (Docker Desktop or OrbStack running, a user logged in):
+
+1. `uname -m; docker version --format '{{.Server.Os}}/{{.Server.Arch}} {{.Server.Version}}'`. Expect
+   `arm64` and `linux/arm64`.
+2. `mend server setup --bind 0.0.0.0 --url http://<mini>:3105`, with `<mini>` the name the MacBook
+   uses (the tailnet name, or `<mini>.local`). Expect `Using Docker context "orbstack"` or
+   `"desktop-linux"`, then `Mend <version> is reachable at http://<mini>:3105`.
+3. The first time: macOS may ask whether Docker (or OrbStack) may accept incoming connections. Allow
+   it, and write down that it asked.
+4. `docker inspect mend-mend-1 --format '{{json .HostConfig.PortBindings}}'`. Expect 3105 and 2222
+   on `0.0.0.0`. `docker exec mend-mend-1 ls -l /var/run/docker.sock`: a socket.
+5. Open `http://<mini>:3105` and create the first account.
+
+On the **MacBook** (VS Code started from the Dock, not a terminal):
+
+6. `curl -s http://<mini>:3105/api/health`: `{"status":"ok",…}`. `nc -vz <mini> 2222`: succeeded.
+7. Install Remote - SSH and the Mend `.vsix`. **Mend: Connect to server** → `http://<mini>:3105` →
+   **Sign in with the browser**. The browser opens `http://<mini>:3105/authorize` with the same code
+   as VS Code; approve. Expect `Signed in to Mend at http://<mini>:3105 as <you>`. Keychain Access
+   then lists a VS Code item for the extension's secret.
+8. Start a session somewhere else (the web app on the mini, or the phone); it appears in the VS Code
+   view within a second or two, with no refresh.
+9. **+** → **Workbench** → the project. Expect **Set up workspace SSH?** → **Set up**, then a new
+   window `[SSH: mend-ws-…]` with `/workspace/repo` open. In its terminal: `uname -sm` prints
+   `Linux aarch64`; `id -un` prints `root` (expected today; see the guide). `cat ~/.ssh/config` on
+   the MacBook starts with the `# >>> mend workspace ssh mend-ws-…` block, before anything you had.
+10. In the first window, **Mend: Open terminal** on that session → the shell → type
+    `echo hi > hi.txt`. **Mend: Review change** opens `http://<mini>:3105/changes/<id>` and lists
+    `hi.txt`.
+11. In the Remote-SSH window, start `python3 -m http.server 8000` and open the forwarded port from
+    the Ports view on the MacBook.
+12. Sleep the mini (Apple menu → Sleep) for a minute. VS Code shows
+    `Mend at http://<mini>:3105 did not answer within 30 s` or `… EHOSTUNREACH …` on the next
+    action; wake it, and the view updates again by itself within about a minute.
+13. Restart the mini. Without anyone logging in, Mend is not reachable (Docker Desktop runs per
+    user). With automatic login and "Start Docker Desktop when you sign in" on, it comes back on its
+    own.
+14. Optional, the edge: `mend server setup --edge <host> --ssh-bind 0.0.0.0 --exposure public` (DNS
+    and router forwarding for 80 and 443 in place), then repeat 7 to 10 against `https://<host>`.
+    Without `--ssh-bind`, setup says workspace SSH stays on loopback, and step 9 fails to connect.
+15. Clean up: stop the sessions, **Mend: Sign out** (the device disappears from Settings → Devices).
+
 ### Restart and upgrade
 
 1. Restart only the application container during disposable active work. Confirm helper/Git
@@ -106,16 +154,17 @@ OrbStack need separate observations; one passing combination does not prove the 
 
 ## Evidence ledger
 
-| Check                                                  | Observation                                                      |
-| ------------------------------------------------------ | ---------------------------------------------------------------- |
-| Generic volume/socket/port probe on Linux amd64        | Passed, Docker Engine 29.7.2                                     |
-| Sealant 0.28.0 containerized-launcher E2E on Linux     | Passed, including controller replacement and strict subpaths     |
-| Same prerequisite probe on macOS                       | Not yet run                                                      |
-| Packaged Mend session on macOS                         | Not yet run                                                      |
-| Installed VS Code and MacBook-to-Mini flow             | Not yet run                                                      |
-| Packaged CLI, session, record, and native SSH on Linux | Passed; private client config and container-pinned gateway trust |
-| Packaged rerun/restart/stop-start/upgrade on Linux     | Passed; same-source two-image upgrade and retained data          |
-| Packaged Mend rerun/restart/upgrade on macOS           | Not yet run                                                      |
+| Check                                                  | Observation                                                                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| Generic volume/socket/port probe on Linux amd64        | Passed, Docker Engine 29.7.2                                                                                                   |
+| Sealant 0.28.0 containerized-launcher E2E on Linux     | Passed, including controller replacement and strict subpaths                                                                   |
+| Same prerequisite probe on macOS                       | Not yet run                                                                                                                    |
+| Packaged Mend session on macOS                         | Not yet run                                                                                                                    |
+| Installed VS Code and MacBook-to-Mini flow             | Not yet run                                                                                                                    |
+| VS Code against a non-loopback server, Linux stand-in  | Passed 2026-10-10, `scripts/vscode-remote-acceptance.mjs`, 0.36.0-next.656, VS Code 1.139.1, Docker-in-Docker, tailnet address |
+| Packaged CLI, session, record, and native SSH on Linux | Passed; private client config and container-pinned gateway trust                                                               |
+| Packaged rerun/restart/stop-start/upgrade on Linux     | Passed; same-source two-image upgrade and retained data                                                                        |
+| Packaged Mend rerun/restart/upgrade on macOS           | Not yet run                                                                                                                    |
 
 The Linux installed-product run on 2026-09-06 used a packed CLI from this stack (the unreleased
 source manifest still read `0.22.0`), not a historical npm release:

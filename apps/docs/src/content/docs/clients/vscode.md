@@ -194,6 +194,9 @@ When the server refuses the token, the error offers **Connect to server**. A req
 answer within 30 seconds (a server asleep, a network change) fails with that, and the live view
 reconnects on its own once the server answers again.
 
+Running Mend on a Mac mini and VS Code on a laptop, step by step:
+[Mac mini and VS Code](/operate/mac-mini-vscode/).
+
 ## Install from source
 
 You need a checkout of the repository with its toolchain: Node (the repository pins 26.4.0 in

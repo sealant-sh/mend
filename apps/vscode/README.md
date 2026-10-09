@@ -20,8 +20,9 @@ or use none for a local server. The token is kept in VS Code's secret storage. `
 revokes a browser sign-in's token and forgets it. Remote opening requires the Microsoft Remote SSH
 extension.
 
-The end-to-end check against a server on another address is
-`MEND_TEST_VERSION=<preloaded image tag> node scripts/vscode-remote-acceptance.mjs`.
+A server on another machine (a Mac mini on the LAN or a tailnet, or behind an https edge) works the
+same way: see `apps/docs/src/content/docs/operate/mac-mini-vscode.md`. The end-to-end check of that
+shape is `MEND_TEST_VERSION=<preloaded image tag> node scripts/vscode-remote-acceptance.mjs`.
 
 The extension is not published to the Visual Studio Marketplace. Build a `.vsix` with
 `pnpm --filter mend build` followed by `pnpm --filter mend package`, and install it with
