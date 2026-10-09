@@ -6,8 +6,8 @@ and home, and what they run runs as them: their logins, Git and Mend identity, d
 files and memory. Mend says so wherever two people meet: before someone starts a session in a
 worktree where another person's session runs, and on a session while another person's process is
 live in its workspace. Everyone there has passwordless `sudo`, so this is not isolation, and the
-lines say that too. An operator opts out with `MEND_HARNESS_LAYOUT=shared`, which keeps new worktrees
-on one shared home; a worktree that has run per person stays per person.
+lines say that too. An operator opts out with `MEND_HARNESS_LAYOUT=shared`, which keeps new
+worktrees on one shared home; a worktree that has run per person stays per person.
 
 ## Sub-features
 
@@ -15,8 +15,8 @@ on one shared home; a worktree that has run per person stays per person.
   the workspace is shared and that either person can read the other's files.
 - `shared-workspace-line` says on a session `Shared workspace with <name> · …` while another
   person's process is live in its workspace.
-- `runs-as-yourself` runs a person's shell and agent as their own Linux user (`m` and 8
-  characters, uid 40001-49999, home `/home/<name>`).
+- `runs-as-yourself` runs a person's shell and agent as their own Linux user (`m` and 8 characters,
+  uid 40001-49999, home `/home/<name>`).
 - `layout-opt-out` keeps new worktrees on one shared home with `MEND_HARNESS_LAYOUT=shared`; the
   join line then says what is started runs on the launcher's logins.
 - `no-way-back` keeps a worktree that has run per person per person whatever the setting says, and
@@ -31,19 +31,20 @@ on one shared home; a worktree that has run per person stays per person.
 ## How to get to it (user POV)
 
 - Web: the worktree's `New session in <worktree>` menu on the project's Worktrees tab, and the Now
-  page composer once a worktree is picked: the join line sits above the harness choices or under
-  the prompt.
+  page composer once a worktree is picked: the join line sits above the harness choices or under the
+  prompt.
 - Web: the session page (`/sessions/<id>`): the shared-workspace line under the header facts; the
   waiting line at the top of the left pane while a turn waits.
 - CLI: `mend codex|claude|opencode|pi --worktree <existing>` (or `--name` of an existing worktree)
-  prints `✓ joins worktree …` and then the join line. `mend sessions` prints the shared-workspace and
-  waiting lines under each live row. `mend shell <prefix>` opens a shell as the caller's own user.
+  prints `✓ joins worktree …` and then the join line. `mend sessions` prints the shared-workspace
+  and waiting lines under each live row. `mend shell <prefix>` opens a shell as the caller's own
+  user.
 - TUI: `n` on a worktree opens `new session in <worktree> · pick a harness` with the join line; the
   session pane lists the shared-workspace and waiting lines.
-- Desktop: a strip above a session's terminal pane shows the shared-workspace line; a
-  conversation shows the waiting line under its turns.
-- Mobile: the session screen (`/session/<id>`) shows the shared-workspace line; a conversation
+- Desktop: a strip above a session's terminal pane shows the shared-workspace line; a conversation
   shows the waiting line under its turns.
+- Mobile: the session screen (`/session/<id>`) shows the shared-workspace line; a conversation shows
+  the waiting line under its turns.
 - VS Code: the session tree shows the join, shared-workspace and waiting lines (`not drivable yet`:
   no VS Code harness in the verify stack, and the extension is unpublished).
 - Server: `MEND_HARNESS_LAYOUT` (`person` unless set, or `shared`), read at start.
@@ -65,15 +66,15 @@ Preconditions:
   `mend claude "List the files and change nothing." --name verify-pp --project <project>-shared --detach`.
   Note `<a8>` from `  attach · mend attach <a8>`. Exit code `0`.
 - **Join line on the web.** On `memberPage`, open the project's Worktrees tab and run
-  `await memberPage.getByRole("button", { name: "New session in verify-pp" }).click()`. The open menu
-  (`memberPage.getByRole("menu")`) holds the text
+  `await memberPage.getByRole("button", { name: "New session in verify-pp" }).click()`. The open
+  menu (`memberPage.getByRole("menu")`) holds the text
   `<owner>'s session is running in this worktree. You share its workspace: everything you run runs as you, on your own logins, but either of you can read the other's files, logins included.`
   above the `claude` menu item. Press Escape.
 - **Join line in the CLI.** Run
   `XDG_CONFIG_HOME=/tmp/verify-member mend claude "List the files and change nothing." --worktree verify-pp --project <project>-shared --detach`.
   Stdout shows `✓ joins worktree verify-pp · 1 session · branch <branch>`, then
-  `· <owner>'s session is running in this worktree. You share its workspace: …` with the same
-  words, then `✓ worktree verify-pp · branch <branch>`. Note `<b8>`. Exit code `0`.
+  `· <owner>'s session is running in this worktree. You share its workspace: …` with the same words,
+  then `✓ worktree verify-pp · branch <branch>`. Note `<b8>`. Exit code `0`.
 - **Shared-workspace line on the web.** On `page`, go to `<web>/sessions/<a-id>` once `<member>`'s
   session runs. The text
   `Shared workspace with <member> · each of you runs as yourself · either of you can read the other's files.`
@@ -87,7 +88,8 @@ Preconditions:
   to 49999, and `/home/<that name>`. The same in `mend shell <a8>` for `<owner>` shows a different
   name and uid. Leave the shells with `exit`.
 - **Opt out.** Restart the server with `MEND_HARNESS_LAYOUT=shared` (through the stack Launch made).
-  Run `mend claude "List the files and change nothing." --name verify-shared --project <project>-shared --detach`,
+  Run
+  `mend claude "List the files and change nothing." --name verify-shared --project <project>-shared --detach`,
   then open `memberPage`'s `New session in verify-shared` menu. It reads
   `Another person's session is running in this worktree, in a workspace that shares one home: what you start there runs on the logins and Git identity of whoever started that workspace, not yours.`
 - **Shared home, observed.** Start `<member>`'s session there with
@@ -101,9 +103,10 @@ Preconditions:
 - **TUI join line.** Run
   `tmux new-session -d -s verify-pp-tui -x 200 -y 50 'XDG_CONFIG_HOME=/tmp/verify-member mend ui'`.
   Select `<project>-shared` in the projects section and `verify-pp` in the worktrees section (keys
-  in [tui.md](./tui.md)), then `tmux send-keys -t verify-pp-tui n`. `tmux capture-pane -p -t verify-pp-tui`
-  shows `new session in verify-pp · pick a harness` and the join line, wrapped, naming `<owner>`.
-  Send `Escape` to close the picker without starting anything, and `q` to quit.
+  in [tui.md](./tui.md)), then `tmux send-keys -t verify-pp-tui n`.
+  `tmux capture-pane -p -t verify-pp-tui` shows `new session in verify-pp · pick a harness` and the
+  join line, wrapped, naming `<owner>`. Send `Escape` to close the picker without starting anything,
+  and `q` to quit.
 - **TUI session pane.** In the same dashboard, select `<member>`'s live `verify-pp` session. The
   session pane lists `Shared workspace with <owner> · each of you runs as yourself · …`, wrapped.
 - **Desktop.** Attach the desktop app over CDP, signed in as `<owner>` (see
@@ -114,8 +117,8 @@ Preconditions:
 - **Mobile.** On the Expo web app (`<mobile-web>`, 390x844, paired as `<owner>`; see
   [mobile.md](./mobile.md)), go to `<mobile-web>/session/<a-id>`. The same line is visible
   (`mobile.getByText(/^Shared workspace with /)`).
-- **Waiting line (conversation sessions only; partly specified).** This step needs, in a
-  per-person worktree, a conversation (protocol) session with shared control on
+- **Waiting line (conversation sessions only; partly specified).** This step needs, in a per-person
+  worktree, a conversation (protocol) session with shared control on
   ([shared-control.md](./shared-control.md)), whose agent is running background work (a background
   task, a sub-agent, a goal) for one person when a second person sends a turn. This map has no exact
   procedure to make an agent start background work or to enqueue the second turn: the web cannot
@@ -131,8 +134,8 @@ Preconditions:
 - **Proof.** Capture the open `New session in verify-pp` menu, `/sessions/<a-id>` with the
   shared-workspace line visible (`ariaSnapshot()` and a screenshot), the `mend claude --worktree`
   and `mend sessions` transcripts, both tmux captures of `id`, the TUI picker and session pane
-  captures, and the desktop and mobile `ariaSnapshot()` with the shared-workspace line. Restart the server without
-  `MEND_HARNESS_LAYOUT` and stop every session the run started (`mend stop <a8>`,
+  captures, and the desktop and mobile `ariaSnapshot()` with the shared-workspace line. Restart the
+  server without `MEND_HARNESS_LAYOUT` and stop every session the run started (`mend stop <a8>`,
   `XDG_CONFIG_HOME=/tmp/verify-member mend stop <b8>`, and the rest by id).
 
 ## Gotchas

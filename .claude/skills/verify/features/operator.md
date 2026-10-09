@@ -3,10 +3,10 @@
 The operator is an instance role, held by the first account registered on an empty instance. It
 administers the machine and has no default read access to organization content. Its acts on
 organizations run from the terminal, under `mend operator`: list organizations with their member and
-owner counts, create one (multi tenancy only), rename one, print a one-time owner invitation, make an
-existing member an owner, and print a one-time password reset link for any active account that belongs to an organization. Every one of
-them refuses an account without the role, and each act on an organization lands in that
-organization's audit log, where its owners read it.
+owner counts, create one (multi tenancy only), rename one, print a one-time owner invitation, make
+an existing member an owner, and print a one-time password reset link for any active account that
+belongs to an organization. Every one of them refuses an account without the role, and each act on
+an organization lands in that organization's audit log, where its owners read it.
 
 ## Sub-features
 
@@ -20,13 +20,14 @@ organization's audit log, where its owners read it.
   organization; its page is `/reset/<token>`.
 - `operator-only` refuses every `mend operator` command for an account without the role.
 - `operator-audit` records each act in the organization's audit log.
-- `instance-defaults` shows the operator, and only the operator, the `instance · operator`
-  defaults on `/settings`.
+- `instance-defaults` shows the operator, and only the operator, the `instance · operator` defaults
+  on `/settings`.
 
 ## How to get to it (user POV)
 
 - CLI: `mend operator org list`, `mend operator org create <name>`,
-  `mend operator org rename <org> <name>`, `mend operator org invite-owner <org> [--email <address>]`,
+  `mend operator org rename <org> <name>`,
+  `mend operator org invite-owner <org> [--email <address>]`,
   `mend operator grant-owner <org> <email>`, `mend operator reset-link <email>`.
 - CLI: `mend operator gate` and `mend operator exposure` are mapped in [exposure.md](./exposure.md).
 - Web: the links these commands print open `/join/<token>` ([organization.md](./organization.md))
@@ -62,8 +63,8 @@ Preconditions:
 - **Owner invitation.** Run
   `mend operator org invite-owner <org> --email verify-owner@example.invalid`. Stdout line 1 is
   `<web>/join/<token>`, line 2 is
-  `owner of <org> · for verify-owner@example.invalid · works once · expires <YYYY-MM-DD>`. Opened
-  in a signed-out browser, the join page's line reads `as owner · expires <day>`. Revoke it from
+  `owner of <org> · for verify-owner@example.invalid · works once · expires <YYYY-MM-DD>`. Opened in
+  a signed-out browser, the join page's line reads `as owner · expires <day>`. Revoke it from
   Settings → Invitations afterwards.
 - **Grant owner.** Run `mend operator grant-owner <org> <member-email>`. Stdout
   `✓ <member-email> is an owner of <org>`. `mend members` shows `<member>` as `owner`.
@@ -96,10 +97,12 @@ Preconditions:
 - Organization names are matched exactly; quote a name with spaces. Only the value right after
   `--email` is skipped when the command reads its words, so put flags after the positional
   arguments.
-- An unknown subcommand prints `mend: unknown operator command "<word>" · mend help operator org list`
-  (or `unknown operator org command`), exit code `1`.
-- `org create` is accepted only with `MEND_TENANCY=multi`, which refuses to start until the multi mode gate
-  passes ([exposure.md](./exposure.md)). In a single-tenancy run only its refusal is drivable.
+- An unknown subcommand prints
+  `mend: unknown operator command "<word>" · mend help operator org list` (or
+  `unknown operator org command`), exit code `1`.
+- `org create` is accepted only with `MEND_TENANCY=multi`, which refuses to start until the multi
+  mode gate passes ([exposure.md](./exposure.md)). In a single-tenancy run only its refusal is
+  drivable.
 - `grant-owner` on someone who is already an owner prints the same `✓` line and changes nothing.
 - The links print once. Nothing lists them later; a lost link means a new one.
 - An operator reads no organization content through these commands: `org list` prints counts only.

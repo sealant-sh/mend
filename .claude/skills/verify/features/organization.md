@@ -5,9 +5,9 @@ every account belongs to exactly one. Registration closes after the first accoun
 joins through a single-use invitation link that an owner prints with `mend invite` or creates in
 Settings → Invitations; Mend sends no email. Whoever opens the link at `/join/<token>` creates an
 account and joins with the link's role. Owners change roles, reset members' passwords, remove
-people, take over projects a removed member left, and read the audit log; members read the roster.
-A project is `private` (its creator only) or `shared` (the organization), and a project someone
-cannot see answers as a missing one does.
+people, take over projects a removed member left, and read the audit log; members read the roster. A
+project is `private` (its creator only) or `shared` (the organization), and a project someone cannot
+see answers as a missing one does.
 
 ## Sub-features
 
@@ -31,8 +31,8 @@ cannot see answers as a missing one does.
 ## How to get to it (user POV)
 
 - Web: `Settings` in the primary navigation opens `/settings`. The panels `Members`, `Invitations`
-  (owners), `Folders`, `Projects without a creator` (owners, only when there is one) and
-  `Audit log` (owners) sit below `Devices`. Folders are mapped in
+  (owners), `Folders`, `Projects without a creator` (owners, only when there is one) and `Audit log`
+  (owners) sit below `Devices`. Folders are mapped in
   [references-folders.md](./references-folders.md). The `Defaults · <org>` and
   `Workspace environment · <org>` panels near the top are mapped in
   [project-environment.md](./project-environment.md).
@@ -51,8 +51,8 @@ cannot see answers as a missing one does.
 Preconditions:
 
 - Mend is healthy at `<web>` in `MEND_TENANCY=single` (the default). The browser and the `mend` CLI
-  are signed in as the instance's first account, written `<owner>`: the organization's owner and
-  the instance's operator. `mend members` prints `<org> · 1 member`.
+  are signed in as the instance's first account, written `<owner>`: the organization's owner and the
+  instance's operator. `mend members` prints `<org> · 1 member`.
 - A second CLI identity for the invited account, written `<member>`, uses its own config directory:
   `mkdir -p /tmp/verify-member/mend`, then prefix its commands with
   `XDG_CONFIG_HOME=/tmp/verify-member`. `MEND_TOKEN` and `MEND_URL` must be unset in the shell that
@@ -74,9 +74,9 @@ Preconditions:
 - **Invite from the web, then revoke.** Run
   `await page.getByRole("textbox", { name: "Bind the link to an email (optional)" }).fill("revoke-me@example.invalid")`,
   `await page.getByRole("group", { name: "Role" }).getByRole("button", { name: "member" }).click()`,
-  then `await page.getByRole("button", { name: "New link" }).click()`. The button reads
-  `Creating…`, then a box says `Copy it now. The link is not shown again. It works once and expires <day>.`
-  with the link and the buttons `Copy` and `Done`. Choose `Done`. Run
+  then `await page.getByRole("button", { name: "New link" }).click()`. The button reads `Creating…`,
+  then a box says `Copy it now. The link is not shown again. It works once and expires <day>.` with
+  the link and the buttons `Copy` and `Done`. Choose `Done`. Run
   `await page.locator("#invitations > div:last-child > div").filter({ hasText: "revoke-me@example.invalid" }).getByRole("button", { name: "Revoke" }).click()`
   (a CSS scope; see Gotchas). The row leaves the open list and a summary `1 spent` appears.
 - **Open a link that is not one.** Run `await memberPage.goto("<web>/join/not-a-token")`. The
@@ -85,8 +85,8 @@ Preconditions:
   `<org>` and the line under it reads `as member · expires <day>`. Fill
   `memberPage.getByRole("textbox", { name: "Name" })` with `<member>`,
   `memberPage.getByRole("textbox", { name: "Email" })` with `verify-member@example.invalid`,
-  `memberPage.getByLabel("Password", { exact: true })` and `memberPage.getByLabel("Password, again")`
-  with one new password, then run
+  `memberPage.getByLabel("Password", { exact: true })` and
+  `memberPage.getByLabel("Password, again")` with one new password, then run
   `await memberPage.getByRole("button", { name: "Create account and join" }).click()`. The button
   reads `One moment…`, then the page lands on `/welcome`.
 - **The link is spent.** Run `await memberPage.goto("<web>/join/<token>")` again from a fresh,
@@ -95,30 +95,32 @@ Preconditions:
 - **Roster, both views.** Run `mend members`. Line 1 is `<org> · 2 members`; the `<owner>` row
   starts with `▸` and reads `owner`, the `<member>` row reads `member  joined <YYYY-MM-DD>`. Reload
   `<web>/settings`: the `Members` panel shows both, `<owner>` marked `you`.
-- **Member CLI.** Sign `<member>` in on its own config directory (see
-  [sign-in.md](./sign-in.md)), then run `XDG_CONFIG_HOME=/tmp/verify-member mend members`. The
-  `▸` row is `<member>`. Run `XDG_CONFIG_HOME=/tmp/verify-member mend invite`. Exit code `1`,
-  stderr `mend: only an owner can invite; mend members shows who`.
-- **Who sees what.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend projects`. `<project>-shared`
-  is listed and `<project>` is not. On `memberPage`, go to `<web>/projects`: a link whose name
-  starts with `<project>-shared` is listed, and
-  `memberPage.getByRole("link", { name: new RegExp("^<project>(?!-shared)") })` has count `0`. A member's Settings shows
-  `Members` without `Make owner`, `Remove…` or the `Invitations` panel.
+- **Member CLI.** Sign `<member>` in on its own config directory (see [sign-in.md](./sign-in.md)),
+  then run `XDG_CONFIG_HOME=/tmp/verify-member mend members`. The `▸` row is `<member>`. Run
+  `XDG_CONFIG_HOME=/tmp/verify-member mend invite`. Exit code `1`, stderr
+  `mend: only an owner can invite; mend members shows who`.
+- **Who sees what.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend projects`. `<project>-shared` is
+  listed and `<project>` is not. On `memberPage`, go to `<web>/projects`: a link whose name starts
+  with `<project>-shared` is listed, and
+  `memberPage.getByRole("link", { name: new RegExp("^<project>(?!-shared)") })` has count `0`. A
+  member's Settings shows `Members` without `Make owner`, `Remove…` or the `Invitations` panel.
 - **Visibility.** As `<owner>`, open `<web>/projects/<id>/setup` for `<project>`. Run
   `await page.getByRole("group", { name: "Visibility" }).getByRole("button", { name: "shared" }).click()`.
   The `shared` button reports `aria-pressed="true"` and the project header line ends `· shared`.
   `XDG_CONFIG_HOME=/tmp/verify-member mend projects` now lists `<project>`. Set it back to
   `private`.
-- **Last owner.** In `Members`, run `await page.getByRole("button", { name: "Make member" }).click()`
-  on `<owner>`'s row (the only one with that button). An alert reads
+- **Last owner.** In `Members`, run
+  `await page.getByRole("button", { name: "Make member" }).click()` on `<owner>`'s row (the only one
+  with that button). An alert reads
   `An organization needs an owner. Make someone else an owner before this one steps down.`
 - **Role change.** Run `await page.getByRole("button", { name: "Make owner" }).click()`. The
   `<member>` row reads `… · owner · joined <day>`. Restore it: two buttons are now named
   `Make member`, so run
   `await page.locator("#members > div:last-child > div").filter({ hasText: "verify-member@example.invalid" }).getByRole("button", { name: "Make member" }).click()`.
 - **Password reset link.** Run `await page.getByRole("button", { name: "Reset password" }).click()`.
-  A line reads `A password reset link for <member>. Setting a password with it signs them out everywhere.`
-  above a one-time link to `/reset/<token>`. The reset page itself is mapped in
+  A line reads
+  `A password reset link for <member>. Setting a password with it signs them out everywhere.` above
+  a one-time link to `/reset/<token>`. The reset page itself is mapped in
   [sign-in.md](./sign-in.md). Choose `Done`.
 - **Leave a private project behind.** As `<member>`, adopt one:
   `XDG_CONFIG_HOME=/tmp/verify-member mend adopt <repo-url> --name <project>-left --auth ambient`.
@@ -136,15 +138,15 @@ Preconditions:
   `This account no longer belongs to an organization on this Mend. Its sessions are being stopped; their work so far is kept.`
 - **Removed CLI.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend projects`. It is refused (the
   removal revokes every way the account signs in); expect exit code `1` with
-  `mend: unauthorized at <web> — the saved token was rejected; run: mend login`. This wording is
-  the CLI's for any rejected token; that a removed account's token is rejected comes from the
-  removal code's comment, not from a traced request.
+  `mend: unauthorized at <web> — the saved token was rejected; run: mend login`. This wording is the
+  CLI's for any rejected token; that a removed account's token is rejected comes from the removal
+  code's comment, not from a traced request.
 - **Their session stopped, work kept.** If the live-session step ran, run
-  `mend sessions --project <project>-shared --all --json` as `<owner>`. The `verify-removed`
-  session is no longer live, and its `reviewUrl` still opens the session page. Stopping is
-  asynchronous (checkpoint, then stop); poll the listing rather than sleeping.
-- **Take over.** Reload `<web>/settings`. The heading `Projects without a creator` is visible, with a
-  row `<project>-left` reading `private · adopted <day>`. Run
+  `mend sessions --project <project>-shared --all --json` as `<owner>`. The `verify-removed` session
+  is no longer live, and its `reviewUrl` still opens the session page. Stopping is asynchronous
+  (checkpoint, then stop); poll the listing rather than sleeping.
+- **Take over.** Reload `<web>/settings`. The heading `Projects without a creator` is visible, with
+  a row `<project>-left` reading `private · adopted <day>`. Run
   `await page.getByRole("button", { name: "Take over…" }).click()`, then
   `await page.getByRole("button", { name: "Take over <project>-left" }).click()`. The panel
   disappears and `mend projects` lists `<project>-left`.
@@ -154,10 +156,9 @@ Preconditions:
   `<owner> made project <id> shared`, `<member> joined as member`,
   `<owner> revoked an invitation link` and `<owner> created an invitation link for member`.
 - **Proof.** Capture `/settings` after the invitation, after the join and after the removal
-  (`await page.locator("body").ariaSnapshot()` and a screenshot with the `Members` heading
-  visible), `memberPage` at `/join/<token>`, `/welcome` and `/login?reason=access`, and the
-  transcripts of `mend invite`, both `mend members`, both `mend projects` and the refused member
-  commands.
+  (`await page.locator("body").ariaSnapshot()` and a screenshot with the `Members` heading visible),
+  `memberPage` at `/join/<token>`, `/welcome` and `/login?reason=access`, and the transcripts of
+  `mend invite`, both `mend members`, both `mend projects` and the refused member commands.
 
 ## Gotchas
 
@@ -171,8 +172,8 @@ Preconditions:
   `organization-settings.tsx:249`), so there is no ARIA scope. Scope with CSS to the panel body's
   direct children, filtered by email:
   `page.locator("#members > div:last-child > div").filter({ hasText: "<email>" })`. A plain
-  `page.locator("div").filter({ hasText })` also matches the ancestor that holds every row and
-  fails strict mode. That is a finding: the rows need a role and a name.
+  `page.locator("div").filter({ hasText })` also matches the ancestor that holds every row and fails
+  strict mode. That is a finding: the rows need a role and a name.
 - `Revoke` on each open invitation carries no email or role (`organization-settings.tsx:458`), and
   the invitation rows have no role either (`organization-settings.tsx:448`). Scope with
   `page.locator("#invitations > div:last-child > div").filter({ hasText: "<email>" })`. That is a
@@ -185,9 +186,9 @@ Preconditions:
 - The two `Show password` toggles on `/join/<token>` share one name
   (`apps/web/src/components/auth-fields.tsx:84`) and toggle both fields together. The password
   inputs are not textboxes; use `getByLabel`.
-- The audit log is a plain `<ol>` with no name (`organization-settings.tsx:816`). Assert entries with
-  `page.getByRole("listitem").filter({ hasText: "…" })`. Project and session entries name the id,
-  not the project's name.
+- The audit log is a plain `<ol>` with no name (`organization-settings.tsx:816`). Assert entries
+  with `page.getByRole("listitem").filter({ hasText: "…" })`. Project and session entries name the
+  id, not the project's name.
 - `--days` above 30 is cut to 30 without a message; below 1 is refused. The web link always expires
   after seven days.
 - Settings pages re-read on their own when membership, roles or invitations change. Wait for the
