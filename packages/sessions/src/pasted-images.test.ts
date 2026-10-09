@@ -10,6 +10,7 @@ import {
   PASTED_IMAGE_MAX_BYTES,
   detectImageType,
   pastedImageName,
+  pastedImagePlacement,
   storePastedImage,
 } from "./pasted-images.ts";
 
@@ -83,5 +84,49 @@ describe("storePastedImage", () => {
     const result = await Effect.runPromise(Effect.result(storePastedImage(home, huge)));
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") expect(result.failure.reason).toBe("too-large");
+  });
+
+  it("refuses a paste directory the workspace made a link out of the harness home (mend#597 review, finding 2)", async () => {
+    const home = tempHome();
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-outside-"));
+    fs.chmodSync(outside, 0o700);
+    fs.symlinkSync(outside, path.join(home, "paste"));
+    const result = await Effect.runPromise(Effect.result(storePastedImage(home, PNG)));
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.reason).toBe("write-failed");
+      expect(result.failure.message).toBe(`Could not store the image: a link: ${home}/paste`);
+    }
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(fs.statSync(outside).mode & 0o7777).toBe(0o700);
+  });
+
+  it("leaves the mode of a paste directory already there as it is", async () => {
+    const home = tempHome();
+    fs.mkdirSync(path.join(home, "paste"));
+    fs.chmodSync(path.join(home, "paste"), 0o750);
+    const stored = await Effect.runPromise(storePastedImage(home, PNG));
+    expect(fs.statSync(path.join(home, "paste")).mode & 0o7777).toBe(0o750);
+    expect(fs.statSync(stored.hostPath).mode & 0o777).toBe(0o644);
+  });
+});
+
+describe("pastedImagePlacement", () => {
+  it("keeps a shared executor's paste where it was, inside the harness home", () => {
+    expect(pastedImagePlacement("a.png", null)).toEqual({
+      path: `${HARNESS_HOME_MOUNT_PATH}/paste/a.png`,
+      within: { root: HARNESS_HOME_MOUNT_PATH, directoryMode: 0o755, fileMode: 0o644 },
+    });
+  });
+
+  it("puts a person's paste in their own saved directory, the group's to read", () => {
+    expect(pastedImagePlacement("a.png", "user-maria")).toEqual({
+      path: `${HARNESS_HOME_MOUNT_PATH}/people/user-maria/paste/a.png`,
+      within: {
+        root: `${HARNESS_HOME_MOUNT_PATH}/people/user-maria`,
+        directoryMode: 0o2770,
+        fileMode: 0o640,
+      },
+    });
   });
 });

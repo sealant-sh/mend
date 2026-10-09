@@ -30,6 +30,9 @@ const runAll = (execs: ReadonlyArray<ReadonlyArray<string>>) => {
   }
 };
 
+/** Mode bits, setgid included, of what is at `at`, never through a link. */
+const modeOf = (at: string) => fs.lstatSync(at).mode & 0o7777;
+
 /** Incompressible bytes: gzip keeps them about as large as they are. */
 const randomOf = (size: number) => new Uint8Array(randomBytes(size));
 
@@ -303,6 +306,139 @@ describe("writeFilesPickupExec", () => {
     expect(fs.readdirSync(elsewhere)).toEqual([]);
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(elsewhere, { recursive: true, force: true });
+  });
+
+  describe("a file kept inside its root (a pasted image, mend#597 review finding 2)", () => {
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+    const place = async (target: string, root: string, modes = { dir: 0o755, file: 0o644 }) =>
+      runExec(
+        writeFilesPickupExec(
+          [
+            {
+              path: target,
+              within: { root, directoryMode: modes.dir, fileMode: modes.file },
+            },
+          ],
+          channel.mint([{ path: target, bytes: PNG }]),
+        ),
+        channel.env,
+      );
+
+    it("refuses a paste directory that is a link out of the root, writing and changing nothing there", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-root-"));
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-outside-"));
+      fs.chmodSync(outside, 0o700);
+      fs.symlinkSync(outside, path.join(root, "paste"));
+      const target = path.join(root, "paste", "20261010-120000-abcd.png");
+      const result = await place(target, root);
+      expect(result.status).toBe(3);
+      expect(result.stderr).toBe(`mend-write: not written: ${target} (a link: ${root}/paste)\n`);
+      expect(fs.readdirSync(outside)).toEqual([]);
+      expect(modeOf(outside)).toBe(0o700);
+      expect(fs.readdirSync(root)).toEqual(["paste"]);
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    });
+
+    it("refuses a link deeper down too, and a path outside the root", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-root-"));
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-outside-"));
+      fs.mkdirSync(path.join(root, "people"));
+      fs.symlinkSync(outside, path.join(root, "people", "maria"));
+      const deep = path.join(root, "people", "maria", "paste", "a.png");
+      const linked = await place(deep, root);
+      expect(linked.status).toBe(3);
+      expect(linked.stderr).toContain(`(a link: ${root}/people/maria)`);
+      const elsewhere = path.join(outside, "a.png");
+      const out = await place(elsewhere, root);
+      expect(out.status).toBe(3);
+      expect(out.stderr).toContain(`(not inside ${root})`);
+      const climbing = `${root}/paste/../../a.png`;
+      const climbed = await place(climbing, root);
+      expect(climbed.status).toBe(3);
+      expect(climbed.stderr).toContain("(not a plain absolute path)");
+      expect(fs.readdirSync(outside)).toEqual([]);
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    });
+
+    it("replaces a link at the file's own name, never writing through it", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-root-"));
+      const outside = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-outside-"));
+      const victim = path.join(outside, "victim");
+      fs.writeFileSync(victim, "theirs");
+      fs.mkdirSync(path.join(root, "paste"));
+      const target = path.join(root, "paste", "a.png");
+      fs.symlinkSync(victim, target);
+      const result = await place(target, root);
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(victim, "utf8")).toBe("theirs");
+      expect(fs.lstatSync(target).isFile()).toBe(true);
+      expect(new Uint8Array(fs.readFileSync(target))).toEqual(PNG);
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    });
+
+    it("keeps the mode of a directory already there, and makes a new one with the mode it names", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-paste-root-"));
+      fs.mkdirSync(path.join(root, "paste"));
+      fs.chmodSync(path.join(root, "paste"), 0o700);
+      const kept = path.join(root, "paste", "a.png");
+      expect((await place(kept, root)).status).toBe(0);
+      expect(modeOf(path.join(root, "paste"))).toBe(0o700);
+      expect(modeOf(kept)).toBe(0o644);
+      expect(modeOf(root)).toBe(0o700);
+
+      // A person's saved directory (docs/adr/0016): a new `paste/` the group's, setgid, and the
+      // image 0640, whatever the writer's umask.
+      const saved = path.join(root, "people", "maria");
+      fs.mkdirSync(saved, { recursive: true });
+      fs.chmodSync(saved, 0o710);
+      const made = path.join(saved, "paste", "b.png");
+      const result = await runExec(
+        [
+          "sh",
+          "-c",
+          'umask 077 && exec "$@"',
+          "mend-as-person",
+          ...writeFilesPickupExec(
+            [{ path: made, within: { root: saved, directoryMode: 0o2770, fileMode: 0o640 } }],
+            channel.mint([{ path: made, bytes: PNG }]),
+          ),
+        ],
+        channel.env,
+      );
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(modeOf(path.join(saved, "paste"))).toBe(0o2770);
+      expect(modeOf(made)).toBe(0o640);
+      expect(modeOf(saved)).toBe(0o710);
+      expect(new Uint8Array(fs.readFileSync(made))).toEqual(PNG);
+      // Nothing staged is left beside it.
+      expect(fs.readdirSync(path.join(saved, "paste"))).toEqual(["b.png"]);
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it("carries only the ticket, the root and the path in its arguments", () => {
+      const argv = writeFilesPickupExec(
+        [
+          {
+            path: "/workspace/harness-home/people/u1/paste/a.png",
+            within: {
+              root: "/workspace/harness-home/people/u1",
+              directoryMode: 0o2770,
+              fileMode: 0o640,
+            },
+          },
+        ],
+        "ticket-1",
+      );
+      expect(argv.slice(4)).toEqual([
+        "ticket-1",
+        "C2770:640:/workspace/harness-home/people/u1",
+        "/workspace/harness-home/people/u1/paste/a.png",
+      ]);
+    });
   });
 
   it("fails, naming the reason and no byte, when the ticket is spent", async () => {

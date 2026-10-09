@@ -2437,13 +2437,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // (docs/adr/0013).
         const steering = yield* SessionSteering;
         const session = yield* steering.session(params.id);
+        const caller = yield* CurrentUser;
         const bytes = Buffer.from(payload.contentsBase64, "base64");
         // Co-located: the mounted harness home on this machine. Capture mode: the live
-        // workspace's own, through exec; no live workspace is `SessionNotLive`.
+        // workspace's own, through exec, as the caller in a person executor (docs/adr/0016); no
+        // live workspace is `SessionNotLive`.
         const stored = yield* (yield* SessionEngine)
           .storePastedImage(
             session.id,
             new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+            caller.user.id,
           )
           .pipe(
             Effect.catchTags({

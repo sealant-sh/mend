@@ -7630,11 +7630,13 @@ describe("SessionEngine files into a captured workspace", () => {
             base: null,
           });
           // No workspace yet: nowhere a harness would read the file, so nothing is stored.
-          const early = yield* engine.storePastedImage(session.id, PNG).pipe(Effect.flip);
+          const early = yield* engine
+            .storePastedImage(session.id, PNG, "user-fixture")
+            .pipe(Effect.flip);
           expect(early._tag).toBe("SessionNotLiveError");
 
           yield* engine.launch(session.id, ["codex"]);
-          const placed = yield* engine.storePastedImage(session.id, PNG);
+          const placed = yield* engine.storePastedImage(session.id, PNG, "user-fixture");
           expect(placed.path).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-\w{4}\.png$/);
           expect(placed.mediaType).toBe("image/png");
           expect(new Uint8Array(writtenFiles(execCalls).get(placed.path) ?? [])).toEqual(PNG);
@@ -7643,7 +7645,7 @@ describe("SessionEngine files into a captured workspace", () => {
           ).toBe(false);
 
           const refused = yield* engine
-            .storePastedImage(session.id, new TextEncoder().encode("not an image"))
+            .storePastedImage(session.id, new TextEncoder().encode("not an image"), "user-fixture")
             .pipe(Effect.flip);
           expect(refused._tag).toBe("PastedImageError");
         }),
@@ -7664,7 +7666,7 @@ describe("SessionEngine files into a captured workspace", () => {
           ownerUserId: "user-fixture",
           base: null,
         });
-        const placed = yield* engine.storePastedImage(session.id, PNG);
+        const placed = yield* engine.storePastedImage(session.id, PNG, "user-fixture");
         const hostPath = path.join(
           harnessHomePathOf(project.storePath, session.id),
           "paste",
@@ -28317,6 +28319,87 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         deliveryNames.some((name) => named(argv, name)) ||
         (commandOf(argv)[2] ?? "").includes("mend-record");
       if (delivery) expect(run.users[index]).not.toBeNull();
+    });
+  });
+
+  /**
+   * mend#597 review, finding 2: a paste was written as root, through a link, into the shared
+   * harness home. In a person executor it is written as its sender, into their own saved
+   * directory and kept inside it; a shared executor still writes it as root, kept inside the
+   * harness home.
+   */
+  describe("a pasted image", () => {
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    const pastes = (run: DeliveryRun, from: number) =>
+      run.execs.flatMap((argv, index) => {
+        const command = commandOf(argv);
+        const marker = command.findIndex((part) => part.startsWith("C"));
+        return index >= from && command[3] === "mend-write" && marker > 4
+          ? [
+              {
+                user: run.users[index] ?? null,
+                within: command[marker],
+                path: command[marker + 1],
+                session: sessionNamed(argv),
+              },
+            ]
+          : [];
+      });
+
+    it("is written as whoever pasted it, into their own saved directory", async () => {
+      let seen: {
+        readonly holder: SessionId;
+        readonly from: number;
+        readonly own: string;
+        readonly steered: string;
+      } | null = null;
+      const run = await launchAndJoin({
+        join: null,
+        inspect: (engine, _world, ids, current) =>
+          Effect.gen(function* () {
+            const from = current.execs.length;
+            const own = yield* engine.storePastedImage(ids.holder, PNG, "user-fixture");
+            // Maria has run nothing here yet: she is made first, as her first process would be.
+            const steered = yield* engine.storePastedImage(ids.holder, PNG, MARIA);
+            seen = { holder: ids.holder, from, own: own.path, steered: steered.path };
+          }),
+      });
+      if (seen === null) throw new Error("nothing pasted");
+      const { holder, from, own, steered } = seen;
+      expect(own).toMatch(new RegExp(`^${P_LAUNCHER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
+      expect(steered).toMatch(new RegExp(`^${P_JOINER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
+      expect(pastes(run, from)).toEqual([
+        { user: LAUNCHER, within: `C2770:640:${P_LAUNCHER}`, path: own, session: holder },
+        { user: JOINER, within: `C2770:640:${P_JOINER}`, path: steered, session: holder },
+      ]);
+      // Maria's user and home were made before her paste, by root, as prepare makes anyone.
+      expect(
+        run.execs
+          .slice(from)
+          .some(
+            (argv) => (argv[2] ?? "").includes("mend_person") && argv.join(" ").includes(JOINER),
+          ),
+      ).toBe(true);
+    });
+
+    it("is written as root, inside the harness home, in a shared executor", async () => {
+      let seen: { readonly from: number; readonly path: string } | null = null;
+      const run = await launchAndJoin({
+        flag: "shared",
+        join: null,
+        inspect: (engine, _world, ids, current) =>
+          Effect.gen(function* () {
+            const from = current.execs.length;
+            const placed = yield* engine.storePastedImage(ids.holder, PNG, MARIA);
+            seen = { from, path: placed.path };
+          }),
+      });
+      if (seen === null) throw new Error("nothing pasted");
+      const { from, path: placed } = seen;
+      expect(placed).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-\w{4}\.png$/);
+      expect(pastes(run, from)).toEqual([
+        { user: null, within: "C755:644:/workspace/harness-home", path: placed, session: null },
+      ]);
     });
   });
 

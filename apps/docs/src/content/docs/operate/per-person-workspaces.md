@@ -109,6 +109,7 @@ sandboxes every new worktree runs with a shared home before any launch is tried.
 | A shell                                                      | the person who opened it                                                              |
 | A Service                                                    | the person who started it, across restarts; a `mend.toml` Service, the launcher       |
 | Dependency install and setup commands                        | the launcher                                                                          |
+| Writing a pasted image into the workspace                    | the person who pasted it                                                              |
 | VS Code Remote-SSH                                           | the launcher; nobody else can open Remote-SSH into that workspace                     |
 | `docker exec` and anything else Mend did not start           | root: no person's login, no Mend token, nothing under `/root` saved                   |
 
@@ -116,7 +117,9 @@ Each person has the same login name (`m` and 8 characters), uid (40000–49999) 
 (`/home/<name>`) in every workspace and project. Their home is 0700 and is not saved; the
 conversation state Mend saves for them lives in `/workspace/harness-home/people/<account id>`,
 linked from their home. Logins are never saved, with one narrow exception: a login made inside
-opencode (see [Known issues](/reference/known-issues/#harnesses)).
+opencode (see [Known issues](/reference/known-issues/#harnesses)). An image a person pastes goes
+into `paste/` there (group `mend`, 2770; the image 0640), so anyone's agent in the workspace can
+read it.
 
 The worktree is shared: everyone in the `mend` group can write it. Toolchains and caches live in
 shared locations (`/opt`, `/var/cache`), so what one person installs everyone can use; credential

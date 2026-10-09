@@ -410,7 +410,7 @@ import {
 import {
   checkPastedImage,
   PastedImageError,
-  pastedImageWorkspacePath,
+  pastedImagePlacement,
   type PlacedPastedImage,
   storePastedImage as storePastedImageOnHost,
 } from "./pasted-images.ts";
@@ -566,6 +566,7 @@ import {
 import { mayWorkIn, WorkspaceCaller } from "./workspace-caller.ts";
 import {
   parseHomeFileOutcomes,
+  type ContainedPlacement,
   type WorkspaceFile,
   WorkspaceFileError,
   writeAbsentHomeFilesExecs,
@@ -1939,6 +1940,11 @@ export class SessionEngine extends Context.Service<
     readonly storePastedImage: (
       sessionId: SessionId,
       bytes: Uint8Array,
+      /**
+       * Who pasted it: in a person-layout executor the file is written as them, into their own
+       * saved directory (docs/adr/0016); a shared executor writes it as root, as before.
+       */
+      sender: string,
     ) => Effect.Effect<
       PlacedPastedImage,
       | SessionNotFoundError
@@ -11483,7 +11489,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         workspace: Workspace,
         files: ReadonlyArray<
-          WorkspaceFile & { readonly secret?: boolean; readonly absent?: boolean }
+          WorkspaceFile & {
+            readonly secret?: boolean;
+            readonly absent?: boolean;
+            readonly within?: ContainedPlacement;
+          }
         >,
         purpose: PickupBinding["purpose"] = "workspace-files",
         /**
@@ -11493,10 +11503,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          */
         as?: PersonExec,
       ) {
-        const latest = new Map<
-          string,
-          WorkspaceFile & { readonly secret?: boolean; readonly absent?: boolean }
-        >();
+        const latest = new Map<string, (typeof files)[number]>();
         for (const file of files) latest.set(file.path, file);
         const unique = [...latest.values()];
         if (unique.length === 0) return;
@@ -11514,9 +11521,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // A person's saved state stays theirs: 0600 files, no directory opened up.
             private:
               file.absent !== true &&
+              file.within === undefined &&
               as !== undefined &&
               file.path.startsWith(`${as.places.saved}/`),
             absent: file.absent === true,
+            ...(file.within === undefined ? {} : { within: file.within }),
           })),
           ticket,
         );
@@ -14866,6 +14875,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
         sessionId: SessionId,
         bytes: Uint8Array,
+        sender: string,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (capture === null) {
@@ -14878,8 +14888,34 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const checked = yield* checkPastedImage(bytes);
         const workspace = yield* workspaceForSupportingProcess(session);
-        const target = pastedImageWorkspacePath(checked.name);
-        yield* writeWorkspaceFiles(session, workspace, [{ path: target, bytes }]).pipe(
+        // A person executor (docs/adr/0016): the write runs as the sender, made there first if
+        // this is the first thing they do in it, as any process of theirs would be. Null: a shared
+        // executor, where it runs as root, as before.
+        const started = yield* startAsPerson(session, workspace, Effect.succeed(sender), "shell");
+        const [identity] = started === null ? [] : yield* harnessLayouts.identitiesOf([sender]);
+        if (started !== null && identity === undefined) {
+          return yield* new PastedImageError({
+            reason: "write-failed",
+            message: "Could not place the image in the workspace: your user there is not known.",
+          });
+        }
+        const as: PersonExec | undefined =
+          started === null || identity === undefined
+            ? undefined
+            : {
+                person: identity,
+                user: started.user,
+                sessionId: session.id,
+                places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, identity),
+              };
+        const placement = pastedImagePlacement(checked.name, as === undefined ? null : sender);
+        yield* writeWorkspaceFiles(
+          session,
+          workspace,
+          [{ path: placement.path, bytes, within: placement.within }],
+          "workspace-files",
+          as,
+        ).pipe(
           Effect.mapError(
             (error) =>
               new PastedImageError({
@@ -14888,7 +14924,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
           ),
         );
-        return { path: target, mediaType: checked.mediaType, bytes: bytes.byteLength };
+        return { path: placement.path, mediaType: checked.mediaType, bytes: bytes.byteLength };
       });
 
       // ─── Repositories in a session (docs/adr/0010) ─────────────────────────────────────────
@@ -22236,8 +22272,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
         stopServices: (sessionId) => owned(sessionId)(stopServices(sessionId)),
-        storePastedImage: (sessionId, bytes) =>
-          owned(sessionId)(storePastedImage(sessionId, bytes)),
+        storePastedImage: (sessionId, bytes, sender) =>
+          owned(sessionId)(storePastedImage(sessionId, bytes, sender)),
         listRepositories: (sessionId) => owned(sessionId)(listRepositories(sessionId)),
         addableProjects: (sessionId) => owned(sessionId)(addableProjects(sessionId)),
         addRepository: (sessionId, input) => owned(sessionId)(addRepository(sessionId, input)),

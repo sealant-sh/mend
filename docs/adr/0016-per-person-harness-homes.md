@@ -191,7 +191,10 @@ starts. A person's live process, Services included, keeps their user's logins he
   copy of every file Claude edits, secret files included, so it is never saved, here or anywhere
   else, `people/*/` included (`HARNESS_CREDENTIALS`, sealantd#136 and #144). It stays in `R` and
   ends with the executor. Mend's per-person saved records are `P/.mend-saved/`, addressed by their
-  absolute path, never through `~/.mend`.
+  absolute path, never through `~/.mend`. An image a person pastes is written as them into
+  `P/paste/` (group `mend`, 2770 when made; the image 0640, so another person's agent reads it), by
+  a writer that enters no link below `P` and changes the mode of no directory already there
+  (mend#597 review, finding 2).
 
 - **The conversations a session shares,** `P_owner/conversations/<session id>/` (`C`): owned by the
   session's owner, group `mend`, setgid, mode 2770 with a default ACL granting the group `rwX`,

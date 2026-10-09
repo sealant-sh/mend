@@ -18,15 +18,26 @@
  * lives and dies with the session. `paste/` sits beside the relocated harness
  * state directories, so the settle-time state capture (which tars only those)
  * never carries the images.
+ *
+ * A person-layout executor (docs/adr/0016) writes a paste as the person who sent it, into their
+ * own saved directory (`people/<account id>/paste/`), since nobody's user but root's may make a
+ * directory in the harness home itself. Every writer keeps the file inside the directory it names
+ * (the harness home, or the person's saved directory): it enters no link on the way, changes the
+ * mode of no directory already there, and refuses rather than write anywhere else (mend#597 review,
+ * finding 2: a `paste` link planted in the harness home led a root write, and a 0755 chmod, outside
+ * it).
  */
 
-import * as fs from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { posix } from "node:path";
 
 import { Effect, Schema } from "effect";
 
+import { savedDirOf } from "./harness-layout.ts";
 import { HARNESS_HOME_MOUNT_PATH } from "./harness-state.ts";
+import type { ContainedPlacement } from "./workspace-files.ts";
 
 export const PASTED_IMAGE_DIR = "paste";
 /** Codex base64-encodes the file into every request that carries it; keep it bounded. */
@@ -106,6 +117,31 @@ export interface CheckedPastedImage {
 export const pastedImageWorkspacePath = (name: string): string =>
   posix.join(HARNESS_HOME_MOUNT_PATH, PASTED_IMAGE_DIR, name);
 
+/**
+ * Where a paste goes in a live workspace, and what keeps it there (`ContainedPlacement`). A shared
+ * executor: the harness home's `paste/`, written as root, a new directory 0755 and the file 0644,
+ * as before. A person executor (docs/adr/0016): the sender's own saved directory, written as them;
+ * a new `paste/` is the group's (`mend`), group-writable and setgid like a shared conversation
+ * (decision 2), so a process of anyone in the workspace reads the file, which is 0640.
+ */
+export const pastedImagePlacement = (
+  name: string,
+  /** The sender's account id in a person executor; null in a shared one. */
+  person: string | null,
+): { readonly path: string; readonly within: ContainedPlacement } => {
+  if (person === null) {
+    return {
+      path: pastedImageWorkspacePath(name),
+      within: { root: HARNESS_HOME_MOUNT_PATH, directoryMode: 0o755, fileMode: 0o644 },
+    };
+  }
+  const saved = savedDirOf(HARNESS_HOME_MOUNT_PATH, person);
+  return {
+    path: posix.join(saved, PASTED_IMAGE_DIR, name),
+    within: { root: saved, directoryMode: 0o2770, fileMode: 0o640 },
+  };
+};
+
 /** Refuse what is too large or not an image, before any byte is written; name what is not. */
 export const checkPastedImage = Effect.fn("checkPastedImage")(function* (
   bytes: Uint8Array,
@@ -145,22 +181,32 @@ export const storePastedImage = Effect.fn("storePastedImage")(function* (
   options: { readonly now?: Date; readonly nonce?: string } = {},
 ) {
   const { mediaType, name } = yield* checkPastedImage(bytes, options);
-  const directory = path.join(harnessHome, PASTED_IMAGE_DIR);
-  const hostPath = path.join(directory, name);
-  yield* Effect.tryPromise({
-    try: async () => {
-      // The workspace reads the file as whatever uid the harness runs under;
-      // the mode-keeper in harness-state.ts widens the tree too, but only
-      // every 15 s — a paste must be readable the instant the path lands.
-      await fs.mkdir(directory, { recursive: true, mode: 0o755 });
-      await fs.writeFile(hostPath, bytes, { mode: 0o644 });
-    },
-    catch: (cause) =>
-      new PastedImageError({
-        reason: "write-failed",
-        message: `Could not store the image: ${cause instanceof Error ? cause.message : String(cause)}`,
-      }),
+  const hostPath = path.join(harnessHome, PASTED_IMAGE_DIR, name);
+  const failed = (message: string) =>
+    new PastedImageError({
+      reason: "write-failed",
+      message: `Could not store the image: ${message}`,
+    });
+  // The harness home is Mend's, made here before a launch; everything below it is the workspace's
+  // too (mounted read-write), so the write enters no link there.
+  yield* Effect.try({
+    try: () => fs.mkdirSync(harnessHome, { recursive: true, mode: 0o755 }),
+    catch: (cause) => failed(cause instanceof Error ? cause.message : String(cause)),
   });
+  // The workspace reads the file as whatever uid the harness runs under; the mode-keeper in
+  // harness-state.ts widens the tree too, but only every 15 s — a paste must be readable the
+  // instant the path lands.
+  const refused = yield* Effect.try({
+    try: () =>
+      writeContained(
+        { root: harnessHome, directoryMode: 0o755, fileMode: 0o644 },
+        [PASTED_IMAGE_DIR],
+        name,
+        bytes,
+      ),
+    catch: (cause) => failed(cause instanceof Error ? cause.message : String(cause)),
+  });
+  if (refused !== null) return yield* failed(refused);
   return {
     hostPath,
     path: pastedImageWorkspacePath(name),
@@ -168,3 +214,133 @@ export const storePastedImage = Effect.fn("storePastedImage")(function* (
     bytes: bytes.byteLength,
   } satisfies StoredPastedImage;
 });
+
+/** A descriptor's directory, entered again without walking its path (Linux). */
+const proc = (fd: number) => `/proc/self/fd/${fd}`;
+
+const codeOf = (error: unknown): string =>
+  error instanceof Error && "code" in error && typeof error.code === "string"
+    ? error.code
+    : "error";
+
+/**
+ * `bytes` as `<within.root>/<directories…>/<name>` on this machine, kept there as the workspace's
+ * writer keeps a file (`SCRIPT_CONTAINED_PUT_FUNCTION`): the root entered at its real path, each
+ * directory below it opened through no link (through the last one's descriptor where `/proc` has
+ * it), one missing made `directoryMode` and one already there left as it is, the file staged
+ * exclusively through no link and renamed into place while its directory is still where its path
+ * says. Null once written; else why not, naming paths only.
+ */
+export const writeContained = (
+  within: ContainedPlacement,
+  directories: ReadonlyArray<string>,
+  name: string,
+  bytes: Uint8Array,
+): string | null => {
+  const c = fs.constants;
+  if (
+    name === "" ||
+    name.includes("/") ||
+    [name, ...directories].some((part) => part === "." || part === ".." || part.includes("/"))
+  ) {
+    return "not a plain path";
+  }
+  let real: string;
+  try {
+    real = fs.realpathSync(within.root);
+  } catch {
+    return `could not enter ${within.root}`;
+  }
+  const enterFlags = c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW;
+  let dfd: number;
+  try {
+    dfd = fs.openSync(real, enterFlags);
+  } catch {
+    return `could not enter ${within.root}`;
+  }
+  const pinned = fs.existsSync(proc(dfd));
+  let literal = real;
+  let shown = within.root;
+  const at = (entry: string) => `${pinned ? proc(dfd) : literal}/${entry}`;
+  const linkOrNot = (entry: string) => {
+    try {
+      return fs.lstatSync(at(entry)).isSymbolicLink() ? "a link" : "not a directory";
+    } catch {
+      return "not a directory";
+    }
+  };
+  try {
+    for (const part of directories) {
+      let next: number;
+      let made = false;
+      try {
+        next = fs.openSync(at(part), enterFlags);
+      } catch (error) {
+        if (codeOf(error) !== "ENOENT") return `${linkOrNot(part)}: ${shown}/${part}`;
+        try {
+          fs.mkdirSync(at(part), { mode: 0o700 });
+          made = true;
+        } catch (mkdirError) {
+          if (codeOf(mkdirError) !== "EEXIST") {
+            return `could not make ${shown}/${part} (${codeOf(mkdirError)})`;
+          }
+        }
+        try {
+          next = fs.openSync(at(part), enterFlags);
+        } catch {
+          return `${linkOrNot(part)}: ${shown}/${part}`;
+        }
+      }
+      try {
+        if (made) fs.fchmodSync(next, within.directoryMode);
+      } catch (error) {
+        fs.closeSync(next);
+        return `could not set the mode of ${shown}/${part} (${codeOf(error)})`;
+      }
+      fs.closeSync(dfd);
+      dfd = next;
+      literal = `${literal}/${part}`;
+      shown = `${shown}/${part}`;
+    }
+    const staging = `.mend-part-${randomBytes(8).toString("hex")}`;
+    const unstage = () => {
+      try {
+        fs.unlinkSync(at(staging));
+      } catch {
+        // Nothing staged, or gone already.
+      }
+    };
+    const expected = path.join(real, ...directories);
+    const inPlace = () => {
+      try {
+        return (pinned ? fs.readlinkSync(proc(dfd)) : fs.realpathSync(literal)) === expected;
+      } catch {
+        return false;
+      }
+    };
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(at(staging), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
+      fs.writeFileSync(fd, bytes);
+      fs.fchmodSync(fd, within.fileMode);
+    } catch (error) {
+      if (fd !== undefined) unstage();
+      return `could not write (${codeOf(error)})`;
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
+    }
+    if (!inPlace()) {
+      unstage();
+      return "its directory moved during the write";
+    }
+    try {
+      fs.renameSync(at(staging), at(name));
+    } catch (error) {
+      unstage();
+      return `could not write (${codeOf(error)})`;
+    }
+    return null;
+  } finally {
+    fs.closeSync(dfd);
+  }
+};

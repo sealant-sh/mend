@@ -24,6 +24,7 @@ import { gzipSync } from "node:zlib";
 import { Schema } from "effect";
 
 import {
+  SCRIPT_CONTAINED_PUT_FUNCTION,
   SCRIPT_PICKUP_FUNCTION,
   SCRIPT_PINNED_PUT_FUNCTION,
   SCRIPT_TRANSPORT_PRELUDE,
@@ -172,18 +173,22 @@ export const writeFilesExecs = (
  * through a link, `Q` a file of someone's own saved state, written 0600 in directories made 0700,
  * changing no directory already there, or `A` such a file written only where nothing is (no file,
  * no link): staged, then linked into place, which refuses to replace anything; `present <path>` is
- * printed for one left as it was. It redeems the ticket once over the session channel; a path the
- * answer lacks,
- * or any refusal, fails the exec with a reason that names paths only, never a byte of a file.
+ * printed for one left as it was. `C<directory mode>:<file mode>:<root>` followed by the path is a
+ * file kept inside `root` (`containedPut`). It redeems the ticket once over the session channel; a
+ * path the answer lacks, or any refusal, fails the exec with a reason that names paths only, never a
+ * byte of a file.
  */
 const WRITE_PICKUP_PROGRAM =
   SCRIPT_TRANSPORT_PRELUDE +
   SCRIPT_PICKUP_FUNCTION +
   SCRIPT_PINNED_PUT_FUNCTION +
+  SCRIPT_CONTAINED_PUT_FUNCTION +
   [
     'const path=require("path"),crypto=require("crypto");',
-    "const [ticket,...marked]=process.argv.slice(1);",
-    'const targets=marked.map((m)=>({secret:m[0]==="S",private:m[0]==="Q",absent:m[0]==="A",path:m.slice(1)}));',
+    "const [ticket,...marked]=process.argv.slice(1);const targets=[];",
+    'for(let k=0;k<marked.length;k++){const m=marked[k];if(m[0]==="C"){const [dm,fm,...r]=m.slice(1).split(":");',
+    'targets.push({within:{root:r.join(":"),dirMode:parseInt(dm,8),fileMode:parseInt(fm,8)},path:marked[++k]??""});continue;}',
+    'targets.push({secret:m[0]==="S",private:m[0]==="Q",absent:m[0]==="A",path:m.slice(1)});}',
     'const fail=(why)=>{process.stderr.write("mend-write: "+why+"\\n");process.exit(3);};',
     "const put=(p,b)=>{const d=path.dirname(p);fs.mkdirSync(d,{recursive:true});",
     'fs.chmodSync(d,0o755);const t=path.join(d,".mend-part-"+crypto.randomBytes(8).toString("hex"));',
@@ -199,7 +204,9 @@ const WRITE_PICKUP_PROGRAM =
     'try{fs.linkSync(t,p);}catch(e){if(e.code!=="EEXIST")throw e;process.stdout.write("present "+p+"\\n");}finally{fs.rmSync(t,{force:true});}};',
     "redeemPickup(ticket,(reason,files)=>{if(reason!==null)return fail(reason);",
     'const missing=targets.filter((t)=>!files.has(t.path)).map((t)=>t.path);if(missing.length>0)return fail("not in the pickup: "+missing.join(", "));',
-    "for(const t of targets){try{(t.secret?putSecret:t.private?putPrivate:t.absent?putAbsent:put)(t.path,files.get(t.path));}",
+    "const putWithin=(w,p,b)=>{const why=containedPut(w.root,w.dirMode,w.fileMode,p,b);if(why!==null)throw new Error(why);};",
+    "for(const t of targets){try{if(t.within)putWithin(t.within,t.path,files.get(t.path));",
+    "else (t.secret?putSecret:t.private?putPrivate:t.absent?putAbsent:put)(t.path,files.get(t.path));}",
     'catch(e){return fail("not written: "+t.path+" ("+(e&&e.code?e.code:e&&e.message?e.message:"error")+")");}}});',
   ].join("");
 
@@ -213,6 +220,21 @@ export interface PickupTarget {
   readonly secret?: boolean;
   readonly private?: boolean;
   readonly absent?: boolean;
+  /** Kept inside a directory, through no link (`containedPut`); wins over the other marks. */
+  readonly within?: ContainedPlacement;
+}
+
+/**
+ * A file that must land physically inside `root` (a pasted image, mend#597 review finding 2):
+ * every directory below `root` is entered through no link, one missing is made `directoryMode`
+ * (and only one this write made: a directory already there keeps its mode), and the file is
+ * written `fileMode`, through no link.
+ */
+export interface ContainedPlacement {
+  /** An absolute directory; the file's path must be below it. */
+  readonly root: string;
+  readonly directoryMode: number;
+  readonly fileMode: number;
 }
 
 /**
@@ -229,9 +251,15 @@ export const writeFilesPickupExec = (
   `exec node -e ${shellQuote(WRITE_PICKUP_PROGRAM)} -- "$@"`,
   "mend-write",
   ticket,
-  ...targets.map(
-    (target) =>
-      `${target.secret === true ? "S" : target.private === true ? "Q" : target.absent === true ? "A" : "P"}${target.path}`,
+  ...targets.flatMap((target) =>
+    target.within !== undefined
+      ? [
+          `C${target.within.directoryMode.toString(8)}:${target.within.fileMode.toString(8)}:${target.within.root}`,
+          target.path,
+        ]
+      : [
+          `${target.secret === true ? "S" : target.private === true ? "Q" : target.absent === true ? "A" : "P"}${target.path}`,
+        ],
   ),
 ];
 

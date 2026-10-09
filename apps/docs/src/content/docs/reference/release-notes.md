@@ -44,6 +44,10 @@ and their agents, can read and change each other's files, logins included.
 - **Deliveries.** Dotfiles (scripts included), the default shell profile, skills, the pi profile,
   memory and secret files go into each person's home, as that person. A joiner's `install.sh` runs
   beside their agent unless **Start my agents after install.sh** is on.
+- **Pasted images.** An image is written as the person who pasted it, into
+  `/workspace/harness-home/people/<account id>/paste/`. In every layout the write follows no link
+  and changes the mode of no directory already there: a `paste` directory that is a link is refused,
+  where before it led a root write, and a 0755 `chmod`, outside the harness home.
 - **Readers.** Conversations and memory are read back per person, for the person each process ran
   as.
 - **Shared steering.** Under shared control each turn runs on its sender's login, in one shared
