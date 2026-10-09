@@ -379,6 +379,15 @@ chooses, as Mend decides.
   is written before it is acknowledged: a choice the file does not take is refused with a reason and
   changes nothing, so a restart never brings back a mode the person moved away from.
 
+## Phase 3: archive
+
+Mend has no archive, so archiving in t3code is the person's own view, kept by the gateway
+(`archived_threads` in the state file), as ADR 0012 decided. `thread.archive` moves the thread out
+of the active shell (`thread.removed`) into the archived one
+(`orchestration.getArchivedShellSnapshot`, `subscribeArchivedShell`), and takes back what was still
+queued for it, as t3code's own server does; `thread.unarchive` brings it back. The session in Mend
+is not touched, and other clients of Mend and other people see it as before.
+
 ## Phase 3: the terminal
 
 t3code's terminal drawer opens Mend's own terminal (`src/terminals.ts`): a shell Mend opens beside

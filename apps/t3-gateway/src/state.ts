@@ -275,6 +275,16 @@ export class GatewayState extends Context.Service<
     readonly listNextModes: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, "bypass" | "ask">, GatewayStateError>;
+    /** Archives a person's thread at `at` (ISO), or, for null, takes it out of their archive. */
+    readonly setArchived: (
+      mendUserId: string,
+      sessionId: string,
+      at: string | null,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Session id → when the person archived it. */
+    readonly listArchived: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
     /** The people who have a message kept that can still reach Mend: their hubs start with the gateway. */
     readonly peopleWithQueuedMessages: () => Effect.Effect<
       ReadonlyArray<BearerSession>,
@@ -297,7 +307,8 @@ export class GatewayState extends Context.Service<
  * `queued_messages` and `queue_holds` keep each person's queues (migration 6): a message names its
  * sender by bearer session, never by device token. `images` keeps the images a person attached
  * (migration 7), and a kept message names its images by id. `next_modes` keeps the permission mode
- * a person chose for a session's next launch (migration 8).
+ * a person chose for a session's next launch (migration 8). `archived_threads` keeps the threads
+ * a person archived in t3code (migration 9): Mend has no archive, so it is the person's view alone.
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -439,6 +450,14 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
   `,
+  `
+  CREATE TABLE archived_threads (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    archived_at TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -520,6 +539,8 @@ const ModeRow = Schema.Struct({
   permission_mode: Schema.Literals(["bypass", "ask"]),
 });
 const decodeModeRows = Schema.decodeUnknownEffect(Schema.Array(ModeRow));
+const ArchivedRow = Schema.Struct({ mend_session_id: Schema.String, archived_at: Schema.String });
+const decodeArchivedRows = Schema.decodeUnknownEffect(Schema.Array(ArchivedRow));
 const ImageBytesRow = Schema.Struct({ ...ImageRow.fields, bytes: Schema.Uint8Array });
 const decodeImageBytesRow = Schema.decodeUnknownEffect(ImageBytesRow);
 const storedImageOf = (row: typeof ImageRow.Type): StoredImage => ({
@@ -1128,6 +1149,36 @@ export const openGatewayState = (
         ),
       );
 
+    const setArchived = (mendUserId: string, sessionId: string, at: string | null) =>
+      run("setArchived", () => {
+        if (at === null) {
+          database
+            .prepare("DELETE FROM archived_threads WHERE mend_user_id = ? AND mend_session_id = ?")
+            .run(mendUserId, sessionId);
+          return;
+        }
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO archived_threads (mend_user_id, mend_session_id, archived_at) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, sessionId, at);
+      });
+
+    const listArchived = (mendUserId: string) =>
+      run("listArchived", () =>
+        database
+          .prepare(
+            "SELECT mend_session_id, archived_at FROM archived_threads WHERE mend_user_id = ?",
+          )
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listArchived", decodeArchivedRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, string> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.archived_at] as const)),
+        ),
+      );
+
     const peopleWithQueuedMessages = () =>
       run("peopleWithQueuedMessages", () =>
         database
@@ -1171,6 +1222,8 @@ export const openGatewayState = (
       pruneImages,
       setNextMode,
       listNextModes,
+      setArchived,
+      listArchived,
       peopleWithQueuedMessages,
     };
   });

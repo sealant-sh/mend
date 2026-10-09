@@ -94,6 +94,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.launchThread,
   ORCHESTRATION_V2_WS_METHODS.getTurnDiff,
   ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff,
+  ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot,
+  ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell,
   WS_METHODS.assetsCreateUrl,
   WS_METHODS.assetsPersistChatAttachments,
   WS_METHODS.projectsSearchEntries,
@@ -493,16 +495,27 @@ export const makeGatewayRpcHandlers = ({
           message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.searchThreads),
         }),
       ),
+    // The person's archive, kept by the gateway (Mend has none).
     [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: () =>
-      Effect.fail(
-        new OrchestrationV2GetShellSnapshotError({
-          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot),
-        }),
+      authorize(session, READ).pipe(
+        Effect.andThen(hub.archivedShell.pipe(Effect.mapError(shellReadFailure))),
       ),
     [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: () =>
-      Stream.fail(
-        new OrchestrationV2GetShellSnapshotError({
-          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell),
+      Stream.unwrap(
+        Effect.gen(function* () {
+          yield* authorize(session, READ);
+          const { snapshot, changes } = yield* hub.subscribeArchivedShell.pipe(
+            Effect.mapError(shellReadFailure),
+          );
+          return Stream.make({ kind: "snapshot" as const, snapshot }).pipe(
+            Stream.concat(
+              changes.pipe(
+                Stream.mapError(
+                  (error) => new OrchestrationV2GetShellSnapshotError({ message: error.message }),
+                ),
+              ),
+            ),
+          );
         }),
       ),
     // Delegated workflows never run through Mend, so there is no workflow root to read from.
