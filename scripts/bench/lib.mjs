@@ -457,13 +457,26 @@ const rowOf = ({ name, measure, before: beforeValue, limit, current, stat, notRu
  * worktree has, for every scenario it was asked to run (`requiredOf`): those absent are misses
  * too, so a run that skipped or crashed them cannot pass. Its errors fail the comparison, and its
  * not-run entries are listed.
+ *
+ * Gate P1 (a `shared` baseline, a `person` record under test) asks for the whole set whatever the
+ * records' `--only` and `--harnesses` said (`requiredOf` with `gate`): every launch scenario for
+ * the four harnesses, and the hand-over, growth, the different-person join and the person checks
+ * for the harnesses the second person can run (`secondPersonHarnesses`, all four unless the
+ * partial gate is asked for explicitly). A budgeted measure either side lacks is a miss, the
+ * baseline's errors fail it, and a record that ran less than the set is "not the gate" and fails.
+ * Companion records (another project's joins) are compared by what they were asked to run.
  */
-export const compareResults = (before, after, { stats = ["median", "p90"] } = {}) => {
+export const compareResults = (
+  before,
+  after,
+  { stats = ["median", "p90"], secondPersonHarnesses = null, companion = false } = {},
+) => {
   const rows = [];
   const incomparable = [];
   const sampledBefore = resourcesSampledAt(before);
   const sampledAfter = resourcesSampledAt(after);
-  const required = requiredOf(after);
+  const gate = !companion && layoutOf(before) === "shared" && layoutOf(after) === "person";
+  const required = requiredOf(after, { gate, secondPersonHarnesses });
   for (const [name, measure] of Object.entries(before.measures ?? {})) {
     if (
       measure.budget === undefined ||
@@ -489,6 +502,39 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
     for (const stat of stats) {
       const limit = baseline[stat] + allowance(measure.budget, baseline, stat);
       rows.push(rowOf({ name, measure, before: baseline[stat], limit, current, stat, notRun }));
+    }
+  }
+  // Under the gate, a budgeted measure the record under test has and the baseline lacks (a shared
+  // launch that errored, say) was never compared: a miss, not a pass.
+  if (gate) {
+    for (const [name, measure] of Object.entries(after.measures ?? {})) {
+      if (
+        measure.budget === undefined ||
+        measure.budget === null ||
+        BUDGETS[measure.budget] === undefined ||
+        isCeiling(measure.budget) ||
+        summarize(measure.samples ?? []).n === 0 ||
+        rows.some((row) => row.measure === name)
+      ) {
+        continue;
+      }
+      if (summarize(before.measures?.[name]?.samples ?? []).n > 0) continue;
+      const current = summarize(measure.samples ?? []);
+      for (const stat of stats) {
+        rows.push({
+          ...rowOf({
+            name,
+            measure,
+            before: null,
+            limit: null,
+            current,
+            stat,
+            notRun: `no baseline: the shared record has no ${name}${notRunReasonOf(before, name) === null ? "" : ` (${notRunReasonOf(before, name)})`}`,
+          }),
+          missing: true,
+          ok: false,
+        });
+      }
     }
   }
   // A baselined measure the record under test must carry, which the baseline lacks: it cannot be
@@ -535,9 +581,9 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
       rows.push(rowOf({ name, measure, before: null, limit, current, stat, notRun }));
     }
   }
-  for (const [name, companion] of Object.entries(before.companions ?? {})) {
+  for (const [name, ours] of Object.entries(before.companions ?? {})) {
     const theirs = after.companions?.[name] ?? { measures: {} };
-    const compared = compareResults(companion, theirs, { stats });
+    const compared = compareResults(ours, theirs, { stats, companion: true });
     for (const row of compared.rows) {
       rows.push({ ...row, measure: `${name}: ${row.measure}` });
     }
@@ -550,7 +596,8 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
     rows,
     misses: rows.filter((row) => !row.ok),
     incomparable,
-    label: describeComparison(before, after),
+    gate,
+    label: describeComparison(before, after, { secondPersonHarnesses, companion }),
     // A correctness check the run under test failed fails the comparison too: a fast launch that
     // ran as the wrong person, or billed the wrong login, is not inside any budget.
     checkFailures: failedChecks(after),
@@ -572,30 +619,71 @@ export const compareResults = (before, after, { stats = ["median", "p90"] } = {}
   };
 };
 
-/** Whether a comparison fails: a miss, a failed or unverified check, or an error in the run. */
+/**
+ * Whether a comparison fails: a miss, a failed or unverified check, or an error in the run; and,
+ * when the layouts make it gate P1, anything that makes it "not the gate" (`label.differs`: another
+ * build, instance, project, image or harness version, or a record that ran less than the gate's
+ * set) and the baseline's errors. Exit 0 means the gate passed, never "not the gate".
+ */
 export const comparisonFails = (comparison) =>
   comparison.misses.length > 0 ||
   comparison.checkFailures.length > 0 ||
   comparison.checksNotVerified.length > 0 ||
-  comparison.errors.length > 0;
+  comparison.errors.length > 0 ||
+  (comparison.gate === true &&
+    ((comparison.label?.differs ?? []).length > 0 || comparison.baselineErrors.length > 0));
 
 /** The harnesses Mend runs in protocol mode, where a turn can be steered (the hand-over). */
 export const PROTOCOL_HARNESSES = ["claude", "codex"];
 
+/** The four harnesses the gate covers. */
+export const GATE_HARNESSES = ["claude", "codex", "pi", "opencode"];
+
 /**
- * What a `person` record must carry for each scenario it was asked to run (its `options`): the
- * hand-over's budgeted difference per protocol harness, growth per harness, the different-person
- * join, and the person checks that say who an agent runs as and where its home is. Nothing for a
- * record of another layout, or one that names no scenarios.
+ * The launch measures gate P1 needs from both records, per the ADR's table: each harness's new
+ * session to first output and its Stop's save; a resume; a second session of the same person; a
+ * checkpoint save; shell and terminal open, typing, `git fetch`; the session list and view. (`git
+ * push` is left out: a project may give the shim no push access, which a record says as not run.)
  */
-export const requiredOf = (result) => {
+const gateLaunchMeasures = () => [
+  ...GATE_HARNESSES.flatMap((harness) => [
+    { measure: `new.${harness}.first_output`, unit: "ms", budget: "start" },
+    { measure: `stop.${harness}.save`, unit: "ms", budget: "start" },
+  ]),
+  { measure: "resume.first_output", unit: "ms", budget: "start" },
+  { measure: "join.same.first_output", unit: "ms", budget: "start" },
+  { measure: "checkpoint.save", unit: "ms", budget: "start" },
+  { measure: "shell.open", unit: "ms", budget: "interactive" },
+  { measure: "terminal.attach", unit: "ms", budget: "interactive" },
+  { measure: "terminal.echo", unit: "ms", budget: "interactive" },
+  { measure: "git.fetch", unit: "ms", budget: "interactive" },
+  { measure: "api.session_list", unit: "ms", budget: "api" },
+  { measure: "api.session_view", unit: "ms", budget: "api" },
+];
+
+/**
+ * What a `person` record must carry. For a plain comparison, what each scenario it was asked to run
+ * (its `options`) yields: the hand-over's budgeted difference per protocol harness, growth per
+ * harness, the different-person join, and the person checks that say who an agent runs as and
+ * where its home is. For gate P1 (`gate`), the whole set whatever it was asked: the launch
+ * measures for the four harnesses, the person checks for the four, and the hand-over, growth, the
+ * joined pi's checks and the different-person join for `secondPersonHarnesses` (all four unless
+ * the partial gate names fewer). Nothing for a record of another layout outside the gate.
+ */
+export const requiredOf = (result, { gate = false, secondPersonHarnesses = null } = {}) => {
   const measures = [];
   const checks = [];
   if (layoutOf(result) !== "person") return { measures, checks };
-  const only = result.options?.only ?? [];
-  const harnesses = result.options?.harnesses ?? [];
+  const only = gate ? SCENARIOS : (result.options?.only ?? []);
+  const harnesses = gate ? GATE_HARNESSES : (result.options?.harnesses ?? []);
+  const second = gate
+    ? (secondPersonHarnesses ?? GATE_HARNESSES)
+    : (result.options?.secondPersonHarnesses ?? harnesses).filter((name) =>
+        harnesses.includes(name),
+      );
+  if (gate) measures.push(...gateLaunchMeasures());
   if (only.includes("handover")) {
-    for (const harness of harnesses.filter((name) => PROTOCOL_HARNESSES.includes(name))) {
+    for (const harness of second.filter((name) => PROTOCOL_HARNESSES.includes(name))) {
       for (const kind of ["to_other", "back"]) {
         measures.push({
           measure: `handover.${harness}.${kind}.first_output_over_own`,
@@ -609,7 +697,7 @@ export const requiredOf = (result) => {
     }
   }
   if (only.includes("growth")) {
-    for (const harness of harnesses) {
+    for (const harness of second) {
       measures.push({
         measure: `growth.${harness}.extra_person_beyond_state_bytes`,
         unit: "bytes",
@@ -617,7 +705,7 @@ export const requiredOf = (result) => {
       });
     }
   }
-  if (only.includes("join-other")) {
+  if (only.includes("join-other") && second.length > 0) {
     measures.push({ measure: "join.other.first_output", unit: "ms", budget: "join-other" });
   }
   if (only.includes("person-checks")) {
@@ -625,11 +713,39 @@ export const requiredOf = (result) => {
     for (const harness of harnesses) {
       for (const check of who) checks.push(`person.${harness}.${check}`);
     }
-    if (harnesses.includes("pi")) {
+    if (second.includes("pi")) {
       for (const check of who) checks.push(`person.pi.joined.${check}`);
     }
   }
   return { measures, checks };
+};
+
+/**
+ * What a gate P1 pair ran less of than the gate's set, in words: scenarios or harnesses either
+ * record's `--only`/`--harnesses` left out, and a person record whose second person ran fewer
+ * harnesses than the gate asks of them.
+ */
+export const gateScopeGaps = (before, after, secondPersonHarnesses = null) => {
+  const gaps = [];
+  const launch = SCENARIOS.filter((scenario) => !PERSON_SCENARIOS.includes(scenario));
+  for (const [who, result, scenarios] of [
+    ["the shared record", before, launch],
+    ["the person record", after, SCENARIOS],
+  ]) {
+    const only = result.options?.only ?? [];
+    const harnesses = result.options?.harnesses ?? [];
+    const notRun = scenarios.filter((scenario) => !only.includes(scenario));
+    if (notRun.length > 0) gaps.push(`${who} did not run ${notRun.join(", ")}`);
+    const absent = GATE_HARNESSES.filter((harness) => !harnesses.includes(harness));
+    if (absent.length > 0) gaps.push(`${who} did not run ${absent.join(", ")}`);
+  }
+  const second = secondPersonHarnesses ?? GATE_HARNESSES;
+  const ran = after.options?.secondPersonHarnesses ?? after.options?.harnesses ?? [];
+  const short = second.filter((harness) => !ran.includes(harness));
+  if (short.length > 0) {
+    gaps.push(`the person record's second person did not run ${short.join(", ")}`);
+  }
+  return gaps;
 };
 
 // ─── layouts and what a comparison is ───────────────────────────────────────
@@ -677,7 +793,11 @@ export const P1_NOT_COVERED = [
  * record is its named check; anything else is a plain before-and-after. Each side's build that
  * cannot be told (no image id, no commit) and each harness version one side lacks is warned of.
  */
-export const describeComparison = (before, after) => {
+export const describeComparison = (
+  before,
+  after,
+  { secondPersonHarnesses = null, companion = false } = {},
+) => {
   const layouts = [layoutOf(before), layoutOf(after)];
   const versions = [before.target?.version ?? null, after.target?.version ?? null];
   const warnings = [];
@@ -743,11 +863,19 @@ export const describeComparison = (before, after) => {
       );
     }
   }
+  const gate = !companion && layouts[0] === "shared" && layouts[1] === "person";
+  if (gate) differs.push(...gateScopeGaps(before, after, secondPersonHarnesses));
   const notGate = differs.length === 0 ? "" : ` (not the gate: ${differs.join("; ")})`;
+  const partial =
+    gate &&
+    secondPersonHarnesses !== null &&
+    GATE_HARNESSES.some((harness) => !secondPersonHarnesses.includes(harness))
+      ? ` (partial: the second person runs ${secondPersonHarnesses.join(", ") || "nothing"} only, by --second-person-harnesses)`
+      : "";
   let kind = "before and after";
   let notCovered = [];
-  if (layouts[0] === "shared" && layouts[1] === "person") {
-    kind = `gate P1: person launches against shared launches${notGate}`;
+  if (gate) {
+    kind = `gate P1: person launches against shared launches${partial}${notGate}`;
     notCovered = P1_NOT_COVERED;
   } else if (layouts[0] === "person" && layouts[1] === "shared") {
     kind = "shared launches against person launches (reversed: the gate puts shared first)";
@@ -1044,8 +1172,11 @@ export const FIRST_PERSON_UID = 40001;
 /** Each harness's ChatGPT login, as the probe names it (docs/adr/0016, decision 5). */
 const CHATGPT_LOGIN_OF = { pi: "openai-codex", opencode: "openai" };
 
-/** A process name that is the harness's own (`claude`, `codex`, `pi`, `opencode`, `.opencode`). */
-const isHarnessProcess = (name, harness) => new RegExp(`^\\.?${harness}`).test(name);
+/**
+ * A process name that is exactly the harness's own (`claude`, `codex`, `pi`, `opencode`, a
+ * `.opencode` binary, a `-rpc` variant): `pip`, `ping` or `pidof` are not pi.
+ */
+const isHarnessProcess = (name, harness) => new RegExp(`^\\.?${harness}(?:-rpc)?$`).test(name);
 
 /** A login file's words for a check's detail; never its contents. */
 const loginWords = (key, login) => {
@@ -1228,6 +1359,58 @@ export const agentIdentityOf = (screen) => {
     ? null
     : { uid: Number(match[1]), home: match[2].replace(/\/+$/, "") || "/" };
 };
+
+// ─── a conversation's size (docs/adr/0016's hand-over row) ──────────────────
+
+/**
+ * Run as the session's owner in the executor, with their account id: the usage of the last model
+ * request in their newest transcript (Claude's `"usage":{…}`, Codex's `"last_token_usage":{…}`),
+ * found under their saved directory (the shared conversations included). Prints only that usage's
+ * numbers, never a message.
+ */
+export const LAST_REQUEST_SH = [
+  `P="\${ST_BENCH_PEOPLE:-${PEOPLE_ROOT}}/$1"`,
+  `[ -d "$P" ] || { echo "usage none"; exit 0; }`,
+  // The shared conversations first (where a protocol session's transcript lives), else the rest;
+  // never the prompt histories, which carry no usage.
+  `d="$P/conversations"; [ -d "$d" ] || d="$P"`,
+  `f=$(find "$d" -type f -name '*.jsonl' ! -name history.jsonl ! -name session_index.jsonl -exec stat -c '%Y %n' {} + 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)`,
+  `[ -n "$f" ] || { echo "usage none"; exit 0; }`,
+  `u=$(grep -o '"last_token_usage":{[^}]*}' "$f" | tail -1)`,
+  `[ -n "$u" ] && { echo "usage codex $u" | tr -cd '[:alnum:]_:,{}" \\n'; exit 0; }`,
+  `u=$(grep -o '"usage":{"input_tokens":[^}]*}' "$f" | tail -1)`,
+  `[ -n "$u" ] && { echo "usage claude $u" | tr -cd '[:alnum:]_:,{}" \\n'; exit 0; }`,
+  `echo "usage none"`,
+].join("\n");
+
+/**
+ * The prompt size of the last model request (`LAST_REQUEST_SH`'s line): Codex's
+ * `last_token_usage.input_tokens` (which includes the cached input), Claude's `input_tokens` plus
+ * its cache reads and writes. Null when it said none or did not parse.
+ */
+export const lastRequestTokensOf = (text) => {
+  const line = text.split("\n").find((entry) => entry.startsWith("usage ")) ?? "";
+  const field = (name) => {
+    const match = new RegExp(`"${name}":(\\d+)`).exec(line);
+    return match === null ? null : Number(match[1]);
+  };
+  if (line.startsWith("usage codex ")) return field("input_tokens");
+  if (line.startsWith("usage claude ")) {
+    const input = field("input_tokens");
+    if (input === null) return null;
+    return (
+      input + (field("cache_read_input_tokens") ?? 0) + (field("cache_creation_input_tokens") ?? 0)
+    );
+  }
+  return null;
+};
+
+/**
+ * Whether a conversation was compacted between two of its requests: its prompt shrank by more than
+ * a quarter (a conversation only grows, turn by turn, until a harness summarises it).
+ */
+export const compactedBetween = (earlier, later) =>
+  typeof earlier === "number" && typeof later === "number" && later < earlier * 0.75;
 
 // ─── growth per extra person (docs/adr/0016, "Budgets") ─────────────────────
 
@@ -1549,6 +1732,24 @@ export const settleNotRun = (result) => ({
   }),
 });
 
+/** Two runs' check tallies as one: held, failed and skipped added, failures kept (up to five). */
+export const sumChecks = (first, second) => {
+  const out = first.map((check) => ({ ...check, failures: [...(check.failures ?? [])] }));
+  for (const check of second) {
+    const entry = out.find((candidate) => candidate.check === check.check);
+    if (entry === undefined) {
+      out.push({ ...check, failures: [...(check.failures ?? [])] });
+      continue;
+    }
+    entry.passed += check.passed ?? 0;
+    entry.failed += check.failed ?? 0;
+    entry.skipped = (entry.skipped ?? 0) + (check.skipped ?? 0);
+    entry.failures = [...entry.failures, ...(check.failures ?? [])].slice(0, 5);
+    entry.detail = entry.detail ?? check.detail ?? null;
+  }
+  return out;
+};
+
 /**
  * One result with some measures taken again. The measures of `extra` that `takes` accepts replace
  * the base's (a re-run stands for the measure; it is not pooled with the run that missed). By
@@ -1573,14 +1774,6 @@ export const mergeResults = (base, extra, takes = null) => {
     ),
   );
   const extraNotRun = (extra.notRun ?? []).filter((entry) => accept(entry.measure));
-  // Checks go by scenario, whether the merge takes named measures or not: a scenario run again
-  // (a re-run of misses runs whole scenarios) stands for its checks, failures included, so a
-  // re-run's faster numbers never come without what it observed.
-  const checkTaken = (name) => {
-    if (only !== null && !only.includes(scenarioOf(name) ?? "")) return false;
-    const harness = harnessOf(name);
-    return harness === null || harnesses === null || harnesses.includes(harness);
-  };
   // A scenario run again stands whole: its measures the later run did not take go too. Named
   // measures (a re-run of misses) replace only themselves.
   const kept = Object.fromEntries(
@@ -1609,10 +1802,10 @@ export const mergeResults = (base, extra, takes = null) => {
     ],
     notes: [...(base.notes ?? []), ...(extra.notes ?? [])],
     // A scenario run again stands for its checks too.
-    checks: [
-      ...(base.checks ?? []).filter((check) => !checkTaken(check.check)),
-      ...(extra.checks ?? []).filter((check) => checkTaken(check.check)),
-    ],
+    // Checks are observations, not timings: a merge adds the two runs' tallies and never drops a
+    // failure. A re-run is for timing noise (docs/adr/0016, "Method"); a check that failed in
+    // either run stays failed.
+    checks: sumChecks(base.checks ?? [], extra.checks ?? []),
     imageBuilds: [...(base.imageBuilds ?? []), ...(extra.imageBuilds ?? [])],
     errors: [...(base.errors ?? []), ...(extra.errors ?? [])],
     merged: [
@@ -1666,7 +1859,14 @@ export const parseOptions = (argv, now = Date.now()) => {
     secretFile: false,
     layout: null,
     flag: null,
-    handoverSeedTurns: 4,
+    // The hand-over's conversation is grown to about this many input tokens on its last request,
+    // in at most `handoverSeedTurns` turns (docs/adr/0016's "a conversation of realistic size").
+    handoverSeedTurns: 8,
+    handoverContextTokens: 45_000,
+    // The harnesses the second person runs: the hand-over, growth and the joined pi. Their
+    // connected accounts decide it (pi and opencode need a Codex account). `compare` takes it as
+    // the explicit opt-in to a partial gate P1.
+    secondPersonHarnesses: null,
     all: false,
     runId: null,
     out: null,
@@ -1692,6 +1892,9 @@ export const parseOptions = (argv, now = Date.now()) => {
     "--flag": (v) => (opts.flag = v),
     "--handover-seed-turns": (v) =>
       (opts.handoverSeedTurns = positiveInt("--handover-seed-turns", v)),
+    "--handover-context-tokens": (v) =>
+      (opts.handoverContextTokens = positiveInt("--handover-context-tokens", v)),
+    "--second-person-harnesses": (v) => (opts.secondPersonHarnesses = list(v)),
     "--run": (v) => (opts.runId = v),
     "--layout": (v) => (opts.layout = v),
     "--out": (v) => (opts.out = v),
@@ -1735,6 +1938,11 @@ export const parseOptions = (argv, now = Date.now()) => {
     }
   }
   if (opts.harnesses.length === 0) throw new Error("--harnesses needs at least one harness");
+  for (const harness of opts.secondPersonHarnesses ?? []) {
+    if (!HARNESS_NAMES.includes(harness)) {
+      throw new Error(`unknown harness ${harness} in --second-person-harnesses`);
+    }
+  }
   if (opts.runId !== null && !/^[0-9a-z]+$/.test(opts.runId)) {
     throw new Error(`--run takes a run's id (the one its log starts with), not ${opts.runId}`);
   }

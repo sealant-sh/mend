@@ -308,11 +308,20 @@ export const imageOfExecutor = async (host, container) => {
   return id === undefined || id === "" ? null : { id, created: created ?? null };
 };
 
-/** A harness's version as its executor's binary says it (`<harness> --version`), or null. */
-export const harnessVersionIn = async (host, container, harness) => {
+/**
+ * A harness's version as its executor's binary says it (`<harness> --version`), or null: as the
+ * person whose saved directory is `people/<accountId>` when there is one (a person executor),
+ * else as root.
+ */
+export const harnessVersionIn = async (host, container, harness, accountId = null) => {
   if (!["claude", "codex", "pi", "opencode"].includes(harness)) return null;
+  if (accountId !== null && !/^[\w.:@-]+$/.test(accountId)) return null;
+  const user =
+    accountId === null
+      ? ""
+      : `uid=$(docker exec ${container} stat -c %u /workspace/harness-home/people/${accountId} 2>/dev/null); `;
   const out = await host.shell(
-    `docker exec ${container} sh -c '${harness} --version 2>&1 | head -3'; true`,
+    `${user}docker exec ${accountId === null ? "" : '${uid:+-u "$uid"} '}${container} sh -c '${harness} --version 2>&1 | head -3'; true`,
     { timeoutMs: 60_000 },
   );
   return /\d+\.\d+\.\d+(?:[-+][\w.]+)?/.exec(out)?.[0] ?? null;

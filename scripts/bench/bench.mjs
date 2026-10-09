@@ -20,16 +20,19 @@
 // flipping MEND_HARNESS_LAYOUT). `run --layout shared` and `run --layout person` take the two
 // records; `compare <shared> <person>` checks the second against the first and says which
 // comparison it is. With `--layout person` three more scenarios run on person worktrees of their own:
-// - `handover`: a protocol session of the first account, its conversation grown first
-//   (`--handover-seed-turns` turns that read files, its size recorded in input tokens), shared
-//   control on; each round the second account sends a turn (the hand-over to their process), the
-//   owner sends one back, and the owner sends one more (no hand-over). Each turn is timed on the
+// - `handover`: a protocol session of the first account, its conversation grown first to a bounded,
+//   realistic size (turns reading two files of 8 to 32 KB each, named by a fixed command, until the
+//   last request's prompt reaches `--handover-context-tokens`, default 45,000, in at most
+//   `--handover-seed-turns`, default 8; that prompt size, read from the transcript, is recorded),
+//   shared control on; each round the second account sends a turn (the hand-over to their process),
+//   the owner sends one back, and the owner sends one more (no hand-over). Each turn is timed on the
 //   server's clock from its submit to its start, its first output and its end. The ADR's row,
 //   "send to first output … under 5 s more than the same turn sent by the process's own person",
 //   is budgeted per round as `first_output_over_own` (the steered turn's first output less the own
-//   turn's). Each turn is checked: billed to its sender, on a process that runs as its sender, one
-//   agent live at a time (polled).
-// - `growth`: `--runs` rounds per harness of the second account's own session in the first one's
+//   turn's). A round in which the conversation shrank (compacted) is discarded and said. Each turn
+//   is checked: billed to its sender, on a process that runs as its sender, one agent live at a
+//   time (polled). It runs on claude and codex among the second person's harnesses.
+// - `growth`: `--runs` rounds per second-person harness of the second account's own session in the first one's
 //   worktree; their saved directory sized, machine state left out, against their conversation state
 //   and memory (budget: at most 64 KB beyond them). A round whose second person held no
 //   conversation (no ChatGPT login of their own, or no answer) goes under
@@ -39,14 +42,16 @@
 //   own, pi's and opencode's ChatGPT login is in their home; for pi, the second account joins and
 //   its pi has its own profile, not the first one's. Probed in the executor as that person (its own
 //   processes left out), without printing a file's contents. A person with no ChatGPT login is
-//   watched for 75 s, not waited on: an answer then fails.
+//   watched for 150 s, not waited on: an answer then fails.
+// The second person's harnesses (`--second-person-harnesses`, default all) are the ones their
+// connected accounts can run: pi and opencode need a Codex account.
 // Checks are observations, not timings: they are tallied in the record's `checks` (held, failed,
-// skipped), and a failed one fails `run` and `compare`. A person run whose per-person scenarios
-// could not run (no second account, no host) exits 1. `compare` fails a person record that lacks
-// what it was asked for (the hand-over's budgeted difference, growth, the different-person join,
-// the checks of who an agent runs as and its home), that has errors, or whose checks failed, and
-// says what P1 asks that no record of this benchmark covers: restore wall time on the box's
-// largest worktree, interleaved between the layouts.
+// skipped), and a failed one fails `run` and `compare`. `run` exits 1 on an error, a failed check,
+// or, in a person run, a per-person scenario or join-other that could not run (no second account)
+// or person-checks without the host. `compare` exits 1 unless everything passed: under gate P1 it
+// asks for the whole set whatever the records' --only/--harnesses said (see "gate P1" below), a
+// budgeted measure either side lacks, an error on either side, or anything that makes it "not the
+// gate" fails it.
 //
 // What the record keeps apart, so one run's accident does not read as a regression:
 // - An executor's size (`executor.<harness>.*_bytes`) is taken at the launch's first output, a fixed
@@ -106,9 +111,14 @@ what runs
   --layout <person|shared>    the harnessLayout of every start that makes a new worktree (the
                               operator's, docs/adr/0016 decision 14); omitted, the server's flag
                               decides. handover, growth and person-checks need --layout person
-  --harnesses <a,b,…>         launch harnesses, the first carries the other scenarios; the hand-over
-                              runs on claude and codex among them, growth and person-checks on each
-                              (default: claude,codex,pi,opencode)
+  --harnesses <a,b,…>         launch harnesses, the first carries the other scenarios; person-checks
+                              runs on each (default: claude,codex,pi,opencode)
+  --second-person-harnesses <a,b,…>
+                              run: the harnesses the second person runs: the hand-over (claude, codex
+                              among them), growth and the joined pi (default: --harnesses). Their
+                              connected accounts decide it: pi and opencode need a Codex account.
+                              compare: the explicit opt-in to a partial gate P1 that asks the second
+                              person for these only, said in the verdict
   --runs <n>                  runs of each launch scenario, rounds of the hand-over and of growth
                               (default: 10, the ADR's gate)
   --joins-per-run <n>         joins of each kind per run (default: 1)
@@ -117,8 +127,11 @@ what runs
   --typing-runs <n>           keystrokes timed (default: 30)
   --api-runs <n>              reads of the session list and a session view (default: 20)
   --secret-file               put an st-bench secret file in place to time its delivery (removed after)
-  --handover-seed-turns <n>   turns that grow the hand-over's conversation before its rounds, each
-                              reading files (default: 4)
+  --handover-context-tokens <n>
+                              the hand-over's conversation is grown until its last request's prompt
+                              is this many tokens (default: 45000)
+  --handover-seed-turns <n>   at most this many turns grow it, each reading two files of 8 to 32 KB
+                              (default: 8)
   --run <id>                  cleanup: the run whose worktrees to remove (its log's "bench <id>")
   --all                       cleanup: every st-bench worktree of the project, any run's
   --flag <text>               the harness layout under test (default: read from the server's env).
@@ -135,15 +148,18 @@ output and comparison
 
 gate P1 (docs/adr/0016): person launches against shared launches at one commit
   run --layout shared … --out shared.json; run --layout person … --out person.json;
-  compare shared.json person.json. compare says what it compares (gate P1, its named check of
-  shared against an earlier shared record, or a plain before-and-after); a different Mend image
-  (its id, else its commit), instance, project, workspace image or harness version makes it "not
-  the gate", and a version or commit it cannot tell is warned of. Ceiling budgets (the hand-over's
-  5 s over the own turn, growth's 64 KB) are checked on the record under test alone. It fails on a
-  miss; on a person record lacking what it was asked for (handover, growth, join-other, the checks
-  of who an agent runs as and where its home is); on a failed or unverified check; and on an error
-  in the record. It says what it does not cover: P1's restore wall time on the box's largest
-  worktree, interleaved between the layouts
+  compare shared.json person.json [--second-person-harnesses <a,b>]. Under the gate compare asks
+  for the whole set whatever the records' --only/--harnesses said: every launch scenario for the
+  four harnesses in both records, and the hand-over, growth, the different-person join and the
+  person checks for the harnesses the second person runs (all four unless
+  --second-person-harnesses opts into a partial gate, which the verdict line says). A record that
+  ran less, another Mend image (its id, else its commit), instance, project, workspace image or
+  harness version make it "not the gate", and that fails. A budgeted measure either side lacks is
+  a miss, and the baseline's errors fail it too. Ceiling budgets (the hand-over's 5 s over the own
+  turn, growth's 64 KB) are checked on the record under test alone. It also fails on a failed or
+  unverified check and on an error in the record under test. It says what it does not cover: P1's
+  restore wall time on the box's largest worktree, interleaved between the layouts. The last line
+  is the verdict; exit 0 only when it says passed
 
 what the record keeps apart
   executor sizes              taken at each launch's first output; memory_after_answer_bytes is what
@@ -289,6 +305,9 @@ const newResult = (opts) => ({
     // Whether a second account's token was given: the person-only scenarios need it.
     secondAccount: opts.secondTokenFile !== null,
     handoverSeedTurns: opts.handoverSeedTurns,
+    handoverContextTokens: opts.handoverContextTokens,
+    // The harnesses the second person ran (hand-over, growth, the joined pi); null: all of them.
+    secondPersonHarnesses: opts.secondPersonHarnesses,
   },
   // Where each launch harness's executor size was taken (`compare` reads it).
   method: { executorResources: RESOURCES_AT_FIRST_OUTPUT },
@@ -418,7 +437,12 @@ const main = async () => {
     case "compare": {
       const before = readJson(opts.args[0]);
       let after = readJson(opts.args[1]);
-      let comparison = compareResults(before, after, { stats: opts.stats });
+      // The partial gate is an explicit choice on this command line, never read from a record.
+      const compareOptions = {
+        stats: opts.stats,
+        secondPersonHarnesses: opts.secondPersonHarnesses,
+      };
+      let comparison = compareResults(before, after, compareOptions);
       process.stdout.write(`${formatComparison(comparison)}\n`);
       if (comparison.misses.length > 0 && opts.rerun) {
         // The re-run's checks and errors come with its numbers (mergeResults), so a re-run that
@@ -430,7 +454,7 @@ const main = async () => {
         const again = await runBench({ ...opts, ...plan, layout });
         after = mergeResults(after, again, (name) => missed.includes(name));
         writeJson(opts.out, after);
-        comparison = compareResults(before, after, { stats: opts.stats });
+        comparison = compareResults(before, after, compareOptions);
         process.stdout.write(`\nafter the re-run\n\n${formatComparison(comparison)}\n`);
         log(`record with the re-run · ${opts.out}`);
       }
@@ -450,8 +474,16 @@ const main = async () => {
       if (comparison.errors.length > 0) {
         log(`${comparison.errors.length} error(s) in the record under test`);
       }
+      if (comparison.gate && comparison.label.differs.length > 0) {
+        log(`not the gate: ${comparison.label.differs.join("; ")}`);
+      }
+      if (comparison.gate && comparison.baselineErrors.length > 0) {
+        log(`${comparison.baselineErrors.length} error(s) in the shared baseline`);
+      }
       for (const item of comparison.label.notCovered) log(`not covered: ${item}`);
-      if (comparisonFails(comparison)) process.exitCode = 1;
+      const fails = comparisonFails(comparison);
+      log(`verdict · ${comparison.label.kind} · ${fails ? "FAILED" : "passed"}`);
+      if (fails) process.exitCode = 1;
       return;
     }
     case "cleanup": {
