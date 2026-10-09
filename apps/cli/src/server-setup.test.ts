@@ -921,6 +921,112 @@ describe("mend server setup", () => {
     expect(env.get("MEND_ALLOWED_ORIGINS")).toBe('["https://mend.example.test"]');
   });
 
+  it("moves a saved non-local URL to the port --port publishes, and keeps one on another port", async () => {
+    const configDir = temporaryDirectory("port-move");
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "0.0.0.0", "--url", "http://mend-mini.local:3105"],
+        makeRuntime({ configDir }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(["setup", "--port", "3205"], makeRuntime({ configDir }).runtime),
+    ).toEqual({ _tag: "ok" });
+    const moved = readEnv(activeFile(configDir, "server.env"));
+    expect(moved.get("APP_URL")).toBe("http://mend-mini.local:3205");
+    expect(moved.get("MEND_PORT")).toBe("3205");
+
+    // A URL on a port setup does not publish (a forward in front of it) is the operator's own.
+    const forwarded = temporaryDirectory("port-forwarded");
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "0.0.0.0", "--url", "http://mend-mini.local:8080"],
+        makeRuntime({ configDir: forwarded }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(
+      await serverCommand(
+        ["setup", "--port", "3206"],
+        makeRuntime({ configDir: forwarded }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(forwarded, "server.env")).get("APP_URL")).toBe(
+      "http://mend-mini.local:8080",
+    );
+  });
+
+  it("publishes workspace SSH with --ssh-bind while an edge keeps the web port on loopback", async () => {
+    const configDir = temporaryDirectory("ssh-bind");
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(
+      await serverCommand(
+        ["setup", "--edge", "mend.example.test", "--ssh-bind", "0.0.0.0"],
+        makeRuntime({ configDir }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const env = readEnv(activeFile(configDir, "server.env"));
+    expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
+    expect(env.get("MEND_SSH_BIND_HOST")).toBe("0.0.0.0");
+    expect(JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8"))).toMatchObject(
+      { bind: "127.0.0.1", sshBind: "0.0.0.0", edgeHost: "mend.example.test" },
+    );
+    // The compose asset publishes 2222 on it, and 3105 on --bind.
+    const compose = fs.readFileSync(activeFile(configDir, "compose.yaml"), "utf8");
+    expect(compose).toContain('"${MEND_BIND_HOST:-127.0.0.1}:${MEND_PORT:-3105}:3105"');
+    expect(compose).toContain(
+      '"${MEND_SSH_BIND_HOST:-${MEND_BIND_HOST:-127.0.0.1}}:${MEND_SSH_PORT:-2222}:2222"',
+    );
+
+    // Kept across a rerun; the --bind address takes it away.
+    expect(await serverCommand(["setup"], makeRuntime({ configDir }).runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(readEnv(activeFile(configDir, "server.env")).get("MEND_SSH_BIND_HOST")).toBe("0.0.0.0");
+    expect(
+      await serverCommand(["setup", "--ssh-bind", "127.0.0.1"], makeRuntime({ configDir }).runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(readEnv(activeFile(configDir, "server.env")).has("MEND_SSH_BIND_HOST")).toBe(false);
+    expect(
+      JSON.parse(fs.readFileSync(activeFile(configDir, "server.json"), "utf8")),
+    ).not.toHaveProperty("sshBind");
+
+    const refusals: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
+      [["--ssh-bind", "mend-mini.local"], "literal IPv4 or IPv6"],
+      [["--exposure", "loopback", "--ssh-bind", "0.0.0.0"], "non-loopback --ssh-bind"],
+    ];
+    for (const [args, message] of refusals) {
+      const refused = makeRuntime();
+      const result = await serverCommand(["setup", ...args], refused.runtime);
+      expect(result).toMatchObject({ _tag: "error", message: expect.stringContaining(message) });
+      expect(fs.existsSync(path.join(refused.runtime.configDir, "active"))).toBe(false);
+    }
+  });
+
+  it("refuses --ssh-bind with a release whose compose publishes SSH on --bind only", async () => {
+    const assets = temporaryDirectory("ssh-bind-old-assets");
+    fs.mkdirSync(assets, { recursive: true });
+    fs.writeFileSync(
+      path.join(assets, "compose.v2.yaml"),
+      composeAsset.replace(
+        "${MEND_SSH_BIND_HOST:-${MEND_BIND_HOST:-127.0.0.1}}",
+        "${MEND_BIND_HOST:-127.0.0.1}",
+      ),
+    );
+    fs.writeFileSync(path.join(assets, "postgres-init.sh"), postgresAsset);
+    const control = makeRuntime();
+    const result = await serverCommand(
+      ["setup", "--version", "0.23.0", "--assets-dir", assets, "--ssh-bind", "0.0.0.0"],
+      control.runtime,
+    );
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("cannot honour --ssh-bind 0.0.0.0"),
+    });
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+
   it("rejects invalid origins and corrupt or truncated persisted state", async () => {
     const invalid = makeRuntime();
     const invalidResult = await serverCommand(

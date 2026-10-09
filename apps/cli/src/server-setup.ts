@@ -143,6 +143,8 @@ interface SetupOptions {
   readonly context: string | undefined;
   readonly version: string | undefined;
   readonly bind: string | undefined;
+  /** `--ssh-bind <ip>`: where the SSH gateway is published, when not on `--bind`. */
+  readonly sshBind: string | undefined;
   readonly url: string | undefined;
   readonly origins: ReadonlyArray<string> | undefined;
   readonly appPort: number | undefined;
@@ -169,6 +171,12 @@ export interface ServerConfig {
   readonly dockerSocket: string;
   readonly dockerSocketSource: "detected" | "override";
   readonly bind: string;
+  /**
+   * Where the workspace SSH gateway is published, when it is not `bind`. An edge keeps the web port
+   * on loopback, but Remote-SSH from another machine needs the gateway's port reachable: the edge
+   * proxies HTTPS only. Absent: the gateway is published on `bind`, as before.
+   */
+  readonly sshBind?: string;
   readonly appUrl: string;
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly appPort: number;
@@ -294,6 +302,7 @@ const SETUP_FLAGS = new Set([
   "--context",
   "--version",
   "--bind",
+  "--ssh-bind",
   "--url",
   "--origin",
   "--port",
@@ -364,6 +373,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
     bind: flagValue("--bind"),
+    sshBind: flagValue("--ssh-bind"),
     url: flagValue("--url"),
     origins: origins === undefined ? undefined : origins,
     appPort: appPort === undefined ? undefined : parsePort(appPort, "--port"),
@@ -431,14 +441,21 @@ const resolveAppUrl = (
     }
     return origin;
   }
-  const oldLocalUrl = existing === null ? null : `http://localhost:${existing.appPort}`;
-  const portChangedOnLocalhost = options.appPort !== undefined && existing?.appUrl === oldLocalUrl;
   // An edge taken away leaves its https origin behind; the localhost default returns unless
   // --url says otherwise.
-  const fallback =
-    portChangedOnLocalhost || existing?.edgeHost !== undefined
-      ? `http://localhost:${appPort}`
-      : (existing?.appUrl ?? `http://localhost:${appPort}`);
+  if (existing?.edgeHost !== undefined) {
+    return parseHttpOrigin(options.url ?? `http://localhost:${appPort}`, "--url");
+  }
+  // A saved URL that names the old port moves with --port, on any host: left behind, it would
+  // send every client (the browser, `mend login`, VS Code) to a port nothing publishes.
+  const saved = existing === null ? null : new URL(existing.appUrl);
+  const savedNamesOldPort =
+    saved !== null &&
+    existing !== null &&
+    options.appPort !== undefined &&
+    Number(saved.port || (saved.protocol === "https:" ? 443 : 80)) === existing.appPort;
+  if (saved !== null && savedNamesOldPort) saved.port = String(appPort);
+  const fallback = saved === null ? `http://localhost:${appPort}` : saved.origin;
   return parseHttpOrigin(options.url ?? fallback, "--url");
 };
 
@@ -462,6 +479,7 @@ const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boo
  */
 const checkPosture = (
   bind: string,
+  sshBind: string,
   ports: { readonly appPort: number; readonly sshPort: number },
   edgeHost: string | undefined,
   exposure: Exposure | undefined,
@@ -486,6 +504,11 @@ const checkPosture = (
       "--exposure loopback contradicts a non-loopback --bind: the port is published beyond this machine.",
     );
   }
+  if (exposure === "loopback" && !isLoopbackBind(sshBind)) {
+    throw setupError(
+      "--exposure loopback contradicts a non-loopback --ssh-bind: the SSH port is published beyond this machine.",
+    );
+  }
   if (exposure === "public" && edgeHost === undefined) {
     throw setupError(
       "--exposure public needs the edge: add --edge <host>. Without it nothing sets MEND_TRUSTED_PROXIES or an https origin, and the server refuses to start as public.",
@@ -498,7 +521,15 @@ const validateExposure = (
   options: SetupOptions,
 ): Pick<
   ServerConfig,
-  "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort" | "edgeHost" | "exposure" | "tenancy"
+  | "bind"
+  | "sshBind"
+  | "appUrl"
+  | "allowedOrigins"
+  | "appPort"
+  | "sshPort"
+  | "edgeHost"
+  | "exposure"
+  | "tenancy"
 > => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
@@ -512,11 +543,19 @@ const validateExposure = (
       "--bind must be a literal IPv4 or IPv6 address, such as 127.0.0.1 or 0.0.0.0.",
     );
   }
+  // Kept across reruns like --bind; naming the same address as --bind takes it away.
+  const requestedSshBind = options.sshBind ?? existing?.sshBind;
+  if (requestedSshBind !== undefined && net.isIP(requestedSshBind) === 0) {
+    throw setupError(
+      "--ssh-bind must be a literal IPv4 or IPv6 address, such as 127.0.0.1 or 0.0.0.0.",
+    );
+  }
+  const sshBind = requestedSshBind === bind ? undefined : requestedSshBind;
   // The edge and the posture are kept across reruns and upgrades; only a flag changes them.
   const edgeHost = options.noEdge ? undefined : (options.edge ?? existing?.edgeHost);
   const exposure = options.exposure ?? existing?.exposure;
   const tenancy = options.tenancy ?? existing?.tenancy;
-  checkPosture(bind, { appPort, sshPort }, edgeHost, exposure);
+  checkPosture(bind, sshBind ?? bind, { appPort, sshPort }, edgeHost, exposure);
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
   if (edgeHost === undefined)
@@ -529,6 +568,7 @@ const validateExposure = (
   ];
   return {
     bind,
+    ...(sshBind === undefined ? {} : { sshBind }),
     appUrl,
     allowedOrigins,
     appPort,
@@ -584,6 +624,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     dockerSocket: parseDockerSocketPath(requiredString(fields, "dockerSocket")),
     dockerSocketSource,
     bind: requiredString(fields, "bind"),
+    ...(fields.has("sshBind") ? { sshBind: requiredString(fields, "sshBind") } : {}),
     appUrl: parseHttpOrigin(requiredString(fields, "appUrl"), "Server config appUrl"),
     allowedOrigins: origins.map((origin) =>
       parseHttpOrigin(origin, "Server config allowedOrigins"),
@@ -614,6 +655,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     context: undefined,
     version: undefined,
     bind: config.bind,
+    sshBind: config.sshBind,
     url: config.appUrl,
     origins: config.allowedOrigins,
     appPort: config.appPort,
@@ -1069,9 +1111,13 @@ const renderGarage = (secrets: ServerSecrets, config: ServerConfig): ReadonlyArr
 const namespaceOf = (config: ServerConfig): ServerDockerNamespace =>
   config.bucket === "garage" ? MEND_DOCKER_NAMESPACE_WITH_GARAGE : MEND_DOCKER_NAMESPACE;
 
+/** An address as Compose's `ports` needs it: IPv6 in brackets. */
+const composeHost = (address: string): string =>
+  net.isIP(address) === 6 ? `[${address}]` : address;
+
 const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => {
   const sshHost = parseUrl(config.appUrl, "Server config appUrl").hostname.replace(/^\[|\]$/g, "");
-  const composeBind = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
+  const composeBind = composeHost(config.bind);
   return [
     `MEND_VERSION=${config.serverVersion}`,
     "MEND_IMAGE_REPOSITORY=ghcr.io/sealant-sh/mend",
@@ -1079,6 +1125,7 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     `APP_URL=${config.appUrl}`,
     `MEND_ALLOWED_ORIGINS=${JSON.stringify(config.allowedOrigins)}`,
     `MEND_BIND_HOST=${composeBind}`,
+    ...(config.sshBind === undefined ? [] : [`MEND_SSH_BIND_HOST=${composeHost(config.sshBind)}`]),
     `MEND_PORT=${config.appPort}`,
     `MEND_SSH_PORT=${config.sshPort}`,
     ...(config.registryPort === undefined ? [] : [`MEND_REGISTRY_PORT=${config.registryPort}`]),
@@ -1416,6 +1463,21 @@ const resolveDockerSocket = (
     dockerSocket: parseDockerSocketPath(override ?? detected),
     dockerSocketSource: override === undefined ? "detected" : "override",
   };
+};
+
+/**
+ * A release's compose asset from before `--ssh-bind` publishes SSH on `--bind` and would ignore
+ * `MEND_SSH_BIND_HOST`: refused, rather than a gateway quietly left where the operator moved it from.
+ */
+const checkSshBindAsset = (
+  config: Pick<ServerConfig, "sshBind" | "serverVersion">,
+  compose: string,
+): void => {
+  if (config.sshBind !== undefined && !compose.includes("MEND_SSH_BIND_HOST")) {
+    throw setupError(
+      `Mend ${config.serverVersion}'s ${COMPOSE_ASSET} publishes workspace SSH on --bind and cannot honour --ssh-bind ${config.sshBind}. Use a release that supports --ssh-bind, or pass --ssh-bind with the --bind address.`,
+    );
+  }
 };
 
 const resolveAssets = async (
@@ -1774,6 +1836,7 @@ const setupServer = async (
     ...validateExposure(existing?.config ?? null, options),
   };
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
+  checkSshBindAsset(configWithoutBucket, assets.compose);
   const bucket = composeBucket(assets.compose);
   // Capture workspaces save on a stop within their long stop grace; a daemon shutdown gives them
   // only the daemon's own timeout. Said once here, where the operator can still raise it.
@@ -2280,6 +2343,7 @@ const upgradeServer = async (
   const previous = storeValue(store.readActive());
   if (previous === null) throw setupError("The active server generation is missing.");
   const assets = await resolveAssets(runtime, version, existing, store, options);
+  checkSshBindAsset({ ...existing.config, serverVersion: version }, assets.compose);
   // The target generation is always on the current contract: a v1 install loses its registry
   // port here (v2 bundles publish none) while its identity, and so its volume ownership, is
   // carried over byte for byte. The bucket follows the target's compose asset: an upgrade

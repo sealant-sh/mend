@@ -58,22 +58,23 @@ context.
 
 Setup options:
 
-| Option                   | Meaning                                                                                                                           |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                                      |
-| `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin              |
-| `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                                     |
-| `--url <origin>`         | Advertised browser URL; required with a non-loopback bind                                                                         |
-| `--origin <origin>`      | Additional exact browser origin; repeat for more than one                                                                         |
-| `--port <n>`             | External web port; default `3105`; must differ from the SSH port                                                                  |
-| `--ssh-port <n>`         | External workspace SSH port; default `2222`                                                                                       |
-| `--edge <host>`          | Run the Caddy TLS edge for this DNS name on ports 80 and 443; the origin becomes `https://<host>` and `--bind` stays on loopback  |
-| `--no-edge`              | Take a saved edge away; the origin returns to `http://localhost`                                                                  |
-| `--exposure <v>`         | Declare `loopback`, `private` or `public`; kept across reruns and upgrades. `public` needs `--edge` and an existing first account |
-| `--tenancy <v>`          | Declare `single` or `multi`; kept across reruns and upgrades. `multi`, like `public`, also sets the multi mode gate's variables   |
-| `--assets-dir <dir>`     | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`             |
-| `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                              |
-| `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                             |
+| Option                   | Meaning                                                                                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                                                                                  |
+| `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin                                                          |
+| `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                                                                                 |
+| `--ssh-bind <ip>`        | Published address for workspace SSH alone, when not `--bind`; with `--edge`, Remote-SSH from another machine needs it. Kept across reruns; the `--bind` address takes it away |
+| `--url <origin>`         | Advertised browser URL; required with a non-loopback bind                                                                                                                     |
+| `--origin <origin>`      | Additional exact browser origin; repeat for more than one                                                                                                                     |
+| `--port <n>`             | External web port; default `3105`; must differ from the SSH port. A saved `--url` on the old port moves to the new one                                                        |
+| `--ssh-port <n>`         | External workspace SSH port; default `2222`                                                                                                                                   |
+| `--edge <host>`          | Run the Caddy TLS edge for this DNS name on ports 80 and 443; the origin becomes `https://<host>` and `--bind` stays on loopback                                              |
+| `--no-edge`              | Take a saved edge away; the origin returns to `http://localhost`                                                                                                              |
+| `--exposure <v>`         | Declare `loopback`, `private` or `public`; kept across reruns and upgrades. `public` needs `--edge` and an existing first account                                             |
+| `--tenancy <v>`          | Declare `single` or `multi`; kept across reruns and upgrades. `multi`, like `public`, also sets the multi mode gate's variables                                               |
+| `--assets-dir <dir>`     | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`                                                         |
+| `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                                                                          |
+| `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                                                                         |
 
 Setup holds an exclusive lock through startup and health checks, keeps private configuration in
 immutable generations, and never deletes Docker volumes. A changed `--version` on a rerun is

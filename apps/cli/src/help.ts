@@ -1112,7 +1112,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "this machine",
     summary: "install or repair the local Mend server",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
@@ -1132,6 +1132,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "exact Mend server version, or latest; omitted keeps the current pin",
       },
       { flag: "--bind <ip>", text: "published listen address. Default: 127.0.0.1" },
+      {
+        flag: "--ssh-bind <ip>",
+        text: "where workspace SSH is published, when not on --bind; with --edge, Remote-SSH from another machine needs it. Kept across reruns; the --bind address takes it away",
+      },
       { flag: "--url <origin>", text: "advertised browser URL, required with a non-loopback bind" },
       {
         flag: "--origin <origin>",
@@ -1175,6 +1179,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         command: "mend server setup --version 0.25.0 --assets-dir ./release-assets --offline",
         text: "install from local release assets and preloaded images",
+      },
+      {
+        command: "mend server setup --edge mend.example.com --ssh-bind 0.0.0.0",
+        text: "the TLS edge for the browser and the API, and workspace SSH for Remote-SSH from other machines",
       },
       {
         command: "mend server setup --edge mend.example.com",

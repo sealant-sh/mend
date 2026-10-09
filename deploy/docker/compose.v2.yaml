@@ -21,7 +21,9 @@ services:
         condition: service_healthy
     ports:
       - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_PORT:-3105}:3105"
-      - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_SSH_PORT:-2222}:2222"
+      # Workspace SSH may be published apart from the web port (`mend server setup --ssh-bind`): an
+      # edge keeps 3105 on loopback, and Remote-SSH from another machine still needs 2222.
+      - "${MEND_SSH_BIND_HOST:-${MEND_BIND_HOST:-127.0.0.1}}:${MEND_SSH_PORT:-2222}:2222"
     environment:
       APP_URL: ${APP_URL:?set APP_URL in .env}
       MEND_ALLOWED_ORIGINS: ${MEND_ALLOWED_ORIGINS:-[]}

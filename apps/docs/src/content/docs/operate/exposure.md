@@ -226,6 +226,10 @@ What the overlay does, and what it states on your behalf:
 - The edge publishes 80 and 443 (`MEND_EDGE_BIND_HOST`, default `0.0.0.0`). Mend's own port stays on
   loopback (`MEND_BIND_HOST`), so the way in from outside is through TLS. A public certificate puts
   the hostname in certificate transparency logs.
+- The edge carries HTTPS only. Workspace SSH (Remote-SSH from VS Code, `mend ssh`) stays on loopback
+  with the web port unless you publish it on its own: `mend server setup --ssh-bind 0.0.0.0` (or a
+  private address). The gateway admits only registered keys, and a workspace only to the person who
+  launched it.
 - The edge shares a network with Mend alone. It cannot reach Postgres, the bucket or a workspace.
 - `MEND_TRUSTED_PROXIES` defaults to exactly the edge's network, `192.168.250.0/28`. Set
   `MEND_EDGE_SUBNET` when that range is already routed where the host lives, and the trusted range
