@@ -796,6 +796,46 @@ test("engine timeline keeps this session's message heads, never annotations, cau
   assert.deepEqual(engineTimelineEvidence(undefined, [sessionId]), []);
 });
 
+test("engine timeline cuts interpolated errors, remotes, paths and short tokens out of a head", () => {
+  const sessionId = "e8f4474e-b96c-4d41-b286-e1a864d966ff";
+  const secrets = [
+    "alice@example.com",
+    "alice",
+    "git@github.com:org/private-repo.git",
+    "private-repo",
+    "ghp_shortTok123",
+    "sk-ab12",
+    "Bearer abc.def.ghi",
+    "abc.def.ghi",
+    "password authentication failed",
+    'user "mend"',
+    "/var/lib/mend/store",
+    "~/.config/secret.env",
+    "SqlError",
+  ];
+  const log = [
+    // engine.ts:6428 (retain(`the launch failed · ${error.message}`)), a WARN: printed for any session.
+    "[13:41:40.001] WARN (#14): session engine: opening prompt not delivered · the launch failed · Sealant answered 401 for alice@example.com token=ghp_shortTok123 git@github.com:org/private-repo.git",
+    // engine.ts:14402 (`pre-release executor · ${reason}`, the reason carrying Cause.pretty).
+    `[13:41:40.002] INFO (#15): session engine: pre-release executor · not replaced · what would stop could not be read (SqlError: password authentication failed for user "mend" at /var/lib/mend/store) { sessionId: '${sessionId}' }`,
+    "[13:41:40.003] ERROR (#16): session engine: x [FooError: Authorization: Bearer abc.def.ghi]",
+    "[13:41:40.004] WARN (#17): session engine: secret file ~/.config/secret.env · moved to /var/lib/mend/store",
+    "[13:41:40.005] WARN (#18): session engine: capture flush · refused · sk-ab12 ghp_shortTok123 seen",
+    "[13:41:40.006] WARN (#19): session engine: clone failed · fatal: could not read from git@github.com:org/private-repo.git",
+  ].join("\n");
+  const timeline = engineTimelineEvidence(log, [sessionId]);
+  assert.deepEqual(timeline, [
+    "13:41:40.001 WARN session engine: opening prompt not delivered · the launch failed · Sealant answered 401 for …",
+    "13:41:40.002 INFO session engine: pre-release executor · not replaced · what would stop could not be read …",
+    "13:41:40.003 ERROR session engine: x …",
+    "13:41:40.004 WARN session engine: secret file …",
+    "13:41:40.005 WARN session engine: capture flush · refused · … … seen",
+    "13:41:40.006 WARN session engine: clone failed …",
+  ]);
+  const text = timeline.join("\n");
+  for (const secret of secrets) assert.equal(text.includes(secret), false, secret);
+});
+
 test("session state names statuses and counters, and only the presence of free text", () => {
   const state = {
     session: {

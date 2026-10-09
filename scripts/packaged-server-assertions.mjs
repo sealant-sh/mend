@@ -278,12 +278,32 @@ const logEntryHead =
  */
 const messageEnd = /\s(?:\{|[A-Z]\w*(?:Error|Exception)\b|Error\b|\[?Fiber\b|Interrupted\b)/;
 
-/** An engine message head with anything opaque (tokens, hashes, URLs) masked. */
-const maskedHead = (text) =>
-  text
+const enginePrefix = "session engine: ";
+/** What an engine message keeps: plain words and the engine's separators, nothing else. */
+const plainWords = /^[\w ·'’,-]*/;
+
+/**
+ * An engine message head as the CI log may carry it. Some messages interpolate an error, a path or
+ * a remote into the head itself (`… the launch failed · ${error.message}`, `… (${Cause.pretty})`),
+ * so the head is cut at the first character outside plain words (`@ : = / ( [ " ~ .` among them),
+ * and the word that character was part of goes too: `alice@…` keeps no `alice`, `git@host:…` no
+ * `git`. What is left has anything opaque masked: a word mixing letters with digits or `_` (a
+ * token of any length), a long run, a URL.
+ */
+const maskedHead = (text) => {
+  const rest = text.startsWith(enginePrefix) ? text.slice(enginePrefix.length) : text;
+  let kept = rest.match(plainWords)[0];
+  if (kept.length < rest.length && !/\s$/.test(kept)) kept = kept.replace(/\S+$/, "");
+  const words = kept
+    .trimEnd()
+    .replace(/[ ·,-]+$/, "")
     .replace(/\b[a-z][\w+.-]*:\/\/\S+/gi, "<url>")
     .replace(/[A-Za-z0-9+/_=-]{32,}/g, "…")
-    .slice(0, 160);
+    .replace(/[\w-]*(?:\d[\w-]*[A-Za-z_]|[A-Za-z_][\w-]*\d|_)[\w-]*/g, (word) =>
+      /^\d+$/.test(word) ? word : "…",
+    );
+  return `${enginePrefix}${words}${kept.length < rest.length ? " …" : ""}`.slice(0, 160);
+};
 
 /**
  * The engine's own account of a session from the Mend container's log, for the CI log of a stage

@@ -106,8 +106,8 @@ const containers = new Set();
 const networks = new Map();
 let volumes;
 let upgrade;
-// The session the capture stages follow, once there is one: what a failure past that point
-// classifies in the CI log (`printDiagnosis`).
+// The proof session, once there is one: what a failure in any later stage (capture, dotfiles,
+// lifecycle, upgrade) classifies in the CI log (`printDiagnosis`).
 let diagnosis;
 
 // Only read-only Docker preflight uses the original home. Every subsequent client gets a
@@ -1698,7 +1698,8 @@ try {
   console.error(
     `FAIL ${stage}: ${error instanceof assert.AssertionError ? error.message : "operation failed; raw error withheld"}`,
   );
-  if (diagnosis) {
+  // A cancelled run goes straight to cleanup: the diagnosis would only delay it.
+  if (diagnosis && !interrupted) {
     try {
       await printDiagnosis();
     } catch {
