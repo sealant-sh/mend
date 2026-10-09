@@ -88,7 +88,8 @@ Preconditions:
   the server's refusal, which includes
   `This worktree holds 1 repository added with mend repo add, saved only with it · /workspace/repos/<other> on mend/<worktree> · Mend cannot see whether it holds commits or edits that are not on origin, and removal deletes it. Push what you need from a session in this worktree before removal, or pass force=true to remove it anyway.`,
   then `  mend worktrees rm <worktree> --project <project> --force removes it anyway`. Exit code `1`.
-- **Proof.** Capture the session page's `Repositories` card while `adding` and once `ready`, and the
+- **Proof.** Capture the session page's `Repositories` card while `adding`, if observed, and once
+  `ready`, and the
   review page's header with the `repositories ·` line (`ariaSnapshot()` and screenshots). Keep the
   tmux transcript (`tmux capture-pane -p -S - -t repo`) and the `mend worktrees rm` transcript with
   its exit code.
@@ -103,6 +104,9 @@ Preconditions:
 - The review line names each repository by path; it links to the repository's own change only once
   that change has checkpoints beyond its start, which does not happen today (its files are saved with
   the main worktree).
+- `adding` can finish before the session page is read, especially after the CLI add returns.
+  Report that state as not observed and retain the action transcript and the resulting `ready`
+  card; the final card alone does not prove the transient state.
 - The add follows the clone for up to 30 minutes and prints `still adding · mend repo list shows it
   when done` past that. A large repository can take minutes; wait for the row, not a fixed sleep.
 - The clone runs through the session's git transport, which is bound to the main project's origin

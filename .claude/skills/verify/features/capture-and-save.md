@@ -34,7 +34,9 @@ included.
   `mend sessions --all --json` (`capture`); `mend worktrees rm <name>` prints the saving refusal.
 - TUI: the session row's state words, `a` on a stopping session, and `Shift+K` on one.
 - Mobile: the session screen's status line (`stopping · saving · 3 left`). Not driven by this map.
-- Desktop, VS Code, Slack: no capture line or discard in this map.
+- Slack: a session's thread status message includes the capture line while saving or when the
+  workspace is kept. Not drivable yet: this map has no Slack driver.
+- Desktop, VS Code: no capture line or discard in this map.
 
 ## Driving it with verify
 
@@ -49,17 +51,23 @@ Preconditions:
   Note `<id>`, `<id8>` and `<worktree>`. How long the drain takes depends on the store's throughput;
   a fast store may finish before a read. Launch must size the bytes for its store.
 
+- **Capture-line forms.** `<capture line>` below is `saving`, `saving · <n> left`,
+  `saving · <size> <unit> left` or `saving · no uploads pending`. Bytes take precedence over the
+  count when available, with units `B`, `KB`, `MB`, `GB` or `TB`. Each form may append
+  `· capture step overdue · <step>` with `· running <duration>` and `· bound <duration>` when
+  those durations are reported. Capture the form observed on each read; the line can change
+  between reads.
 - **Stop and read the line.** Run `mend stop <id8>`. Stdout reads
   `✓ stopped · <harness> · <id8> · <branch>`, then, while the drain runs,
-  `  saving · <n> left · the workspace stops once nothing is pending` (or
-  `  saving · no uploads pending · …`), then `  review · <web>/sessions/<id>`. Exit code `0`.
+  `  <capture line> · the workspace stops once nothing is pending`, then
+  `  review · <web>/sessions/<id>`. Exit code `0`.
 - **Session page while saving.** Go to `<web>/sessions/<id>`. The header shows the status word
-  `Stopping` and beside it the capture line (`saving · <n> left`), as plain text. For the owner,
+  `Stopping` and beside it `<capture line>` in one of the forms above, as plain text. For the owner,
   `page.getByRole("button", { name: "Discard unsaved and stop…" })` is present.
 - **Listed while saving.** Run `mend sessions`. The session is listed although it is no longer live:
-  `<harness>  <id8>  stopping   <project>  <branch> · base <base>  saving · <n> left`. Run
+  `<harness>  <id8>  stopping   <project>  <branch> · base <base>  <capture line>`. Run
   `mend sessions --project <project> --all --json`. The session's entry has `"status": "stopping"`
-  and `"capture"` with `"drain": "stop"`, `"notSaved": false` and `"line": "saving · <n> left"`
+  and `"capture"` with `"drain": "stop"`, `"notSaved": false` and `"line": "<capture line>"`
   (`pending` and `pendingBytes` as the server reports them).
 - **Removal refused while saving.** Run `mend worktrees rm <worktree> --project <project> --force`.
   Stderr reads
@@ -73,8 +81,8 @@ Preconditions:
   (`page.getByRole("alert")`) holds the same `not removed · saving · …` words, and its buttons are
   `Keep worktree` and the dialog's `Close`: no `Remove anyway`. Choose `Keep worktree`.
 - **Dashboard.** In `tmux new-session -d -s cap -x 200 -y 50 'mend ui'`, select the session. Its
-  row's state words read `saving · <n> left`. Press `a`: the status line reads
-  `stopping · <name> · saving · <n> left`.
+  row's state words read `<capture line>` in one of the forms above. Press `a`: the status line
+  reads `stopping · <session display name> · <capture line>`.
 - **Saved.** Wait until the capture line goes. The session page shows a settled status word
   (`Stopped`) with no capture line, `Discard unsaved and stop…` is gone, and
   `mend sessions --project <project> --all --json` shows the entry settled with `"line": null` in
@@ -86,6 +94,8 @@ Preconditions:
   (`page.getByRole("button", { name: /^Really discard what is not saved\?/ })`). It reads
   `Discarding…`, then the capture line reads
   `unsaved work discarded by <name> at <HH:MM:SS> UTC`.
+- **Slack capture.** Not drivable yet: this map has no Slack driver. A Slack-started session
+  with a drain shows `<capture line>` in the thread's status message beside its state and branch.
 - **Proof.** Capture the session page while saving, after it saved, and after the discard
   (`ariaSnapshot()` and screenshots with the header visible), and the `Not removed` dialog. Keep the
   `mend stop`, `mend sessions`, `mend sessions --json` and `mend worktrees rm` transcripts with exit
@@ -94,7 +104,9 @@ Preconditions:
 ## Gotchas
 
 - A drain on a small worktree can finish between two reads. A run that never sees `saving` reports
-  the line as not observed, with the bytes it used; it does not report the feature broken.
+  the line as not observed, with the bytes it used; it does not report the feature broken. Report
+  each drain state, discard action or pending button label not observed when it finishes between
+  reads. A completed drain does not prove the mid-drain removal or discard steps.
 - Status words and the capture line are plain text, not `role="status"`. Assert with `getByText`.
 - `Discard unsaved and stop…` is a two-click button: the first click arms it and changes its name,
   and moving focus away disarms it. Ask for the armed name in the second click. Only the session's
@@ -115,5 +127,6 @@ Preconditions:
   the page may already offer `resume with:` and `Delete…`. A delete asked mid-drain waits for the
   workspace and says what it waits on under the header.
 - A worktree started without a name (`mend run` takes none in its documented form) is called
-  `wt-<id>` by `mend worktrees`, and the web shows it by its first session's label, else
-  `session <id8>`. Right-click the name the web shows.
+  `wt-<id>` by `mend worktrees`, and the web shows it by the first member with a non-null label,
+  else `session <id8>` using the first member's id. With no members it keeps the worktree name.
+  Right-click the name the web shows.

@@ -37,7 +37,8 @@ on those devices. Everything updates live, without a reload.
 - Mobile: the `Now` tab (`/`) of the Expo app.
 - Desktop: the sidebar's `inbox` face (`Ctrl+Shift+B` toggles it with `tree`).
 - VS Code: the Mend view lists sessions. Not drivable yet: this map has no VS Code driver.
-- Slack: none.
+- Slack: `@mend list` lists the person's sessions started from Slack in that workspace, newest
+  first, with their state, channel and links to Mend. Not drivable yet: this map has no Slack driver.
 
 ## Driving it with verify
 
@@ -55,8 +56,9 @@ Preconditions:
   (`page.getByRole("heading", { name: "What needs you" })`). The line under it reads
   `Nothing waiting on you · 2 live · 1 to review · 1 project`.
 - **Ready to review.** Under the label `Ready to review`, one row links to the review:
-  `page.getByRole("link", { name: new RegExp("^<harness> · <project>") })`. Its text ends with
-  `Review →` and the stats `· 1 file · +1 −0`. Clicking it lands on `/changes/<changeId>`.
+  `page.getByRole("link", { name: new RegExp("^<harness> · <project>") })`. Its text contains
+  `Review →`, then `settled <time>`, then the stats `· 1 file · +1 −0`. Assert each fragment
+  separately. Clicking it lands on `/changes/<changeId>`.
 - **Live.** Under `Live`, each live session is a card linking to `/sessions/<id>`, named from
   `<shown name> · <project>` (an unnamed worktree is shown by its session's label, else
   `session <id8>`) followed by its status word (`Running · recording`) and its line
@@ -65,7 +67,7 @@ Preconditions:
   harness there are two, so take `.nth(0)` and `.nth(1)`.
 - **Stop selected.** Check both. A button `Stop 2 selected` appears beside `Live`. Run
   `await page.getByRole("button", { name: "Stop 2 selected" }).click()`. It reads `Stopping…`; the
-  cards leave `Live` and the summary line reads `0 live`. `mend sessions --project <project>` prints
+  cards leave `Live` and the summary line reads `0 live`. Unscoped `mend sessions` prints
   `no active sessions — mend sessions --all includes settled ones` (unless a Service or a save keeps
   one listed).
 - **Projects.** Under `Projects`, the card's link `page.getByRole("link", { name: "<project>", exact: true })`
@@ -105,9 +107,15 @@ Preconditions:
 - **Desktop.** Attached over CDP, press `Control+Shift+B` (or click
   `page.getByRole("group", { name: "Sidebar face" }).getByRole("button", { name: "inbox" })`). Inside
   `page.getByRole("navigation", { name: "Projects and sessions" })` the header reads
-  `<n> live · <n> settled`, live rows come first, and the shelf buttons `settled` and `snoozed`
-  (`aria-expanded`) fold the rest. A row is a button named by its text, starting `<harness> · `;
+  `<n> live · <n> settled`, live rows come first, and the shelf buttons fold the rest
+  (`aria-expanded`). Match their names by prefix,
+  `page.getByRole("button", { name: /^settled/ })` and
+  `page.getByRole("button", { name: /^snoozed/ })`: a collapsed shelf includes its count,
+  for example `settled 3`. A row is a button named by its text, starting `<harness> · `;
   clicking it opens the session's tab. With no live session the rail reads `no live sessions`.
+- **Slack list.** Not drivable yet: this map has no Slack driver. A linked person sends
+  `@mend list`; the private reply reads `Your sessions started from Slack, newest first:` with
+  state, channel and Mend links, or `No sessions you started from Slack in this workspace.`
 - **Proof.** Capture the Now page with all sections (`ariaSnapshot()` and a screenshot with the
   heading visible) before and after `Stop 2 selected`, and the mobile and desktop lists. Keep the
   `mend sessions` (human, `--json`, `--json=v2`) and `mend projects` transcripts with exit codes.
@@ -128,16 +136,18 @@ Preconditions:
   and no follow-up is pending. A stopped session does not appear there.
 - Link names concatenate everything inside the card: the place, the status word and the facts. Match
   them with a prefix regex, not an exact name.
-- `mend sessions` without `--all` lists live sessions plus settled ones whose Services or save still
-  hold the workspace. `--json` without `--all` or `--project` reads the server's live list, with
-  `review` null.
+- `mend sessions` without `--all` and without `--project` lists live sessions plus settled ones
+  whose Services or save still hold the workspace. `--project` includes settled sessions. `--json`
+  without `--all` or `--project` reads the server's live list, with `review` null.
 - `--json=v2` must be written with `=`; `--json v2` is the v1 list.
 - Right-click menus have no accessible name (`role="menu"`); their header is a plain line, and items
   are `menuitem`s named by their labels. `Remove project…` and `Delete session…` confirm on a second
   click with new names.
 - Mobile rows are role-less elements named by their whole text; there is no `Ready to review` group
   on the phone, and rename and delete sit behind a swipe. The phone shows the harness's display name
-  (`Claude Code`, `Codex`, `OpenCode`) on a row. At a viewport wider than 600 in both directions the
+  (`Claude Code`, `Codex`, `OpenCode`) on a row. At a viewport at least 600 in both dimensions the
   phone app switches to a two-pane layout where a row selects instead of navigating.
 - The desktop's inbox rows run their texts together with no separator; match with a regex.
+- Pending button labels such as `Stopping…` can finish between reads. Report each transient
+  state not observed, then capture the resulting list and statuses.
 - Never wait for `networkidle`: the Now page holds the `/api/events` stream open.

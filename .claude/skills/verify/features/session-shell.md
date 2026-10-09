@@ -21,8 +21,9 @@ the dashboard's harness list or the desktop launcher: a recorded terminal sessio
 
 ## How to get to it (user POV)
 
-- CLI: `mend shell [session-id-prefix]`. With no id, the one live session is taken; with several, a
-  numbered picker opens.
+- CLI: `mend shell [session-id-prefix]`. An explicit id prefix selects a live or retained session.
+  Without an id, the cwd's project narrows those sessions when it matches; one candidate is taken,
+  and several open a numbered picker only on a TTY. A non-TTY caller with several must name one.
 - Web: the project page header's `Open a shell` button (`/projects/<id>`), and `Start shell session`
   in a project's right-click menu on the Now page's Projects list and on `/projects`. Both start a new
   session with the `shell` harness in a new worktree; neither opens a shell in an existing session.
@@ -56,9 +57,10 @@ Preconditions:
   The session is still listed, not settled (`idle` is the fold for a workspace a shell holds): the
   shell holds its workspace.
 - **Rejoin.** In the dashboard (`tmux new-session -d -s shui -x 200 -y 50 'mend ui'`), select the
-  session and press `a`. The status line reads `no live terminal · rejoining the open shell`, and
-  the shell's prompt comes back. Run `cat /workspace/repo/SHELL.md` there; it prints
-  `from the shell`. Run `exit`; the dashboard returns.
+  session and press `a`. Capture the attached terminal, which prints
+  `no live terminal · rejoining the open shell`, then the shell's prompt. Run
+  `cat /workspace/repo/SHELL.md` there; it prints `from the shell`. Run `exit`; the dashboard
+  returns with the status line `terminal ended · <id8> · refreshing session status`.
 - **End.** With no shell left, the session settles; `mend sessions --project <project> --all --json`
   shows it no longer live.
 - **Shell session from the web.** Go to `<web>/projects/<projectId>` and run
@@ -99,7 +101,8 @@ Preconditions:
   not by reading the pane.
 - Detaching (`Ctrl+]`) leaves the shell running and the workspace up. End it with `exit` when the
   run needs the session to settle. `MEND_DETACH_KEY=none` turns the detach key off.
-- With no id and several live sessions, `mend shell` opens a numbered picker on a TTY and refuses
+- With no id and several live or retained candidates after narrowing by the cwd's project,
+  `mend shell` opens a numbered picker on a TTY and refuses
   without one: `mend: several live sessions — name one: mend shell <session-id-prefix>`. Always pass
   the id prefix in a scripted run.
 - Only the session's owner opens a shell in it on the desktop, even while control is shared; others
@@ -109,5 +112,7 @@ Preconditions:
   element named only by its text (`Stop`, the key bar), `Stop` asks through a native alert that does
   nothing on the web, and the terminal itself renders only
   `React Native WebView does not support this platform.`
+- `Starting…` and provisioning can finish between reads. Report each transient state not observed
+  and capture the new session's URL and heading.
 - `Open a shell` and `Start shell session` share their status words with every session: assert the
   heading `shell` and the `/sessions/<id>` URL, not the status word.
