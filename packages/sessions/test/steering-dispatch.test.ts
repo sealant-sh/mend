@@ -198,7 +198,17 @@ const conversationWorld = () => {
           update(turnId, { status: "cancelled", endedAt: now() });
         }
       }),
-    cancelOpenForProcess: () => Effect.void,
+    // As the real repo: every queued or running turn of the process ends `cancelled`.
+    cancelOpenForProcess: (processId) =>
+      Effect.sync(() => {
+        for (const turn of ordered()) {
+          if (
+            turn.processId === processId &&
+            (turn.status === "queued" || turn.status === "running")
+          )
+            update(turn.id, { status: "cancelled", endedAt: now() });
+        }
+      }),
     requeueQueuedTurns: (from, to) =>
       Effect.sync(() => {
         for (const turn of ordered()) {
@@ -365,6 +375,12 @@ const steeredWorld = (harness: "claude" | "codex") => {
    * the host its last question; what the host answers decides whether anything stops.
    */
   const preparation: { during: Effect.Effect<void> } = { during: Effect.void };
+  /**
+   * What the engine does between the old process's stop and the next one's attach: stage the
+   * home, two Core calls, open the pipe. About a second on the box, by which time the old
+   * process's output has ended.
+   */
+  const nextStart: { after: Effect.Effect<void> } = { after: Effect.void };
   const atStop: Array<boolean> = [];
   const processes = Layer.mock(SessionProcessesRepo, {
     listForSession: () =>
@@ -407,6 +423,7 @@ const steeredWorld = (harness: "claude" | "codex") => {
           const protocolHost = yield* ProtocolHost;
           yield* protocolHost.detachForHandOver(processA.id);
           live.delete(processA.id);
+          yield* nextStart.after;
           live.add(processB.id);
           yield* attachB;
         }).pipe(Effect.provide(host)),
@@ -424,6 +441,7 @@ const steeredWorld = (harness: "claude" | "codex") => {
     hooksFor,
     decision,
     preparation,
+    nextStart,
     atStop,
   };
 };
@@ -1031,4 +1049,81 @@ describe("shared steering's dispatch (docs/adr/0016, Delivery 18)", () => {
       yield* host.detach(steered.processA.id);
     }).pipe(Effect.scoped, Effect.provide(steered.host));
   });
+
+  /**
+   * The box, 2026-10-09 (session e4028ea7): Bob's turn read `cancelled` on Alice's process and was
+   * never sent, though Bob's process started. The stop aborts the old process's output; its adapter
+   * then says "Claude process output ended", and the host swept that process's open turns, Bob's
+   * waiting one with them, a second before Bob's process attached to take the queue.
+   */
+  it.live(
+    "the waiting turn, and one sent while the conversation is between processes, run on B's process once A's output has ended",
+    () => {
+      const steered = steeredWorld("claude");
+      const alice = claudePipe("pipe-a");
+      const bob = claudePipe("pipe-b");
+      let attachBob: Effect.Effect<void> = Effect.void;
+      const aliceHooks = steered.hooksFor(
+        ALICE,
+        Effect.suspend(() => attachBob),
+      );
+      attachBob = attachAs(steered.processB, bob.pipe, steered.hooksFor(BOB, Effect.void)).pipe(
+        Effect.orDie,
+        Effect.provide(steered.host),
+      );
+      const between: { turn: AgentTurn | null } = { turn: null };
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        // The next process starts once Alice's has ended and its output with it; Bob sends a
+        // second turn meanwhile, which queues on the conversation.
+        steered.nextStart.after = Effect.gen(function* () {
+          yield* pause(200);
+          between.turn = yield* host.submitTurn(sessionId, "Bob's second request", BOB);
+          yield* pause(200);
+        }).pipe(Effect.orDie);
+        yield* attachAs(steered.processA, alice.pipe, aliceHooks);
+        yield* host.submitTurn(sessionId, "Alice's request", ALICE);
+        yield* waitUntil(
+          () => alice.sent.some((message) => message["type"] === "user"),
+          "Alice's turn sent",
+        );
+        alice.push({ type: "result", subtype: "success" });
+        alice.push({ type: "system", subtype: "session_state_changed", state: "idle" });
+        yield* pause(30);
+        const bobs = yield* host.submitTurn(sessionId, "Bob's request", BOB);
+        yield* waitUntil(
+          () => bob.sent.some((message) => message["type"] === "user"),
+          "Bob's turn sent to his process",
+        );
+        expect(steered.handOvers.map((handOver) => handOver.sender)).toEqual([BOB]);
+        expect(JSON.stringify(bob.sent)).toContain("Bob's request");
+        expect(steered.world.turns.get(bobs.id)).toMatchObject({
+          processId: steered.processB.id,
+          status: "running",
+          billedUserId: BOB,
+          billedAccountName: "default",
+        });
+        // The turn behind it waited on the conversation too, and runs next, on Bob's login.
+        const second = between.turn;
+        if (second === null) return expect.fail("Bob's second turn was not sent");
+        expect(steered.world.turns.get(second.id)).toMatchObject({
+          processId: steered.processB.id,
+          status: "queued",
+        });
+        bob.push({ type: "result", subtype: "success" });
+        yield* waitUntil(
+          () => JSON.stringify(bob.sent).includes("Bob's second request"),
+          "Bob's second turn sent",
+        );
+        expect(steered.world.turns.get(bobs.id)?.status).toBe("completed");
+        expect(steered.world.turns.get(second.id)).toMatchObject({
+          processId: steered.processB.id,
+          status: "running",
+          billedUserId: BOB,
+        });
+        expect(JSON.stringify(alice.sent)).not.toContain("Bob's");
+        yield* host.detach(steered.processB.id);
+      }).pipe(Effect.scoped, Effect.provide(steered.host));
+    },
+  );
 });

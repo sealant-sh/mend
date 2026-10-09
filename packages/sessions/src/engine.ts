@@ -9469,6 +9469,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const endingAgentProcesses = new Set<string>();
 
       /**
+       * Conversation processes being handed over (docs/adr/0016, decision 6): from before their
+       * stop until the next process has taken the queue, or the hand-over has ended. Their queued
+       * turns are the conversation's, so an exit seen meanwhile cancels none of them.
+       */
+      const handingOverProcesses = new Set<string>();
+
+      /**
        * Record an agent process's end: the row, its run, and the session fold — synchronously,
        * so a caller's next read sees the new status. True when THIS call recorded it; false
        * when another observer already had. The slow tail is `finishAgentProcess`.
@@ -9661,7 +9668,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ? Effect.gen(function* () {
               if (ended.kind === "agent-protocol") {
                 yield* protocolHost.detach(ended.id);
-                yield* conversations.cancelOpenForProcess(ended.id);
+                // The watcher can see a handed-over process exit before its stop records it:
+                // its queued turns wait for the conversation's next process (decision 6).
+                if (!handingOverProcesses.has(ended.id)) {
+                  yield* conversations.cancelOpenForProcess(ended.id);
+                }
               }
               let outcome: SessionOutcome = "failed";
               if (
@@ -16877,6 +16888,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const nameOf = yield* namesFor(session.id);
           let stopped = false;
+          handingOverProcesses.add(agentProcess.id);
           const stop = stopForHandOver(agentProcess, nameOf(sender)).pipe(
             Effect.tap(() =>
               Effect.sync(() => {
@@ -16929,10 +16941,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }
                 yield* conversations.failTurn(turnId, words).pipe(Effect.ignore);
                 const previous = agentProcess.runsAs ?? session.ownerUserId;
-                if (previous !== null) {
+                // No process takes the conversation's queue: the turns behind the waiting one,
+                // never sent, end with the stopped process, as at any stop.
+                const dropQueue = conversations.cancelOpenForProcess(agentProcess.id);
+                if (previous === null) {
+                  yield* dropQueue;
+                } else {
                   yield* launch(previous, Effect.void).pipe(
                     Effect.catchCause((cause) =>
                       Effect.gen(function* () {
+                        yield* dropQueue;
                         // Said on the session line, not only in a log (review 2, P3-2).
                         yield* noteLaunchWords(
                           session.id,
@@ -16973,6 +16991,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   cause: error,
                 }),
           ),
+          Effect.ensuring(Effect.sync(() => handingOverProcesses.delete(agentProcess.id))),
         );
 
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
