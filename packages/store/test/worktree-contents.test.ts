@@ -2,11 +2,18 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Worker } from "node:worker_threads";
 
 import { Effect, Layer } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { isWorktreeRelativePath, parseGrep, Store, StoreConfig } from "../src/index.ts";
+import {
+  GREP_LINE_LIMIT,
+  isWorktreeRelativePath,
+  parseGrep,
+  Store,
+  StoreConfig,
+} from "../src/index.ts";
 
 /**
  * Reading a worktree's files and searching its lines (ADR 0012, phase 3): a commit's tree through
@@ -86,6 +93,70 @@ describe("reading one file", () => {
     }
   });
 
+  it("follows a link that stays inside the worktree, and none through `.git`", async () => {
+    fs.mkdirSync(path.join(repo, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "docs", "guide.md"), "the guide\n");
+    fs.symlinkSync("docs", path.join(repo, "manual"));
+    fs.symlinkSync("../docs/guide.md", path.join(repo, "docs", "readme.md"));
+    fs.symlinkSync(".git", path.join(repo, "dotgit"));
+    expect(text((await run(store.readWorktreeFile(repo, "manual/guide.md", 1024)))?.bytes)).toBe(
+      "the guide\n",
+    );
+    expect(text((await run(store.readWorktreeFile(repo, "docs/readme.md", 1024)))?.bytes)).toBe(
+      "the guide\n",
+    );
+    expect(await run(store.readWorktreeFile(repo, "dotgit/config", 1024))).toBeNull();
+  });
+
+  it(
+    "never reads outside while a directory is swapped for a link out of the worktree",
+    { timeout: 60_000 },
+    async () => {
+      // The race the review found (602-1): `dir` is renamed away, a link to `outside` put in its
+      // place, then put back, as fast as a thread can, while the store reads `dir/file`.
+      const racing = path.join(tmp, "racing");
+      const outside = path.join(tmp, "racing-outside");
+      fs.mkdirSync(path.join(racing, "dir"), { recursive: true });
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(racing, "dir", "file"), "inside");
+      fs.writeFileSync(path.join(outside, "file"), "outside-secret");
+      const stop = new Int32Array(new SharedArrayBuffer(4));
+      const worker = new Worker(
+        `const { workerData, parentPort } = require("node:worker_threads");
+         const fs = require("node:fs");
+         const stop = new Int32Array(workerData.stop);
+         parentPort.postMessage("ready");
+         while (!Atomics.load(stop, 0)) {
+           try {
+             fs.renameSync(workerData.racing + "/dir", workerData.racing + "/held");
+             fs.symlinkSync(workerData.outside, workerData.racing + "/dir");
+             fs.unlinkSync(workerData.racing + "/dir");
+             fs.renameSync(workerData.racing + "/held", workerData.racing + "/dir");
+           } catch {}
+         }`,
+        { eval: true, workerData: { racing, outside, stop: stop.buffer } },
+      );
+      await new Promise((resolve) => worker.once("message", resolve));
+      let inside = 0;
+      let escaped = 0;
+      try {
+        for (let attempt = 0; attempt < 5_000; attempt++) {
+          const read = await Effect.runPromise(
+            store.readWorktreeFile(racing, "dir/file", 1024).pipe(Effect.orElseSucceed(() => null)),
+          );
+          if (read === null) continue;
+          if (text(read.bytes) === "outside-secret") escaped += 1;
+          else inside += 1;
+        }
+      } finally {
+        Atomics.store(stop, 0, 1);
+        await worker.terminate();
+      }
+      expect(escaped).toBe(0);
+      expect(inside).toBeGreaterThan(0);
+    },
+  );
+
   it("takes only a path inside the worktree", () => {
     expect(isWorktreeRelativePath("src/app.ts")).toBe(true);
     for (const refused of ["", "/abs", "a/../b", "./a", "a//b", ".git/HEAD", "x/.git/config"]) {
@@ -136,6 +207,28 @@ describe("searching lines", () => {
     expect((await query("Hello = [0-9]", { regex: true })).matches).toEqual([
       { path: "app.ts", line: 1, text: "export const Hello = 1;" },
     ]);
+  });
+
+  it("answers a huge matching line bounded: one match, its text cut, never a failure", async () => {
+    const huge = path.join(tmp, "huge");
+    fs.mkdirSync(huge);
+    git(huge, "init", "-q", "-b", "main");
+    // One 6 MiB line: past the output budget on its own.
+    fs.writeFileSync(path.join(huge, "blob.txt"), `needle ${"x".repeat(6 * 1024 * 1024)}\n`);
+    for (let file = 0; file < 50; file++) {
+      fs.writeFileSync(path.join(huge, `more-${file}.txt`), "needle\n".repeat(100));
+    }
+    const found = await run(
+      store.grep(
+        huge,
+        null,
+        { pattern: "needle", caseSensitive: true, wholeWord: false, regex: false },
+        1,
+      ),
+    );
+    expect(found.matches).toHaveLength(1);
+    expect(found.matches[0]?.text.length).toBeLessThanOrEqual(GREP_LINE_LIMIT);
+    expect(found.truncated).toBe(true);
   });
 
   it("keeps at most the limit, and says so", () => {

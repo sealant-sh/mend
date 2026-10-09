@@ -118,12 +118,15 @@ export class WorktreeMatch extends Schema.Class<WorktreeMatch>("WorktreeMatch")(
   path: Schema.String,
   /** From 1. */
   line: Schema.Int,
+  /** The line, cut at 2,000 characters. */
   text: Schema.String,
 }) {}
 
 /**
  * A read of a worktree's files: one file (`path`), or the lines matching a search (`query`), the
  * worktree as it stands, untracked files included and ignored ones not. Exactly one is answered.
+ * A search is bounded as a whole: at most `limit` matches, 4 MiB of git's output and 10 seconds;
+ * past any, what was found answers and `truncated` says so.
  */
 export class WorktreeContents extends Schema.Class<WorktreeContents>("WorktreeContents")({
   worktreeId: WorktreeId,

@@ -264,22 +264,133 @@ export const isWorktreeRelativePath = (relative: string): boolean => {
 
 const binaryOf = (bytes: Uint8Array): boolean => bytes.subarray(0, 8000).includes(0);
 
-/** `git grep -n -z` output (`path\0line\0text`, paths prefixed by `rev:` for a tree) as matches. */
-export const parseGrep = (out: string, rev: string | null, limit: number): GrepResult => {
+/** How many links one read follows inside a worktree before it gives up. */
+const CONTAINED_LINK_HOPS = 16;
+/** A descriptor's file or directory, reached again without walking its path (Linux). */
+const procPath = (fd: number) => `/proc/self/fd/${fd}`;
+const hasProc = (): boolean => fs.existsSync("/proc/self/fd");
+const errorCode = (error: unknown): string | undefined =>
+  error instanceof Error && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
+/** What a missing, swapped or refused entry answers: nothing to read, never an error. */
+const GONE = new Set(["ENOENT", "ENOTDIR", "ELOOP", "EACCES", "EPERM", "ENXIO"]);
+
+/**
+ * Opens `<root>/<relative>` for reading so that nothing outside `root` can be what is opened, even
+ * while the worktree changes underneath (mend#602 review, 602-1; the walk mend#615's contained
+ * writer uses). Each directory is opened through no link (`O_NOFOLLOW`), the next one through the
+ * last one's descriptor where `/proc` has it, and the file through no link either. A link met on
+ * the way is read and the walk starts again from `root` on its target, only while that target
+ * stays inside `root` and `.git` is not on it: a link inside the worktree is followed, one out of
+ * it is not. A component swapped for a link between the look and the open fails the open. Null
+ * when there is nothing (left) to read there.
+ */
+const openContained = (root: string, relative: string): number | null => {
+  const c = fs.constants;
+  const enter = c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW;
+  const proc = hasProc();
+  let parts = relative.split("/");
+  for (let hops = 0; hops <= CONTAINED_LINK_HOPS; hops++) {
+    let dfd: number;
+    try {
+      dfd = fs.openSync(root, enter);
+    } catch (error) {
+      if (GONE.has(errorCode(error) ?? "")) return null;
+      throw error;
+    }
+    let literal = root;
+    const walked: Array<string> = [];
+    let restart: Array<string> | null = null;
+    try {
+      for (const [index, part] of parts.entries()) {
+        if (part === ".git") return null;
+        const at = `${proc ? procPath(dfd) : literal}/${part}`;
+        const entry = fs.lstatSync(at, { throwIfNoEntry: false });
+        if (entry === undefined) return null;
+        if (entry.isSymbolicLink()) {
+          const target = fs.readlinkSync(at);
+          const joined = path.posix.isAbsolute(target)
+            ? target.startsWith(`${root}/`)
+              ? target.slice(root.length + 1)
+              : null
+            : path.posix.normalize(path.posix.join(...walked, target));
+          if (joined === null || joined === ".." || joined.startsWith("../")) return null;
+          restart = [...joined.split("/"), ...parts.slice(index + 1)].filter(
+            (segment) => segment !== "" && segment !== ".",
+          );
+          break;
+        }
+        if (index === parts.length - 1) {
+          // No link, and no waiting on a pipe: a file, or nothing.
+          return fs.openSync(at, c.O_RDONLY | c.O_NOFOLLOW | c.O_NONBLOCK);
+        }
+        const next = fs.openSync(at, enter);
+        fs.closeSync(dfd);
+        dfd = next;
+        literal = `${literal}/${part}`;
+        walked.push(part);
+      }
+    } catch (error) {
+      if (GONE.has(errorCode(error) ?? "")) return null;
+      throw error;
+    } finally {
+      fs.closeSync(dfd);
+    }
+    if (restart === null || restart.length === 0) return null;
+    parts = restart;
+  }
+  return null;
+};
+
+/**
+ * Whether an opened file is inside `root` and outside `.git`, by where the descriptor itself is
+ * (`/proc/self/fd`), not by the path that named it. Without `/proc`, the walk's own refusals are
+ * what holds.
+ */
+const descriptorInside = (fd: number, root: string): boolean => {
+  if (!hasProc()) return true;
+  const real = fs.readlinkSync(procPath(fd));
+  return real.startsWith(`${root}${path.sep}`) && !real.split(path.sep).includes(".git");
+};
+
+/** How much of one matching line a search answers: enough to show it, never a whole blob. */
+export const GREP_LINE_LIMIT = 2_000;
+/** How much of git's output one search reads before it stops git. */
+export const GREP_OUTPUT_BYTES = 4 * 1024 * 1024;
+/** How long one search may run before git is stopped and what it found answers. */
+export const GREP_DEADLINE_MS = 10_000;
+
+/**
+ * `git grep -n -z` output (`path\0line\0text`, paths prefixed by `rev:` for a tree) as matches, at
+ * most `limit`, each line's text cut at `GREP_LINE_LIMIT`. Output git was stopped in (`cut`) ends
+ * in a part record: kept when its path and line came through, its text cut; else dropped. Stopped
+ * output, or more matches than `limit`, says `truncated`; a line cut to its limit does not.
+ */
+export const parseGrep = (
+  out: string,
+  rev: string | null,
+  limit: number,
+  cut = false,
+): GrepResult => {
   const matches: Array<GrepMatch> = [];
-  let truncated = false;
-  for (const record of out.split("\n")) {
+  let truncated = cut;
+  const records = out.split("\n");
+  for (const [index, record] of records.entries()) {
     if (record.length === 0) continue;
-    const [rawPath = "", line = "", ...rest] = record.split("\0");
+    const fields = record.split("\0");
+    if (cut && index === records.length - 1 && fields.length < 3) break;
+    const [rawPath = "", line = "", ...rest] = fields;
     if (matches.length >= limit) {
       truncated = true;
       break;
     }
     const prefix = rev === null ? "" : `${rev}:`;
+    const text = rest.join("\0");
     matches.push({
       path: rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
       line: Number.parseInt(line, 10),
-      text: rest.join("\0"),
+      text: text.length > GREP_LINE_LIMIT ? text.slice(0, GREP_LINE_LIMIT) : text,
     });
   }
   return { matches, truncated };
@@ -1387,16 +1498,12 @@ export class Store extends Context.Service<
         return yield* Effect.try({
           try: (): FileRead | null => {
             const root = fs.realpathSync(worktreePath);
-            const target = path.resolve(root, relative);
-            if (!fs.existsSync(target)) return null;
-            // A symlink may point anywhere: only a file that stays inside the worktree is read.
-            const real = fs.realpathSync(target);
-            if (!real.startsWith(`${root}${path.sep}`)) return null;
-            if (real.split(path.sep).includes(".git")) return null;
-            const stat = fs.statSync(real);
-            if (!stat.isFile()) return null;
-            const handle = fs.openSync(real, "r");
+            const handle = openContained(root, relative);
+            if (handle === null) return null;
             try {
+              // The descriptor, not the path: what was opened is what is checked and read.
+              const stat = fs.fstatSync(handle);
+              if (!stat.isFile() || !descriptorInside(handle, root)) return null;
               const buffer = Buffer.alloc(Math.min(maxBytes, stat.size));
               const read = fs.readSync(handle, buffer, 0, buffer.byteLength, 0);
               const bytes = new Uint8Array(buffer.subarray(0, read));
@@ -1431,9 +1538,15 @@ export class Store extends Context.Service<
         if (query.wholeWord) args.push("-w");
         args.push(query.regex ? "-E" : "-F", "-e", query.pattern);
         args.push(...(rev === null ? ["--untracked"] : [rev]));
-        // 1: nothing matched.
-        const out = yield* git(args, dir, undefined, [1]);
-        return parseGrep(out, rev, limit);
+        // Bounded as a whole, not per file: git stops at the byte budget or the deadline, and what
+        // it found by then answers, marked truncated. 1: nothing matched.
+        const out = yield* gitCapped(args, dir, GREP_OUTPUT_BYTES, GREP_DEADLINE_MS).pipe(
+          Effect.catchIf(
+            (error) => error.exitCode === 1,
+            () => Effect.succeed({ stdout: "", cut: false }),
+          ),
+        );
+        return parseGrep(out.stdout, rev, limit, out.cut);
       });
 
       const listTreeFiles = Effect.fn("Store.listTreeFiles")(function* (
