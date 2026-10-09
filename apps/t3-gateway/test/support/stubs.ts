@@ -93,6 +93,7 @@ export const emptyHub: PersonHub = {
     rename: () => refused,
     stop: () => refused,
     remove: () => refused,
+    setNextMode: () => refused,
   },
 };
 

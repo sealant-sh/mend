@@ -265,6 +265,16 @@ export class GatewayState extends Context.Service<
       before: number,
       mendUserId: string | null,
     ) => Effect.Effect<ReadonlyArray<string>, GatewayStateError>;
+    /** The permission mode a person chose for a session's next launch; null clears it. */
+    readonly setNextMode: (
+      mendUserId: string,
+      sessionId: string,
+      mode: "bypass" | "ask" | null,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Every next-launch mode a person chose, by session. */
+    readonly listNextModes: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, "bypass" | "ask">, GatewayStateError>;
     /** The people who have a message kept that can still reach Mend: their hubs start with the gateway. */
     readonly peopleWithQueuedMessages: () => Effect.Effect<
       ReadonlyArray<BearerSession>,
@@ -285,8 +295,9 @@ export class GatewayState extends Context.Service<
  * across sessions, and a recorded turn is never replaced (migration 3). `pending_removals` keeps
  * each person's deleted sessions that Mend keeps until their workspace has stopped (migration 5).
  * `queued_messages` and `queue_holds` keep each person's queues (migration 6): a message names its
- * sender by bearer session, never by device token. `images` keeps the images a person attached (migration 7), and a kept
- * message names its images by id.
+ * sender by bearer session, never by device token. `images` keeps the images a person attached
+ * (migration 7), and a kept message names its images by id. `next_modes` keeps the permission mode
+ * a person chose for a session's next launch (migration 8).
  */
 const MIGRATIONS: ReadonlyArray<string> = [
   `
@@ -420,6 +431,14 @@ const MIGRATIONS: ReadonlyArray<string> = [
   CREATE INDEX sent_images_by_image ON sent_images (image_id);
   ALTER TABLE queued_messages ADD COLUMN image_ids TEXT NOT NULL DEFAULT '[]';
   `,
+  `
+  CREATE TABLE next_modes (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    permission_mode TEXT NOT NULL,
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -496,6 +515,11 @@ const ImageRow = Schema.Struct({
   mend_path: Schema.NullOr(Schema.String),
 });
 const decodeImageRows = Schema.decodeUnknownEffect(Schema.Array(ImageRow));
+const ModeRow = Schema.Struct({
+  mend_session_id: Schema.String,
+  permission_mode: Schema.Literals(["bypass", "ask"]),
+});
+const decodeModeRows = Schema.decodeUnknownEffect(Schema.Array(ModeRow));
 const ImageBytesRow = Schema.Struct({ ...ImageRow.fields, bytes: Schema.Uint8Array });
 const decodeImageBytesRow = Schema.decodeUnknownEffect(ImageBytesRow);
 const storedImageOf = (row: typeof ImageRow.Type): StoredImage => ({
@@ -1076,6 +1100,34 @@ export const openGatewayState = (
         Effect.map((rows) => rows.map((row) => row.image_id)),
       );
 
+    const setNextMode = (mendUserId: string, sessionId: string, mode: "bypass" | "ask" | null) =>
+      run("setNextMode", () => {
+        if (mode === null) {
+          database
+            .prepare("DELETE FROM next_modes WHERE mend_user_id = ? AND mend_session_id = ?")
+            .run(mendUserId, sessionId);
+          return;
+        }
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO next_modes (mend_user_id, mend_session_id, permission_mode) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, sessionId, mode);
+      });
+
+    const listNextModes = (mendUserId: string) =>
+      run("listNextModes", () =>
+        database
+          .prepare("SELECT mend_session_id, permission_mode FROM next_modes WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listNextModes", decodeModeRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, "bypass" | "ask"> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.permission_mode] as const)),
+        ),
+      );
+
     const peopleWithQueuedMessages = () =>
       run("peopleWithQueuedMessages", () =>
         database
@@ -1117,6 +1169,8 @@ export const openGatewayState = (
       recordSentImages,
       listSentImages,
       pruneImages,
+      setNextMode,
+      listNextModes,
       peopleWithQueuedMessages,
     };
   });

@@ -158,6 +158,7 @@ const sourceWith = (notices: ThreadNotices): ThreadSource => ({
   imagesOf: () => [],
   turnCheckpoints: new Map(),
   sharedWorktree: false,
+  nextMode: null,
   project,
   session,
   agent,

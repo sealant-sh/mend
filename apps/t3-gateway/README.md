@@ -363,6 +363,20 @@ the shell (every session there adds to the one change) or a thread goes, and eve
 besides, as a change can move without its threads changing. It reads at most once a second however
 busy the worktree is, and sends only what moved.
 
+## Phase 3: the runtime mode
+
+Mend sets a permission mode per launch, so `thread.runtime-mode.set` chooses the mode for the
+agent's next start, as ADR 0012 decided ("the next launch"): `approval-required` is `ask`,
+`full-access` is `bypass`, and anything between is refused. Only someone who may steer the session
+chooses, as Mend decides.
+
+- The running agent is not touched. Until it next starts (the idle stop, a stop), the thread shows
+  the chosen mode and says: "From the agent's next start: ask before acting · it runs as it started
+  until then", in Mend's own words for its modes.
+- The next launch the gateway makes for the thread names the chosen mode; once a live agent runs
+  with it, the line goes. Choosing the mode it already runs with is nothing to wait for.
+- The choice is kept per person and session in the state file (`next_modes`), across a restart.
+
 ## Phase 3: the terminal
 
 t3code's terminal drawer opens Mend's own terminal (`src/terminals.ts`): a shell Mend opens beside

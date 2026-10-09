@@ -356,6 +356,15 @@ export interface ThreadCommands {
     readonly session: BearerSession;
     readonly threadId: string;
   }) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * The permission mode for the agent's next start (`thread.runtime-mode.set`): Mend sets it per
+   * launch, so the running agent keeps its own until it next starts, and the thread says so.
+   */
+  readonly setNextMode: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly mode: "bypass" | "ask";
+  }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
 /** Where a launched thread works: a new worktree from a base, or an existing one it joins. */
@@ -928,6 +937,43 @@ export const makePersonHub = (input: {
         return image === undefined ? [] : [image];
       });
 
+    /** Session id → the permission mode the person chose for its agent's next start. */
+    const nextModes = new Map<string, "bypass" | "ask">(
+      keeper === null
+        ? []
+        : yield* state.listNextModes(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read its next-start modes", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, "bypass" | "ask">())),
+            ),
+          ),
+    );
+    /** Lets go of each chosen mode once a live agent runs with it: the next start applied it. */
+    const settleNextModes = Effect.suspend(() =>
+      Effect.forEach(
+        Array.from(nextModes),
+        ([sessionId, mode]) => {
+          const source = sourceOf(sessionId);
+          const applied =
+            source !== null &&
+            source.agent.exitedAt === null &&
+            source.agent.status === "running" &&
+            modeOf(source.agent) === mode;
+          if (!applied || keeper === null) return Effect.void;
+          nextModes.delete(sessionId);
+          return state.setNextMode(keeper.id, sessionId, null).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not let go of a next-start mode", {
+                cause: error.message,
+              }),
+            ),
+          );
+        },
+        { discard: true },
+      ),
+    );
+
     /** Writes every queue that changed since it was last kept. */
     const keepQueues = Effect.suspend(() =>
       Effect.forEach(Array.from(queues), ([sessionId, queue]) => keepQueue(sessionId, queue), {
@@ -1082,6 +1128,10 @@ export const makePersonHub = (input: {
             runIds: ids?.runIds ?? NO_IDS,
             messageIds: ids?.messageIds ?? NO_IDS,
             imagesOf: imagesOfMessage,
+            nextMode: (() => {
+              const next = nextModes.get(session.id);
+              return next === undefined || next === modeOf(agent) ? null : next;
+            })(),
             ...turnCheckpointsOf(session.id, conversation.turns),
             pending: (queue?.entries ?? []).map((queued) => ({
               runId: queued.runId,
@@ -1358,6 +1408,7 @@ export const makePersonHub = (input: {
       return retain(now);
     });
     const publishAll = Effect.suspend(() => settleQueues).pipe(
+      Effect.andThen(settleNextModes),
       Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
       Effect.andThen(publishThreads),
@@ -2125,9 +2176,12 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         // A launched thread's options go with its launches only until Mend has recorded a protocol
         // agent for it; from then on Mend reuses what that agent recorded (mend#493), as for every
-        // session, so a mode or model changed in Mend is never undone from here.
-        const options =
+        // session, so a mode or model changed in Mend is never undone from here. The mode chosen
+        // for the next start goes over either.
+        const next = nextModes.get(sessionId);
+        const named =
           recordedAgentOf(sessionId) === null ? launched.get(sessionId)?.options : undefined;
+        const options = next === undefined ? named : { ...named, permissionMode: next };
         const answer = yield* mend
           .launchProtocol(entry.token, sessionId, "", options)
           .pipe(Effect.result);
@@ -2845,6 +2899,47 @@ export const makePersonHub = (input: {
       return null;
     };
 
+    const setNextMode: ThreadCommands["setNextMode"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sessionId = sessionIdOf(command.threadId);
+        // Mend's steering rule, read as the sender: only those who may steer choose a mode.
+        const detail = yield* mend
+          .sessionDetail(command.session.deviceToken, sessionId)
+          .pipe(Effect.catchTag("MendNotFound", () => Effect.succeed(null)));
+        if (detail === null) {
+          return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+        }
+        if (detail.control?.steer === false) {
+          return yield* refused(
+            "This session is not yours to steer. Its owner can turn on shared control in Mend.",
+            true,
+          );
+        }
+        if (keeper === null) return yield* refused("A mode needs a paired person to keep it for.");
+        return yield* locked(
+          Effect.gen(function* () {
+            const source = sourceOf(sessionId);
+            if (source === null) {
+              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            }
+            // The mode it already runs with is nothing to wait for.
+            const next = command.mode === modeOf(source.agent) ? null : command.mode;
+            if (next === null) nextModes.delete(sessionId);
+            else nextModes.set(sessionId, next);
+            yield* state.setNextMode(keeper.id, sessionId, next).pipe(
+              Effect.catch((error) =>
+                Effect.logError("t3 gateway could not keep a next-start mode", {
+                  cause: error.message,
+                }),
+              ),
+            );
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
@@ -2869,6 +2964,7 @@ export const makePersonHub = (input: {
       rename,
       stop,
       remove,
+      setNextMode,
     };
 
     // ─── The hub ───────────────────────────────────────────────────────────
@@ -3220,6 +3316,10 @@ const QUEUE_NOT_KEPT =
 /** Why a message the state file could not keep was not sent. */
 const NOT_KEPT =
   "The gateway could not write this message to its state file, so it did not send it. Send it again.";
+
+/** The mode an agent started with; a launch that named none ran `bypass`. */
+const modeOf = (agent: MendProcess): "bypass" | "ask" =>
+  agent.protocolOptions?.permissionMode === "ask" ? "ask" : "bypass";
 
 const messageImageOf = (image: StoredImage): MessageImage => ({
   id: image.id,

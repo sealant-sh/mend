@@ -97,6 +97,11 @@ export interface ThreadSource {
   /** Another session takes checkpoints in the worktree: a turn's files may hold its work too. */
   readonly sharedWorktree: boolean;
   /**
+   * The permission mode the person chose for the agent's next start, when it differs from the one
+   * it runs with (`thread.runtime-mode.set`); null otherwise.
+   */
+  readonly nextMode: "bypass" | "ask" | null;
+  /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
    */
@@ -329,7 +334,14 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     title: threadTitleOf(source),
     providerInstanceId: modelSelectionOf(source).instanceId,
     modelSelection: modelSelectionOf(source),
-    runtimeMode: runtimeModeOf(source.agent),
+    // The mode chosen for the next start, once chosen: what the person asked for, with a line in
+    // the thread saying the running agent keeps its own until then.
+    runtimeMode:
+      source.nextMode === null
+        ? runtimeModeOf(source.agent)
+        : source.nextMode === "ask"
+          ? "approval-required"
+          : "full-access",
     interactionMode: "default",
     branch: source.session.branch.trim().length > 0 ? source.session.branch : null,
     worktreePath: worktreePathOf(source.project, source.session),
