@@ -9,6 +9,7 @@ import {
   pasteBytes,
   matchProjectByCwd,
   normalizeRemoteUrl,
+  redactCredentials,
   trackBracketedPaste,
 } from "./shared.ts";
 
@@ -284,5 +285,22 @@ describe("firstPositional", () => {
     expect(firstPositional(["a404034c", "--project", "mend"], ["--project"])).toBe("a404034c");
     expect(firstPositional(["--from", "12", "web"], ["--from"])).toBe("web");
     expect(firstPositional(["--project", "mend"], ["--project"])).toBeUndefined();
+  });
+});
+
+describe("redactCredentials", () => {
+  it("takes the credentials out of every URL in a line, and leaves the rest", () => {
+    expect(
+      redactCredentials(
+        "origin https://oauth2:TOKEN@github.com/a/r.git · and https://TOKEN@h.io/x",
+      ),
+    ).toBe("origin https://github.com/a/r.git · and https://h.io/x");
+    expect(redactCredentials("ssh://git:pw@host/x and ssh://git@host/y")).toBe(
+      "ssh://git@host/x and ssh://git@host/y",
+    );
+    expect(redactCredentials("git@github.com:a/r.git")).toBe("git@github.com:a/r.git");
+    expect(redactCredentials("http://127.0.0.1:3105/sessions/1")).toBe(
+      "http://127.0.0.1:3105/sessions/1",
+    );
   });
 });

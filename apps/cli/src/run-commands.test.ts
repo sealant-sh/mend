@@ -86,20 +86,21 @@ const logPage = (nextFrom: string, status: string, ...texts: ReadonlyArray<strin
 
 type Handler = (route: string, request: IncomingMessage, response: ServerResponse) => void;
 
-const startFake = async (handle: Handler) => {
+/** `host` 127.0.0.2 reads as a remote server to the CLI (`serverIsLocal`), still on loopback. */
+const startFake = async (handle: Handler, host = "127.0.0.1") => {
   const routes: Array<string> = [];
   const server = createServer((request, response) => {
     const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
     routes.push(route);
     handle(route, request, response);
   });
-  server.listen(0, "127.0.0.1");
+  server.listen(0, host);
   await once(server, "listening");
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("missing test port");
   return {
     routes,
-    url: `http://127.0.0.1:${address.port}`,
+    url: `http://${host}:${address.port}`,
     close: async () => {
       server.closeAllConnections();
       server.close();
@@ -118,15 +119,23 @@ const cliEnv = (url: string) => ({
   MEND_DETACH_KEY: "none",
 });
 
-const spawnCli = (url: string, args: ReadonlyArray<string>) =>
+const spawnCli = (
+  url: string,
+  args: ReadonlyArray<string>,
+  env: Readonly<Record<string, string>> = {},
+) =>
   spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
-    env: cliEnv(url),
+    env: { ...cliEnv(url), ...env },
     stdio: ["ignore", "pipe", "pipe"],
     cwd: os.tmpdir(),
   });
 
-const runCli = async (url: string, args: ReadonlyArray<string>) => {
-  const child = spawnCli(url, args);
+const runCli = async (
+  url: string,
+  args: ReadonlyArray<string>,
+  env: Readonly<Record<string, string>> = {},
+) => {
+  const child = spawnCli(url, args, env);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => {
@@ -704,6 +713,35 @@ describe("review of mend#610", spawning, () => {
   );
 });
 
+/** A Service's view as the server answers a start, its port observed `state`. */
+const serviceView = (state: "reachable" | "unreachable") => ({
+  service: {
+    id: "service-1",
+    sessionId,
+    name: "web",
+    workspacePort: 3000,
+    transport: "tcp",
+    browserScheme: null,
+    currentAttemptId: "attempt-1",
+  },
+  attempts: [
+    {
+      id: "attempt-1",
+      argv: ["pnpm", "dev"],
+      status: "running",
+      exitedAt: null,
+      sealantSessionId: "pty-2",
+    },
+  ],
+  currentForward: { id: "forward-1", hostPort: 41000, state: "bound" },
+  latestObservation: { forwardId: "forward-1", state },
+  workspaceExpiresAt: null,
+  workspaceTtlRenewedAt: null,
+  workspaceTtlRenewalFailedAt: null,
+  workspaceTtlRenewalError: null,
+  endpoints: [],
+});
+
 describe("--json and --wait", spawning, () => {
   it("mend projects --json prints JSON, not the table", async () => {
     const fake = await startFake((route, _request, response) => {
@@ -733,34 +771,32 @@ describe("--json and --wait", spawning, () => {
     }
   });
 
-  it("mend service run --wait exits 1 when the port did not answer, and the Service stays", async () => {
-    const view = {
-      service: {
-        id: "service-1",
-        sessionId,
-        name: "web",
-        workspacePort: 3000,
-        transport: "tcp",
-        browserScheme: null,
-        currentAttemptId: "attempt-1",
-      },
-      attempts: [
-        {
-          id: "attempt-1",
-          argv: ["pnpm", "dev"],
-          status: "running",
-          exitedAt: null,
-          sealantSessionId: "pty-2",
-        },
-      ],
-      currentForward: { id: "forward-1", hostPort: 41000, state: "bound" },
-      latestObservation: { forwardId: "forward-1", state: "unreachable" },
-      workspaceExpiresAt: null,
-      workspaceTtlRenewedAt: null,
-      workspaceTtlRenewalFailedAt: null,
-      workspaceTtlRenewalError: null,
-      endpoints: [],
+  it("never prints the credentials of a project's origin, in JSON or in the table", async () => {
+    const leaky = {
+      ...project,
+      originUrl: "https://oauth2:s3cret-token@github.com/acme/fixture.git",
     };
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") json(response, [leaky]);
+      else if (route === "GET /api/sessions") json(response, []);
+      else response.writeHead(404).end();
+    });
+    try {
+      const asJson = await runCli(fake.url, ["projects", "--json"]);
+      expect(asJson.code, asJson.stderr).toBe(0);
+      expect(asJson.stdout).not.toContain("s3cret-token");
+      expect(JSON.parse(asJson.stdout).projects[0].originUrl).toBe(
+        "https://github.com/acme/fixture.git",
+      );
+      const table = await runCli(fake.url, ["projects"]);
+      expect(table.stdout + table.stderr).not.toContain("s3cret-token");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait exits 1 when the port did not answer, and the Service stays", async () => {
+    const view = serviceView("unreachable");
     const fake = await startFake((route, _request, response) => {
       if (route === "GET /api/sessions?retained=1") json(response, [session]);
       else if (route === `POST /api/sessions/${sessionId}/services/run`) json(response, view);
@@ -774,6 +810,89 @@ describe("--json and --wait", spawning, () => {
       expect(fake.routes).not.toContain("POST /api/services/service-1/stop");
       const unwaited = await runCli(fake.url, [...args, "--", "pnpm", "dev"]);
       expect(unwaited.code, unwaited.stderr).toBe(0);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait against a remote server returns once it answered, with no tunnel", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `POST /api/sessions/${sessionId}/services/run`) {
+        json(response, serviceView("reachable"));
+      } else response.writeHead(404).end();
+    }, "127.0.0.2");
+    try {
+      const result = await runCli(fake.url, [
+        "service",
+        "run",
+        sessionId.slice(0, 8),
+        "--port",
+        "3000",
+        "--wait",
+        "--",
+        "pnpm",
+        "dev",
+      ]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout + result.stderr).toContain("connect: mend service connect web");
+      expect(fake.routes.some((route) => route.includes("upgrade"))).toBe(false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait refuses a recipe with no command, before anything starts", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `GET /api/sessions/${sessionId}/recipes`) {
+        json(response, [
+          {
+            name: "web",
+            command: null,
+            port: 3000,
+            protocol: "tcp",
+            browserScheme: "http",
+            shadowedBy: null,
+          },
+        ]);
+      } else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, [
+        "service",
+        "run",
+        sessionId.slice(0, 8),
+        "web",
+        "--wait",
+      ]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        "--wait needs a command Mend starts: web declares only a port",
+      );
+      expect(fake.routes.filter((route) => route.startsWith("POST "))).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait gives up on a start the server never answers, with 124", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `POST /api/sessions/${sessionId}/services/run`) {
+        // An answer that starts and never finishes: headers, then nothing.
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write("{");
+      } else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(
+        fake.url,
+        ["service", "run", sessionId.slice(0, 8), "--port", "3000", "--wait", "--", "pnpm", "dev"],
+        { MEND_SERVICE_WAIT_MS: "1000" },
+      );
+      expect(result.code, result.stderr).toBe(124);
+      expect(result.stderr).toContain("no answer within 1 s · the Service may still be starting");
     } finally {
       await fake.close();
     }

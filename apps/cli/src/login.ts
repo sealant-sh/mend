@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as os from "node:os";
 
 import { groupCode } from "./pair.ts";
+import { redactCredentials } from "./shared.ts";
 
 /**
  * `mend login`: sign this terminal in through the browser. The CLI opens an
@@ -111,9 +112,9 @@ const paint = (code: string) => (text: string) =>
 const dim = paint("2");
 const green = paint("32");
 const cobalt = paint("34");
-const say = (line: string) => process.stdout.write(`${line}\n`);
+const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
 const fail = (message: string): never => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
 };
 

@@ -10,6 +10,7 @@ import {
   type MemberNameDto,
   type WorkspaceRetirementDto,
 } from "./shared-workspace.ts";
+import { redactCredentials } from "./shared.ts";
 
 /**
  * `mend workspace replace <session>` (docs/adr/0016-per-person-harness-homes.md, decision 14):
@@ -23,9 +24,9 @@ const paint = (code: string) => (text: string) =>
   process.stdout.isTTY === true ? `\u001b[${code}m${text}\u001b[0m` : text;
 const dim = paint("2");
 const green = paint("32");
-const say = (line: string) => process.stdout.write(`${line}\n`);
+const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
 const fail = (message: string): never => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
 };
 

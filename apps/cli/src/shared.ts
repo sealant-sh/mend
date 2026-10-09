@@ -580,3 +580,23 @@ export const firstPositional = (
     (argument, index) =>
       !argument.startsWith("--") && (index === 0 || !valued.includes(args[index - 1] ?? "")),
   );
+
+/**
+ * `text` with the credentials of every URL in it taken out. Adoption accepts a clone URL with a
+ * token in it (`https://oauth2:TOKEN@github.com/acme/repo.git`) and the server returns the URL as
+ * stored, so anything the CLI prints, a project's origin, a server's message or a JSON field, goes
+ * through this. An http(s) (or any other) URL loses its whole userinfo, since a token can sit in
+ * the user part alone; an ssh URL keeps its user (`git@`), which is no secret, and loses a password.
+ * scp-like `git@host:path` has no password to lose and stays as it is.
+ */
+export const redactCredentials = (text: string): string =>
+  text.replace(
+    /\b([a-z][a-z0-9+.-]*):\/\/([^\s/?#@]+)@/giu,
+    (_whole, scheme: string, userinfo: string) => {
+      if (/^(git\+)?ssh$/iu.test(scheme)) {
+        const user = userinfo.split(":")[0] ?? "";
+        return user === "" ? `${scheme}://` : `${scheme}://${user}@`;
+      }
+      return `${scheme}://`;
+    },
+  );

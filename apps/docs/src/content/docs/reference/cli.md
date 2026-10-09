@@ -102,6 +102,23 @@ your Git access mode from `mend keys mode`, which is `mend-key` until you change
 A project is `--private` by default: only you see it. `--shared` makes it visible to everyone in
 your organization, who can then start sessions in it. See [Organizations](/organizations/overview/).
 
+`mend projects --json` prints `{"version": 1, "projects": [...]}`, with an empty list when there are
+none. The shape is stable:
+
+| Key             | Type             | Meaning                                                 |
+| --------------- | ---------------- | ------------------------------------------------------- |
+| `id`            | string           | The project's id                                        |
+| `name`          | string           | Its name, as `--project` takes it                       |
+| `originUrl`     | string or `null` | The repository it was adopted from, without credentials |
+| `defaultBranch` | string           | The branch new worktrees start from                     |
+| `storePath`     | string           | Where the store holds it on the server                  |
+| `liveSessions`  | number           | Sessions live in it now                                 |
+| `current`       | boolean          | The current directory is inside it                      |
+
+The CLI never prints a URL's credentials: an origin adopted as
+`https://oauth2:TOKEN@github.com/acme/repo.git` reads as `https://github.com/acme/repo.git` in JSON,
+in tables and in messages.
+
 ## Start agents and commands
 
 ```text
@@ -470,13 +487,15 @@ selection and host-key verification.
 
 `mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, and
 `--no-connect`. Mend holds the start for up to a minute until the port answers; with `--wait` the
-exit status says how that ended, `0` once it answered and `1` when it did not, and the Service keeps
-running either way. `--wait` takes TCP ports only: UDP has no probe. On a server that is not this
-machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`, and the dashboard tunnel the
-session's live Services declared `--http` or `--https` to this machine's loopback while attached, on
-the Service's own port when it is free. One line each says where it opens
-(`web → http://localhost:5173`); a Service that stops closes its tunnel, and detaching closes them
-all. `--no-tunnel` opts out.
+exit status says how that ended: `0` once it answered, `1` when it did not, and `124` when the
+server gave no answer within 90 seconds. The Service keeps running in every case. A waited start
+returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes TCP ports only
+(UDP has no probe), and not a recipe that declares only a port, which Mend adopts with one probe. On
+a server that is not this machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`, and
+the dashboard tunnel the session's live Services declared `--http` or `--https` to this machine's
+loopback while attached, on the Service's own port when it is free. One line each says where it
+opens (`web → http://localhost:5173`); a Service that stops closes its tunnel, and detaching closes
+them all. `--no-tunnel` opts out.
 
 Read [Development services](/guides/services/) for network and authentication boundaries.
 

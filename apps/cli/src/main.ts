@@ -152,6 +152,7 @@ import {
   sessionDisplayName,
   matchProjectByCwd,
   normalizeProjectName,
+  redactCredentials,
   gitCurrentBranch,
   parseLaunchArgs,
   servicesHoldOf,
@@ -350,7 +351,7 @@ const loadConfig = (): CliConfig => {
 };
 
 const fail = (message: string): never => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
 };
 
@@ -376,7 +377,8 @@ const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");
 const cobalt = paint("34");
-const say = (line: string) => chrome.write(`${line}\n`);
+/** Everything the CLI says itself; a URL's credentials never reach a terminal or a log. */
+const say = (line: string) => chrome.write(`${redactCredentials(line)}\n`);
 const detachKeyEnabled = process.env["MEND_DETACH_KEY"] !== "none";
 const detachHint = () => (detachKeyEnabled ? ` · detach: ${dim("Ctrl+]")}` : "");
 
@@ -586,7 +588,9 @@ const withSpinner = async <T>(label: string | (() => string), work: Promise<T>):
     const seconds = Math.round((Date.now() - started) / 1000);
     const text = typeof label === "string" ? label : label();
     // Clear first: a status line that got shorter must not leave the old one's tail behind.
-    chrome.write(`\r\x1b[2K  ${frames[frame % frames.length]} ${text} ${dim(`${seconds}s`)} `);
+    chrome.write(
+      `\r\x1b[2K  ${frames[frame % frames.length]} ${redactCredentials(text)} ${dim(`${seconds}s`)} `,
+    );
     frame += 1;
   }, 120);
   try {
@@ -2149,16 +2153,47 @@ const autoConnect = async (config: CliConfig, service: ServiceDto): Promise<void
 };
 
 /**
- * `--wait`: the server already holds the start until the port answers, for up to a minute. With
- * the flag the exit status says how that ended: 0 once the port answered, 1 when it did not (the
- * Service keeps running). UDP has no probe, so nothing could be waited for.
+ * `--wait`: the server holds a start until the port answers, for up to a minute. With the flag the
+ * exit status says how that ended: 0 once the port answered, 1 when it did not, 124 when the server
+ * gave no answer within `SERVICE_WAIT_MS`. The Service keeps running in every case. UDP has no
+ * probe, and a recipe without a command is adopted with one probe, so neither can be waited for.
+ * A waited start opens no tunnel: it returns, and `mend service connect` reaches the port.
  */
-const failUnlessAnswered = (service: ServiceDto, wait: boolean): void => {
-  if (!wait || service.status === "reachable") return;
-  const name = service.label ?? service.id.slice(0, 8);
-  fail(
-    `nothing answered on :${service.workspacePort} · ${service.status} · the Service keeps running · mend service logs ${name}`,
+const SERVICE_WAIT_MS = (() => {
+  const configured = Number(process.env["MEND_SERVICE_WAIT_MS"]);
+  return Number.isFinite(configured) && configured > 0 ? configured : 90_000;
+})();
+
+/** The start request, bounded under `--wait`: a start that stalls fails with 124. */
+const startServiceWith = async (
+  label: string,
+  start: Promise<ServiceDto>,
+  wait: boolean,
+): Promise<ServiceDto> => {
+  if (!wait) return withSpinner(label, start);
+  const bounded = await withSpinner(
+    label,
+    beforeDeadline(start, clock, clock.now() + SERVICE_WAIT_MS),
   );
+  if (bounded.done) return bounded.value;
+  process.stderr.write(
+    `mend: no answer within ${Math.round(SERVICE_WAIT_MS / 1000)} s · the Service may still be starting · mend service list\n`,
+  );
+  return exitFlushed(WAIT_TIMED_OUT);
+};
+
+const failUnlessAnswered = (config: CliConfig, service: ServiceDto, wait: boolean): void => {
+  if (!wait) return;
+  const name = service.label ?? service.id.slice(0, 8);
+  if (service.status !== "reachable") {
+    fail(
+      `nothing answered on :${service.workspacePort} · ${service.status} · the Service keeps running · mend service logs ${name}`,
+    );
+  }
+  // A waited start returns: the tunnel a remote server would get is the next command's.
+  if (willAutoConnect(config, service, false)) {
+    say(dim(`  connect: mend service connect ${name}`));
+  }
 };
 
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -2190,7 +2225,12 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     if (wait && recipe.protocol === "udp") {
       return fail(`--wait needs a TCP port: ${recipe.name} is UDP, which has no probe`);
     }
-    const service = await withSpinner(
+    if (wait && recipe.command === null) {
+      return fail(
+        `--wait needs a command Mend starts: ${recipe.name} declares only a port, which Mend adopts with one probe · run it without --wait, or give the recipe a command`,
+      );
+    }
+    const service = await startServiceWith(
       recipe.command === null
         ? `adopting ${recipe.name} on :${recipe.port}…`
         : recipe.protocol === "udp"
@@ -2199,12 +2239,13 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
         name: recipe.name,
       }),
+      wait,
     );
-    const tunneling = willAutoConnect(config, service, args.includes("--no-connect"));
+    const tunneling = willAutoConnect(config, service, args.includes("--no-connect") || wait);
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
     printServiceEndpoint(config, service, tunneling);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
-    failUnlessAnswered(service, wait);
+    failUnlessAnswered(config, service, wait);
     if (tunneling) await autoConnect(config, service);
     return;
   }
@@ -2235,7 +2276,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   );
   const session = await resolveLiveSession(config, prefix, "service run");
 
-  const service = await withSpinner(
+  const service = await startServiceWith(
     protocol === "udp"
       ? `starting ${name ?? argv[0]} (udp :${port})…`
       : `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
@@ -2246,12 +2287,13 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
       protocol,
       browserScheme,
     }),
+    wait,
   );
-  const tunneling = willAutoConnect(config, service, head.includes("--no-connect"));
+  const tunneling = willAutoConnect(config, service, head.includes("--no-connect") || wait);
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
   printServiceEndpoint(config, service, tunneling);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
-  failUnlessAnswered(service, wait);
+  failUnlessAnswered(config, service, wait);
   if (tunneling) await autoConnect(config, service);
 };
 
@@ -4035,7 +4077,7 @@ const clock = { sleep: pause, now: Date.now };
 
 /** Print one JSON value on stdout, as the other --json commands do. */
 const printJson = (value: unknown): void => {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  process.stdout.write(`${redactCredentials(JSON.stringify(value, null, 2))}\n`);
 };
 
 // ─── recorded output on this terminal ───────────────────────────────────────
@@ -4117,7 +4159,7 @@ const exitFlushed = async (code: number): Promise<never> => {
 
 /** `fail`, after what was written so far has flushed. */
 const failFlushed = (message: string): Promise<never> => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   return exitFlushed(1);
 };
 

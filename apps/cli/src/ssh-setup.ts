@@ -11,6 +11,7 @@ import {
 } from "@mend/workspace-ssh";
 
 import type { ApiCall } from "./pair.ts";
+import { redactCredentials } from "./shared.ts";
 
 interface WorkspaceSshViewDto {
   readonly gateway: {
@@ -32,7 +33,7 @@ const ansi = (code: string) => (text: string) =>
 const dim = ansi("2");
 const green = ansi("32");
 const warn = ansi("33");
-const say = (line: string) => console.log(line);
+const say = (line: string) => console.log(redactCredentials(line));
 const sshConfigPath = (): string => path.join(os.homedir(), ".ssh", "config");
 
 const flagValue = (args: ReadonlyArray<string>, flag: string): string | null => {

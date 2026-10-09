@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { type LandingFact, landingFactLine, landingFactsFromWire } from "@mend/domain/workbench";
 
 import type { ApiCall } from "./pair.ts";
-import { gitCurrentBranch, gitTopLevel, normalizeRemoteUrl } from "./shared.ts";
+import { gitCurrentBranch, gitTopLevel, normalizeRemoteUrl, redactCredentials } from "./shared.ts";
 
 /**
  * Landing from a terminal (docs/adr/0007-landing.md): `mend land` pushes a session's change to
@@ -20,9 +20,9 @@ const paint = (code: string) => (text: string) =>
 const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");
-const say = (line: string) => process.stdout.write(`${line}\n`);
+const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
 const fail = (message: string): never => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
 };
 
