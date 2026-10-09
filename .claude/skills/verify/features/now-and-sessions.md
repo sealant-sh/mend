@@ -5,8 +5,8 @@ nobody has reviewed yet, what runs, and what settled in each project. Each row c
 facts (open comments, a pending follow-up, the pull request) and opens its session or its review.
 Live sessions can be selected and stopped together, and every row and project card has a right-click
 menu. The same facts reach the terminal as `mend sessions` (also `mend status`) and `mend projects`,
-with stable JSON for integrations; the phone's Now tab and the desktop's inbox rail are the same list
-on those devices. Everything updates live, without a reload.
+with stable JSON for integrations; the phone's Now tab and the desktop's inbox rail are the same
+list on those devices. Everything updates live, without a reload.
 
 ## Sub-features
 
@@ -21,8 +21,8 @@ on those devices. Everything updates live, without a reload.
 - `now-projects` lists each project with up to four recent settled sessions, each with `Review` and
   `Resume`, plus `Adopt a repository` and the pairing hint.
 - `now-menus` opens the project and session right-click menus.
-- `sessions-cli` lists sessions with `mend sessions` / `mend status`, `--all`, `--project`,
-  `--json` and `--json=v2`.
+- `sessions-cli` lists sessions with `mend sessions` / `mend status`, `--all`, `--project`, `--json`
+  and `--json=v2`.
 - `projects-cli` lists projects with their live sessions (`mend projects`).
 - `now-mobile` shows the phone's Now tab.
 - `now-desktop` shows the desktop's inbox rail.
@@ -38,7 +38,8 @@ on those devices. Everything updates live, without a reload.
 - Desktop: the sidebar's `inbox` face (`Ctrl+Shift+B` toggles it with `tree`).
 - VS Code: the Mend view lists sessions. Not drivable yet: this map has no VS Code driver.
 - Slack: `@mend list` lists the person's sessions started from Slack in that workspace, newest
-  first, with their state, channel and links to Mend. Not drivable yet: this map has no Slack driver.
+  first, with their state, channel and links to Mend. Not drivable yet: this map has no Slack
+  driver.
 
 ## Driving it with verify
 
@@ -70,29 +71,30 @@ Preconditions:
   cards leave `Live` and the summary line reads `0 live`. Unscoped `mend sessions` prints
   `no active sessions — mend sessions --all includes settled ones` (unless a Service or a save keeps
   one listed).
-- **Projects.** Under `Projects`, the card's link `page.getByRole("link", { name: "<project>", exact: true })`
-  opens `/projects/<projectId>`. Its recent rows show each settled session's harness, `settled <time>`,
-  status word, `Review` (to the change) and `Resume`. `page.getByRole("link", { name: "Adopt a repository" })`
-  opens `/projects`. With no paired device,
-  `page.getByRole("link", { name: "Pair your phone · Settings → Devices" })` opens
-  `/settings#devices`.
+- **Projects.** Under `Projects`, the card's link
+  `page.getByRole("link", { name: "<project>", exact: true })` opens `/projects/<projectId>`. Its
+  recent rows show each settled session's harness, `settled <time>`, status word, `Review` (to the
+  change) and `Resume`. `page.getByRole("link", { name: "Adopt a repository" })` opens `/projects`.
+  With no paired device, `page.getByRole("link", { name: "Pair your phone · Settings → Devices" })`
+  opens `/settings#devices`.
 - **Project menu.** Right-click the project link
-  (`await page.getByRole("link", { name: "<project>", exact: true }).click({ button: "right" })`).
-  A menu titled `<project>` lists `Open project`, `Start claude session`, `Start codex session`,
+  (`await page.getByRole("link", { name: "<project>", exact: true }).click({ button: "right" })`). A
+  menu titled `<project>` lists `Open project`, `Start claude session`, `Start codex session`,
   `Start opencode session`, `Start pi session`, `Start shell session`, `Copy store path`,
-  `Copy origin URL`, and for someone who may remove it `Remove project…`. Press `Escape` to close it.
+  `Copy origin URL`, and for someone who may remove it `Remove project…`. Press `Escape` to close
+  it.
 - **Session menu.** Right-click a settled row's link. The menu titled `<harness>` (with ` — <label>`
   when labelled) lists `Open session`, `Open review` (with a change), `Resume session` (for the
   owner) and `Delete session…`. On a live card it lists `Mark checkpoint` and `Stop session`
   instead, and `Stop services` while Services run.
 - **CLI list.** Run `mend sessions --project <project> --all`. One line per session:
   `<harness>  <id8>  <status>  <project>  <branch> · base <base>`, then the facts (label,
-  `<n> open`, `follow-up pending`, a hold line). Exit code `0`. `mend status --project <project> --all`
-  prints the same.
+  `<n> open`, `follow-up pending`, a hold line). Exit code `0`.
+  `mend status --project <project> --all` prints the same.
 - **CLI JSON.** Run `mend sessions --project <project> --all --json`. The JSON is
   `{ "version": 1, "sessions": [ … ] }`; each entry has `id`, `projectName`, `harness`, `label`,
-  `worktree`, `branch`, `baseSha`, `baseRef`, `status`, `summary`, `createdAt`,
-  `reviewUrl` (`<web>/sessions/<id>`), `review` and `capture`. Run
+  `worktree`, `branch`, `baseSha`, `baseRef`, `status`, `summary`, `createdAt`, `reviewUrl`
+  (`<web>/sessions/<id>`), `review` and `capture`. Run
   `mend sessions --project <project> --json=v2`: `{ "version": 2, "worktrees": [ … ] }`, each
   worktree with its `sessions`, the same shape as `mend worktrees --json`.
 - **Unknown project.** Run `mend sessions --project no-such-project`. Stderr reads
@@ -105,14 +107,13 @@ Preconditions:
   `Recently settled` for the groups that have rows. A row is found by its title
   (`page.getByText("session <id8>")`, or its label); clicking it opens `/session/<id>`.
 - **Desktop.** Attached over CDP, press `Control+Shift+B` (or click
-  `page.getByRole("group", { name: "Sidebar face" }).getByRole("button", { name: "inbox" })`). Inside
-  `page.getByRole("navigation", { name: "Projects and sessions" })` the header reads
+  `page.getByRole("group", { name: "Sidebar face" }).getByRole("button", { name: "inbox" })`).
+  Inside `page.getByRole("navigation", { name: "Projects and sessions" })` the header reads
   `<n> live · <n> settled`, live rows come first, and the shelf buttons fold the rest
-  (`aria-expanded`). Match their names by prefix,
-  `page.getByRole("button", { name: /^settled/ })` and
-  `page.getByRole("button", { name: /^snoozed/ })`: a collapsed shelf includes its count,
-  for example `settled 3`. A row is a button named by its text, starting `<harness> · `;
-  clicking it opens the session's tab. With no live session the rail reads `no live sessions`.
+  (`aria-expanded`). Match their names by prefix, `page.getByRole("button", { name: /^settled/ })`
+  and `page.getByRole("button", { name: /^snoozed/ })`: a collapsed shelf includes its count, for
+  example `settled 3`. A row is a button named by its text, starting `<harness> · `; clicking it
+  opens the session's tab. With no live session the rail reads `no live sessions`.
 - **Slack list.** Not drivable yet: this map has no Slack driver. A linked person sends
   `@mend list`; the private reply reads `Your sessions started from Slack, newest first:` with
   state, channel and Mend links, or `No sessions you started from Slack in this workspace.`
@@ -148,6 +149,6 @@ Preconditions:
   (`Claude Code`, `Codex`, `OpenCode`) on a row. At a viewport at least 600 in both dimensions the
   phone app switches to a two-pane layout where a row selects instead of navigating.
 - The desktop's inbox rows run their texts together with no separator; match with a regex.
-- Pending button labels such as `Stopping…` can finish between reads. Report each transient
-  state not observed, then capture the resulting list and statuses.
+- Pending button labels such as `Stopping…` can finish between reads. Report each transient state
+  not observed, then capture the resulting list and statuses.
 - Never wait for `networkidle`: the Now page holds the `/api/events` stream open.

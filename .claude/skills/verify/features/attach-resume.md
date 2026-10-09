@@ -4,20 +4,20 @@ A session outlives the terminal that started it. A user reattaches a terminal to
 `mend attach` (the whole scrollback replays, then it follows live), detaches with `Ctrl+]` while the
 agent keeps running, and stops the agent with `mend stop`, leaving the worktree, the record and the
 review. A settled session comes back with `mend resume`: a fresh workspace with the saved harness
-state restored, in the same harness or another one. `mend rejoin` attaches if the session is live and
-resumes it otherwise. The web session page offers `resume with:` per harness, a `rename` of the
-session's label and `Delete…`; the dashboard has `a` and `r`. A session picked up on the phone runs as
-a conversation with no terminal, and `mend attach` takes it back into the terminal. While attached
-to a remote server, the session's browser Services are tunneled to this machine, and `Ctrl+V` pastes
-an image from this machine's clipboard into the agent.
+state restored, in the same harness or another one. `mend rejoin` attaches if the session is live
+and resumes it otherwise. The web session page offers `resume with:` per harness, a `rename` of the
+session's label and `Delete…`; the dashboard has `a` and `r`. A session picked up on the phone runs
+as a conversation with no terminal, and `mend attach` takes it back into the terminal. While
+attached to a remote server, the session's browser Services are tunneled to this machine, and
+`Ctrl+V` pastes an image from this machine's clipboard into the agent.
 
 ## Sub-features
 
 - `attach-cli` reattaches a terminal with `mend attach [prefix]`, following a still-starting session
   until its agent runs.
 - `detach` leaves with `Ctrl+]`; the session keeps running.
-- `stop-cli` stops one session, every live session, or every live session of a project
-  (`mend stop`, `--all`, `--project`).
+- `stop-cli` stops one session, every live session, or every live session of a project (`mend stop`,
+  `--all`, `--project`).
 - `resume-cli` resumes a settled session (`mend resume [id] [--with <harness>]`).
 - `rejoin-cli` attaches if live, otherwise resumes (`mend rejoin [id] [--harness <h>]`).
 - `resume-web` resumes from the session page's `resume with:` buttons and the Now page's `Resume`.
@@ -38,20 +38,20 @@ an image from this machine's clipboard into the agent.
   unless `--detach`.
 - Web: the session page (`/sessions/<id>`): `Stop` while the agent runs, `resume with:` and one
   button per harness once it has stopped, `rename` beside the heading for the owner, `Delete…` once
-  stopped. The Now page's Projects list has `Resume` on each recent settled session; right-click menus
-  on session rows offer `Stop session`, `Resume session` and `Delete session…`.
+  stopped. The Now page's Projects list has `Resume` on each recent settled session; right-click
+  menus on session rows offer `Stop session`, `Resume session` and `Delete session…`.
 - TUI: `a` attaches the selected live session, `r` resumes a settled one through a harness picker,
   `Shift+K` stops, `e` renames the session's label.
 - Desktop: the session tab's strip buttons `resume`, `stop`, `delete`, `continue as conversation` /
   `continue in terminal`; the inbox row menu's `Stop`.
 - Mobile: the session screen's `Resume` action and `Stop session` in `More actions`; the message box
-  under a terminal session picks it up as a conversation (`Message the session — continues here in
-  structured mode`).
+  under a terminal session picks it up as a conversation
+  (`Message the session — continues here in structured mode`).
 - VS Code: `Mend: Stop session`, `Mend: Take over session in the editor`. Not drivable yet: this map
   has no VS Code driver.
 - Slack: `@mend <prompt>` in a settled session's thread resumes that session when its latest agent
-  was a protocol process of the same harness with a provider session id. Not drivable yet: this
-  map has no Slack driver.
+  was a protocol process of the same harness with a provider session id. Not drivable yet: this map
+  has no Slack driver.
 
 ## Driving it with verify
 
@@ -61,8 +61,8 @@ Preconditions:
   `mend connect claude` has been run (the resume, rename and pickup steps use a `claude` session).
 - A clone of `<repo-url>` or a directory named `<project>` to run `mend resume` and `mend rejoin`
   from (`<project-dir>`): both find the project from the working directory only.
-- For the pickup step: the mobile web build paired with this instance (its `mend-config` in
-  browser storage holds the URL and a device token), at a 390x844 viewport.
+- For the pickup step: the mobile web build paired with this instance (its `mend-config` in browser
+  storage holds the URL and a device token), at a 390x844 viewport.
 - A live, detached session:
   `mend claude "Reply with one word and change nothing." --name verify-attach --project <project> --detach`.
   Note `<id>` and `<id8>` from `  attach · mend attach <id8>`. `<session display name>` is the
@@ -77,8 +77,8 @@ Preconditions:
 - **No match.** Run `mend attach zzzzzzzz`. Stderr reads
   `mend: no active session matches "zzzzzzzz"`; exit code `1`.
 - **Stop.** Run `mend stop <id8>`. Stdout reads `✓ stopped · claude · <id8> · mend/verify-attach`
-  and `  review · <web>/sessions/<id>`; exit code `0`. `mend sessions --project <project> --all --json`
-  shows it no longer live.
+  and `  review · <web>/sessions/<id>`; exit code `0`.
+  `mend sessions --project <project> --all --json` shows it no longer live.
 - **Resume from the CLI.** From `<project-dir>`, run
   `tmux new-session -d -s res -x 200 -y 50 -c <project-dir> 'mend resume <id8>'`. The pane shows
   `✓ resuming claude · <id8>`, `  watch · <web>/sessions/<id>`, a spinner
@@ -87,22 +87,22 @@ Preconditions:
   with the earlier conversation. Detach with `tmux send-keys -t res C-]`.
 - **Resume a live session refused.** From `<project-dir>`, run `mend resume <id8>`. Stderr reads
   `mend: session <id8> is live — attach: mend attach <id8>`; exit code `1`.
-- **Rejoin.** From `<project-dir>`, run `tmux new-session -d -s rej -x 200 -y 50 -c <project-dir> 'mend rejoin <id8>'`.
-  The pane shows `✓ rejoining <session display name> · claude <id8> · already live`, the watch line, then
-  `✓ recording · attached to the live session · detach: Ctrl+]`. Detach, run `mend stop <id8>`,
-  and rejoin again: the first line ends `· restoring`, and the third reads
+- **Rejoin.** From `<project-dir>`, run
+  `tmux new-session -d -s rej -x 200 -y 50 -c <project-dir> 'mend rejoin <id8>'`. The pane shows
+  `✓ rejoining <session display name> · claude <id8> · already live`, the watch line, then
+  `✓ recording · attached to the live session · detach: Ctrl+]`. Detach, run `mend stop <id8>`, and
+  rejoin again: the first line ends `· restoring`, and the third reads
   `✓ recording · same worktree, conversation restored · …`. Detach, then `mend stop <id8>`.
 - **Stop all in a project.** Start two detached sessions as in the preconditions (`--name verify-a`,
-  `--name verify-b`), then run `mend stop --all --project <project>`. Stdout has one
-  `✓ stopped · …` and `  review · …` pair per session, then `✓ stopped 2 sessions`. Run it again:
+  `--name verify-b`), then run `mend stop --all --project <project>`. Stdout has one `✓ stopped · …`
+  and `  review · …` pair per session, then `✓ stopped 2 sessions`. Run it again:
   `no active sessions`.
 - **Rename on the web.** Go to `<web>/sessions/<id>`. Run
   `await page.getByRole("button", { name: "rename" }).click()`. A textbox replaces the heading's
   label, with focus. Run
-  `await page.getByRole("textbox", { name: "what this session is about" }).fill("verify label")`
-  and `await page.keyboard.press("Enter")`. The heading reads `claude — verify label`, followed by
-  the `rename` button. `mend sessions --project <project> --all --json` shows
-  `"label": "verify label"`.
+  `await page.getByRole("textbox", { name: "what this session is about" }).fill("verify label")` and
+  `await page.keyboard.press("Enter")`. The heading reads `claude — verify label`, followed by the
+  `rename` button. `mend sessions --project <project> --all --json` shows `"label": "verify label"`.
 - **Resume on the web.** With the session stopped, the page shows `resume with:` and buttons
   `claude`, `codex`, `opencode`, `pi`. Run
   `await page.getByRole("button", { name: "claude", exact: true }).click()`. The buttons read `…`,
@@ -117,8 +117,8 @@ Preconditions:
   `await page.getByRole("button", { name: /^Really delete this session\?/ }).click()`. It reads
   `Deleting…`, then the browser lands on `/projects/<projectId>`. `mend sessions --all --json` no
   longer lists `<id>`; `mend worktrees --project <project>` still lists `verify-attach`.
-- **Dashboard attach and resume.** Start another detached session (`--name verify-tui-attach`).
-  Read its id; its `<session display name>` is `claude <id8>` until renamed. Run
+- **Dashboard attach and resume.** Start another detached session (`--name verify-tui-attach`). Read
+  its id; its `<session display name>` is `claude <id8>` until renamed. Run
   `tmux new-session -d -s ui -x 200 -y 50 'mend ui'`, select the session and press `a`. The screen
   prints `attaching · claude · <id8> · detach: Ctrl+]` and the agent's terminal. Press `C-]`; the
   dashboard returns with `detached · <id8> keeps running`. Press `Shift+K` twice
@@ -127,17 +127,17 @@ Preconditions:
   `resume <session display name> · pick a harness` lists `claude` first
   (`same harness · native resume, conversation intact`). Press `Enter`: the status line reads
   `resuming <session display name> · a fresh workspace restores the saved state ·`, then
-  `resumed · <session display name> · a attaches` (or `still resuming · …`). Press `a` on a settled row
-  instead and the status line reads `settled · <name> · r resumes it, ⇧D removes it`.
+  `resumed · <session display name> · a attaches` (or `still resuming · …`). Press `a` on a settled
+  row instead and the status line reads `settled · <name> · r resumes it, ⇧D removes it`.
 - **Pickup takeover.** On the mobile web build at 390x844, open `/session/<id>` for a live `claude`
   session the signed-in device owns. Fill the message box
   (`page.getByRole("textbox", { name: "Message the session — continues here in structured mode" })`)
-  with `Reply with one word.` and click the text `Send`. The screen reads
-  `picking up the session…`, then the conversation continues there. Then run
-  `tmux new-session -d -s take -x 200 -y 50 'mend attach <id8>'`. The pane shows the attaching
-  line, then `taking over from the protocol session`, a spinner
-  `reopening as a terminal — same conversation…`, and the agent's terminal with the phone's turns
-  in its scrollback.
+  with `Reply with one word.` and click the text `Send`. The screen reads `picking up the session…`,
+  then the conversation continues there. Then run
+  `tmux new-session -d -s take -x 200 -y 50 'mend attach <id8>'`. The pane shows the attaching line,
+  then `taking over from the protocol session`, a spinner
+  `reopening as a terminal — same conversation…`, and the agent's terminal with the phone's turns in
+  its scrollback.
 - **Slack resume.** Not drivable yet: this map has no Slack driver. With a linked person who may
   steer the settled session, connected provider credentials and the resumable agent above, a thread
   follow-up `@mend <prompt>` starts a new turn in the same session. The thread's status message
@@ -156,7 +156,8 @@ Preconditions:
   state not observed and retain the resulting session state.
 - `mend resume` and `mend rejoin` take no `--project`: they resolve the project from the working
   directory (a clone with the same origin, or a directory with the project's name). Elsewhere they
-  fail with `no adopted project matches <cwd> — run "mend adopt" here first, or name one with --project`,
+  fail with
+  `no adopted project matches <cwd> — run "mend adopt" here first, or name one with --project`,
   which names a flag these two commands do not read. That message is a finding.
 - `mend resume --with` is documented as `claude or codex`; the web offers `opencode` and `pi` too.
   Drive `--with` with the documented values.
@@ -179,21 +180,21 @@ Preconditions:
 - On the Now page, each project card's recent rows repeat `Review` and `Resume` with no accessible
   name tying them to their session. Scope to the row:
   `page.locator("div", { has: page.getByRole("link", { name: /^claude — verify label/ }) }).last().getByRole("button", { name: "Resume" })`
-  (`.last()` is the innermost container, the row).
-  The rows have no list or row role: a finding.
+  (`.last()` is the innermost container, the row). The rows have no list or row role: a finding.
 - Service tunnels on attach apply only to a server that is not this machine, and only to Services
   declared `--http` or `--https`. Each opens with a line
-  `● <service> → http://localhost:<port> · tunnel, closes on detach`; `--no-tunnel` opens none.
-  A local server tunnels nothing, and that is not a failure.
+  `● <service> → http://localhost:<port> · tunnel, closes on detach`; `--no-tunnel` opens none. A
+  local server tunnels nothing, and that is not a failure.
 - `Ctrl+V` image paste needs `wl-paste` (Wayland) or `xclip` (X11) on the CLI's machine and an image
-  on its clipboard; with none, the keystroke goes through unchanged. The pasted text is a path inside
-  the workspace; a failed upload rings the terminal bell. In a headless harness, load the clipboard
-  first (for example `xclip -selection clipboard -t image/png -i <png>` under an X server).
+  on its clipboard; with none, the keystroke goes through unchanged. The pasted text is a path
+  inside the workspace; a failed upload rings the terminal bell. In a headless harness, load the
+  clipboard first (for example `xclip -selection clipboard -t image/png -i <png>` under an X
+  server).
 - The phone's message box offers the pickup only to the session's owner and only for `claude` and
-  `codex`. On the web build the recipe's `Send` control has no button role and is named by its
-  text: click `Send` with `getByText`. More-actions entries have role `menuitem`; session pull
-  request controls have role `link`. `Stop session` asks through a native alert that does
-  nothing on the web build; stop from the CLI.
+  `codex`. On the web build the recipe's `Send` control has no button role and is named by its text:
+  click `Send` with `getByText`. More-actions entries have role `menuitem`; session pull request
+  controls have role `link`. `Stop session` asks through a native alert that does nothing on the web
+  build; stop from the CLI.
 - Mobile rename and delete live behind a swipe on the Now tab's rows (`Rename`, `Delete`), which the
   web build cannot reliably drive. Not driven by this map.
 - The desktop's `delete` and closing a shell tab ask with `window.confirm`; accept it with

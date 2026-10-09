@@ -3,11 +3,12 @@
 With per-person workspaces (ADR 0016, on by default), each person who runs anything in a workspace
 runs as their own Linux user. A workspace that started with one shared home, as every workspace
 started before Mend 0.36 did, keeps it until it is replaced. Once the worktree's next launch would
-run per person, Mend marks that workspace to retire: it takes only its launcher's sessions and turns,
-and every session in it says so. Mend replaces it on its own when nothing would stop. Otherwise the
-change's owner reads what was checked and what would stop, and chooses `Replace this workspace now`
-on the session page or `mend workspace replace` in a terminal. The replacement ends nothing that was
-not on the list the owner saw; when more would stop by then, the server refuses and stops nothing.
+run per person, Mend marks that workspace to retire: it takes only its launcher's sessions and
+turns, and every session in it says so. Mend replaces it on its own when nothing would stop.
+Otherwise the change's owner reads what was checked and what would stop, and chooses
+`Replace this workspace now` on the session page or `mend workspace replace` in a terminal. The
+replacement ends nothing that was not on the list the owner saw; when more would stop by then, the
+server refuses and stops nothing.
 
 ## Sub-features
 
@@ -44,8 +45,8 @@ Preconditions:
   happens only once a per-person workspace has run on the same image. Two ways to reach it: a
   session left live across an upgrade from a release before 0.36, or a worktree whose first launch
   ran with a shared home because the image's capability was not known yet. Launch must produce this
-  state; a fresh instance has none, and a run without it reports every step unreachable with
-  "no workspace waiting to be replaced".
+  state; a fresh instance has none, and a run without it reports every step unreachable with "no
+  workspace waiting to be replaced".
 - Something in that workspace would stop, so Mend does not replace it on its own: an open shell
   (`mend shell <id8>` in its own PTY) is enough.
 
@@ -64,8 +65,8 @@ Preconditions:
 - **Non-interactive without --yes.** Run `mend workspace replace <id8> < /dev/null` from a non-TTY
   harness. Stderr reads `mend: non-interactive · pass --yes to replace the workspace`; exit code
   `1`.
-- **Refused after a change.** Open a second shell (`mend shell <id8>` in another PTY) after the
-  page loaded, then choose `Replace this workspace now` on the page:
+- **Refused after a change.** Open a second shell (`mend shell <id8>` in another PTY) after the page
+  loaded, then choose `Replace this workspace now` on the page:
   `await page.getByRole("button", { name: "Replace this workspace now" }).click()`. An alert
   (`page.getByRole("alert")`) states the server's refusal, for example
   `What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.`,
@@ -84,13 +85,13 @@ Preconditions:
 
 - This state does not exist on a fresh instance by default. Report its absence as an unmet
   precondition, never as a pass.
-- Only the change's owner sees `Replace this workspace now` on the web and the `mend workspace
-  replace` line in `mend sessions`. Anyone else reads the retirement line and what would stop, with a
-  process's or container's name withheld.
+- Only the change's owner sees `Replace this workspace now` on the web and the
+  `mend workspace replace` line in `mend sessions`. Anyone else reads the retirement line and what
+  would stop, with a process's or container's name withheld.
 - The web button replaces at once; there is no confirmation step on the web. The desktop asks in a
   dialog titled `Replace this workspace now?`. The CLI asks `replace it? [y/N]`.
-- `mend workspace replace` with no replacement waiting still asks the server, which refuses in its own
-  words; the CLI prints them after `mend: ` and exits `1`.
+- `mend workspace replace` with no replacement waiting still asks the server, which refuses in its
+  own words; the CLI prints them after `mend: ` and exits `1`.
 - An agent turn in flight is never stopped: the server refuses the replacement the same way, and
   nothing is stopped.
 - Mend checks the workspace about once a minute. A list read before a new shell or process appeared

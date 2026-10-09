@@ -4,9 +4,9 @@
 Mend commits the session's latest checkpoint the way a landing does, sends the commits from the
 session's base to it as a git bundle, and the command fetches that bundle into a local branch named
 like the session's branch (`mend/<worktree>`). The working tree, the index and the checked-out
-branch are not touched; the user switches to the branch when they want it. It runs before the
-change is landed and without access to origin, and it refuses in plain words when the clone is not
-the project's.
+branch are not touched; the user switches to the branch when they want it. It runs before the change
+is landed and without access to origin, and it refuses in plain words when the clone is not the
+project's.
 
 ## Sub-features
 
@@ -37,13 +37,13 @@ Preconditions:
   `<id8>` from the `✓ base … · session <id8>` line.
 - A fresh clone of the same origin: `git clone <repo-url> <clone>`. Its checked-out branch is the
   default branch, not `<branch>`.
-- An empty scratch directory outside any git repository (`<scratch>`, for example from
-  `mktemp -d`), and a second one with `git init` and no remotes (`<bare-init>`).
+- An empty scratch directory outside any git repository (`<scratch>`, for example from `mktemp -d`),
+  and a second one with `git init` and no remotes (`<bare-init>`).
 
 - **Outside a repository.** Run `mend pull <worktree> --project <project>` with `<scratch>` as the
   working directory. Stderr reads
-  `mend: <scratch> is not a git repository · run mend pull inside a clone of the project`; exit
-  code `1`.
+  `mend: <scratch> is not a git repository · run mend pull inside a clone of the project`; exit code
+  `1`.
 - **Wrong clone.** Run the same command in `<bare-init>`. Stderr reads
   `mend: <project>'s origin is <repo-url> · this clone has no remotes · run mend pull in a clone of it, or pass --force`;
   exit code `1`. Nothing is fetched (`git -C <bare-init> branch` lists nothing new).
@@ -60,8 +60,8 @@ Preconditions:
   `· already here`; exit code `0`.
 - **By id prefix.** Run `mend pull <id8>` in `<clone>`. It picks the same session and prints the
   same `✓ fetched` line.
-- **Checked out.** Run `git -C <clone> switch <branch>`, then `mend pull <worktree> --project <project>`.
-  Stderr reads
+- **Checked out.** Run `git -C <clone> switch <branch>`, then
+  `mend pull <worktree> --project <project>`. Stderr reads
   `mend: nothing fetched · <branch> is checked out here · switch to another branch first; mend pull does not touch the working tree`;
   exit code `1`. Switch back to the default branch afterwards.
 - **Proof.** Keep every `mend pull` transcript (command, stdout, stderr, exit code) and the
@@ -76,8 +76,8 @@ Preconditions:
 - The clone needs the session's base commit. A base it lacks is refused with
   `this clone lacks the change's base <sha7> · fetch it from origin, then run mend pull again`.
 - `mend pull` is not `mend land`. It never pushes, and it never moves the session's branch on the
-  server. For the change's owner it takes a checkpoint first; anyone else gets the latest
-  checkpoint there is.
+  server. For the change's owner it takes a checkpoint first; anyone else gets the latest checkpoint
+  there is.
 - An existing local branch of the same name only fast-forwards. A branch moved locally since the
   last pull is refused with git's own words after `nothing fetched ·`.
 - A session with no change yet is refused with `nothing to pull · <branch> holds no change yet`.

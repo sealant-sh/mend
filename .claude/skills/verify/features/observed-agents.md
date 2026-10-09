@@ -5,8 +5,8 @@ or an editor terminal, is not launched by Mend, but Mend sees it: the agent writ
 through the session's harness home, and fresh writes become an observed process row labelled
 `<harness> (observed)`, for example `claude (observed)` (plan §17, decided 2026-08-28). The session
 then reads running everywhere, the workspace stays up, and the conversation is captured when it goes
-quiet, like an agent Mend started. Mend observes and does not own the process: it cannot steer or stop
-it, and the row ends after five minutes without writes. The next write opens a fresh row.
+quiet, like an agent Mend started. Mend observes and does not own the process: it cannot steer or
+stop it, and the row ends after five minutes without writes. The next write opens a fresh row.
 
 ## Sub-features
 
@@ -16,8 +16,8 @@ it, and the row ends after five minutes without writes. The next write opens a f
   `mend sessions`, `activity seen …` in the dashboard.
 - `observe-quiet` ends the row after five minutes without writes, without stopping the workspace.
 - `observe-revive` opens a fresh row when the agent writes again, a quiet-settled session included.
-- `observe-yield` sees nothing while Mend's own agent in the session is live: its writes are presumed
-  to be Mend's agent.
+- `observe-yield` sees nothing while Mend's own agent in the session is live: its writes are
+  presumed to be Mend's agent.
 
 ## How to get to it (user POV)
 
@@ -31,8 +31,8 @@ it, and the row ends after five minutes without writes. The next write opens a f
   is the session reading running with a `claude (observed)` row.
 - Mobile: the session screen's header shows the resulting session status beside its harness and
   model; an observed agent makes it read running.
-- Slack: the session's thread status message updates to the resulting state. Not drivable yet:
-  this map has no Slack driver.
+- Slack: the session's thread status message updates to the resulting state. Not drivable yet: this
+  map has no Slack driver.
 - TUI: the session row's state words read `activity seen <ago>` while an observed agent is current.
 - No surface lists the `(observed)` label itself; the session's processes endpoint
   (`GET /api/sessions/<id>/processes`) carries it.
@@ -44,26 +44,25 @@ Preconditions:
 - Mend is healthy at `<web>`, the browser and the CLI signed in as the session's owner, and
   `mend connect claude` has been run, so `claude` can sign in inside the workspace.
 - The server reads harness homes it can see. Observation reads the session's harness home on the
-  server (`/workspace/harness-home` in the workspace is its mount). Whether a capture-store workspace
-  (the default, which mounts nothing) feeds the observer could not be confirmed from source; Launch
-  must state which store it runs.
+  server (`/workspace/harness-home` in the workspace is its mount). Whether a capture-store
+  workspace (the default, which mounts nothing) feeds the observer could not be confirmed from
+  source; Launch must state which store it runs.
 - A live session whose own agent is not running, held by a shell. Start
   `mend claude "Reply with one word and change nothing." --name verify-observed --project <project> --detach`
   and note `<id>` and `<id8>`. Open a shell in its workspace in tmux:
   `tmux new-session -d -s obs -x 200 -y 50 'mend shell <id8>'`. Then stop Mend's own agent:
-  `mend stop <id8>`. The shell keeps the workspace up, and `mend sessions --project <project>`
-  still lists the session (`idle` is the fold for a workspace a shell holds), not `running`.
-  Read the latest Mend-launched agent's `exitedAt` from the processes endpoint, and start the
-  hand-run agent more than two seconds after it. If the session settled, also wait more than
-  two seconds after its settle time.
+  `mend stop <id8>`. The shell keeps the workspace up, and `mend sessions --project <project>` still
+  lists the session (`idle` is the fold for a workspace a shell holds), not `running`. Read the
+  latest Mend-launched agent's `exitedAt` from the processes endpoint, and start the hand-run agent
+  more than two seconds after it. If the session settled, also wait more than two seconds after its
+  settle time.
 - `<token>` is `MEND_TOKEN` when set; otherwise use the CLI token from
   `$XDG_CONFIG_HOME/mend/cli.json`, default `~/.config/mend/cli.json`. When the preferred Mend
-  directory is absent and `~/.mend` exists, legacy `~/.mend/cli.json` stays authoritative. Use
-  that token for the processes read.
+  directory is absent and `~/.mend` exists, legacy `~/.mend/cli.json` stays authoritative. Use that
+  token for the processes read.
 
-- **Before.** Run
-  `curl -sS -H "authorization: Bearer <token>" <web>/api/sessions/<id>/processes`. No row has
-  `"kind": "agent-external"` with `"exitedAt": null`.
+- **Before.** Run `curl -sS -H "authorization: Bearer <token>" <web>/api/sessions/<id>/processes`.
+  No row has `"kind": "agent-external"` with `"exitedAt": null`.
 - **Run an agent by hand.** After the exit-time window above, in the shell run
   `tmux send-keys -t obs 'claude -p "Reply with the word observed."' Enter`. The pane shows the
   agent's answer.
@@ -76,13 +75,13 @@ Preconditions:
 - **Dashboard.** In `tmux new-session -d -s obsui -x 200 -y 50 'mend ui'`, select the session. Its
   state words read `activity seen just now` (then `activity seen <n>m ago`).
 - **Quiet.** Wait five minutes without running the agent again. The processes read shows the row
-  with `exitedAt` set, the session no longer reads `running` (the shell still holds the workspace), and the
-  dashboard row reads `agent ended <ago>`.
+  with `exitedAt` set, the session no longer reads `running` (the shell still holds the workspace),
+  and the dashboard row reads `agent ended <ago>`.
 - **Revive.** Run the same `claude -p …` in the shell again. Within about 20 seconds a new
   `claude (observed)` row with `"exitedAt": null` appears, and the session reads `running`.
-- **Mobile status.** On the paired Expo web build at 390x844, open `/session/<id>`. The header
-  shows the harness and the running status while the observed row is current. Capture its ARIA
-  snapshot and screenshot.
+- **Mobile status.** On the paired Expo web build at 390x844, open `/session/<id>`. The header shows
+  the harness and the running status while the observed row is current. Capture its ARIA snapshot
+  and screenshot.
 - **Slack status.** Not drivable yet: this map has no Slack driver. For a session started from
   Slack, its thread's status message shows the resulting running state.
 - **Proof.** Keep every processes read (command, body, time), the `mend sessions` transcripts, the
@@ -102,12 +101,12 @@ Preconditions:
   open, waiting for input. Do not report the end as the agent exiting.
 - Mend cannot steer or stop the hand-run process. The session page still shows `Stop` while the
   observed row is current. That action records the row as stopped but does not close the hand-run
-  agent's terminal. This is partly verifiable: a stopped row does not prove the process ended.
-  Stop the hand-run agent in the terminal that started it; do not use `Stop` as process-exit proof.
+  agent's terminal. This is partly verifiable: a stopped row does not prove the process ended. Stop
+  the hand-run agent in the terminal that started it; do not use `Stop` as process-exit proof.
 - What the session page's Terminal or Record pane shows while an observed agent is current was not
   confirmed from source. Assert the status word, not the pane.
-- No web, CLI, TUI, desktop or phone surface prints the `(observed)` label. The processes endpoint is
-  the only read of it; that is a gap for a user who wants to see what Mend observed.
+- No web, CLI, TUI, desktop or phone surface prints the `(observed)` label. The processes endpoint
+  is the only read of it; that is a gap for a user who wants to see what Mend observed.
 - A harness home the server cannot read (codex can write one `0700`) makes the agent invisible; the
   server logs `session engine: harness home unreadable — external agents in it are invisible` once
   per session and harness.

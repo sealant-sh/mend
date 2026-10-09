@@ -5,10 +5,10 @@ branch of its own (`mend/<name>`), holding every session started in it over time
 they make together. A project's Worktrees tab shows each worktree as a parent of its sessions, in a
 list or as cards, with its branch, base, sessions and review link. A user creates one, opens its
 menu to start a session in it or copy its path, and removes it. Removal takes the worktree's
-sessions, change, checkpoints and review with it, never touches origin, and is refused in words while
-a session in it is live, while its change is not on origin (until forced), or while its workspace is
-saving. `mend worktrees` lists the same tree in a terminal, and `mend refresh` brings origin's
-branches into the store so new worktrees base on current tips.
+sessions, change, checkpoints and review with it, never touches origin, and is refused in words
+while a session in it is live, while its change is not on origin (until forced), or while its
+workspace is saving. `mend worktrees` lists the same tree in a terminal, and `mend refresh` brings
+origin's branches into the store so new worktrees base on current tips.
 
 ## Sub-features
 
@@ -36,10 +36,12 @@ branches into the store so new worktrees base on current tips.
   and `Clear settled` once a worktree is settled. Each worktree header has a show/hide toggle, its
   sessions count, `Review`, and `New session in <worktree>`; right-clicking the header opens its
   menu.
-- CLI: `mend worktrees [--project <p>] [--json]`, `mend worktrees rm <name> [--force] [--project <p>]`,
-  `mend refresh [project]`, and `mend sessions --json=v2` (the same grouped shape).
+- CLI: `mend worktrees [--project <p>] [--json]`,
+  `mend worktrees rm <name> [--force] [--project <p>]`, `mend refresh [project]`, and
+  `mend sessions --json=v2` (the same grouped shape).
 - TUI: the dashboard's `worktrees` section; `w` opens the new worktree form (from the projects or
-  worktrees section), `Shift+D` removes the selected worktree, `Shift+K` stops all its live sessions.
+  worktrees section), `Shift+D` removes the selected worktree, `Shift+K` stops all its live
+  sessions.
 - VS Code: `Mend: New worktree without an agent…` and `Mend: Copy worktree path`. Not drivable yet:
   this map has no VS Code driver; the end states are a new worktree in `mend worktrees` and the path
   on the clipboard (`Mend worktree path copied` in the status bar).
@@ -61,11 +63,11 @@ Preconditions:
   With no worktree it shows the heading `No worktrees yet` and the button
   `Create your first worktree`.
 - **Create.** Run `await page.getByRole("button", { name: "New worktree" }).click()`. The dialog
-  `New worktree` opens. Run
-  `await page.getByRole("textbox", { name: "Name" }).fill("verify-wt")`; the line under it reads
-  `branch mend/verify-wt`. Run `await page.getByRole("button", { name: "Create worktree" }).click()`.
-  The button reads `Creating…`, the dialog closes, and the tree shows `verify-wt` with
-  `mend/verify-wt · base <base>` and `0 sessions`, and the line `No visible sessions` under it.
+  `New worktree` opens. Run `await page.getByRole("textbox", { name: "Name" }).fill("verify-wt")`;
+  the line under it reads `branch mend/verify-wt`. Run
+  `await page.getByRole("button", { name: "Create worktree" }).click()`. The button reads
+  `Creating…`, the dialog closes, and the tree shows `verify-wt` with `mend/verify-wt · base <base>`
+  and `0 sessions`, and the line `No visible sessions` under it.
 - **CLI view.** Run `mend worktrees --project <project>`. A line starts `verify-wt` and reads
   `<project>  mend/verify-wt · base <base>  0 sessions`. Run
   `mend worktrees --project <project> --json`. The JSON has `"version": 2` and a worktree with
@@ -90,10 +92,9 @@ Preconditions:
 - **Refused: never landed.** Make a worktree with a change:
   `mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`, and note its worktree
   name `<wt>` from the `✓ worktree` line. Wait until
-  `mend sessions --project <project> --all --json` shows its `capture` null or with a null `line`
-  (a workspace still saving is refused with other words). Run
-  `mend worktrees rm <wt> --project <project>`. Stderr
-  reads
+  `mend sessions --project <project> --all --json` shows its `capture` null or with a null `line` (a
+  workspace still saving is refused with other words). Run
+  `mend worktrees rm <wt> --project <project>`. Stderr reads
   `mend: This worktree holds a change that was never landed · 1 file · +1 −0 · VERIFY.md +1 −0. Land it or discard it before removal, or pass force=true to remove it anyway.`
   and `  mend worktrees rm <wt> --project <project> --force removes it anyway`; exit code `1`.
 - **Hide and show sessions.** On the tab, `<wt>`'s header has the toggle named
@@ -101,9 +102,9 @@ Preconditions:
   `await page.getByRole("button", { name: "Hide sessions in <shown name>" }).click()`. Its
   `aria-expanded` becomes `false`, the session line is hidden, and the button is now named
   `Show sessions in <shown name>`. Click it again to show them.
-- **Refused on the web, then removed anyway.** On the tab, open that worktree's menu (right-click its
-  shown name; see Gotchas) and choose `Remove worktree…` twice. A dialog named `Not removed` opens,
-  stating `<shown name> stays in the store.`; its alert holds the same words, the list
+- **Refused on the web, then removed anyway.** On the tab, open that worktree's menu (right-click
+  its shown name; see Gotchas) and choose `Remove worktree…` twice. A dialog named `Not removed`
+  opens, stating `<shown name> stays in the store.`; its alert holds the same words, the list
   `page.getByRole("list", { name: "Not on origin" })` reads `1 file` with `+1 −0`, then `VERIFY.md`
   with `+1 −0`, and the text says `Remove anyway discards this change.` Run
   `await page.getByRole("button", { name: "Remove anyway" }).click()`. It reads `Removing…`, the
@@ -118,8 +119,8 @@ Preconditions:
   `mend run --project <project> -- true`, then one with an unlanded change with
   `mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`. Record both worktree
   names. Wait until both sessions are settled and their capture lines are null in
-  `mend sessions --project <project> --all --json`. The project must have exactly one worktree
-  whose removal will be refused, the new unlanded change; no saving workspace or other refusal.
+  `mend sessions --project <project> --all --json`. The project must have exactly one worktree whose
+  removal will be refused, the new unlanded change; no saving workspace or other refusal.
 - **Clear settled.** With those two settled worktrees on the tab, run
   `await page.getByRole("button", { name: "Clear settled" }).click()`. The button reads
   `Really remove <n> settled worktree(s)? Sessions and changes go with them.` Click it again
@@ -127,39 +128,40 @@ Preconditions:
   `Clearing…`; settled worktrees without unlanded work go, and a worktree the store refused stays,
   with a status (`page.getByRole("status")`) reading
   `1 kept · removal refused · remove it from its menu to see why`.
-  `mend worktrees --project <project> --json` no longer lists the clean worktree and still lists
-  the worktree with the unlanded change. After capturing proof, remove the latter with
+  `mend worktrees --project <project> --json` no longer lists the clean worktree and still lists the
+  worktree with the unlanded change. After capturing proof, remove the latter with
   `mend worktrees rm <kept-worktree> --project <project> --force`.
 - **Refresh.** Run `mend refresh <project>`. Stdout reads `✓ refreshed <project> · <n> branches`,
   then up to twelve lines `<name>  <sha12>  <YYYY-MM-DD>`, the default branch marked `▸`, and
   `  … <k> more` past twelve. Exit code `0`.
 - **TUI create.** Run `tmux new-session -d -s wt -x 200 -y 50 'mend ui'`. Select `<project>` in the
-  projects section and press `w`. A form titled ` new worktree · <project> ` shows `name` with the
+  projects section and press `w`. A form titled `new worktree · <project>` shows `name` with the
   placeholder `e.g. fix-auth (empty = auto · an existing name joins it)`. Type `verify-tui`
   (`tmux send-keys -t wt 'verify-tui' Enter`); the base step shows
   `type to filter · enter takes the highlighted branch, or the default when empty`. Press `Enter`
   for the default. In the harness list (`codex`, `claude`, `opencode`, `pi`, `shell`), pick `shell`
-  (`tmux send-keys -t wt Down Down Down Down Enter`). The status line reads `provisioning shell workspace ·`,
-  then `started · <session display name> · a attaches` or
-  `still starting · <session display name> · a attaches once the row reads running`. The new
-  shell session has no label, so its display name is `shell <id8>`, not `verify-tui`.
+  (`tmux send-keys -t wt Down Down Down Down Enter`). The status line reads
+  `provisioning shell workspace ·`, then `started · <session display name> · a attaches` or
+  `still starting · <session display name> · a attaches once the row reads running`. The new shell
+  session has no label, so its display name is `shell <id8>`, not `verify-tui`.
 - **TUI remove.** Stop the new session first (select it in the sessions section, `Shift+K` twice:
-  `press ⇧K again to stop · …`, then `stopped · … · the record and review remain`). In the
-  worktrees section select `verify-tui` and press `Shift+D` (`tmux send-keys -t wt D`). The status
-  line reads `press ⇧D again to remove worktree · verify-tui · its session and change go with it`.
-  Press `D` again within five seconds: `removing worktree · verify-tui`, then
-  `removed · verify-tui`, or the server's refusal words.
-- **Proof.** Capture the Worktrees tab (`page.getByRole("region", { name: "Worktrees" }).ariaSnapshot()`
-  and a screenshot) after create, in Cards view, with the `Not removed` dialog open, and after Clear
-  settled. Keep every `mend worktrees`, `mend worktrees rm`, `mend refresh` transcript with exit
-  codes, and the tmux captures.
+  `press ⇧K again to stop · …`, then `stopped · … · the record and review remain`). In the worktrees
+  section select `verify-tui` and press `Shift+D` (`tmux send-keys -t wt D`). The status line reads
+  `press ⇧D again to remove worktree · verify-tui · its session and change go with it`. Press `D`
+  again within five seconds: `removing worktree · verify-tui`, then `removed · verify-tui`, or the
+  server's refusal words.
+- **Proof.** Capture the Worktrees tab
+  (`page.getByRole("region", { name: "Worktrees" }).ariaSnapshot()` and a screenshot) after create,
+  in Cards view, with the `Not removed` dialog open, and after Clear settled. Keep every
+  `mend worktrees`, `mend worktrees rm`, `mend refresh` transcript with exit codes, and the tmux
+  captures.
 
 ## Gotchas
 
 - A worktree created without a name is `wt-<id>` (branch `mend/wt/<id>`) in `mend worktrees`, but
-  the web shows it by the first member with a non-null label, else `session <id8>` using the
-  first member's id. With no members it keeps the worktree name. Right-click the shown name;
-  `.first()` picks the worktree header over a session line with the same text.
+  the web shows it by the first member with a non-null label, else `session <id8>` using the first
+  member's id. With no members it keeps the worktree name. Right-click the shown name; `.first()`
+  picks the worktree header over a session line with the same text.
 - The worktree header has no role, and its menu (`role="menu"`) has no accessible name; only its
   `menuitem`s are named. A confirm item renames itself to its confirmation on the first click, and a
   copy item to `Copied`.
@@ -167,14 +169,15 @@ Preconditions:
   case itself, before asking the server.
 - `mend run` documents only `--project`; it cannot name its worktree in the documented form. Read
   the name from the `✓ worktree` line.
-- The web has no worktree rename, and neither has any other surface: the dashboard's `e` renames
-  the selected session's label, which can change what an unnamed worktree is shown as, and the
-  desktop's `rename` names a shell. A worktree's name is set only when it is created.
+- The web has no worktree rename, and neither has any other surface: the dashboard's `e` renames the
+  selected session's label, which can change what an unnamed worktree is shown as, and the desktop's
+  `rename` names a shell. A worktree's name is set only when it is created.
 - The dashboard sends no `force`: a worktree whose change is not on origin is refused there with the
   server's words, and removing it takes the web's `Remove anyway` or `mend worktrees rm --force`.
-- `Clear settled` never forces. A worktree with unlanded work stays; its own menu shows why.
-  Zero refusals show no kept note; several show `<n> kept · removal refused · remove one from its
-  menu to see why`. The seeded recipe expects exactly one refusal.
+- `Clear settled` never forces. A worktree with unlanded work stays; its own menu shows why. Zero
+  refusals show no kept note; several show
+  `<n> kept · removal refused · remove one from its menu to see why`. The seeded recipe expects
+  exactly one refusal.
 - Provisioning and pending button labels can finish between reads. Report each transient state not
   observed and capture the resulting worktree and session list.
 - A removal while a workspace is still saving is refused on every surface, `--force` included (see
