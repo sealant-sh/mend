@@ -84,9 +84,12 @@
 // - A resume is kept apart by kind: `resume.tree_restored.*` (the saved dependency tree restored)
 //   and `resume.installed.*` (reinstalled; its start budget less the install), each budgeted
 //   against the same kind, with `resume.unclassified.*` when the log cannot tell. Gate P1 fails when
-//   the person layout reinstalls at a larger share of resumes than shared, or either side tells too
-//   few apart. These need the host; `compare` reads raw measures an older record budgeted as
-//   unbudgeted (docs/adr/0016, decision log 2026-10-09).
+//   the person layout reinstalls at a share of resumes more than 2 per 10 over shared's (scaled),
+//   or at every resume while shared restored at least one, or either side tells too few apart; both
+//   shares are printed either way. Each reinstall keeps why the engine said it ran
+//   (`resumeReinstalls`, tallied per layout in the comparison). These need the host; `compare`
+//   reads raw measures an older record budgeted as unbudgeted (docs/adr/0016, decision log
+//   2026-10-09).
 // - `new.<harness>.launch_call` is capped: the server answers the launch after its 30 s answer
 //   window at the latest and the launch goes on. It is unbudgeted (`cappedAtMs` on the measure),
 //   with `launch_call_capped` (1 when the call took the whole window) and a note per capped call.

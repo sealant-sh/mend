@@ -48,6 +48,9 @@ import {
   fetchRetriesOf,
   installOf,
   installsOf,
+  installWhyOf,
+  reinstallReasonsOf,
+  reinstallSharesOf,
   NO_HOST,
   resumeKindOf,
   LAUNCH_ANSWER_WINDOW_MS,
@@ -2169,6 +2172,7 @@ test("a launch's install is exactly one running line to one end line, with its r
     exited: false,
     exitCode: 0,
     fetchRetries: 2,
+    why: null,
   });
   const exited = launchLines([
     [1000, "session engine: dependency install · running"],
@@ -2180,6 +2184,7 @@ test("a launch's install is exactly one running line to one end line, with its r
     exited: true,
     exitCode: 1,
     fetchRetries: null,
+    why: null,
   });
   // A resume whose head carries a tree for its platform, or an install skipped: none.
   assert.deepEqual(
@@ -2603,7 +2608,7 @@ test("resumes are budgeted by kind, and the person layout may not reinstall more
     ),
   );
   assert.deepEqual(lost.layoutFailures, [
-    "the person layout reinstalled at 10 of 10 resumes, the shared at 3 of 10: the person layout's saved dependency tree was not restored as often",
+    "the person layout reinstalled at 10 of 10 resumes, the shared at 3 of 10 (more than 2 per 10 resumes over shared): the person layout's saved dependency tree was not restored as often",
   ]);
   assert.equal(comparisonFails(lost), true);
   // Restoring more often than shared is no failure; a kind only one side had is not compared.
@@ -2620,4 +2625,149 @@ test("resumes are budgeted by kind, and the person layout may not reinstall more
   assert.deepEqual(blind.layoutFailures, [
     "the person record told 4 of 10 resumes apart (reinstalled or restored the saved tree; 6 could not be told); at least 8 needed",
   ]);
+});
+
+test("the reinstall rule allows 2 per 10 resumes over shared, scaled, and both shares are printed", () => {
+  const kinds = (installed, restored) => ({
+    measures: {
+      ...(installed > 0
+        ? {
+            "resume.installed.first_output": {
+              unit: "ms",
+              budget: null,
+              samples: tenOf(1).concat(tenOf(1)).slice(0, installed),
+            },
+          }
+        : {}),
+      ...(restored > 0
+        ? {
+            "resume.tree_restored.first_output": {
+              unit: "ms",
+              budget: "start",
+              samples: tenOf(1).concat(tenOf(1)).slice(0, restored),
+            },
+          }
+        : {}),
+    },
+  });
+  const tooMany = (shared, person) => reinstallSharesOf(kinds(...shared), kinds(...person)).tooMany;
+  // 3 of 10 against 5 of 10: 2 per 10 more, noise. 6 of 10: more than 2.
+  assert.equal(tooMany([3, 7], [5, 5]), false);
+  assert.equal(tooMany([3, 7], [6, 4]), true);
+  // Scaled: 1 of 5 (20%) against 8 of 20 (40%) stands, 9 of 20 (45%) does not.
+  assert.equal(tooMany([1, 4], [8, 12]), false);
+  assert.equal(tooMany([1, 4], [9, 11]), true);
+  // Every person resume reinstalled while shared restored one: fails inside the tolerance too.
+  const every = reinstallSharesOf(kinds(9, 1), kinds(10, 0));
+  assert.deepEqual(every, {
+    shared: { installed: 9, of: 10 },
+    person: { installed: 10, of: 10 },
+    tooMany: true,
+    why: "every person resume reinstalled while shared restored the saved tree",
+  });
+  // Both reinstalled every time: the same in both layouts, no failure.
+  assert.equal(tooMany([10, 0], [10, 0]), false);
+  assert.equal(reinstallSharesOf(kinds(0, 0), kinds(3, 7)), null);
+  // Printed whether or not it fails.
+  const withResumes = (record, installed, restored) => {
+    Object.assign(record.measures, kinds(installed, restored).measures);
+    return record;
+  };
+  const passing = compareResults(
+    withResumes(sharedBaseline(), 3, 7),
+    withResumes(completePerson(), 5, 5),
+  );
+  assert.deepEqual(passing.layoutFailures, []);
+  assert.match(
+    formatComparison(passing),
+    /Shares of resumes that reinstalled: shared 3 of 10 \(30%\), person 5 of 10 \(50%\); gate P1 allows 2 per 10 more/,
+  );
+  const failing = compareResults(
+    withResumes(sharedBaseline(), 3, 7),
+    withResumes(completePerson(), 6, 4),
+  );
+  assert.equal(failing.layoutFailures.length, 1);
+  assert.match(formatComparison(failing), /shared 3 of 10 \(30%\), person 6 of 10 \(60%\)/);
+});
+
+test("why a resume reinstalled is what the engine's running line says, tallied per layout", () => {
+  const log = (fields) =>
+    [
+      "2026-10-09T10:00:00.000000000Z [10:00:00.000] INFO (#1): session engine: dependency install · running {",
+      ...fields.map((line) => `2026-10-09T10:00:00.000000000Z   ${line}`),
+      "2026-10-09T10:00:00.000000000Z }",
+    ].join("\n");
+  const whyOf = (fields) => installWhyOf({ fields: parseMendLog(log(fields))[0].fields });
+  assert.equal(
+    whyOf([
+      "sessionId: 's1',",
+      "platform: 'linux-x64-glibc',",
+      "capturedFor: [],",
+      "command: 'pnpm install --frozen-lockfile'",
+    ]),
+    "the saved head held no dependency tree (needed: linux-x64-glibc)",
+  );
+  assert.equal(
+    whyOf([
+      "sessionId: 's1',",
+      "platform: 'linux-x64-glibc',",
+      "capturedFor: [ 'linux-arm64-glibc' ],",
+      "command: 'pnpm install'",
+    ]),
+    "the saved head held a tree for linux-arm64-glibc, not linux-x64-glibc",
+  );
+  assert.equal(whyOf(["sessionId: 's1',", "reason: 'head pending upload'"]), "head pending upload");
+  assert.equal(whyOf(["sessionId: 's1'"]), null);
+  // installOf carries it with the install.
+  const lines = [
+    {
+      name: "dependency install · running",
+      at: 1000,
+      fields: { platform: "linux-x64-glibc", capturedFor: "[]" },
+      message: "session engine: dependency install · running",
+    },
+    {
+      name: "dependency install · completed",
+      at: 15_000,
+      fields: {},
+      message: "session engine: dependency install · completed · fetch retries 0 · exit 0",
+    },
+  ];
+  assert.equal(
+    installOf(lines).why,
+    "the saved head held no dependency tree (needed: linux-x64-glibc)",
+  );
+  // A record's reinstalls, tallied, merged, and printed beside the other layout's.
+  const shared = sharedBaseline();
+  const { result, ctx } = recording();
+  ctx.rec.reinstall({
+    run: 1,
+    why: "the saved head held no dependency tree (needed: linux-x64-glibc)",
+    ms: 14_000,
+  });
+  ctx.rec.reinstall({ run: 2, why: null, ms: 15_000 });
+  ctx.rec.reinstall({
+    run: 3,
+    why: "the saved head held no dependency tree (needed: linux-x64-glibc)",
+    ms: 14_500,
+  });
+  shared.resumeReinstalls = result.resumeReinstalls;
+  assert.deepEqual(reinstallReasonsOf(shared), [
+    ["the saved head held no dependency tree (needed: linux-x64-glibc)", 2],
+    ["the engine's line gave no reason", 1],
+  ]);
+  assert.equal(
+    mergeResults(shared, { resumeReinstalls: [{ run: 4, why: "x", ms: 1 }] }).resumeReinstalls
+      .length,
+    4,
+  );
+  shared.measures["resume.installed.first_output"] = {
+    unit: "ms",
+    budget: null,
+    samples: [1, 1, 1],
+  };
+  assert.match(
+    formatComparison(compareResults(shared, completePerson())),
+    /Why resumes reinstalled before: 2 × the saved head held no dependency tree \(needed: linux-x64-glibc\); 1 × the engine's line gave no reason\./,
+  );
 });

@@ -99,6 +99,10 @@ export const makeRecorder = (result, log) => ({
     result.errors.push({ scenario, message: errorText(error), at: new Date().toISOString() });
     log(`error · ${scenario} · ${errorText(error)}`);
   },
+  /** A resume that reinstalled, with why the engine said it did (`resumeReinstalls`). */
+  reinstall: (entry) => {
+    (result.resumeReinstalls ??= []).push(entry);
+  },
   /**
    * A correctness observation, never a timing: tallied per check, failures logged. `ok` null is a
    * check that could not be made, with its reason.
@@ -878,6 +882,9 @@ const resume = async (ctx, primary, run) => {
     if (kind === "resume.installed") {
       ctx.rec.sample(`${kind}.first_output`, firstOutput, "ms");
       recordInstall(ctx, kind, install, "start", kind, label);
+      const why = install.why ?? null;
+      ctx.rec.reinstall({ run, why, ms: install.ms });
+      ctx.rec.note(`${label} reinstalled: ${why ?? "the engine's line gave no reason"}`);
       recordExcludingInstall(ctx, `${kind}.first_output`, firstOutput, "start", install);
     } else {
       ctx.rec.sample(`${kind}.first_output`, firstOutput, "ms", budgeted ? "start" : null);

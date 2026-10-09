@@ -335,6 +335,7 @@ export const installOf = (lines) => {
     return { kind: "unknown", reason: "the install's end line precedes its running line" };
   }
   const exit = /·\s*exit (-?\d+)/.exec(end.message ?? "");
+  const why = installWhyOf(start);
   const exitCode = exit === null ? null : Number(exit[1]);
   return {
     kind: "ran",
@@ -342,7 +343,34 @@ export const installOf = (lines) => {
     exited: /^dependency install · exited/.test(end.name) || (exitCode !== null && exitCode !== 0),
     exitCode,
     fetchRetries: fetchRetriesOf(end),
+    why,
   };
+};
+
+/** The platforms a logged list names (`[ 'linux-x64-glibc' ]`, an array, or `[]`). */
+const platformsOf = (value) => {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string");
+  if (typeof value !== "string") return [];
+  return [...value.matchAll(/'([^']+)'|"([^"]+)"/g)].map((match) => match[1] ?? match[2]);
+};
+
+/**
+ * Why the engine ran an install, from its "dependency install · running" line: a stated `reason`
+ * when the line carries one, else what its fields say of the saved head (`capturedFor`: the
+ * platforms whose dependency tree it holds, against this executor's `platform`). Null when the
+ * line says neither.
+ */
+export const installWhyOf = (line) => {
+  const fields = line.fields ?? {};
+  for (const key of ["reason", "why"]) {
+    if (typeof fields[key] === "string" && fields[key] !== "") return fields[key];
+  }
+  if (!("capturedFor" in fields)) return null;
+  const platform = typeof fields.platform === "string" ? fields.platform : "this platform";
+  const captured = platformsOf(fields.capturedFor);
+  return captured.length === 0
+    ? `the saved head held no dependency tree (needed: ${platform})`
+    : `the saved head held a tree for ${captured.join(", ")}, not ${platform}`;
 };
 
 /**
@@ -849,7 +877,12 @@ export const compareResults = (
     incomparable,
     gate,
     installs: installReportOf(before, after),
-    resumes: { before: resumeKindsOf(before), after: resumeKindsOf(after) },
+    resumes: {
+      before: resumeKindsOf(before),
+      after: resumeKindsOf(after),
+      shares: reinstallSharesOf(before, after),
+      reasons: { before: reinstallReasonsOf(before), after: reinstallReasonsOf(after) },
+    },
     // Under the gate: the person layout reinstalling at more resumes than shared, too few resumes
     // of a known kind, no kind on both sides, and a failed install in the baseline.
     layoutFailures: gate && !companion ? gateLayoutFailures(before, after) : [],
@@ -935,9 +968,66 @@ export const installReportOf = (before, after) =>
     .filter((row) => row.before.installs > 0 || row.after.installs > 0);
 
 /**
+ * How much larger a share of its resumes the person layout may reinstall at than shared: 2 per 10
+ * resumes, scaled with their number. Shared resumes reinstall now and then too (a capture still
+ * uploading at the Stop), so a smaller excess is noise.
+ */
+export const REINSTALL_TOLERANCE = { per: 10, more: 2 };
+
+/**
+ * Both layouts' resume reinstall shares, and whether the person layout's is too large: more than
+ * `REINSTALL_TOLERANCE` over shared's (exact integer arithmetic), or every person resume
+ * reinstalled while shared restored the saved tree at least once. Null when either side told no
+ * resume apart.
+ */
+export const reinstallSharesOf = (before, after) => {
+  const shared = resumeKindsOf(before);
+  const person = resumeKindsOf(after);
+  const sharedKnown = shared.installed + shared.restored;
+  const personKnown = person.installed + person.restored;
+  if (sharedKnown === 0 || personKnown === 0) return null;
+  // person/personKnown - shared/sharedKnown > more/per, without division.
+  const { per, more } = REINSTALL_TOLERANCE;
+  const excess =
+    per * (person.installed * sharedKnown - shared.installed * personKnown) >
+    more * sharedKnown * personKnown;
+  const everyOne = person.installed === personKnown && shared.restored >= 1;
+  return {
+    shared: { installed: shared.installed, of: sharedKnown },
+    person: { installed: person.installed, of: personKnown },
+    tooMany: excess || everyOne,
+    why: excess
+      ? `more than ${more} per ${per} resumes over shared`
+      : everyOne
+        ? "every person resume reinstalled while shared restored the saved tree"
+        : null,
+  };
+};
+
+const percent = (part, of) => `${Math.round((100 * part) / of)}%`;
+
+/** Both reinstall shares in words. */
+export const reinstallSharesText = (shares) =>
+  `resumes that reinstalled: shared ${shares.shared.installed} of ${shares.shared.of} (${percent(shares.shared.installed, shares.shared.of)}), person ${shares.person.installed} of ${shares.person.of} (${percent(shares.person.installed, shares.person.of)}); gate P1 allows ${REINSTALL_TOLERANCE.more} per ${REINSTALL_TOLERANCE.per} more, and fails when every person resume reinstalls while shared restored at least one`;
+
+/**
+ * Why a record's resumes reinstalled, as the engine said it (`resumeReinstalls`), tallied:
+ * `[reason, count]`, most first. A reinstall with no stated reason counts under its own words.
+ */
+export const reinstallReasonsOf = (result) => {
+  const counts = new Map();
+  for (const entry of result.resumeReinstalls ?? []) {
+    const why = entry.why ?? "the engine's line gave no reason";
+    counts.set(why, (counts.get(why) ?? 0) + 1);
+  }
+  return [...counts].toSorted((a, b) => b[1] - a[1]);
+};
+
+/**
  * What fails gate P1 between the layouts that no single measure holds: the person layout
- * reinstalling at a larger share of its resumes than shared (its saved tree not saved or not
- * restored, a loss of work product that would read as a faster resume), either record classifying
+ * reinstalling at too large a share of its resumes against shared (`reinstallSharesOf`: its saved
+ * tree not saved or not restored, a loss of work product that would read as a faster resume),
+ * either record classifying
  * fewer resumes than its floor, no kind of resume both records had (nothing compared), and a
  * failed install in the baseline (the record under test's fail as checks).
  */
@@ -945,7 +1035,6 @@ export const gateLayoutFailures = (before, after) => {
   const failures = [];
   const shared = resumeKindsOf(before);
   const person = resumeKindsOf(after);
-  const share = (kinds) => kinds.installed / (kinds.installed + kinds.restored);
   for (const [who, result, kinds] of [
     ["the shared record", before, shared],
     ["the person record", after, person],
@@ -961,9 +1050,10 @@ export const gateLayoutFailures = (before, after) => {
   }
   const sharedKnown = shared.installed + shared.restored;
   const personKnown = person.installed + person.restored;
-  if (sharedKnown > 0 && personKnown > 0 && share(person) > share(shared)) {
+  const shares = reinstallSharesOf(before, after);
+  if (shares?.tooMany === true) {
     failures.push(
-      `the person layout reinstalled at ${person.installed} of ${personKnown} resumes, the shared at ${shared.installed} of ${sharedKnown}: the person layout's saved dependency tree was not restored as often`,
+      `the person layout reinstalled at ${shares.person.installed} of ${shares.person.of} resumes, the shared at ${shares.shared.installed} of ${shares.shared.of} (${shares.why}): the person layout's saved dependency tree was not restored as often`,
     );
   }
   const both = ["installed", "restored"].filter((kind) => shared[kind] > 0 && person[kind] > 0);
@@ -2073,6 +2163,19 @@ export const formatComparison = (comparison) => {
       `Resumes before: ${said(resumes.before)}.`,
       `Resumes after: ${said(resumes.after)}.`,
     );
+    if (resumes.shares !== null && resumes.shares !== undefined) {
+      lines.push(`Shares of ${reinstallSharesText(resumes.shares)}.`);
+    }
+    for (const [who, reasons] of [
+      ["before", resumes.reasons?.before ?? []],
+      ["after", resumes.reasons?.after ?? []],
+    ]) {
+      if (reasons.length > 0) {
+        lines.push(
+          `Why resumes reinstalled ${who}: ${reasons.map(([why, n]) => `${n} × ${why}`).join("; ")}.`,
+        );
+      }
+    }
   }
   if ((comparison.layoutFailures ?? []).length > 0) {
     lines.push("", "Between the layouts (gate P1):", "");
@@ -2244,6 +2347,7 @@ export const mergeResults = (base, extra, takes = null) => {
     // either run stays failed.
     checks: sumChecks(base.checks ?? [], extra.checks ?? []),
     imageBuilds: [...(base.imageBuilds ?? []), ...(extra.imageBuilds ?? [])],
+    resumeReinstalls: [...(base.resumeReinstalls ?? []), ...(extra.resumeReinstalls ?? [])],
     errors: [...(base.errors ?? []), ...(extra.errors ?? [])],
     merged: [
       ...(base.merged ?? []),
