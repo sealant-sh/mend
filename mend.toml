@@ -1,0 +1,11 @@
+# Services a Mend session of this repository can start by name (apps/docs guides/services.md).
+
+# The verify stack: sealantd, Sealant Core and Mend built from source in this session's Docker, each
+# at a ref, installed with `mend server setup` (docs/operations/verify-stack.md). Mend comes from this
+# worktree; Core and sealantd from /workspace/repos/<name> when `mend repo add` brought them in,
+# else main. Its web is the inner Mend: on your machine, `mend service connect stack --port 3305`,
+# then http://localhost:3305. Stopping the Service removes the stack and keeps its images.
+[service.stack]
+command = "node scripts/verify-stack/stack.mjs serve"
+port = 3305
+browserScheme = "http"
