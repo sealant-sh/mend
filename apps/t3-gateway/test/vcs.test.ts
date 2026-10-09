@@ -39,7 +39,9 @@ describe("VCS status", () => {
         assert.isFalse(status.isDefaultRef);
         assert.isTrue(status.isRepo);
         assert.isTrue(status.hasPrimaryRemote);
-        assert.isTrue(status.hasWorkingTreeChanges);
+        // Mend's totals are the branch against its base; it has no read of uncommitted work.
+        assert.isFalse(status.hasWorkingTreeChanges);
+        assert.deepStrictEqual(status.workingTree, { files: [], insertions: 0, deletions: 0 });
         assert.deepStrictEqual(status.branchChanges, {
           baseRef: "main",
           insertions: 10,
@@ -55,7 +57,7 @@ describe("VCS status", () => {
           (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
         );
         assert.isNull(snapshot.remote);
-        assert.strictEqual(snapshot.local.workingTree.insertions, 10);
+        assert.strictEqual(snapshot.local.branchChanges?.insertions, 10);
 
         // A turn changes the worktree; the status follows.
         mend.workbench.stats.set("change-session-1", { files: 3, additions: 25, deletions: 3 });
@@ -79,6 +81,30 @@ describe("VCS status", () => {
           const error = Option.getOrUndefined(Cause.findErrorOption(elsewhere.cause));
           assert.strictEqual(error?._tag, "GitManagerError");
         }
+      }),
+    ),
+  );
+
+  it.live("follows every session in the worktree, as each adds to its one change", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.addSession({ id: "session-2", projectId: "project-1", joins: "session-1" });
+        mend.workbench.stats.set("change-session-1", { files: 1, additions: 10, deletions: 0 });
+        const { rpc } = yield* pairAndConnect(mend, "SHARED-VCS");
+        const stream = yield* feed(rpc[WS_METHODS.subscribeVcsStatus]({ cwd: WORKTREE }));
+        yield* stream.next(
+          (event): event is Extract<Event, { _tag: "snapshot" }> => event._tag === "snapshot",
+        );
+        // The other session's turn moves the change.
+        mend.workbench.stats.set("change-session-1", { files: 2, additions: 25, deletions: 0 });
+        mend.workbench.addTurn("session-2", "Add a lexer");
+        const updated = yield* stream.next(
+          (event): event is Extract<Event, { _tag: "localUpdated" }> =>
+            event._tag === "localUpdated",
+        );
+        assert.strictEqual(updated.local.branchChanges?.insertions, 25);
       }),
     ),
   );

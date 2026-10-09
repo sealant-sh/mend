@@ -209,18 +209,21 @@ export class FakeWorkbench {
     /** Defaults to `steer`: a session the person can't steer is not theirs. */
     readonly own?: boolean;
     readonly changeId?: string | null;
+    /** A session whose worktree this one joins: the same worktree, branch and change. */
+    readonly joins?: string;
   }): FakeSession {
     const harness = input.harness ?? "codex";
     const createdAt = tick();
+    const joined = input.joins === undefined ? undefined : this.sessions.get(input.joins);
     const session: FakeSession = {
       id: input.id,
       projectId: input.projectId,
-      worktreeId: `worktree-${input.id}`,
+      worktreeId: joined?.worktreeId ?? `worktree-${input.id}`,
       harness,
       model: harness === "claude" ? "fable" : "gpt-6.1-sol",
       label: input.label === undefined ? null : input.label,
-      worktree: `wt-${input.id}`,
-      branch: `mend/wt-${input.id}`,
+      worktree: joined?.worktree ?? `wt-${input.id}`,
+      branch: joined?.branch ?? `mend/wt-${input.id}`,
       baseSha: "6abd2ab9fee56f5a5fa3eaafa7bbad52ae65bdd4",
       baseRef: "main",
       status: input.live === false ? "stopped" : "idle",
@@ -246,7 +249,11 @@ export class FakeWorkbench {
     });
     this.changes.set(
       session.id,
-      input.changeId === undefined ? `change-${input.id}` : (input.changeId ?? ""),
+      joined !== undefined
+        ? (this.changes.get(joined.id) ?? "")
+        : input.changeId === undefined
+          ? `change-${input.id}`
+          : (input.changeId ?? ""),
     );
     this.control.set(session.id, input.steer ?? true);
     this.ownership.set(session.id, input.own ?? input.steer ?? true);

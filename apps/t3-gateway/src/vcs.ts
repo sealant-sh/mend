@@ -18,18 +18,25 @@ import type { BearerSession } from "./state.ts";
  * person.
  *
  * - The ref is the session's branch; the project's root is its default branch.
- * - Mend's change is the worktree against its base, which is t3code's `branchChanges`: those
- *   totals, and `hasWorkingTreeChanges` when it holds any file. Mend's stats carry no per-file
- *   lines, so `workingTree.files` stays empty: the changes panel lists the files.
+ * - Mend's change is the worktree against its base, committed or not, which is t3code's
+ *   `branchChanges`: those totals.
+ * - Mend has no read of the worktree's HEAD, index or uncommitted files, so nothing is claimed
+ *   about them: `hasWorkingTreeChanges` is false and `workingTree` empty, rather than base-diff
+ *   totals presented as uncommitted work.
  * - Mend tracks no upstream for a session's branch (landing is its own step, ADR 0007), so the
  *   remote half is null: nothing ahead, behind or in review is claimed.
  *
- * The stream sends a snapshot, then the local half again whenever the thread changes in the shell
- * (a turn ended, a file moved), at most once a second.
+ * The stream sends a snapshot, then the local half again whenever any thread in the worktree
+ * changes in the shell (every session there adds to its one change), or a thread goes, and every
+ * fifteen seconds besides, as a change can move without its threads changing. Reads come at most
+ * once a second, however busy the worktree: a burst is one read at the end of its second, never
+ * put off while the burst lasts.
  */
 
-/** How often a thread's status is read again while its shell keeps changing. */
+/** At most one read of a worktree's status this often while it keeps changing. */
 export const VCS_REFRESH_MS = 1_000;
+/** How often a watched status is read with nothing in the shell to say it moved. */
+export const VCS_POLL = "15 seconds";
 
 const EMPTY_TREE = { files: [], insertions: 0, deletions: 0 } as const;
 
@@ -41,12 +48,8 @@ export const localStatusOf = (
   hasPrimaryRemote: location.hasOrigin,
   isDefaultRef: location.branch === location.defaultBranch,
   refName: location.branch.trim().length > 0 ? location.branch : null,
-  hasWorkingTreeChanges: (stats?.files ?? 0) > 0,
-  workingTree: {
-    ...EMPTY_TREE,
-    insertions: stats?.additions ?? 0,
-    deletions: stats?.deletions ?? 0,
-  },
+  hasWorkingTreeChanges: false,
+  workingTree: EMPTY_TREE,
   ...(location.sessionId === null
     ? {}
     : {
@@ -118,12 +121,22 @@ export const makeVcsHandlers = (input: {
           local: first.local,
           remote: null,
         };
-        const threadId = first.location.threadId;
-        if (threadId === null) return Stream.make(snapshot).pipe(Stream.concat(Stream.never));
+        if (first.location.sessionId === null) {
+          return Stream.make(snapshot).pipe(Stream.concat(Stream.never));
+        }
         let last = JSON.stringify(first.local);
-        const updates = shell.changes.pipe(
-          Stream.filter((delta) => delta.kind === "thread.updated" && delta.thread.id === threadId),
-          Stream.debounce(VCS_REFRESH_MS),
+        // Any session of the worktree moving its one change, or a thread going (the one the
+        // first read found may be gone, and another in the worktree read instead).
+        const moved = shell.changes.pipe(
+          Stream.filter(
+            (delta) =>
+              (delta.kind === "thread.updated" && delta.thread.worktreePath === request.cwd) ||
+              delta.kind === "thread.removed",
+          ),
+          Stream.map(() => undefined),
+        );
+        const updates = Stream.merge(moved, Stream.tick(VCS_POLL).pipe(Stream.drop(1))).pipe(
+          Stream.groupedWithin(Number.MAX_SAFE_INTEGER, VCS_REFRESH_MS),
           Stream.mapEffect(() =>
             statusAt(operation, request.cwd).pipe(
               Effect.map(({ local }) => local),
