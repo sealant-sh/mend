@@ -5,7 +5,8 @@ output is recorded, its port is observed, and a user brings it to their own mach
 through the Mend server, signed in as themselves. A user starts one from the session page's Services
 card or with `mend service run`, adopts a port the agent already listens on, connects it with
 `mend service connect`, and restarts or stops it. Services keep a workspace up after the agent
-stops, and the session says so.
+stops, and the session says so. The dashboard shows a session's Services and stops a held set; the
+desktop has a Services sheet with the same verbs as the web card.
 
 ## Sub-features
 
@@ -23,6 +24,10 @@ stops, and the session says so.
 - `service-restart-stop` restarts a Service on the same port, or stops it and closes its tunnel.
 - `service-hold` keeps the workspace up after the agent stops, and `Stop services` /
   `mend stop --services` ends that.
+- `service-tui` shows the selected session's Services in the dashboard, tunnels its browser
+  Services while it is selected, and stops a held set with `Shift+K`.
+- `service-desktop` runs, adopts, opens, logs, restarts and stops Services from the desktop's
+  Services sheet.
 
 ## How to get to it (user POV)
 
@@ -37,8 +42,15 @@ stops, and the session says so.
   `mend service stop <name-or-id>`, `mend service init [--yes]`.
 - CLI: `mend attach`, `mend codex`, `mend claude` and the dashboard tunnel the attached session's
   `--http`/`--https` Services on their own; `mend stop --services [session]` stops them all.
-- Desktop: the `Services` sheet. Mobile and VS Code: not a Services surface in this map. Not driven
-  by this map.
+- TUI: the dashboard's session pane lists the selected session's Services (two, then
+  `+<n> more`). On a server that is not this machine, it tunnels that session's `--http`/`--https`
+  Services while it stays selected (unless `mend ui --no-tunnel`). On a row whose agent stopped while
+  Services keep the workspace up, `Shift+K` twice stops them.
+- Desktop: a session tab's header button `Services <n>`, `Ctrl+Shift+S`, a Service's line under its
+  session in the sidebar, or `Services` in the session row's right-click menu opens the side sheet
+  `Session Services`. While Services hold a stopped session, its header has `stop services`, and
+  the row's right-click menu has `Stop services`.
+- Mobile, VS Code and Slack: no Services surface.
 
 ## Driving it with verify
 
@@ -53,6 +65,7 @@ Preconditions:
 - Local port `18000` is free on the machine running the CLI.
 - The worktree declares no `mend.toml` Services, the project declares none, and the session has
   started no Service yet, so the Services card starts empty.
+- TUI and desktop steps: the harnesses from [Start a session](./start-session.md).
 
 - **Empty card.** Go to `<web>/sessions/<id>`. The `Services` card reads
   `none running · mend service run exposes one`.
@@ -84,16 +97,64 @@ Preconditions:
   `web2` joins the card.
 - **Stop one.** Run `mend service stop web2`. Stdout reads `✓ stopped · web2`. The card shows `web2`
   as ended, with a `Run` button to start it again.
+- **TUI: Services in the session pane.** Run
+  `tmux new-session -d -s mend-svc -x 200 -y 50 'mend ui'` and select the session (`h`/`l` between
+  panes, `j`/`k` within one). The session pane's Services line reads
+  `web :8000→<host port> reachable` (`web2` beside it while it runs), or, when the dashboard tunnels
+  it here, the tunnel's own line, such as `web → http://localhost:<port>`. A session with none reads
+  `no services running`.
+- **Desktop: open the sheet.** Click the session's sidebar row (named
+  `<harness> · <label or branch>`), then run
+  `await page.getByRole("button", { name: /^Services \d+$/ }).click()` (or press
+  `Control+Shift+S`). The side sheet `Session Services` opens
+  (`const sheet = page.getByRole("complementary", { name: "Session Services" })`), headed `Services`
+  with the session's label or branch. The sidebar's line for the Service is a button named
+  `web reachable`.
+- **Desktop: read a Service.** The row `web` reads `<declaration source> · :8000` and three facts:
+  `Process running` (with its attempt), `Forward bound to <address>`, and `TCP accepted on :8000` with
+  `observed <when>`. Its actions include `Logs`, `Restart` and `Stop`, plus `Open` and
+  `Copy endpoint` when this desktop can reach the address, or `Copy command` (the
+  `mend service connect` line) when it cannot.
+- **Desktop: logs.** Run `await sheet.getByRole("button", { name: "Logs" }).first().click()`. A
+  dialog named `web logs` opens (`page.getByRole("dialog", { name: "web logs" })`), titled
+  `web · logs` with `read-only · sequence-addressed`, the recorded output, `Open as tab` and
+  `Close`. `Open as tab` closes it and opens a tab headed `web · logs · read-only · <branch>` with
+  `close`.
+- **Desktop: run or adopt.** In the sheet's `One-off` form, run
+  `await sheet.getByRole("textbox", { name: "command · leave empty to adopt a listening port" }).fill("<serve-cmd with port 8002>")`,
+  `await sheet.getByRole("textbox", { name: "port", exact: true }).fill("8002")`,
+  `await sheet.getByRole("textbox", { name: "name", exact: true }).fill("web3")`, choose `http` in
+  the form's scheme select (no name; see Gotchas), and run
+  `await sheet.getByRole("button", { name: "Run or adopt" }).click()`. It reads `Starting…`, then a
+  `web3` row joins the sheet. A port outside 1–65535 reads `Enter a port between 1 and 65535.`
+- **Desktop: restart and stop.** On the `web3` row, `Restart` reads `Restart…` and the row returns
+  to `Process running`; `Stop` reads `Stop…`, then the row offers `Run again` (or
+  `Remove forward` while its forward is still bound). `Close` closes the
+  sheet. `Recipes` lists the worktree's `mend.toml` Services with `Run`, or
+  `No recipes declared in mend.toml.`
 - **Hold after the agent stops.** Run `mend stop <id8>`. Stdout reads
   `✓ stopped · <harness> · <id8> · <branch>`, then one line naming what keeps the workspace up,
   ending `· mend stop --services <id8>`, then `  review · <web>/sessions/<id>`. The session page
-  shows a hold word in place of the status, and `web` stays `reachable`.
+  shows a hold word in place of the status, and `web` stays `reachable`. The desktop tab's header
+  shows the hold line and `stop services`.
 - **Stop the Services.** Run `mend stop --services <id8>`. Stdout reads
   `✓ stopped 1 service · <harness> · <id8> · <branch>` (`services` when more than one).
   `mend service list` prints `no live services — mend service add <port> adopts a listening one`.
+- **TUI: stop a held set.** Instead of `mend stop --services`, drive the dashboard: with the held
+  session selected, run `tmux send-keys -t mend-svc K`. The status line reads
+  `press ⇧K again to stop the services · <name> · <hold>`. Within five seconds run
+  `tmux send-keys -t mend-svc K` again. It reads
+  `stopped 1 service · <name> · the workspace ends once nothing is live` (`services` when more than
+  one).
+- **Desktop: stop a held set.** Instead, in the held session's tab, run
+  `await page.getByRole("button", { name: "stop services", exact: true }).click()`. It reads
+  `stopping services…`, then the hold line and the button leave the header.
 - **Proof.** Capture the Services card with `web` reachable and after the stops:
   `await page.locator("body").ariaSnapshot()` and a screenshot. Keep the `mend service run`, `list`,
-  `connect`, curl, `logs`, `stop` and `mend stop --services` transcripts with exit codes.
+  `connect`, curl, `logs`, `stop` and `mend stop --services` transcripts with exit codes, the TUI
+  session pane (`tmux capture-pane -p`) with `web` listed and after `Shift+K`, and the desktop sheet
+  (`page.getByRole("complementary", { name: "Session Services" }).ariaSnapshot()`) with `web`
+  listed and after the stops.
 
 ## Gotchas
 
@@ -123,3 +184,20 @@ Preconditions:
   Pick a free one rather than killing the holder.
 - Status words are observations: `reachable` means a connection answered, not that the server works.
   Report them as written.
+- The dashboard cannot start, restart, stop one, connect or log a Service; it shows them and stops a
+  held set. Its status lines clear after five seconds, and the second `K` must land while the first
+  one's line still shows.
+- The desktop's `One-off` form has no labels: its command, port and name fields are named by their
+  placeholders (`command · leave empty to adopt a listening port`, `port`, `name`), and its scheme
+  select (`raw`, `http`, `https`) has no name at all
+  (`apps/desktop/src/renderer/src/components/services-sheet.tsx:481`). Pick it by its options
+  (`sheet.getByRole("combobox").filter({ hasText: "https" })`). The `udp` checkbox is named by its
+  wrapping label. Those are findings.
+- The desktop's Service rows are `article` elements with no name, and their actions (`Open`,
+  `Copy endpoint`, `Logs`, `Restart`, `Stop`) repeat per row. Scope by the row's name text. The
+  sheet's `Close` shares its name with the Land sheet's and the logs dialog's `Close`.
+- The desktop's header buttons are lowercase (`stop`, `stop services`); pass `exact: true`, since
+  Playwright's name match is otherwise case-insensitive and partial.
+- Without control of the session, the desktop sheet keeps only reading actions and reads
+  `Only this session's owner runs Services in it, unless they share control.`; a steerer who may not
+  type in the workspace reads `Only <owner> starts Services in this workspace.` and has no form.
