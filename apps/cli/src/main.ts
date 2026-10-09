@@ -70,7 +70,7 @@ import {
   usageOf,
 } from "./help.ts";
 import { useHttp1 } from "./http-client.ts";
-import { type Download, landCommand, pullCommand } from "./landing.ts";
+import { type Download, landCommand, pickSession, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
 import { loginCommand } from "./login.ts";
@@ -84,6 +84,20 @@ import {
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
+import {
+  type CommandDetail,
+  type CommandEnd,
+  endLine,
+  exitStatusOf,
+  followLogs,
+  isSessionId,
+  parseLogsArgs,
+  parseWaitArgs,
+  pickProcess,
+  runArgvIssue,
+  WAIT_TIMED_OUT,
+  waitForCommand,
+} from "./run-scripts.ts";
 import {
   secretFileLines,
   secretFilePathOf,
@@ -122,7 +136,6 @@ import {
 } from "./shared-workspace.ts";
 import {
   agentIsLive,
-  agentOutcome,
   type AgentProcessLike,
   cwdFacts,
   gitOriginUrl,
@@ -346,13 +359,21 @@ const parseMendUrl = (value: string): URL => {
   }
 };
 
-const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY ? `[${code}m${text}[0m` : text;
+/**
+ * Where the CLI's own lines go. stdout, except under `mend run`, `mend logs` and `mend wait`: there
+ * stdout carries the command's output (or `--json`) alone, so a script reads it as it is.
+ */
+let chrome: NodeJS.WriteStream = process.stdout;
+const chromeToStderr = (): void => {
+  chrome = process.stderr;
+};
+
+const paint = (code: string) => (text: string) => (chrome.isTTY ? `[${code}m${text}[0m` : text);
 const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");
 const cobalt = paint("34");
-const say = (line: string) => process.stdout.write(`${line}\n`);
+const say = (line: string) => chrome.write(`${line}\n`);
 const detachKeyEnabled = process.env["MEND_DETACH_KEY"] !== "none";
 const detachHint = () => (detachKeyEnabled ? ` · detach: ${dim("Ctrl+]")}` : "");
 
@@ -554,7 +575,7 @@ const boundApi =
 
 /** A live elapsed-time spinner around a slow await — provisioning is not a hang. */
 const withSpinner = async <T>(label: string | (() => string), work: Promise<T>): Promise<T> => {
-  if (process.stdout.isTTY !== true) return work;
+  if (chrome.isTTY !== true) return work;
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   const started = Date.now();
   let frame = 0;
@@ -562,16 +583,14 @@ const withSpinner = async <T>(label: string | (() => string), work: Promise<T>):
     const seconds = Math.round((Date.now() - started) / 1000);
     const text = typeof label === "string" ? label : label();
     // Clear first: a status line that got shorter must not leave the old one's tail behind.
-    process.stdout.write(
-      `\r\x1b[2K  ${frames[frame % frames.length]} ${text} ${dim(`${seconds}s`)} `,
-    );
+    chrome.write(`\r\x1b[2K  ${frames[frame % frames.length]} ${text} ${dim(`${seconds}s`)} `);
     frame += 1;
   }, 120);
   try {
     return await work;
   } finally {
     clearInterval(timer);
-    process.stdout.write("\r\x1b[2K");
+    chrome.write("\r\x1b[2K");
   }
 };
 
@@ -608,7 +627,7 @@ const followStarting = async (
         onLine: (next) => {
           // A bare `starting` says less than the label already on screen.
           line = next === "starting" ? label : next;
-          if (process.stdout.isTTY !== true) say(dim(`  ${next}`));
+          if (chrome.isTTY !== true) say(dim(`  ${next}`));
         },
         sleep,
         now: Date.now,
@@ -869,8 +888,13 @@ const workspaceLinesOf = async (
 };
 
 const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<string>) => {
+  // A run's stdout is its command's output (or --json); everything the CLI says goes to stderr.
+  if (harness === "run") chromeToStderr();
   const parsed = parseLaunchArgs(args);
   if (parsed.error !== null) return fail(parsed.error);
+  if (harness !== "run" && parsed.json) {
+    return fail(`mend ${harness} takes no --json · mend run --json prints what it started`);
+  }
   const structured =
     parsed.prompt !== null ||
     parsed.model !== null ||
@@ -885,15 +909,18 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
       "mend run takes no landing flags — a command has no turns to land after; land it with mend land",
     );
   }
-  if (harness === "run" && (parsed.detach || parsed.foreground)) {
+  if (harness === "run" && parsed.foreground) {
     return fail(
-      "mend run takes no lifecycle flags — it tails the record; Ctrl+C stops watching, not the command",
+      "mend run takes no --foreground — Ctrl+C stops watching, not the command; mend stop ends it",
     );
   }
   const argv = harness === "run" ? parsed.custom : (HARNESS_COMMANDS[harness] ?? []);
   if (argv.length === 0) {
     return fail(harness === "run" ? usageOf("run") : `unknown harness ${harness}`);
   }
+  // What the platform would refuse once the session exists, refused here with nothing created.
+  const argvIssue = harness === "run" ? runArgvIssue(argv) : null;
+  if (argvIssue !== null) return fail(`${argvIssue} · nothing was created`);
 
   const project = await findProject(config, parsed.project, true);
   // Say which project the cwd resolved to before anything is created — a
@@ -999,7 +1026,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   // a platform PTY runs argv, the record begins. Commands tail the record;
   // interactive harnesses get the full terminal bridge.
   if (harness === "run") {
-    return supervisedRun(config, session, argv);
+    return supervisedRun(config, session, argv, { detach: parsed.detach, json: parsed.json });
   }
   // A harness start sends no argv, flags or not: the server composes the harness's own flags
   // (one shared mapping), applies its default model when none is named and records what runs
@@ -3863,6 +3890,7 @@ _mend() {
     'adopt:adopt a repository into the store'
     'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode' 'pi:new session + pi'
     'run:new session + arbitrary command'
+    'logs:recorded terminal output of a session' 'wait:wait for the command of a session to end'
     'attach:reattach to a running session' 'stop:stop the agent — record and review remain'
     'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
@@ -3899,7 +3927,7 @@ _mend() {
         esac
       fi
       ;;
-    shell|attach|stop|continue|resume|rejoin|land|pull)
+    shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
       (( \${#sessions} )) && _describe 'session' sessions
@@ -3912,7 +3940,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -3930,7 +3958,7 @@ const BASH_COMPLETIONS = `_mend() {
       fi
       COMPREPLY=( $(compgen -W "$options" -- "$cur") )
       ;;
-    shell|attach|stop|continue|resume|rejoin|land|pull)
+    shell|attach|stop|continue|resume|rejoin|land|pull|logs|wait)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
       ;;
   esac
@@ -3954,73 +3982,238 @@ const completionsCommand = (args: ReadonlyArray<string>) => {
 
 // ─── supervised run: platform workspace + PTY + record ──────────────────────
 
+/** A sleep for the run, logs and wait loops: a plain timer, nothing else holds the process. */
+const pause = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/** Print one JSON value on stdout, as the other --json commands do. */
+const printJson = (value: unknown): void => {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+};
+
+/** One page of a process's recorded terminal output. */
+const readLogPage = (config: CliConfig, processId: string, from: string) =>
+  request<ProcessLogPageDto>(
+    config,
+    "GET",
+    `/processes/${processId}/logs?from=${encodeURIComponent(from)}&limit=256`,
+  );
+
+/** Write a process's recorded output to stdout from `from`; following, until it has ended. */
+const writeProcessLogs = (config: CliConfig, processId: string, from: string, follow: boolean) =>
+  followLogs({
+    from,
+    follow,
+    read: (cursor) => readLogPage(config, processId, cursor),
+    write: (bytes) => process.stdout.write(bytes),
+    sleep: pause,
+    now: Date.now,
+  });
+
+/** Read the session until its command has ended, or `timeoutMs` passes. */
+const waitForSessionCommand = (config: CliConfig, sessionId: string, timeoutMs: number | null) =>
+  waitForCommand({
+    read: () => request<CommandDetail>(config, "GET", `/sessions/${sessionId}`),
+    timeoutMs,
+    sleep: pause,
+    now: Date.now,
+  });
+
+/** What `mend run --json` and `mend wait --json` print about a session's command. */
+interface RunJson {
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly processId: string | null;
+  readonly worktree: string;
+  readonly branch: string;
+  readonly url: string;
+  /** The process's status: `running` when detached, then how it ended (`exited`, `stopped`). */
+  readonly status: string;
+  /** The command's exit code, once it ended and the platform reported one. */
+  readonly exitCode: number | null;
+}
+
+const runJsonOf = (
+  config: CliConfig,
+  session: SessionDto,
+  processId: string | null,
+  state: { readonly status: string; readonly exitCode: number | null },
+): RunJson => ({
+  version: 1,
+  sessionId: session.id,
+  processId,
+  worktree: session.worktree,
+  branch: session.branch,
+  url: `${config.url}/sessions/${session.id}`,
+  status: state.status,
+  exitCode: state.exitCode,
+});
+
+/** Say how the command ended and exit with its code. */
+const exitWithCommandEnd = (
+  config: CliConfig,
+  session: SessionDto,
+  end: CommandEnd,
+  json: boolean,
+): never => {
+  const code = exitStatusOf(end);
+  say(`${code === 0 ? green("✓") : amber("·")} ${endLine(end)} · recorded`);
+  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
+  if (json) printJson(runJsonOf(config, session, end.processId, end));
+  process.exit(code);
+};
+
+/**
+ * `mend run`: the command runs as the session's process in its workspace, and this terminal shows
+ * what it prints, as the record has it, then exits with the command's exit code. stdout is the
+ * command's output and nothing else (stdout and stderr together: it runs in a terminal). Ctrl+C
+ * stops watching; the command keeps running. `--detach` returns once it runs, `--json` prints the
+ * session and process ids (and with no `--detach`, how it ended) in place of the output.
+ */
 const supervisedRun = async (
   config: CliConfig,
   session: SessionDto,
   argv: ReadonlyArray<string>,
+  options: { readonly detach: boolean; readonly json: boolean },
 ) => {
-  const launched = await startAndFollow(
+  const outcome = await followStarting(
     config,
     session.id,
     "provisioning workspace — a first launch builds the harness image (can take minutes)…",
     request<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
   );
-  say(
-    `${green("✓ recording")} · run ${dim(launched.id.slice(0, 8))} · workspace mounts the worktree`,
-  );
-  say(dim(`  ${argv.join(" ")} — live record:`));
-  say("");
-
-  // Tail the record through the server's event stream until the session settles.
-  const headers: Record<string, string> = {};
-  if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
-  const response = await fetch(`${config.url}/api/events`, { headers });
-  if (response.body === null) return fail("event stream unavailable");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let settled: string | null = null;
-  while (settled === null) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n\n");
-    buffer = parts.pop() ?? "";
-    for (const part of parts) {
-      const data = part
-        .split("\n")
-        .filter((line) => line.startsWith("data: "))
-        .map((line) => line.slice(6))
-        .join("");
-      if (data === "") continue;
-      let event: { readonly type?: string; readonly sessionId?: string; readonly line?: string };
-      try {
-        event = JSON.parse(data) as typeof event;
-      } catch {
-        continue;
-      }
-      if (event.sessionId !== session.id) continue;
-      if (event.type === "session-progress" && event.line !== undefined) {
-        say(dim(`  ${event.line}`));
-      }
-      if (event.type === "session") {
-        const detail = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
-        // The agent's own end settles the wait: the session fold may read `idle` while a
-        // shell still holds the workspace.
-        const ended =
-          agentOutcome(detail.currentAgent) ??
-          (["completed", "failed", "stopped"].includes(detail.session.status)
-            ? detail.session.status
-            : null);
-        if (ended !== null) settled = ended;
-      }
-    }
+  // A short command can end before the follower sees it run: the session settled, and its
+  // command's process says it ran.
+  const ranAndEnded =
+    outcome.kind === "settled"
+      ? await request<CommandDetail>(config, "GET", `/sessions/${session.id}`).catch(() => null)
+      : null;
+  if (outcome.kind !== "live" && ranAndEnded?.currentAgent?.id === undefined) {
+    startedOrExit(config, session.id, outcome);
+    return;
   }
-  await reader.cancel().catch(() => undefined);
+  const detail =
+    ranAndEnded ?? (await api<CommandDetail>(config, "GET", `/sessions/${session.id}`));
+  const processId = detail.currentAgent?.id ?? null;
+  const id8 = session.id.slice(0, 8);
+  if (options.detach) {
+    say(`${green("✓ recording")} · running detached · session ${dim(id8)}`);
+    say(`${cobalt("  output")} · mend logs ${id8} --follow`);
+    say(`${cobalt("  wait")} · mend wait ${id8}`);
+    if (options.json) {
+      printJson(runJsonOf(config, session, processId, { status: "running", exitCode: null }));
+    }
+    return;
+  }
+  say(
+    `${green("✓ recording")} · ${argv[0] ?? "command"} · workspace mounts the worktree · Ctrl+C stops watching, not the command`,
+  );
   say("");
-  say(`${green("✓")} session ${settled ?? "settled"} · recorded · checkpoint taken`);
-  say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
-  process.exit(settled === "failed" ? 1 : 0);
+  if (processId !== null && !options.json) {
+    await writeProcessLogs(config, processId, "0", true).catch((error: unknown) => {
+      say(
+        amber(
+          `output not read · ${error instanceof Error ? error.message : String(error)} · mend logs ${id8}`,
+        ),
+      );
+    });
+  }
+  const waited = await waitForSessionCommand(config, session.id, null).catch((error: unknown) =>
+    fail(error instanceof Error ? error.message : String(error)),
+  );
+  if (waited.kind === "timeout") return fail("the wait ended without a timeout");
+  say("");
+  exitWithCommandEnd(config, session, waited.end, options.json);
+};
+
+/**
+ * The session a word names, settled ones included: a full id is read directly; a prefix of the id,
+ * or a worktree's name, is looked for in every project, as `mend land` does.
+ */
+const resolveAnySession = async (config: CliConfig, word: string): Promise<SessionDto> => {
+  if (isSessionId(word)) {
+    return (await api<SessionDetailLiteDto>(config, "GET", `/sessions/${word}`)).session;
+  }
+  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
+  const details = await Promise.all(
+    projects.map((project) =>
+      api<ProjectDetailDto>(config, "GET", `/projects/${project.id}?deadEnds=include`),
+    ),
+  );
+  const picked = pickSession(
+    details.flatMap((detail) => detail.sessions),
+    word,
+  );
+  if ("error" in picked) return fail(picked.error);
+  return picked.session;
+};
+
+/**
+ * `mend logs [session] [--follow] [--from <sequence>] [--process <id>]`: a session's recorded
+ * terminal output on stdout, as bytes. The session's command (or agent) by default; another of
+ * its processes, a shell or a Service attempt, with --process.
+ */
+const logsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  chromeToStderr();
+  const parsed = parseLogsArgs(args);
+  if ("error" in parsed) return fail(`${parsed.error} · ${usageOf("logs")}`);
+  const { session: word, follow, from, process: processPrefix } = parsed.args;
+  const session =
+    word === null
+      ? await resolveLiveSession(config, undefined, "logs")
+      : await resolveAnySession(config, word);
+  const detail = await api<CommandDetail>(config, "GET", `/sessions/${session.id}`);
+  const picked = pickProcess(detail, processPrefix);
+  if ("error" in picked) return fail(`session ${session.id.slice(0, 8)} · ${picked.error}`);
+  const target = picked.process;
+  if (target.id === undefined || target.sealantSessionId === null) {
+    return fail(
+      `session ${session.id.slice(0, 8)} · this process has no recorded terminal (an adopted port, or a server older than process ids)`,
+    );
+  }
+  try {
+    const last = await writeProcessLogs(config, target.id, from, follow);
+    if (follow) say(dim(`\nrecord ended · ${last.status} · next sequence ${last.next}`));
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+};
+
+/**
+ * `mend wait [session] [--timeout <seconds>] [--json]`: return once the session's command has
+ * ended, with its exit code; 124 when the timeout passes first, and the command keeps running.
+ */
+const waitCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  chromeToStderr();
+  const parsed = parseWaitArgs(args);
+  if ("error" in parsed) return fail(`${parsed.error} · ${usageOf("wait")}`);
+  const { session: word, timeoutMs, json } = parsed.args;
+  const session =
+    word === null
+      ? await resolveLiveSession(config, undefined, "wait")
+      : await resolveAnySession(config, word);
+  const waited = await waitForSessionCommand(config, session.id, timeoutMs).catch(
+    (error: unknown) => fail(error instanceof Error ? error.message : String(error)),
+  );
+  if (waited.kind === "timeout") {
+    say(
+      `${amber("·")} session ${session.id.slice(0, 8)} · still running after ${Math.round((timeoutMs ?? 0) / 1000)} s · the command keeps running`,
+    );
+    if (json) {
+      const detail = await api<CommandDetail>(config, "GET", `/sessions/${session.id}`);
+      // Still running: the process's own status, and the exit status (124) says the wait gave up.
+      printJson(
+        runJsonOf(config, session, detail.currentAgent?.id ?? null, {
+          status: detail.currentAgent?.status ?? detail.session.status,
+          exitCode: null,
+        }),
+      );
+    }
+    process.exit(WAIT_TIMED_OUT);
+  }
+  exitWithCommandEnd(config, session, waited.end, json);
 };
 
 // ─── continue: pick up a pending follow-up ──────────────────────────────────
@@ -4939,6 +5132,10 @@ const main = async () => {
     case "pi":
     case "run":
       return withAgentShare(config, () => launch(config, command, rest));
+    case "logs":
+      return logsCommand(config, rest);
+    case "wait":
+      return waitCommand(config, rest);
     case "attach":
       return withAgentShare(config, () => attach(config, rest));
     case "stop":

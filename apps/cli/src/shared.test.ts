@@ -91,6 +91,7 @@ describe("parseLaunchArgs", () => {
       foreground: false,
       noTunnel: false,
       autoLand: null,
+      json: false,
       custom: [],
       error: null,
     });
@@ -124,9 +125,17 @@ describe("parseLaunchArgs", () => {
       foreground: false,
       noTunnel: false,
       autoLand: null,
+      json: false,
       custom: [],
       error: null,
     });
+  });
+
+  it("takes --json before the command, and leaves one after it to the command", () => {
+    expect(parseLaunchArgs(["--json", "--", "make"]).json).toBe(true);
+    const after = parseLaunchArgs(["--", "jq", "--json"]);
+    expect(after.json).toBe(false);
+    expect(after.custom).toEqual(["jq", "--json"]);
   });
 
   it("takes --detach (and -d) and --foreground, refusing the contradiction", () => {

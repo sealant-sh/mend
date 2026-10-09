@@ -108,7 +108,7 @@ your organization, who can then start sessions in it. See [Organizations](/organ
 mend codex ["prompt"] [options]
 mend claude ["prompt"] [options]
 mend opencode ["prompt"] [options]
-mend run -- <command...>
+mend run [--detach] [--json] [options] -- <command...>
 ```
 
 Agent options:
@@ -146,8 +146,8 @@ project, `inherit · on · off`) turns this off for interactive launches, giving
 semantics: the session stops when the launching `mend` exits. `--detach` and `--foreground` override
 both for one launch. Foreground stops are best-effort on signals: a `SIGKILL` or power loss cannot
 stop anything; `mend sessions` shows what still runs and `mend stop` ends it. The switch applies to
-interactive CLI launches (`mend codex|claude|opencode`); `mend run` tails the record without
-attaching, and browser or phone clients never stop a session by disconnecting.
+interactive CLI launches (`mend codex|claude|opencode`); `mend run` prints the command's recorded
+output without attaching, and browser or phone clients never stop a session by disconnecting.
 
 Inside a session workspace, the staged helper accepts `mend stop` too, so a workspace shell (or the
 agent itself) can end its own session, and `mend land`, which lands the session's change as its
@@ -161,6 +161,50 @@ session is picked up on the phone. From the terminal, land it with `mend land`.
 Codex uses model, effort, permission, and speed options. Claude uses model, effort, and permission
 options. OpenCode uses model and permission options; its models are named `provider/model`, and
 without one it opens on `openai/gpt-6.1-sol` through your ChatGPT login.
+
+### Run a command
+
+`mend run` starts a session whose process is your command instead of a harness. It takes
+`--project`, `--name`, `--worktree` and `--base` as the agents do, and prints what the command
+writes to its terminal, as the record holds it, then exits with the command's exit code. The command
+runs in a terminal, so its stdout and stderr arrive together, on stdout. What `mend run` says itself
+(the project, the worktree, the session, how the command ended) goes to stderr, so a script reads
+the command's output alone:
+
+```sh
+out=$(mend run --project api -- git log -1 --format=%H)
+```
+
+`Ctrl+C` stops watching; the command keeps running. `--detach` returns as soon as it runs. `--json`
+prints one JSON object on stdout in place of the output: `sessionId`, `processId`, `worktree`,
+`branch`, `url`, `status`, and `exitCode`, which is `null` until the command ended. With `--detach`
+it is printed once the command runs; without, once it ended. Pick the session up again with
+`mend logs` and `mend wait`:
+
+```sh
+id=$(mend run --detach --json -- pnpm test | jq -r .sessionId)
+mend logs "$id" --follow
+mend wait "$id" --timeout 900   # exits with the test run's exit code
+```
+
+| Command                                                          | Purpose                                                                                          |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `mend logs [session] [--follow] [--from <seq>] [--process <id>]` | Print a session's recorded terminal output on stdout; settled sessions count                     |
+| `mend wait [session] [--timeout <seconds>] [--json]`             | Return once the session's command ended, with its exit code; `124` when the timeout passes first |
+
+`mend logs` reads the session's command (or agent) by default, and another of its processes, a shell
+or a Service attempt, with `--process` and a prefix of its id. `--follow` keeps printing until the
+process ends. `mend wait` exits with the code the platform reported, or `1` when it reported none.
+Both take the session id, a prefix of it, or the worktree's name.
+
+The platform takes a command of at most 64 words, none of them empty and none starting or ending
+with whitespace. A script passed as `bash -lc "<script>"` that starts with a newline is such a word:
+`mend run` refuses it before anything is created and names the word by its position. Trim it and run
+again.
+
+Workspaces set `PAGER=cat`, because the workspace images carry no `less` and `git log` in a terminal
+would otherwise fail with `unable to execute pager 'less'`. A project variable named `PAGER`, a
+`PAGER` your shell profile exports, or `core.pager` in your git config wins.
 
 ### Models
 
