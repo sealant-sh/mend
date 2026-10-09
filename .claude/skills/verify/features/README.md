@@ -1,12 +1,13 @@
 # Mend verification map
 
-This directory is the maintained source for verifying Mend's user-facing behavior: the core loop of
-adopting a project, running a session in a recorded worktree, reviewing its change, sending review
-back, landing, and Services. Read this index before driving Mend, then use the matching feature file
-as the recipe. The map was written from source (the web routes and components in `apps/web/src`, the
-command catalog in `apps/cli/src/help.ts`, and the CLI in `apps/cli/src`). It has not been driven
-live yet. The first live pass happens when the `verify` skill's Launch section exists, which waits
-on the 0.36 feature "Verify Mend in Mend".
+This directory is the maintained source for verifying every user-facing feature of Mend. Read this
+index before driving Mend, find the feature in the coverage table, then use its file as the recipe.
+The map was written from source: the command catalog in `apps/cli/src/help.ts` and the CLI in
+`apps/cli/src`, the web routes and components in `apps/web/src`, the TUI in
+`apps/cli/src/dashboard*` and `apps/cli/src/review.tsx`, the desktop, mobile, VS Code and T3 gateway
+apps, the docs site in `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. It has not been
+driven live yet. The first live pass happens when the `verify` skill's Launch section exists, which
+waits on the 0.36 feature "Verify Mend in Mend".
 
 ## Baseline preconditions
 
@@ -42,6 +43,19 @@ on the 0.36 feature "Verify Mend in Mend".
 - `mend codex`, `mend claude`, `mend attach`, `mend continue`, `mend service connect` and
   `mend service logs` hold the terminal. Run them in their own PTY (tmux or similar); a harness
   launch may pass `--detach` instead. Never run them in a plain pipe.
+- TUI steps run the dashboard (`mend ui`, or bare `mend`) in a tmux session sized like a real
+  terminal (`tmux new-session -d -s <name> -x 200 -y 50`), send keys with
+  `tmux send-keys -t <name> <key>`, and read the screen with `tmux capture-pane -p -t <name>`. Keys
+  and the strings to wait for come from `apps/cli/src/dashboard*` and `apps/cli/src/review.tsx`. The
+  dashboard needs Node 26 or newer.
+- Desktop steps start the Electron app with a remote debugging port and attach Playwright through
+  CDP (`chromium.connectOverCDP("http://127.0.0.1:<port>")`), then use ARIA roles and names as on
+  the web.
+- Mobile steps run the Expo app on the web (`pnpm --filter @mend/mobile web`) in Playwright at a
+  390x844 viewport, and use ARIA roles and names as on the web. Native-only behavior (keychain,
+  camera, push) is reported unreachable on the web build.
+- VS Code and Slack steps are `not drivable yet`: their files list entry points and observable end
+  states only, and say why.
 - Web sign-in goes through `/login`: the textbox `Email`, the password field labelled `Password`,
   and the button `Sign in`. Sign-in calls outside a browser must carry an `Origin` header naming the
   instance's own origin: the auth layer rejects requests from origins outside its trusted list
@@ -62,8 +76,9 @@ on the 0.36 feature "Verify Mend in Mend".
 - CLI proof includes the command, stdout, stderr and exit code.
 - Mutation proof includes a second, read-only view of the stored result: a reload of the page, or a
   listing command such as `mend projects`, `mend sessions --all --json` or `mend worktrees --json`.
-- Record the feature file, sub-feature ID and entry point (web or CLI) with every artifact, under
-  the evidence directory the `verify` skill's Evidence section names (pending with Launch).
+- Record the feature file, sub-feature ID and entry point (web, CLI, TUI, desktop or mobile) with
+  every artifact, under the evidence directory the `verify` skill's Evidence section names (pending
+  with Launch).
 - Report an unreachable path with the attempted step and the unmet precondition, for example
   "provider not connected" or "origin is not on GitHub".
 - Do not report an entry point as verified through a different one. A change landed with `mend land`
@@ -75,10 +90,11 @@ Each feature file starts with an H1 title and one paragraph describing the user-
 then uses exactly four H2 sections, in this order.
 
 1. `Sub-features` lists short IDs, one line for each behavior.
-2. `How to get to it (user POV)` lists every user entry point, including the mobile, desktop and VS
-   Code ones. Only web and CLI are driven.
+2. `How to get to it (user POV)` lists every user entry point on every surface: web, CLI, TUI,
+   desktop, mobile, VS Code and Slack.
 3. `Driving it with verify` starts with `Preconditions:` and uses labelled bullets that pair each
-   user action with an exact Playwright call or `mend` command and the result a user can observe.
+   user action with an exact Playwright call, `mend` command or tmux key and the result a user can
+   observe. VS Code and Slack steps are marked `not drivable yet`, with the reason.
 4. `Gotchas` lists traps that can waste or invalidate a run, and every control the recipe needs that
    has no stable accessible name.
 
@@ -87,15 +103,116 @@ commands and observable proof.
 
 ## Features
 
-- [Adopt a project](./adopt-project.md) covers adoption from the web Projects page and `mend adopt`,
-  the project page, and the CLI listing.
-- [Start a session](./start-session.md) covers the Now page composer, a worktree's `New session`
-  menu, and `mend codex`, `mend claude` and `mend run`.
-- [Review the change](./review-change.md) covers the review page's diff, files, inline and
-  change-level comments, checkpoints, the pinned slice, and the CLI review screen.
-- [Send review back to the session](./send-review-back.md) covers `Send review to session`, the
-  pending follow-up, and `mend continue`.
-- [Land a change](./land-change.md) covers the review page's Land panel, the session page's landing
-  line, and `mend land`.
-- [Services](./services.md) covers the session page's Services card and `mend service run`, `list`,
-  `connect`, `logs`, `restart` and `stop`.
+One row per user-facing feature, found by sweeping the 86 commands in `apps/cli/src/help.ts`, every
+route under `apps/web/src/routes` (settings and project setup included), the TUI dashboard and
+review screen, the desktop, mobile and VS Code apps, the T3 gateway, Slack (ADR 0006), `mend.toml`,
+every page under `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. A feature that appears
+on several surfaces is one row. `not mapped` rows say why, so a gap is visible rather than silent.
+
+Totals: 58 features, 51 mapped, 7 not mapped.
+
+### The core loop
+
+| Feature          | File                                         | Surfaces                                | Status |
+| ---------------- | -------------------------------------------- | --------------------------------------- | ------ |
+| adopt-project    | [adopt-project.md](./adopt-project.md)       | web, CLI, mobile, VS Code               | mapped |
+| start-session    | [start-session.md](./start-session.md)       | web, CLI, TUI, desktop, mobile, VS Code | mapped |
+| review-change    | [review-change.md](./review-change.md)       | web, TUI, desktop, mobile               | mapped |
+| send-review-back | [send-review-back.md](./send-review-back.md) | web, CLI, TUI, mobile                   | mapped |
+| land-change      | [land-change.md](./land-change.md)           | web, CLI, desktop, mobile, Slack        | mapped |
+| services         | [services.md](./services.md)                 | web, CLI, TUI, desktop                  | mapped |
+
+### Access and identity
+
+| Feature           | File                                           | Surfaces                           | Status |
+| ----------------- | ---------------------------------------------- | ---------------------------------- | ------ |
+| sign-in           | [sign-in.md](./sign-in.md)                     | web, CLI, desktop                  | mapped |
+| pairing-devices   | [pairing-devices.md](./pairing-devices.md)     | web, CLI, mobile, desktop          | mapped |
+| provider-accounts | [provider-accounts.md](./provider-accounts.md) | web, CLI                           | mapped |
+| git-access        | [git-access.md](./git-access.md)               | web, CLI                           | mapped |
+| workspace-ssh     | [workspace-ssh.md](./workspace-ssh.md)         | CLI, VS Code                       | mapped |
+| models            | [models.md](./models.md)                       | web, CLI, desktop, mobile, VS Code | mapped |
+
+### Personal setup
+
+| Feature      | File                                 | Surfaces             | Status |
+| ------------ | ------------------------------------ | -------------------- | ------ |
+| dotfiles     | [dotfiles.md](./dotfiles.md)         | web, CLI             | mapped |
+| secret-files | [secret-files.md](./secret-files.md) | web, CLI             | mapped |
+| git-author   | [git-author.md](./git-author.md)     | web, CLI             | mapped |
+| skills       | [skills.md](./skills.md)             | web, CLI             | mapped |
+| agent-memory | [agent-memory.md](./agent-memory.md) | CLI                  | mapped |
+| pi-profile   | [pi-profile.md](./pi-profile.md)     | CLI                  | mapped |
+| appearance   | [appearance.md](./appearance.md)     | web, desktop, mobile | mapped |
+
+### Project setup and customization
+
+| Feature             | File                                               | Surfaces | Status |
+| ------------------- | -------------------------------------------------- | -------- | ------ |
+| project-environment | [project-environment.md](./project-environment.md) | web, CLI | mapped |
+| cluster-bindings    | [cluster-bindings.md](./cluster-bindings.md)       | web, CLI | mapped |
+| workspace-images    | [workspace-images.md](./workspace-images.md)       | web      | mapped |
+| automatic-install   | [automatic-install.md](./automatic-install.md)     | web      | mapped |
+| hot-sessions        | [hot-sessions.md](./hot-sessions.md)               | web      | mapped |
+| project-settings    | [project-settings.md](./project-settings.md)       | web      | mapped |
+| references-folders  | [references-folders.md](./references-folders.md)   | web, CLI | mapped |
+| mend-toml           | [mend-toml.md](./mend-toml.md)                     | CLI, web | mapped |
+
+### Sessions
+
+| Feature                 | File                                                       | Surfaces                       | Status |
+| ----------------------- | ---------------------------------------------------------- | ------------------------------ | ------ |
+| now-and-sessions        | [now-and-sessions.md](./now-and-sessions.md)               | web, CLI, mobile, desktop      | mapped |
+| attach-resume           | [attach-resume.md](./attach-resume.md)                     | CLI, web, TUI, desktop, mobile | mapped |
+| session-shell           | [session-shell.md](./session-shell.md)                     | CLI, web, desktop, mobile      | mapped |
+| worktrees               | [worktrees.md](./worktrees.md)                             | web, CLI, TUI, VS Code         | mapped |
+| workspace-replace       | [workspace-replace.md](./workspace-replace.md)             | web, CLI                       | mapped |
+| pull-change             | [pull-change.md](./pull-change.md)                         | CLI                            | mapped |
+| repositories-in-session | [repositories-in-session.md](./repositories-in-session.md) | CLI (in the workspace), web    | mapped |
+| capture-and-save        | [capture-and-save.md](./capture-and-save.md)               | web, CLI                       | mapped |
+| observed-agents         | [observed-agents.md](./observed-agents.md)                 | CLI (in the workspace), web    | mapped |
+
+### Organization and sharing
+
+| Feature          | File                                         | Surfaces          | Status |
+| ---------------- | -------------------------------------------- | ----------------- | ------ |
+| organization     | [organization.md](./organization.md)         | web, CLI          | mapped |
+| shared-control   | [shared-control.md](./shared-control.md)     | web, CLI, desktop | mapped |
+| per-person-homes | [per-person-homes.md](./per-person-homes.md) | web, CLI          | mapped |
+| operator         | [operator.md](./operator.md)                 | CLI, web          | mapped |
+| exposure         | [exposure.md](./exposure.md)                 | CLI               | mapped |
+
+### This machine: the server and the CLI
+
+| Feature   | File                           | Surfaces | Status |
+| --------- | ------------------------------ | -------- | ------ |
+| server    | [server.md](./server.md)       | CLI      | mapped |
+| doctor    | [doctor.md](./doctor.md)       | CLI, web | mapped |
+| uninstall | [uninstall.md](./uninstall.md) | CLI      | mapped |
+| cli       | [cli.md](./cli.md)             | CLI      | mapped |
+| tui       | [tui.md](./tui.md)             | TUI      | mapped |
+
+### Clients and integrations
+
+| Feature     | File                             | Surfaces             | Status                                     |
+| ----------- | -------------------------------- | -------------------- | ------------------------------------------ |
+| desktop-app | [desktop.md](./desktop.md)       | desktop              | mapped                                     |
+| mobile-app  | [mobile.md](./mobile.md)         | mobile               | mapped                                     |
+| vscode      | [vscode.md](./vscode.md)         | VS Code              | mapped; drive steps not drivable yet       |
+| slack       | [slack.md](./slack.md)           | Slack, web           | mapped; Slack drive steps not drivable yet |
+| t3-gateway  | [t3-gateway.md](./t3-gateway.md) | t3code clients, HTTP | mapped                                     |
+
+### Not mapped
+
+| Feature                   | Surfaces                                           | Status and reason                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| issue-queue               | web (`/queue`, `/issues/$issueId`, `/runs/$runId`) | not mapped: the retired issue queue ("the queue is gone", AGENTS.md). The routes still answer by URL, but no navigation reaches them.                                |
+| context-packs-handoffs    | none                                               | not mapped: planned, not built (`reference/feature-status`: context items, packs, snapshots and editable handoffs are planned).                                      |
+| agent-protocol-sessions   | none                                               | not mapped: the process kind is reserved and nothing launches one yet.                                                                                               |
+| mend-toml-setup-preview   | none                                               | not mapped: `mend.toml` declares Services only (`[service.<name>]`); it has no setup or preview key. Setup commands live in the workspace image (workspace-images).  |
+| multi-tenancy             | server                                             | not mapped: `MEND_TENANCY=multi` refuses to start until its gate passes. Reading the gate is mapped (exposure, `mend operator gate`).                                |
+| scoped-device-permissions | none                                               | not mapped: planned; paired devices have ordinary authenticated access today.                                                                                        |
+| kubernetes-deployment     | Helm chart                                         | not mapped: an operator deployment that needs a Kubernetes cluster, not a product surface. What it changes for users is mapped (cluster-bindings, per-person-homes). |
+
+The marketing site (`apps/marketing`) and the docs site (`apps/docs`) are publications about Mend,
+not features of it, and are not rows.

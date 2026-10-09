@@ -93,5 +93,7 @@ Preconditions:
   public repository unless the run is about git access.
 - Project names are unique within an organization. Rerunning the recipe needs a fresh `<project>` or
   cleanup between runs.
-- Cleanup has no single command in this map: removing a project is not in `help.ts`. Record the
-  leftover projects in the run notes rather than inventing a removal path.
+- Removing a project has no CLI command. On the web, the project's Setup tab has `Remove project…`,
+  and a second click confirms (`Really remove project and store copy?`); see
+  [Project settings](./project-settings.md). Clean up between runs that way, or use a fresh
+  `<project>` name.
