@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
+import { FakeTty } from "./fake-tty.ts";
 import { FakeWorkbench } from "./fake-workbench.ts";
 
 /**
@@ -37,6 +38,8 @@ export interface FakeMend {
   readonly setModelsDown: (down: boolean) => void;
   /** Projects, sessions and their conversations, and the SSE stream that reports them. */
   readonly workbench: FakeWorkbench;
+  /** Shells, `tty` tickets and the `/api/tty` socket. */
+  readonly tty: FakeTty;
 }
 
 /**
@@ -116,6 +119,8 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     return token === undefined ? null : (tokens.get(token)?.userId ?? null);
   };
 
+  const tty = new FakeTty(workbench);
+
   const accepted = (authorization: string | undefined) => {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
     const entry = token === undefined ? undefined : tokens.get(token);
@@ -165,6 +170,16 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         if (modelsDown) return json(503, { _tag: "ServiceUnavailable" });
         return json(200, MEND_MODEL_CATALOG);
       }
+      const terminal = await tty.route(
+        request,
+        response,
+        async () => {
+          const text = await readBody(request);
+          return text === "" ? undefined : JSON.parse(text);
+        },
+        accepted(request.headers.authorization),
+      );
+      if (terminal) return;
       const routed = await workbench.route(
         request,
         response,
@@ -179,6 +194,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     })();
   });
 
+  server.on("upgrade", tty.upgrade);
   yield* Effect.acquireRelease(
     Effect.callback<void>((resume) => {
       server.listen(0, "127.0.0.1", () => resume(Effect.void));
@@ -213,5 +229,6 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
       modelsDown = down;
     },
     workbench,
+    tty,
   };
 });

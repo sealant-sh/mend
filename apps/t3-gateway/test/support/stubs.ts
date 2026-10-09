@@ -8,6 +8,7 @@ import { ThreadCommandRefused, type PersonHub } from "../../src/hub.ts";
 import { MendUnavailable, type MendClient } from "../../src/mend-client.ts";
 import { EMPTY_SHELL_SNAPSHOT } from "../../src/shell.ts";
 import type { BearerSession } from "../../src/state.ts";
+import { makeTerminals } from "../../src/terminals.ts";
 import { PERSON } from "./gateway.ts";
 
 /** Stand-ins for handler tests that never reach Mend. */
@@ -42,6 +43,9 @@ export const unreachableMend: MendClient["Service"] = {
   stopSession: () => unavailable("POST /api/sessions/:id/stop"),
   removeSession: () => unavailable("DELETE /api/sessions/:id"),
   pasteImage: () => unavailable("POST /api/sessions/:id/images"),
+  openShell: () => unavailable("POST /api/sessions/:id/shell"),
+  stopShell: () => unavailable("POST /api/processes/:id/stop"),
+  ttyTicket: () => unavailable("POST /api/upgrade-tickets"),
   submitTurn: () => unavailable("POST /api/sessions/:id/turns"),
   launchProtocol: () => unavailable("POST /api/sessions/:id/launch"),
   interruptTurn: () => unavailable("POST /api/turns/:id/interrupt"),
@@ -63,6 +67,11 @@ export const emptyHub: PersonHub = {
       changes: Stream.never,
     }),
   isRefused: () => false,
+  terminals: makeTerminals({
+    mend: gateDeviceCalls(unreachableMend, () => Effect.void),
+    mendUrl: new URL("http://127.0.0.1:0"),
+    threadSession: () => Effect.succeed(null),
+  }),
   persistImages: () => refused,
   imageOf: () => null,
   refusal: () => Effect.never,

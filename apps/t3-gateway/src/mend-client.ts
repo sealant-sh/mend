@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/unstable/http/HttpClient";
@@ -25,6 +26,8 @@ import {
   MendPastedImage,
   MendProjectDetail,
   MendRemovalReport,
+  MendShell,
+  MendUpgradeTicket,
   MendRequest,
   MendSession,
   MendSessionDetail,
@@ -355,6 +358,21 @@ export class MendClient extends Context.Service<
       sessionId: string,
       bytes: Uint8Array,
     ) => MendCommand<MendPastedImage>;
+    /**
+     * `POST /api/sessions/:id/shell`: a shell beside the agent in the session's live workspace.
+     * Its owner's alone (`steering.owned`); a workspace that is not running is Mend's 409.
+     */
+    readonly openShell: (deviceToken: string, sessionId: string) => MendCommand<MendShell>;
+    /** `POST /api/processes/:id/stop`: ends a shell. */
+    readonly stopShell: (deviceToken: string, processId: string) => MendCommand<void>;
+    /**
+     * `POST /api/upgrade-tickets` for a `tty`: Mend's single-use, thirty-second ticket that opens
+     * `/api/tty?process=` for this process and nothing else. Redacted: it is never logged.
+     */
+    readonly ttyTicket: (
+      deviceToken: string,
+      processId: string,
+    ) => MendCommand<Redacted.Redacted<string>>;
     /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
     readonly submitTurn: (
       deviceToken: string,
@@ -408,6 +426,8 @@ const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
 const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
 const decodePastedImage = Schema.decodeUnknownEffect(MendPastedImage);
+const decodeShell = Schema.decodeUnknownEffect(MendShell);
+const decodeUpgradeTicket = Schema.decodeUnknownEffect(MendUpgradeTicket);
 const decodeFileListing = Schema.decodeUnknownEffect(MendFileListing);
 const decodeChangeStats = Schema.decodeUnknownEffect(MendChangeStats);
 const decodeWorktreeDetail = Schema.decodeUnknownEffect(MendWorktreeDetail);
@@ -877,6 +897,39 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/sessions/:id/images",
         );
 
+      const openShell = (deviceToken: string, sessionId: string) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/shell",
+            `/api/sessions/${encodeURIComponent(sessionId)}/shell`,
+            deviceToken,
+            {},
+            decodeShell,
+          ),
+          "POST /api/sessions/:id/shell",
+        );
+
+      const stopShell = (deviceToken: string, processId: string) =>
+        command(
+          "POST /api/processes/:id/stop",
+          `/api/processes/${encodeURIComponent(processId)}/stop`,
+          deviceToken,
+          {},
+          null,
+        ).pipe(Effect.asVoid);
+
+      const ttyTicket = (deviceToken: string, processId: string) =>
+        answered(
+          command(
+            "POST /api/upgrade-tickets",
+            "/api/upgrade-tickets",
+            deviceToken,
+            { target: "tty", process: processId },
+            decodeUpgradeTicket,
+          ),
+          "POST /api/upgrade-tickets",
+        ).pipe(Effect.map((minted) => Redacted.make(minted.ticket)));
+
       const interruptTurn = (deviceToken: string, turnId: string) =>
         command(
           "POST /api/turns/:id/interrupt",
@@ -996,6 +1049,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         stopSession,
         removeSession,
         pasteImage,
+        openShell,
+        stopShell,
+        ttyTicket,
         submitTurn,
         launchProtocol,
         interruptTurn,

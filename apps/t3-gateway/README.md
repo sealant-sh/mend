@@ -363,6 +363,24 @@ the shell (every session there adds to the one change) or a thread goes, and eve
 besides, as a change can move without its threads changing. It reads at most once a second however
 busy the worktree is, and sends only what moved.
 
+## Phase 3: the terminal
+
+t3code's terminal drawer opens Mend's own terminal (`src/terminals.ts`): a shell Mend opens beside
+the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reached over Mend's
+`/api/tty?process=` WebSocket, as the person.
+
+- The socket opens with a `tty` upgrade ticket Mend mints for that one process
+  (`POST /api/upgrade-tickets`): single use, thirty seconds, spent at once. The gateway holds it
+  redacted and never logs or keeps it. A restart is a new shell and a new ticket.
+- Mend's rules hold: only a session's owner opens a shell in it, and only its owner types; anyone
+  else gets t3code's authorization error. A session whose workspace is not running answers
+  `TerminalNotRunningError`.
+- Output is Mend's PTY bytes as UTF-8; input goes as bytes, a resize as Mend's `{"t":"resize"}`.
+  Mend's `{"t":"end"}`, or the socket closing, is the terminal exiting.
+- Terminals are the person's, shared by their sockets, with the last 512 KiB of output kept for a
+  client that attaches again. `terminal.close` stops the shell in Mend. A hub that goes closes its
+  terminals' sockets.
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:
