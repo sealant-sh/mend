@@ -104,6 +104,22 @@ Workspaces reach their session over a mounted Unix socket by default, or over a 
 | `MEND_SERVICE_PORT_MAX`          | `43999`     | The highest port a Service listener takes.                                                                                                                                                                                                                                                                                       |
 | `MEND_HARNESS_LAYOUT`            | `person`    | `person` gives each person their own Linux user and home in a workspace, for worktrees with no layout yet; `shared` keeps them on one shared home (and keeps Hot sessions' standbys). Unset or empty is `person`. A worktree that has run `person` stays `person`. See [Per-person workspaces](/operate/per-person-workspaces/). |
 
+## Package and image mirrors
+
+`mend server setup` sets these from the install's mirrors; see [npm mirror](/operate/npm-mirror/)
+and [Docker mirror](/operate/docker-mirror/). The `SEALANT_DOCKER_*` variables are read by the
+Sealant worker that runs inside the Mend container.
+
+| Variable                                   | Default | What it does                                                                                                                                                                                        |
+| ------------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_NPM_MIRROR_URL`                      | unset   | The npm mirror's origin, such as `http://npm-mirror:4873/`. Each session's dependency install goes through it when nobody set a registry or a login for registry.npmjs.org, and the mirror answers. |
+| `SEALANT_DOCKER_REGISTRY_MIRRORS`          | unset   | Comma-separated http(s) origins every session's Docker daemon asks first for a Docker Hub image. The daemon falls back to Docker Hub when one fails.                                                |
+| `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` | unset   | The container serving those mirrors, which Sealant connects to each session's Docker network, such as `mend-docker-mirror`.                                                                         |
+
+The mirrors' own settings live in the install's `server.env`: `MEND_NPM_MIRROR_MAX_SIZE` (its cap),
+and `MEND_DOCKER_HUB_USERNAME` and `MEND_DOCKER_HUB_TOKEN` when the Docker mirror has a Docker Hub
+login. Only the mirrors' containers read them.
+
 ## Exposure
 
 See [Exposure and the public gate](/operate/exposure/) for what each item means.
