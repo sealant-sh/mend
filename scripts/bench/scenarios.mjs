@@ -31,6 +31,9 @@ import {
   liveAgents,
   overOwn,
   firstExecAt,
+  installOf,
+  LAUNCH_ANSWER_WINDOW_MS,
+  launchCallCapped,
   milestonesOf,
   parseContainerDisk,
   parseDockerTime,
@@ -73,9 +76,10 @@ const errorText = (error) => (error instanceof Error ? error.message : String(er
 // ─── the recorder ───────────────────────────────────────────────────────────
 
 export const makeRecorder = (result, log) => ({
-  sample: (name, value, unit, budget = null) => {
+  /** `extra` is said of the measure once, beside its unit and budget (`cappedAtMs`). */
+  sample: (name, value, unit, budget = null, extra = null) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return;
-    const measure = (result.measures[name] ??= { unit, budget, samples: [] });
+    const measure = (result.measures[name] ??= { unit, budget, ...extra, samples: [] });
     measure.samples.push(Math.round(value * 10) / 10);
   },
   note: (text) => {
@@ -256,6 +260,8 @@ const mendBlocks = async (ctx, fromMs, toMs) => {
 const sealantdEvents = (ctx, text) =>
   parseSealantdLog(text).map((event) => ({ ...event, at: event.at - ctx.clockOffsetMs }));
 
+const NO_HOST = "no access to the server's host (pass --ssh or run there)";
+
 /**
  * One launch (new, join or resume) as steps: the engine's milestones between the request and the
  * agent's first output, the executor's first command, the commands run, the image, and the
@@ -269,8 +275,8 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   if (ctx.host === null) {
     const prefix = typeof prefixOf === "function" ? prefixOf(null) : prefixOf;
     rec.sample(`${prefix}.agent_to_output`, outputAt - agentAt, "ms");
-    rec.notRun(`${prefix}.step.*`, "no access to the server's host (pass --ssh or run there)");
-    return { prefix, milestones: null };
+    rec.notRun(`${prefix}.step.*`, NO_HOST);
+    return { prefix, milestones: null, install: null };
   }
   const workspaceId = detail.session.sealantWorkspaceId;
   const blocks = await mendBlocks(ctx, startedAt, outputAt + 1000);
@@ -290,6 +296,9 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   for (const step of stepsOf(startedAt, marks)) {
     rec.sample(`${prefix}.step.${step.name}`, step.ms, "ms");
   }
+  // The install's own time, unbudgeted: it is the public registry's (decision log 2026-10-09).
+  const install = installOf(milestones);
+  if (install?.ran === true) rec.sample(`${prefix}.install`, install.ms, "ms");
   if (workspaceId !== null) {
     rec.sample(`${prefix}.execs`, execCount(blocks, workspaceId, startedAt, agentAt), "count");
   }
@@ -308,7 +317,26 @@ const recordLaunch = async (ctx, prefixOf, { startedAt, sessionId, detail, agent
   }
   const image = blocks.map((block) => parseImageLine(block.message)).find((line) => line !== null);
   if (image !== null && image !== undefined) ctx.result.target.workspaceImage ??= image.image;
-  return { prefix, milestones };
+  return { prefix, milestones, install };
+};
+
+/**
+ * A launch's time less its dependency install (`<name>_excl_install`), which carries the start
+ * budget: the install fetches every tarball from the public npm registry, whose stalls swing it
+ * 14–78 s in either layout (docs/adr/0016, decision log 2026-10-09). A launch that ran no install
+ * subtracts nothing; one whose install the log does not show is not run.
+ */
+export const recordExcludingInstall = (ctx, name, value, budget, recorded) => {
+  if (recorded.install === null) {
+    ctx.rec.notRun(
+      `${name}_excl_install`,
+      recorded.milestones === null
+        ? NO_HOST
+        : "the dependency install's milestones were not in the log",
+    );
+    return;
+  }
+  ctx.rec.sample(`${name}_excl_install`, value - recorded.install.ms, "ms", budget);
 };
 
 /**
@@ -335,6 +363,13 @@ const recordJoin = async (ctx, prefix, budget, { startedAt, session, detail, age
     (milestones) => (joinedLiveExecutor(milestones) ? prefix : `${prefix}.cold`),
     { startedAt, sessionId: session.id, detail, agent },
   );
+  // A join of a live executor runs no dependency install (only a cold launch does); one that did
+  // is said, its install recorded under `<prefix>.install`.
+  if (recorded.install?.ran === true) {
+    ctx.rec.note(
+      `${recorded.prefix} #${run} ran a dependency install (${(recorded.install.ms / 1000).toFixed(1)} s) before its first output`,
+    );
+  }
   if (recorded.prefix === prefix) {
     ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", budget);
   } else {
@@ -488,11 +523,22 @@ const newSession = async (ctx, harness, run) => {
     : built === null
       ? `new.${harness}`
       : `new.${harness}.image_built`;
+  // The start budget is on first output and first turn less the install (`_excl_install`).
   const budget = built === null && !otherLayout ? "start" : null;
   const firstOutput = outputAt - startedAt;
-  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", budget);
+  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms");
   ctx.rec.sample(`new.${harness}.create_call`, createMs, "ms");
-  ctx.rec.sample(`new.${harness}.launch_call`, launchMs, "ms");
+  // The launch call answers by its window at the latest, the launch going on: capped, unbudgeted.
+  ctx.rec.sample(`new.${harness}.launch_call`, launchMs, "ms", null, {
+    cappedAtMs: LAUNCH_ANSWER_WINDOW_MS,
+  });
+  const capped = launchCallCapped(launchMs);
+  ctx.rec.sample(`new.${harness}.launch_call_capped`, capped ? 1 : 0, "count");
+  if (capped) {
+    ctx.rec.note(
+      `${harness} #${run}: the launch call answered at the server's ${LAUNCH_ANSWER_WINDOW_MS / 1000} s answer window (${(launchMs / 1000).toFixed(1)} s), the launch going on; capped`,
+    );
+  }
   if (built !== null) {
     ctx.rec.note(
       `${harness} #${run} waited for its workspace image to be built (${built.id.slice(0, 19)}, created ${built.created}): ${(firstOutput / 1000).toFixed(1)} s, kept apart under ${prefix}`,
@@ -503,7 +549,7 @@ const newSession = async (ctx, harness, run) => {
   // After the answer and the sizes, so it never runs inside a measured window.
   await noteHarnessVersion(ctx, container, harness, session.ownerUserId);
   if (answered.at !== null) {
-    ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms", budget);
+    ctx.rec.sample(`${prefix}.first_turn`, answered.at - startedAt, "ms");
     ctx.rec.sample(`${prefix}.output_to_answer`, answered.at - outputAt, "ms");
     if (ctx.host !== null && container !== null) {
       const after = await executorResources(ctx.host, container);
@@ -517,13 +563,23 @@ const newSession = async (ctx, harness, run) => {
     const reason = `the harness's account hit its usage limit ("${answered.limit}")`;
     ctx.rec.note(`${harness} #${run}: no answer, ${reason}`);
     ctx.rec.notRun(`${prefix}.first_turn`, reason);
+    ctx.rec.notRun(`${prefix}.first_turn_excl_install`, reason);
     ctx.rec.notRun(`${prefix}.output_to_answer`, reason);
   } else {
     ctx.rec.note(
       `${harness} #${run}: the answer (${answer}) was not seen in the agent's output within 3 min`,
     );
   }
-  await recordLaunch(ctx, prefix, { startedAt, sessionId: session.id, detail, agent });
+  const recorded = await recordLaunch(ctx, prefix, {
+    startedAt,
+    sessionId: session.id,
+    detail,
+    agent,
+  });
+  recordExcludingInstall(ctx, `${prefix}.first_output`, firstOutput, budget, recorded);
+  if (answered.at !== null) {
+    recordExcludingInstall(ctx, `${prefix}.first_turn`, answered.at - startedAt, budget, recorded);
+  }
   if (container !== null && ctx.host !== null) {
     const boot = restoreOf(
       sealantdEvents(ctx, await ctx.host.shell(`docker logs -t ${container} 2>&1`)),
@@ -759,7 +815,9 @@ const resume = async (ctx, primary, run) => {
   const container = ctx.host === null ? null : await executorOf(ctx.host, sessionId);
   const built = await imageBuiltDuring(ctx, container, `resume #${run}`, startedAt, outputAt);
   const prefix = built === null ? "resume" : "resume.image_built";
-  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms", built === null ? "start" : null);
+  // A resume whose head has no dependency tree for its platform installs too: its start budget is
+  // on first output less the install, as a new launch's is.
+  ctx.rec.sample(`${prefix}.first_output`, firstOutput, "ms");
   ctx.rec.sample("resume.call", ms, "ms");
   if (built !== null) {
     ctx.rec.note(
@@ -767,7 +825,9 @@ const resume = async (ctx, primary, run) => {
     );
   }
   ctx.log(`resume #${run} · first output ${(firstOutput / 1000).toFixed(1)} s`);
-  await recordLaunch(ctx, prefix, { startedAt, sessionId, detail, agent });
+  const recorded = await recordLaunch(ctx, prefix, { startedAt, sessionId, detail, agent });
+  const budget = built === null ? "start" : null;
+  recordExcludingInstall(ctx, `${prefix}.first_output`, firstOutput, budget, recorded);
   if (container !== null) {
     const boot = restoreOf(
       sealantdEvents(ctx, await ctx.host.shell(`docker logs -t ${container} 2>&1`)),

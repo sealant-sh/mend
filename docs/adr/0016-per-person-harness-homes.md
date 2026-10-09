@@ -822,6 +822,10 @@ same project (Mend's own repository), the same image and the same harness versio
 Each limit applies to the median and to the 90th percentile of the runs, `person` launches against
 `shared` launches at the same commit, each run on a fresh worktree (decision 14).
 
+A new session's and a resume's first output and first-turn latency are measured less the launch's
+dependency install, whose time depends on the public npm registry; the install is recorded and
+reported separately, unbudgeted (decision log, 2026-10-09).
+
 | Measure                                                                                                                                             | Limit                                                                                                         |
 | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | New session to first output (each harness), resume, Stop's save                                                                                     | +5% or +1 s, whichever is larger                                                                              |
@@ -1373,4 +1377,7 @@ benchmark once more, before 0.36 is tagged.
   on in both layouts, in words true to each (`SessionControlView.turnsOnSendersLogin`, from the live
   executor's launch layout, or the worktree's record when none is live; unknown reads as the owner's
   logins), and only once the session view has said which.
+- 2026-10-09: the new-launch start budget excludes the dependency install, whose duration depends on
+  the public registry (diagnosis: registry stalls 14–78 s in both layouts); the install is recorded
+  and reported separately.
 - Open: gate B's history record.

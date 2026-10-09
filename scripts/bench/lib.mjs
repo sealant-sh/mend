@@ -252,6 +252,40 @@ export const deliveryWindow = (milestones) => {
   return ends.at(-1).at - start.at;
 };
 
+const INSTALL_RUNNING = "dependency install · running";
+const INSTALL_ENDED = /^dependency install · (?:completed|exited)$/;
+/** What the engine says when a launch ran no install: a tree restored, skipped, or not run. */
+const INSTALL_NONE =
+  /^(?:dependency tree observed|dependency install skipped|dependency install did not run)/;
+
+/**
+ * The dependency install inside a launch, from its milestones: `{ ran: true, ms }` from
+ * "dependency install · running" to its "· completed" (or "· exited"), `{ ran: false, ms: 0 }`
+ * when the engine said it ran none (a tree observed for the platform, an install skipped or not
+ * run), and null when the milestones say neither, or an install started and its end is missing.
+ * Its duration depends on the public npm registry (docs/adr/0016, decision log 2026-10-09).
+ */
+export const installOf = (milestones) => {
+  if (milestones === null) return null;
+  const running = milestones.find((m) => m.name === INSTALL_RUNNING);
+  const ended = milestones.find((m) => INSTALL_ENDED.test(m.name));
+  if (running === undefined && ended === undefined) {
+    return milestones.some((m) => INSTALL_NONE.test(m.name)) ? { ran: false, ms: 0 } : null;
+  }
+  if (running === undefined || ended === undefined || ended.at < running.at) return null;
+  return { ran: true, ms: ended.at - running.at };
+};
+
+/**
+ * `POST /sessions/:id/launch` answers with the session as it stands after this long and the
+ * launch carries on (`LAUNCH_ANSWER_WINDOW`, apps/api/src/session-start.ts): a launch call is
+ * capped there, so it is recorded unbudgeted, with whether it hit the cap.
+ */
+export const LAUNCH_ANSWER_WINDOW_MS = 30_000;
+
+/** Whether a launch call's time is the answer window's rather than the launch's. */
+export const launchCallCapped = (ms) => ms >= LAUNCH_ANSWER_WINDOW_MS;
+
 /** A harness's version from its own first screen ("Claude Code v2.1.287"), or null. */
 export const harnessVersionOf = (screen) => {
   const claude = /Claude Code\s*v(\d+\.\d+\.\d+)/.exec(screen);
@@ -428,6 +462,19 @@ export const BUDGETS = {
 /** Whether a budget is a fixed ceiling rather than an allowance over a baseline. */
 const isCeiling = (budgetKey) => typeof BUDGETS[budgetKey]?.ceiling === "number";
 
+/**
+ * Measures records made before 2026-10-09 budgeted, recorded unbudgeted since: a new launch's and
+ * a resume's first output and first turn, which hold the dependency install and its public
+ * registry's stalls (their `_excl_install` measures carry the budget now), and the launch call,
+ * capped by the answer window. A comparison reads them as unbudgeted whatever a record says.
+ */
+const UNBUDGETED =
+  /^(?:(?:new\.[a-z]+|resume)\.(?:first_output|first_turn)|new\.[a-z]+\.launch_call)$/;
+
+/** A measure's budget class as a comparison reads it. */
+export const budgetOf = (name, measure) =>
+  UNBUDGETED.test(name) ? null : (measure?.budget ?? null);
+
 /** The increase a budget allows over one statistic of the baseline. */
 export const allowance = (budgetKey, before, stat) => {
   const budget = BUDGETS[budgetKey];
@@ -444,13 +491,16 @@ export const allowance = (budgetKey, before, stat) => {
 export const expectedSamplesOf = (result, name) => {
   const runs = result.options?.runs ?? 10;
   if (
-    /^(?:new|stop)\.(?:claude|codex|pi|opencode)\.(?:first_output|save)$/.test(name) ||
+    /^new\.(?:claude|codex|pi|opencode)\.first_output_excl_install$/.test(name) ||
+    /^stop\.(?:claude|codex|pi|opencode)\.save$/.test(name) ||
     /^handover\.\w+\.(?:to_other|back)\.first_output_over_own$/.test(name) ||
     /^growth\.\w+\.extra_person_beyond_state_bytes$/.test(name)
   ) {
     return runs;
   }
-  if (name === "resume.first_output") return runs * (result.options?.resumesPerRun ?? 1);
+  if (name === "resume.first_output_excl_install") {
+    return runs * (result.options?.resumesPerRun ?? 1);
+  }
   if (name === "join.same.first_output" || name === "join.other.first_output") {
     return runs * (result.options?.joinsPerRun ?? 1);
   }
@@ -535,9 +585,9 @@ export const compareResults = (
   const sampledAfter = resourcesSampledAt(after);
   const gate = !companion && layoutOf(before) === "shared" && layoutOf(after) === "person";
   const required = requiredOf(after, { gate, secondPersonHarnesses });
-  for (const [name, measure] of Object.entries(before.measures ?? {})) {
+  for (const [name, recorded] of Object.entries(before.measures ?? {})) {
+    const measure = { ...recorded, budget: budgetOf(name, recorded) };
     if (
-      measure.budget === undefined ||
       measure.budget === null ||
       BUDGETS[measure.budget] === undefined ||
       isCeiling(measure.budget)
@@ -565,9 +615,9 @@ export const compareResults = (
   // Under the gate, a budgeted measure the record under test has and the baseline lacks (a shared
   // launch that errored, say) was never compared: a miss, not a pass.
   if (gate) {
-    for (const [name, measure] of Object.entries(after.measures ?? {})) {
+    for (const [name, recorded] of Object.entries(after.measures ?? {})) {
+      const measure = { ...recorded, budget: budgetOf(name, recorded) };
       if (
-        measure.budget === undefined ||
         measure.budget === null ||
         BUDGETS[measure.budget] === undefined ||
         isCeiling(measure.budget) ||
@@ -732,16 +782,18 @@ export const GATE_HARNESSES = ["claude", "codex", "pi", "opencode"];
 
 /**
  * The launch measures gate P1 needs from both records, per the ADR's table: each harness's new
- * session to first output and its Stop's save; a resume; a second session of the same person; a
- * checkpoint save; shell and terminal open, typing, `git fetch`; the session list and view. (`git
- * push` is left out: a project may give the shim no push access, which a record says as not run.)
+ * session to first output and a resume's, each less its dependency install (decision log
+ * 2026-10-09: the install's time is the public registry's); each Stop's save; a second session of
+ * the same person; a checkpoint save; shell and terminal open, typing, `git fetch`; the session
+ * list and view. (`git push` is left out: a project may give the shim no push access, which a
+ * record says as not run.)
  */
 const gateLaunchMeasures = () => [
   ...GATE_HARNESSES.flatMap((harness) => [
-    { measure: `new.${harness}.first_output`, unit: "ms", budget: "start" },
+    { measure: `new.${harness}.first_output_excl_install`, unit: "ms", budget: "start" },
     { measure: `stop.${harness}.save`, unit: "ms", budget: "start" },
   ]),
-  { measure: "resume.first_output", unit: "ms", budget: "start" },
+  { measure: "resume.first_output_excl_install", unit: "ms", budget: "start" },
   { measure: "join.same.first_output", unit: "ms", budget: "start" },
   { measure: "checkpoint.save", unit: "ms", budget: "start" },
   { measure: "shell.open", unit: "ms", budget: "interactive" },
@@ -885,6 +937,7 @@ const commitOf = (result) => {
 /** What gate P1 measures that no record of this benchmark covers (said, so a pass is not read as all of it). */
 export const P1_NOT_COVERED = [
   "restore wall time on the box's largest worktree, interleaved between the layouts, on the box's own filesystem (docs/adr/0016, \"What the design does to stay inside them\"; sealantd#145): not measured by this benchmark, which restores its own fresh st-bench worktrees one layout per run",
+  "the dependency install inside a new launch and a resume: its time is recorded (`<launch>.install`) and reported, not budgeted, since it waits on the public npm registry; the start budget is on first output less the install (docs/adr/0016, decision log 2026-10-09)",
 ];
 
 /**
@@ -1712,7 +1765,11 @@ export const formatTable = (result) => {
   for (const [name, measure] of Object.entries(result.measures ?? {})) {
     const summary = summarize(measure.samples ?? []);
     if (summary.n === 0) continue;
-    const budget = BUDGETS[measure.budget]?.text ?? "–";
+    const budget =
+      BUDGETS[budgetOf(name, measure)]?.text ??
+      (typeof measure.cappedAtMs === "number"
+        ? `none: capped at ${formatValue(measure.cappedAtMs, "ms")}`
+        : "–");
     lines.push(
       `| ${name} | ${summary.n} | ${formatValue(summary.median, measure.unit)} | ${formatValue(summary.p90, measure.unit)} | ${formatValue(summary.worst, measure.unit)} | ${budget} |`,
     );

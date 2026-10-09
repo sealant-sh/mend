@@ -69,6 +69,16 @@
 //   limit", "Usage limit reached", "5-hour limit reached") will not answer: the wait ends there, the
 //   run gets a note, and `first_turn` is recorded as not run with that reason, which `compare`
 //   prints in place of MISSING. A rate limit the harness retries by itself is not one.
+// - A launch's dependency install fetches every tarball from the public npm registry, whose stalls
+//   swing it 14–78 s in either layout. Its own time is `<prefix>.install` (from the engine's
+//   "dependency install · running" to "· completed"), unbudgeted; the start budget of a new launch
+//   and a resume is on `first_output_excl_install` (and `first_turn_excl_install`), the same launch's
+//   time less that install, and the raw `first_output`/`first_turn` are kept, unbudgeted. These
+//   need the host; `compare` reads a raw measure an older record budgeted as unbudgeted
+//   (docs/adr/0016, decision log 2026-10-09).
+// - `new.<harness>.launch_call` is capped: the server answers the launch after its 30 s answer
+//   window at the latest and the launch goes on. It is unbudgeted (`cappedAtMs` on the measure),
+//   with `launch_call_capped` (1 when the call took the whole window) and a note per capped call.
 // - The answer is watched for from the first output on, while the executor is sized beside it.
 // - A merge stamps each executor size with the point its own record sampled it at (`sampledAt`).
 

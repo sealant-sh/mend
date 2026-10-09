@@ -42,7 +42,11 @@ import {
   turnTimes,
   turnVerdicts,
   allowance,
+  budgetOf,
   builtWithin,
+  installOf,
+  LAUNCH_ANSWER_WINDOW_MS,
+  launchCallCapped,
   deliveryWindow,
   harnessVersionOf,
   compareResults,
@@ -78,6 +82,7 @@ import {
   summarize,
   usageLimitOf,
 } from "./lib.mjs";
+import { makeRecorder, recordExcludingInstall } from "./scenarios.mjs";
 
 // ─── statistics ─────────────────────────────────────────────────────────────
 
@@ -332,12 +337,12 @@ test("an allowance is the larger of the share and the fixed amount, or the basel
 
 test("the comparison checks the median and the p90 of every budgeted measure", () => {
   const before = record({
-    "new.claude.first_output": { unit: "ms", budget: "start", samples: tenOf(30_000) },
+    "new.claude.first_output_excl_install": { unit: "ms", budget: "start", samples: tenOf(30_000) },
     "api.session_list": { unit: "ms", budget: "api", samples: tenOf(100) },
     "new.claude.step.x": { unit: "ms", budget: null, samples: tenOf(1) },
   });
   const within = record({
-    "new.claude.first_output": { unit: "ms", budget: "start", samples: tenOf(31_400) },
+    "new.claude.first_output_excl_install": { unit: "ms", budget: "start", samples: tenOf(31_400) },
     "api.session_list": { unit: "ms", budget: "api", samples: tenOf(119) },
   });
   const ok = compareResults(before, within);
@@ -345,14 +350,16 @@ test("the comparison checks the median and the p90 of every budgeted measure", (
   assert.equal(ok.misses.length, 0);
 
   const over = record({
-    "new.claude.first_output": {
+    "new.claude.first_output_excl_install": {
       unit: "ms",
       budget: "start",
       samples: [...tenOf(31_000).slice(0, 8), 40_000, 40_000],
     },
   });
   const result = compareResults(before, over);
-  const firstOutput = result.rows.filter((row) => row.measure === "new.claude.first_output");
+  const firstOutput = result.rows.filter(
+    (row) => row.measure === "new.claude.first_output_excl_install",
+  );
   assert.deepEqual(
     firstOutput.map((row) => [row.stat, row.ok]),
     [
@@ -366,7 +373,7 @@ test("the comparison checks the median and the p90 of every budgeted measure", (
   assert.equal(result.misses.length, 3);
   assert.match(
     formatComparison(result),
-    /\| new\.claude\.first_output \| p90 \| 30\.0 s \| 40\.0 s \| 31\.5 s \| OVER \|/,
+    /\| new\.claude\.first_output_excl_install \| p90 \| 30\.0 s \| 40\.0 s \| 31\.5 s \| OVER \|/,
   );
   assert.match(formatComparison(result), /MISSING/);
 });
@@ -396,14 +403,21 @@ test("values print in their unit", () => {
 test("the table has the median, p90 and worst of each measure, and says what did not run", () => {
   const table = formatTable({
     measures: {
-      "resume.first_output": { unit: "ms", budget: "start", samples: [34_000, 36_000, 35_000] },
+      "resume.first_output_excl_install": {
+        unit: "ms",
+        budget: "start",
+        samples: [34_000, 36_000, 35_000],
+      },
       empty: { unit: "ms", budget: null, samples: [] },
     },
     notRun: [{ measure: "join.other.first_output", reason: "second account not yet joined" }],
   });
   const lines = table.split("\n");
   assert.equal(lines.length, 4);
-  assert.equal(lines[2], "| resume.first_output | 3 | 35.0 s | 35.8 s | 36.0 s | +5% or +1 s |");
+  assert.equal(
+    lines[2],
+    "| resume.first_output_excl_install | 3 | 35.0 s | 35.8 s | 36.0 s | +5% or +1 s |",
+  );
   assert.equal(
     lines[3],
     "| join.other.first_output | 0 | not run: second account not yet joined | | | |",
@@ -676,14 +690,14 @@ test("an image made inside a launch's window is a build that launch waited for",
 
 test("a measure not run says why in the comparison, in place of MISSING", () => {
   const before = record({
-    "new.claude.first_turn": { unit: "ms", budget: "start", samples: tenOf(30_000) },
-    "new.codex.first_turn": { unit: "ms", budget: "start", samples: tenOf(20_000) },
+    "new.claude.first_turn_excl_install": { unit: "ms", budget: "start", samples: tenOf(30_000) },
+    "new.codex.first_turn_excl_install": { unit: "ms", budget: "start", samples: tenOf(20_000) },
   });
   const after = {
     ...record({}),
     notRun: [
       {
-        measure: "new.claude.first_turn",
+        measure: "new.claude.first_turn_excl_install",
         reason: 'the harness\'s account hit its usage limit ("Usage limit reached")',
       },
     ],
@@ -692,8 +706,11 @@ test("a measure not run says why in the comparison, in place of MISSING", () => 
   // Still a miss: a number not taken is not inside its limit.
   assert.equal(comparison.misses.length, 4);
   const table = formatComparison(comparison);
-  assert.match(table, /new\.claude\.first_turn \| median .*NOT RUN: the harness's account hit/);
-  assert.match(table, /new\.codex\.first_turn \| median .*MISSING/);
+  assert.match(
+    table,
+    /new\.claude\.first_turn_excl_install \| median .*NOT RUN: the harness's account hit/,
+  );
+  assert.match(table, /new\.codex\.first_turn_excl_install \| median .*MISSING/);
 });
 
 test("executor sizes taken at another point of the launch are not compared", () => {
@@ -831,8 +848,9 @@ test("a comparison says whether it is gate P1, its named check, or a plain befor
   assert.deepEqual(gate.differs, []);
   assert.deepEqual(gate.warnings, []);
   // What P1 asks that the benchmark does not take is said, not implied.
-  assert.equal(gate.notCovered.length, 1);
+  assert.equal(gate.notCovered.length, 2);
   assert.match(gate.notCovered[0], /largest worktree, interleaved/);
+  assert.match(gate.notCovered[1], /dependency install .* not budgeted/);
 
   // Any difference of build, instance, project, image or harness version: not the gate.
   const rebuilt = layoutRecord("person", "0.36.0-next.648", {});
@@ -1733,7 +1751,7 @@ test("gate P1 asks for the whole set whatever --only and --harnesses said (N2)",
   }
   const oneResult = compareResults(shared, one);
   assert.ok(oneResult.label.differs.includes("the person record did not run codex, pi, opencode"));
-  assert.ok(oneResult.misses.some((row) => row.measure === "new.pi.first_output"));
+  assert.ok(oneResult.misses.some((row) => row.measure === "new.pi.first_output_excl_install"));
   assert.equal(comparisonFails(oneResult), true);
   // A second person who ran claude only: missing pieces unless the partial gate is asked for.
   const claudeOnly = completePerson(["claude"]);
@@ -1767,17 +1785,17 @@ test("gate P1 asks for the whole set whatever --only and --harnesses said (N2)",
 test("under gate P1 a measure either side lacks, and the baseline's errors, fail it (N3, N5)", () => {
   // The shared run's pi errored: no baseline for the person record's 99 s pi launch.
   const shared = sharedBaseline();
-  delete shared.measures["new.pi.first_output"];
+  delete shared.measures["new.pi.first_output_excl_install"];
   shared.errors = [{ scenario: "new.pi", message: "boom" }];
-  shared.notRun = [{ measure: "new.pi.first_output", reason: "usage limit" }];
+  shared.notRun = [{ measure: "new.pi.first_output_excl_install", reason: "usage limit" }];
   const person = completePerson();
-  person.measures["new.pi.first_output"].samples = tenOf(99_000);
+  person.measures["new.pi.first_output_excl_install"].samples = tenOf(99_000);
   const result = compareResults(shared, person);
-  const rows = result.misses.filter((row) => row.measure === "new.pi.first_output");
+  const rows = result.misses.filter((row) => row.measure === "new.pi.first_output_excl_install");
   assert.equal(rows.length, 2);
   assert.match(
     rows[0].notRun,
-    /^no baseline: the shared record has no new\.pi\.first_output \(usage limit\)/,
+    /^no baseline: the shared record has no new\.pi\.first_output_excl_install \(usage limit\)/,
   );
   assert.equal(comparisonFails(result), true);
   // The baseline's errors alone fail the gate.
@@ -1914,10 +1932,10 @@ test("F1: a gate series shorter than its floor is a miss, however its samples lo
   eight.measures["growth.claude.extra_person_beyond_state_bytes"].samples = tenOf(1000).slice(0, 8);
   assert.equal(comparisonFails(compareResults(sharedBaseline(), eight)), false);
   const thin = sharedBaseline();
-  thin.measures["new.pi.first_output"].samples = [30_000, 30_000];
+  thin.measures["new.pi.first_output_excl_install"].samples = [30_000, 30_000];
   assert.match(
     compareResults(thin, completePerson()).misses.find(
-      (row) => row.measure === "new.pi.first_output",
+      (row) => row.measure === "new.pi.first_output_excl_install",
     ).short,
     /^the baseline kept 2 of 10/,
   );
@@ -2113,4 +2131,178 @@ test("F6: the second person's harnesses are never empty and always hold the hand
       .secondPersonHarnesses,
     ["codex", "pi"],
   );
+});
+
+// ─── the dependency install and the launch call (decision log 2026-10-09) ───
+
+/** Engine lines for one launch, as milestones; `at` in ms from the request. */
+const launchMilestones = (lines) =>
+  lines.map(([at, message]) => ({ name: milestoneName(message), at, level: "INFO", fields: {} }));
+
+test("a launch's install is its running line to its completed or exited one", () => {
+  const ran = launchMilestones([
+    [900, "session engine: workspace note"],
+    [1000, "session engine: dependency install · running"],
+    [75_000, "session engine: dependency install · completed · exit 0"],
+    [76_000, "session engine: harness warm-up"],
+  ]);
+  assert.deepEqual(installOf(ran), { ran: true, ms: 74_000 });
+  const exited = launchMilestones([
+    [1000, "session engine: dependency install · running"],
+    [9000, "session engine: dependency install · exited · exit 1"],
+  ]);
+  assert.deepEqual(installOf(exited), { ran: true, ms: 8000 });
+  // A resume whose head carries a tree for its platform, or an install skipped: none, nothing taken.
+  for (const line of [
+    "session engine: dependency tree observed for this platform",
+    "session engine: dependency install skipped · automatic install off",
+    "session engine: dependency install did not run",
+  ]) {
+    assert.deepEqual(installOf(launchMilestones([[500, line]])), { ran: false, ms: 0 });
+  }
+  // The log says neither, or an install with no end: unknown, never taken as none.
+  assert.equal(installOf(launchMilestones([[900, "session engine: workspace note"]])), null);
+  assert.equal(
+    installOf(launchMilestones([[1000, "session engine: dependency install · running"]])),
+    null,
+  );
+  assert.equal(installOf(null), null);
+});
+
+test("first output and first turn less the install carry the budget; the raw ones stay, unbudgeted", () => {
+  const result = { measures: {}, notRun: [], notes: [], errors: [] };
+  const ctx = { rec: makeRecorder(result, () => {}) };
+  const launch = { milestones: [], install: { ran: true, ms: 64_000 } };
+  recordExcludingInstall(ctx, "new.codex.first_output", 78_000, "start", launch);
+  recordExcludingInstall(ctx, "new.codex.first_turn", 81_000, "start", launch);
+  assert.deepEqual(result.measures["new.codex.first_output_excl_install"], {
+    unit: "ms",
+    budget: "start",
+    samples: [14_000],
+  });
+  assert.deepEqual(result.measures["new.codex.first_turn_excl_install"].samples, [17_000]);
+  // A launch that ran no install subtracts nothing.
+  recordExcludingInstall(ctx, "resume.first_output", 15_000, "start", {
+    milestones: [],
+    install: { ran: false, ms: 0 },
+  });
+  assert.deepEqual(result.measures["resume.first_output_excl_install"].samples, [15_000]);
+  // Unknown install: not run, with why; never the raw number under the budgeted name.
+  recordExcludingInstall(ctx, "new.pi.first_output", 30_000, "start", {
+    milestones: null,
+    install: null,
+  });
+  recordExcludingInstall(ctx, "new.opencode.first_output", 30_000, "start", {
+    milestones: [],
+    install: null,
+  });
+  assert.equal(result.measures["new.pi.first_output_excl_install"], undefined);
+  assert.deepEqual(
+    result.notRun.map((entry) => entry.measure),
+    ["new.pi.first_output_excl_install", "new.opencode.first_output_excl_install"],
+  );
+  assert.match(result.notRun[0].reason, /no access to the server's host/);
+  assert.match(result.notRun[1].reason, /dependency install's milestones were not in the log/);
+});
+
+test("the launch call is capped at the answer window, unbudgeted, and its table says so", () => {
+  assert.equal(LAUNCH_ANSWER_WINDOW_MS, 30_000);
+  assert.equal(launchCallCapped(30_050), true);
+  assert.equal(launchCallCapped(30_000), true);
+  assert.equal(launchCallCapped(4200), false);
+  const result = { measures: {}, notRun: [], notes: [], errors: [] };
+  const rec = makeRecorder(result, () => {});
+  rec.sample("new.claude.launch_call", 30_050, "ms", null, { cappedAtMs: LAUNCH_ANSWER_WINDOW_MS });
+  rec.sample("new.claude.launch_call", 4200, "ms", null, { cappedAtMs: LAUNCH_ANSWER_WINDOW_MS });
+  assert.deepEqual(result.measures["new.claude.launch_call"], {
+    unit: "ms",
+    budget: null,
+    cappedAtMs: 30_000,
+    samples: [30_050, 4200],
+  });
+  assert.match(
+    formatTable(result),
+    /\| new\.claude\.launch_call \| 2 \| .* \| none: capped at 30\.0 s \|/,
+  );
+});
+
+test("a raw launch time an older record budgeted is read as unbudgeted", () => {
+  for (const name of [
+    "new.claude.first_output",
+    "new.pi.first_turn",
+    "resume.first_output",
+    "resume.first_turn",
+    "new.codex.launch_call",
+  ]) {
+    assert.equal(budgetOf(name, { budget: "start" }), null, name);
+  }
+  for (const name of [
+    "new.claude.first_output_excl_install",
+    "resume.first_output_excl_install",
+    "join.same.first_output",
+    "new.claude.image_built.first_output",
+    "resume.restore_ms",
+  ]) {
+    assert.equal(budgetOf(name, { budget: "start" }), "start", name);
+  }
+  // A baseline from before 2026-10-09 budgets the raw first output: not compared, nor shown so.
+  const before = record({
+    "new.claude.first_output": { unit: "ms", budget: "start", samples: tenOf(14_000) },
+    "new.claude.launch_call": { unit: "ms", budget: "api", samples: tenOf(5000) },
+    "new.claude.first_output_excl_install": { unit: "ms", budget: "start", samples: tenOf(14_000) },
+  });
+  const after = record({
+    "new.claude.first_output": { unit: "ms", budget: null, samples: tenOf(78_000) },
+    "new.claude.launch_call": { unit: "ms", budget: null, samples: tenOf(30_050) },
+    "new.claude.first_output_excl_install": { unit: "ms", budget: "start", samples: tenOf(14_500) },
+  });
+  const result = compareResults(before, after);
+  assert.deepEqual(
+    [...new Set(result.rows.map((row) => row.measure))],
+    ["new.claude.first_output_excl_install"],
+  );
+  assert.deepEqual(result.misses, []);
+  assert.match(formatTable(before), /\| new\.claude\.first_output \| 10 \| .* \| – \|/);
+});
+
+test("gate P1 requires launch times less the install, never the raw ones", () => {
+  const required = requiredOf(layoutRecord("person", "1", {}), { gate: true }).measures.map(
+    (entry) => entry.measure,
+  );
+  for (const harness of GATE_HARNESSES) {
+    assert.ok(required.includes(`new.${harness}.first_output_excl_install`), harness);
+    assert.ok(!required.includes(`new.${harness}.first_output`), harness);
+    assert.ok(!required.includes(`new.${harness}.launch_call`), harness);
+  }
+  assert.ok(required.includes("resume.first_output_excl_install"));
+  assert.ok(!required.includes("resume.first_output"));
+  assert.equal(
+    expectedSamplesOf({ options: { runs: 10 } }, "new.pi.first_output_excl_install"),
+    10,
+  );
+  assert.equal(
+    expectedSamplesOf(
+      { options: { runs: 10, resumesPerRun: 2 } },
+      "resume.first_output_excl_install",
+    ),
+    20,
+  );
+  assert.equal(expectedSamplesOf({ options: { runs: 10 } }, "new.pi.first_output"), null);
+  // A registry stall in the person record's raw first output does not fail the gate.
+  const stalled = completePerson();
+  stalled.measures["new.pi.first_output"] = { unit: "ms", budget: null, samples: tenOf(78_000) };
+  stalled.measures["new.pi.install"] = { unit: "ms", budget: null, samples: tenOf(64_000) };
+  const passed = compareResults(sharedBaseline(), stalled);
+  assert.deepEqual(passed.misses, []);
+  assert.equal(comparisonFails(passed), false);
+  // A person record with only the raw first output (an older bench, or no host) misses the gate.
+  const raw = completePerson();
+  delete raw.measures["new.pi.first_output_excl_install"];
+  raw.measures["new.pi.first_output"] = { unit: "ms", budget: "start", samples: tenOf(14_000) };
+  const missed = compareResults(sharedBaseline(), raw);
+  assert.deepEqual(
+    [...new Set(missed.misses.map((row) => row.measure))],
+    ["new.pi.first_output_excl_install"],
+  );
+  assert.equal(comparisonFails(missed), true);
 });
