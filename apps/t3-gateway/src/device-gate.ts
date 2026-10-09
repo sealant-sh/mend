@@ -34,6 +34,9 @@ class GatedMendClient {
   readonly worktreeNames: DeviceCalls["worktreeNames"];
   readonly createSession: DeviceCalls["createSession"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
+  readonly labelSession: DeviceCalls["labelSession"];
+  readonly stopSession: DeviceCalls["stopSession"];
+  readonly removeSession: DeviceCalls["removeSession"];
   readonly submitTurn: DeviceCalls["submitTurn"];
   readonly launchProtocol: DeviceCalls["launchProtocol"];
   readonly interruptTurn: DeviceCalls["interruptTurn"];
@@ -56,6 +59,9 @@ class GatedMendClient {
     this.worktreeNames = calls.worktreeNames;
     this.createSession = calls.createSession;
     this.joinWorktree = calls.joinWorktree;
+    this.labelSession = calls.labelSession;
+    this.stopSession = calls.stopSession;
+    this.removeSession = calls.removeSession;
     this.submitTurn = calls.submitTurn;
     this.launchProtocol = calls.launchProtocol;
     this.interruptTurn = calls.interruptTurn;
@@ -107,6 +113,10 @@ export const gateDeviceCalls = (
       guard(token, mend.createSession(token, projectId, input)),
     joinWorktree: (token, worktreeId, input) =>
       guard(token, mend.joinWorktree(token, worktreeId, input)),
+    labelSession: (token, sessionId, label) =>
+      guard(token, mend.labelSession(token, sessionId, label)),
+    stopSession: (token, sessionId) => guard(token, mend.stopSession(token, sessionId)),
+    removeSession: (token, sessionId) => guard(token, mend.removeSession(token, sessionId)),
     launchProtocol: (token, sessionId, prompt, options) =>
       guard(token, mend.launchProtocol(token, sessionId, prompt, options)),
     interruptTurn: (token, turnId) => guard(token, mend.interruptTurn(token, turnId)),

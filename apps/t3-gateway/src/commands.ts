@@ -23,6 +23,11 @@ import type { BearerSession } from "./state.ts";
  * - `run.interrupt`, `queued-run.cancel`, `queue.resume`: Mend's interrupt and the gateway's queue.
  * - `runtime-request.respond`, `thread.user-input.dismiss`: Mend's request answers; a dismissal
  *   answers `cancel`.
+ * - `thread.metadata.update` with only a title: the session's name in Mend (its owner's to set).
+ * - `provider-session.detach`: Mend's stop. t3code sends it before deleting a thread with a live
+ *   agent; what is still queued is held.
+ * - `thread.delete`: Mend's delete, after a stop when Mend says the session is live. The worktree
+ *   and its change stay in Mend.
  */
 
 /** t3code's approval decisions as Mend's; Mend has no "always", so it is "for this session". */
@@ -173,6 +178,29 @@ export const dispatchCommand = (
       return refuse("An answer needs a decision or answers.");
     case "thread.user-input.dismiss":
       return respond(command.threadId, command.requestId, { decision: "cancel" });
+    case "thread.metadata.update": {
+      // Only the name moves through Mend; the branch and worktree are Mend's, and so are titles.
+      const { threadId, title } = command;
+      const others = [
+        command.regenerateTitle === true ? true : undefined,
+        command.branch,
+        command.worktreePath,
+        command.expectedWorktreePath,
+        command.expectedEmpty,
+        command.limitRecovery,
+        command.linkedPullRequest,
+      ];
+      if (title === undefined || others.some((value) => value !== undefined)) {
+        return refuse(
+          "Mend's t3code gateway renames a thread and nothing else: its branch, worktree and pull request are Mend's.",
+        );
+      }
+      return answered(hub.commands.rename({ session, threadId, title }));
+    }
+    case "provider-session.detach":
+      return answered(hub.commands.stop({ session, threadId: command.threadId }));
+    case "thread.delete":
+      return answered(hub.commands.remove({ session, threadId: command.threadId }));
     default:
       return refuse(`Mend's t3code gateway does not accept ${command.type}.`);
   }

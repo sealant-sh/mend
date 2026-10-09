@@ -17,6 +17,7 @@ import {
   MendItem,
   MendProject,
   MendProjectDetail,
+  MendRemovalReport,
   MendRequest,
   MendSession,
   MendSessionDetail,
@@ -278,6 +279,19 @@ export class MendClient extends Context.Service<
       worktreeId: string,
       input: { readonly harness: string; readonly label: string | null },
     ) => MendCommand<MendSession>;
+    /** `POST /api/sessions/:id/label`: the session's name; null clears it. Owner only. */
+    readonly labelSession: (
+      deviceToken: string,
+      sessionId: string,
+      label: string | null,
+    ) => MendCommand<MendSession>;
+    /** `POST /api/sessions/:id/stop`: stops the session's processes and its workspace. */
+    readonly stopSession: (deviceToken: string, sessionId: string) => MendCommand<MendSession>;
+    /** `DELETE /api/sessions/:id`: a settled session, its record and workspace. Owner only. */
+    readonly removeSession: (
+      deviceToken: string,
+      sessionId: string,
+    ) => MendCommand<MendRemovalReport>;
     /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
     readonly submitTurn: (
       deviceToken: string,
@@ -329,6 +343,7 @@ const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
 const decodeWorktreeListing = Schema.decodeUnknownEffect(MendWorktreeListing);
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
+const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
 const MendErrorBody = Schema.Struct({
   _tag: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
@@ -350,6 +365,9 @@ const readJson = (
   response.json.pipe(
     Effect.mapError((cause) => new MendUnavailable({ operation, status: response.status, cause })),
   );
+
+/** The body of a command that is a `DELETE`: it has none. */
+const DELETE: unique symbol = Symbol("DELETE");
 
 /** Speaks to the configured Mend through whatever `HttpClient` it is given. */
 export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | HttpClient.HttpClient> =
@@ -495,13 +513,13 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         decode: ((value: unknown) => Effect.Effect<A, Schema.SchemaError>) | null,
       ): MendCommand<A | undefined> =>
         Effect.gen(function* () {
+          const request =
+            body === DELETE
+              ? HttpClientRequest.delete(url(path))
+              : HttpClientRequest.post(url(path)).pipe(HttpClientRequest.bodyJsonUnsafe(body));
           const response = yield* send(
             operation,
-            HttpClientRequest.post(url(path)).pipe(
-              HttpClientRequest.acceptJson,
-              HttpClientRequest.bearerToken(deviceToken),
-              HttpClientRequest.bodyJsonUnsafe(body),
-            ),
+            request.pipe(HttpClientRequest.acceptJson, HttpClientRequest.bearerToken(deviceToken)),
           );
           if (response.status === 401) return yield* new MendDeviceRefused({ operation });
           if (response.status === 404) return yield* new MendNotFound({ operation });
@@ -639,6 +657,42 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/worktrees/:id/sessions",
         );
 
+      const labelSession = (deviceToken: string, sessionId: string, label: string | null) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/label",
+            `/api/sessions/${encodeURIComponent(sessionId)}/label`,
+            deviceToken,
+            { label },
+            decodeSession,
+          ),
+          "POST /api/sessions/:id/label",
+        );
+
+      const stopSession = (deviceToken: string, sessionId: string) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/stop",
+            `/api/sessions/${encodeURIComponent(sessionId)}/stop`,
+            deviceToken,
+            {},
+            decodeSession,
+          ),
+          "POST /api/sessions/:id/stop",
+        );
+
+      const removeSession = (deviceToken: string, sessionId: string) =>
+        answered(
+          command(
+            "DELETE /api/sessions/:id",
+            `/api/sessions/${encodeURIComponent(sessionId)}`,
+            deviceToken,
+            DELETE,
+            decodeRemovalReport,
+          ),
+          "DELETE /api/sessions/:id",
+        );
+
       const interruptTurn = (deviceToken: string, turnId: string) =>
         command(
           "POST /api/turns/:id/interrupt",
@@ -749,6 +803,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeNames,
         createSession,
         joinWorktree,
+        labelSession,
+        stopSession,
+        removeSession,
         submitTurn,
         launchProtocol,
         interruptTurn,

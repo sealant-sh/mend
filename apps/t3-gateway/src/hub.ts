@@ -219,6 +219,28 @@ export interface ThreadCommands {
    * runs. A retry of the same command is the same thread.
    */
   readonly launch: (input: ThreadLaunch) => Effect.Effect<LaunchedThreadId, ThreadCommandFailure>;
+  /** The session's name in Mend (`thread.metadata.update` with a title). Mend lets only its owner. */
+  readonly rename: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly title: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * Stops the session (`provider-session.detach`, which t3code sends before a delete): its agent
+   * and workspace stop; what is still queued is held, so nothing relaunches it unasked.
+   */
+  readonly stop: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /**
+   * Deletes the session in Mend (`thread.delete`), stopping it first when Mend says it is live.
+   * Its worktree and change stay, as they do for every session Mend removes.
+   */
+  readonly remove: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
 /** Where a launched thread works: a new worktree from a base, or an existing one it joins. */
@@ -605,6 +627,11 @@ export const makePersonHub = (input: {
     /** A t3code thread id as the Mend session it is. */
     const sessionIdOf = (threadId: string): string => sessionOfThread.get(threadId) ?? threadId;
     /**
+     * Sessions deleted through the gateway that Mend keeps until their workspace has stopped
+     * (`RemovalReport.leftover`): hidden at once, as t3code's client already dropped them.
+     */
+    const removing = new Set<string>();
+    /**
      * Sessions just created for a launch that no project read has shown yet: hidden, and their
      * queue left alone, until one does, so the client never sees the thread without its message
      * and the message is never failed as "gone" for a session not read yet.
@@ -702,7 +729,7 @@ export const makePersonHub = (input: {
       const names = knownNames();
       for (const entry of projects.values()) {
         for (const session of entry.sessions) {
-          if (opening.has(session.id)) continue;
+          if (removing.has(session.id) || opening.has(session.id)) continue;
           const annotation = entry.annotations.get(session.id);
           const thread = launched.get(session.id);
           const current = annotation?.currentAgent ?? null;
@@ -1072,7 +1099,11 @@ export const makePersonHub = (input: {
         Effect.gen(function* () {
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
-          seen(entries.flatMap((entry) => entry.sessions.map((session) => session.id)));
+          const present = new Set(entries.flatMap((entry) => entry.sessions.map((s) => s.id)));
+          seen(present);
+          for (const sessionId of removing) {
+            if (!present.has(sessionId)) removing.delete(sessionId);
+          }
           active = facts;
           applyRetirements(retired);
           conversations.clear();
@@ -1149,10 +1180,10 @@ export const makePersonHub = (input: {
             }
             const kept = new Set(entry?.sessions.map((session) => session.id) ?? []);
             for (const session of previous?.sessions ?? []) {
-              if (!kept.has(session.id)) {
-                conversations.delete(session.id);
-                adoptedTurns.delete(session.id);
-              }
+              if (kept.has(session.id)) continue;
+              conversations.delete(session.id);
+              adoptedTurns.delete(session.id);
+              removing.delete(session.id);
             }
             for (const [sessionId, conversation] of read) {
               if (conversation !== null) {
@@ -1955,6 +1986,86 @@ export const makePersonHub = (input: {
         );
       });
 
+    /** The project of a thread the person has, or a refusal naming the thread. */
+    const projectOfThread = (threadId: string, sessionId: string) =>
+      locked(Effect.sync(() => sourceOf(sessionId)?.project.id ?? null)).pipe(
+        Effect.flatMap((projectId) =>
+          projectId === null
+            ? refused(`Thread ${threadId} is not in this environment.`)
+            : Effect.succeed(projectId),
+        ),
+      );
+
+    const rename: ThreadCommands["rename"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sessionId = sessionIdOf(command.threadId);
+        const projectId = yield* projectOfThread(command.threadId, sessionId);
+        yield* asCommandRefusal(
+          mend.labelSession(command.session.deviceToken, sessionId, command.title),
+        );
+        yield* refreshProject(projectId).pipe(Effect.catch(() => requestRefresh("all")));
+        return yield* locked(Effect.sync(() => sequence));
+      });
+
+    const stop: ThreadCommands["stop"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sessionId = sessionIdOf(command.threadId);
+        const projectId = yield* projectOfThread(command.threadId, sessionId);
+        yield* asCommandRefusal(mend.stopSession(command.session.deviceToken, sessionId));
+        // A stopped session is not launched again for what was already queued; resuming is.
+        yield* locked(
+          Effect.gen(function* () {
+            Queueing.holdIfQueued(queueOf(sessionId), true);
+            yield* publishAll;
+          }),
+        );
+        yield* requestRefresh(`project:${projectId}`);
+        return yield* locked(Effect.sync(() => sequence));
+      });
+
+    const remove: ThreadCommands["remove"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const token = command.session.deviceToken;
+        const sessionId = sessionIdOf(command.threadId);
+        const projectId = yield* projectOfThread(command.threadId, sessionId);
+        // Mend removes only a settled session; a live one is stopped first, once.
+        const report = yield* asCommandRefusal(
+          mend
+            .removeSession(token, sessionId)
+            .pipe(
+              Effect.catch((error) =>
+                error._tag === "MendCommandRefused" && error.tag === "SessionActive"
+                  ? mend
+                      .stopSession(token, sessionId)
+                      .pipe(Effect.andThen(mend.removeSession(token, sessionId)))
+                  : Effect.fail(error),
+              ),
+            ),
+        );
+        yield* locked(
+          Effect.gen(function* () {
+            // Mend keeps the row until its workspace has stopped; t3code's client has let it go.
+            if (!report.removed) removing.add(sessionId);
+            Queueing.failAll(queueOf(sessionId), "The thread was deleted.");
+            yield* publishAll;
+          }),
+        );
+        if (report.removed && launcher !== null) {
+          yield* state.forgetThread(launcher, sessionId).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not forget a deleted thread", {
+                cause: error.message,
+              }),
+            ),
+          );
+        }
+        yield* requestRefresh(`project:${projectId}`);
+        return yield* locked(Effect.sync(() => sequence));
+      });
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
@@ -1964,6 +2075,9 @@ export const makePersonHub = (input: {
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),
       launch,
+      rename,
+      stop,
+      remove,
     };
 
     // ─── The hub ───────────────────────────────────────────────────────────

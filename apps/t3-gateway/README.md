@@ -193,6 +193,22 @@ The opening message is kept from the moment the launch is accepted. When Mend do
 first reads of the new session, the gateway keeps reading in the background, and fails the message
 with a reason if it still cannot read the session after thirty seconds.
 
+### Rename, stop and delete
+
+Each goes through Mend's own route as the person, so Mend's rules decide: a session that is not
+theirs answers t3code's authorization error.
+
+| t3code                                     | Mend                                                                                               |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `thread.metadata.update` with only `title` | `POST /api/sessions/:id/label`, its owner's to set. A branch, worktree or pull request is refused  |
+| `provider-session.detach`                  | `POST /api/sessions/:id/stop`; what is still queued is held, so nothing relaunches it unasked      |
+| `thread.delete`                            | `DELETE /api/sessions/:id`; when Mend answers that the session is live, a stop and one more delete |
+
+t3code's client sends `provider-session.detach` before it deletes a thread with a live agent. Mend
+keeps the session's worktree and change after a delete, as it does for every session it removes.
+When Mend keeps the session until its workspace has stopped (`removed: false`), the gateway hides it
+at once: the client has already let it go.
+
 ## Run it
 
 Nothing in Mend starts the gateway. Run it beside a Mend server:

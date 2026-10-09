@@ -163,6 +163,8 @@ export class FakeWorkbench {
   /** How long `POST /launch` takes to answer, and a status it then refuses with (null: it launches). */
   launchAnswerDelayMs = 0;
   launchFailStatus: number | null = null;
+  /** `DELETE /api/sessions/:id` keeps the row until the workspace stops (`removed: false`). */
+  removalLeavesWorkspace = false;
 
   get eventStreams(): number {
     return this.streams.size;
@@ -529,6 +531,45 @@ export class FakeWorkbench {
     if (collection === "sessions") {
       const session = this.sessions.get(id);
       if (session === undefined) return json(404, { _tag: "NotFound" });
+      const notOwner = () =>
+        json(403, { _tag: "SessionNotSteerable", sessionId: id, message: "not yours" });
+      if (method === "POST" && sub === "label") {
+        return body().then((value) => {
+          record(value);
+          if (this.control.get(id) === false) return notOwner();
+          const payload = typeof value === "object" && value !== null ? value : {};
+          const label =
+            "label" in payload && typeof payload.label === "string" ? payload.label.trim() : "";
+          session.label = label.length === 0 ? null : label;
+          session.updatedAt = tick();
+          this.emit({ type: "session", sessionId: id, projectId: session.projectId });
+          return json(200, session);
+        });
+      }
+      if (method === "POST" && sub === "stop") {
+        return body().then((value) => {
+          record(value);
+          if (this.control.get(id) === false) return notOwner();
+          this.stopAgent(id);
+          return json(200, session);
+        });
+      }
+      if (method === "DELETE" && sub === undefined) {
+        record(undefined);
+        if (this.control.get(id) === false) return notOwner();
+        const agent = this.agents.get(id);
+        if (agent !== undefined && agent.exitedAt === null) {
+          return json(409, { _tag: "SessionActive", id });
+        }
+        if (this.removalLeavesWorkspace) {
+          return json(200, {
+            removed: false,
+            leftover: "workspace · removed once its workspace has stopped",
+          });
+        }
+        this.removeSession(id);
+        return json(200, { removed: true, leftover: null });
+      }
       if (method === "GET" && sub === undefined) {
         const changeId = this.changes.get(id) || null;
         return json(200, {
