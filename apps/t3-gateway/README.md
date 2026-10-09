@@ -63,8 +63,17 @@ of pointers for one thing is one read. After the stream drops, the hub reconnect
 reads everything again.
 
 Each read rebuilds the t3code entities (`src/shell.ts`), encodes them through the vendored schemas,
-and sends only what changed, each change stamped with the hub's next sequence. A fresh snapshot is
-always a legal reset for a t3code client, so a restarted gateway starts its sequence again.
+and sends only what changed, each change stamped with the hub's next sequence. Sequences come from a
+reservation per person in the state file, so no hub ever stamps one an earlier hub of the same
+person stamped, across restarts too.
+
+### Replay after a sequence
+
+A client that subscribes with `afterSequence` gets only what changed after it, when the hub still
+holds it: the last 1,000 shell changes, and the last 128 changes of each watched thread (t3code's
+own limits). Any other sequence (older than that, from an earlier hub, or ahead of the hub) gets a
+fresh snapshot, which t3code always takes as a reset. A thread stays watched for two minutes after
+its last subscriber, so a client that reconnects resumes it without reloading it.
 
 | t3code                                                         | From Mend                                                                                                       |
 | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -85,8 +94,8 @@ keeps its items current: an `agent-conversation` pointer re-reads its turns and 
 items past the last change-feed cursor (`GET /api/sessions/:id/items?after=`). Each entity that
 changed is one upsert event (`run.updated`, `turn-item.updated`, `message.updated`,
 `runtime-request.updated`, …); one that went away sends a fresh snapshot; a session that is no
-longer a thread sends `thread.deleted`. A subscription always opens with a full snapshot, whatever
-sequence the client resumes after: replay after a sequence is phase 2.
+longer a thread sends `thread.deleted`. A subscription opens with a full snapshot, or, resuming
+after a sequence the hub still holds, with only what changed since (see "Replay after a sequence").
 
 | t3code                                     | From Mend                                                                                                                                                                                                                                                 |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

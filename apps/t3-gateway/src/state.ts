@@ -183,6 +183,17 @@ export class GatewayState extends Context.Service<
       }>,
       GatewayStateError
     >;
+    /**
+     * Reserves `count` of a person's sequences at or above `from` and answers where they start:
+     * every sequence their hub stamps comes from a reservation, so none is stamped twice across
+     * the hub's lifetimes and the gateway's restarts, and a client resuming after a sequence from
+     * before is never answered wrongly.
+     */
+    readonly reserveSequences: (
+      mendUserId: string,
+      from: number,
+      count: number,
+    ) => Effect.Effect<number, GatewayStateError>;
     /** The people who have a message kept that can still reach Mend: their hubs start with the gateway. */
     readonly peopleWithQueuedMessages: () => Effect.Effect<
       ReadonlyArray<BearerSession>,
@@ -765,6 +776,25 @@ export const openGatewayState = (
         }));
       });
 
+    const reserveSequences = (mendUserId: string, from: number, count: number) =>
+      run("reserveSequences", () => {
+        const key = `sequence_high:${mendUserId}`;
+        database.exec("BEGIN IMMEDIATE");
+        try {
+          const row = database.prepare("SELECT value FROM meta WHERE key = ?").get(key);
+          const high = row === undefined ? 0 : Number(Schema.decodeUnknownSync(MetaRow)(row).value);
+          const start = Math.max(high, from);
+          database
+            .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+            .run(key, String(start + count));
+          database.exec("COMMIT");
+          return start;
+        } catch (error) {
+          database.exec("ROLLBACK");
+          throw error;
+        }
+      });
+
     const peopleWithQueuedMessages = () =>
       run("peopleWithQueuedMessages", () =>
         database
@@ -798,6 +828,7 @@ export const openGatewayState = (
       dropRemoval,
       saveQueue,
       loadQueues,
+      reserveSequences,
       peopleWithQueuedMessages,
     };
   });

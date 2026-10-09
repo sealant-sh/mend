@@ -60,6 +60,12 @@ import type {
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import * as Queueing from "./queue.ts";
 import {
+  makeReplayLog,
+  SHELL_REPLAY_CAPACITY,
+  THREAD_REPLAY_CAPACITY,
+  type ReplayLog,
+} from "./replay.ts";
+import {
   isProjectable,
   launchingAgentOf,
   PROJECTION_SCHEMA_VERSION,
@@ -81,8 +87,9 @@ import { threadProjectionOf } from "./thread-projection.ts";
  * The projection hub (ADR 0012, "Projection"): one per paired person, shared by every socket and
  * request of theirs. It holds one Mend SSE stream, re-reads what each pointer names through Mend's
  * API as that person, rebuilds the t3code entities, diffs them against what it last sent, and
- * stamps each change with its own sequence. A fresh snapshot is always a legal reset for a
- * t3code client, so a restarted gateway starts its sequence again without a protocol step.
+ * stamps each change with its own sequence, from a reservation that no later hub of the person
+ * repeats. A client resuming after a sequence the hub still holds gets only what it missed
+ * (`replay.ts`); any other gets a fresh snapshot, always a legal reset for a t3code client.
  */
 
 /** A shell change after the snapshot. */
@@ -102,8 +109,13 @@ const worktreeSuffix = (): string =>
   Array.from(randomBytes(6), (byte) => SUFFIX_ALPHABET[byte % SUFFIX_ALPHABET.length]).join("");
 
 export interface ShellSubscription {
-  /** The shell as of subscribing; every later change arrives in `changes`, sequenced after it. */
-  readonly snapshot: OrchestrationV2ShellSnapshot;
+  /**
+   * The shell as of subscribing, or, for a client resuming after a sequence the hub still covers,
+   * only what changed after it (`replay.ts`). Every later change arrives in `changes`.
+   */
+  readonly start:
+    | { readonly kind: "snapshot"; readonly snapshot: OrchestrationV2ShellSnapshot }
+    | { readonly kind: "replay"; readonly deltas: ReadonlyArray<ShellDelta> };
   /** Fails with `SubscriberFellBehind` when the subscriber cannot keep up (`fanout.ts`). */
   readonly changes: Stream.Stream<ShellDelta, SubscriberFellBehind>;
 }
@@ -127,7 +139,10 @@ export type ThreadChange =
   | ({ readonly kind: "snapshot" } & ThreadSnapshot);
 
 export interface ThreadSubscription {
-  readonly snapshot: ThreadSnapshot;
+  /** The thread in full, or what changed after the sequence the client resumed after. */
+  readonly start:
+    | { readonly kind: "snapshot"; readonly snapshot: ThreadSnapshot }
+    | { readonly kind: "replay"; readonly changes: ReadonlyArray<ThreadChange> };
   /** Fails with `SubscriberFellBehind` when the subscriber cannot keep up (`fanout.ts`). */
   readonly changes: Stream.Stream<ThreadChange, SubscriberFellBehind>;
 }
@@ -135,8 +150,13 @@ export interface ThreadSubscription {
 export interface PersonHub {
   /** The shell now, once the hub has read Mend at least once. */
   readonly shellSnapshot: Effect.Effect<OrchestrationV2ShellSnapshot, HubReadError>;
-  /** The shell now and its changes from here, for as long as the scope lasts. */
-  readonly subscribeShell: Effect.Effect<ShellSubscription, HubReadError, Scope.Scope>;
+  /**
+   * The shell now, or what changed after `afterSequence` when the hub still covers it, and its
+   * changes from here, for as long as the scope lasts.
+   */
+  readonly subscribeShell: (
+    afterSequence: number | undefined,
+  ) => Effect.Effect<ShellSubscription, HubReadError, Scope.Scope>;
   /** Whether Mend has refused this device token: the device was revoked. */
   readonly isRefused: (token: string) => boolean;
   /** Completes once Mend refuses this device token; a socket holding it closes then. */
@@ -151,6 +171,7 @@ export interface PersonHub {
    */
   readonly subscribeThread: (
     threadId: string,
+    afterSequence?: number,
   ) => Effect.Effect<ThreadSubscription | null, HubReadError, Scope.Scope>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
@@ -329,6 +350,8 @@ interface Watch {
   prints: Map<string, string> | null;
   /** The thread as last sent, for the `thread.deleted` event if it goes. */
   thread: OrchestrationV2AppThread | null;
+  /** What was published for it since its baseline, for a client resuming after a sequence. */
+  log: ReplayLog<ThreadChange> | null;
 }
 
 /** A refusal Mend gave a command, in the words t3code shows. */
@@ -788,7 +811,38 @@ export const makePersonHub = (input: {
      * row says one is under way: only the full thread has a place to say it.
      */
     const retirements = new Map<string, MendWorkspaceRetirement | null>();
-    let sequence = 0;
+    /**
+     * The hub's sequence, from a reservation in the state file (`reserveSequences`): never one a
+     * client was given by an earlier hub of this person, so a resume after a sequence is answered
+     * by replay only when this hub stamped it. Without a reservation, nothing is replayed.
+     */
+    const personId = input.viewer?.id ?? null;
+    const reserved =
+      personId === null
+        ? null
+        : yield* state.reserveSequences(personId, 0, SEQUENCE_BLOCK).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not reserve sequences", {
+                cause: error.message,
+              }).pipe(Effect.as(null)),
+            ),
+          );
+    let sequence = reserved ?? 0;
+    let reservedUpTo = sequence + SEQUENCE_BLOCK;
+    const replays = reserved !== null;
+    /** Reserves more before the hub runs out of what it holds. */
+    const extendSequences = Effect.suspend(() =>
+      personId === null || !replays || sequence < reservedUpTo - SEQUENCE_BLOCK / 2
+        ? Effect.void
+        : state.reserveSequences(personId, reservedUpTo, SEQUENCE_BLOCK).pipe(
+            Effect.tap((start) => Effect.sync(() => (reservedUpTo = start + SEQUENCE_BLOCK))),
+            Effect.asVoid,
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not reserve sequences", { cause: error.message }),
+            ),
+          ),
+    );
+    const shellLog = makeReplayLog<ShellDelta>(SHELL_REPLAY_CAPACITY, sequence);
     let shellProjects = new Map<string, Printed<OrchestrationProjectShell>>();
     let shellThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
     const shellChanges = makeFanout<ShellDelta>();
@@ -953,6 +1007,7 @@ export const makePersonHub = (input: {
       }
       shellProjects = nextProjects;
       shellThreads = nextThreads;
+      for (const delta of deltas) shellLog.push(delta.sequence, delta);
       if (deltas.length > 0) yield* shellChanges.publish(deltas);
     });
 
@@ -977,28 +1032,36 @@ export const makePersonHub = (input: {
     const publishThread = (sessionId: string) =>
       Effect.gen(function* () {
         const watch = watches.get(sessionId);
+        /** Publishes the thread's changes, and keeps them for a client that resumes. */
+        const publish = (changes: ReadonlyArray<ThreadChange>) => {
+          for (const change of changes) {
+            watch?.log?.push(
+              change.kind === "event" ? change.sequence : change.snapshotSequence,
+              change,
+            );
+          }
+          return threadChanges.publish(changes.map((change) => ({ threadId: sessionId, change })));
+        };
         const source = sourceOf(sessionId);
         if (source === null) {
           if (watch?.prints !== null && watch?.thread !== null && watch !== undefined) {
             const base = eventBase();
             const thread = watch.thread;
-            yield* threadChanges.publish([
+            yield* publish([
               {
-                threadId: sessionId,
-                change: {
-                  kind: "event",
-                  sequence,
-                  event: {
-                    ...base,
-                    threadId: thread.id,
-                    type: "thread.deleted",
-                    payload: { ...thread, deletedAt: base.occurredAt },
-                  },
+                kind: "event",
+                sequence,
+                event: {
+                  ...base,
+                  threadId: thread.id,
+                  type: "thread.deleted",
+                  payload: { ...thread, deletedAt: base.occurredAt },
                 },
               },
             ]);
             watch.prints = null;
             watch.thread = null;
+            watch.log = null;
           }
           return null;
         }
@@ -1008,36 +1071,30 @@ export const makePersonHub = (input: {
         const prints = new Map(built.entities.map((entity) => [entity.key, entity.print]));
         watch.prints = prints;
         watch.thread = built.projection.thread;
-        if (previous === null) return built.projection;
+        // The baseline a first subscriber's snapshot shows: what follows it is kept for replay.
+        if (previous === null) {
+          watch.log = replays ? makeReplayLog(THREAD_REPLAY_CAPACITY, sequence) : null;
+          return built.projection;
+        }
 
         // Something the client holds went away: a fresh snapshot replaces it.
         if (Array.from(previous.keys()).some((key) => !prints.has(key))) {
-          yield* threadChanges.publish([
-            {
-              threadId: sessionId,
-              change: {
-                kind: "snapshot",
-                snapshotSequence: ++sequence,
-                projection: built.projection,
-              },
-            },
+          yield* publish([
+            { kind: "snapshot", snapshotSequence: ++sequence, projection: built.projection },
           ]);
           return built.projection;
         }
-        const changes: Array<{ readonly threadId: string; readonly change: ThreadChange }> = [];
+        const changes: Array<ThreadChange> = [];
         for (const entity of built.entities) {
           if (previous.get(entity.key) === entity.print) continue;
           const base = eventBase();
           changes.push({
-            threadId: sessionId,
-            change: {
-              kind: "event",
-              sequence,
-              event: entity.event({ ...base, threadId: built.projection.thread.id }),
-            },
+            kind: "event",
+            sequence,
+            event: entity.event({ ...base, threadId: built.projection.thread.id }),
           });
         }
-        if (changes.length > 0) yield* threadChanges.publish(changes);
+        if (changes.length > 0) yield* publish(changes);
         return built.projection;
       });
 
@@ -1060,6 +1117,7 @@ export const makePersonHub = (input: {
       Effect.andThen(keepQueues),
       Effect.andThen(publishShell),
       Effect.andThen(publishThreads),
+      Effect.andThen(extendSequences),
       Effect.andThen(holdWhileBusy),
     );
 
@@ -2294,13 +2352,26 @@ export const makePersonHub = (input: {
 
     const shellSnapshot = ensureLoaded.pipe(Effect.andThen(locked(Effect.sync(currentShell))));
 
-    const subscribeShell = Effect.gen(function* () {
-      yield* ensureLoaded;
-      // Subscribed before the snapshot is taken: nothing published after it is missed.
-      const changes = yield* shellChanges.subscribe(() => true);
-      const snapshot = yield* locked(Effect.sync(currentShell));
-      return { snapshot, changes };
-    });
+    const subscribeShell = (afterSequence: number | undefined) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        // Subscribed before the snapshot or the replay is taken: nothing published after it is
+        // missed, and what both carry has a sequence the client already holds, which it drops.
+        const changes = yield* shellChanges.subscribe(() => true);
+        const start = yield* locked(
+          Effect.sync((): ShellSubscription["start"] => {
+            const deltas =
+              afterSequence === undefined || !replays
+                ? null
+                : shellLog.since(afterSequence, sequence);
+            return deltas === null
+              ? { kind: "snapshot", snapshot: currentShell() }
+              : { kind: "replay", deltas };
+          }),
+        );
+        const subscribed: ShellSubscription = { start, changes };
+        return subscribed;
+      });
 
     const threadSnapshot = (threadId: string) =>
       Effect.gen(function* () {
@@ -2324,7 +2395,7 @@ export const makePersonHub = (input: {
         );
       });
 
-    const subscribeThread = (threadId: string) =>
+    const subscribeThread = (threadId: string, afterSequence?: number) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
         if (!(yield* locked(Effect.sync(() => isKnownThread(threadId))))) return null;
@@ -2341,14 +2412,26 @@ export const makePersonHub = (input: {
               cursor: 0,
               prints: null,
               thread: null,
+              log: null,
             };
             watches.set(threadId, fresh);
             return fresh;
           }),
+          // Kept a while after its last subscriber, so a client that reconnects resumes it.
           (held) =>
-            Effect.sync(() => {
+            Effect.suspend(() => {
               held.count -= 1;
-              if (held.count === 0 && watches.get(threadId) === held) watches.delete(threadId);
+              if (held.count > 0) return Effect.void;
+              return Effect.sleep(WATCH_GRACE).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    if (held.count === 0 && watches.get(threadId) === held)
+                      watches.delete(threadId);
+                  }),
+                ),
+                Effect.forkIn(hubScope),
+                Effect.asVoid,
+              );
             }),
         );
         const [read, retired] = yield* Effect.all(
@@ -2358,17 +2441,32 @@ export const makePersonHub = (input: {
         // Subscribed before the snapshot is taken: nothing published after it is missed.
         // Only this thread's changes are buffered for it.
         const published = yield* threadChanges.subscribe((change) => change.threadId === threadId);
-        const projection = yield* locked(
+        const opened = yield* locked(
           Effect.gen(function* () {
+            // What the client missed is taken before catching up: the catch-up's own changes
+            // reach it through `published`.
+            const missed =
+              afterSequence === undefined || watch.log === null
+                ? null
+                : watch.log.since(afterSequence, sequence);
             mergeItems(watch, read);
             applyRetirements(retired);
-            return yield* publishThread(threadId);
+            const projection = yield* publishThread(threadId);
+            return { missed, projection, at: sequence };
           }),
         );
-        if (projection === null) return null;
-        const snapshot: ThreadSnapshot = { snapshotSequence: sequence, projection };
+        if (opened.projection === null) return null;
         const changes = published.pipe(Stream.map((change) => change.change));
-        const subscribed: ThreadSubscription = { snapshot, changes };
+        const subscribed: ThreadSubscription = {
+          start:
+            opened.missed === null
+              ? {
+                  kind: "snapshot",
+                  snapshot: { snapshotSequence: opened.at, projection: opened.projection },
+                }
+              : { kind: "replay", changes: opened.missed },
+          changes,
+        };
         return subscribed;
       });
 
@@ -2390,7 +2488,8 @@ export const makePersonHub = (input: {
       shellSnapshot,
       subscribeShell,
       threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),
-      subscribeThread: (threadId: string) => subscribeThread(sessionIdOf(threadId)),
+      subscribeThread: (threadId: string, afterSequence?: number) =>
+        subscribeThread(sessionIdOf(threadId), afterSequence),
       isRefused: tokens.isRefused,
       refusal: tokens.refusal,
       mend,
@@ -2430,6 +2529,11 @@ const QUEUE_NOT_KEPT =
 /** Why a message the state file could not keep was not sent. */
 const NOT_KEPT =
   "The gateway could not write this message to its state file, so it did not send it. Send it again.";
+
+/** How many sequences a hub reserves at a time (`reserveSequences`). */
+const SEQUENCE_BLOCK = 1_000_000;
+/** How long a thread stays watched after its last subscriber: a reconnect resumes it by replay. */
+const WATCH_GRACE = "2 minutes";
 
 /** How long a hub outlives its last user: a client reconnecting finds it warm. */
 export const HUB_IDLE_TTL = "2 minutes";
