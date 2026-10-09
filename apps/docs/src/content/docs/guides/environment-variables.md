@@ -122,6 +122,21 @@ the declared bindings to the platform verbatim; the worker resolves the objects 
 their keys become workspace environment. An install that cannot resolve them refuses the launch with
 a failure naming every binding; remove the bindings in project setup to launch there.
 
+## Set by Mend
+
+Every workspace also starts with a few variables of Mend's own, for every process in it, each
+person's processes in a [per-person workspace](/operate/per-person-workspaces/) included:
+
+| Variable                                                                            | Why                                                                                                               |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `PAGER=cat`                                                                         | The workspace images carry no `less`, so `git log` in a terminal would fail with `unable to execute pager 'less'` |
+| `DISABLE_AUTOUPDATER=1`, `OPENCODE_DISABLE_AUTOUPDATE=1`, `PI_SKIP_VERSION_CHECK=1` | The image owns each harness; an update inside a running workspace can break it for every later launch             |
+
+A project variable of the same name wins over Mend's, and so does what a shell profile exports. The
+one exception is Claude Code's updater, which Mend turns off again when it starts `claude`.
+`GIT_PAGER` is left unset on purpose: git reads it before `core.pager`, so it would override the
+pager you name in your own git config.
+
 ## Reserved names
 
 Mend rejects names that belong to the platform or can change process startup. Examples include:

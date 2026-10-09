@@ -80,6 +80,19 @@ export const HARNESS_UPDATES_OFF_ENV: Readonly<Record<string, string>> = {
 };
 
 /**
+ * No pager in a workspace: Core's images carry no `less`, so `git log` in a terminal failed with
+ * "unable to execute pager 'less'" (pstack, 2026-10-10). `PAGER=cat` is what git, gh and man fall
+ * back to when nothing more specific is set. `GIT_PAGER` stays unset on purpose: git reads it
+ * before `core.pager`, so it would override the pager a person names in their own git config.
+ * Set on the workspace below the project's variables (a project's own `PAGER` wins), and a
+ * person's shell profile wins over both. A person's process inherits it like every workspace
+ * variable that is not withheld from them.
+ */
+export const NO_PAGER_ENV: Readonly<Record<string, string>> = {
+  PAGER: "cat",
+};
+
+/**
  * Claude's seed. The workspace IS the sandbox: Claude Code refuses bypass-permissions as root
  * unless the environment says so, and it is telling the truth. Its self-updater is off
  * (`HARNESS_UPDATES_OFF_ENV`).

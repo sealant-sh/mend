@@ -354,6 +354,7 @@ import {
   CODEX_DAEMON_OFF,
   CODEX_SHELL_SNAPSHOT_OFF,
   HARNESS_UPDATES_OFF_ENV,
+  NO_PAGER_ENV,
   launchesCodex,
   withCodexMemoryOff,
   withHarnessSetup,
@@ -10659,8 +10660,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const channel = yield* sessionChannelLaunchEnv(sessionId, input.launchId);
         const env = {
           // The harnesses' self-updaters are off for every process in the workspace, a `claude`
-          // typed in a shell included; a project variable of the same name wins.
+          // typed in a shell included, and nothing pages; a project variable of the same name wins.
           ...HARNESS_UPDATES_OFF_ENV,
+          ...NO_PAGER_ENV,
           ...Object.fromEntries(
             environment.variables.map((variable) => [variable.name, variable.value] as const),
           ),
