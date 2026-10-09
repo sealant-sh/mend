@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,6 +12,7 @@ import {
   CARRIED_INCOMING,
   CODEX_CARRY_MAX_CONVERSATIONS,
   carryConversationsExec,
+  codexDatabaseAsRead,
   codexDatabaseHolds,
   codexWouldSummarise,
   consolidateCodexDatabase,
@@ -294,6 +296,29 @@ describe("Codex's summary database", () => {
     expect(
       await Effect.runPromise(mergeCodexDatabases({ ours: version, theirs: unknown })),
     ).toBeNull();
+  });
+
+  it("reads back a database untouched since delivery as delivered: consolidating it would not be the same bytes", async () => {
+    const { db, wal } = withWal(scratch());
+    const delivered = await Effect.runPromise(consolidateCodexDatabase(db, wal));
+    if (delivered === null) throw new Error("not consolidated");
+    const digest = createHash("sha256").update(delivered).digest("hex");
+    // `VACUUM INTO` moves the schema cookie on: the same database, other bytes.
+    const again = await Effect.runPromise(consolidateCodexDatabase(delivered, null));
+    expect(again).not.toBeNull();
+    expect(Buffer.from(again ?? []).equals(Buffer.from(delivered))).toBe(false);
+    // Untouched (no write-ahead log, or an empty one): the delivered bytes, so nothing reads as changed.
+    for (const log of [null, new Uint8Array()]) {
+      const read = await Effect.runPromise(codexDatabaseAsRead(delivered, log, digest));
+      expect(Buffer.from(read ?? []).equals(Buffer.from(delivered))).toBe(true);
+    }
+    // Written since (a log with frames, other bytes) or never delivered: consolidated, as before.
+    const logged = await Effect.runPromise(codexDatabaseAsRead(db, wal, digest));
+    expect([...(await Effect.runPromise(summarisedThreads(logged)))]).toEqual([[id(4), 1234]]);
+    expect(Buffer.from(logged ?? []).equals(Buffer.from(db))).toBe(false);
+    const fresh = await Effect.runPromise(codexDatabaseAsRead(delivered, null, null));
+    expect(Buffer.from(fresh ?? []).equals(Buffer.from(delivered))).toBe(false);
+    expect(await Effect.runPromise(codexDatabaseAsRead(Buffer.from("torn"), null, "x"))).toBeNull();
   });
 
   it("stores nothing for bytes that are not a database, and reads them as nothing summarised", async () => {

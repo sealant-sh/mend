@@ -295,7 +295,7 @@ import {
   carryConversationsExec,
   codexDatabaseHolds,
   codexMemoryMayStayOn,
-  consolidateCodexDatabase,
+  codexDatabaseAsRead,
   materializeCarriedConversations,
   parseCarryOutcomes,
   planCodexCarry,
@@ -423,6 +423,7 @@ import {
   type PersonPlaces,
   type PersonRecord,
   personLinksScript,
+  personMemoryInPlace,
   personPlacesOf,
   personRecordsExec,
   personSavedPathOf,
@@ -11782,6 +11783,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Nothing stored and nothing delivered before: nothing to write, not even a record.
         if (stored.length === 0 && (as.records.get("memory-delivered") ?? null) === null) return;
         const plan = mapAgentMemoryPlan(planAgentMemory(stored), personSavedPathOf);
+        // Already in `P` as stored, from their earlier start in this executor: nothing to stage or
+        // run (a same-person join of a live executor).
+        if (personMemoryInPlace(plan.list, as.records)) {
+          return yield* Effect.logInfo("session engine: agent memory · already in place").pipe(
+            Effect.annotateLogs({ sessionId: session.id, files: stored.length }),
+          );
+        }
         const home = as.places.saved;
         yield* writeWorkspaceFiles(
           session,
@@ -13584,25 +13592,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             files.push(asMemoryFile(relative, yield* read(file.path)));
           }
         }
-        // Single memory files (Codex's summary database): read with the write-ahead log the
-        // capture holds beside it, and stored as one consolidated file.
-        for (const { path: relative } of AGENT_MEMORY_FILES) {
-          const bytes = yield* read(at(relative)).pipe(Effect.option);
-          if (Option.isNone(bytes)) continue;
-          const wal = yield* read(at(`${relative}-wal`)).pipe(Effect.option);
-          const consolidated = yield* consolidateCodexDatabase(
-            bytes.value,
-            Option.isNone(wal) ? null : wal.value,
-          );
-          if (
-            consolidated === null ||
-            consolidated.byteLength > agentMemoryMaxFileBytes(relative)
-          ) {
-            skipped.push(relative);
-            continue;
-          }
-          files.push(asMemoryFile(relative, consolidated));
-        }
         const text = (relative: string) =>
           read(relative).pipe(
             Effect.map((bytes) => new TextDecoder().decode(bytes)),
@@ -13614,6 +13603,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ([key, digest]) => [place.homePathOf(key), digest] as const,
           ),
         );
+        // Single memory files (Codex's summary database): read with the write-ahead log the
+        // capture holds beside it, and stored as one consolidated file unless untouched.
+        for (const { path: relative } of AGENT_MEMORY_FILES) {
+          const bytes = yield* read(at(relative)).pipe(Effect.option);
+          if (Option.isNone(bytes)) continue;
+          const wal = yield* read(at(`${relative}-wal`)).pipe(Effect.option);
+          const consolidated = yield* codexDatabaseAsRead(
+            bytes.value,
+            Option.isNone(wal) ? null : wal.value,
+            delivered[relative] ?? null,
+          );
+          if (
+            consolidated === null ||
+            consolidated.byteLength > agentMemoryMaxFileBytes(relative)
+          ) {
+            skipped.push(relative);
+            continue;
+          }
+          files.push(asMemoryFile(relative, consolidated));
+        }
         return { delivered, files, skipped };
       });
 
