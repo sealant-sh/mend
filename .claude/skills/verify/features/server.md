@@ -64,9 +64,9 @@ Preconditions:
 
 - **Help page.** Run `mend help server setup`. Stdout starts
   `mend server setup · install or repair the local Mend server` and lists every flag above under
-  `options`. Exit code `0`. Run `mend help server`. The page ends with a `subcommands` block naming
+  `options`. Exit code `0`. Run `mend help server`. The page contains a `subcommands` block naming
   `server setup`, `server status`, `server start`, `server stop`, `server restart`, `server logs`
-  and `server upgrade`.
+  and `server upgrade`, followed by `see also`.
 - **Refusals before Docker.** Run `mend server`. Stderr reads
   `mend: usage: mend server <setup|status|start|stop|restart|logs|upgrade> [options]`, exit code
   `1`. Run `mend server setup --bogus`. Stderr reads
@@ -139,15 +139,24 @@ Preconditions:
   server that is not on `X.Y.Z-preview.K`, `--from-preview` is refused with a line starting
   `mend: --from-preview moves a server on X.Y.Z-preview.K to a next build`. None of these stop
   anything; `mend server status` still reads `Pinned Mend <v>`.
-- **Upgrade.** Only when Launch supplies a second, higher image `<v2>` (online, or preloaded with
-  `--assets-dir`): run `mend server upgrade --version <v2>`. Stdout shows the interruption line,
+- **Upgrade.** Only when Launch supplies a second, higher version `<v2>`. Online, run
+  `mend server upgrade --version <v2>`: it downloads `<v2>`'s release assets and pulls its image.
+  Offline, with `ghcr.io/sealant-sh/mend:<v2>` preloaded and its `compose.v2.yaml` and
+  `postgres-init.sh` in `<v2-assets>`, run
+  `mend server upgrade --version <v2> --assets-dir <v2-assets> --offline`; without both flags the
+  command reaches for GitHub. Stdout shows the interruption line,
   `Upgrade recovery files: <dir>. Keep the previous generation: <dir>`, the starting line,
   `Mend <v2> is reachable at <url>`, `Upgraded to <v2>. Retained database backup: <dir>`, and
   `Upgrade backups · removed <n> … · kept <k> (--keep-backups 2)`. `mend server status` reads
   `Pinned Mend <v2>` and the same declared posture as before.
 - **Next channel.** Only when a published `next` build is in reach: `npm install --global
   @sealant/mend@next` on the disposable host, then `mend version`. The first line reads
-  `mend X.Y.Z-next.N`. `mend server setup` then pins `X.Y.Z-next.N`. A server on an old-style
+  `mend X.Y.Z-next.N`. Installing the CLI does not move a server that already exists: setup keeps
+  its pin. To see setup pin the next build, run `mend server setup` against a fresh install (a new
+  disposable host, or this one after [uninstall](./uninstall.md) removed the recipe's server, with
+  a new empty `XDG_CONFIG_HOME`); `mend server status` then reads `Pinned Mend X.Y.Z-next.N`. To
+  move the existing install instead, run `mend server upgrade --version X.Y.Z-next.N`, which is
+  refused as a downgrade when that is lower than its pin. A server on an old-style
   `X.Y.Z-preview.K` asked for `X.Y.Z-next.N` without `--from-preview` is refused with the downgrade
   line, which then names `--from-preview`; with it, stdout reads
   `ghcr.io/sealant-sh/mend:<target> carries all <n> migrations this server applied.` before the
@@ -175,7 +184,9 @@ Preconditions:
   drivable only on a disposable host with a DNS name pointing at it; otherwise `status` reports
   `edge · <host> · container running · no certificate in Caddy's data yet · mend server logs shows what Caddy tried`.
   Take it away with `mend server setup --no-edge`, which prints that the edge is gone and how to
-  remove its certificate volumes.
+  remove its certificate volumes. On an install that declares `public`, `--no-edge` alone is
+  refused with `--exposure public needs the edge: …`, because the saved exposure is kept; pass a
+  compatible one in the same command: `mend server setup --no-edge --exposure private`.
 - Setup's "first account must already exist" rule is checked as "an installation already exists"
   (`apps/cli/src/server-setup.ts:1800`). Once one setup has succeeded, `--edge` is accepted on a
   rerun even when no account has been created yet, though `mend help server setup` says the first

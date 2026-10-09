@@ -3,19 +3,22 @@
 `mend doctor` reads this machine's setup and prints one line per fact: the server, the sign-in, the
 platform connection, each provider account, Mend's Claude grant when it keeps one, the projects,
 the provider CLIs on this machine, the exposure, the server host's user namespaces and this
-machine's Docker shutdown timeout. A line that needs an action ends with the one command that takes
-it. It changes nothing, and it exits `1` only when a line is `✗`. `mend doctor --bundle` writes the
+machine's Docker shutdown timeout. Many unfinished lines end with `→` and what to do next: a
+`mend` command, a provider's own login command, or an instruction in words. Some end with nothing.
+It changes nothing, and it exits `1` only when a line is `✗`. `mend doctor --bundle` writes the
 same facts and much more into one redacted `tar.gz` with mode 0600, for a bug report. The web
 Settings page shows the platform connection as its own panel, checked live.
 
 ## Sub-features
 
 - `doctor-checklist` prints the fact lines with `✓` observed, `○` not set up yet, `✗` cannot run.
-- `doctor-fix-commands` ends each unfinished line with `→ <command>`.
+- `doctor-fix-commands` ends an unfinished line with `→ <fix>` where the doctor knows one: a
+  command, or an instruction in words.
 - `doctor-exit-code` exits `1` when any line is `✗`, `0` otherwise.
 - `doctor-bundle` writes the archive, prints its path, each file with its size, and a notice.
-- `doctor-bundle-redaction` blanks tokens, header values, passwords and `NAME=value` values in every
-  file.
+- `doctor-bundle-redaction` runs one pattern redactor over every file: header values, `Bearer`
+  tokens, known token shapes, passwords in URLs, values of secret-named keys, and `NAME=value`
+  values.
 - `doctor-bundle-options` takes `--out <path>` and `--tail <n>` (1..2000, default 500).
 - `doctor-web-connection` shows the Sealant connection on `/settings`, with `Check again`.
 
@@ -52,28 +55,42 @@ Preconditions:
   `exposure` line starting `declared <exposure> · <scheme> origin`. A `workspaces` line follows when
   the server reports its host, and a `docker` line when `docker` is on this machine's `PATH`. Exit
   code `0` unless a line is `✗`.
-- **Fix commands.** Pick any `○` or `✗` line in that output. It ends with `→ ` and one command, and
-  that command exists in `mend help` (or is the provider's own login command for the `cli` lines).
+- **Fix commands.** Pick a `○` or `✗` line that ends with `→ `, for example
+  `○ codex       not connected → mend connect codex` or `○ projects    none adopted → mend adopt`.
+  What follows the arrow on those lines is a `mend` command that `mend help` lists. Other arrows
+  are the provider's own login (`claude setup-token`, `codex login`, `gh auth login` on the `cli`
+  lines) or an instruction in words (`start the Mend server`,
+  `serve it over https and set APP_URL to that origin`, `on the server's host: …`, the `docker`
+  line's `set "shutdown-timeout": …`). Lines with no arrow at all exist too: `not checked`,
+  `not on PATH`, `GET /projects → <status>`, `shutdown-timeout not observed · …`. Assert which kind
+  each line is; do not expect a command on every line.
 - **Rejected token.** Run `MEND_TOKEN=verify-not-a-token mend doctor`. The second line reads
   `✗ signed in   token rejected → mend login`, the lines that need a sign-in read `○ … not checked`,
   and the exit code is `1`.
 - **Unreachable server.** Run `MEND_URL=http://127.0.0.1:9 mend doctor`. The first line reads
   `✗ server      cannot reach http://127.0.0.1:9 → start the Mend server`, the next reads
-  `○ signed in   not checked`, and the exit code is `1`. It returns within a few seconds: no request
-  waits longer than three.
+  `○ signed in   not checked`, and the exit code is `1`. Each HTTP request the doctor makes is cut
+  off after three seconds; the command as a whole has no bound (the local `gh auth token` and the
+  Docker probe are not timed by it).
 - **Bundle.** Run `mend doctor --bundle --out <evidence>/doctor/bundle.tgz --tail 50`. Stderr reads
   `collecting · this can take a minute`. Stdout reads `<evidence>/doctor/bundle.tgz · <size>`, one
-  line per file with its size (`cli.json`, `doctor.txt`, `server-health.json`, `docker.txt`,
-  `sessions.json` and the rest), and last
+  line per file with its size (`cli.json`, `doctor.txt`, `server-health.json`, `sessions.json`,
+  `docker.txt` when this machine's Docker answered or `docker.error.txt` when it did not, and the
+  rest), and last
   `Contains logs and configuration; secrets are redacted, but read it before sharing.`. Exit code
   `0`.
 - **Archive facts.** Run `stat -c %a <evidence>/doctor/bundle.tgz`. It prints `600`. Run
   `tar -tzf <evidence>/doctor/bundle.tgz`. Every entry sits under `bundle/`. On a machine with no
   local server, `bundle/server-config.error.txt` and `bundle/server-logs.error.txt` are present and
   read `no Mend server is installed on this machine (mend server setup installs one)`.
-- **Redaction.** Run `tar -xzOf <evidence>/doctor/bundle.tgz | grep -c -F '<token>'`. It prints
-  `0` (grep exits `1`). `bundle/cli.json` records whether a token is saved, never the token, and the
-  names of the `MEND_` variables in the environment without their values.
+- **Token absent.** Run `tar -xzOf <evidence>/doctor/bundle.tgz | grep -c -F '<token>'`. It prints
+  `0` (grep exits `1`). `bundle/cli.json` records `tokenSaved`, never the token, and the names of
+  the `MEND_` variables in the environment without their values. This proves the token is absent
+  from the archive; it does not prove the redactor removed it, since no collector writes the saved
+  token in the first place.
+- **Redactor at work.** Find a pattern the redactor covers in what the bundle collected, for example
+  an `Authorization` or `Bearer` value in a recorded session's output, or a `NAME=value` line in a
+  container log. In the archive the value reads `[redacted]` and the key or prefix stays.
 - **Usage errors.** Run `mend doctor --bundle --tail 0`. Stderr reads `mend: --tail is 1..2000`,
   then `usage: mend doctor` and `       mend doctor --bundle [--out <path>] [--tail <n>]`. Exit code
   `1`, and no archive is written.
@@ -84,9 +101,11 @@ Preconditions:
   `A live round-trip to the control plane, checked from this instance.`. Its status reads
   `Connected · observed`, `Unauthorized`, `Responded · surface mismatch` or `Unreachable`, beside
   `control plane <url>` and `checked <time>`.
-- **Check again.** Run `await page.getByRole("button", { name: "Check again" }).click()`. The
-  button reads `Checking…` and is disabled, then reads `Check again`, and the `checked` time moves
-  forward.
+- **Check again.** Wait at least one second after the page loaded, then run
+  `await page.getByRole("button", { name: "Check again" }).click()`. The button reads `Checking…`
+  and is disabled, then reads `Check again`, and the `checked` time is later than before. The time
+  is shown with `toLocaleString()` to the second, so two checks within one displayed second look
+  identical; that is not a missed check.
 - **Proof.** Keep the `mend doctor` transcripts (plain, rejected token, unreachable server) with
   their exit codes, the `--bundle` transcript, the `stat`, `tar -tzf` and redaction-grep outputs,
   and the archive itself under `<evidence>/doctor/`. For the web panel keep
@@ -111,6 +130,12 @@ Preconditions:
 - Marks are painted only on a TTY. On a pipe the line starts with the bare `✓`, `○` or `✗`.
 - `○` lines never fail the command. Only `✗` sets exit code `1`; a fresh instance with no providers
   connected exits `0`.
+- The redactor matches by pattern only (`apps/cli/src/doctor-bundle.ts:30-57`): header values,
+  `Bearer` tokens, Slack `xox…`/`xapp-`, OpenAI `sk-…`, GitHub `gh?_…`/`github_pat_…`, JWTs, AWS
+  `AKIA…`, passwords in URLs, values of keys whose names contain `password`, `secret`, `token`,
+  `api_key`, `private_key` or `credential`, and `NAME=value` lines. A Mend device token (`mdt_…`,
+  `apps/api/src/routes/devices.ts:56`) standing bare in a log line, outside those shapes, has no
+  rule and would survive. A product gap.
 - The redactor is over-eager on purpose: any key containing `token`, `secret` or `password` and
   every `NAME=value` line is blanked. A blanked harmless value is expected, not a bug.
 - The web `Sealant connection` panel is a `section` with no `aria-labelledby`, so it has no region

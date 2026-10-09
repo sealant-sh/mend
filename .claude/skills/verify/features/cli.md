@@ -104,7 +104,9 @@ Preconditions:
 
 - `--help` or `-h` anywhere before `--` makes any command print its page and do nothing else:
   `mend land fix --help` lands nothing. After `--` it belongs to the user's command
-  (`mend run -- cmd --help`).
+  (`mend run -- cmd --help`). `help` itself is the exception (`apps/cli/src/main.ts:4920-4926`):
+  `mend help --help` asks for a page named `--help` and prints
+  `mend: no command "--help" · mend help lists them`, exit `1`.
 - `mend <unknown> --help` prints `no command "<unknown>" · mend help lists them`, not the
   `unknown command` line: help runs first.
 - Help pages wrap at the terminal width, capped at 100 columns. Compare pages produced at the same
@@ -123,8 +125,9 @@ Preconditions:
   (`apps/cli/src/main.ts:3842`), printing `id<TAB>harness · project · branch`. It swallows every
   error and prints nothing on a dead server; an empty completion is not proof of no sessions.
 - `mend help qr` says the installer renders its pairing QR through `mend qr`
-  (`apps/cli/src/help.ts:1394-1399`), but no script in the repository calls it; the host installer
-  was retired. A stale description.
+  (`apps/cli/src/help.ts:1394-1399`), but no installer in the repository calls it; the host
+  installer was retired. Its only caller is the package smoke test
+  (`apps/cli/scripts/test-package.mjs:126`). A stale description.
 - `mend snake` reads `--no-tunnel` (`apps/cli/src/main.ts:5035-5036`), but its catalog entry has no
   options. A gap between the parser and the catalog.
 - `mend version` never fails on a missing server; `server · unreachable` is a printed fact with exit

@@ -48,18 +48,24 @@ Preconditions:
 - Mend is healthy at `<web>`, the CLI is signed in to it, and `<project>` is adopted (see
   [Adopt a project](./adopt-project.md)).
 - The `mend` on `PATH` runs on Node 26 or newer. For the Node gate step, a Node 22 or 24 binary is
-  also available as `<node22>`; without one, report that step unreachable.
+  also available as `<node22>`, and `command -v mend` resolves to a JavaScript file Node can run
+  (the published `dist/main.js`). How Launch installs the CLI decides that: a shell wrapper or the
+  TypeScript source does not qualify. Without both, report that step unreachable.
 - tmux is installed. Every dashboard runs in its own session sized like a real terminal, started in
   a directory that is not a Git checkout (so no adopt offer appears), and wrapped so its exit code
   stays on screen: `tmux new-session -d -s verify-tui -x 200 -y 50 'cd /tmp && mend ui; echo "exit $?"; sleep 600'`.
   Read the screen with `tmux capture-pane -p -t verify-tui` and wait for a string, never a fixed
   sleep.
 - No worktree named `verify-tui` exists in `<project>` (`mend worktrees --project <project>`).
+- For the review step, the base `verify-tui` forks from has no `TUI.md`, and the shell session
+  changes nothing but writing that file; the file and line counts below assume exactly that diff.
 - For the adopt step, a local clone of a second disposable repository whose origin (written
   `<repo-url-2>`) no project uses; Launch must supply it, or the step is reported unreachable.
 
-- **Open.** Start the session above. The top line starts ` mend  <n> projects · <m> live` and ends
-  with `<web>`. The sidebar shows the `projects`, `worktrees` and `sessions · <n>` frames, the
+- **Open.** Start the session above. The top line starts ` mend  <n> projects · <m> live` (or
+  ` mend  1 project · <m> live` with a single project) and ends with `<web>`. The sidebar shows the
+  `projects`, `worktrees` and `sessions · <n>` frames (the last reads plain `sessions` while no
+  worktree is selected), the
   session pane's frame reads `session · read-only` (or `session` with nothing selected), and the
   footer starts ` ↑↓ move · ←→ panes · a attach · r resume · n new session · w new worktree`.
 - **Navigate to the project.** Send `tmux send-keys -t verify-tui Left Left`. The projects section
@@ -97,10 +103,11 @@ Preconditions:
 - **Rename.** Send `e`. A modal titled ` label · shell <id8> ` opens. Send
   `tmux send-keys -t verify-tui -l 'verify tui'` and `Enter`. The status line reads
   `labeled · verify tui`, and the session row now reads `verify tui`.
-- **Review.** Send `v`. The screen's first line reads
-  ` mend / <project> / review · shell <id8>` followed by `· checkpointing`, `· checkpoint recorded`
-  or `· checkpoint incomplete`, the second line names `1 files` and `+1`, the `files · 1` frame
-  lists `TUI.md`, and the diff frame's title reads ` TUI.md · unified `. The footer starts
+- **Review.** Send `v`. The screen first reads `Loading the live change…` (or
+  `<error> · retrying`); wait it out. Then the first line reads
+  ` mend / <project> / review · shell <id8>`, then ` · syncing` while it refetches, then
+  ` · checkpoint recorded`. With the fixture above, the second line names `1 files` and `+1`, the
+  `files · 1` frame lists `TUI.md`, and the diff frame's title reads ` TUI.md · unified `. The footer starts
   ` diff · ↑↓/jk lines · n/p files`. Send `w`; the diff title ends `· wrapped`. Send `Tab`; the
   footer starts ` comments · ↑↓/jk move`. Send `r`; the status line reads
   `Refreshing live change…`. Send `Escape`; the dashboard returns. If `v` instead reads
@@ -160,6 +167,9 @@ Preconditions:
   `Enter` sent before that does nothing. Wait for a branch row (or the list's own notice) first.
 - `⇧K` and `⇧D` act only on a second press within five seconds while their armed line is still the
   status. Any other key between the presses disarms them.
+- The review header's `· checkpointing` and `· checkpoint incomplete` words never show: the header
+  draws only once the change has loaded, and then it always reads `· checkpoint recorded`
+  (`apps/cli/src/review.tsx:606`, `1140-1151`). Dead branches; a finding.
 - `x` stops exactly like `⇧K` (`apps/cli/src/dashboard-model.ts:1315`) and `clients/terminal`
   documents it, but `mend help ui` does not. A gap between the key table and the catalog.
 - The adopt offer starts on `ambient` (`apps/cli/src/dashboard-adoption.ts:28`,
@@ -175,7 +185,12 @@ Preconditions:
   sub-feature is unreachable; report it so. On a remote server a tunneled Service shows in the
   session pane as `<name> → http://localhost:<port>`.
 - `a` suspends the dashboard and hands the terminal to the session; the capture then shows the
-  workspace shell, not the dashboard. `Ctrl+]` is the only way back. `MEND_DETACH_KEY=none` turns it
+  workspace shell, not the dashboard. `Ctrl+]` is the detach path that gives the terminal back and
+  leaves the session running (`detached · <id8> keeps running`). The dashboard also returns when the
+  attach is interrupted (the same `detached` line), when the connection drops
+  (`disconnected · <id8> · refreshing session status`), when the server does not open the terminal
+  (`no answer · …`), or when the terminal ends (`terminal ended · <id8> · refreshing session status`,
+  for example after `exit` in the shell). Only the first leaves a live shell behind for certain. `MEND_DETACH_KEY=none` turns it
   off, which a harness must not set.
 - `o` runs the machine's browser opener. On a headless host nothing opens, yet the status line still
   reads `opened · …`; it states the request, not a page load.
