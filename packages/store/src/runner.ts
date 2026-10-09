@@ -54,6 +54,9 @@ import {
   type DiffFileFactsOptions,
   type DiffRangeOptions,
   type FileListing,
+  type FileRead,
+  type GrepQuery,
+  type GrepResult,
   type StoreBranch,
   Store,
   StoreConfig,
@@ -192,6 +195,20 @@ export class GitOpsRunner extends Context.Service<
       ref: string,
       limit: number,
     ) => Effect.Effect<FileListing, GitError>;
+    /** The start of one file of `ref`'s tree (`Store.readBlob`); null when none is there. */
+    readonly readBlob: (
+      cache: RunnerCache,
+      ref: string,
+      relative: string,
+      maxBytes: number,
+    ) => Effect.Effect<FileRead | null, GitError>;
+    /** Lines of `ref`'s tree matching `query` (`Store.grep`). */
+    readonly grep: (
+      cache: RunnerCache,
+      ref: string,
+      query: GrepQuery,
+      limit: number,
+    ) => Effect.Effect<GrepResult, GitError>;
     readonly headSha: (cache: RunnerCache) => Effect.Effect<Sha, GitError>;
     readonly listBranches: (
       cache: RunnerCache,
@@ -585,6 +602,26 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* store.listTreeFiles(cache.path, sha, limit);
       });
 
+      const readBlob = Effect.fn("GitOpsRunner.readBlob")(function* (
+        cache: RunnerCache,
+        ref: string,
+        relative: string,
+        maxBytes: number,
+      ) {
+        const sha = yield* resolve(cache, ref);
+        return yield* store.readBlob(cache.path, sha, relative, maxBytes);
+      });
+
+      const grep = Effect.fn("GitOpsRunner.grep")(function* (
+        cache: RunnerCache,
+        ref: string,
+        query: GrepQuery,
+        limit: number,
+      ) {
+        const sha = yield* resolve(cache, ref);
+        return yield* store.grep(cache.path, sha, query, limit);
+      });
+
       const headSha = Effect.fn("GitOpsRunner.headSha")(function* (cache: RunnerCache) {
         return yield* resolve(cache, "HEAD");
       });
@@ -735,6 +772,8 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         diffFileFactsBounded,
         changedFiles,
         listTreeFiles,
+        readBlob,
+        grep,
         headSha,
         listBranches,
         blame,

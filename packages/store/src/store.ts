@@ -7,7 +7,7 @@ import { RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench"
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { git, gitCapped, GitError } from "./git.ts";
+import { git, gitCapped, GitError, gitHead } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -216,6 +216,74 @@ export type DiffFileStatus =
   | "type-changed"
   | "unmerged"
   | "unknown";
+
+/** The start of one file's bytes: at most what was asked, and how large the file is. */
+export interface FileRead {
+  readonly bytes: Uint8Array;
+  /** The whole file's size in bytes. */
+  readonly size: number;
+  /** Fewer bytes than the file holds were read. */
+  readonly truncated: boolean;
+  /** A NUL in the first 8000 bytes, as git decides it. */
+  readonly binary: boolean;
+}
+
+/** What `grep` looks for: literal text unless `regex`, whole words when asked. */
+export interface GrepQuery {
+  readonly pattern: string;
+  readonly caseSensitive: boolean;
+  readonly wholeWord: boolean;
+  readonly regex: boolean;
+}
+
+/** One line that matched. */
+export interface GrepMatch {
+  readonly path: string;
+  /** From 1. */
+  readonly line: number;
+  readonly text: string;
+}
+
+export interface GrepResult {
+  readonly matches: ReadonlyArray<GrepMatch>;
+  /** More lines matched than were kept. */
+  readonly truncated: boolean;
+}
+
+/**
+ * A path inside a worktree as a client may name one: relative, without `..` or an empty segment,
+ * and never into `.git`.
+ */
+export const isWorktreeRelativePath = (relative: string): boolean => {
+  if (relative.length === 0 || relative.includes("\0") || path.isAbsolute(relative)) return false;
+  const segments = relative.split("/");
+  return segments.every(
+    (segment) => segment.length > 0 && segment !== "." && segment !== ".." && segment !== ".git",
+  );
+};
+
+const binaryOf = (bytes: Uint8Array): boolean => bytes.subarray(0, 8000).includes(0);
+
+/** `git grep -n -z` output (`path\0line\0text`, paths prefixed by `rev:` for a tree) as matches. */
+export const parseGrep = (out: string, rev: string | null, limit: number): GrepResult => {
+  const matches: Array<GrepMatch> = [];
+  let truncated = false;
+  for (const record of out.split("\n")) {
+    if (record.length === 0) continue;
+    const [rawPath = "", line = "", ...rest] = record.split("\0");
+    if (matches.length >= limit) {
+      truncated = true;
+      break;
+    }
+    const prefix = rev === null ? "" : `${rev}:`;
+    matches.push({
+      path: rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath,
+      line: Number.parseInt(line, 10),
+      text: rest.join("\0"),
+    });
+  }
+  return { matches, truncated };
+};
 
 /** Git facts for one file in an immutable commit range. */
 /**
@@ -667,6 +735,35 @@ export class Store extends Context.Service<
       worktreePath: string,
       limit: number,
     ) => Effect.Effect<FileListing, GitError>;
+    /**
+     * The start of one file of a commit's tree (`cat-file blob rev:path`), at most `maxBytes`;
+     * null when the tree has no file there. Read-only.
+     */
+    readonly readBlob: (
+      dir: string,
+      rev: string,
+      relative: string,
+      maxBytes: number,
+    ) => Effect.Effect<FileRead | null, GitError>;
+    /**
+     * The start of one file of a worktree as it stands on disk, at most `maxBytes`; null when
+     * nothing readable is there, or the path leaves the worktree (a symlink out of it, `.git`).
+     */
+    readonly readWorktreeFile: (
+      worktreePath: string,
+      relative: string,
+      maxBytes: number,
+    ) => Effect.Effect<FileRead | null, GitError>;
+    /**
+     * Lines matching `query` (`git grep`), in a commit's tree, or with `rev` null in a worktree
+     * as it stands, untracked files included and ignored ones not; at most `limit`.
+     */
+    readonly grep: (
+      dir: string,
+      rev: string | null,
+      query: GrepQuery,
+      limit: number,
+    ) => Effect.Effect<GrepResult, GitError>;
     /** Every path in one commit's tree (`ls-tree -r`), for the bare store when no worktree is in play. */
     readonly listTreeFiles: (
       dir: string,
@@ -1260,6 +1357,85 @@ export class Store extends Context.Service<
         return capListing([...new Set(out.split("\0"))], limit);
       });
 
+      const readBlob = Effect.fn("Store.readBlob")(function* (
+        dir: string,
+        rev: string,
+        relative: string,
+        maxBytes: number,
+      ) {
+        if (!isWorktreeRelativePath(relative)) return null;
+        const spec = `${rev}:${relative}`;
+        // 128: git found nothing at that path.
+        const type = yield* git(["cat-file", "-t", spec], dir, undefined, [128]);
+        if (type !== "blob") return null;
+        const size = Number.parseInt(yield* git(["cat-file", "-s", spec], dir), 10);
+        const bytes = new Uint8Array(yield* gitHead(["cat-file", "blob", spec], dir, maxBytes));
+        return {
+          bytes,
+          size,
+          truncated: size > bytes.byteLength,
+          binary: binaryOf(bytes),
+        } satisfies FileRead;
+      });
+
+      const readWorktreeFile = Effect.fn("Store.readWorktreeFile")(function* (
+        worktreePath: string,
+        relative: string,
+        maxBytes: number,
+      ) {
+        if (!isWorktreeRelativePath(relative)) return null;
+        return yield* Effect.try({
+          try: (): FileRead | null => {
+            const root = fs.realpathSync(worktreePath);
+            const target = path.resolve(root, relative);
+            if (!fs.existsSync(target)) return null;
+            // A symlink may point anywhere: only a file that stays inside the worktree is read.
+            const real = fs.realpathSync(target);
+            if (!real.startsWith(`${root}${path.sep}`)) return null;
+            if (real.split(path.sep).includes(".git")) return null;
+            const stat = fs.statSync(real);
+            if (!stat.isFile()) return null;
+            const handle = fs.openSync(real, "r");
+            try {
+              const buffer = Buffer.alloc(Math.min(maxBytes, stat.size));
+              const read = fs.readSync(handle, buffer, 0, buffer.byteLength, 0);
+              const bytes = new Uint8Array(buffer.subarray(0, read));
+              return {
+                bytes,
+                size: stat.size,
+                truncated: stat.size > read,
+                binary: binaryOf(bytes),
+              };
+            } finally {
+              fs.closeSync(handle);
+            }
+          },
+          catch: (error) =>
+            new GitError({
+              args: ["read-worktree-file", relative],
+              cwd: worktreePath,
+              exitCode: null,
+              stderr: error instanceof Error ? error.message : String(error),
+            }),
+        });
+      });
+
+      const grep = Effect.fn("Store.grep")(function* (
+        dir: string,
+        rev: string | null,
+        query: GrepQuery,
+        limit: number,
+      ) {
+        const args = ["grep", "-n", "-z", "-I", "--no-color", `--max-count=${limit + 1}`];
+        if (!query.caseSensitive) args.push("-i");
+        if (query.wholeWord) args.push("-w");
+        args.push(query.regex ? "-E" : "-F", "-e", query.pattern);
+        args.push(...(rev === null ? ["--untracked"] : [rev]));
+        // 1: nothing matched.
+        const out = yield* git(args, dir, undefined, [1]);
+        return parseGrep(out, rev, limit);
+      });
+
       const listTreeFiles = Effect.fn("Store.listTreeFiles")(function* (
         dir: string,
         ref: string,
@@ -1408,6 +1584,9 @@ export class Store extends Context.Service<
         diffFileFactsBounded,
         headSha,
         listWorktreeFiles,
+        readBlob,
+        readWorktreeFile,
+        grep,
         listTreeFiles,
         listTopLevel,
       };
