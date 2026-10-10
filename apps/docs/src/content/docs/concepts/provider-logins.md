@@ -108,8 +108,8 @@ session finds its conversation again. In a remote workspace the state is saved w
 and whoever starts the next session there gets it. Logins and tokens are never part of it: none of
 the files below is saved, and none is brought back from a session saved before it was on this list.
 A path ending in `/` is a directory and everything in it; a file's siblings named after it with a
-suffix (`auth.json.lock`, a write's temporary) are left out with it. This applies once Mend pins a
-Sealant runtime with sealantd#136, planned for Mend 0.36. An older runtime leaves out only
+suffix (`auth.json.lock`, a write's temporary) are left out with it. The Sealant runtime Mend 0.36
+bundles (with sealantd#136) applies this list. An older runtime leaves out only
 `.claude/.credentials.json`, `.codex/auth.json`, and pi's and opencode's `auth.json`.
 
 | Path                                   | Agent       | Holds                                                                                       |
