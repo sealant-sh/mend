@@ -19,8 +19,8 @@ License in `LICENSE` (t3code's own, copied with the files):
 
 - Never edit the copied files. Mend's lint and format skip them; `tsconfig.json` carries t3code's
   compiler options so they typecheck as upstream does.
-- The package runs on Effect `4.0.0-rc.115` from the `t3` catalog in `pnpm-workspace.yaml`, apart
-  from the rest of the monorepo.
+- The package runs on Effect `4.0.2` from the `t3` catalog in `pnpm-workspace.yaml`, apart from the
+  rest of the monorepo.
 - To move the pin, run the copy script with a nightly tag, never `main`:
 
   ```sh

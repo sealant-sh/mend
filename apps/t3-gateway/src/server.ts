@@ -2,9 +2,9 @@ import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as Effect from "effect/Effect";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
 
 import { AssetTracingDisabledLive, AssetUrlsLive } from "./assets.ts";
 import { GatewayAuthLive } from "./auth.ts";

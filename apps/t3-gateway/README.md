@@ -6,7 +6,7 @@ them it is a t3code server; to Mend it is an ordinary client of `/api`, calling 
 token of the person who paired. Mend stays the only source of truth and its access rules apply
 unchanged.
 
-It runs on Effect `4.0.0-rc.115` from the `t3` catalog and speaks t3code's contracts from
+It runs on Effect `4.0.2` from the `t3` catalog and speaks t3code's contracts from
 `@mend/t3-contracts`, pinned to one t3code nightly tag. It does not import `@mend/api-contracts`: it
 decodes only the Mend fields it reads.
 
@@ -26,10 +26,17 @@ Refusals carry t3code's own error bodies (`EnvironmentAuthInvalidError`,
 
 ## Phase 0: the RPC socket
 
-`GET /ws?wsTicket=…&orchestrationProtocol=2` upgrades to Effect RPC in JSON on `rc.115`, serving
-t3code's whole `WsRpcGroup`. Without `orchestrationProtocol=2` it answers 426 with t3code's body. A
-ticket is spent once; a socket without one may use the request's own bearer, as t3code allows. Each
-socket gets its own RPC server, holding the handlers of the person who paired.
+`GET /ws?wsTicket=…&orchestrationProtocol=2` upgrades to Effect RPC in JSON on Effect `4.0.2`,
+serving t3code's whole `WsRpcGroup`. Without `orchestrationProtocol=2` it answers 426 with t3code's
+body. A ticket is spent once; a socket without one may use the request's own bearer, as t3code
+allows. Each socket gets its own RPC server, holding the handlers of the person who paired.
+
+Every call is checked against the bearer's scopes before its handler runs, as t3code's
+`RpcScopeAuthorization` does, from a copy of t3code's own scope map at the pin (`rpc-scopes.ts`). A
+pairing grants the overlap of what the client asks and t3code's standard client scopes. A grant from
+before t3code's granular permissions (it holds `review:write`) is read as today's standard grant, so
+clients of the previous pin keep files, the terminal and review. Refusals name the scope as t3code
+does: the granular permission, and its legacy parent for older clients.
 
 | Method                                                  | What the gateway does                                                                                                                                                                                                        |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

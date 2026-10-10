@@ -71,18 +71,18 @@ catalog:
 # the monorepo stays on the default catalog. Versions are t3code's pins at the tag in
 # packages/t3-contracts/t3code.pin.json; vitest is the one vite-plus 1.0.0 pins. A package that
 # takes @effect/vitest from the default catalog must also declare effect, or pnpm satisfies the peer
-# with rc.115 (beta.93 is below @effect/vitest's ^4.0.0-beta.98); hence effect in apps/cli.
+# with the t3 catalog's (beta.93 is below @effect/vitest's ^4.0.0-beta.98); hence effect in apps/cli.
 catalogs:
   t3:
-    "@effect/platform-node": 4.0.0-rc.115
-    "@effect/vitest": 4.0.0-rc.115
-    effect: 4.0.0-rc.115
+    "@effect/platform-node": 4.0.2
+    "@effect/vitest": 4.0.2
+    effect: 4.0.2
     vitest: 5.0.1
 
-# @effect/platform-node rc.115 asks for @effect/platform-node-shared ^4.0.0-rc.115, which resolves
-# to the stable 4.0.0 and its effect ^4.0.0 peer. t3code pins it to rc.115 the same way.
+# @effect/platform-node 4.0.2 asks for @effect/platform-node-shared ^4.0.2, which would resolve to
+# the newest 4.0.x and its own effect peer. t3code pins it to 4.0.2 in its catalog; so does this.
 overrides:
-  "@effect/platform-node@4.0.0-rc.115>@effect/platform-node-shared": 4.0.0-rc.115
+  "@effect/platform-node@4.0.2>@effect/platform-node-shared": 4.0.2
 
 onlyBuiltDependencies:
   - electron

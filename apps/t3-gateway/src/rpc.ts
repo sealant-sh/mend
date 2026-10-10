@@ -4,12 +4,10 @@ import {
   AssetAttachmentNotFoundError,
   AssetWorkspaceContextNotFoundError,
   AuthAccessReadScope,
-  AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
-  AuthRelayReadScope,
-  AuthRelayWriteScope,
-  AuthTerminalOperateScope,
+  AuthTerminalReadScope,
   EnvironmentAuthorizationError,
+  authScopeRequiredResponse,
   ExternalLauncherUnsupportedEditorError,
   GitManagerError,
   ORCHESTRATION_V2_WS_METHODS,
@@ -44,10 +42,10 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import type * as Rpc from "effect/rpc/Rpc";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import type * as Rpc from "effect/unstable/rpc/Rpc";
-import type * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
 import { AssetUrls } from "./assets.ts";
 import { dispatchCommand } from "./commands.ts";
@@ -56,6 +54,7 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { makeReviewHandlers } from "./review.ts";
+import { RPC_REQUIRED_SCOPES } from "./rpc-scopes.ts";
 import {
   loginsOf,
   makeServerConfig,
@@ -97,9 +96,11 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.serverRefreshProviders,
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
+  WS_METHODS.serverGetStorageCleanupReport,
   ORCHESTRATION_V2_WS_METHODS.subscribeShell,
   ORCHESTRATION_V2_WS_METHODS.subscribeThread,
   ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+  ORCHESTRATION_V2_WS_METHODS.getTurnItem,
   ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
   ORCHESTRATION_V2_WS_METHODS.launchThread,
   ORCHESTRATION_V2_WS_METHODS.getTurnDiff,
@@ -117,6 +118,7 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.vcsListRefs,
   WS_METHODS.terminalOpen,
   WS_METHODS.terminalAttach,
+  WS_METHODS.terminalObserve,
   WS_METHODS.terminalWrite,
   WS_METHODS.terminalResize,
   WS_METHODS.terminalClear,
@@ -138,7 +140,6 @@ export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.pullRequestsSubscribeRefreshes,
   WS_METHODS.subscribeProjectClones,
   WS_METHODS.subscribeWorktreeSetup,
-  WS_METHODS.previewAutomationConnect,
   WS_METHODS.subscribePreviewEvents,
   WS_METHODS.subscribeDiscoveredLocalServers,
   WS_METHODS.subscribeDeviceState,
@@ -149,24 +150,23 @@ export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
 // ─── Refusals ────────────────────────────────────────────────────────────────
 
 const READ = AuthOrchestrationReadScope;
-const OPERATE = AuthOrchestrationOperateScope;
-const TERMINAL = AuthTerminalOperateScope;
+const TERMINAL_READ = AuthTerminalReadScope;
 
 const notOfferedText = (method: string) => `Mend's t3code gateway does not offer ${method}.`;
 
 /**
- * The refusal every method's contract allows. `requiredScope` is the scope t3code's own server
- * requires for the method (`RPC_REQUIRED_SCOPES` in t3:apps/server/src/auth/RpcAuthorization.ts);
- * no client at the pin reads it.
+ * The refusal every method's contract allows, naming the scope t3code's own server requires for the
+ * method (`rpc-scopes.ts`): the permission, and its legacy parent for clients from before them.
  */
-const notOffered = (method: WsRpcMethod, requiredScope: AuthEnvironmentScope) =>
-  new EnvironmentAuthorizationError({ message: notOfferedText(method), requiredScope });
+const notOffered = (method: WsRpcMethod) =>
+  new EnvironmentAuthorizationError({
+    message: notOfferedText(method),
+    ...authScopeRequiredResponse(RPC_REQUIRED_SCOPES[method]),
+  });
 
-const refuse = (method: WsRpcMethod, requiredScope: AuthEnvironmentScope) =>
-  Effect.fail(notOffered(method, requiredScope));
+const refuse = (method: WsRpcMethod) => Effect.fail(notOffered(method));
 
-const refuseStream = (method: WsRpcMethod, requiredScope: AuthEnvironmentScope) =>
-  Stream.fail(notOffered(method, requiredScope));
+const refuseStream = (method: WsRpcMethod) => Stream.fail(notOffered(method));
 
 const PROVIDER_SETUP_DETAIL =
   "Mend runs each harness on its person's own login. Sign in and install harnesses in Mend.";
@@ -230,17 +230,6 @@ export interface GatewayRpcInput {
   readonly hub: PersonHub;
 }
 
-/** The orchestration read scope t3code requires for the served reads, checked as t3code does. */
-const scopeCheck = (session: BearerSession, requiredScope: AuthEnvironmentScope) =>
-  session.scopes.includes(requiredScope)
-    ? Effect.void
-    : Effect.fail(
-        new EnvironmentAuthorizationError({
-          message: `The authenticated token is missing required scope: ${requiredScope}.`,
-          requiredScope,
-        }),
-      );
-
 const MODELS_SOURCE = "Mend GET /api/harnesses/models";
 /** How long the config waits for the person's logins (Mend asks the platform) before leaving them unknown. */
 const LOGINS_DEADLINE = "2 seconds";
@@ -300,16 +289,12 @@ export const makeGatewayRpcHandlers = ({
   const files = makeFileHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
 
-  /** The socket's own device token, checked on every call, then the scope it needs. */
-  const authorize = (bearer: BearerSession, requiredScope: AuthEnvironmentScope) =>
-    hub.isRefused(bearer.deviceToken)
-      ? Effect.fail(
-          new EnvironmentAuthorizationError({
-            message: "Mend no longer accepts this device. Pair again from Mend.",
-            requiredScope,
-          }),
-        )
-      : scopeCheck(bearer, requiredScope);
+  /**
+   * The socket's own device token, checked on every served call. The scope the call needs was
+   * checked before the handler ran (`RpcScopeAuthorization`, `rpc-scopes.ts`).
+   */
+  const authorize = (bearer: BearerSession) =>
+    hub.isRefused(bearer.deviceToken) ? Effect.fail(deviceRefused(READ)) : Effect.void;
 
   /**
    * The person's config. Mend's catalog is read with their device token; a revoked device
@@ -318,7 +303,7 @@ export const makeGatewayRpcHandlers = ({
    * mapping bug is a typed failure logged by the gateway, never a defect in the client.
    */
   const loadServerConfig = Effect.gen(function* () {
-    yield* authorize(session, READ);
+    yield* authorize(session);
     const catalogRead = mend.listHarnessModels(session.deviceToken).pipe(
       Effect.catchTags({
         MendDeviceRefused: () =>
@@ -383,7 +368,7 @@ export const makeGatewayRpcHandlers = ({
 
   return WsRpcGroup.of({
     // ── Served ──────────────────────────────────────────────────────────────
-    [WS_METHODS.serverProbe]: () => authorize(session, READ).pipe(Effect.as({})),
+    [WS_METHODS.serverProbe]: () => authorize(session).pipe(Effect.as({})),
     [WS_METHODS.serverGetConfig]: () => loadServerConfig,
     // A snapshot, then the providers again whenever the person's logins may have moved (review
     // R650-3): Mend says their accounts changed, or the regular look finds them changed (an
@@ -424,7 +409,7 @@ export const makeGatewayRpcHandlers = ({
       ).pipe(Stream.scoped),
     [WS_METHODS.subscribeServerLifecycle]: () =>
       Stream.fromEffect(
-        authorize(session, READ).pipe(
+        authorize(session).pipe(
           Effect.as({
             version: 1 as const,
             sequence: 1,
@@ -439,7 +424,7 @@ export const makeGatewayRpcHandlers = ({
     [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input) =>
       Stream.unwrap(
         Effect.gen(function* () {
-          yield* authorize(session, READ);
+          yield* authorize(session);
           const { start, changes } = yield* hub
             .subscribeShell(input.afterSequence)
             .pipe(Effect.mapError(shellReadFailure));
@@ -471,7 +456,7 @@ export const makeGatewayRpcHandlers = ({
     [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) => launchThread(hub, session, input),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input) =>
       Effect.gen(function* () {
-        yield* authorize(session, READ);
+        yield* authorize(session);
         const snapshot = yield* hub
           .threadSnapshot(input.threadId)
           .pipe(Effect.mapError(threadReadFailure(input.threadId)));
@@ -483,7 +468,7 @@ export const makeGatewayRpcHandlers = ({
     [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input) =>
       Stream.unwrap(
         Effect.gen(function* () {
-          yield* authorize(session, READ);
+          yield* authorize(session);
           const subscribed = yield* hub
             .subscribeThread(input.threadId, input.afterSequence)
             .pipe(Effect.mapError(threadReadFailure(input.threadId)));
@@ -515,7 +500,7 @@ export const makeGatewayRpcHandlers = ({
     // (`turn-checkpoints.ts`); a revoked device blocks, anything else is the method's own error.
     [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: (input) =>
       Effect.gen(function* () {
-        yield* authorize(session, READ);
+        yield* authorize(session);
         const diff = yield* hub
           .turnDiff({
             session,
@@ -540,7 +525,7 @@ export const makeGatewayRpcHandlers = ({
       }),
     [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: (input) =>
       Effect.gen(function* () {
-        yield* authorize(session, READ);
+        yield* authorize(session);
         const diff = yield* hub
           .turnDiff({
             session,
@@ -558,6 +543,21 @@ export const makeGatewayRpcHandlers = ({
           );
         return { threadId: input.threadId, fromTurnCount: 0, toTurnCount: input.toTurnCount, diff };
       }),
+    // One item in full, from the thread as the gateway projects it: Mend's items are never cut.
+    [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
+      Effect.gen(function* () {
+        yield* authorize(session);
+        const snapshot = yield* hub
+          .threadSnapshot(input.threadId)
+          .pipe(Effect.mapError(threadReadFailure(input.threadId)));
+        if (snapshot === null) return yield* unknownThread(input.threadId);
+        const item = snapshot.projection.turnItems.find((turnItem) => turnItem.id === input.itemId);
+        return { item: item ?? null };
+      }),
+    [ORCHESTRATION_V2_WS_METHODS.searchThread]: () =>
+      refuse(ORCHESTRATION_V2_WS_METHODS.searchThread),
+    [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: () =>
+      refuseStream(ORCHESTRATION_V2_WS_METHODS.searchThreadStream),
     [ORCHESTRATION_V2_WS_METHODS.searchThreads]: () =>
       Effect.fail(
         new OrchestrationSearchThreadsError({
@@ -566,13 +566,13 @@ export const makeGatewayRpcHandlers = ({
       ),
     // The person's archive, kept by the gateway (Mend has none).
     [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: () =>
-      authorize(session, READ).pipe(
+      authorize(session).pipe(
         Effect.andThen(hub.archivedShell.pipe(Effect.mapError(shellReadFailure))),
       ),
     [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: () =>
       Stream.unwrap(
         Effect.gen(function* () {
-          yield* authorize(session, READ);
+          yield* authorize(session);
           const { snapshot, changes } = yield* hub.subscribeArchivedShell.pipe(
             Effect.mapError(shellReadFailure),
           );
@@ -659,32 +659,30 @@ export const makeGatewayRpcHandlers = ({
       Stream.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
     [WS_METHODS.serverCommitDesktopUpdate]: () =>
       Effect.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
-    [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding, OPERATE),
-    [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding, OPERATE),
-    [WS_METHODS.serverGetSettings]: () => refuse(WS_METHODS.serverGetSettings, READ),
-    [WS_METHODS.serverUpdateSettings]: () => refuse(WS_METHODS.serverUpdateSettings, OPERATE),
-    [WS_METHODS.serverDiscoverSourceControl]: () =>
-      refuse(WS_METHODS.serverDiscoverSourceControl, READ),
-    [WS_METHODS.serverGetTraceDiagnostics]: () =>
-      refuse(WS_METHODS.serverGetTraceDiagnostics, READ),
-    [WS_METHODS.serverGetProcessDiagnostics]: () =>
-      refuse(WS_METHODS.serverGetProcessDiagnostics, READ),
-    [WS_METHODS.serverGetHostResources]: () => refuse(WS_METHODS.serverGetHostResources, READ),
+    [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding),
+    [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding),
+    [WS_METHODS.serverGetSettings]: () => refuse(WS_METHODS.serverGetSettings),
+    [WS_METHODS.serverUpdateSettings]: () => refuse(WS_METHODS.serverUpdateSettings),
+    [WS_METHODS.serverDiscoverSourceControl]: () => refuse(WS_METHODS.serverDiscoverSourceControl),
+    [WS_METHODS.serverGetTraceDiagnostics]: () => refuse(WS_METHODS.serverGetTraceDiagnostics),
+    [WS_METHODS.serverGetProcessDiagnostics]: () => refuse(WS_METHODS.serverGetProcessDiagnostics),
+    [WS_METHODS.serverGetHostResources]: () => refuse(WS_METHODS.serverGetHostResources),
     [WS_METHODS.serverGetProcessResourceHistory]: () =>
-      refuse(WS_METHODS.serverGetProcessResourceHistory, READ),
+      refuse(WS_METHODS.serverGetProcessResourceHistory),
     [WS_METHODS.serverGetResourceTelemetryHistory]: () =>
-      refuse(WS_METHODS.serverGetResourceTelemetryHistory, READ),
+      refuse(WS_METHODS.serverGetResourceTelemetryHistory),
     [WS_METHODS.serverRetryResourceTelemetry]: () =>
-      refuse(WS_METHODS.serverRetryResourceTelemetry, OPERATE),
-    [WS_METHODS.serverGetUsageSummary]: () => refuse(WS_METHODS.serverGetUsageSummary, READ),
-    [WS_METHODS.serverRefreshUsageRates]: () => refuse(WS_METHODS.serverRefreshUsageRates, READ),
-    [WS_METHODS.serverSignalProcess]: () => refuse(WS_METHODS.serverSignalProcess, OPERATE),
-    [WS_METHODS.serverReportClientActivity]: () =>
-      refuse(WS_METHODS.serverReportClientActivity, READ),
-    [WS_METHODS.serverReportHostPowerState]: () =>
-      refuse(WS_METHODS.serverReportHostPowerState, OPERATE),
-    [WS_METHODS.serverGetBackgroundPolicy]: () =>
-      refuse(WS_METHODS.serverGetBackgroundPolicy, READ),
+      refuse(WS_METHODS.serverRetryResourceTelemetry),
+    [WS_METHODS.serverGetUsageSummary]: () => refuse(WS_METHODS.serverGetUsageSummary),
+    // The gateway keeps nothing a cleanup would free: there is never a report.
+    [WS_METHODS.serverGetStorageCleanupReport]: () =>
+      Stream.concat(Stream.make(null), Stream.never),
+    [WS_METHODS.serverRunStorageCleanup]: () => refuse(WS_METHODS.serverRunStorageCleanup),
+    [WS_METHODS.serverRefreshUsageRates]: () => refuse(WS_METHODS.serverRefreshUsageRates),
+    [WS_METHODS.serverSignalProcess]: () => refuse(WS_METHODS.serverSignalProcess),
+    [WS_METHODS.serverReportClientActivity]: () => refuse(WS_METHODS.serverReportClientActivity),
+    [WS_METHODS.serverReportHostPowerState]: () => refuse(WS_METHODS.serverReportHostPowerState),
+    [WS_METHODS.serverGetBackgroundPolicy]: () => refuse(WS_METHODS.serverGetBackgroundPolicy),
     [WS_METHODS.subscribeBackgroundPolicy]: () => Stream.never,
     [WS_METHODS.subscribeResourceTelemetry]: () => Stream.never,
     // t3code's own answer to a paired client: pairing is administered in Mend, and the gateway
@@ -704,7 +702,7 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.serverUninstallAcpRegistryManagedBinary]: () =>
       acpRegistry(WS_METHODS.serverUninstallAcpRegistryManagedBinary),
     [WS_METHODS.serverAcceptAcpRegistryUrlAuth]: () =>
-      refuse(WS_METHODS.serverAcceptAcpRegistryUrlAuth, OPERATE),
+      refuse(WS_METHODS.serverAcceptAcpRegistryUrlAuth),
     [WS_METHODS.serverListAcpRegistrySessions]: () =>
       acpRegistry(WS_METHODS.serverListAcpRegistrySessions),
     [WS_METHODS.serverImportAcpRegistrySession]: () =>
@@ -727,12 +725,18 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.scheduledTasksDelete]: () => scheduledTasks(WS_METHODS.scheduledTasksDelete),
     [WS_METHODS.scheduledTasksRunNow]: () => scheduledTasks(WS_METHODS.scheduledTasksRunNow),
     [WS_METHODS.scheduledTasksSubscribe]: () => Stream.never,
+    [WS_METHODS.scheduledTasksRotateWebhookToken]: () =>
+      scheduledTasks(WS_METHODS.scheduledTasksRotateWebhookToken),
+    [WS_METHODS.scheduledTasksListWebhookDeliveries]: () =>
+      scheduledTasks(WS_METHODS.scheduledTasksListWebhookDeliveries),
+    [WS_METHODS.scheduledTasksGetWebhookDelivery]: () =>
+      scheduledTasks(WS_METHODS.scheduledTasksGetWebhookDelivery),
+    // Mend asks for no secret through t3code: there is never a request to answer.
+    [WS_METHODS.secretsAnswerRequest]: () => refuse(WS_METHODS.secretsAnswerRequest),
 
     // ── T3 Connect relay ────────────────────────────────────────────────────
-    [WS_METHODS.cloudGetRelayClientStatus]: () =>
-      refuse(WS_METHODS.cloudGetRelayClientStatus, AuthRelayReadScope),
-    [WS_METHODS.cloudInstallRelayClient]: () =>
-      refuseStream(WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope),
+    [WS_METHODS.cloudGetRelayClientStatus]: () => refuse(WS_METHODS.cloudGetRelayClientStatus),
+    [WS_METHODS.cloudInstallRelayClient]: () => refuseStream(WS_METHODS.cloudInstallRelayClient),
 
     // ── Pull requests ───────────────────────────────────────────────────────
     [WS_METHODS.pullRequestsList]: () => pullRequests(WS_METHODS.pullRequestsList),
@@ -767,6 +771,7 @@ export const makeGatewayRpcHandlers = ({
       pullRequests(WS_METHODS.pullRequestsSetThreadResolution),
     [WS_METHODS.pullRequestsSetReaction]: () => pullRequests(WS_METHODS.pullRequestsSetReaction),
     [WS_METHODS.pullRequestsInvalidate]: () => pullRequests(WS_METHODS.pullRequestsInvalidate),
+    [WS_METHODS.pullRequestsReportState]: () => pullRequests(WS_METHODS.pullRequestsReportState),
     [WS_METHODS.pullRequestsReviewerCandidates]: () =>
       pullRequests(WS_METHODS.pullRequestsReviewerCandidates),
     [WS_METHODS.pullRequestsRequestReviewers]: () =>
@@ -778,31 +783,31 @@ export const makeGatewayRpcHandlers = ({
 
     // ── Source control and project creation ─────────────────────────────────
     [WS_METHODS.sourceControlLookupRepository]: () =>
-      refuse(WS_METHODS.sourceControlLookupRepository, READ),
+      refuse(WS_METHODS.sourceControlLookupRepository),
     [WS_METHODS.sourceControlCloneRepository]: () =>
-      refuse(WS_METHODS.sourceControlCloneRepository, OPERATE),
+      refuse(WS_METHODS.sourceControlCloneRepository),
     [WS_METHODS.sourceControlPublishRepository]: () =>
-      refuse(WS_METHODS.sourceControlPublishRepository, OPERATE),
+      refuse(WS_METHODS.sourceControlPublishRepository),
     [WS_METHODS.projectCloneStart]: () =>
       Effect.fail(
         new OrchestrationDispatchCommandError({
           message: notOfferedText(WS_METHODS.projectCloneStart),
         }),
       ),
-    [WS_METHODS.projectCloneCancel]: () => refuse(WS_METHODS.projectCloneCancel, OPERATE),
-    [WS_METHODS.projectCloneRetry]: () => refuse(WS_METHODS.projectCloneRetry, OPERATE),
+    [WS_METHODS.projectCloneCancel]: () => refuse(WS_METHODS.projectCloneCancel),
+    [WS_METHODS.projectCloneRetry]: () => refuse(WS_METHODS.projectCloneRetry),
     [WS_METHODS.subscribeProjectClones]: () => Stream.never,
 
     // ── Projects and files ──────────────────────────────────────────────────
     [WS_METHODS.projectsListEntries]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(files.listEntries(input))),
+      authorize(session).pipe(Effect.andThen(files.listEntries(input))),
     [WS_METHODS.projectsReadFile]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(files.readFile(input))),
+      authorize(session).pipe(Effect.andThen(files.readFile(input))),
     [WS_METHODS.projectsSearchContents]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(files.searchContents(input))),
+      authorize(session).pipe(Effect.andThen(files.searchContents(input))),
     [WS_METHODS.projectsSearchEntries]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(files.searchEntries(input))),
-    [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile, OPERATE),
+      authorize(session).pipe(Effect.andThen(files.searchEntries(input))),
+    [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile),
     [WS_METHODS.projectsEnsureScratch]: () =>
       Effect.fail(
         new OrchestrationDispatchCommandError({
@@ -826,11 +831,11 @@ export const makeGatewayRpcHandlers = ({
     // Nothing opens on the machine Mend runs on.
     [WS_METHODS.shellOpenInEditor]: (input) =>
       Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
-    [WS_METHODS.filesystemBrowse]: () => refuse(WS_METHODS.filesystemBrowse, READ),
+    [WS_METHODS.filesystemBrowse]: () => refuse(WS_METHODS.filesystemBrowse),
     // Nothing to import: the gateway has no agent history of its own to scan, and Mend's projects
     // are in the shell already. t3code's onboarding then offers none.
     [WS_METHODS.agentSessionsScan]: () =>
-      Effect.andThen(authorize(session, READ), () =>
+      Effect.andThen(authorize(session), () =>
         Effect.succeed({ candidates: [], scannedAt: new Date().toISOString() }),
       ),
     [WS_METHODS.agentSessionsImport]: (input) =>
@@ -839,7 +844,7 @@ export const makeGatewayRpcHandlers = ({
     // a workspace are not served.
     [WS_METHODS.assetsCreateUrl]: (input) =>
       Effect.gen(function* () {
-        yield* authorize(session, READ);
+        yield* authorize(session);
         const resource = input.resource;
         if (resource._tag !== "attachment") {
           return yield* new AssetWorkspaceContextNotFoundError({ resource });
@@ -852,9 +857,14 @@ export const makeGatewayRpcHandlers = ({
           fileName: image.name,
         });
       }),
+    // MCP apps run in a t3code server's own provider sessions; Mend's agents have none.
+    [WS_METHODS.mcpAppsCallTool]: () => refuse(WS_METHODS.mcpAppsCallTool),
+    [WS_METHODS.mcpAppsToolInfo]: () => refuse(WS_METHODS.mcpAppsToolInfo),
+    [WS_METHODS.mcpAppsReadResource]: () => refuse(WS_METHODS.mcpAppsReadResource),
+    [WS_METHODS.mcpAppsUpdateModelContext]: () => refuse(WS_METHODS.mcpAppsUpdateModelContext),
     [WS_METHODS.assetsPersistChatAttachments]: (input) =>
       Effect.gen(function* () {
-        yield* authorize(session, OPERATE);
+        yield* authorize(session);
         const kept = yield* hub
           .persistImages({
             threadId: input.threadId,
@@ -874,99 +884,108 @@ export const makeGatewayRpcHandlers = ({
           })),
         };
       }),
-    [WS_METHODS.attachmentsCreateUploadUrl]: () =>
-      refuse(WS_METHODS.attachmentsCreateUploadUrl, OPERATE),
-    [WS_METHODS.attachmentsDelete]: () => refuse(WS_METHODS.attachmentsDelete, OPERATE),
+    [WS_METHODS.attachmentsCreateUploadUrl]: () => refuse(WS_METHODS.attachmentsCreateUploadUrl),
+    [WS_METHODS.attachmentsDelete]: () => refuse(WS_METHODS.attachmentsDelete),
 
     // ── VCS and git ─────────────────────────────────────────────────────────
     // The thread's change, as Mend keeps it (`vcs.ts`).
     [WS_METHODS.subscribeVcsStatus]: (input) =>
-      Stream.unwrap(authorize(session, READ).pipe(Effect.as(vcs.subscribeStatus(input)))),
+      Stream.unwrap(authorize(session).pipe(Effect.as(vcs.subscribeStatus(input)))),
     [WS_METHODS.vcsRefreshStatus]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(vcs.refreshStatus(input))),
+      authorize(session).pipe(Effect.andThen(vcs.refreshStatus(input))),
     [WS_METHODS.gitRunStackedAction]: (input) =>
       Stream.fail(gitManager(WS_METHODS.gitRunStackedAction, input.cwd)),
     [WS_METHODS.gitResolvePullRequest]: (input) =>
       Effect.fail(gitManager(WS_METHODS.gitResolvePullRequest, input.cwd)),
     [WS_METHODS.gitPreparePullRequestThread]: (input) =>
       Effect.fail(gitManager(WS_METHODS.gitPreparePullRequestThread, input.cwd)),
-    [WS_METHODS.vcsPull]: () => refuse(WS_METHODS.vcsPull, OPERATE),
+    [WS_METHODS.vcsPull]: () => refuse(WS_METHODS.vcsPull),
     [WS_METHODS.vcsListRefs]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(vcs.listRefs(input))),
-    [WS_METHODS.vcsCreateWorktree]: () => refuse(WS_METHODS.vcsCreateWorktree, OPERATE),
+      authorize(session).pipe(Effect.andThen(vcs.listRefs(input))),
+    [WS_METHODS.vcsCreateWorktree]: () => refuse(WS_METHODS.vcsCreateWorktree),
     [WS_METHODS.vcsRemoveWorktree]: () =>
       Effect.fail(
-        new EnvironmentAuthorizationError({ message: WORKTREE_KEPT, requiredScope: OPERATE }),
+        new EnvironmentAuthorizationError({
+          message: WORKTREE_KEPT,
+          ...authScopeRequiredResponse(RPC_REQUIRED_SCOPES[WS_METHODS.vcsRemoveWorktree]),
+        }),
       ),
-    [WS_METHODS.vcsCreateRef]: () => refuse(WS_METHODS.vcsCreateRef, OPERATE),
-    [WS_METHODS.vcsSwitchRef]: () => refuse(WS_METHODS.vcsSwitchRef, OPERATE),
+    [WS_METHODS.vcsCreateRef]: () => refuse(WS_METHODS.vcsCreateRef),
+    [WS_METHODS.vcsSwitchRef]: () => refuse(WS_METHODS.vcsSwitchRef),
     [WS_METHODS.vcsInit]: () => vcsUnsupported(WS_METHODS.vcsInit),
     [WS_METHODS.subscribeWorktreeSetup]: () => Stream.never,
-    [WS_METHODS.worktreeSetupCancel]: () => refuse(WS_METHODS.worktreeSetupCancel, OPERATE),
+    [WS_METHODS.worktreeSetupCancel]: () => refuse(WS_METHODS.worktreeSetupCancel),
 
     // ── Review: the thread's change ─────────────────────────────────────────
     [WS_METHODS.reviewGetDiffPreview]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(review.getDiffPreview(input))),
+      authorize(session).pipe(Effect.andThen(review.getDiffPreview(input))),
     [WS_METHODS.reviewGetDiffFileContents]: (input) =>
-      authorize(session, READ).pipe(Effect.andThen(review.getDiffFileContents(input))),
+      authorize(session).pipe(Effect.andThen(review.getDiffFileContents(input))),
 
     // ── Terminal: Mend's shell beside the agent, over /api/tty (`terminals.ts`) ──
     [WS_METHODS.terminalOpen]: (input) =>
-      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.open(session, input))),
+      authorize(session).pipe(Effect.andThen(hub.terminals.open(session, input))),
     [WS_METHODS.terminalAttach]: (input) =>
+      Stream.unwrap(authorize(session).pipe(Effect.as(hub.terminals.attach(session, input)))),
+    // Following a terminal that runs, never starting one: an attach with no `cwd` starts nothing.
+    [WS_METHODS.terminalObserve]: (input) =>
       Stream.unwrap(
-        authorize(session, TERMINAL).pipe(Effect.as(hub.terminals.attach(session, input))),
+        authorize(session).pipe(
+          Effect.as(
+            hub.terminals.attach(session, {
+              threadId: input.threadId,
+              terminalId: input.terminalId,
+            }),
+          ),
+        ),
       ),
     [WS_METHODS.terminalWrite]: (input) =>
-      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.write(input))),
+      authorize(session).pipe(Effect.andThen(hub.terminals.write(input))),
     [WS_METHODS.terminalResize]: (input) =>
-      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.resize(input))),
+      authorize(session).pipe(Effect.andThen(hub.terminals.resize(input))),
     [WS_METHODS.terminalClear]: (input) =>
-      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.clear(input))),
+      authorize(session).pipe(Effect.andThen(hub.terminals.clear(input))),
     [WS_METHODS.terminalRestart]: (input) =>
-      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.restart(session, input))),
+      authorize(session).pipe(Effect.andThen(hub.terminals.restart(session, input))),
     [WS_METHODS.terminalClose]: (input) =>
-      authorize(session, TERMINAL).pipe(Effect.andThen(hub.terminals.close(session, input))),
+      authorize(session).pipe(Effect.andThen(hub.terminals.close(session, input))),
     // A subscriber too slow to keep up fails typed, and t3code subscribes again.
     [WS_METHODS.subscribeTerminalEvents]: () =>
       Stream.unwrap(
-        authorize(session, TERMINAL).pipe(
-          Effect.as(hub.terminals.events.pipe(Stream.mapError(() => fellBehind(TERMINAL)))),
+        authorize(session).pipe(
+          Effect.as(hub.terminals.events.pipe(Stream.mapError(() => fellBehind(TERMINAL_READ)))),
         ),
       ),
     [WS_METHODS.subscribeTerminalMetadata]: () =>
       Stream.unwrap(
-        authorize(session, TERMINAL).pipe(
-          Effect.as(hub.terminals.metadata.pipe(Stream.mapError(() => fellBehind(TERMINAL)))),
+        authorize(session).pipe(
+          Effect.as(hub.terminals.metadata.pipe(Stream.mapError(() => fellBehind(TERMINAL_READ)))),
         ),
       ),
 
     // ── Preview ─────────────────────────────────────────────────────────────
-    [WS_METHODS.previewOpen]: () => refuse(WS_METHODS.previewOpen, OPERATE),
-    [WS_METHODS.previewNavigate]: () => refuse(WS_METHODS.previewNavigate, OPERATE),
-    [WS_METHODS.previewResize]: () => refuse(WS_METHODS.previewResize, OPERATE),
-    [WS_METHODS.previewRefresh]: () => refuse(WS_METHODS.previewRefresh, OPERATE),
-    [WS_METHODS.previewClose]: () => refuse(WS_METHODS.previewClose, OPERATE),
-    [WS_METHODS.previewList]: () => refuse(WS_METHODS.previewList, READ),
-    [WS_METHODS.previewReportStatus]: () => refuse(WS_METHODS.previewReportStatus, OPERATE),
-    // A desktop offering itself as a browser host: the host is never asked for anything.
-    [WS_METHODS.previewAutomationConnect]: () => Stream.never,
-    [WS_METHODS.previewAutomationRespond]: () =>
-      refuse(WS_METHODS.previewAutomationRespond, OPERATE),
-    [WS_METHODS.previewAutomationFocusHost]: () =>
-      refuse(WS_METHODS.previewAutomationFocusHost, OPERATE),
+    [WS_METHODS.previewOpen]: () => refuse(WS_METHODS.previewOpen),
+    [WS_METHODS.previewNavigate]: () => refuse(WS_METHODS.previewNavigate),
+    [WS_METHODS.previewResize]: () => refuse(WS_METHODS.previewResize),
+    [WS_METHODS.previewRefresh]: () => refuse(WS_METHODS.previewRefresh),
+    [WS_METHODS.previewClose]: () => refuse(WS_METHODS.previewClose),
+    [WS_METHODS.previewList]: () => refuse(WS_METHODS.previewList),
+    [WS_METHODS.previewReportStatus]: () => refuse(WS_METHODS.previewReportStatus),
+    [WS_METHODS.previewAdjust]: () => refuse(WS_METHODS.previewAdjust),
+    [WS_METHODS.previewClearProfile]: () => refuse(WS_METHODS.previewClearProfile),
+    [WS_METHODS.previewReportProfiles]: () => refuse(WS_METHODS.previewReportProfiles),
     [WS_METHODS.subscribePreviewEvents]: () => Stream.never,
     [WS_METHODS.subscribeDiscoveredLocalServers]: () => Stream.never,
 
     // ── Devices ─────────────────────────────────────────────────────────────
-    [WS_METHODS.deviceConfigure]: () => refuse(WS_METHODS.deviceConfigure, OPERATE),
-    [WS_METHODS.deviceList]: () => refuse(WS_METHODS.deviceList, READ),
-    [WS_METHODS.deviceTestHost]: () => refuse(WS_METHODS.deviceTestHost, OPERATE),
-    [WS_METHODS.deviceOpen]: () => refuse(WS_METHODS.deviceOpen, OPERATE),
-    [WS_METHODS.deviceClose]: () => refuse(WS_METHODS.deviceClose, OPERATE),
-    [WS_METHODS.deviceShutdown]: () => refuse(WS_METHODS.deviceShutdown, OPERATE),
-    [WS_METHODS.deviceDetail]: () => refuse(WS_METHODS.deviceDetail, READ),
-    [WS_METHODS.deviceAction]: () => refuse(WS_METHODS.deviceAction, OPERATE),
+    [WS_METHODS.deviceConfigure]: () => refuse(WS_METHODS.deviceConfigure),
+    [WS_METHODS.deviceList]: () => refuse(WS_METHODS.deviceList),
+    [WS_METHODS.deviceTestHost]: () => refuse(WS_METHODS.deviceTestHost),
+    [WS_METHODS.deviceOpen]: () => refuse(WS_METHODS.deviceOpen),
+    [WS_METHODS.deviceClose]: () => refuse(WS_METHODS.deviceClose),
+    [WS_METHODS.deviceShutdown]: () => refuse(WS_METHODS.deviceShutdown),
+    [WS_METHODS.deviceDetail]: () => refuse(WS_METHODS.deviceDetail),
+    [WS_METHODS.deviceAction]: () => refuse(WS_METHODS.deviceAction),
     [WS_METHODS.subscribeDeviceState]: () => Stream.never,
   });
 };

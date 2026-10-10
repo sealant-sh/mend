@@ -71,6 +71,7 @@ describe("a thread", () => {
         const bounded = yield* client.orchestration.threadBoundedSnapshot({
           headers,
           params: { threadId: ThreadId.make("session-1") },
+          query: {},
         });
         assert.isFalse(bounded.hasMoreHistory);
         assert.isNull(bounded.historyCursor);

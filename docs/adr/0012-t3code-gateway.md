@@ -15,7 +15,8 @@ live, send a follow-up, interrupt, answer a request, read the change.
 
 - **Transport.** One WebSocket at `/ws` carries Effect RPC in JSON (`Request`/`Ack`/`Interrupt`/
   `Eof`/`Ping` from the client, `Chunk`/`Exit`/`Defect`/`Pong` from the server, a ping every 5 s).
-  The group is 173 methods, 27 of them streams. A small HTTP API sits beside it.
+  The group is 188 methods, 29 of them streams (173 and 27 at the first pin). A small HTTP API sits
+  beside it.
 - **Remote servers are a public seam.** Desktop, mobile and the hosted app add a server by pairing
   URL (`…/pair#token=`) or host plus pairing code (`t3:packages/shared/src/remote.ts:188-245`). The
   base URL is always forced to path `/` (`remote.ts:100-130`), so a server needs its own origin.
@@ -73,16 +74,18 @@ the same client; nothing here has to merge the two.
 
 ### Effect on its own catalog
 
-The gateway runs on `effect@4.0.0-rc.115` through a named pnpm catalog (`catalogs.t3`). It does not
-import `@mend/api-contracts` (beta.93 schemas); it carries its own decoders for the handful of Mend
-responses it reads. Nothing else in the monorepo moves.
+The gateway runs on t3code's Effect (`4.0.2` since the 2026-10-10 pin; `rc.115` before) through a
+named pnpm catalog (`catalogs.t3`). It does not import `@mend/api-contracts` (beta.93 schemas); it
+carries its own decoders for the handful of Mend responses it reads. Nothing else in the monorepo
+moves.
 
 ### The vendored contract
 
 `packages/t3-contracts` (`@mend/t3-contracts`) is a verbatim, MIT-attributed copy of
 `t3:packages/contracts/src` (99 files, depends on `effect` only), plus t3code's default keybindings.
 A copy script writes it from a pinned nightly tag and records the tag and SHA. It is never edited by
-hand. The first pin is `v0.0.46-nightly.20261003.2623`.
+hand. The first pin was `v0.0.46-nightly.20261003.2623`; the current one is in
+`packages/t3-contracts/t3code.pin.json`.
 
 ### Concepts
 
@@ -237,3 +240,8 @@ its own pull request.
   The box check found the bearer of a revoked device still getting tickets: the revocation was
   written after the refusal tore the hub down, and the teardown interrupted it. A ticket now asks
   `GET /api/me/devices` first, and a start checks every paired device once.
+- 2026-10-10: the pin moves to `v0.0.46-nightly.20261010.2922`, and the `t3` catalog with it to
+  Effect `4.0.2` (stable; `effect/unstable/*` became `effect/http`, `effect/rpc`, `effect/socket`,
+  `effect/http-api`). t3code split its scopes into granular permissions and put an
+  `RpcScopeAuthorization` middleware on every RPC; the gateway serves it from a copy of t3code's own
+  scope map, and reads a grant from before the split as the standard grant it stood for.

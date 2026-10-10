@@ -20,8 +20,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
+import * as Socket from "effect/socket/Socket";
 import * as Stream from "effect/Stream";
-import * as Socket from "effect/unstable/socket/Socket";
 
 import type { GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";

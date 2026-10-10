@@ -10,10 +10,10 @@ import {
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as HttpClient from "effect/http/HttpClient";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as HttpClient from "effect/unstable/http/HttpClient";
 
 import { EMPTY_SHELL_SNAPSHOT } from "../src/shell.ts";
 import { orchestrationProtocolCompatibilityError } from "./support/compatibility.ts";
