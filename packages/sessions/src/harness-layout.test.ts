@@ -69,7 +69,21 @@ const fakeRoot = () => {
   stub(
     "id",
     `if [ "$1" = -u ] && [ -z "$2" ]; then echo 0; exit 0; fi\n` +
-      `[ -f "${users}/$2" ] && cat "${users}/$2" || exit 1`,
+      `[ -f "${users}/$2" ] || exit 1\n` +
+      // A user's primary group: `mend`'s, unless a test gave them another.
+      `if [ "$1" = -g ]; then [ -f "${users}/$2.gid" ] && cat "${users}/$2.gid" || echo 40000; exit 0; fi\n` +
+      `cat "${users}/$2"`,
+  );
+  // The owner and group a test gave a path (`chown` changes nothing here); the rest as it is.
+  const realStat = spawnSync("sh", ["-c", "command -v stat"], { encoding: "utf8" }).stdout.trim();
+  const owners = path.join(dir, "owners");
+  fs.mkdirSync(owners);
+  stub(
+    "stat",
+    `if [ "$1" = -c ] && { [ "$2" = %u ] || [ "$2" = %g ]; }; then ` +
+      `o="${owners}/$(printf %s "$3" | tr / %)"; ` +
+      `if [ -f "$o" ]; then if [ "$2" = %u ]; then cut -d' ' -f1 "$o"; else cut -d' ' -f2 "$o"; fi; exit 0; fi; fi\n` +
+      `exec ${realStat} "$@"`,
   );
   stub(
     "useradd",
@@ -107,6 +121,12 @@ const fakeRoot = () => {
     passwd,
     group,
     failUseradd: () => fs.writeFileSync(path.join(dir, "useradd-fails"), ""),
+    /** What `stat` says owns `target`, as root would have made it. */
+    own: (target: string, uid: number, gid: number) =>
+      fs.writeFileSync(path.join(owners, target.replaceAll("/", "%")), `${uid} ${gid}\n`),
+    /** The user's primary group, as passwd would say it. */
+    primaryGroup: (name: string, gid: number) =>
+      fs.writeFileSync(path.join(users, `${name}.gid`), `${gid}\n`),
     log: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : ""),
     run: (script: string) =>
       spawnSync("sh", ["-c", script], {
@@ -630,9 +650,12 @@ describe("a private TMPDIR someone else made first (review of mend#566, round 2 
   });
 });
 
+/** A path's permission bits, special bits included. */
+const modeOf = (target: string) => fs.statSync(target).mode & 0o7777;
+
 describe("a person ensured again while their deliveries run (review of mend#619, R1)", () => {
-  /** Alice made by her first start's exec, as root; then her dotfiles fold `~/.claude` into a link. */
-  const madeThenFolded = () => {
+  /** Alice made by her first start's exec, as root: her home hers, `mend`'s, 0700. */
+  const made = () => {
     const root = fakeRoot();
     const options = {
       harnessHome: path.join(root.dir, "harness-home"),
@@ -642,7 +665,12 @@ describe("a person ensured again while their deliveries run (review of mend#619,
       skel: root.skel,
     };
     expect(root.run(personHomeScript(alice, options)).status).toBe(0);
-    // A supported folded dotfiles directory, while her dotfiles apply runs.
+    root.own(options.home, alice.uid, 40_000);
+    return { root, options };
+  };
+  /** Then her dotfiles fold `~/.claude` into a link, while their apply runs. */
+  const madeThenFolded = () => {
+    const { root, options } = made();
     const folded = path.join(options.home, "dotfiles-claude");
     fs.mkdirSync(folded);
     fs.writeFileSync(path.join(folded, "settings.json"), "{}");
@@ -677,6 +705,85 @@ describe("a person ensured again while their deliveries run (review of mend#619,
     expect(fs.readFileSync(path.join(root.dir, "users", alice.name), "utf8").trim()).toBe(
       String(alice.uid),
     );
+  });
+
+  // Review 2 of mend#619, R2: the home is held to what `personHomeScript` makes of it.
+  it("refuses a home someone else owns, and changes nothing in it", () => {
+    const { root, options } = made();
+    root.own(options.home, 40_013, 40_000);
+    const logged = root.log();
+    const ensured = root.run(personHomeEnsureScript(alice, options));
+    expect(ensured.status).toBe(1);
+    expect(ensured.stderr).toContain(`the home of ${alice.name} belongs to someone else`);
+    expect(modeOf(options.home)).toBe(0o700);
+    expect(root.log()).toBe(logged);
+  });
+
+  it("refuses a user with another uid or another primary group", () => {
+    for (const [mutate, words] of [
+      [
+        (root: ReturnType<typeof fakeRoot>) =>
+          fs.writeFileSync(path.join(root.dir, "users", alice.name), "40099\n"),
+        `user ${alice.name} has another uid in this image`,
+      ],
+      [
+        (root: ReturnType<typeof fakeRoot>) => root.primaryGroup(alice.name, 40_001),
+        `user ${alice.name} has another primary group in this image`,
+      ],
+    ] as const) {
+      const { root, options } = made();
+      mutate(root);
+      const ensured = root.run(personHomeEnsureScript(alice, options));
+      expect(ensured.status).toBe(1);
+      expect(ensured.stderr).toContain(words);
+    }
+  });
+
+  it.each(["0755", "0777", "0500", "01700", "02700"])(
+    "sets a home of mode %s back to 0700, the directory alone",
+    (mode) => {
+      const { root, options } = madeThenFolded();
+      fs.chmodSync(options.home, Number.parseInt(mode, 8));
+      expect(root.run(personHomeEnsureScript(alice, options)).status).toBe(0);
+      expect(modeOf(options.home)).toBe(0o700);
+      expect(fs.lstatSync(path.join(options.home, ".claude")).isSymbolicLink()).toBe(true);
+    },
+  );
+
+  it("gives a home of another group back to mend's, the directory alone", () => {
+    const { root, options } = made();
+    root.own(options.home, alice.uid, 40_001);
+    expect(root.run(personHomeEnsureScript(alice, options)).status).toBe(0);
+    expect(root.log().trim().split("\n").at(-1)).toBe(`chgrp -h 40000 ${options.home}`);
+  });
+
+  // Review 2 of mend#619, R3: a link at the home is refused, never followed.
+  it.each(["to a directory", "dangling"])("refuses a home that is a link %s", (kind) => {
+    const { root, options } = made();
+    const target = path.join(root.dir, "elsewhere");
+    if (kind === "to a directory") {
+      fs.mkdirSync(target);
+      fs.chmodSync(target, 0o755);
+    }
+    fs.rmSync(options.home, { recursive: true });
+    fs.symlinkSync(target, options.home);
+    const logged = root.log();
+    for (const script of [
+      personHomeEnsureScript(alice, options),
+      personHomeScript(alice, options),
+    ]) {
+      const run = root.run(script);
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`unexpected link: ${options.home}`);
+    }
+    expect(fs.readlinkSync(options.home)).toBe(target);
+    if (kind === "to a directory") {
+      expect(modeOf(target)).toBe(0o755);
+      expect(fs.readdirSync(target)).toEqual([]);
+    } else {
+      expect(fs.existsSync(target)).toBe(false);
+    }
+    expect(root.log()).toBe(logged);
   });
 });
 

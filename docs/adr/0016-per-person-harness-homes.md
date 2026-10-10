@@ -1479,11 +1479,14 @@ benchmark once more, before 0.36 is tagged.
   user and home beside Core's POST of their logins (both started within 3 ms), and Core's write
   exited 1. A person's logins are now posted only once that exec has exited 0. A POST that fails
   without refusing a login is asked once more, after the user and home are ensured again, and a
-  second failure refuses the start in words. The ensure reads and changes nothing in the home when
-  the user and the home are there, because the person's deliveries may be running in it by then
-  (dotfiles that fold `~/.claude` into a link, which the whole home script refuses); only a missing
-  user or home runs the whole script (review of mend#619). The failed turn never ran on the owner's
-  process or login: a hand-over prepares the sender's user, home and logins before it stops
-  anything, and a failure fails the waiting turn unsent. A first steer or join now waits for the
-  POST after the exec (about 140 ms on the box) instead of beside it.
+  second failure refuses the start in words. The ensure reads and changes nothing in the home,
+  because the person's deliveries may be running in it by then (dotfiles that fold `~/.claude` into
+  a link, which the whole home script refuses), and holds the home itself to what that script makes
+  of it: a link at the home is refused and never followed, by both scripts; the user must have their
+  uid and `mend` as their primary group and the home must be theirs, or the start is refused; a
+  group or mode that drifted is set again on the directory alone. Only a missing user or home runs
+  the whole script (reviews 1 and 2 of mend#619). The failed turn never ran on the owner's process
+  or login: a hand-over prepares the sender's user, home and logins before it stops anything, and a
+  failure fails the waiting turn unsent. A first steer or join now waits for the POST after the exec
+  (about 140 ms on the box) instead of beside it.
 - Open: gate B's history record.
