@@ -64,9 +64,11 @@ Preconditions:
   line's `set "shutdown-timeout": …`). Lines with no arrow at all exist too: `not checked`,
   `not on PATH`, `GET /projects → <status>`, `shutdown-timeout not observed · …`. Assert which kind
   each line is; do not expect a command on every line.
-- **Rejected token.** Run `MEND_TOKEN=verify-not-a-token mend doctor`. The second line reads
-  `✗ signed in   token rejected → mend login`, the lines that need a sign-in read `○ … not checked`,
-  and the exit code is `1`.
+- **Rejected token.** Make a scratch config home whose `mend/cli.json` names `<web>` and holds a
+  bogus token (`{"url":"<web>","token":"verify-not-a-token"}`), and run
+  `XDG_CONFIG_HOME=<that home> mend doctor`; the verify skill's guard refuses `MEND_TOKEN`. The
+  second line reads `✗ signed in   token rejected → mend login`, the lines that need a sign-in read
+  `○ … not checked`, and the exit code is `1`.
 - **Unreachable server.** Run `MEND_URL=http://127.0.0.1:9 mend doctor`. The first line reads
   `✗ server      cannot reach http://127.0.0.1:9 → start the Mend server`, the next reads
   `○ signed in   not checked`, and the exit code is `1`. Each HTTP request the doctor makes is cut
