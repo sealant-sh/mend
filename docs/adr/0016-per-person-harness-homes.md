@@ -756,6 +756,32 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   `sudo`; that is the accepted limit, not a new one.
 - Mend's default shell profile is written into each home.
 
+### 11a. Claude plugins the settings enable, installed without a prompt
+
+Owner decision, 2026-10-10: repository settings are trusted. Before every Claude process Mend starts
+(protocol and terminal, every surface), Claude's launch seed installs, with no prompt, the plugins
+enabled by the repository's `.claude/settings.json` and `.claude/settings.local.json` and by the
+person's own `~/.claude/settings.json` (their dotfiles), a later file's `false` turning an earlier
+`true` off. A marketplace Claude does not know yet is added from `extraKnownMarketplaces` in the
+same files. The install runs as the process's user, into their home (the person in a per-person
+executor), with one 30 s budget for the step; a plugin that cannot be installed never stops the
+launch. A once-shared conversation's neutral home installs none.
+
+- **Risk, accepted:** a repository adopted into Mend can install plugin code (hooks, MCP servers,
+  agents) into every member's sessions, and that code runs as the person, with their logins.
+  Enabling a plugin in a committed `.claude/settings.json` is a change to the repository, and the
+  same file can already declare hooks that run as the person; the install widens what such a commit
+  brings in to whatever its marketplace serves.
+- **Mitigation:** the session's start line names what was installed, what was already there, and
+  what was not installed and why
+  (`mend: Claude plugins · installed: pstack@pstack-claude · not installed: x@m (timed out)`). A
+  plugin that asks to run a marketplace-declared command at install is refused: Mend never passes
+  `-y`. Names and marketplace sources are checked before they reach an argv, and a source URL
+  carrying credentials is not used.
+- **Held for 0.37:** `~/.claude/plugins` is not saved per person (about 14 MB a person), so each new
+  executor installs again (about 2.4 s for pstack on the box); a live executor's later launches skip
+  in milliseconds.
+
 ### 12. Readers
 
 Every reader goes by a prefix: `HARNESS_STATE`'s patterns become `^people/<id>/…` for a session that
@@ -1028,6 +1054,9 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **A login made inside opencode** (`opencode console login`, the integration routes) is saved in
   the captures taken while that opencode process ran, in that person's own directory; Mend deletes
   it when opencode exits (decision 8a).
+- **Claude plugins from repository settings install without a prompt** and run as the person
+  (decision 11a). In a terminal the start line names them; a protocol session writes the line only
+  to its process's stderr record, which the conversation view does not show yet.
 - **Settings edited by hand** last until the executor ends; pi's and opencode's ChatGPT logins are
   refreshed by Core in a `person` executor, and at process start in a `shared` one.
 
@@ -1533,4 +1562,7 @@ benchmark once more, before 0.36 is tagged.
   or login: a hand-over prepares the sender's user, home and logins before it stops anything, and a
   failure fails the waiting turn unsent. A first steer or join now waits for the POST after the exec
   (about 140 ms on the box) instead of beside it.
+- 2026-10-10 (owner): repository settings are trusted. Claude plugins enabled by the repository's or
+  the person's settings are installed before Claude starts, with no prompt, and named on the start
+  line (decision 11a, mend#678). Saving `~/.claude/plugins` per person is held for 0.37.
 - Open: gate B's history record.

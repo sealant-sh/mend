@@ -113,6 +113,55 @@ skills.
 A launch never fails because of skills. If Mend cannot write them, the session starts without them
 and the server logs a warning.
 
+## Claude Code plugins
+
+Claude Code plugins are not kept in a library. Mend installs the ones your settings enable before
+Claude starts, in every Claude session: terminal or conversation, from the CLI, the web app, the
+phone or Slack. It reads `enabledPlugins` from:
+
+1. your own `~/.claude/settings.json`, which your [dotfiles](/guides/dotfiles/) can carry;
+2. the repository's `.claude/settings.json`;
+3. the repository's `.claude/settings.local.json`.
+
+A later file wins, so `false` in the repository turns off a plugin your own settings enable. A
+plugin that is already installed is skipped. A marketplace Claude does not know yet is added from
+`extraKnownMarketplaces` in the same files: a GitHub repository, a git or https URL without
+credentials in it, or a path. For example, a repository that wants
+[pstack](https://github.com/ypanagidis/pstack) in every session commits:
+
+```json
+{
+  "enabledPlugins": { "pstack@pstack-claude": true },
+  "extraKnownMarketplaces": {
+    "pstack-claude": { "source": { "source": "github", "repo": "ypanagidis/pstack" } }
+  }
+}
+```
+
+The install runs as the person whose Claude it is, into their own `~/.claude`, and takes about 2 s
+for a plugin from GitHub. All installs at one launch share 30 seconds. A plugin that cannot be
+installed in that time, or at all, does not stop the launch: Claude starts without it. The terminal
+shows one line before Claude starts:
+
+```text
+mend: Claude plugins · installed: pstack@pstack-claude
+```
+
+The line also names what was already installed, and what was not installed and why:
+
+```text
+mend: Claude plugins · already installed: pstack@pstack-claude · not installed: lint@acme-tools (timed out)
+```
+
+A plugin that wants to run a command of its marketplace's at install is not installed: Mend never
+accepts that command for you.
+
+A conversation session writes the same line to its process's stderr, which the conversation view
+does not show. A new workspace installs the plugins again: Mend does not save `~/.claude/plugins`
+between workspaces yet. A conversation that
+[shared control](/reference/known-issues/#shared-control) moved into its own neutral home installs
+none.
+
 ## Limits
 
 | Limit              | Value                                                                                             |

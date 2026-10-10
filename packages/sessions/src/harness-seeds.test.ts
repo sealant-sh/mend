@@ -9,6 +9,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { personHomeScript } from "./harness-layout.ts";
 import {
   CLAUDE_ONBOARDING_SEED,
+  CLAUDE_PLUGINS_BUDGET_MS,
+  claudeOnboardingSeed,
   CODEX_TRUST_SEED,
   COPY_REFRESH_TOKEN,
   HARNESS_UPDATES_OFF_ENV,
@@ -277,6 +279,315 @@ describe("claude onboarding seed, temporary names", () => {
         "Saved user work\n",
       );
     }
+  });
+});
+
+/**
+ * A stand-in `claude` for the plugin step: it logs each call (argv, working directory, the
+ * updater switch, whether it has a stdin), writes what `plugin marketplace add` and `plugin
+ * install` would (the marketplace named after its repository, `acme/tools` → `acme-tools`), and
+ * says something on stdout and stderr, which nobody should see. `FAKE_CLAUDE_MODE`: `ok`, `fail`
+ * (exit 1) or `hang` (starts a child that sleeps, writes its pid, and never exits).
+ */
+const FAKE_CLAUDE = `#!/usr/bin/env node
+const fs=require("fs"),path=require("path"),h=require("os").homedir(),args=process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_CLAUDE_LOG,JSON.stringify({args,cwd:process.cwd(),updater:process.env.DISABLE_AUTOUPDATER??null})+"\\n");
+process.stdout.write("claude says something on stdout\\n");process.stderr.write("and on stderr\\n");
+const mode=process.env.FAKE_CLAUDE_MODE||"ok";
+if(mode==="hang"){const c=require("child_process").spawn(process.execPath,["-e","setTimeout(()=>{},30000)"],{stdio:"ignore"});fs.writeFileSync(process.env.FAKE_CLAUDE_LOG+".sleep",String(c.pid));setInterval(()=>{},1000);return}
+if(mode==="fail")process.exit(1);
+const dir=h+"/.claude/plugins";fs.mkdirSync(dir,{recursive:true});
+const read=p=>{try{return JSON.parse(fs.readFileSync(p,"utf8"))}catch{return null}};
+if(args[1]==="marketplace"){const k=dir+"/known_marketplaces.json",known=read(k)||{},name=args[3].split("#")[0].replace("/","-");
+fs.mkdirSync(dir+"/marketplaces/"+name,{recursive:true});known[name]={source:args[3],installLocation:dir+"/marketplaces/"+name};fs.writeFileSync(k,JSON.stringify(known))}
+if(args[1]==="install"){const f=dir+"/installed_plugins.json",list=read(f)||{version:2,plugins:{}},at=dir+"/cache/"+args[2];
+fs.mkdirSync(at,{recursive:true});list.plugins[args[2]]=[{scope:"user",installPath:at}];fs.writeFileSync(f,JSON.stringify(list))}
+`;
+
+/** A home, a repository and a bin holding the fake `claude` (and `node`, and nothing else). */
+const pluginScene = () => {
+  const root = makeHome();
+  const home = path.join(root, "home");
+  const repo = path.join(root, "repo");
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(repo, { recursive: true });
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "claude"), FAKE_CLAUDE, { mode: 0o755 });
+  fs.symlinkSync(process.execPath, path.join(bin, "node"));
+  return { root, home, repo, bin, log: path.join(root, "claude.log") };
+};
+
+type PluginScene = ReturnType<typeof pluginScene>;
+
+/** The seed over `scene`, as a launch runs it; its stdout, its stderr and how long it took. */
+const runPluginSeed = (
+  scene: PluginScene,
+  options: { readonly mode?: string; readonly budgetMs?: number; readonly claude?: boolean } = {},
+) => {
+  const seed = claudeOnboardingSeed({
+    repo: scene.repo,
+    ...(options.budgetMs === undefined ? {} : { pluginBudgetMs: options.budgetMs }),
+  });
+  const bin = options.claude === false ? path.join(scene.root, "bin-without-claude") : scene.bin;
+  if (options.claude === false) {
+    fs.mkdirSync(bin, { recursive: true });
+    if (!fs.existsSync(path.join(bin, "node")))
+      fs.symlinkSync(process.execPath, path.join(bin, "node"));
+  }
+  const started = Date.now();
+  const result = spawnSync(
+    "/bin/sh",
+    ["-c", seed, "sh", "/bin/sh", "-c", 'echo "ran $IS_SANDBOX"'],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: bin,
+        HOME: scene.home,
+        FAKE_CLAUDE_LOG: scene.log,
+        FAKE_CLAUDE_MODE: options.mode ?? "ok",
+      },
+    },
+  );
+  expect(result.status).toBe(0);
+  return { stdout: result.stdout, stderr: result.stderr, tookMs: Date.now() - started };
+};
+
+/** The calls the fake `claude` saw. */
+const claudeCalls = (scene: PluginScene) =>
+  fs.existsSync(scene.log)
+    ? fs
+        .readFileSync(scene.log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line): { args: Array<string>; cwd: string; updater: string | null } =>
+          JSON.parse(line),
+        )
+    : [];
+
+describe("claude onboarding seed: the plugins its settings enable", () => {
+  it("installs what the person's and the repository's settings enable, in Claude's order, and names it", () => {
+    const scene = pluginScene();
+    write(
+      path.join(scene.home, ".claude", "settings.json"),
+      JSON.stringify({
+        enabledPlugins: { "pstack@pstack-claude": true, "noisy@acme-tools": true },
+        extraKnownMarketplaces: {
+          "pstack-claude": { source: { source: "github", repo: "ypanagidis/pstack" } },
+        },
+      }),
+    );
+    write(
+      path.join(scene.repo, ".claude", "settings.json"),
+      JSON.stringify({
+        enabledPlugins: { "lint@acme-tools": true, "off@acme-tools": false },
+        extraKnownMarketplaces: {
+          "acme-tools": { source: { source: "github", repo: "acme/tools", ref: "v2" } },
+        },
+      }),
+    );
+    // The repository's local settings come last: their `false` turns the person's `true` off.
+    write(
+      path.join(scene.repo, ".claude", "settings.local.json"),
+      JSON.stringify({ enabledPlugins: { "noisy@acme-tools": false } }),
+    );
+    const { stdout, stderr } = runPluginSeed(scene);
+    // A protocol launch's stdout is Claude's alone: nothing of the step's, nor of its `claude`s.
+    expect(stdout).toBe("ran 1\n");
+    expect(stderr).toBe(
+      "mend: Claude plugins · installed: pstack@pstack-claude, lint@acme-tools\n",
+    );
+    const calls = claudeCalls(scene);
+    expect(calls.map((call) => call.args)).toEqual([
+      ["plugin", "marketplace", "add", "ypanagidis/pstack"],
+      ["plugin", "install", "pstack@pstack-claude", "--scope", "user"],
+      ["plugin", "marketplace", "add", "acme/tools#v2"],
+      ["plugin", "install", "lint@acme-tools", "--scope", "user"],
+    ]);
+    for (const call of calls) {
+      expect(call.cwd).toBe(fs.realpathSync(scene.repo));
+      expect(call.updater).toBe("1");
+    }
+    // The seed's own merge still ran first.
+    expect(readJson(path.join(scene.home, ".claude", "settings.json"))).toMatchObject({
+      skipDangerousModePermissionPrompt: true,
+    });
+  });
+
+  it("skips a plugin already installed for the user and on disk, and a marketplace Claude knows", () => {
+    const scene = pluginScene();
+    write(
+      path.join(scene.repo, ".claude", "settings.json"),
+      JSON.stringify({
+        enabledPlugins: { "here@m": true, "gone@m": true, "elsewhere@m": true },
+        extraKnownMarketplaces: { m: { source: { source: "github", repo: "acme/m" } } },
+      }),
+    );
+    const plugins = path.join(scene.home, ".claude", "plugins");
+    fs.mkdirSync(path.join(plugins, "cache", "here"), { recursive: true });
+    fs.mkdirSync(path.join(plugins, "marketplaces", "m"), { recursive: true });
+    write(
+      path.join(plugins, "known_marketplaces.json"),
+      JSON.stringify({ m: { installLocation: path.join(plugins, "marketplaces", "m") } }),
+    );
+    write(
+      path.join(plugins, "installed_plugins.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          "here@m": [{ scope: "user", installPath: path.join(plugins, "cache", "here") }],
+          // Listed, but its files went with an earlier executor.
+          "gone@m": [{ scope: "user", installPath: path.join(plugins, "cache", "gone") }],
+          // Installed for another project only.
+          "elsewhere@m": [
+            {
+              scope: "project",
+              projectPath: "/somewhere/else",
+              installPath: path.join(plugins, "cache", "here"),
+            },
+          ],
+        },
+      }),
+    );
+    const { stderr } = runPluginSeed(scene);
+    expect(stderr).toBe(
+      "mend: Claude plugins · installed: gone@m, elsewhere@m · already installed: here@m\n",
+    );
+    expect(claudeCalls(scene).map((call) => call.args)).toEqual([
+      ["plugin", "install", "gone@m", "--scope", "user"],
+      ["plugin", "install", "elsewhere@m", "--scope", "user"],
+    ]);
+
+    // The next launch in the executor finds them all and starts no `claude`.
+    fs.rmSync(scene.log);
+    expect(runPluginSeed(scene).stderr).toBe(
+      "mend: Claude plugins · already installed: here@m, gone@m, elsewhere@m\n",
+    );
+    expect(claudeCalls(scene)).toEqual([]);
+  });
+
+  it("says nothing and starts no claude when no plugin is enabled", () => {
+    const scene = pluginScene();
+    write(
+      path.join(scene.repo, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { "off@m": false }, model: "x" }),
+    );
+    // A settings file that is not JSON is read as nothing, and left as it is.
+    write(path.join(scene.repo, ".claude", "settings.local.json"), "{ not json");
+    const { stdout, stderr } = runPluginSeed(scene);
+    expect(stdout).toBe("ran 1\n");
+    expect(stderr).toBe("");
+    expect(claudeCalls(scene)).toEqual([]);
+    expect(fs.readFileSync(path.join(scene.repo, ".claude", "settings.local.json"), "utf8")).toBe(
+      "{ not json",
+    );
+  });
+
+  it("puts no name or source in an argv that it has not checked, and no credentials in a URL", () => {
+    const scene = pluginScene();
+    write(
+      path.join(scene.repo, ".claude", "settings.json"),
+      JSON.stringify({
+        enabledPlugins: {
+          "--help@m": true,
+          "a b@m": true,
+          "x@$(touch pwned)": true,
+          "good@private": true,
+          "fine@https-m": true,
+        },
+        extraKnownMarketplaces: {
+          private: {
+            source: { source: "git", url: "https://person:ghp_secret@github.com/a/b.git" },
+          },
+          "https-m": { source: { source: "git", url: "https://github.com/a/m.git", ref: "main" } },
+        },
+      }),
+    );
+    const { stderr } = runPluginSeed(scene);
+    expect(stderr).toBe("mend: Claude plugins · installed: good@private, fine@https-m\n");
+    const calls = claudeCalls(scene).map((call) => call.args);
+    expect(calls).toEqual([
+      // A source with credentials in it is not used: Claude is left to find the marketplace.
+      ["plugin", "install", "good@private", "--scope", "user"],
+      ["plugin", "marketplace", "add", "https://github.com/a/m.git#main"],
+      ["plugin", "install", "fine@https-m", "--scope", "user"],
+    ]);
+    expect(JSON.stringify(calls)).not.toContain("ghp_secret");
+    expect(fs.existsSync(path.join(scene.repo, "pwned"))).toBe(false);
+  });
+
+  it("a plugin that cannot be installed is said in one line, and Claude starts anyway", () => {
+    const scene = pluginScene();
+    write(
+      path.join(scene.repo, ".claude", "settings.json"),
+      JSON.stringify({
+        enabledPlugins: { "a@m": true, "b@m": true, "c@n": true },
+        extraKnownMarketplaces: { m: { source: { source: "github", repo: "acme/m" } } },
+      }),
+    );
+    const failing = runPluginSeed(scene, { mode: "fail" });
+    expect(failing.stdout).toBe("ran 1\n");
+    expect(failing.stderr).toBe(
+      "mend: Claude plugins · not installed: a@m (marketplace not added: exit 1), b@m (marketplace not added: exit 1), c@n (exit 1)\n",
+    );
+    // The marketplace that could not be added is tried once.
+    expect(claudeCalls(scene).map((call) => call.args)).toEqual([
+      ["plugin", "marketplace", "add", "acme/m"],
+      ["plugin", "install", "c@n", "--scope", "user"],
+    ]);
+
+    const missing = pluginScene();
+    write(
+      path.join(missing.repo, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { "a@m": true } }),
+    );
+    const noClaude = runPluginSeed(missing, { claude: false });
+    expect(noClaude.stdout).toBe("ran 1\n");
+    expect(noClaude.stderr).toBe(
+      "mend: Claude plugins · not installed: a@m (claude did not start)\n",
+    );
+  });
+
+  it("is bounded: a claude that hangs is killed with what it started, and the launch goes on", () => {
+    const scene = pluginScene();
+    write(
+      path.join(scene.repo, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { "a@m": true, "b@m": true } }),
+    );
+    const { stdout, stderr, tookMs } = runPluginSeed(scene, { mode: "hang", budgetMs: 1500 });
+    expect(stdout).toBe("ran 1\n");
+    expect(stderr).toBe("mend: Claude plugins · not installed: a@m (timed out), b@m (timed out)\n");
+    expect(tookMs).toBeLessThan(10_000);
+    // One budget for the whole step: the second plugin started no claude of its own.
+    expect(claudeCalls(scene)).toHaveLength(1);
+    // The hung claude's own child went with it (its process group was killed).
+    const sleeper = Number(fs.readFileSync(`${scene.log}.sleep`, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(sleeper, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const until = Date.now() + 2000;
+    while (alive() && Date.now() < until) spawnSync("sleep", ["0.05"]);
+    expect(alive()).toBe(false);
+  });
+
+  it("is what every Claude launch starts behind, protocol and terminal alike, reading /workspace/repo", () => {
+    expect(withHarnessSetup("claude", ["claude", "-p"])).toEqual([
+      "sh",
+      "-c",
+      CLAUDE_ONBOARDING_SEED,
+      "sh",
+      "claude",
+      "-p",
+    ]);
+    expect(CLAUDE_ONBOARDING_SEED).toContain(
+      `'/workspace/repo' ${CLAUDE_PLUGINS_BUDGET_MS} 3>&2 2>/dev/null;`,
+    );
+    expect(CLAUDE_PLUGINS_BUDGET_MS).toBe(30_000);
   });
 });
 

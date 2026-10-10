@@ -1,6 +1,7 @@
 import { OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 
 import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
+import { shellQuote } from "./workspace-files.ts";
 
 /**
  * The shell prefixes that pre-answer a harness's first-run questions before Mend execs its real
@@ -57,6 +58,81 @@ const CLAUDE_SEED_PROGRAM = [
 ].join("");
 
 /**
+ * The Claude plugins a launch's settings enable, installed before Claude starts. Claude Code
+ * 2.1.292 does not do it itself in a workspace (box, next.708, 2026-10-10): in protocol mode
+ * `installPluginsForHeadless` adds the marketplace only, and the plugin then misses its cache;
+ * in a terminal only the first Claude of an executor loads it, without its SessionStart hooks.
+ * Installed beforehand (`claude plugin marketplace add`, then `claude plugin install --scope
+ * user`, about 2.4 s for pstack), both get the plugin, hooks included, from the first turn.
+ *
+ * What is enabled: `enabledPlugins` in the person's own `~/.claude/settings.json` (their
+ * dotfiles), then the repository's `.claude/settings.json` and `.claude/settings.local.json`, a
+ * later file's `false` turning an earlier `true` off, as Claude reads them (the owner's trust
+ * decision, 2026-10-10: both the repository's and the person's). A plugin whose user-scope
+ * install is in `installed_plugins.json` and on disk is skipped. A marketplace Claude does not
+ * know yet is added from the `extraKnownMarketplaces` of the same files: a GitHub repository, a
+ * git or https URL without credentials in it, or a path. Every name and source is checked
+ * before it is put in an argv, which never holds a token; the only variable the step adds to
+ * the environment it inherits is `DISABLE_AUTOUPDATER=1`.
+ *
+ * Bounded: every `claude` it starts shares one budget (30 s at a launch) and is killed with its
+ * process group when the budget is spent. Their output is never read: stdin, stdout and stderr
+ * are closed to them, so a protocol launch's stdout stays Claude's alone and nothing is said
+ * into a terminal. It runs as the process's own user, with the process's own home: the person
+ * in their executor (docs/adr/0016), root in a shared one, as Claude itself does. A plugin that
+ * cannot be installed never stops the launch: the step says so and Claude starts.
+ *
+ * One line on stderr (fd 3, the launch's own stderr, past the seed's `2>/dev/null`) names what
+ * it found: `mend: Claude plugins · installed: … · already installed: … · not installed: … (why)`.
+ * Nothing is said when no plugin is enabled.
+ *
+ * A person's `.claude/plugins` is not kept across executors yet (about 14 MB a person): a new
+ * executor installs again. A shared executor's harness home is saved with it, as it was whenever
+ * Claude installed a plugin itself, so its next executor finds them installed.
+ *
+ * `argv[1]` is the repository, `argv[2]` the budget in milliseconds.
+ */
+const CLAUDE_PLUGINS_PROGRAM = [
+  `const repo=process.argv[1],deadline=Date.now()+Number(process.argv[2]),{spawn}=require("child_process");`,
+  `const ID=/^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/,REF=/^[A-Za-z0-9._\\/-]+$/;`,
+  `function obj(v){return v!==null&&typeof v==="object"&&!Array.isArray(v)}`,
+  // What `claude plugin marketplace add` takes for a declared source; null for anything else.
+  `function sourceOf(s){if(!obj(s))return null;const ref=typeof s.ref==="string"&&REF.test(s.ref)?"#"+s.ref:"";`,
+  `if(s.source==="github"&&typeof s.repo==="string"&&/^[A-Za-z0-9._-]+\\/[A-Za-z0-9._-]+$/.test(s.repo))return s.repo+ref;`,
+  `if((s.source==="git"||s.source==="url")&&typeof s.url==="string"&&/^(https:\\/\\/[A-Za-z0-9.:-]+\\/|git@[A-Za-z0-9.-]+:|ssh:\\/\\/([A-Za-z0-9._-]+@)?[A-Za-z0-9.:-]+\\/)[^\\s@]*$/.test(s.url))return s.url+(s.source==="git"?ref:"");`,
+  `if((s.source==="directory"||s.source==="file")&&typeof s.path==="string"&&/^[A-Za-z0-9._\\/~][^\\s]*$/.test(s.path))return s.path;`,
+  `return null}`,
+  `const on=new Map(),sources=new Map();`,
+  `for(const p of [h+"/.claude/settings.json",repo+"/.claude/settings.json",repo+"/.claude/settings.local.json"]){const s=read(p);if(!s)continue;`,
+  `if(obj(s.enabledPlugins))for(const [k,v] of Object.entries(s.enabledPlugins))if(ID.test(k))on.set(k,v===true);`,
+  `if(obj(s.extraKnownMarketplaces))for(const [k,v] of Object.entries(s.extraKnownMarketplaces)){const a=obj(v)?sourceOf(v.source):null;if(a!==null)sources.set(k,a)}}`,
+  `const wanted=[...on].filter(e=>e[1]).map(e=>e[0]);`,
+  `const listed=(read(h+"/.claude/plugins/installed_plugins.json")||{}).plugins,known=read(h+"/.claude/plugins/known_marketplaces.json")||{};`,
+  `function installed(k){const e=obj(listed)?listed[k]:null;return (Array.isArray(e)?e:[e]).some(x=>obj(x)&&(x.scope===undefined||x.scope==="user"||x.projectPath===repo)&&typeof x.installPath==="string"&&fs.existsSync(x.installPath))}`,
+  `function knows(m){return obj(known[m])&&typeof known[m].installLocation==="string"&&fs.existsSync(known[m].installLocation)}`,
+  // Null when it exited 0; otherwise why not.
+  `function claude(args){const left=deadline-Date.now();if(left<=0)return Promise.resolve("timed out");return new Promise(done=>{let c;`,
+  `try{c=spawn("claude",args,{cwd:fs.existsSync(repo)?repo:h,stdio:"ignore",detached:true,env:Object.assign({},process.env,{DISABLE_AUTOUPDATER:"1"})})}catch{return done("claude did not start")}`,
+  `const timer=setTimeout(()=>{try{process.kill(-c.pid,"SIGKILL")}catch{}done("timed out")},left);`,
+  `c.on("error",()=>{clearTimeout(timer);done("claude did not start")});`,
+  `c.on("exit",(code,signal)=>{clearTimeout(timer);done(code===0?null:"exit "+(code===null?signal:code))})})}`,
+  `(async()=>{if(wanted.length===0)return;const added=[],had=[],failed=[],adds=new Map();`,
+  `for(const k of wanted){if(installed(k)){had.push(k);continue}const m=k.slice(k.indexOf("@")+1);`,
+  `if(!knows(m)&&sources.has(m)){if(!adds.has(m))adds.set(m,await claude(["plugin","marketplace","add",sources.get(m)]));`,
+  `const why=adds.get(m);if(why!==null){failed.push(k+" (marketplace not added: "+why+")");continue}}`,
+  `const why=await claude(["plugin","install",k,"--scope","user"]);if(why===null)added.push(k);else failed.push(k+" ("+why+")")}`,
+  `const parts=["Claude plugins"];if(added.length)parts.push("installed: "+added.join(", "));`,
+  `if(had.length)parts.push("already installed: "+had.join(", "));if(failed.length)parts.push("not installed: "+failed.join(", "));`,
+  `try{fs.writeSync(3,"mend: "+parts.join(" · ")+"\\n")}catch{}})().catch(()=>{});`,
+].join("");
+
+/** Where a session's repository is in its workspace, and so where its `.claude/` settings are. */
+const WORKSPACE_REPO = "/workspace/repo";
+
+/** How long the plugin step of a launch may take, all of it (`CLAUDE_PLUGINS_PROGRAM`). */
+export const CLAUDE_PLUGINS_BUDGET_MS = 30_000;
+
+/**
  * The harnesses' own self-updaters, off in every workspace: the image owns each harness (Core
  * installs it at build time), and an update inside a running workspace can break it for every
  * later launch there.
@@ -93,11 +169,19 @@ export const NO_PAGER_ENV: Readonly<Record<string, string>> = {
 };
 
 /**
- * Claude's seed. The workspace IS the sandbox: Claude Code refuses bypass-permissions as root
- * unless the environment says so, and it is telling the truth. Its self-updater is off
- * (`HARNESS_UPDATES_OFF_ENV`).
+ * Claude's seed: its files, then the plugins its settings enable (`CLAUDE_PLUGINS_PROGRAM`), in
+ * one node. The workspace IS the sandbox: Claude Code refuses bypass-permissions as root unless
+ * the environment says so, and it is telling the truth. Its self-updater is off
+ * (`HARNESS_UPDATES_OFF_ENV`). `repo` and `pluginBudgetMs` are for tests.
  */
-export const CLAUDE_ONBOARDING_SEED = `node -e '${CLAUDE_SEED_PROGRAM}' 2>/dev/null; export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; exec "$@"`;
+export const claudeOnboardingSeed = (
+  options: { readonly repo?: string; readonly pluginBudgetMs?: number } = {},
+): string =>
+  `node -e '${CLAUDE_SEED_PROGRAM}${CLAUDE_PLUGINS_PROGRAM}' ${shellQuote(options.repo ?? WORKSPACE_REPO)} ` +
+  `${Math.max(0, Math.floor(options.pluginBudgetMs ?? CLAUDE_PLUGINS_BUDGET_MS))} 3>&2 2>/dev/null; ` +
+  `export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; exec "$@"`;
+
+export const CLAUDE_ONBOARDING_SEED = claudeOnboardingSeed();
 
 /**
  * Codex's per-project trust prompt, pre-answered the same way: the user made the trust decision
