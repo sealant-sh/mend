@@ -71,27 +71,86 @@ export const parseContainerDisk = (text) => parseDockerSize((text ?? "").split("
 export const parseMemUsage = (text) => parseDockerSize((text ?? "").split("/")[0]);
 
 /**
- * A container's cgroup `memory.stat` as the parts `docker stats` adds up: `anon` (processes' own
- * memory), `activeFile` (page cache it counts; the inactive part it leaves out), `shmem` (tmpfs
- * and shared memory) and `kernel`. cgroup v2's names, v1's (`total_*`) where v2's are absent.
- * Null for a part the text does not hold.
+ * Reads an executor's own cgroup `memory.stat` on its host, by its container's PID: the cgroup it
+ * is in (`/proc/<pid>/cgroup`) under the host's mount, v2 (`cgroup2fs`, the unified `0::` line) or
+ * v1 (the `memory` controller's line under its own mount). Read from the host, so it neither
+ * assumes the container's view of `/sys/fs/cgroup` nor adds a process to the memory it reads.
+ * Prints `cgroup v2 <path>` or `cgroup v1 <path>` and the file, or `unavailable <why>`
+ * (`parseMemoryStat`). `$1` is the container's name.
+ */
+export const MEMORY_STAT_SH = [
+  'pid=$(docker inspect -f "{{.State.Pid}}" "$1" 2>/dev/null)',
+  'id=$(docker inspect -f "{{.Id}}" "$1" 2>/dev/null)',
+  'if [ -z "$pid" ] || [ "$pid" = 0 ]; then echo "unavailable the executor has no running process"; exit 0; fi',
+  'if [ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" = cgroup2fs ]; then',
+  '  v=v2; m=/sys/fs/cgroup; p=$(awk -F: \'$1 == "0" { print $3 }\' "/proc/$pid/cgroup")',
+  "else",
+  "  v=v1; m=/sys/fs/cgroup/memory; p=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3 }' \"/proc/$pid/cgroup\")",
+  "fi",
+  'if [ -z "$p" ]; then echo "unavailable no $v memory cgroup in /proc/$pid/cgroup"; exit 0; fi',
+  // The container's own cgroup, not its first process's: that may sit in a child (`…scope/init`).
+  'case "$p" in *"$id"*) p=$(printf %s "$p" | sed "s#\\(.*$id[^/]*\\).*#\\1#") ;; *) echo "unavailable $p does not name the container"; exit 0 ;; esac',
+  'f="$m$p/memory.stat"',
+  'if [ ! -r "$f" ]; then echo "unavailable $f cannot be read"; exit 0; fi',
+  'echo "cgroup $v $p"; cat "$f"',
+].join("\n");
+
+/** The host command that runs `MEMORY_STAT_SH` for one container, the script passed whole. */
+export const memoryStatCommand = (container) => {
+  if (!/^[\w.-]+$/.test(String(container))) throw new Error(`not a container name: ${container}`);
+  const encoded = Buffer.from(MEMORY_STAT_SH, "utf8").toString("base64");
+  return `sh -c "$(printf %s '${encoded}' | base64 -d)" st-bench ${container}`;
+};
+
+/** No parts, and why. */
+const noMemoryParts = (reason) => ({
+  anon: null,
+  activeFile: null,
+  shmem: null,
+  kernel: null,
+  reason,
+});
+
+/**
+ * An executor's `memory.stat` (`MEMORY_STAT_SH`'s output) as the parts `docker stats` adds up:
+ * `anon` (processes' own memory), `activeFile` (page cache it counts; the inactive part it leaves
+ * out), `shmem` (tmpfs and shared memory) and `kernel`. v2 has them as they are; v1 takes the
+ * hierarchical totals alone (`total_rss`, `total_active_file`, `total_shmem`: the cgroup and every
+ * child, as v2's are), never a local counter beside a hierarchical one, and has no `kernel` in
+ * this file. A part the file does not hold is null; `reason` says why there are none at all.
  */
 export const parseMemoryStat = (text) => {
+  const lines = (text ?? "").split("\n").map((line) => line.trim());
+  const unavailable = lines.find((line) => line.startsWith("unavailable "));
+  if (unavailable !== undefined) return noMemoryParts(unavailable.slice("unavailable ".length));
   const values = new Map();
-  for (const line of (text ?? "").split("\n")) {
-    const match = /^(\w+)\s+(\d+)$/.exec(line.trim());
+  for (const line of lines) {
+    const match = /^(\w+)\s+(\d+)$/.exec(line);
     if (match !== null) values.set(match[1], Number(match[2]));
   }
-  const first = (...names) => {
-    for (const name of names) if (values.has(name)) return values.get(name);
-    return null;
-  };
-  return {
-    anon: first("anon", "total_rss"),
-    activeFile: first("active_file", "total_active_file"),
-    shmem: first("shmem", "total_shmem"),
-    kernel: first("kernel"),
-  };
+  const header = /^cgroup (v1|v2)\b/.exec(lines.find((line) => line.startsWith("cgroup ")) ?? "");
+  const version =
+    header?.[1] ?? (values.has("anon") ? "v2" : values.has("total_rss") ? "v1" : null);
+  const of = (name) => values.get(name) ?? null;
+  if (version === "v2") {
+    return {
+      anon: of("anon"),
+      activeFile: of("active_file"),
+      shmem: of("shmem"),
+      kernel: of("kernel"),
+      reason: null,
+    };
+  }
+  if (version === "v1") {
+    return {
+      anon: of("total_rss"),
+      activeFile: of("total_active_file"),
+      shmem: of("total_shmem"),
+      kernel: null,
+      reason: null,
+    };
+  }
+  return noMemoryParts("no memory.stat was read");
 };
 
 // ─── Mend's log (docker logs -t of the Mend container) ──────────────────────
@@ -865,8 +924,9 @@ export const compareResults = (
     }
   }
   // Under the gate, a budgeted measure the record under test has and the baseline lacks (a shared
-  // launch that errored, say) was never compared: a miss, not a pass.
-  if (gate) {
+  // launch that errored, say) was never compared: a miss, not a pass. So in a companion under the
+  // gate, for every budgeted measure it holds, required or not.
+  if (gate || gateMeasures !== null) {
     for (const [name, recorded] of Object.entries(after.measures ?? {})) {
       const measure = { ...recorded, budget: budgetOf(name, recorded) };
       if (
@@ -948,7 +1008,12 @@ export const compareResults = (
   // Companions (another project's runs), on either side: one only one record has is compared
   // against an empty counterpart, and its failed and unverified checks and errors count as the
   // main record's do.
-  const fromCompanions = { checkFailures: [], checksNotVerified: [], errors: [] };
+  const fromCompanions = {
+    checkFailures: [],
+    checksNotVerified: [],
+    errors: [],
+    baselineErrors: [],
+  };
   const companionNames = new Set([
     ...Object.keys(before.companions ?? {}),
     ...Object.keys(after.companions ?? {}),
@@ -975,6 +1040,10 @@ export const compareResults = (
     }
     for (const error of compared.errors) {
       fromCompanions.errors.push({ ...error, scenario: `${name}: ${error.scenario}` });
+    }
+    // The baseline's companion's errors are the baseline's: a failed shared round fails the gate.
+    for (const error of compared.baselineErrors) {
+      fromCompanions.baselineErrors.push({ ...error, scenario: `${name}: ${error.scenario}` });
     }
   }
   // Under the gate, a series shorter than its floor (rounds discarded as compacted, launches kept
@@ -1026,7 +1095,7 @@ export const compareResults = (
     checksSkipped: checks.filter((check) => (check.skipped ?? 0) > 0),
     // What went wrong in the run under test fails it; the baseline's are said.
     errors: [...(after.errors ?? []), ...fromCompanions.errors],
-    baselineErrors: before.errors ?? [],
+    baselineErrors: [...(before.errors ?? []), ...fromCompanions.baselineErrors],
     notRun: after.notRun ?? [],
   };
 };
@@ -1360,22 +1429,81 @@ export const gateScopeGaps = (before, after, secondPersonHarnesses = null) => {
   return gaps;
 };
 
+/** Said: neither null, undefined nor empty. */
+const known = (value) => value !== null && value !== undefined && value !== "";
+
 /**
  * Why a companion is not of the same run as the record it is kept in (`withCompanion`), in words;
- * empty when it is. Of the same run: the same layout, instance, Mend build (the image's id, else
- * the commit, else the version), workspace image and harness versions; only the project differs.
- * Under gate P1 a companion of the same run counts toward the gate's set (`requiredOf`), and one
- * that is not makes the comparison "not the gate".
+ * empty when it is. Of the same run, affirmatively: the same known layout and instance; the same
+ * Mend build, told by both image ids or else both commits (a version alone does not tell a build);
+ * the same known workspace image; and, for every harness the companion's measures and checks name,
+ * the same known harness version on both. Anything either side does not say is a reason, never a
+ * warning: under gate P1 a companion of the same run stands in for what the record did not run
+ * (`requiredOf`), and one that cannot be shown to be of it makes the comparison "not the gate".
  */
 export const companionMismatchOf = (main, companion) => {
   const reasons = [];
   const layouts = [layoutOf(main), layoutOf(companion)];
-  if (layouts[0] !== layouts[1]) {
-    reasons.push(`it ran the ${layouts[1] ?? "unknown"} layout, the record ${layouts[0] ?? "?"}`);
+  if (!known(layouts[0]) || !known(layouts[1])) {
+    reasons.push("its layout or the record's is not known");
+  } else if (layouts[0] !== layouts[1]) {
+    reasons.push(`it ran the ${layouts[1]} layout, the record ${layouts[0]}`);
   }
-  const { differs } = describeComparison(main, companion, { companion: true });
-  return [...reasons, ...differs.filter((reason) => reason !== "different projects")];
+  const urls = [main.target?.url, companion.target?.url];
+  if (!known(urls[0]) || !known(urls[1])) {
+    reasons.push("its instance or the record's is not known");
+  } else if (urls[0] !== urls[1]) {
+    reasons.push(`different instances (${urls[0]} and ${urls[1]})`);
+  }
+  const images = [mendImageIdOf(main), mendImageIdOf(companion)];
+  const commits = [commitOf(main), commitOf(companion)];
+  if (images[0] !== null && images[1] !== null) {
+    if (images[0] !== images[1]) {
+      reasons.push(
+        `the Mend images differ (${images[0].slice(0, 19)} and ${images[1].slice(0, 19)})`,
+      );
+    }
+  } else if (commits[0] !== null && commits[1] !== null) {
+    if (commits[0] !== commits[1]) {
+      reasons.push(`the commits differ (${commits[0].slice(0, 9)} and ${commits[1].slice(0, 9)})`);
+    }
+  } else {
+    reasons.push(
+      "its Mend build cannot be told against the record's: neither both image ids nor both commits are known",
+    );
+  }
+  const workspaces = [main.target?.workspaceImage, companion.target?.workspaceImage];
+  if (!known(workspaces[0]) || !known(workspaces[1])) {
+    reasons.push("its workspace image or the record's is not known");
+  } else if (workspaces[0] !== workspaces[1]) {
+    reasons.push(`the workspace images differ (${workspaces[0]} and ${workspaces[1]})`);
+  }
+  for (const harness of companionHarnessesOf(companion)) {
+    const versions = [
+      main.target?.harnessVersions?.[harness],
+      companion.target?.harnessVersions?.[harness],
+    ];
+    if (!known(versions[0]) || !known(versions[1])) {
+      reasons.push(`${harness}'s version is not known on both`);
+    } else if (versions[0] !== versions[1]) {
+      reasons.push(`${harness} ran ${versions[0]} in the record and ${versions[1]} in it`);
+    }
+  }
+  return reasons;
 };
+
+/** The harnesses a companion's measures and checks name (`harnessOf`): whose versions must match. */
+const companionHarnessesOf = (companion) =>
+  [
+    ...new Set(
+      [
+        ...Object.keys(companion.measures ?? {}),
+        ...(companion.checks ?? []).map((check) => check.check),
+      ]
+        .map(harnessOf)
+        .filter((harness) => harness !== null),
+    ),
+  ].toSorted();
 
 /** A record's companions of its own run (`companionMismatchOf`), as `[name, record]` pairs. */
 export const sameRunCompanionsOf = (result) =>

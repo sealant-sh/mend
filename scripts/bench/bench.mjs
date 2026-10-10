@@ -97,9 +97,11 @@
 //   with `launch_call_capped` (1 when the call took the whole window) and a note per capped call.
 // - The answer is watched for from the first output on, while the executor is sized beside it.
 // - A merge stamps each executor size with the point its own record sampled it at (`sampledAt`).
-// - Beside each executor's memory, its cgroup's `memory.stat` parts (`memory_anon_bytes`, the
+// - Beside each executor's memory, its own cgroup's `memory.stat` parts (`memory_anon_bytes`, the
 //   processes' own; `memory_active_file_bytes`, page cache the total counts; `memory_shmem_bytes`;
-//   `memory_kernel_bytes`), unbudgeted, so a difference in the total can be told apart.
+//   `memory_kernel_bytes`, v2 only), unbudgeted, so a difference in the total can be told apart.
+//   Read on the host from the container's cgroup (v2, or v1's hierarchical totals); when it cannot
+//   be read, the parts are not run, with why.
 // - Each shell open counts the person's logins the engine wrote into the executor during it
 //   (`shell.open_credential_writes`, Core's credentials POST), unbudgeted.
 // - The different-person join gets memory of its own: when the second account holds none in the
@@ -108,8 +110,14 @@
 //   unbudgeted: an executor that shares one home delivers nothing to another person's join).
 //   `--secret-file` gives the second account the run's secret file too. A launch that delivered
 //   nothing says why (memory already in place, another person's shared home, nothing held).
-// - `companion` keeps only a record of the same run (layout, instance, Mend image, workspace image,
-//   harness versions); under gate P1 what such a companion ran and holds counts toward the set.
+// - `companion` keeps only a record of the same run, shown, not assumed: the same known layout,
+//   instance, Mend build (both image ids, else both commits), workspace image and the versions of
+//   the harnesses it names. Under gate P1 what such a companion ran and holds counts toward the set,
+//   every budgeted measure in it needs its baseline counterpart, and the baseline companion's
+//   errors are the baseline's.
+// - Cleanup waits for what is in flight that leaves something (a create, an import), refuses new
+//   such work once interrupted, and removes each kind on its own: the joiner's memory file of a
+//   run by its path, whatever else failed; a failure fails the cleanup.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -202,14 +210,16 @@ gate P1 (docs/adr/0016): person launches against shared launches at one commit
   a miss, and the baseline's errors fail it too. A per-round series (launches and Stops, the
   hand-over's differences, growth, joins, resumes) that kept fewer than 80% of its rounds, or
   fewer than 5, is a miss (SHORT), and a record of fewer than 10 rounds is not the gate. A
-  companion of the same run (\`companion\`: same layout, instance, Mend image, workspace image and
-  harness versions, another project) counts toward the set: what it ran and holds is compared
-  against the baseline's companion of that name, under the same floors; one of another run makes
-  it "not the gate". A companion's failed checks and errors count, on either side. Ceiling
-  budgets (the hand-over's 5 s over the own turn, growth's 64 KB) are checked on the record under
-  test alone. It also fails on a failed or unverified check and on an error in the record under
-  test. It says what it does not cover: P1's restore wall time on the box's largest worktree,
-  interleaved between the layouts. The last line is the verdict; exit 0 only when it says passed
+  companion of the same run (\`companion\`: the same known layout, instance, Mend image or
+  commit, workspace image and versions of the harnesses it names; another project) counts toward
+  the set: what it ran and holds is compared against the baseline's companion of that name, under
+  the same floors, a budgeted measure of it the baseline's companion lacks is a miss, and the
+  baseline companion's errors fail it; one not shown to be of the run makes it "not the gate". A
+  companion's failed checks and errors count, on either side. Ceiling budgets (the hand-over's 5 s
+  over the own turn, growth's 64 KB) are checked on the record under test alone. It also fails on
+  a failed or unverified check and on an error in the record under test. It says what it does
+  not cover: P1's restore wall time on the box's largest worktree, interleaved between the
+  layouts. The last line is the verdict; exit 0 only when it says passed
 
 what the record keeps apart
   executor sizes              taken at each launch's first output; memory_after_answer_bytes is what
@@ -402,13 +412,21 @@ const runBench = async (opts) => {
       remoteRefs: new Set(),
       secretFile: false,
     },
+    // What is in flight that leaves something behind, and whether new such work is refused.
+    pending: new Set(),
+    stopping: false,
   };
+  // One cleanup, whoever asks first: the signal's and the run's own wait for the same one.
+  let cleaning = null;
+  const cleanupOnce = () => (cleaning ??= cleanupAll(ctx));
   let interrupted = false;
   const onSignal = () => {
     if (interrupted) process.exit(130);
     interrupted = true;
+    // Nothing new that leaves something starts; cleanup waits for what is in flight.
+    ctx.stopping = true;
     log("interrupted: cleaning up (again to quit without it)");
-    cleanupAll(ctx)
+    cleanupOnce()
       .catch((error) => log(`cleanup failed: ${error.message}`))
       .finally(() => {
         writeJson(opts.out, settleNotRun({ ...result, finishedAt: new Date().toISOString() }));
@@ -422,7 +440,7 @@ const runBench = async (opts) => {
   } catch (error) {
     ctx.rec.error("run", error);
   } finally {
-    await cleanupAll(ctx).catch((error) => ctx.rec.error("cleanup", error));
+    await cleanupOnce().catch((error) => ctx.rec.error("cleanup", error));
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }

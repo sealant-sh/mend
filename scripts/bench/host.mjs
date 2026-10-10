@@ -5,6 +5,8 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
+import { memoryStatCommand } from "./lib.mjs";
+
 const run = promisify(execFile);
 
 // ─── the API ────────────────────────────────────────────────────────────────
@@ -288,7 +290,7 @@ export const executorResources = async (host, container) => {
   );
   // The executor's own memory.stat beside its stats: what the total is made of.
   const memory = await host.shell(
-    `docker stats --no-stream --format '{{.Name}}|{{.MemUsage}}' ${container} ${container}-docker 2>/dev/null; echo ${MEMORY_STAT_MARK}; docker exec ${container} cat /sys/fs/cgroup/memory.stat 2>/dev/null; true`,
+    `docker stats --no-stream --format '{{.Name}}|{{.MemUsage}}' ${container} ${container}-docker 2>/dev/null; echo ${MEMORY_STAT_MARK}; ${memoryStatCommand(container)}; true`,
   );
   const [stats, memoryStat = ""] = memory.split(MEMORY_STAT_MARK);
   const [mainDisk, sidecarDisk] = disk.split("\n");

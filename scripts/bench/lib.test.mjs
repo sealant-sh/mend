@@ -6,9 +6,12 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { ApiError } from "./host.mjs";
 import {
   agentIdentityOf,
   companionMismatchOf,
+  MEMORY_STAT_SH,
+  memoryStatCommand,
   credentialWriteCount,
   noDeliveryReasonOf,
   parseMemoryStat,
@@ -97,7 +100,13 @@ import {
   summarize,
   usageLimitOf,
 } from "./lib.mjs";
-import { makeRecorder, recordExcludingInstall, recordInstall } from "./scenarios.mjs";
+import {
+  cleanupAll,
+  makeRecorder,
+  recordExcludingInstall,
+  recordInstall,
+  runAll,
+} from "./scenarios.mjs";
 
 // ─── statistics ─────────────────────────────────────────────────────────────
 
@@ -2273,6 +2282,266 @@ test("gate P1: the partial gate's second person may run in the companion alone",
   );
 });
 
+/** The split gate of review 624, mutated: before and after with their companions, compared. */
+const splitCase = (mutate) => {
+  const pair = splitGate();
+  mutate(pair);
+  return compareResults(
+    withCompanion(pair.sharedMain, pair.sharedPair),
+    withCompanion(pair.personMain, pair.personPair),
+  );
+};
+
+test("review 624 (1): a companion whose build, workspace or harness identity is unknown is not of the run", () => {
+  assert.equal(comparisonFails(splitCase(() => {})), false);
+  const result = splitCase(({ personPair, sharedPair }) => {
+    for (const companion of [personPair, sharedPair]) {
+      companion.target.mendImage = null;
+      companion.target.commit = "unknown";
+      companion.target.workspaceImage = null;
+      companion.target.harnessVersions = {};
+    }
+  });
+  assert.equal(comparisonFails(result), true);
+  assert.ok(
+    result.label.differs.some((reason) =>
+      /companion on configs is not of its run: its Mend build cannot be told/.test(reason),
+    ),
+  );
+  assert.ok(result.label.differs.some((reason) => /did not run join-other/.test(reason)));
+  const { personMain, personPair } = splitGate();
+  const versionOnly = structuredClone(personPair);
+  versionOnly.target.mendImage = null;
+  versionOnly.target.commit = null;
+  assert.match(companionMismatchOf(personMain, versionOnly).join("; "), /build cannot be told/);
+  const noWorkspace = structuredClone(personPair);
+  noWorkspace.target.workspaceImage = undefined;
+  assert.deepEqual(companionMismatchOf(personMain, noWorkspace), [
+    "its workspace image or the record's is not known",
+  ]);
+  // A harness the companion names needs its version on both; one it does not name, not.
+  const noCodex = structuredClone(personPair);
+  delete noCodex.target.harnessVersions.codex;
+  assert.deepEqual(companionMismatchOf(personMain, noCodex), [
+    "codex's version is not known on both",
+  ]);
+  const claudeOnly = {
+    ...structuredClone(personPair),
+    measures: { "join.other.first_output": personPair.measures["join.other.first_output"] },
+    checks: [],
+  };
+  claudeOnly.target.harnessVersions = {};
+  assert.deepEqual(companionMismatchOf(personMain, claudeOnly), []);
+  const noUrl = structuredClone(personPair);
+  noUrl.target.url = undefined;
+  assert.deepEqual(companionMismatchOf(personMain, noUrl), [
+    "its instance or the record's is not known",
+  ]);
+});
+
+test("review 624 (2): an error in the baseline's companion fails the gate like the baseline's own", () => {
+  const result = splitCase(({ sharedPair }) => {
+    sharedPair.errors = [{ scenario: "join.other", message: "a baseline round failed" }];
+  });
+  assert.deepEqual(result.misses, []);
+  assert.deepEqual(
+    result.baselineErrors.map((error) => error.scenario),
+    ["configs: join.other"],
+  );
+  assert.equal(comparisonFails(result), true);
+});
+
+test("review 624 (3): a budgeted companion measure the baseline's companion lacks is a miss", () => {
+  const result = splitCase(({ personPair }) => {
+    personPair.measures["executor.claude.memory_bytes"] = {
+      unit: "bytes",
+      budget: "resource",
+      samples: tenOf(5_000_000_000),
+    };
+  });
+  assert.deepEqual(
+    result.misses.map((row) => [row.measure, row.stat, row.missing]),
+    [
+      ["configs: executor.claude.memory_bytes", "median", true],
+      ["configs: executor.claude.memory_bytes", "p90", true],
+    ],
+  );
+  assert.equal(comparisonFails(result), true);
+  // Outside the gate a companion is compared by what it was asked, as before.
+  const plain = compareResults(
+    withCompanion(record({}), splitGate().sharedPair),
+    withCompanion(record({}), {
+      ...splitGate().personPair,
+      measures: {
+        ...splitGate().personPair.measures,
+        "executor.claude.memory_bytes": {
+          unit: "bytes",
+          budget: "resource",
+          samples: tenOf(5_000_000_000),
+        },
+      },
+    }),
+  );
+  assert.ok(!plain.rows.some((row) => row.measure === "configs: executor.claude.memory_bytes"));
+});
+
+/** A cleanup's world: the owner's and the joiner's API, with what the joiner's memory holds. */
+const cleanupWorld = ({ worktrees = "ok", memory = "ok", rid = "proof" } = {}) => {
+  const seed = `.claude/projects/-workspace-repo/memory/st-bench-${rid}.md`;
+  const stored = new Map([[seed, { path: seed }]]);
+  const result = { measures: {}, notRun: [], notes: [], errors: [], checks: [] };
+  const ctx = {
+    rid,
+    project: { id: "p" },
+    log: () => {},
+    rec: makeRecorder(result, () => {}),
+    created: { remoteRefs: new Set(), worktrees: new Map(), sessions: new Set() },
+    api: {
+      get: async (route) => {
+        if (route.endsWith("/worktrees")) {
+          if (worktrees === "fails") throw new Error("worktree listing failed");
+          return { worktrees: [] };
+        }
+        return { files: [] };
+      },
+    },
+    api2: {
+      get: async (route) => {
+        if (route.endsWith("/memory")) {
+          if (memory === "fails") throw new Error("memory listing failed");
+          return { files: [...stored.values()] };
+        }
+        return { files: [] };
+      },
+      post: async () => ({}),
+      delete: async (route) => {
+        if (memory === "delete fails") throw new Error("memory delete failed");
+        const memoryPath = decodeURIComponent(route.split("?path=")[1]);
+        if (!stored.has(memoryPath)) throw new ApiError("DELETE", route, 404, "{}");
+        stored.delete(memoryPath);
+        return {};
+      },
+    },
+  };
+  return { ctx, stored, result };
+};
+
+test("review 624 (4): cleanup removes the joiner's memory whatever else failed, and fails loudly", async () => {
+  for (const [world, errors] of [
+    [{}, []],
+    [{ worktrees: "fails" }, ["cleanup · worktrees"]],
+    [{ memory: "fails" }, []],
+  ]) {
+    const { ctx, stored, result } = cleanupWorld(world);
+    await cleanupAll(ctx);
+    assert.equal(stored.size, 0, JSON.stringify(world));
+    assert.deepEqual(
+      result.errors.map((error) => error.scenario),
+      errors,
+    );
+  }
+  // Gone already is fine; a removal that fails is an error, so `cleanup` exits 1.
+  const gone = cleanupWorld();
+  gone.stored.clear();
+  await cleanupAll(gone.ctx);
+  assert.deepEqual(gone.result.errors, []);
+  const failing = cleanupWorld({ memory: "delete fails" });
+  await cleanupAll(failing.ctx);
+  assert.deepEqual(
+    failing.result.errors.map((error) => error.scenario),
+    ["cleanup · joiner memory"],
+  );
+  // `--all` lists, and a list that fails is an error, never "nothing to remove".
+  const all = cleanupWorld({ memory: "fails" });
+  await cleanupAll(all.ctx, { all: true });
+  assert.equal(all.stored.size, 1);
+  assert.deepEqual(
+    all.result.errors.map((error) => error.scenario),
+    ["cleanup · joiner memory"],
+  );
+});
+
+test("review 624 (5): cleanup waits for an import in flight, and nothing new starts once stopping", async () => {
+  const { ctx, stored } = cleanupWorld({ rid: "race" });
+  stored.clear();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  let importing;
+  const started = new Promise((resolve) => {
+    importing = resolve;
+  });
+  ctx.opts = { only: ["join-other"], layout: "person", secretFile: false, runs: 1 };
+  ctx.result = { target: { harnessVersions: {} }, blocked: [] };
+  ctx.api.call = async () => {
+    throw new Error("no sessions in this test");
+  };
+  ctx.api2.post = async (_route, payload) => {
+    importing();
+    await gate;
+    for (const file of payload.files) stored.set(file.path, file);
+    return {};
+  };
+  const run = runAll(ctx).catch(() => null);
+  await started;
+  // The signal: nothing new starts, and cleanup waits for the import before it decides.
+  ctx.stopping = true;
+  const cleaning = cleanupAll(ctx);
+  setTimeout(release, 50);
+  await cleaning;
+  await run;
+  assert.equal(stored.size, 0);
+  // An import asked for after the signal is refused.
+  const late = cleanupWorld({ rid: "late" });
+  late.stored.clear();
+  late.ctx.stopping = true;
+  late.ctx.opts = ctx.opts;
+  late.ctx.result = ctx.result;
+  late.ctx.api.call = ctx.api.call;
+  await runAll(late.ctx).catch(() => null);
+  assert.equal(late.stored.size, 0);
+});
+
+test("review 624 (6): memory.stat is the executor's own cgroup, v1 read from hierarchical totals only", () => {
+  // v1 with a child cgroup: the hierarchical totals, never the parent's local counters.
+  assert.deepEqual(
+    parseMemoryStat(
+      "cgroup v1 /docker/abc\ntotal_rss 1000\nactive_file 20\ntotal_active_file 2000\nshmem 30\ntotal_shmem 3000\n",
+    ),
+    { anon: 1000, activeFile: 2000, shmem: 3000, kernel: null, reason: null },
+  );
+  // A v1 file with no totals has no parts, rather than local ones.
+  assert.deepEqual(parseMemoryStat("cgroup v1 /docker/abc\nrss 5\nactive_file 6\n"), {
+    anon: null,
+    activeFile: null,
+    shmem: null,
+    kernel: null,
+    reason: null,
+  });
+  assert.deepEqual(
+    parseMemoryStat(
+      "cgroup v2 /system.slice/docker-abc.scope\nanon 1000\nfile 5000\nactive_file 3000\nshmem 7\nkernel 40\n",
+    ),
+    { anon: 1000, activeFile: 3000, shmem: 7, kernel: 40, reason: null },
+  );
+  assert.equal(
+    parseMemoryStat("unavailable /sys/fs/cgroup/x/memory.stat cannot be read").reason,
+    "/sys/fs/cgroup/x/memory.stat cannot be read",
+  );
+  assert.equal(parseMemoryStat("").reason, "no memory.stat was read");
+  // The host script passes whole, as its own argument list, and takes a container name only.
+  const command = memoryStatCommand("sealant-abc_1.x");
+  const encoded = /printf %s '([^']+)'/.exec(command)[1];
+  assert.equal(Buffer.from(encoded, "base64").toString("utf8"), MEMORY_STAT_SH);
+  assert.match(command, / st-bench sealant-abc_1\.x$/);
+  assert.throws(() => memoryStatCommand("a; rm -rf /"), /not a container name/);
+  // It reads the container's own cgroup: the first process's path is cut at the container's id.
+  assert.match(MEMORY_STAT_SH, /\/proc\/\$pid\/cgroup/);
+  assert.match(MEMORY_STAT_SH, /\$id\[\^\/\]\*/);
+  assert.ok(!MEMORY_STAT_SH.includes("docker exec"));
+});
+
 const milestone = (name) => ({ name, at: 0, level: "INFO", fields: {} });
 
 test("a launch with no delivery says why: in place, another person's home, nothing held", () => {
@@ -2296,27 +2565,6 @@ test("a launch with no delivery says why: in place, another person's home, nothi
     /the delivery milestones were not in the log/,
   );
   assert.match(noDeliveryReasonOf(null), /logged no memory/);
-});
-
-test("an executor's memory is split into its processes', page cache, tmpfs and kernel", () => {
-  assert.deepEqual(
-    parseMemoryStat(
-      "anon 1000\nfile 5000\nactive_file 3000\ninactive_file 2000\nshmem 7\nkernel 40\n",
-    ),
-    { anon: 1000, activeFile: 3000, shmem: 7, kernel: 40 },
-  );
-  assert.deepEqual(parseMemoryStat("total_rss 9\ntotal_active_file 8\ntotal_shmem 1\n"), {
-    anon: 9,
-    activeFile: 8,
-    shmem: 1,
-    kernel: null,
-  });
-  assert.deepEqual(parseMemoryStat(""), {
-    anon: null,
-    activeFile: null,
-    shmem: null,
-    kernel: null,
-  });
 });
 
 const responseLine = (time, url, method = "POST") => ({

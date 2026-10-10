@@ -86,6 +86,45 @@ const runLocal = (command) =>
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const errorText = (error) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * A request that leaves something on the server for cleanup to remove (a worktree, a secret file,
+ * a memory file). Refused once the run is interrupted (`ctx.stopping`), and kept in `ctx.pending`
+ * until it settles, so cleanup waits for it (`settlePending`): nothing it leaves can commit after
+ * cleanup decided what to remove.
+ */
+const leaving = (ctx, request) => {
+  if (ctx.stopping === true) {
+    return Promise.reject(new Error("the run was interrupted: nothing new is started"));
+  }
+  const pending = request();
+  ctx.pending ??= new Set();
+  ctx.pending.add(pending);
+  const forget = () => ctx.pending.delete(pending);
+  pending.then(forget, forget);
+  return pending;
+};
+
+/** How long cleanup waits for requests in flight before it goes on without them. */
+export const PENDING_WAIT_MS = 120_000;
+
+/** Waits for every request in flight that leaves something (`leaving`), up to `PENDING_WAIT_MS`. */
+export const settlePending = async (ctx, waitMs = PENDING_WAIT_MS) => {
+  const deadline = Date.now() + waitMs;
+  while ((ctx.pending?.size ?? 0) > 0) {
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      ctx.rec.error(
+        "cleanup",
+        new Error(
+          `${ctx.pending.size} request(s) still in flight after ${waitMs / 1000} s: what they leave may stay (cleanup --run ${ctx.rid} removes it)`,
+        ),
+      );
+      return;
+    }
+    await Promise.race([Promise.allSettled(ctx.pending), sleep(left)]);
+  }
+};
+
 // ─── the recorder ───────────────────────────────────────────────────────────
 
 export const makeRecorder = (result, log) => ({
@@ -136,14 +175,16 @@ const local = (ctx, iso) =>
  */
 const createSession = async (ctx, { harness, name, label, api = ctx.api, layout = null }) => {
   const started = Date.now();
-  const { value: session, ms } = await api.call("POST", `/projects/${ctx.project.id}/sessions`, {
-    harness,
-    label,
-    name,
-    base: null,
-    autoLand: false,
-    ...(layout === null ? {} : { harnessLayout: layout }),
-  });
+  const { value: session, ms } = await leaving(ctx, () =>
+    api.call("POST", `/projects/${ctx.project.id}/sessions`, {
+      harness,
+      label,
+      name,
+      base: null,
+      autoLand: false,
+      ...(layout === null ? {} : { harnessLayout: layout }),
+    }),
+  );
   ctx.created.sessions.add(session.id);
   ctx.created.worktrees.set(session.worktree, session.worktreeId);
   return { session, startedAt: started, createMs: ms };
@@ -458,6 +499,7 @@ const recordResources = async (ctx, name, container, budget) => {
     ["kernel", parts.kernel],
   ]) {
     if (value !== null) ctx.rec.sample(`${name}.memory_${part}_bytes`, value, "bytes");
+    else if (parts.reason !== null) ctx.rec.notRun(`${name}.memory_${part}_bytes`, parts.reason);
   }
 };
 
@@ -1667,15 +1709,22 @@ const removeWorktree = async (ctx, worktreeId) => {
  * run's: a bench run or a `cleanup` beside a gate run leaves the gate's sessions alone.
  */
 export const cleanupAll = async (ctx, { all = false } = {}) => {
-  const listing = await ctx.api.get(`/projects/${ctx.project.id}/worktrees`);
-  for (const worktree of listing.worktrees ?? []) {
-    if (!inCleanupScope(worktree.name, ctx.rid, all)) continue;
-    try {
-      await removeWorktree(ctx, worktree.id);
-      ctx.log(`cleanup · removed worktree ${worktree.name}`);
-    } catch (error) {
-      ctx.rec.error(`cleanup · worktree ${worktree.name}`, error);
+  // Whatever is in flight first: an import or a create that commits after this would stay.
+  await settlePending(ctx);
+  // Each part on its own: one that fails is recorded (cleanup then fails) and the others still run.
+  try {
+    const listing = await ctx.api.get(`/projects/${ctx.project.id}/worktrees`);
+    for (const worktree of listing.worktrees ?? []) {
+      if (!inCleanupScope(worktree.name, ctx.rid, all)) continue;
+      try {
+        await removeWorktree(ctx, worktree.id);
+        ctx.log(`cleanup · removed worktree ${worktree.name}`);
+      } catch (error) {
+        ctx.rec.error(`cleanup · worktree ${worktree.name}`, error);
+      }
     }
+  } catch (error) {
+    ctx.rec.error("cleanup · worktrees", error);
   }
   // This run's secret file (one a hard quit left included), or with `all` every run's; never
   // another run's otherwise. Either account's: the joiner gets one too.
@@ -1684,37 +1733,61 @@ export const cleanupAll = async (ctx, { all = false } = {}) => {
     [" (the second account's)", ctx.api2 ?? null],
   ]) {
     if (api === null) continue;
-    const secrets = await api.get("/me/secret-files").catch(() => ({ files: [] }));
-    for (const file of secrets.files ?? []) {
-      const ours = all
-        ? file.path === SECRET_PREFIX || file.path.startsWith(`${SECRET_PREFIX}-`)
-        : typeof ctx.rid === "string" && file.path === secretPathOf(ctx.rid);
-      if (ours) {
-        await api
-          .delete(`/me/secret-files?path=${encodeURIComponent(file.path)}`)
-          .then(() => ctx.log(`cleanup · removed secret file ${file.path}${who}`))
-          .catch((error) => ctx.rec.error("cleanup · secret file", error));
+    try {
+      const secrets = await api.get("/me/secret-files");
+      for (const file of secrets.files ?? []) {
+        const ours = all
+          ? file.path === SECRET_PREFIX || file.path.startsWith(`${SECRET_PREFIX}-`)
+          : typeof ctx.rid === "string" && file.path === secretPathOf(ctx.rid);
+        if (ours) {
+          await api
+            .delete(`/me/secret-files?path=${encodeURIComponent(file.path)}`)
+            .then(() => ctx.log(`cleanup · removed secret file ${file.path}${who}`))
+            .catch((error) => ctx.rec.error("cleanup · secret file", error));
+        }
       }
+    } catch (error) {
+      ctx.rec.error(`cleanup · secret files${who}`, error);
     }
   }
-  // The joiner's memory file of this run, or with `all` every run's, in this project.
-  if ((ctx.api2 ?? null) !== null) {
-    const memory = await ctx.api2
-      .get(`/projects/${ctx.project.id}/memory`)
-      .catch(() => ({ files: [] }));
-    for (const file of memory.files ?? []) {
-      const ours = all
-        ? file.path.startsWith(`${JOINER_MEMORY_DIR}/${PREFIX}`)
-        : typeof ctx.rid === "string" && file.path === joinerMemoryPathOf(ctx.rid);
-      if (ours) {
-        await ctx.api2
-          .delete(`/projects/${ctx.project.id}/memory/file?path=${encodeURIComponent(file.path)}`)
-          .then(() => ctx.log(`cleanup · removed the joiner's memory file ${file.path}`))
-          .catch((error) => ctx.rec.error("cleanup · joiner memory", error));
-      }
-    }
-  }
+  await removeJoinerMemory(ctx, { all });
   remoteRefsNote(ctx);
+};
+
+/**
+ * The joiner's memory file: this run's by its path, which needs no listing (gone already is
+ * fine), or with `all` every run's in the project. A failure is recorded, so cleanup fails and
+ * says so; it never passes over a seed it could not see.
+ */
+const removeJoinerMemory = async (ctx, { all }) => {
+  if ((ctx.api2 ?? null) === null) {
+    ctx.log(
+      "cleanup · the joiner's memory file is the second account's: pass --second-token-file to remove it",
+    );
+    return;
+  }
+  const remove = (path) =>
+    ctx.api2
+      .delete(`/projects/${ctx.project.id}/memory/file?path=${encodeURIComponent(path)}`)
+      .then(
+        () => ctx.log(`cleanup · removed the joiner's memory file ${path}`),
+        (error) => {
+          if (error instanceof ApiError && error.status === 404) return;
+          ctx.rec.error("cleanup · joiner memory", error);
+        },
+      );
+  if (!all) {
+    if (typeof ctx.rid === "string") await remove(joinerMemoryPathOf(ctx.rid));
+    return;
+  }
+  try {
+    const memory = await ctx.api2.get(`/projects/${ctx.project.id}/memory`);
+    for (const file of memory.files ?? []) {
+      if (file.path.startsWith(`${JOINER_MEMORY_DIR}/${PREFIX}`)) await remove(file.path);
+    }
+  } catch (error) {
+    ctx.rec.error("cleanup · joiner memory", error);
+  }
 };
 
 const remoteRefsNote = (ctx) => {
@@ -1735,11 +1808,13 @@ const placeSecretFile = async (ctx, api = ctx.api) => {
     ctx.rec.note(`a secret file at ${path} already exists; left as it is`);
     return;
   }
-  await api.put("/me/secret-files", {
-    path,
-    encoding: "utf8",
-    contents: "st-bench: a secret file to time its delivery\n",
-  });
+  await leaving(ctx, () =>
+    api.put("/me/secret-files", {
+      path,
+      encoding: "utf8",
+      contents: "st-bench: a secret file to time its delivery\n",
+    }),
+  );
   if (api === ctx.api) ctx.created.secretFile = true;
 };
 
@@ -1759,15 +1834,17 @@ const seedJoinerMemory = async (ctx) => {
     );
     return;
   }
-  await ctx.api2.post(`/projects/${ctx.project.id}/memory/import`, {
-    files: [
-      {
-        path: joinerMemoryPathOf(ctx.rid),
-        encoding: "utf8",
-        contents: `# st-bench\n\nA memory file of benchmark run ${ctx.rid}, so a join by this person delivers memory.\n`,
-      },
-    ],
-  });
+  await leaving(ctx, () =>
+    ctx.api2.post(`/projects/${ctx.project.id}/memory/import`, {
+      files: [
+        {
+          path: joinerMemoryPathOf(ctx.rid),
+          encoding: "utf8",
+          contents: `# st-bench\n\nA memory file of benchmark run ${ctx.rid}, so a join by this person delivers memory.\n`,
+        },
+      ],
+    }),
+  );
 };
 
 /** Whether the second account can reach the project at all; the reason when it cannot. */
