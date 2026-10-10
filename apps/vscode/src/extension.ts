@@ -1,6 +1,7 @@
 import * as path from "node:path";
 
 import {
+  canSteerSession,
   emptyHarnessModelCatalog,
   modelPicker,
   repositoryCloneUrlIssue,
@@ -29,6 +30,7 @@ import {
   type ProjectNode,
   type SessionNode,
 } from "./tree.js";
+import { isRefusal } from "./tty-attachment.js";
 import { attachableProcesses, type TtyAddress } from "./tty-protocol.js";
 import { MendTtyTerminal } from "./tty-terminal.js";
 import type {
@@ -79,6 +81,17 @@ const errorMessage = (cause: unknown): string =>
     : cause instanceof MendApiError || cause instanceof Error
       ? cause.message
       : "Mend could not complete that action.";
+
+/** Whether the server lets `viewer` steer, and so attach to the terminal of, `session`. */
+const maySteer = (session: Session, viewer: string): boolean =>
+  canSteerSession(
+    {
+      ownerUserId: session.ownerUserId,
+      sharedControlEnabledAt:
+        session.sharedControlEnabledAt === null ? null : new Date(session.sharedControlEnabledAt),
+    },
+    viewer,
+  );
 
 /** The error, with Connect offered when the server refused the token. */
 const showError = async (cause: unknown): Promise<void> => {
@@ -384,6 +397,14 @@ class MendCommands {
       const detail = await this.client.sessionDetail(location.session.id);
       const live = attachableProcesses(detail.processes);
       const viewer = this.tree.knownViewer() ?? (await this.client.viewerId());
+      // The server lets into a session's terminal whoever may steer it: its owner, and others only
+      // while shared control is on, and then they watch (`canSteerSession`, apps/api tty route).
+      if (viewer !== null && !maySteer(detail.session, viewer)) {
+        void vscode.window.showInformationMessage(
+          `${displaySession(detail.session)} is ${await this.nameOf(detail.session.ownerUserId)}'s session. Its terminal opens for others only while its owner has shared control on.`,
+        );
+        return;
+      }
       const owns =
         viewer === null ||
         detail.session.ownerUserId === null ||
@@ -428,11 +449,17 @@ class MendCommands {
           connection: () => this.client.connection(),
           address,
           banner,
-          stillLive: async () => {
-            const now = await this.client.sessionDetail(detail.session.id);
-            return processId === null
-              ? now.currentAgent !== null && now.currentAgent.exitedAt === null
-              : attachableProcesses(now.processes).some((process) => process.id === processId);
+          liveness: async () => {
+            try {
+              const now = await this.client.sessionDetail(detail.session.id);
+              const live =
+                processId === null
+                  ? now.currentAgent !== null && now.currentAgent.exitedAt === null
+                  : attachableProcesses(now.processes).some((process) => process.id === processId);
+              return live ? "live" : "ended";
+            } catch (cause) {
+              return isRefusal(cause) ? "refused" : "unknown";
+            }
           },
         }),
       });
@@ -470,25 +497,33 @@ class MendCommands {
     void vscode.window.showInformationMessage(said);
   }
 
+  /** A member's name as the organization lists it; "another person" when it cannot say. */
+  private async nameOf(userId: string | null): Promise<string> {
+    if (userId === null) return "another person";
+    const names = await this.client.memberNames();
+    return names.find((member) => member.userId === userId)?.name ?? "another person";
+  }
+
   /**
-   * Remote-SSH admits only the person who launched the workspace (docs/adr/0016; the gateway
-   * authorizes the workspace's creator). Opening someone else's session would end in a bare
-   * "Permission denied" from Remote-SSH, so say it first and offer the terminal, which needs no SSH.
+   * Remote-SSH admits only the person who launched the workspace's executor (docs/adr/0016; the
+   * gateway authorizes the workspace's creator). That is not always the session's owner: a session
+   * started in a worktree where another person's session already runs joins that person's
+   * executor. Opening it would end in a bare "Permission denied" from Remote-SSH, so say it first
+   * and offer the terminal where the server lets this person in. Every path that opens a
+   * workspace over SSH asks this, the takeover included.
    */
   private async mayOpenOverSsh(location: SessionLocation): Promise<boolean> {
-    const owner = location.session.ownerUserId;
+    const launcher = location.session.workspaceLauncherUserId;
     const viewer = this.tree.knownViewer() ?? (await this.client.viewerId());
-    if (owner === null || viewer === null || owner === viewer) return true;
-    const names = await this.client.memberNames();
-    const name = names.find((member) => member.userId === owner)?.name ?? "another person";
+    if (launcher === null || viewer === null || launcher === viewer) return true;
+    const terminal = maySteer(location.session, viewer);
     const answer = await vscode.window.showWarningMessage(
-      `${displaySession(location.session)} is ${name}'s session.`,
+      `${await this.nameOf(launcher)} launched the workspace ${displaySession(location.session)} runs in.`,
       {
         modal: true,
-        detail: `Remote-SSH opens a workspace only for the person who launched it, so VS Code would be refused. Open its terminal instead (read-only unless it is yours), or start your own session in this worktree.`,
+        detail: `Remote-SSH opens a workspace only for the person who launched it, so VS Code would be refused. A session of yours in this worktree joins the same workspace, so it would be refused too.${terminal ? " The session's terminal needs no SSH." : ""}`,
       },
-      "Open terminal",
-      "Open anyway",
+      ...(terminal ? ["Open terminal", "Open anyway"] : ["Open anyway"]),
     );
     if (answer === "Open terminal") {
       await this.openTerminal({
@@ -590,7 +625,9 @@ class MendCommands {
       );
       return;
     }
-    // Reconcile SSH before ending anything: a cancelled setup must leave the agent running.
+    // Before ending anything: Remote-SSH must admit this person, and SSH must be set up. A refusal
+    // or a cancelled setup leaves the agent running.
+    if (!(await this.mayOpenOverSsh(location))) return;
     const destination = await this.resolveWorkspaceSsh(false);
     if (destination === "cancelled") return;
     const workspaceId = session.sealantWorkspaceId;

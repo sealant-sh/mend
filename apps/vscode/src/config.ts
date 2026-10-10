@@ -4,6 +4,12 @@ import * as path from "node:path";
 
 import * as vscode from "vscode";
 
+import {
+  parseStoredCredential,
+  serializeStoredCredential,
+  tokenFor,
+  type StoredCredential,
+} from "./credentials.js";
 import { requestMend } from "./mend-http.js";
 import { browserSignIn, normalizeServerUrl, plainHttpWarning, type SignedIn } from "./sign-in.js";
 
@@ -13,29 +19,6 @@ export interface MendConnection {
 }
 
 const TOKEN_KEY = "mend.serverToken";
-
-interface StoredToken {
-  readonly url: string;
-  readonly token: string;
-  /** The device a browser sign-in created; sign-out revokes it. Absent for a pasted token. */
-  readonly deviceId: string | null;
-}
-
-const storedToken = (value: string | undefined): StoredToken | null => {
-  if (value === undefined) return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const url = Reflect.get(parsed, "url");
-    const token = Reflect.get(parsed, "token");
-    const deviceId = Reflect.get(parsed, "deviceId");
-    return typeof url === "string" && typeof token === "string"
-      ? { url, token, deviceId: typeof deviceId === "string" ? deviceId : null }
-      : null;
-  } catch {
-    return null;
-  }
-};
 
 interface ConnectPick extends vscode.QuickPickItem {
   readonly method: "browser" | "token" | "none";
@@ -80,10 +63,8 @@ export class ConnectionStore {
       (configured === undefined || configured === "" ? discovered?.url : configured) ??
       "http://localhost:3105"
     ).replace(/\/$/, "");
-    const secret = storedToken(await this.context.secrets.get(TOKEN_KEY));
-    const token =
-      secret?.url === url ? secret.token : url === discovered?.url ? discovered.token : null;
-    return { url, token };
+    const stored = parseStoredCredential(await this.context.secrets.get(TOKEN_KEY));
+    return { url, token: tokenFor(url, stored, discovered) };
   }
 
   /**
@@ -128,11 +109,11 @@ export class ConnectionStore {
       },
     );
     if (method === undefined) return false;
-    let stored: StoredToken | null;
+    let stored: StoredCredential;
     if (method.method === "browser") {
       const signedIn = await this.browserSignIn(url);
       if (signedIn === null) return false;
-      stored = { url, token: signedIn.token, deviceId: signedIn.deviceId };
+      stored = { kind: "token", url, token: signedIn.token, deviceId: signedIn.deviceId };
       void vscode.window.showInformationMessage(
         `Signed in to Mend at ${url} as ${signedIn.email}. Revoke this editor under Settings → Devices.`,
       );
@@ -144,13 +125,13 @@ export class ConnectionStore {
         ignoreFocusOut: true,
       });
       if (token === undefined || token.trim() === "") return false;
-      stored = { url, token: token.trim(), deviceId: null };
+      stored = { kind: "token", url, token: token.trim(), deviceId: null };
     } else {
-      stored = null;
+      // "No token" means none: not the CLI's sign-in for the same URL either.
+      stored = { kind: "none", url };
     }
     // The token first: changing the setting restarts the event stream, which reads it.
-    if (stored === null) await this.context.secrets.delete(TOKEN_KEY);
-    else await this.context.secrets.store(TOKEN_KEY, JSON.stringify(stored));
+    await this.context.secrets.store(TOKEN_KEY, serializeStoredCredential(stored));
     await vscode.workspace
       .getConfiguration("mend")
       .update("serverUrl", url, vscode.ConfigurationTarget.Global);
@@ -192,12 +173,16 @@ export class ConnectionStore {
    * token stops working everywhere, not only here.
    */
   async signOut(): Promise<string> {
-    const stored = storedToken(await this.context.secrets.get(TOKEN_KEY));
-    if (stored === null) return "This editor holds no Mend token of its own.";
+    const current = await this.get();
+    const stored = parseStoredCredential(await this.context.secrets.get(TOKEN_KEY));
+    const own = stored !== null && stored.kind === "token" ? stored : null;
+    if (own === null && current.token === null) {
+      return "This editor holds no Mend sign-in.";
+    }
     let revoked = false;
-    if (stored.deviceId !== null) {
+    if (own !== null && own.deviceId !== null) {
       try {
-        await requestMend(stored, `/me/devices/${encodeURIComponent(stored.deviceId)}`, {
+        await requestMend(own, `/me/devices/${encodeURIComponent(own.deviceId)}`, {
           method: "DELETE",
         });
         revoked = true;
@@ -205,9 +190,17 @@ export class ConnectionStore {
         revoked = false;
       }
     }
-    await this.context.secrets.delete(TOKEN_KEY);
-    return revoked || stored.deviceId === null
-      ? `Signed out of Mend at ${stored.url}.`
-      : `Forgot the token for ${stored.url}; Mend could not be reached to revoke it. Revoke it under Settings → Devices.`;
+    // Signed out stays signed out: the editor does not fall back to the CLI's sign-in for this URL.
+    const url = own?.url ?? current.url;
+    await this.context.secrets.store(TOKEN_KEY, serializeStoredCredential({ kind: "none", url }));
+    if (own === null) {
+      return `Signed out of Mend at ${url} in this editor. The Mend CLI on this machine keeps its own sign-in; mend logout ends it.`;
+    }
+    if (own.deviceId === null) {
+      return `Signed out of Mend at ${url}. The pasted token stays valid until it is revoked under Settings → Devices.`;
+    }
+    return revoked
+      ? `Signed out of Mend at ${url}, and revoked this editor's device.`
+      : `Signed out of Mend at ${url}; Mend could not be reached to revoke this editor's device. Revoke it under Settings → Devices.`;
   }
 }

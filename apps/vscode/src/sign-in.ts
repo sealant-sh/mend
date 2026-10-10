@@ -1,3 +1,7 @@
+import { isIP } from "node:net";
+
+import { transportReason } from "./mend-http.js";
+
 /**
  * Sign the editor in through the browser, the same walk `mend login` takes (apps/cli/src/login.ts):
  * open an authorize request holding only a secret device code, send the browser to
@@ -44,11 +48,16 @@ export const normalizeServerUrl = (input: string): string | null => {
   return `${url.origin}${url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "")}`;
 };
 
-const isLoopbackHost = (hostname: string): boolean =>
-  hostname === "localhost" ||
-  hostname === "[::1]" ||
-  hostname.startsWith("127.") ||
-  hostname.endsWith(".localhost");
+/**
+ * This machine, by name or by literal address. 127/8 counts only as a literal IPv4 address: a DNS
+ * name that begins with `127.` can point anywhere.
+ */
+const isLoopbackHost = (hostname: string): boolean => {
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  if (isIP(bare) === 4) return bare.startsWith("127.");
+  if (isIP(bare) === 6) return bare === "::1";
+  return bare === "localhost";
+};
 
 /**
  * Said before a token is chosen for a plain-http server another machine serves: the token crosses
@@ -132,9 +141,7 @@ const post = async (
       signal: AbortSignal.timeout(30_000),
     });
   } catch (cause) {
-    throw new SignInError(
-      `Cannot reach Mend at ${new URL(url).origin}.${cause instanceof Error ? ` ${cause.message}` : ""}`,
-    );
+    throw new SignInError(`Cannot reach Mend at ${new URL(url).origin}.${transportReason(cause)}`);
   }
   const text = await response.text();
   let json: unknown = null;

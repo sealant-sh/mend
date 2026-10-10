@@ -99,8 +99,9 @@ describe("browserSignIn", () => {
       cause: new Error("connect ECONNREFUSED 192.168.1.20:3105"),
     });
     const unreachable = deps(vi.fn<typeof fetch>().mockRejectedValue(refused));
+    // The reason that helps on another network is the cause, not Node's "fetch failed".
     await expect(browserSignIn("http://192.168.1.20:3105", unreachable.value)).rejects.toThrow(
-      "Cannot reach Mend at http://192.168.1.20:3105. fetch failed",
+      "Cannot reach Mend at http://192.168.1.20:3105. connect ECONNREFUSED 192.168.1.20:3105",
     );
 
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(json(200, opened));
@@ -124,6 +125,9 @@ describe("server URL", () => {
     expect(plainHttpWarning("https://mend.example.com")).toBe(null);
     expect(plainHttpWarning("http://localhost:3105")).toBe(null);
     expect(plainHttpWarning("http://127.0.0.1:3105")).toBe(null);
+    expect(plainHttpWarning("http://[::1]:3105")).toBe(null);
+    // A DNS name that begins with 127. is not this machine.
+    expect(plainHttpWarning("http://127.remote.example:3105")).toContain("unencrypted");
   });
 
   it("groups the code as the browser shows it", () => {

@@ -87,6 +87,10 @@ const parseSession = (value: unknown): Session => {
     sharedControlEnabledAt:
       typeof value["sharedControlEnabledAt"] === "string" ? value["sharedControlEnabledAt"] : null,
     workspaceRetirement: parseRetirementState(value["workspaceRetirement"]),
+    workspaceLauncherUserId:
+      typeof value["workspaceLauncherUserId"] === "string"
+        ? value["workspaceLauncherUserId"]
+        : null,
   };
 };
 

@@ -67,10 +67,12 @@ workbench shell. The shell starts a fresh workspace over the same worktree and k
 editor is attached. No agent is launched.
 
 In a [per-person workspace](/operate/per-person-workspaces/) only the workspace's launcher can open
-it over Remote-SSH; a workspace someone else launched in a worktree you share is theirs to open.
-Opening another person's session says so first and offers its terminal instead. The Remote-SSH login
-itself runs as root inside the workspace until Sealant's gateway takes a user for it, so an agent
-you start in that terminal does not run on your per-person home and logins.
+it over Remote-SSH: the person whose session started the workspace. A session started in a worktree
+where someone else's session already runs joins their workspace, so it is theirs to open, your own
+session included. Opening one says so first, and offers the session's terminal when the server would
+let you in. The Remote-SSH login itself runs as root inside the workspace until Sealant's gateway
+takes a user for it, so an agent you start in that terminal does not run on your per-person home and
+logins.
 
 ### Workspace SSH setup
 
@@ -133,9 +135,10 @@ Only `claude` and `codex` sessions can be taken over here. The extension says so
 **Mend: Open terminal** on a live session opens its terminal in a VS Code terminal tab: the agent's
 own terminal, one of the session's shells, or a new shell. It goes over Mend's terminal connection,
 the one `mend attach` and the web app use, so it needs no SSH and works wherever the extension
-reaches the server: a LAN, a private network or an https edge. Only the session's owner types;
-anyone else who can see the session watches it read-only. Closing the tab detaches, and the process
-keeps running. A dropped connection reattaches on its own while the process runs.
+reaches the server: a LAN, a private network or an https edge. It opens for whoever may steer the
+session: its owner, and others only while the owner has shared control on, and then they watch; only
+the owner types. Closing the tab detaches, and the process keeps running. A dropped connection
+reattaches on its own while the process runs, up to five times; a refusal from the server ends it.
 
 ## Review a change
 
@@ -180,7 +183,10 @@ The URL is saved as the `mend.serverUrl` setting and the token in VS Code's secr
 macOS Keychain on a Mac). For a plain `http://` URL on another machine, the extension says so before
 you sign in: the token crosses that network unencrypted, so use a private network you control or an
 https edge. The CLI's token is used only while `mend.serverUrl` points at the same URL as the CLI's
-configuration. **Mend: Sign out** revokes a token the browser sign-in created and forgets it.
+configuration. **Mend: Sign out** revokes a token the browser sign-in created and forgets it; a
+pasted token stays valid until you revoke it under **Settings → Devices**. Signed out stays signed
+out: the editor does not fall back to the CLI's sign-in for that server until you connect again, and
+the CLI keeps its own (`mend logout` ends it).
 
 When the server refuses the token, the error offers **Connect to server**. A request that gets no
 answer within 30 seconds (a server asleep, a network change) fails with that, and the live view
