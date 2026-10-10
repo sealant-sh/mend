@@ -32091,6 +32091,8 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     readonly stillQuiescent?: Effect.Effect<boolean>;
     /** Maria's next turn asks for the conversation again at once (review 2, P3-3). */
     readonly again?: boolean;
+    /** The conversation then goes idle and Mend stops it, as the idle stop does. */
+    readonly thenIdle?: boolean;
   }) => {
     const spawned: Array<ReadonlyArray<string>> = [];
     const opened: Array<SessionOptions | PersonSessionOptions> = [];
@@ -32113,6 +32115,8 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       stopsBeforeSecond: number;
       summary: string | null;
     } = { outcome: null, second: null, stopsBeforeSecond: 0, summary: null };
+    /** The session's status at every write, `settled` when the write settled it. */
+    const statuses: Array<string> = [];
     const exec = (argv: ReadonlyArray<string>) => {
       if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
       if (isStage(argv)) {
@@ -32173,11 +32177,32 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
               result.second = { code: again.failure.code, message: again.failure.message };
             }
           }
+          if (options.thenIdle === true) {
+            yield* engine.stop(session.id, "idle");
+            yield* until(
+              () => (world.sessions.get(session.id)?.settledAt ?? null) !== null,
+              "the idle stop's settle",
+            );
+          }
           result.summary = world.sessions.get(session.id)?.summary ?? null;
         }),
       {
         captured: makeMemoryCaptureStore(),
-        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        prepareWorld: (world) => {
+          world.members.set(MARIA, "member");
+          const write = world.sessions.set.bind(world.sessions);
+          world.sessions.set = (id, next) => {
+            const before = world.sessions.get(id);
+            if (before !== undefined && before.status !== next.status) {
+              statuses.push(
+                before.settledAt === null && next.settledAt !== null
+                  ? `settled ${next.status}`
+                  : next.status,
+              );
+            }
+            return write(id, next);
+          };
+        },
         sealantLayer: sealantLaunchLayer(
           [],
           undefined,
@@ -32244,8 +32269,36 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       second: result.second,
       stopsBeforeSecond: result.stopsBeforeSecond,
       summary: result.summary,
+      statuses,
     };
   };
+
+  it("a change of sender is not a settle: the session stays running through the hand-over, and settles once when it goes idle (review 0.36, S1)", async () => {
+    const run = await handOverToMaria({ thenIdle: true });
+    expect(run.outcome).toBeNull();
+    expect(run.stops).toHaveLength(1);
+    expect(run.attached.map((entry) => entry.process.runsAs)).toEqual(["user-fixture", MARIA]);
+    // Alice's process stopped before Maria's started, and the session never read as settled or
+    // idle between them: nothing for review prep, Slack or a phone to take as the end of work.
+    const handOver = run.statuses.slice(0, run.statuses.indexOf("stopping"));
+    expect(handOver.filter((status) => status !== "running")).toEqual([]);
+    // The idle stop after it is the session's one settle.
+    expect(run.statuses.filter((status) => status.startsWith("settled"))).toEqual([
+      "settled stopped",
+    ]);
+  }, 30_000);
+
+  it("a hand-over that leaves no process running settles once it ends (review 0.36, S1)", async () => {
+    // Every write into the home after the owner's first fails: Maria's, then Alice's restart.
+    let intoHome = 0;
+    const run = await handOverToMaria({
+      postFails: (_onBehalfOf, home) => home.startsWith("/run/mend/conv/") && intoHome++ > 0,
+    });
+    expect(run.outcome?.message).toContain("Core did not answer");
+    expect(run.statuses.filter((status) => status.startsWith("settled"))).toEqual([
+      "settled stopped",
+    ]);
+  }, 30_000);
 
   it("a hand-over that fails after the stop starts the conversation again as the person before, on their login, and fails the waiting turn with its line (review of mend#572, P2-2)", async () => {
     const run = await handOverToMaria({
