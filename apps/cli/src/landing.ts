@@ -5,7 +5,7 @@ import * as path from "node:path";
 
 import { type LandingFact, landingFactLine, landingFactsFromWire } from "@mend/domain/workbench";
 
-import { failureWords } from "./failure-words.ts";
+import { failureWords, noteRefusal } from "./failure-words.ts";
 import type { ApiCall } from "./pair.ts";
 import { gitCurrentBranch, gitTopLevel, normalizeRemoteUrl, redactCredentials } from "./shared.ts";
 
@@ -720,7 +720,8 @@ export const bundleRefusal = (downloaded: Downloaded): string => {
   if (downloaded.status === 413 && size !== null && limit !== null) {
     return `bundle not sent · ${formatBytes(size)} (${size} bytes) · the server's limit is ${formatBytes(limit)} (MEND_BUDGET_BUNDLE_BYTES) · nothing was fetched`;
   }
-  return failureWords(downloaded.status, body).words;
+  const call = "GET /changes/:changeId/bundle";
+  return noteRefusal(call, downloaded.status, failureWords(downloaded.status, body)).words;
 };
 
 /** The bundle's own facts, from its headers; null when the server sent none. */

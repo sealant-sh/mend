@@ -72,3 +72,26 @@ export const failureWords = (status: number, body: unknown): Failure => {
   const byTag = tag === null ? undefined : TAG_WORDS[tag];
   return { words: byTag ?? STATUS_WORDS[status] ?? GENERIC_FAILURE, tag, serverWords };
 };
+
+/** Whether `MEND_DEBUG` asks for the diagnostics the words leave out. */
+export const debugOn = (env: NodeJS.ProcessEnv = process.env): boolean =>
+  ["1", "true", "yes"].includes((env["MEND_DEBUG"] ?? "").trim().toLowerCase());
+
+/**
+ * The line `MEND_DEBUG=1` writes to stderr for a refused call: the call, the status and the
+ * tag, beside the words a person reads. Never written otherwise: stderr is the dashboard's too.
+ */
+export const refusalDebugLine = (call: string, status: number, failure: Failure): string =>
+  `mend: debug · ${call} → ${status}${failure.tag === null ? "" : ` · ${failure.tag}`}`;
+
+/** Writes `refusalDebugLine` when `MEND_DEBUG` asks for it; returns the failure. */
+export const noteRefusal = (
+  call: string,
+  status: number,
+  failure: Failure,
+  env: NodeJS.ProcessEnv = process.env,
+  write: (line: string) => void = (line) => void process.stderr.write(`${line}\n`),
+): Failure => {
+  if (debugOn(env)) write(refusalDebugLine(call, status, failure));
+  return failure;
+};

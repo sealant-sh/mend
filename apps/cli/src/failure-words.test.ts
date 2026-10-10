@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { failureWords, GENERIC_FAILURE, NO_ANSWER } from "./failure-words.ts";
+import { failureWords, GENERIC_FAILURE, NO_ANSWER, noteRefusal } from "./failure-words.ts";
 
 describe("failureWords", () => {
   it("shows the server's own sentence, and keeps the tag for code that branches", () => {
@@ -41,5 +41,29 @@ describe("failureWords", () => {
     );
     expect(failureWords(502, "Bad Gateway").words).toBe(GENERIC_FAILURE);
     expect(failureWords(0, "fetch failed").words).toBe(NO_ANSWER);
+  });
+});
+
+describe("a refusal's diagnostics (MEND_DEBUG)", () => {
+  const failure = failureWords(502, {
+    _tag: "SealantUnavailable",
+    message: "GitHub rejected this token. Paste a new one.",
+  });
+
+  it("are written beside the words only when MEND_DEBUG asks, with the call, status and tag", () => {
+    const lines: Array<string> = [];
+    noteRefusal("POST /api/me/sealant/accounts", 502, failure, { MEND_DEBUG: "1" }, (line) =>
+      lines.push(line),
+    );
+    expect(lines).toEqual([
+      "mend: debug · POST /api/me/sealant/accounts → 502 · SealantUnavailable",
+    ]);
+    expect(failure.words).toBe("GitHub rejected this token. Paste a new one.");
+  });
+
+  it("stay off stderr otherwise", () => {
+    const lines: Array<string> = [];
+    noteRefusal("GET /api/projects", 502, failure, {}, (line) => lines.push(line));
+    expect(lines).toEqual([]);
   });
 });

@@ -59,7 +59,7 @@ import {
   type DotfilesRepositoryBody,
 } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
-import { failureWords } from "./failure-words.ts";
+import { failureWords, noteRefusal } from "./failure-words.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
 import {
   findCommand,
@@ -490,11 +490,11 @@ const request = async <T>(
     } catch {
       // not JSON — words for the status stand
     }
-    throw new MendRequestError(
-      "http",
-      failureWords(response.status, parsed).words,
-      response.status,
-    );
+    const failure = noteRefusal(call, response.status, failureWords(response.status, parsed));
+    throw new MendRequestError("http", failure.words, response.status, {
+      call,
+      tag: failure.tag,
+    });
   }
   // A route with nothing to return answers 204 with no body (`mend workspace replace`).
   if (text === "") return JSON.parse("null");
@@ -576,11 +576,12 @@ const mintTicket =
     }
     if (!response.ok) {
       const body: unknown = await response.json().catch(() => null);
-      throw new MendRequestError(
-        "http",
-        failureWords(response.status, body).words,
-        response.status,
-      );
+      const call = "POST /api/upgrade-tickets";
+      const failure = noteRefusal(call, response.status, failureWords(response.status, body));
+      throw new MendRequestError("http", failure.words, response.status, {
+        call,
+        tag: failure.tag,
+      });
     }
     const minted = (await response.json()) as { readonly ticket?: unknown };
     if (typeof minted.ticket !== "string")

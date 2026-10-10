@@ -1697,6 +1697,7 @@ const ENVIRONMENT: ReadonlyArray<readonly [string, string]> = [
     "MEND_DETACH_KEY",
     "the detach chord; default Ctrl+]. none when an outer multiplexer owns detaching",
   ],
+  ["MEND_DEBUG", "1 prints each refused call, its status and its tag on stderr"],
 ];
 
 const FILES: ReadonlyArray<readonly [string, string]> = [

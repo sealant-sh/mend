@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import * as os from "node:os";
 
-import { failureWords } from "./failure-words.ts";
+import { failureWords, noteRefusal } from "./failure-words.ts";
 import { groupCode } from "./pair.ts";
 import { redactCredentials } from "./shared.ts";
 
@@ -257,7 +257,8 @@ export const loginCommand = async (args: ReadonlyArray<string>, deps: LoginDeps)
   }
   if (started.status < 200 || started.status >= 300) {
     return fail(
-      failureWords(started.status, started.json).serverWords ??
+      noteRefusal("POST /api/cli/auth", started.status, failureWords(started.status, started.json))
+        .serverWords ??
         `the server at ${base} did not open an authorize request — try again; its log has the detail`,
     );
   }
@@ -290,7 +291,8 @@ export const loginCommand = async (args: ReadonlyArray<string>, deps: LoginDeps)
     }
     if (poll.status < 200 || poll.status >= 300) {
       return fail(
-        failureWords(poll.status, poll.json).serverWords ??
+        noteRefusal("POST /api/cli/auth/token", poll.status, failureWords(poll.status, poll.json))
+          .serverWords ??
           "the server refused while waiting — run mend login again; its log has the detail",
       );
     }
