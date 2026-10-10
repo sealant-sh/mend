@@ -187,9 +187,11 @@ Preconditions:
 - **Desktop: open a shell session.** Run
   `await dialog.getByRole("textbox", { name: "worktree name — e.g. fix-auth (empty = auto)" }).fill("verify-desktop")`,
   then `await dialog.getByRole("button", { name: "Open a shell" }).click()`. The button reads
-  `Opening…`, the dialog closes, and a tab opens whose header shows the status word (`starting`,
-  then `running`) and the branch `mend/verify-desktop`. The sidebar lists a row whose name starts
-  with `shell · `.
+  `Opening…`, the dialog closes, and the sidebar lists a row whose name starts with `shell · `. A
+  tab whose header shows the status word (`starting`, then `running`) and the branch
+  `mend/verify-desktop` opens, or, until mend#667 lands, may not (Gotchas): when no tab shows within
+  20 s, record that, then click the sidebar row whose name starts `shell · mend/verify-desktop`; the
+  tab opens.
 - **Desktop: start an agent.** Needs a provider. Open the launcher again and type `verify-desktop`
   into the worktree name field; an existing name joins that worktree. Click the harness pill (a
   button named by the current harness, such as `claude`), then
@@ -293,6 +295,11 @@ Preconditions:
 - The dashboard hides a settled session only when `hasTranscript === false` (`isDeadEnd`,
   `apps/cli/src/dashboard-model.ts:345`); `mend sessions --all` still lists it. Sessions whose
   transcript state is unknown and shell sessions remain listed.
+- On the desktop, `Open a shell` (and any launch) may open no tab. The live pass saw none, twice
+  (2026-10-10), and on main a project read that predates the new session closes the tab just opened
+  (`reconcileProject`, `apps/desktop/src/renderer/src/lib/workbench.ts:204`). A click on the
+  session's sidebar row opens it. mend#667 keeps the tab open; until it lands, record whether the
+  tab opened on its own before clicking the row.
 - On the desktop, `New session in <project>` names the `+` button, the launcher dialog and the
   composer form inside it (the inline composer form too). Ask for the role.
 - The desktop composer's fields have no labels: the worktree name and the prompt are named by their
