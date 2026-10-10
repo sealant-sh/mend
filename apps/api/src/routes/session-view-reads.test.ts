@@ -1,8 +1,10 @@
+import { SessionId } from "@mend/domain";
+import { Session } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
-import { ids } from "../../test/support/tenancy-harness.ts";
+import { ids, makeSession } from "../../test/support/tenancy-harness.ts";
 
 /**
  * The session list, the session view and the project view read the per-person columns (the people
@@ -54,5 +56,50 @@ describe("the per-person columns of the session reads", () => {
     expect(calls).toContain("sessions.viewById");
     expect(calls).toContain("sessions.listForProjectView");
     expect(calls).not.toContain("sessions.listActive");
+  });
+
+  it("with the flag off, every read names who launched each executor, a joined session's included", async () => {
+    // Carol's session joined the executor Alice's session launched in the shared worktree.
+    const launched = makeSession(shared.session, shared.project, shared.worktree, "alice");
+    const joined = SessionId.make("session-shared-a-joined");
+    api = await createTenancyApi(
+      {},
+      {
+        sessions: [
+          new Session({
+            ...makeSession(joined, shared.project, shared.worktree, "carol"),
+            sealantWorkspaceId: launched.sealantWorkspaceId,
+            status: "running",
+            settledAt: null,
+          }),
+        ],
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            personLayoutPossible: () => Effect.succeed(false),
+            refreshCaptureStatus: () => Effect.void,
+          },
+          forwards: { listOpen: () => Effect.succeed([]) },
+        },
+      },
+    );
+    const world = api;
+    const launchers = async (path: string) => {
+      const body: unknown = await (await world.request("alice", "GET", path)).json();
+      return new Map(
+        (Array.isArray(body) ? body : []).map((row: unknown) => [
+          Reflect.get(Object(row), "id"),
+          Reflect.get(Object(row), "workspaceLauncherUserId"),
+        ]),
+      );
+    };
+    const listed = await launchers("/api/sessions");
+    expect(listed.get(joined)).toBe("alice");
+    expect(listed.get(shared.session)).toBe("alice");
+    expect((await launchers("/api/sessions?retained=true")).get(joined)).toBe("alice");
+    // The session detail goes through the same `withLauncher`; this world does not answer the rest
+    // of that route (see the first test), so the list reads carry the assertion.
+    expect(world.world.calls).not.toContain("sessions.listActiveView");
+    expect(world.world.calls).toContain("sessions.launchersOf");
   });
 });

@@ -571,9 +571,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // its retirement (docs/adr/0016, decision 13); otherwise the plain read, at no cost.
         const engine = yield* SessionEngine;
         const sessionVisibility = projectSessionVisibility(
-          (yield* engine.personLayoutPossible())
-            ? yield* sessions.listForProjectView(params.id)
-            : yield* sessions.listForProject(params.id),
+          yield* withLaunchers(
+            (yield* engine.personLayoutPossible())
+              ? yield* sessions.listForProjectView(params.id)
+              : yield* sessions.listForProject(params.id),
+          ),
           query.deadEnds === "include",
         );
         const projectSessions = sessionVisibility.sessions;
@@ -2286,6 +2288,39 @@ const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: st
     });
   });
 
+/**
+ * Who launched each session's executor (`Session.workspaceLauncherUserId`): the only person
+ * Remote-SSH admits into it, in either harness layout. The view reads compute it in their own
+ * statement; every other read that hands sessions out (the plain reads, retained additions) gets it
+ * here, in one batched read, so a client never sees null for a launcher Mend knows.
+ */
+const withLaunchers = (rows: ReadonlyArray<Session>) =>
+  Effect.gen(function* () {
+    const missing = [
+      ...new Set(
+        rows.flatMap((row) =>
+          row.workspaceLauncherUserId === null && row.sealantWorkspaceId !== null
+            ? [row.sealantWorkspaceId]
+            : [],
+        ),
+      ),
+    ];
+    if (missing.length === 0) return rows;
+    const launchers = yield* (yield* SessionsRepo).launchersOf(missing);
+    return rows.map((row) => {
+      const launcher =
+        row.workspaceLauncherUserId === null && row.sealantWorkspaceId !== null
+          ? launchers.get(row.sealantWorkspaceId)
+          : undefined;
+      return launcher === undefined
+        ? row
+        : new Session({ ...row, workspaceLauncherUserId: launcher });
+    });
+  });
+
+const withLauncher = (session: Session) =>
+  withLaunchers([session]).pipe(Effect.map((rows) => rows[0] ?? session));
+
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
     .handle("listActive", ({ query }) =>
@@ -2294,10 +2329,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const access = yield* ProjectAccess;
         // With the people live in each executor (docs/adr/0016, decision 13), in the same query,
         // when per-person homes are possible at all; otherwise the plain read, at no cost.
-        const active = yield* access.filterByProject(
-          (yield* (yield* SessionEngine).personLayoutPossible())
-            ? yield* sessions.listActiveView()
-            : yield* sessions.listActive(),
+        const active = yield* withLaunchers(
+          yield* access.filterByProject(
+            (yield* (yield* SessionEngine).personLayoutPossible())
+              ? yield* sessions.listActiveView()
+              : yield* sessions.listActive(),
+          ),
         );
         if (query.retained === undefined) return active;
 
@@ -2320,7 +2357,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (session !== null) retained.push(session);
         }
-        return yield* access.filterByProject(retained);
+        return yield* withLaunchers(yield* access.filterByProject(retained));
       }),
     )
     .handle("create", ({ params, payload }) =>
@@ -2344,9 +2381,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
         const landings = yield* ChangeLandingsRepo;
-        const session = (yield* (yield* SessionEngine).personLayoutPossible())
-          ? yield* (yield* ProjectAccess).sessionView(params.id)
-          : yield* (yield* ProjectAccess).session(params.id);
+        const session = yield* withLauncher(
+          (yield* (yield* SessionEngine).personLayoutPossible())
+            ? yield* (yield* ProjectAccess).sessionView(params.id)
+            : yield* (yield* ProjectAccess).session(params.id),
+        );
         // Someone is looking: read the running executor's capture status (throttled, in the
         // background) so a failing snap shows now, not at the reaper's next read. The answer
         // reaches the view as a session event.

@@ -228,6 +228,12 @@ describe.skipIf(!reachable)("the people live in a session's executor, in Postgre
         const listed = yield* sessions.listActiveView();
         const view = yield* sessions.viewById(SessionId.make("s-maria"));
         const plain = yield* sessions.byId(SessionId.make("s-maria"));
+        // The batched read the API fills plain reads with: the same rule, by workspace.
+        const batched = yield* sessions.launchersOf([
+          SealantWorkspaceId.make("ws-person"),
+          SealantWorkspaceId.make("ws-shared"),
+          SealantWorkspaceId.make("ws-nobody"),
+        ]);
         yield* sql`
           UPDATE agent_sessions SET executor_launch_id = NULL, executor_started_at = NULL
           WHERE id IN ('s-alice', 's-carol')`;
@@ -237,6 +243,7 @@ describe.skipIf(!reachable)("the people live in a session's executor, in Postgre
           ),
           view: view.workspaceLauncherUserId,
           plain: plain.workspaceLauncherUserId,
+          batched: Object.fromEntries(batched),
         };
       }),
     );
@@ -246,8 +253,9 @@ describe.skipIf(!reachable)("the people live in a session's executor, in Postgre
       "s-carol": "carol",
     });
     expect(launchers.view).toBe("alice");
-    // Every other read leaves it empty.
+    // The plain read leaves it empty; the API fills it from the batched read.
     expect(launchers.plain).toBeNull();
+    expect(launchers.batched).toEqual({ "ws-person": "alice", "ws-shared": "carol" });
   });
 
   it("reads the list and the view within the budget of the plain reads (+5% or +20 ms)", async () => {

@@ -602,6 +602,15 @@ export class SessionsRepo extends Context.Service<
      */
     readonly executorSessionOf: (workspaceId: SealantWorkspaceId) => Effect.Effect<Session | null>;
     /**
+     * Who launched each of these executors, by `executorSessionOf`'s rule, in one read: the owner
+     * of the session whose own launch made it. The API fills `Session.workspaceLauncherUserId` with
+     * it on every read that carries the field and did not compute it in the same statement (the
+     * plain reads, retained additions). A workspace no row names a creator for is absent.
+     */
+    readonly launchersOf: (
+      workspaceIds: ReadonlyArray<SealantWorkspaceId>,
+    ) => Effect.Effect<ReadonlyMap<string, string>>;
+    /**
      * In one read: who created the executor in `workspaceId` (as `executorSessionOf`), the facts
      * of its project that decide who may see it, and the creator's and `askerUserId`'s roles in
      * that project's organization (null: not a member of it). What `WorkspaceCaller` decides
@@ -2107,6 +2116,36 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row === undefined ? null : toSession(row);
       });
 
+      const launchersOf = Effect.fn("SessionsRepo.launchersOf")(function* (
+        workspaceIds: ReadonlyArray<SealantWorkspaceId>,
+      ) {
+        if (workspaceIds.length === 0) return new Map<string, string>();
+        const rows = yield* db
+          .selectDistinctOn([agentSessions.sealantWorkspaceId], {
+            workspaceId: agentSessions.sealantWorkspaceId,
+            ownerUserId: agentSessions.ownerUserId,
+          })
+          .from(agentSessions)
+          .where(
+            and(
+              inArray(agentSessions.sealantWorkspaceId, [...workspaceIds]),
+              isNotNull(agentSessions.executorLaunchId),
+            ),
+          )
+          .orderBy(
+            agentSessions.sealantWorkspaceId,
+            sql`${agentSessions.executorStartedAt} DESC NULLS LAST`,
+          )
+          .pipe(Effect.orDie);
+        const launchers = new Map<string, string>();
+        for (const row of rows) {
+          if (row.workspaceId !== null && row.ownerUserId !== null) {
+            launchers.set(row.workspaceId, row.ownerUserId);
+          }
+        }
+        return launchers;
+      });
+
       const executorAccessOf = Effect.fn("SessionsRepo.executorAccessOf")(function* (
         workspaceId: SealantWorkspaceId,
         askerUserId: string,
@@ -2241,6 +2280,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         executorResourceOf,
         executorLaunchOf,
         executorSessionOf,
+        launchersOf,
         executorAccessOf,
         recordExecutorCreate,
         clearExecutorCreate,
