@@ -30,6 +30,31 @@ write them that way) created the session, then failed its launch with
   `/v1/sessions/as-user` alike. Mend then drops its check for the arguments and keeps the 64-word
   limit.
 
+## 2026-10-10 · 0.39.0-next.707 · Registry mirrors for a workspace's Docker service
+
+Mend 0.36 runs a pull-through cache of Docker Hub beside its server (`docker-mirror`). Every
+workspace's Docker service should ask it first: a session today reports `RegistryConfig.Mirrors=[]`
+and pulls every image anonymously from Docker Hub, and pstack's verifier sessions hit
+`toomanyrequests: unauthenticated pull rate limit`.
+
+- **What existed:** no setting reached the workspace daemon's flags or `daemon.json` on any runtime.
+  The Docker runtime's sidecar is on its own per-workspace network, which cannot resolve a name on
+  Mend's Compose network. Joining the sidecar to that network would let every workspace on it drive
+  the unauthenticated daemon on 2375.
+- **What Mend does:** none of it through the SDK. This is operator configuration of the worker,
+  which runs inside the Mend container. `compose.mirrors.yaml` sets the worker's environment, and
+  the Helm chart's notes name the Sealant chart value.
+- **Added in Core (sealant#346):** `SEALANT_DOCKER_REGISTRY_MIRRORS` (origins, refused with
+  credentials) becomes `--registry-mirror` (plus `--insecure-registry` for http) on the Docker and
+  Kubernetes runtimes. `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` names the container that Core
+  connects to each workspace's Docker network under the mirror's host name, and disconnects before
+  removing it. The Sealant chart gains `workspaces.docker.registryMirrors`. Until a Sealant release
+  that carries it is bundled, the bundled worker ignores both variables and sessions pull from
+  Docker Hub as before.
+- **Suggested next:** a per-workspace mirror list in `CreateOptions.services.docker` if a project
+  ever needs its own mirror, and the mirror on MicroVM guests (`microvm-image/docker-service.mjs`)
+  when they can reach one.
+
 ## 2026-10-08 · 0.39.0-next.706 · `workspaces.imageKey` and `inspectImage` need a source neither reads
 
 Mend asks about an image before a person launch's create (ADR 0016 decision 1), when the create's
