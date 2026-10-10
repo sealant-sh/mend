@@ -34,9 +34,13 @@ allows. Each socket gets its own RPC server, holding the handlers of the person 
 Every call is checked against the bearer's scopes before its handler runs, as t3code's
 `RpcScopeAuthorization` does, from a copy of t3code's own scope map at the pin (`rpc-scopes.ts`). A
 pairing grants the overlap of what the client asks and t3code's standard client scopes. A grant from
-before t3code's granular permissions (it holds `review:write`) is read as today's standard grant, so
-clients of the previous pin keep files, the terminal and review. Refusals name the scope as t3code
-does: the granular permission, and its legacy parent for older clients.
+before t3code's granular permissions (it holds `review:write`) has each old scope it holds read as
+the scopes t3code split it into, so clients of the previous pin keep files, the terminal and review;
+`review:write` alone grants nothing and is refused. A grant without that mark is read as stored: an
+old one of `orchestration:read` alone no longer reads files, which now need `filesystem:read`. Two
+methods need scopes by their input, as in t3code: `assets.createUrl` for a workspace or media file
+needs `filesystem:read`, and `server.updateSettings` the scopes its patch touches. Refusals name the
+scope as t3code does: the granular permission, and its legacy parent for older clients.
 
 | Method                                                  | What the gateway does                                                                                                                                                                                                        |
 | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

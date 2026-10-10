@@ -67,7 +67,7 @@ const isEnvironmentScope = Schema.is(AuthEnvironmentScope);
 /**
  * What a grant made before t3code's granular permissions (v0.0.46-nightly.20261010.2922) stands
  * for now. Those grants were t3code's standard client scopes of the time, marked by `review:write`,
- * which no later grant holds; each old scope is read as the scopes t3code split it into (its
+ * which grants no RPC of its own; each old scope is read as the scopes t3code split it into (its
  * `legacyParents`), so a client paired before the split keeps what it could do. Any other grant is
  * read as stored.
  */
@@ -119,7 +119,10 @@ export const parseRequestedScopes = (value: string): ReadonlyArray<AuthEnvironme
 /**
  * What a token request is granted: the scopes it asked for that the gateway grants, as t3code's
  * server grants the overlap. `review:write` is kept: a client from before granular permissions asks
- * with it for the standard grant of its time, which `grantedScopesOf` reads as today's.
+ * with it for the standard grant of its time, which `grantedScopesOf` reads as today's. A client
+ * naming it now gets only what the old scopes it also names covered, which it could ask for itself.
+ * The token's `scope` stays what was granted, not its reading: a client from before permissions
+ * reads that string with its own, older list of scopes.
  */
 export const grantFor = (
   requested: ReadonlyArray<AuthEnvironmentScope>,
@@ -285,7 +288,8 @@ export const GatewayAuthLive: Layer.Layer<
       if (requested === null) return yield* new GatewayRequestInvalid({ reason: "invalid_scope" });
       // Checked before the code is claimed, so a client asking for nothing it can have keeps its code.
       const granted = grantFor(requested);
-      if (granted.length === 0) {
+      // Nothing, or only the mark, which grants nothing by itself: t3code answers the same.
+      if (granted.every((scope) => scope === LEGACY_GRANT_MARK)) {
         return yield* new GatewayRequestInvalid({ reason: "scope_not_granted" });
       }
       if (input.dpop) {

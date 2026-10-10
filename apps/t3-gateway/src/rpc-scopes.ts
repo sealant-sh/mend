@@ -1,4 +1,5 @@
 import {
+  AssetCreateUrlInput,
   AuthAccessReadScope,
   AuthAccessWriteScope,
   AuthDiagnosticsReadScope,
@@ -16,9 +17,12 @@ import {
   AuthTerminalReadScope,
   EnvironmentAuthorizationError,
   ORCHESTRATION_V2_WS_METHODS,
+  ProviderInstanceMutation,
   RpcScopeAuthorization,
+  ServerSettingsPatch,
   WS_METHODS,
   authScopeRequiredResponse,
+  requiredScopesForServerSettingsPatch,
   type AuthEnvironmentScope,
   type WsRpcGroup,
 } from "@mend/t3-contracts";
@@ -28,7 +32,9 @@ import {
 } from "@mend/t3-contracts/client-rpc-permissions";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
+import * as Schema from "effect/Schema";
 
 /**
  * The scope each RPC requires, as t3code's own server declares it at the pinned tag
@@ -211,9 +217,47 @@ export const RPC_REQUIRED_SCOPES = {
 
 const isWsRpcMethod = (tag: string): tag is WsRpcMethod => Object.hasOwn(RPC_REQUIRED_SCOPES, tag);
 
+const decodeAssetUrlInput = Schema.decodeUnknownOption(AssetCreateUrlInput);
+const decodeSettingsUpdate = Schema.decodeUnknownOption(
+  Schema.Struct({
+    patch: ServerSettingsPatch,
+    providerInstanceMutation: Schema.optionalKey(ProviderInstanceMutation),
+  }),
+);
+
+/** A workspace or media file behind an asset URL is a filesystem read, as t3code rules. */
+const assetUrlScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentScope> =>
+  Option.match(decodeAssetUrlInput(payload), {
+    onNone: () => [AuthOrchestrationReadScope],
+    onSome: ({ resource }) =>
+      resource._tag === "workspace-file" ||
+      resource._tag === "media-file" ||
+      resource._tag === "draft-workspace-file"
+        ? [AuthFilesystemReadScope]
+        : [AuthOrchestrationReadScope],
+  });
+
 /**
- * The scopes one call needs: t3code's rule, including the methods whose scope depends on input. A
- * tag outside the group (never sent by a client of the pin) needs a scope no bearer holds.
+ * A settings update needs the scopes its patch touches, and `providers:manage` with a provider
+ * mutation; one carrying only a provider mutation needs only that (t3code's
+ * `requiredScopesForSettingsUpdate`). A payload that does not decode needs `settings:write`.
+ */
+const settingsUpdateScopes = (payload: unknown): ReadonlyArray<AuthEnvironmentScope> =>
+  Option.match(decodeSettingsUpdate(payload), {
+    onNone: () => [AuthSettingsWriteScope],
+    onSome: (update) => {
+      const scopes = requiredScopesForServerSettingsPatch(update.patch);
+      if (update.providerInstanceMutation === undefined) return scopes;
+      return Object.values(update.patch).every((value) => value === undefined)
+        ? [AuthProvidersManageScope]
+        : [...new Set([...scopes, AuthProvidersManageScope])];
+    },
+  });
+
+/**
+ * The scopes one call needs, by t3code's rule at the pin (`requiredScopesForRpcCall`): the
+ * methods whose scope depends on their input, then the client-guarded ones, then the map. A tag
+ * outside the group (never sent by a client of the pin) needs a scope no bearer holds.
  */
 export const requiredScopesFor = (
   method: string,
@@ -223,6 +267,8 @@ export const requiredScopesFor = (
   if (method === WS_METHODS.serverRetryResourceTelemetry) {
     return [AuthEnvironmentMaintainScope, AuthDiagnosticsReadScope];
   }
+  if (method === WS_METHODS.assetsCreateUrl) return assetUrlScopes(payload);
+  if (method === WS_METHODS.serverUpdateSettings) return settingsUpdateScopes(payload);
   const guarded = clientRpcRequiredScopes(method, payload);
   return guarded.length > 0 ? guarded : [RPC_REQUIRED_SCOPES[method]];
 };

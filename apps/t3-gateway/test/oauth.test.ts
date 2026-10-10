@@ -130,6 +130,15 @@ describe("POST /oauth/token", () => {
         );
         assert.strictEqual(mend.claims.length, 0);
 
+        // The old grants' mark alone grants nothing, as t3code answers it.
+        const markOnly = yield* Effect.flip(
+          client.auth.token(tokenRequest("KEEPCODE", { scope: "review:write" })),
+        );
+        assert.strictEqual(
+          markOnly._tag === "EnvironmentRequestInvalidError" && markOnly.reason,
+          "scope_not_granted",
+        );
+
         // Names t3code lacks are dropped and admin scopes are not granted; the rest is.
         const narrow = yield* client.auth.token(
           tokenRequest("KEEPCODE", { scope: "orchestration:read access:write nonsense" }),
