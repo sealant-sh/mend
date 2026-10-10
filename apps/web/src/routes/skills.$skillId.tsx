@@ -5,6 +5,7 @@ import { useState } from "react";
 import { AppShell } from "#/components/shell";
 import { formatSkillBytes } from "#/components/skills-library";
 import { removeSkill, updateSkill, type SkillDetailDto } from "#/lib/api";
+import { dropRemovedSkill, settleRemovedSkill } from "#/lib/skill-removal";
 import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
@@ -236,12 +237,13 @@ function DeleteSkillButton({ detail }: { readonly detail: SkillDetailDto }) {
     try {
       const projectId = detail.skill.projectId;
       await removeSkill(detail.skill.id);
-      await queryClient.invalidateQueries(trpc.skills.pathFilter());
+      await dropRemovedSkill(queryClient, trpc, detail.skill);
       if (projectId === null) {
         await navigate({ to: "/skills" });
       } else {
         await navigate({ to: "/projects/$projectId/setup", params: { projectId }, hash: "skills" });
       }
+      void settleRemovedSkill(queryClient, trpc, detail.skill);
     } catch {
       setState("idle");
     }
