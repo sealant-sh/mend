@@ -1,6 +1,7 @@
 import * as net from "node:net";
 
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY } from "./server-edge-files.ts";
+import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
 
 /**
  * The edge and the posture of a packaged install (docs/adr/0004-access-without-a-private-network.md
@@ -143,9 +144,12 @@ export const renderPostureOverlay = (posture: ServerPosture): string | undefined
 };
 
 /** The overlay files a generation holds beside `compose.yaml`, in the order Compose merges them. */
-export const composeOverlays = (posture: ServerPosture): ReadonlyArray<string> => [
+export const composeOverlays = (
+  posture: ServerPosture & { readonly mirrors?: ServerMirrors },
+): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined ? [] : [EDGE_COMPOSE_FILE]),
   ...(renderPostureOverlay(posture) === undefined ? [] : [POSTURE_COMPOSE_FILE]),
+  ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
 ];
 
 // ── what `mend server status` says ─────────────────────────────────────────

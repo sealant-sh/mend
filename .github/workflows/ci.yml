@@ -37,7 +37,9 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm test
-      - name: Check packaging contracts, supervision, acceptance helpers, and the Helm chart
+      - name:
+          Check packaging contracts, supervision, acceptance helpers, the mirrors, and the Helm
+          chart
         run:
           node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs
           scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs
@@ -47,4 +49,5 @@ jobs:
           scripts/next-version.test.mjs scripts/sealant-pins.test.mjs
           scripts/check-release-pins.test.mjs scripts/mend-migrations.test.mjs
           scripts/republish.test.mjs scripts/preview-deploy.test.mjs scripts/bench/lib.test.mjs
+          scripts/mirrors-runtime.test.mjs
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml

@@ -33,6 +33,14 @@ const withEdge =
   typeof config.edgeHost === "string" &&
   composeFiles.includes(path.join(directory, "compose.edge.yaml")) &&
   fs.existsSync(path.join(directory, "Caddyfile"));
+// The mirrors run from the overlay the CLI wrote beside compose.yaml, with the images it names.
+const mirrorsFile = path.join(directory ?? "", "compose.mirrors.yaml");
+const mirrorsOverlay =
+  config !== null && composeFiles.includes(mirrorsFile) ? fs.readFileSync(mirrorsFile, "utf8") : "";
+const mirrorImages = [...mirrorsOverlay.matchAll(/^ {4}image: (\S+)$/gm)].map((match) => match[1]);
+const mirrorServices = ["npm-mirror", "docker-mirror"].filter((service) =>
+  mirrorsOverlay.includes(`\n  ${service}:\n`),
+);
 const envOf = () => {
   const values = new Map();
   for (const line of fs.readFileSync(path.join(directory, "server.env"), "utf8").split("\n")) {
@@ -74,6 +82,32 @@ if (args[2] === "container" && args[3] === "ls" && args.includes(edgeLabelFilter
   if (state.fail === "container-ls") fail();
   // Name and the working directory Compose recorded: the generation the edge was started from.
   out(state.edgeRunning ? `mend-edge-1\t${state.edgeDirectory ?? ""}` : "");
+  process.exit(0);
+}
+// When the Docker mirror started: its proxy counters count from then.
+if (args[2] === "container" && args[3] === "inspect" && args.at(-1) === "mend-docker-mirror") {
+  out("2026-10-10T08:00:00.123456Z");
+  process.exit(0);
+}
+// The mirrors' containers, by service, and the generation each was started from; a mirror turned
+// off keeps its container until the CLI removes it by label, as Compose leaves it.
+const mirrorLabel = args.find((arg) =>
+  /^label=com\.docker\.compose\.service=(npm|docker)-mirror$/.test(arg),
+);
+if (args[2] === "container" && args[3] === "ls" && mirrorLabel !== undefined) {
+  const service = mirrorLabel.slice("label=com.docker.compose.service=".length);
+  const started = (state.mirrorContainers ?? {})[service];
+  out(started === undefined ? "" : `mend-${service}-1\t${started}`);
+  process.exit(0);
+}
+if (
+  args[2] === "container" &&
+  args[3] === "rm" &&
+  args.some((arg) => /^mend-(npm|docker)-mirror-1$/.test(arg))
+) {
+  for (const name of args.filter((arg) => /^mend-(npm|docker)-mirror-1$/.test(arg)))
+    delete state.mirrorContainers[name.slice("mend-".length, -"-1".length)];
+  save();
   process.exit(0);
 }
 if (args[2] === "container" && args[3] === "rm" && args.includes("mend-edge-1")) {
@@ -127,6 +161,7 @@ else if (args.includes("image")) {
   if (image === "postgres:17-alpine") out("sha256:postgres");
   else if (image === "dxflrs/garage:v2.4.1") out("sha256:garage");
   else if (image === "caddy:2.10-alpine") out("sha256:caddy");
+  else if (image.startsWith("nginx:") || image.startsWith("registry:")) out("sha256:mirror");
   else {
     const version = image.split(":").at(-1);
     if (!state.images[version]) fail();
@@ -140,7 +175,7 @@ else if (args.includes("image")) {
 } else if (command[0] === "config") {
   if (state.fail === "compose-config") fail();
   out(
-    `ghcr.io/sealant-sh/mend:${config.serverVersion}\npostgres:17-alpine${withGarage ? "\ndxflrs/garage:v2.4.1" : ""}${withEdge ? "\ncaddy:2.10-alpine" : ""}`,
+    `ghcr.io/sealant-sh/mend:${config.serverVersion}\npostgres:17-alpine${withGarage ? "\ndxflrs/garage:v2.4.1" : ""}${withEdge ? "\ncaddy:2.10-alpine" : ""}${mirrorImages.map((image) => `\n${image}`).join("")}`,
   );
 } else if (command[0] === "ps") {
   if (command.includes("--services"))
@@ -151,6 +186,7 @@ else if (args.includes("image")) {
         withGarage && state.postgresRunning ? "garage" : "",
         // A running edge shows whether or not the active generation still declares it.
         state.edgeRunning ? "edge" : "",
+        ...(state.postgresRunning ? Object.keys(state.mirrorContainers ?? {}) : []),
       ]
         .filter(Boolean)
         .join("\n"),
@@ -168,11 +204,25 @@ else if (args.includes("image")) {
     process.stderr.write("ls: /data/caddy/certificates/*/x/x.crt: No such file or directory\n");
     process.exit(1);
   }
+} else if (command[0] === "exec" && command.some((arg) => arg.startsWith("du -sk "))) {
+  // Each mirror's disk probe: its cache's KiB, the KiB free on its disk, the Docker guard's state.
+  out(
+    `2048\n${state.mirrorFreeKiB ?? 1048576}\n${command.includes("docker-mirror") ? (state.mirrorGuard ?? "running") : ""}`,
+  );
+} else if (command[0] === "exec" && command.includes("docker-mirror")) {
+  // The registry's proxy counters.
+  out(
+    'registry_proxy_hits_total{type="blob"} 3\nregistry_proxy_hits_total{type="manifest"} 2\nregistry_proxy_misses_total{type="blob"} 1\nregistry_proxy_misses_total{type="manifest"} 2',
+  );
+} else if (command[0] === "logs" && command.includes("npm-mirror")) {
+  // nginx's request lines: one tarball served from the cache, one fetched.
+  out('{"uri":"/a/-/a-1.0.0.tgz","cache":"HIT"}\n{"uri":"/b/-/b-1.0.0.tgz","cache":"MISS"}');
 } else if (command[0] === "logs") out("bounded fixture log");
 else if (command[0] === "down") {
   state.appRunning = false;
   state.postgresRunning = false;
   state.edgeRunning = false;
+  state.mirrorContainers = {};
   state.downArgs = command;
   state.downFiles = composeFiles.map((file) => path.basename(file));
   save();
@@ -198,6 +248,10 @@ else if (command[0] === "down") {
       state.edgeRunning = true;
       state.edgeDirectory = directory;
     }
+    state.mirrorContainers = {
+      ...state.mirrorContainers,
+      ...Object.fromEntries(mirrorServices.map((service) => [service, directory])),
+    };
     state.version = config.serverVersion;
     state.upFiles = composeFiles.map((file) => path.basename(file));
     save();

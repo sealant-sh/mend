@@ -15,8 +15,8 @@ export type ServerStoreResult<T> =
 
 /**
  * Complete deployment files, committed together. Only postgresInit and the Caddyfile are public;
- * identity never changes. The three optional files exist when the config declares a posture or an
- * edge: a generation from before them has none, and reads as it did.
+ * identity never changes. The optional files exist when the config declares a posture, an edge or
+ * mirrors: a generation from before them has none, and reads as it did.
  */
 export interface ServerFiles {
   readonly identity: string;
@@ -30,6 +30,12 @@ export interface ServerFiles {
   readonly edge?: string;
   /** Caddyfile: the edge's configuration, mounted read-only into the edge container. */
   readonly caddyfile?: string;
+  /** compose.mirrors.yaml: the package and image mirrors (server-mirrors.ts). */
+  readonly mirrors?: string;
+  /** npm-mirror.conf: the npm mirror's nginx configuration, mounted read-only. */
+  readonly npmMirrorConf?: string;
+  /** docker-mirror-guard.sh: the Docker mirror's entrypoint, which bounds its cache. */
+  readonly dockerMirrorGuard?: string;
 }
 
 /** An immutable deployment snapshot. Use this directory, not the active symlink, for Compose. */
@@ -194,7 +200,14 @@ const writeDurable = (file: string, content: string, mode = 0o600): void => {
 
 const fileKeys = ["identity", "config", "env", "compose", "postgresInit"] as const;
 /** Present only when the config asks for them; a missing file reads as undefined. */
-const optionalFileKeys = ["posture", "edge", "caddyfile"] as const;
+const optionalFileKeys = [
+  "posture",
+  "edge",
+  "caddyfile",
+  "mirrors",
+  "npmMirrorConf",
+  "dockerMirrorGuard",
+] as const;
 const fileNames = {
   identity: "identity.env",
   config: "server.json",
@@ -204,8 +217,14 @@ const fileNames = {
   posture: "compose.posture.yaml",
   edge: "compose.edge.yaml",
   caddyfile: "Caddyfile",
+  mirrors: "compose.mirrors.yaml",
+  npmMirrorConf: "npm-mirror.conf",
+  dockerMirrorGuard: "docker-mirror-guard.sh",
 } as const;
-/** The bind-mounted files another UID reads: Postgres's init (UID 70) and Caddy's configuration. */
+/**
+ * The bind-mounted files another UID reads: Postgres's init (UID 70), Caddy's configuration and
+ * the npm mirror's.
+ */
 const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[number], number>> = {
   identity: 0o600,
   config: 0o600,
@@ -215,6 +234,9 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   posture: 0o600,
   edge: 0o600,
   caddyfile: 0o644,
+  mirrors: 0o600,
+  npmMirrorConf: 0o644,
+  dockerMirrorGuard: 0o644,
 };
 
 /** Every file a generation may hold, in a fixed order, with its content or undefined. */
@@ -351,6 +373,9 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const posture = optional("posture");
   const edge = optional("edge");
   const caddyfile = optional("caddyfile");
+  const mirrors = optional("mirrors");
+  const npmMirrorConf = optional("npmMirrorConf");
+  const dockerMirrorGuard = optional("dockerMirrorGuard");
   const files: ServerFiles = {
     identity: fs.readFileSync(path.join(directory, fileNames.identity), "utf8"),
     config: fs.readFileSync(path.join(directory, fileNames.config), "utf8"),
@@ -360,6 +385,9 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(posture === undefined ? {} : { posture }),
     ...(edge === undefined ? {} : { edge }),
     ...(caddyfile === undefined ? {} : { caddyfile }),
+    ...(mirrors === undefined ? {} : { mirrors }),
+    ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
+    ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
   };
   if (readIdentity(paths) !== files.identity) {
     throw new ServerStoreError(

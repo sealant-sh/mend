@@ -92,10 +92,18 @@ describe("server filesystem transactions", () => {
       expect(modeOf(directory)).toBe(0o700);
     }
     expect(modeOf(path.join(root, "identity.env"))).toBe(0o600);
-    for (const file of ["identity.env", "server.json", "server.env", "compose.yaml"]) {
+    for (const file of [
+      "identity.env",
+      "server.json",
+      "server.env",
+      "compose.yaml",
+      "compose.mirrors.yaml",
+    ]) {
       expect(modeOf(path.join(generation, file))).toBe(0o600);
     }
     expect(modeOf(path.join(generation, "postgres-init.sh"))).toBe(0o755);
+    // nginx's worker reads the npm mirror's configuration: public, like Postgres's init.
+    expect(modeOf(path.join(generation, "npm-mirror.conf"))).toBe(0o644);
   });
 
   it.each([0o700, 0o600, 0o644, 0o750, 0o777, 0o4755])(
