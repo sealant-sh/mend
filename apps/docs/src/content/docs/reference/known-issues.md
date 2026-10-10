@@ -53,11 +53,13 @@ it, such as `https://oauth2:TOKEN@gitlab.com/acme/api.git`. Before 0.36 Mend sto
 typed and returned it to everyone who could see the project; 0.36 refuses such a URL
 ([No credentials in repository URLs](/guides/git-access/#no-credentials-in-repository-urls)).
 
-On upgrade, Mend removes the credential from the stored URL and from the Git remotes in its store,
-and logs the names of the projects and references whose remotes it changed (never their URLs). A
-private repository that Mend reached only through that token then no longer fetches or lands: the
-base of a new session is not freshened, a refresh fails with the remote's reason, and a landing push
-is refused. Nothing in a worktree is lost.
+On upgrade, Mend removes the credential from the stored URL and from the Git remotes in its store.
+It logs each project and reference whose remotes it changed (never their URLs) and records it in the
+organization's audit log. A store whose Git config includes another file (`include.path` or
+`includeIf`) is refused until the include is removed: Mend never writes one. A private repository
+that Mend reached only through that token then no longer fetches or lands: the base of a new session
+is not freshened, a refresh fails with the remote's reason, and a landing push is refused. Nothing
+in a worktree is lost.
 
 To fix one, adopt the repository again from its SSH URL with your Mend key (`mend keys`) or the
 agent bridge, and remove the old project once its sessions are landed or no longer needed. Rotate

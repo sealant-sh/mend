@@ -11,7 +11,7 @@ import {
 import { Effect, Layer, Schedule, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
-import { git, GitError, gitHostFaultWords, gitOutput } from "./git.ts";
+import { git, GitError, gitHostFaultWords } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -80,6 +80,58 @@ const refusedElsewhere = (gitDir: string, files: ReadonlySet<string>) =>
     exitCode: null,
     stderr: `a login or token sits in git config Mend does not edit (${[...files].join(", ")}: an included file or a url.insteadOf rewrite). Remove it there.`,
   });
+
+/** The include keys: `include.path` and every `includeIf.<condition>.path`. */
+const INCLUDE_KEYS = String.raw`^include(if\..*)?\.path$`;
+
+/**
+ * One permit per repository across every Store in this process, keyed by the git dir's real path,
+ * so a symlinked spelling is the same repository: Mend's read-and-rewrite of a config never runs
+ * twice at once here. Across processes the rewrite itself is safe (`rewriteKey`).
+ */
+const remoteLocks = new Map<string, Semaphore.Semaphore>();
+const remoteLock = (gitDir: string): Semaphore.Semaphore => {
+  const key = realPath(gitDir);
+  const existing = remoteLocks.get(key);
+  if (existing !== undefined) return existing;
+  const created = Semaphore.makeUnsafe(1);
+  remoteLocks.set(key, created);
+  return created;
+};
+
+/** The file a rewrite leaves in the git dir until its notice is reported. No URL, no secret. */
+export const REMOTE_CREDENTIAL_NOTICE = "mend-remote-credentials-removed";
+
+/** What a rewrite of a repository's remotes left to report: when, and which config keys. */
+export const RemoteCredentialNotice = Schema.Struct({
+  removedAt: Schema.NullOr(Schema.String),
+  keys: Schema.Array(Schema.String),
+});
+export type RemoteCredentialNotice = typeof RemoteCredentialNotice.Type;
+
+const decodeNotice = Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteCredentialNotice));
+
+/** Record (or extend) a notice: the keys about to be rewritten, and the first time it happened. */
+const writeNotice = (file: string, keys: ReadonlyArray<string>): void => {
+  let previous: RemoteCredentialNotice | null = null;
+  try {
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    previous = Schema.decodeUnknownSync(RemoteCredentialNotice)(parsed);
+  } catch {
+    previous = null;
+  }
+  const notice: RemoteCredentialNotice = {
+    removedAt: previous?.removedAt ?? new Date().toISOString(),
+    keys: [...new Set([...(previous?.keys ?? []), ...keys])],
+  };
+  fs.writeFileSync(file, JSON.stringify(notice));
+};
+
+/** Every value of `key` in the repository's own config, in order, whole (`-z`). */
+const valuesOf = (gitDir: string, key: string) =>
+  git(["config", "-z", "--local", "--get-all", key], gitDir, undefined, [1]).pipe(
+    Effect.map((listed) => listed.split("\0").slice(0, -1)),
+  );
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -650,6 +702,15 @@ export class Store extends Context.Service<
      */
     readonly scrubRemoteCredentials: (gitDir: string) => Effect.Effect<number, GitError>;
     /**
+     * What a rewrite by `scrubRemoteCredentials` left to report for this repository, whichever
+     * caller did it (the sweep, or a fetch that got there first), or null. It stays until
+     * `clearRemoteCredentialNotice`, so a restart re-derives what was never reported.
+     */
+    readonly remoteCredentialNotice: (
+      gitDir: string,
+    ) => Effect.Effect<RemoteCredentialNotice | null, GitError>;
+    readonly clearRemoteCredentialNotice: (gitDir: string) => Effect.Effect<void, GitError>;
+    /**
      * Landing step 2 (docs/adr/0007-landing.md) in the project store: Mend's commit of the
      * checkpoint's tree, parented by `planLanding` on the last landing and the agent's head, or
      * nothing when an existing commit already is what lands. The session's branch never moves:
@@ -768,18 +829,7 @@ export class Store extends Context.Service<
         );
       });
 
-      /** One permit per repository: Mend's read-and-rewrite of a config never runs twice at once. */
-      const remoteLocks = new Map<string, Semaphore.Semaphore>();
-      const remoteLock = (gitDir: string): Semaphore.Semaphore => {
-        const key = path.resolve(gitDir);
-        const existing = remoteLocks.get(key);
-        if (existing !== undefined) return existing;
-        const created = Semaphore.makeUnsafe(1);
-        remoteLocks.set(key, created);
-        return created;
-      };
-
-      /** Every remote URL and URL rewrite git reads for `gitDir`: its own config and what it includes. */
+      /** Every remote URL and URL rewrite git reads for `gitDir` from its own config. */
       const remoteConfig = Effect.fn("Store.remoteConfig")(function* (gitDir: string) {
         // `-z`: a value may hold a newline, so entries end in NUL and a key ends at its first newline.
         const listed = yield* git(
@@ -812,56 +862,104 @@ export class Store extends Context.Service<
       });
 
       /**
-       * Rewrite every value of `key` in the repository's own config to its clean spelling, in
-       * order. Each value is unset by its exact old spelling and then added clean, so a value
-       * another writer already rewrote is skipped, never appended a second time. Answers how many
-       * values changed.
+       * Rewrite every value of `key` that holds a credential to its clean spelling, in the
+       * repository's own config. Each rewrite is one atomic git write (`--fixed-value
+       * --replace-all KEY CLEAN OLD`: git writes the new file aside and renames it), so no crash or
+       * concurrent reader ever sees a remote missing or half-written, and a value that is the only
+       * one of its spelling keeps its place. A writer working from a stale read appends CLEAN
+       * instead of replacing; the copies of a clean value this produced are then collapsed into one.
+       * The rewrite is accepted only when every value read before has its clean spelling in the
+       * config after: a remote that went missing is never "clean". Answers how many values changed.
        */
       const rewriteKey = Effect.fn("Store.rewriteKey")(function* (gitDir: string, key: string) {
-        const listed = yield* git(
-          ["config", "-z", "--local", "--get-all", key],
-          gitDir,
-          undefined,
-          [1],
-        );
-        const values = listed.split("\0").slice(0, -1);
-        if (values.every((value) => redactRepositoryUrl(value) === value)) return 0;
-        let rewritten = 0;
-        const seen = new Set<string>();
-        for (const value of values) {
-          if (seen.has(value)) continue;
-          seen.add(value);
-          const unset = yield* gitOutput(
-            ["config", "--local", "--fixed-value", "--unset-all", key, value],
+        const values = yield* valuesOf(gitDir, key);
+        const dirty = [...new Set(values.filter((value) => redactRepositoryUrl(value) !== value))];
+        for (const value of dirty) {
+          yield* git(
+            [
+              "config",
+              "--local",
+              "--fixed-value",
+              "--replace-all",
+              key,
+              redactRepositoryUrl(value),
+              value,
+            ],
             gitDir,
           );
-          // 5: the value is gone already; whoever removed it writes its replacement.
-          if (unset.exitCode === 5) continue;
-          if (unset.exitCode !== 0) {
-            return yield* new GitError({
-              args: ["config", "--unset-all", key],
-              cwd: gitDir,
-              exitCode: unset.exitCode,
-              stderr: unset.stderr.trim(),
-            });
-          }
-          const clean = redactRepositoryUrl(value);
-          yield* git(["config", "--local", "--add", key, clean], gitDir);
-          if (clean !== value) rewritten += 1;
         }
-        return rewritten;
+        const produced = new Set(dirty.map(redactRepositoryUrl));
+        const written = yield* valuesOf(gitDir, key);
+        for (const clean of produced) {
+          if (written.filter((value) => value === clean).length > 1) {
+            yield* git(
+              ["config", "--local", "--fixed-value", "--replace-all", key, clean, clean],
+              gitDir,
+            );
+          }
+        }
+        const after = new Set(yield* valuesOf(gitDir, key));
+        if (values.some((value) => !after.has(redactRepositoryUrl(value)))) {
+          return yield* new GitError({
+            args: ["mend", "remote-credentials"],
+            cwd: gitDir,
+            exitCode: null,
+            stderr: `a value of ${key} went missing while Mend cleaned it; it is not clean`,
+          });
+        }
+        return dirty.length;
+      });
+
+      /** Where a rewrite leaves its notice, beside the config it rewrote, until it is reported. */
+      const noticePath = (absoluteGitDir: string) =>
+        path.join(absoluteGitDir, REMOTE_CREDENTIAL_NOTICE);
+
+      const remoteCredentialNotice = Effect.fn("Store.remoteCredentialNotice")(function* (
+        gitDir: string,
+      ) {
+        const file = noticePath(yield* git(["rev-parse", "--absolute-git-dir"], gitDir));
+        if (!fs.existsSync(file)) return null;
+        return yield* decodeNotice(fs.readFileSync(file, "utf8")).pipe(
+          // An unreadable notice still says something was removed; when is unknown.
+          Effect.orElseSucceed(() => ({ removedAt: null, keys: [] })),
+        );
+      });
+
+      const clearRemoteCredentialNotice = Effect.fn("Store.clearRemoteCredentialNotice")(function* (
+        gitDir: string,
+      ) {
+        const file = noticePath(yield* git(["rev-parse", "--absolute-git-dir"], gitDir));
+        yield* Effect.sync(() => fs.rmSync(file, { force: true }));
       });
 
       const scrubRemoteCredentials = Effect.fn("Store.scrubRemoteCredentials")(function* (
         gitDir: string,
       ) {
-        const ownConfig = path.join(
-          yield* git(["rev-parse", "--absolute-git-dir"], gitDir),
-          "config",
-        );
+        const absoluteGitDir = yield* git(["rev-parse", "--absolute-git-dir"], gitDir);
+        const ownConfig = path.join(absoluteGitDir, "config");
         const scrub = Effect.gen(function* () {
+          // Mend never writes an include into a store's config, and a conditional one can turn on
+          // in a worktree after this check passed: a config that has one is refused, not evaluated.
+          const includes = yield* git(
+            ["config", "--local", "--no-includes", "--name-only", "--get-regexp", INCLUDE_KEYS],
+            gitDir,
+            undefined,
+            [1],
+          );
+          if (includes.trim() !== "") {
+            return yield* new GitError({
+              args: ["mend", "remote-credentials"],
+              cwd: gitDir,
+              exitCode: null,
+              stderr: `this repository's git config includes other files (${includes.trim().split("\n").join(", ")} in ${ownConfig}); Mend never writes one and does not run git through it. Remove it there.`,
+            });
+          }
           const before = credentialsIn(gitDir, yield* remoteConfig(gitDir), ownConfig);
           if (before.elsewhere.size > 0) return yield* refusedElsewhere(gitDir, before.elsewhere);
+          if (before.own.size > 0) {
+            // The notice goes down before the first rewrite: a crash after it still reports.
+            yield* Effect.sync(() => writeNotice(noticePath(absoluteGitDir), [...before.own]));
+          }
           let rewritten = 0;
           for (const key of before.own) rewritten += yield* rewriteKey(gitDir, key);
           // The answer is what git reads now, not what was written: another process may write too.
@@ -877,7 +975,7 @@ export class Store extends Context.Service<
           }
           return rewritten;
         });
-        return yield* remoteLock(gitDir).withPermits(1)(scrub);
+        return yield* remoteLock(absoluteGitDir).withPermits(1)(scrub);
       });
 
       /**
@@ -1424,6 +1522,8 @@ export class Store extends Context.Service<
         refreshReference,
         removeReference,
         scrubRemoteCredentials,
+        remoteCredentialNotice,
+        clearRemoteCredentialNotice,
         adopt,
         createWorktree,
         resolveBase,

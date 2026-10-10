@@ -3,11 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { ProjectsRepo, ReferencesRepo } from "@mend/db";
+import { AuditEventsRepo, type NewAuditEvent, ProjectsRepo, ReferencesRepo } from "@mend/db";
 import { OrganizationId, ProjectId, ReferenceId } from "@mend/domain";
 import { Reference } from "@mend/domain/workbench";
 import { Store, StoreConfig } from "@mend/store";
-import { Effect, Layer, Schedule } from "effect";
+import { Effect, Fiber, Layer, Schedule } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeProject } from "../test/support/tenancy-harness.ts";
@@ -27,6 +27,26 @@ const repositoryWithOrigin = (root: string, name: string, url: string): string =
   execFileSync("git", ["config", "remote.origin.url", url], { cwd: gitDir });
   return gitDir;
 };
+
+/** An audit log that keeps what it was asked to record. */
+const recordingAudit = () => {
+  const events: Array<NewAuditEvent> = [];
+  return {
+    events,
+    layer: Layer.mock(AuditEventsRepo, {
+      record: (event) => Effect.sync(() => void events.push(event)),
+    }),
+  };
+};
+
+const projectAt = (id: string, storePath: string) =>
+  makeProject({
+    id: ProjectId.make(id),
+    organizationId: ORG,
+    visibility: "shared",
+    createdByUserId: "anna",
+    storePath,
+  });
 
 const originOf = (gitDir: string): string =>
   execFileSync("git", ["config", "--get", "remote.origin.url"], {
@@ -69,6 +89,7 @@ describe("scrubRemoteCredentials", () => {
             project("gone", path.join(root, "gone.git")),
           ]),
       }),
+      recordingAudit().layer,
       Layer.mock(ReferencesRepo, {
         listAll: () =>
           Effect.succeed([
@@ -124,6 +145,7 @@ describe("scrubRemoteCredentials", () => {
           ]),
       }),
       Layer.mock(ReferencesRepo, { listAll: () => Effect.succeed([]) }),
+      recordingAudit().layer,
     );
     // Another git lets go of the config a moment after the sweep's first attempt.
     setTimeout(() => fs.rmSync(lock, { force: true }), 150);
@@ -132,5 +154,77 @@ describe("scrubRemoteCredentials", () => {
     );
     expect(result).toEqual({ projects: ["locked"], references: [] });
     expect(originOf(locked)).toBe("https://example.invalid/repo.git");
+  });
+
+  it("reports a cleaned project at once, while another stays refused, and records it", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-remote-scrub-notice-"));
+    scratches.push(root);
+    const leaky = repositoryWithOrigin(
+      root,
+      "leaky.git",
+      "https://oauth2:TOKEN@gitlab.com/o/r.git",
+    );
+    const blocked = repositoryWithOrigin(root, "blocked.git", "https://gitlab.com/o/b.git");
+    execFileSync("git", ["config", "include.path", "../elsewhere.gitconfig"], { cwd: blocked });
+    const audit = recordingAudit();
+    const layer = Layer.mergeAll(
+      Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))),
+      Layer.mock(ProjectsRepo, {
+        listAll: () => Effect.succeed([projectAt("leaky", leaky), projectAt("blocked", blocked)]),
+      }),
+      Layer.mock(ReferencesRepo, { listAll: () => Effect.succeed([]) }),
+      audit.layer,
+    );
+    // The blocked project retries for as long as its include stays: the sweep never ends here.
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(scrubRemoteCredentials(Schedule.spaced("20 millis")));
+        yield* Effect.sleep("600 millis");
+        yield* Fiber.interrupt(fiber);
+      }).pipe(Effect.provide(layer)),
+    );
+    expect(audit.events).toEqual([
+      {
+        organizationId: ORG,
+        actorUserId: "anna",
+        action: "project.remote_credentials_removed",
+        subjectType: "project",
+        subjectId: "leaky",
+        data: { name: "leaky", keys: "remote.origin.url" },
+      },
+    ]);
+    expect(originOf(leaky)).toBe("https://gitlab.com/o/r.git");
+  });
+
+  it("reports a removal a fetch made before the sweep, and one a restart never got to record", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-remote-scrub-restart-"));
+    scratches.push(root);
+    const leaky = repositoryWithOrigin(
+      root,
+      "leaky.git",
+      "https://oauth2:TOKEN@gitlab.com/o/r.git",
+    );
+    const storeLayer = Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root)));
+    // A fetch (any gated op) got there first; then the server stopped before any sweep reported it.
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.scrubRemoteCredentials(leaky);
+      }).pipe(Effect.provide(storeLayer)),
+    );
+    const audit = recordingAudit();
+    const layer = Layer.mergeAll(
+      storeLayer,
+      Layer.mock(ProjectsRepo, { listAll: () => Effect.succeed([projectAt("leaky", leaky)]) }),
+      Layer.mock(ReferencesRepo, { listAll: () => Effect.succeed([]) }),
+      audit.layer,
+    );
+    const first = await Effect.runPromise(scrubRemoteCredentials().pipe(Effect.provide(layer)));
+    expect(first).toEqual({ projects: ["leaky"], references: [] });
+    expect(audit.events.map((event) => event.subjectId)).toEqual(["leaky"]);
+    // Recorded once: the next start has nothing left to say.
+    const second = await Effect.runPromise(scrubRemoteCredentials().pipe(Effect.provide(layer)));
+    expect(second).toEqual({ projects: [], references: [] });
+    expect(audit.events).toHaveLength(1);
   });
 });

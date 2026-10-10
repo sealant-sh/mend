@@ -20,6 +20,10 @@ export const AuditAction = Schema.Literals([
   "folder.removed",
   "reference.added",
   "reference.removed",
+  // Mend took a login or token out of the git remotes a server before 0.36 cloned with one
+  // (docs/GIT-ACCESS.md, "Credentials in repository URLs"), credited to whoever adopted it.
+  "project.remote_credentials_removed",
+  "reference.remote_credentials_removed",
   "session.shared_control_on",
   "session.shared_control_off",
   // The owner ended a session's workspace with captures still pending: work was discarded.

@@ -367,4 +367,19 @@ describe("jsonWithoutCredentials", () => {
       at: "2026-10-10T00:00:00.000Z",
     });
   });
+
+  it("redacts keys and boxed strings, and always prints JSON", () => {
+    const printed = jsonWithoutCredentials({
+      ["https://user:KEY-TOKEN@host/repo"]: "https://user:VALUE-TOKEN@host/repo",
+      boxed: new String("https://user:BOXED-TOKEN@host/repo"),
+      count: 1,
+    });
+    expect(printed).not.toContain("TOKEN");
+    expect(JSON.parse(printed)).toEqual({
+      "https://host/repo": "https://host/repo",
+      boxed: "https://host/repo",
+      count: 1,
+    });
+    expect(jsonWithoutCredentials(undefined)).toBe("null");
+  });
 });

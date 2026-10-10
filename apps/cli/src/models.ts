@@ -71,6 +71,8 @@ export const modelCatalogLines = (
   return lines;
 };
 
-/** `mend models --json`: the catalog as the server answered it, for scripts. */
-export const modelCatalogJson = (catalogs: ReadonlyArray<HarnessModelCatalogDto>): string =>
-  JSON.stringify({ version: 1, harnesses: catalogs }, null, 2);
+/** `mend models --json`: the catalog as the server answered it, for scripts (`printJson`). */
+export const modelCatalogJson = (catalogs: ReadonlyArray<HarnessModelCatalogDto>) => ({
+  version: 1,
+  harnesses: catalogs,
+});

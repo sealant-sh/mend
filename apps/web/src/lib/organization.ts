@@ -92,6 +92,11 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `added reference ${name ?? event.subjectId}`;
     case "reference.removed":
       return `removed reference ${name ?? event.subjectId}`;
+    // Mend did it, credited to whoever adopted the repository with a token in its URL.
+    case "project.remote_credentials_removed":
+      return `had the login or token in project ${name ?? event.subjectId}'s git remotes removed by Mend`;
+    case "reference.remote_credentials_removed":
+      return `had the login or token in reference ${name ?? event.subjectId}'s git remotes removed by Mend`;
     case "session.shared_control_on":
       return `shared control of session ${event.subjectId}`;
     case "session.shared_control_off":

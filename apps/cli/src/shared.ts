@@ -597,10 +597,33 @@ export const firstPositional = (
  */
 export const redactCredentials = (text: string): string => redactUrlCredentials(text);
 
-/** `value` as indented JSON with every string redacted on its own: no credential, still JSON. */
-export const jsonWithoutCredentials = (value: unknown): string =>
-  JSON.stringify(
+/** A plain object's keys redacted like its values; two keys that redact alike keep the later. */
+const redactKeys = (field: object): object =>
+  Object.fromEntries(Object.entries(field).map(([key, value]) => [redactCredentials(key), value]));
+
+const isPlainObject = (field: unknown): field is object =>
+  typeof field === "object" &&
+  field !== null &&
+  (Object.getPrototypeOf(field) === Object.prototype || Object.getPrototypeOf(field) === null);
+
+/**
+ * `value` as indented JSON with every string redacted on its own: no credential, still JSON. The
+ * strings are values, the keys of plain objects and boxed strings alike; a value JSON has no
+ * spelling for (`undefined`) prints `null`. A BigInt throws, as `JSON.stringify` does.
+ */
+export const jsonWithoutCredentials = (value: unknown): string => {
+  // `JSON.stringify` answers undefined for a value it cannot spell, whatever its type says.
+  const printed: string | undefined = JSON.stringify(
     value,
-    (_key, field: unknown) => (typeof field === "string" ? redactCredentials(field) : field),
+    (_key, field: unknown) => {
+      if (typeof field === "string") return redactCredentials(field);
+      // A boxed string (`new String(…)`) is unboxed by JSON.stringify after this sees it.
+      if (Object.prototype.toString.call(field) === "[object String]") {
+        return redactCredentials(String(field));
+      }
+      return isPlainObject(field) ? redactKeys(field) : field;
+    },
     2,
   );
+  return printed ?? "null";
+};
