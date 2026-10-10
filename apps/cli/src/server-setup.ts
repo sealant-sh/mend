@@ -47,6 +47,8 @@ import {
   publishedAddress,
   renderPostureOverlay,
   renderT3GatewayOverlay,
+  T3_GATEWAY_IMAGE_LABEL,
+  T3_GATEWAY_VOLUME,
   type Tenancy,
   TENANCIES,
 } from "./server-edge.ts";
@@ -1828,6 +1830,26 @@ const reachableLine = (config: ServerConfig): string =>
     ? `Mend ${config.serverVersion} is reachable at ${config.appUrl}`
     : `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · the edge is set up for ${config.appUrl}`;
 
+/** How long setup watches for the gateway after Mend answered: it starts once Mend is ready. */
+const T3_GATEWAY_OBSERVE_ATTEMPTS = 15;
+
+/**
+ * Whether the t3code gateway answers on its loopback port, from this machine, within about 30 s
+ * of Mend answering (review 644-1): what was observed, never that it listens because it was
+ * asked to. Its absence never fails setup; Mend runs without it.
+ */
+const observeT3Gateway = async (runtime: ServerSetupRuntime, port: number): Promise<string> => {
+  const url = `http://127.0.0.1:${port}/.well-known/t3/environment`;
+  for (let attempt = 0; attempt < T3_GATEWAY_OBSERVE_ATTEMPTS; attempt += 1) {
+    const response = await runtime.fetchText(url, 2_000);
+    if (response.error === undefined && response.status === 200) {
+      return `The t3code gateway answered at 127.0.0.1:${port}, observed from this machine; it is published there only. In t3code, add it as an environment at http://127.0.0.1:${port} and pair with a code from mend pair; reaching it from elsewhere is an exposure you put in front of it and declare (docs/adr/0004).`;
+    }
+    if (attempt < T3_GATEWAY_OBSERVE_ATTEMPTS - 1) await runtime.sleep(2_000);
+  }
+  return `The t3code gateway did not answer at 127.0.0.1:${port} from this machine within 30 s. Mend runs without it; mend server logs shows what it said, and mend server status looks again.`;
+};
+
 const probeHealth = async (
   runtime: ServerSetupRuntime,
   appUrl: string,
@@ -2019,6 +2041,24 @@ const checkLocalImages = async (
     throw setupError(
       `Image ${image} must carry org.opencontainers.image.version=${config.serverVersion}.`,
     );
+  }
+  if (config.t3GatewayPort !== undefined) {
+    // The overlay is the CLI's, the gateway the image's: an image from before it would take the
+    // overlay and run no gateway (review 644-1). Refused before the generation is activated.
+    const gateway = await runtime.run("docker", [
+      "--context",
+      config.dockerContext,
+      "image",
+      "inspect",
+      image,
+      "--format",
+      `{{index .Config.Labels "${T3_GATEWAY_IMAGE_LABEL}"}}`,
+    ]);
+    if (gateway.status !== 0 || gateway.stdout.trim() !== "1") {
+      throw setupError(
+        `Mend ${config.serverVersion} has no t3code gateway (its image carries no ${T3_GATEWAY_IMAGE_LABEL} label). Upgrade to a version that has one with mend server upgrade --version <version>, then turn it on; or run mend server setup --no-t3-gateway.`,
+      );
+    }
   }
   const postgres = await inspectImage(
     runtime,
@@ -2509,13 +2549,11 @@ const setupServer = async (
   const sshPublication = await sshPublicationLine(runtime, config);
   if (sshPublication !== null) runtime.writeLine(sshPublication);
   if (config.t3GatewayPort !== undefined) {
-    runtime.writeLine(
-      `The t3code gateway listens on 127.0.0.1:${config.t3GatewayPort}, on this machine only. In t3code, add it as an environment at http://127.0.0.1:${config.t3GatewayPort} and pair with a code from mend pair; reaching it from elsewhere is an exposure you put in front of it and declare (docs/adr/0004).`,
-    );
+    runtime.writeLine(await observeT3Gateway(runtime, config.t3GatewayPort));
   }
   if (existing?.config.t3GatewayPort !== undefined && config.t3GatewayPort === undefined) {
     runtime.writeLine(
-      "The t3code gateway is off. Its state (pairings, queued messages) stays in the config volume, and comes back if you turn it on again.",
+      `The t3code gateway is off. Its state (pairings, queued messages) stays in its volume, ${T3_GATEWAY_VOLUME}, and comes back if you turn it on again.`,
     );
   }
   if (existing?.config.edgeHost !== undefined && config.edgeHost === undefined) {

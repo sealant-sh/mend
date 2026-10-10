@@ -155,10 +155,21 @@ export const renderPostureOverlay = (posture: ServerPosture): string | undefined
 };
 
 /**
+ * The gateway's state (pairings, the queue, archive flags) in a volume of its own, mounted in the
+ * root the gateway is confined to (scripts/t3-gateway-root.sh): never in Mend's config volume,
+ * which the gateway cannot see. It stays when the gateway is turned off.
+ */
+export const T3_GATEWAY_VOLUME = "mend-t3-gateway";
+/** The label an image that carries the confined gateway has, set to `1` (Dockerfile). */
+export const T3_GATEWAY_IMAGE_LABEL = "dev.sealant.mend.t3-gateway";
+export const T3_GATEWAY_STATE_DIR = "/opt/mend-t3-gateway/state";
+
+/**
  * `compose.t3.yaml`: the t3code gateway (docs/adr/0012, phase 4), when the operator turned it on.
- * It turns the gateway on in the `mend` container and publishes its port on 127.0.0.1 only, its own
- * listener and origin beside Mend's: from anywhere else it is not there until the operator puts
- * something in front of it, which is an exposure of its own (ADR 0004). Absent when it is off.
+ * It turns the gateway on in the `mend` container, publishes its port on 127.0.0.1 only, its own
+ * listener and origin beside Mend's (from anywhere else it is not there until the operator puts
+ * something in front of it, which is an exposure of its own, ADR 0004), and mounts its state
+ * volume. Absent when it is off.
  */
 export const renderT3GatewayOverlay = (posture: ServerPosture): string | undefined => {
   if (posture.t3GatewayPort === undefined) return undefined;
@@ -172,6 +183,10 @@ export const renderT3GatewayOverlay = (posture: ServerPosture): string | undefin
     '      MEND_T3_GATEWAY_ENABLED: "true"',
     "    ports:",
     `      - "127.0.0.1:\${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:${T3_GATEWAY_CONTAINER_PORT}"`,
+    "    volumes:",
+    `      - ${T3_GATEWAY_VOLUME}:${T3_GATEWAY_STATE_DIR}`,
+    "volumes:",
+    `  ${T3_GATEWAY_VOLUME}:`,
     "",
   ].join("\n");
 };

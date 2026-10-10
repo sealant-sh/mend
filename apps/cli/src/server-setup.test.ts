@@ -87,6 +87,10 @@ const makeRuntime = (
     readonly operatingSystem?: string;
     readonly imageVersion?: string;
     readonly imageStatus?: number;
+    /** The image's t3code gateway label: absent, an image from before the gateway. */
+    readonly gatewayLabel?: string;
+    /** Whether the gateway answers on its loopback port once started. */
+    readonly gatewayAnswers?: boolean;
     /** What the host-kernel probe container prints; absent: the probe fails, as on no image. */
     readonly hostKernel?: string;
   } = {},
@@ -185,6 +189,9 @@ const makeRuntime = (
           };
         return { status: 0, stdout: "", stderr: "" };
       }
+      if (args.includes("image") && args.some((arg) => arg.includes("t3-gateway"))) {
+        return { status: options.imageStatus ?? 0, stdout: options.gatewayLabel ?? "", stderr: "" };
+      }
       if (args.includes("image")) {
         const image = args[args.indexOf("inspect") + 1];
         return {
@@ -214,6 +221,11 @@ const makeRuntime = (
     },
     fetchText: async (url) => {
       fetched.push(url);
+      if (url.endsWith("/.well-known/t3/environment")) {
+        return options.gatewayAnswers === false
+          ? { status: 0, body: "", error: "connection refused" }
+          : { status: 200, body: "{}" };
+      }
       if (url.endsWith("/api/health")) {
         return {
           status: options.healthStatus ?? 200,
@@ -1637,7 +1649,7 @@ describe("mend server setup", () => {
   });
 
   it("--t3-gateway writes its loopback overlay, runs it every time, keeps it, and --no-t3-gateway takes it away", async () => {
-    const control = makeRuntime();
+    const control = makeRuntime({ gatewayLabel: "1" });
     expect(await serverCommand(["setup", "--t3-gateway"], control.runtime)).toEqual({ _tag: "ok" });
     const { configDir } = control.runtime;
     const generation = activeDirectory(configDir);
@@ -1650,15 +1662,21 @@ describe("mend server setup", () => {
       '- "127.0.0.1:${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:3120"',
     );
     expect(overlay).not.toMatch(/0\.0\.0\.0/);
+    // Its state in a volume of its own, inside the root it is confined to.
+    expect(overlay).toContain("      - mend-t3-gateway:/opt/mend-t3-gateway/state");
+    expect(overlay).toMatch(/^volumes:\n {2}mend-t3-gateway:$/m);
     expect(readEnv(path.join(generation, "server.env")).get("MEND_T3_GATEWAY_PORT")).toBe("3120");
     expect(JSON.parse(fs.readFileSync(path.join(generation, "server.json"), "utf8"))).toMatchObject(
       { t3GatewayPort: 3120 },
     );
     const up = control.commands.find(([, args]) => args.includes("up"));
     expect(up?.[1]).toContain(path.join(generation, "compose.t3.yaml"));
+    // What was observed at its port, not that it listens because it was asked to.
     expect(
       control.lines.some((line) =>
-        line.startsWith("The t3code gateway listens on 127.0.0.1:3120, on this machine only."),
+        line.startsWith(
+          "The t3code gateway answered at 127.0.0.1:3120, observed from this machine; it is published there only.",
+        ),
       ),
     ).toBe(true);
     for (const line of control.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
@@ -1680,6 +1698,37 @@ describe("mend server setup", () => {
       "t3GatewayPort",
     );
     expect(control.lines.some((line) => line.startsWith("The t3code gateway is off."))).toBe(true);
+  });
+
+  it("refuses --t3-gateway on an image that has no gateway, before activating anything (644-1)", async () => {
+    const control = makeRuntime();
+    const result = await serverCommand(["setup", "--t3-gateway"], control.runtime);
+    expect(result).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(
+        "Mend 0.23.0 has no t3code gateway (its image carries no dev.sealant.mend.t3-gateway label)",
+      ),
+    });
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+    expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
+    // Without the gateway, the same image sets up as before.
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+  });
+
+  it("says the gateway did not answer when it did not, and Mend runs on (644-1)", async () => {
+    const control = makeRuntime({ gatewayLabel: "1", gatewayAnswers: false });
+    expect(await serverCommand(["setup", "--t3-gateway"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(
+      control.lines.some((line) =>
+        line.startsWith(
+          "The t3code gateway did not answer at 127.0.0.1:3120 from this machine within 30 s. Mend runs without it;",
+        ),
+      ),
+    ).toBe(true);
+    expect(control.lines.some((line) => line.includes("gateway answered"))).toBe(false);
+    expect(
+      control.fetched.filter((url) => url.endsWith("/.well-known/t3/environment")),
+    ).toHaveLength(15);
   });
 
   it.each([

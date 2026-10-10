@@ -165,7 +165,10 @@ else if (args.includes("image")) {
   else {
     const version = image.split(":").at(-1);
     if (!state.images[version]) fail();
-    out(state.images[version]);
+    // The t3code gateway's label: "1" on an image that carries it, empty on one before it.
+    if (args.some((arg) => arg.includes("dev.sealant.mend.t3-gateway"))) {
+      out(state.gatewayImages?.includes(version) ? "1" : "");
+    } else out(state.images[version]);
   }
 } else if (args.includes("pull")) {
   if (state.fail === "pull") fail();
