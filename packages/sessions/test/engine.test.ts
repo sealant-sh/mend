@@ -25680,7 +25680,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
     );
     expect(result.summary).toContain(
-      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+      "launch refused · Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
     );
     // The ladder never stepped below Claude: no create without it, so no agent started signed out.
     expect(created.map((options) => options.credentials)).toEqual([
@@ -25691,6 +25691,145 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     // Nobody else's login was asked for on the launcher's behalf.
     expect(calls).toEqual([]);
   });
+
+  it("steps a person launch's create past an optional account Core refuses, missing or needing reconnecting, and stops at the harness's own, as a join does (review of mend#671)", async () => {
+    type AccountState = Partial<Record<"claude" | "codex" | "github", "missing" | "invalid">>;
+    const launchWith = (harness: string, state: AccountState) => {
+      const asked: Array<CreateOptions["credentials"]> = [];
+      const created: Array<CreateOptions> = [];
+      // Core's own refusals of a create (connected-account-selection.ts): its code, its
+      // provider and its words, the first refused account in the order Core resolves them.
+      const core = Layer.effect(
+        SealantClient,
+        Effect.map(SealantClient, (inner) => ({
+          ...inner,
+          createWorkspace: (
+            options: CreateOptions,
+            ...rest: Parameters<typeof inner.createWorkspace> extends [unknown, ...infer R]
+              ? R
+              : never
+          ) => {
+            asked.push(options.credentials);
+            for (const provider of ["claude", "codex", "github"] as const) {
+              if (options.credentials?.[provider] === undefined) continue;
+              const standing = state[provider];
+              if (standing === "missing") {
+                return Effect.fail(
+                  new SealantPlatformError({
+                    code: "connected-account-missing",
+                    status: 404,
+                    provider,
+                    message: `No ${provider} connected account matches "default".`,
+                    cause: null,
+                  }),
+                );
+              }
+              if (standing === "invalid") {
+                return Effect.fail(
+                  new SealantPlatformError({
+                    code: "connected-account-invalid",
+                    status: 409,
+                    provider,
+                    message: `Connected ${provider} account "default" is invalid — reconnect it.`,
+                    cause: null,
+                  }),
+                );
+              }
+            }
+            return inner.createWorkspace(options, ...rest);
+          },
+        })),
+      ).pipe(
+        Layer.provide(
+          sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            [],
+            undefined,
+            [],
+            undefined,
+            { exec: answerLayout(LAYOUT_READY) },
+          ),
+        ),
+      );
+      return withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: "fresh",
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const launched = yield* engine
+              .launch(session.id, [harness === "shell" ? "bash" : harness])
+              .pipe(Effect.result);
+            return {
+              outcome: launched._tag === "Success" ? "launched" : launched.failure.message,
+              asked: asked.length,
+              created: created.map((options) => options.credentials),
+            };
+          }),
+        {
+          captured: makeMemoryCaptureStore(),
+          sealantLayer: core,
+          harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+        },
+      );
+    };
+    const connectClaude =
+      "Connect it in Settings → Connected accounts, or run mend connect claude.";
+    // The harness's own login refuses the launch in a join's words, after one create: asking
+    // again with the same refused login would only be refused again.
+    expect(await launchWith("claude", { claude: "missing" })).toEqual({
+      outcome: `Connect Claude to start a session here. ${connectClaude}`,
+      asked: 1,
+      created: [],
+    });
+    expect(await launchWith("claude", { claude: "invalid" })).toEqual({
+      outcome: `Your Claude login needs reconnecting. Reconnect Claude to start a session here. ${connectClaude}`,
+      asked: 1,
+      created: [],
+    });
+    // An account the launch does not need, missing or needing reconnecting, is left out.
+    expect(await launchWith("claude", { github: "missing" })).toMatchObject({
+      outcome: "launched",
+      created: [{ claude: true }],
+    });
+    expect(await launchWith("claude", { github: "invalid" })).toMatchObject({
+      outcome: "launched",
+      created: [{ claude: true }],
+    });
+    expect(await launchWith("codex", { github: "invalid" })).toMatchObject({
+      outcome: "launched",
+      created: [{ codex: true }],
+    });
+    // Open workbenches need no login: any refused account is left out, the rest kept.
+    expect(await launchWith("shell", { claude: "invalid" })).toMatchObject({
+      outcome: "launched",
+      created: [{ codex: true, github: true }],
+    });
+    expect(await launchWith("pi", { claude: "invalid" })).toMatchObject({
+      outcome: "launched",
+      created: [{ codex: true, github: true }],
+    });
+    expect(await launchWith("opencode", { codex: "invalid" })).toMatchObject({
+      outcome: "launched",
+      created: [{ claude: true, github: true }],
+    });
+    expect(
+      await launchWith("pi", { claude: "missing", codex: "missing", github: "missing" }),
+    ).toMatchObject({ outcome: "launched", created: [undefined] });
+  }, 60_000);
 
   it("a person launch sends its capture owner map; a shared launch sends none (sealant#333)", async () => {
     const person = await launchPersonOnce({
@@ -27178,6 +27317,103 @@ describe("per-person standbys (docs/adr/0016)", () => {
         }),
       world.layers,
     );
+  });
+
+  it("a person standby claimed by a claude session whose owner has no Claude login is refused before the agent starts, in a join's words (review of mend#671)", async () => {
+    const world = personStandbyWorld({
+      report: { person: true, missing: [] },
+      exec: answerLayout(LAYOUT_READY),
+    });
+    // The owner has no Claude: Core refuses every create naming it (the standby's shell ladder
+    // steps past it) and leaves it out of the claim's write into their home.
+    const sealantLayer = Layer.effect(
+      SealantClient,
+      Effect.map(SealantClient, (inner) => ({
+        ...inner,
+        createWorkspace: (
+          options: CreateOptions,
+          ...rest: Parameters<typeof inner.createWorkspace> extends [unknown, ...infer R]
+            ? R
+            : never
+        ) =>
+          options.credentials?.claude === undefined
+            ? inner.createWorkspace(options, ...rest)
+            : Effect.fail(
+                new SealantPlatformError({
+                  code: "connected-account-missing",
+                  status: 404,
+                  provider: "claude",
+                  message: 'No claude connected account matches "default".',
+                  cause: null,
+                }),
+              ),
+      })),
+    ).pipe(Layer.provide(world.layers.sealantLayer));
+    const platform = Layer.effect(
+      PersonLayoutPlatform,
+      Effect.map(PersonLayoutPlatform, (inner) => ({
+        ...inner,
+        postCredentials: (
+          workspace: Workspace,
+          input: Parameters<typeof inner.postCredentials>[1],
+        ) =>
+          inner.postCredentials(workspace, input).pipe(
+            Effect.as({
+              skipped:
+                input.logins.claude === undefined
+                  ? []
+                  : [
+                      {
+                        provider: "claude" as const,
+                        reason: "connected-account-missing" as const,
+                        message: 'No claude connected account matches "default".',
+                      },
+                    ],
+            }),
+          ),
+      })),
+    ).pipe(Layer.provide(personPlatform(world.calls, { person: true })));
+    const result = await withEngine(
+      (testWorld, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, testWorld);
+          testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          const standby = yield* warmPersonStandby(project, world.pool);
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).toBe(standby.id);
+          world.executor.id = session.id;
+          const refused = yield* engine.launch(session.id, ["claude"]).pipe(Effect.flip);
+          return {
+            message: refused.message,
+            summary: testWorld.sessions.get(session.id)?.summary ?? null,
+          };
+        }),
+      {
+        ...world.layers,
+        sealantLayer,
+        harnessLayout: { ...world.layers.harnessLayout, platform },
+      },
+    );
+    // The standby's create wrote no Claude, so the claim asked Core for the owner's own and was
+    // refused, as a join is; the agent never started signed out.
+    expect(result.message).toBe(
+      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
+    );
+    expect(result.summary).toContain("launch refused · Connect Claude to start a session here.");
+    // Every standby the pool made (the claimed one, and the one warmed in its place) was made
+    // without Claude, and so says it holds none.
+    expect(world.created[0]?.credentials).toEqual({ codex: true, github: true });
+    expect(world.created.every((options) => options.credentials?.claude === undefined)).toBe(true);
+    expect(world.calls).toContain(`post:user-fixture:/home/${STANDBY_OWNER}`);
+    expect(world.opened.filter((options) => options.user?.name === STANDBY_OWNER)).toEqual([]);
   });
 
   it("a person standby's claim costs no more execs than a shared standby's, past the person prepare a cold person launch runs too (Performance)", async () => {

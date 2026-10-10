@@ -376,6 +376,32 @@ export const personCreateAttempts = (
 };
 
 /**
+ * The rungs a create asks next after Core refused one, or null when it stops. A refusal Core names
+ * (sealant#335: missing, needs reconnecting, unsupported) of a provider the launch needs stops the
+ * ladder: asking again with that login refuses again, and the refusal is the launch's
+ * (`createLoginRefusal`). One of a provider it does not need drops every rung that names it, as a
+ * join's partial write leaves it out. A refusal without Core's code that still says a connected
+ * account was refused steps down one rung, as before.
+ */
+export const nextCreateAttempts = (
+  error: SealantPlatformError,
+  remaining: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
+  needed: ReadonlyArray<LoginProvider>,
+): ReadonlyArray<WorkspaceCredentialsOptions | undefined> | null => {
+  const refused = refusedAccountOf(error);
+  if (refused !== null) {
+    if (needed.includes(refused.provider)) return null;
+    const next = remaining.filter(
+      (credentials) => !loginsOfCreate(credentials).includes(refused.provider),
+    );
+    return next.length === 0 ? null : next;
+  }
+  return error.message.toLowerCase().includes("connected account") && remaining.length > 0
+    ? remaining
+    : null;
+};
+
+/**
  * What a person launch's create refused for the account its harness needs: the words a join's
  * refusal uses (`loginRefusal`). Core names the account (sealant#335); a refusal without its code
  * that still says a connected account was refused is the harness's own, since the ladder asked

@@ -354,7 +354,9 @@ import {
   createLoginRefusal,
   isAuthenticationFailure,
   layoutRefused,
+  loginNeedOf,
   makeHarnessLayoutSteps,
+  nextCreateAttempts,
   personCreateAttempts,
 } from "./harness-layout-steps.ts";
 import {
@@ -836,6 +838,16 @@ const causeWords = (cause: Cause.Cause<unknown>): string => {
   const squashed = Cause.squash(cause);
   return squashed instanceof Error ? squashed.message : String(squashed);
 };
+
+/**
+ * A launch that did not start, for its session line: refused before anything ran (a login the
+ * person has not connected, a layout Mend cannot run), in a join's words, or failed.
+ */
+const launchEndWords = (error: unknown): string =>
+  error instanceof SealantPlatformError &&
+  (error.code === "person_login_refused" || error.code === "harness_layout_refused")
+    ? `launch refused · ${error.message}`
+    : `launch failed: ${error instanceof Error ? error.message : String(error)}`;
 
 /** A steerer's refusal, in a steerer's words ("Connect Claude to steer this session."). */
 const steerWords = (message: string) =>
@@ -10543,7 +10555,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * captured (the co-located store).
          */
         readonly restoredFrom: number | null;
-        readonly onFailure: (message: string) => Effect.Effect<void>;
+        /** Told why the launch did not start: its words, and the failure itself. */
+        readonly onFailure: (message: string, failure?: unknown) => Effect.Effect<void>;
         readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
         /**
          * The harness this executor is about to start: its files are read once in the background
@@ -10708,7 +10721,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ["sh", "-lc", command],
                 setupUser === undefined ? undefined : { user: setupUser },
               )
-              .pipe(Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)));
+              .pipe(
+                Effect.tapError((error) =>
+                  input.onFailure(error.message, error).pipe(Effect.ignore),
+                ),
+              );
             if (result.exitCode !== 0) {
               const message = `setup command failed (exit ${result.exitCode}): ${command}`;
               yield* stop(message);
@@ -10877,7 +10894,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly socketDir: string;
         readonly shape: ReturnType<typeof platformShape>;
         readonly ownerUserId: string | null;
-        readonly onFailure: (message: string) => Effect.Effect<void>;
+        /** Told why the launch did not start: its words, and the failure itself. */
+        readonly onFailure: (message: string, failure?: unknown) => Effect.Effect<void>;
         /**
          * The platform accepted the create: from here on an executor exists. Runs before anything
          * executes in it, so the caller can make the executor addressable first.
@@ -10942,7 +10960,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           effect: Effect.Effect<A, E>,
         ): Effect.Effect<A, E> =>
           effect.pipe(
-            Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)),
+            Effect.tapError((error) => input.onFailure(error.message, error).pipe(Effect.ignore)),
           );
         // Before anything is read for the mounts: what they would hold passes the gate first.
         yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(report);
@@ -11256,6 +11274,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         // The attempt the create answered: what the launcher's home holds in a person launch.
         let createdWith: WorkspaceCredentialsOptions | undefined = undefined;
+        // The logins a person launch may not start without; a shared launch steps down past any.
+        const needed = credentialsHome === undefined ? [] : loginNeedOf(shape.starts).required;
         const createWithCredentialFallback = (
           attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
         ): Effect.Effect<Workspace, SealantPlatformError> => {
@@ -11267,12 +11287,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             ),
             Effect.catchIf(
-              (error) =>
-                error.message.toLowerCase().includes("connected account") && remaining.length > 0,
+              (error) => nextCreateAttempts(error, remaining, needed) !== null,
               (error) =>
                 Effect.logWarning("session engine: retrying with fewer connected accounts").pipe(
                   Effect.annotateLogs({ sessionId, error: error.message }),
-                  Effect.andThen(createWithCredentialFallback(remaining)),
+                  Effect.andThen(
+                    createWithCredentialFallback(
+                      nextCreateAttempts(error, remaining, needed) ?? [],
+                    ),
+                  ),
                 ),
             ),
           );
@@ -15974,7 +15997,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.tapCause((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.void
-                : settleSession(sessionId, "failed", `launch failed: ${causeWords(cause)}`).pipe(
+                : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
                     Effect.ignore,
                   ),
             ),
@@ -16326,8 +16349,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             socketDir,
             shape,
             ownerUserId,
-            onFailure: (message) =>
-              settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
+            onFailure: (message, failure) =>
+              settleSession(
+                sessionId,
+                "failed",
+                launchEndWords(failure === undefined ? message : failure),
+              ).pipe(Effect.ignore),
             onCreated: (workspace) => acceptExecutor(workspace, key),
             abandon: abandonExecutor,
             launchId: key,
@@ -16493,8 +16520,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               workspaceImage: provisioned.workspaceImage,
               captured: true,
               restoredFrom: replanned.restoredFrom,
-              onFailure: (message) =>
-                settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
+              onFailure: (message, failure) =>
+                settleSession(
+                  sessionId,
+                  "failed",
+                  launchEndWords(failure === undefined ? message : failure),
+                ).pipe(Effect.ignore),
               abandon: abandonExecutor,
               warmHarness: session.harness,
               ...(launchLayout.layout === "person" ||
