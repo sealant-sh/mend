@@ -36,8 +36,11 @@ ARG MEND_VERSION=dev
 # A preview build's sealantd image (by digest), baked into workspace images by the bundled worker;
 # scripts/bundle-supervisor.mjs hands it over. Empty in a release build, which changes nothing.
 ARG MEND_PREVIEW_SEALANTD_IMAGE=""
+# dev.sealant.mend.t3-gateway: this image carries the confined t3code gateway (ADR 0012), which
+# `mend server setup --t3-gateway` checks for before turning it on.
 LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
+  dev.sealant.mend.t3-gateway="1" \
   dev.sealant.mend.sealant-version="0.39.0-next.714"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
@@ -53,8 +56,12 @@ COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /
 WORKDIR /app
 COPY --from=mend-build /app/apps/api/dist ./apps/api/dist
 COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
-# The t3code gateway, one bundled file; it runs only when the operator turned it on (ADR 0012).
-COPY --from=mend-build /app/apps/t3-gateway/dist ./apps/t3-gateway/dist
+# The t3code gateway, one bundled file, in a root of its own it is confined to (ADR 0012; review
+# 643-1; scripts/t3-gateway-root.sh). It runs only when the operator turned it on, and
+# scripts/bundle-supervisor.mjs starts it there as its own uid with no capabilities.
+COPY scripts/t3-gateway-root.sh /tmp/t3-gateway-root.sh
+RUN /tmp/t3-gateway-root.sh /opt/mend-t3-gateway && rm /tmp/t3-gateway-root.sh
+COPY --from=mend-build /app/apps/t3-gateway/dist /opt/mend-t3-gateway/app
 COPY scripts/process-supervisor.mjs scripts/process-supervisor.mjs
 COPY scripts/bundle-supervisor.mjs scripts/bundle-supervisor.mjs
 COPY scripts/bundle-health.mjs scripts/bundle-health.mjs

@@ -51,17 +51,31 @@ export class ProcessSupervisor {
   }
 
   /**
-   * Keep an optional process running: its exit is never fatal to the set. It is started again
-   * after `backoffMs`, doubled each time it exits before it ran `steadyMs` (to `maxBackoffMs`),
-   * until shutdown. For a part an operator turned on beside Mend (the t3code gateway), which must
-   * never take Mend down with it. Resolves once the first start spawned.
+   * Keep an optional process running: its exit is never fatal to the set, and neither is a start
+   * that fails, the first included (review 643-2: a spawn refused for want of processes or
+   * descriptors must not stop Mend beside it). It is started again after `backoffMs`, doubled
+   * each time it ends before it ran `steadyMs` (to `maxBackoffMs`), until shutdown. For a part an
+   * operator turned on beside Mend (the t3code gateway). Resolves once the first start was tried;
+   * never rejects.
    */
   async keepRunning(
     specification,
     { backoffMs = 1_000, maxBackoffMs = 60_000, steadyMs = 60_000, log = console.error } = {},
   ) {
+    const attempt = async () => {
+      try {
+        return await this.#spawn(specification, false);
+      } catch (error) {
+        if (!this.#stopping) {
+          log(`[supervisor] ${specification.name} did not start: ${String(error)}`);
+        }
+        return {
+          exited: Promise.resolve({ name: specification.name, code: null, signal: null, error }),
+        };
+      }
+    };
     let wait = backoffMs;
-    const first = await this.#spawn(specification, false);
+    const first = await attempt();
     void (async () => {
       let tracked = first;
       for (;;) {
@@ -74,15 +88,7 @@ export class ProcessSupervisor {
         );
         await unrefDelay(wait);
         if (this.#stopping) return;
-        try {
-          tracked = await this.#spawn(specification, false);
-        } catch (error) {
-          if (this.#stopping) return;
-          log(`[supervisor] ${specification.name} did not start: ${String(error)}`);
-          tracked = {
-            exited: Promise.resolve({ name: specification.name, code: null, signal: null, error }),
-          };
-        }
+        tracked = await attempt();
       }
     })();
     return first;

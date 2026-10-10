@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, chown, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 
 import { supervise } from "./process-supervisor.mjs";
 
@@ -137,22 +137,106 @@ export const workerQueueEnvironment = (environment) => ({
 });
 
 /**
- * The t3code gateway (ADR 0012, phase 4), when the operator turned it on (`mend server setup
- * --t3-gateway`, which sets MEND_T3_GATEWAY_ENABLED): its own listener on 3120, in front of Mend's
- * API in this container, with its state file under the config volume. It listens on every address
- * of the container; the host publishes it on loopback only, so who reaches it is the operator's to
- * widen (ADR 0004). Off, nothing of it runs. Null when off.
+ * The t3code gateway's own root in the image (Dockerfile): node and its libraries, `setpriv`, the
+ * gateway's bundle in `/app`, and its state in `/state`. Nothing else of the container is in it:
+ * not Mend's store, its config or SSH keys, the control sockets or the Docker socket.
+ */
+export const T3_GATEWAY_ROOT = "/opt/mend-t3-gateway";
+/** The gateway's own uid and gid: no other process of the bundle runs as it. */
+export const T3_GATEWAY_UID = 10120;
+/**
+ * Its bounds, so it can never starve Mend beside it: a 256 MiB heap and 768 MiB of data, 1,024
+ * descriptors, 256 processes of its uid, and a lower CPU priority (nice 10).
+ */
+export const T3_GATEWAY_LIMITS = {
+  heapMiB: 256,
+  dataBytes: 768 * 1024 * 1024,
+  openFiles: 1024,
+  processes: 256,
+  nice: 10,
+};
+
+/**
+ * The t3code gateway's environment (ADR 0012, phase 4) when the operator turned it on (`mend
+ * server setup --t3-gateway`, which sets MEND_T3_GATEWAY_ENABLED); null when off. Exactly this,
+ * never the bundle's own (review 643-1): Mend's API on loopback, where it listens, its state, and
+ * its label. No database URL, no Sealant or Better Auth secret, no capture-store key: the gateway
+ * reaches Mend only over HTTP, with each paired person's own device token. It listens on every
+ * address of the container; the host publishes it on loopback only, so who reaches it is the
+ * operator's to widen (ADR 0004).
  */
 export const t3GatewayEnvironment = (environment) => {
   const switch_ = environment.MEND_T3_GATEWAY_ENABLED?.trim().toLowerCase() ?? "";
   if (switch_ !== "1" && switch_ !== "true") return null;
   return {
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    NODE_ENV: "production",
+    HOME: "/state",
+    SQLITE_TMPDIR: "/state",
     MEND_T3_GATEWAY_HOST: "0.0.0.0",
     MEND_T3_GATEWAY_PORT: "3120",
     MEND_T3_GATEWAY_MEND_URL: "http://127.0.0.1:3101",
-    MEND_T3_GATEWAY_STATE_PATH: "/var/lib/mend/config/t3-gateway/state.sqlite",
+    MEND_T3_GATEWAY_STATE_PATH: "/state/state.sqlite",
     MEND_T3_GATEWAY_LABEL: environment.MEND_T3_GATEWAY_LABEL?.trim() || "Mend",
   };
+};
+
+/**
+ * How the gateway is started, null when off: bounded (`prlimit`, `nice`), in its own root
+ * (`chroot`, the one capability it is started with), then as its own uid with no supplementary
+ * groups, no capabilities left (none effective, permitted, inherited or in the bounding set) and
+ * no way to gain any (`no_new_privs`), before node runs. `entry` is the script node runs in the
+ * root (`/app/bin.js`); `root` where that root is.
+ */
+export const t3GatewaySpecification = (
+  environment,
+  { root = T3_GATEWAY_ROOT, entry = "/app/bin.js" } = {},
+) => {
+  const env = t3GatewayEnvironment(environment);
+  if (env === null) return null;
+  const limits = T3_GATEWAY_LIMITS;
+  return {
+    name: "mend-t3-gateway",
+    // Each by its path: the chain runs with the gateway's own PATH, which has no sbin.
+    command: [
+      "/usr/bin/prlimit",
+      `--nofile=${limits.openFiles}`,
+      `--nproc=${limits.processes}`,
+      `--data=${limits.dataBytes}`,
+      "--",
+      "/usr/bin/nice",
+      "-n",
+      String(limits.nice),
+      "/usr/sbin/chroot",
+      root,
+      "/usr/bin/setpriv",
+      `--reuid=${T3_GATEWAY_UID}`,
+      `--regid=${T3_GATEWAY_UID}`,
+      "--clear-groups",
+      "--no-new-privs",
+      "--inh-caps=-all",
+      "--bounding-set=-all",
+      "--",
+      "/usr/local/bin/node",
+      `--max-old-space-size=${limits.heapMiB}`,
+      entry,
+    ],
+    env,
+  };
+};
+
+/**
+ * The gateway's state directory, its own: made if missing, owned by its uid, `0700`, and what is
+ * in it owned by it too (a volume first mounted by root). Nothing above it is touched.
+ */
+export const prepareT3GatewayState = async (root = T3_GATEWAY_ROOT) => {
+  const state = `${root}/state`;
+  await mkdir(state, { recursive: true });
+  await chown(state, T3_GATEWAY_UID, T3_GATEWAY_UID);
+  await chmod(state, 0o700);
+  for (const entry of await readdir(state)) {
+    await chown(`${state}/${entry}`, T3_GATEWAY_UID, T3_GATEWAY_UID);
+  }
 };
 
 const baseSpecification = (name, command, environment = {}) => ({
@@ -260,12 +344,18 @@ const startBundle = async (supervisor) => {
 
   // After Mend is ready, and never in its way: the gateway is kept running on its own, and its
   // exit never stops the bundle.
-  const t3Gateway = t3GatewayEnvironment(process.env);
+  const t3Gateway = t3GatewaySpecification(process.env);
   if (t3Gateway !== null) {
-    console.log("[bundle] starting the t3code gateway on 3120 (MEND_T3_GATEWAY_ENABLED)");
-    await supervisor.keepRunning(
-      baseSpecification("mend-t3-gateway", ["node", "/app/apps/t3-gateway/dist/bin.js"], t3Gateway),
+    console.log(
+      `[bundle] starting the t3code gateway on 3120 (MEND_T3_GATEWAY_ENABLED), as uid ${T3_GATEWAY_UID} in ${T3_GATEWAY_ROOT}`,
     );
+    try {
+      await prepareT3GatewayState();
+      await supervisor.keepRunning(t3Gateway);
+    } catch (error) {
+      // Never in Mend's way: a gateway that cannot even be prepared is reported, and Mend runs on.
+      console.error(`[bundle] the t3code gateway was not started: ${String(error)}`);
+    }
   }
 };
 

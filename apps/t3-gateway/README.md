@@ -419,9 +419,20 @@ the agent in the session's live workspace (`POST /api/sessions/:id/shell`), reac
 It is off unless someone turns it on. In Mend's server image it is one bundled file
 (`pnpm --filter @mend/t3-gateway build`, `dist/bin.js`), which the bundle's supervisor starts after
 Mend is ready when `MEND_T3_GATEWAY_ENABLED` is `1` or `true`: on 3120 in the container, in front of
-Mend's API there, with its state under the config volume
-(`/var/lib/mend/config/t3-gateway/state.sqlite`). It is kept running on its own (`keepRunning`): its
-exit is logged and it starts again, and it never stops Mend. Mend's health does not wait for it.
+Mend's API there. It is kept running on its own (`keepRunning`): its exit, or a start that fails, is
+logged and it starts again, and it never stops Mend. Mend's health does not wait for it.
+
+It runs confined, as nothing else in the container does (`scripts/bundle-supervisor.mjs`,
+`scripts/t3-gateway-root.sh`):
+
+- in a root of its own, `/opt/mend-t3-gateway`: node and its libraries, `setpriv`, the bundle in
+  `/app` and its state in `/state` (`/state/state.sqlite`; a packaged server mounts a volume there).
+  Mend's store, config and SSH keys, the control sockets and the Docker socket are not in it;
+- as its own uid and gid, 10120, with no supplementary groups, no capabilities and `no_new_privs`;
+- with only its own environment: Mend's API on loopback, where it listens, its state and its label.
+  No database URL, secret or key of the bundle's reaches it; it reaches Mend over HTTP with each
+  paired person's device token;
+- bounded: a 256 MiB heap, 768 MiB of data, 1,024 descriptors, 256 processes, and nice 10.
 
 From a checkout, run it beside a Mend server:
 

@@ -76,6 +76,47 @@ test("an optional process kept running is started again, and its exit is never f
   }
 });
 
+test("an optional process that cannot even start the first time never stops a required one", async () => {
+  // Review 643-2: the first spawn's failure escaped the retry, ended the bundle's start, and the
+  // supervisor stopped every healthy sibling with exit code 1.
+  const supervisor = new ProcessSupervisor();
+  const logged = [];
+  try {
+    const required = await supervisor.start({
+      name: "mend",
+      command: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+      env: process.env,
+      stdio: "ignore",
+    });
+    await supervisor.keepRunning(
+      {
+        name: "optional",
+        command: ["/nonexistent/mend-t3-gateway"],
+        env: process.env,
+        stdio: "ignore",
+      },
+      { backoffMs: 20, maxBackoffMs: 40, log: (line) => logged.push(line) },
+    );
+    await withTimeout(
+      (async () => {
+        while (logged.filter((line) => line.includes("optional did not start")).length < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      })(),
+    );
+    // Tried again, nothing fatal, and the required process still runs.
+    const settled = await Promise.race([
+      supervisor.failure.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    assert.equal(settled, false);
+    assert.equal(required.child.exitCode, null);
+    assert.equal(required.child.signalCode, null);
+  } finally {
+    await supervisor.shutdown("SIGTERM", 2_000);
+  }
+});
+
 test("a one-shot failure reports its process and exit code", async () => {
   const supervisor = new ProcessSupervisor();
   await assert.rejects(

@@ -253,28 +253,44 @@ test("a preview sealantd image reaches only the Sealant worker, and a release ad
 });
 
 test("the t3code gateway is in the bundle, and runs only when the operator turned it on", async () => {
-  const [dockerfile, supervisor, { t3GatewayEnvironment }] = await Promise.all([
-    readFile(path.join(root, "Dockerfile"), "utf8"),
-    readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
-    import("./bundle-supervisor.mjs"),
-  ]);
+  const [dockerfile, supervisor, { t3GatewayEnvironment, t3GatewaySpecification }] =
+    await Promise.all([
+      readFile(path.join(root, "Dockerfile"), "utf8"),
+      readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
+      import("./bundle-supervisor.mjs"),
+    ]);
   assert.match(dockerfile, /pnpm --filter @mend\/t3-gateway build/);
+  assert.match(dockerfile, /RUN \/tmp\/t3-gateway-root\.sh \/opt\/mend-t3-gateway/);
+  // What `mend server setup --t3-gateway` checks for before turning it on.
+  assert.match(dockerfile, /dev\.sealant\.mend\.t3-gateway="1"/);
   assert.match(
     dockerfile,
-    /COPY --from=mend-build \/app\/apps\/t3-gateway\/dist \.\/apps\/t3-gateway\/dist/,
+    /COPY --from=mend-build \/app\/apps\/t3-gateway\/dist \/opt\/mend-t3-gateway\/app/,
   );
   // Kept running on its own: its exit never stops Mend.
-  assert.match(supervisor, /keepRunning\(\s*baseSpecification\("mend-t3-gateway"/);
-  assert.doesNotMatch(supervisor, /supervisor\.start\(\s*baseSpecification\("mend-t3-gateway"/);
+  assert.match(supervisor, /keepRunning\(t3Gateway\)/);
+  assert.doesNotMatch(supervisor, /supervisor\.start\(t3Gateway/);
 
   assert.equal(t3GatewayEnvironment({}), null);
   assert.equal(t3GatewayEnvironment({ MEND_T3_GATEWAY_ENABLED: "0" }), null);
   assert.equal(t3GatewayEnvironment({ MEND_T3_GATEWAY_ENABLED: "" }), null);
-  assert.deepEqual(t3GatewayEnvironment({ MEND_T3_GATEWAY_ENABLED: "true" }), {
+  assert.equal(t3GatewaySpecification({}), null);
+  // Exactly its own environment, whatever the bundle's holds (review 643-1).
+  const specification = t3GatewaySpecification({
+    MEND_T3_GATEWAY_ENABLED: "true",
+    DATABASE_URL: "postgresql://mend:secret@postgres/mend",
+    BETTER_AUTH_SECRET: "secret",
+    SEALANT_SERVICE_KEY: "slt_svc_secret",
+  });
+  assert.deepEqual(specification?.env, {
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    NODE_ENV: "production",
+    HOME: "/state",
+    SQLITE_TMPDIR: "/state",
     MEND_T3_GATEWAY_HOST: "0.0.0.0",
     MEND_T3_GATEWAY_PORT: "3120",
     MEND_T3_GATEWAY_MEND_URL: "http://127.0.0.1:3101",
-    MEND_T3_GATEWAY_STATE_PATH: "/var/lib/mend/config/t3-gateway/state.sqlite",
+    MEND_T3_GATEWAY_STATE_PATH: "/state/state.sqlite",
     MEND_T3_GATEWAY_LABEL: "Mend",
   });
   assert.equal(
@@ -283,3 +299,65 @@ test("the t3code gateway is in the bundle, and runs only when the operator turne
     "Box",
   );
 });
+
+test(
+  "the t3code gateway runs as its own uid, in its own root, with no capabilities and only its environment",
+  { skip: spawnSync("docker", ["info"], { stdio: "ignore" }).status !== 0 && "no Docker here" },
+  async () => {
+    // The bundle's real start chain, run as root in the bundle's base image, as the supervisor
+    // runs it: a probe in the gateway's place reports what it can see, and /proc what it holds.
+    const dockerfile = await readFile(path.join(root, "Dockerfile"), "utf8");
+    const base = /^FROM (\S+) AS runtime$/m.exec(dockerfile)?.[1];
+    assert.ok(base !== undefined);
+    const result = spawnSync(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--volume",
+        `${path.join(root, "scripts")}:/scripts:ro`,
+        base,
+        "node",
+        "/scripts/t3-gateway-sandbox.check.mjs",
+      ],
+      { encoding: "utf8", timeout: 300_000 },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "");
+    assert.equal(report.seen.uid, 10120);
+    assert.equal(report.seen.gid, 10120);
+    assert.deepEqual(report.status.Uid.split(/\s+/), ["10120", "10120", "10120", "10120"]);
+    assert.equal(report.status.Groups, "");
+    for (const set of ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]) {
+      assert.equal(report.status[set], "0000000000000000", set);
+    }
+    assert.equal(report.status.NoNewPrivs, "1");
+    // Only its environment: no database URL, secret or key of the bundle's.
+    assert.deepEqual(Object.keys(report.seen.env).toSorted(), [
+      "HOME",
+      "MEND_T3_GATEWAY_HOST",
+      "MEND_T3_GATEWAY_LABEL",
+      "MEND_T3_GATEWAY_MEND_URL",
+      "MEND_T3_GATEWAY_PORT",
+      "MEND_T3_GATEWAY_STATE_PATH",
+      "NODE_ENV",
+      "PATH",
+      "SQLITE_TMPDIR",
+    ]);
+    // Its root alone: nothing of the container outside it, and it writes only its state.
+    assert.deepEqual(report.seen.sees, {
+      "/scripts": false,
+      "/var/run/docker.sock": false,
+      "/proc": false,
+      "/etc/passwd": false,
+      "/state": true,
+    });
+    assert.equal(report.seen.wrote, true);
+    assert.equal(report.seen.writesOutsideState, false);
+    // Bounded.
+    assert.match(report.limits, /Max open files\s+1024\s+1024/);
+    assert.match(report.limits, /Max processes\s+256\s+256/);
+    assert.match(report.limits, /Max data size\s+805306368\s+805306368/);
+    assert.equal(report.nice, 10);
+  },
+);
