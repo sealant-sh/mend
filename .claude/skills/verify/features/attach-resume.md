@@ -168,8 +168,12 @@ Preconditions:
   session; never in a pipe.
 - Detaching never stops the agent. Once attached, `Ctrl+C` goes to the agent like any key; only
   while the terminal is still connecting does it cancel. A session launched `--foreground` (or under
-  a project that runs in the foreground) is stopped when its launching terminal exits any other way
-  than `Ctrl+]`.
+  a project that runs in the foreground) is stopped when its launching CLI is hung up (`SIGHUP`, the
+  pane printing `✓ stopped · <id8>`), but not when the terminal itself is closed: the CLI's next
+  write to the gone terminal fails with `EIO` and it exits before its stop request is sent, so the
+  session stays `running`. Confirmed bug, fix in flight (confirming drive of 2026-10-10, two stacks,
+  five runs). Until it lands, record the session's status after closing the terminal; do not expect
+  a stop.
 - `MEND_DETACH_KEY=none` turns `Ctrl+]` off (for an outer multiplexer that owns detaching); the
   banner then omits `· detach: Ctrl+]`.
 - The heading's accessible name includes the `rename` button's text, and the rename textbox is named

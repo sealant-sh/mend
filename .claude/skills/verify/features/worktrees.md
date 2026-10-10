@@ -83,7 +83,11 @@ Preconditions:
   else `Open newest session` when it has members; `Open review` when it has a change;
   `Copy base ref` when a base ref was named. Choose
   `page.getByRole("menuitem", { name: "Copy worktree path" })`: the item reads `Copied`, then the
-  menu closes.
+  menu closes. Read the clipboard, not the item
+  (`page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: web })`, then
+  `navigator.clipboard.readText()`): it holds the bare worktree name (`verify-wt`), not its path.
+  Confirmed bug, fix in flight (`apps/web/src/lib/workbench-menus.ts:269` copies
+  `worktree.directory`; VS Code's command of the same name copies `<store>/worktrees/<name>`).
 - **Remove an empty worktree.** Open the menu again and choose
   `page.getByRole("menuitem", { name: "Remove worktree…" })`. The item now reads
   `Really remove worktree verify-wt? The change and checkpoints go with it.`; choose it again
@@ -163,6 +167,9 @@ Preconditions:
   the web shows it by the first member with a non-null label, else `session <id8>` using the first
   member's id. With no members it keeps the worktree name. Right-click the shown name; `.first()`
   picks the worktree header over a session line with the same text.
+- The worktree and session menus keep the focus where the right-click left it, and `Escape` leaves
+  them open until a menu item has focus: confirmed bug, fix in flight (see
+  [Now and sessions](./now-and-sessions.md)). Close them with a click outside.
 - The worktree header has no role, and its menu (`role="menu"`) has no accessible name; only its
   `menuitem`s are named. A confirm item renames itself to its confirmation on the first click, and a
   copy item to `Copied`.
