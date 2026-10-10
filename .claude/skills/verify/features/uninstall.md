@@ -122,6 +122,9 @@ Preconditions:
 
 ## Gotchas
 
+- The verify skill's guard refuses `mend uninstall` (all but its help page) on the machine that runs
+  it (mend#662). Run these steps on the disposable host from [the local server](./server.md), in a
+  shell of their own there.
 - `HOME` matters as much as `XDG_CONFIG_HOME`: the home scope edits `~/.ssh/config` under the real
   `HOME`. A run with the owner's `HOME` strips the owner's managed block.
 - The home scope revokes the device on the effective CLI URL (`MEND_URL`, else the URL in

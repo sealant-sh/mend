@@ -176,6 +176,9 @@ Preconditions:
 
 ## Gotchas
 
+- The verify skill's guard refuses `mend server …` (all but its help pages) on the machine that runs
+  it, since it acts on that machine's own installation (mend#662). Run these steps on the disposable
+  host, in a shell of their own there, not in the run's guarded shell.
 - Never run these steps against the owner's machine or Launch's stack. The Compose project name and
   volume names are fixed, so a second setup on a daemon that already has Mend volumes fails with
   `Docker volume ownership check failed (…)`, and a stop or upgrade there interrupts real work.
