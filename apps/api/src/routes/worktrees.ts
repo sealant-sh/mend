@@ -28,7 +28,7 @@ import {
 import { currentAgentProcess, heldRepositoriesRefusal } from "@mend/domain/workbench";
 import { captureHoldWords, SessionEngine, WorktreeReads } from "@mend/sessions";
 import { type DiffFileFact, Store } from "@mend/store";
-import { Effect } from "effect";
+import { Clock, Duration, Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
@@ -36,13 +36,18 @@ import { unlandedWork } from "../landing-state.ts";
 import { LIVE_STATES, observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
 
 /**
- * A checkpoint slice's rendering budget (`GET /worktrees/:id/diff`): at most this many files'
- * patches, as the live change's diff renders at most 200 untracked files, within this many bytes,
- * and within the deadline. Past any, the rest are omitted by name, never a failure.
+ * A checkpoint slice's budget (`GET /worktrees/:id/diff`), for the whole request: listing its
+ * files and rendering their patches share one deadline. The listing reads at most this much of
+ * git's output, within its share of the time; past either it answers the first files, cut. Then
+ * at most this many files' patches (as the live change's diff renders at most 200 untracked
+ * files), within this many bytes and what is left of the deadline; past any, the rest are omitted
+ * by name. Never a failure for size or time.
  */
+const RANGE_DEADLINE_MS = 20_000;
+const RANGE_LIST_DEADLINE_MS = 10_000;
+const RANGE_LIST_BYTES = 8 * 1024 * 1024;
 const RANGE_RENDER_FILES = 200;
 const RANGE_RENDER_BYTES = 8 * 1024 * 1024;
-const RANGE_DEADLINE = "20 seconds";
 
 /** A file of a slice by its path: the new one, else the old. */
 const pathOf = (fact: DiffFileFact) => fact.newPath ?? fact.oldPath ?? "";
@@ -145,41 +150,44 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const fromSha = from?.sha ?? worktree.baseSha;
         const reads = yield* WorktreeReads;
         const options = query.whitespace === "ignore" ? { ignoreWhitespace: true } : {};
-        // The files first: one line each, whatever their size. A slice git cannot even list in
-        // time is refused in words, never left running.
-        const facts = yield* reads
-          .diffFileFacts(worktree.projectId, worktree.id, fromSha, to.sha, options)
+        const started = yield* Clock.currentTimeMillis;
+        // The files first, within the listing budget: a slice too large or slow to list whole
+        // answers its first files, cut. A path asked for is the only one git lists.
+        const listed = yield* reads
+          .diffFileFactsBounded(worktree.projectId, worktree.id, fromSha, to.sha, {
+            ...options,
+            ...(query.path === undefined ? {} : { paths: [query.path] }),
+            maxBytes: RANGE_LIST_BYTES,
+            deadlineMs: RANGE_LIST_DEADLINE_MS,
+          })
           .pipe(
             Effect.mapError(readFailure),
             Effect.timeoutOrElse({
-              duration: RANGE_DEADLINE,
-              orElse: () =>
-                Effect.fail(
-                  new StoreFailure({
-                    message: `Mend could not list this slice's files within ${RANGE_DEADLINE}.`,
-                  }),
-                ),
+              duration: Duration.millis(RANGE_DEADLINE_MS),
+              orElse: () => Effect.succeed(null),
             }),
           );
+        const facts = listed?.value.facts ?? [];
+        const listingCut = listed === null || listed.value.cut;
+        // The pathspec also matches a directory's files: only the file itself is the answer.
         const wanted =
           query.path === undefined
-            ? facts.value
-            : facts.value.filter(
-                (fact) => fact.newPath === query.path || fact.oldPath === query.path,
-              );
-        if (query.path !== undefined && wanted.length === 0) {
+            ? facts
+            : facts.filter((fact) => fact.newPath === query.path || fact.oldPath === query.path);
+        if (query.path !== undefined && wanted.length === 0 && !listingCut) {
           return yield* new NotFound({ id: query.path });
         }
-        // Then the patches of the first files, within the budget and the deadline: past either,
-        // the files rendered whole stay and the rest are named as omitted, never a failure.
+        // Then the patches of the first files, within the budget and what is left of the
+        // deadline: past either, the files rendered whole stay and the rest are named as omitted.
         const page = wanted.slice(0, RANGE_RENDER_FILES);
         const paths = [
           ...new Set(
             page.flatMap((fact) => [fact.oldPath, fact.newPath].filter((p) => p !== null)),
           ),
         ];
+        const left = RANGE_DEADLINE_MS - ((yield* Clock.currentTimeMillis) - started);
         const rendered =
-          page.length === 0
+          page.length === 0 || left <= 0
             ? null
             : yield* reads
                 .diffRange(worktree.projectId, worktree.id, fromSha, to.sha, {
@@ -190,7 +198,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
                 .pipe(
                   Effect.mapError(readFailure),
                   Effect.timeoutOrElse({
-                    duration: RANGE_DEADLINE,
+                    duration: Duration.millis(left),
                     orElse: () => Effect.succeed(null),
                   }),
                 );
@@ -198,6 +206,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         // One patch per file, in the files' order (both are git's, from the same range).
         const whole = Math.min(page.length, diff.match(/^diff --git /gm)?.length ?? 0);
         const omitted = wanted.slice(whole).map(pathOf);
+        const stamp = (rendered ?? listed)?.stamp;
         return new WorktreeRangeDiff({
           worktreeId: worktree.id,
           from,
@@ -205,9 +214,10 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           fromSha,
           diff,
           files: wanted.map((fact) => new WorktreeRangeFile(fact)),
-          truncated: omitted.length > 0,
+          truncated: omitted.length > 0 || listingCut,
           omitted,
-          observation: observationOf((rendered ?? facts).stamp),
+          listingCut,
+          ...(stamp === undefined ? {} : { observation: observationOf(stamp) }),
         });
       }),
     )

@@ -230,6 +230,24 @@ export interface DiffRangeOptions {
   readonly maxBytes?: number;
 }
 
+/** A bounded listing of a range's files: what git listed within the budget. */
+export interface DiffFileFactsOptions {
+  readonly ignoreWhitespace?: boolean;
+  /** Only these paths, taken literally: git lists nothing else. */
+  readonly paths?: ReadonlyArray<string>;
+  /** How much of each of git's two listings is read; past it the listing is cut. */
+  readonly maxBytes: number;
+  /** Past this, git is stopped and what it listed answers, cut. */
+  readonly deadlineMs?: number;
+}
+
+export interface DiffFileFactsListing {
+  /** The range's first files, in git's order: all of them unless `cut`. */
+  readonly facts: ReadonlyArray<DiffFileFact>;
+  /** Git listed more than the budget or the deadline let through. */
+  readonly cut: boolean;
+}
+
 export interface DiffFileFact {
   readonly oldPath: string | null;
   readonly newPath: string | null;
@@ -315,6 +333,81 @@ const parseNameStatus = (
     });
   }
   return files;
+};
+
+/** A `--name-status -z` record: what happened to a file, and its paths. */
+interface NameStatusRecord {
+  readonly status: DiffFileStatus;
+  readonly oldPath: string | null;
+  readonly newPath: string | null;
+}
+
+/**
+ * `--name-status -z` records whose every part git ended with a NUL: output cut short (a byte cap,
+ * a deadline) loses its half record, never reads one as whole.
+ */
+const nameStatusRecords = (raw: string): ReadonlyArray<NameStatusRecord> => {
+  const tokens = raw.split("\0");
+  // Every token but the last was ended by a NUL.
+  const ended = tokens.length - 1;
+  const records: Array<NameStatusRecord> = [];
+  let cursor = 0;
+  while (cursor < ended && tokens[cursor] !== "") {
+    const status = statusOf(tokens[cursor] ?? "");
+    const twoPaths = status === "renamed" || status === "copied";
+    const width = twoPaths ? 3 : 2;
+    if (cursor + width > ended) break;
+    const first = tokens[cursor + 1] ?? "";
+    const second = twoPaths ? (tokens[cursor + 2] ?? "") : first;
+    records.push({
+      status,
+      oldPath: status === "added" ? null : first,
+      newPath: status === "deleted" ? null : second,
+    });
+    cursor += width;
+  }
+  return records;
+};
+
+/** A `--numstat -z` record: a file's counts, under its new path (a deleted file's old one). */
+interface NumstatRecord extends NumstatEntry {
+  readonly path: string;
+}
+
+/** `--numstat -z` records git ended, as `nameStatusRecords` takes them. */
+const numstatRecords = (raw: string): ReadonlyArray<NumstatRecord> => {
+  const records: Array<NumstatRecord> = [];
+  let cursor = 0;
+  while (cursor < raw.length) {
+    const firstTab = raw.indexOf("\t", cursor);
+    const secondTab = firstTab < 0 ? -1 : raw.indexOf("\t", firstTab + 1);
+    if (secondTab < 0) break;
+    const added = raw.slice(cursor, firstTab);
+    const deleted = raw.slice(firstTab + 1, secondTab);
+    let next = secondTab + 1;
+    let at: string;
+    if (raw[next] === "\0") {
+      // A rename or copy: `\0old\0new\0`.
+      const oldEnd = raw.indexOf("\0", next + 1);
+      const newEnd = oldEnd < 0 ? -1 : raw.indexOf("\0", oldEnd + 1);
+      if (newEnd < 0) break;
+      at = raw.slice(oldEnd + 1, newEnd);
+      next = newEnd + 1;
+    } else {
+      const end = raw.indexOf("\0", next);
+      if (end < 0) break;
+      at = raw.slice(next, end);
+      next = end + 1;
+    }
+    records.push({
+      path: at,
+      additions: added === "-" ? 0 : Number(added),
+      deletions: deleted === "-" ? 0 : Number(deleted),
+      binary: added === "-" || deleted === "-",
+    });
+    cursor = next;
+  }
+  return records;
 };
 
 const sha = (value: string) => Sha.make(value);
@@ -553,6 +646,17 @@ export class Store extends Context.Service<
       b: string,
       options?: { readonly ignoreWhitespace?: boolean },
     ) => Effect.Effect<ReadonlyArray<DiffFileFact>, GitError>;
+    /**
+     * `diffFileFacts` within a budget: each of git's listings read up to `maxBytes` and
+     * `deadlineMs`, a cut one answering its first whole records and `cut`, never a buffer failure.
+     * `paths` lists only those files, without enumerating the range.
+     */
+    readonly diffFileFactsBounded: (
+      dir: string,
+      a: string,
+      b: string,
+      options: DiffFileFactsOptions,
+    ) => Effect.Effect<DiffFileFactsListing, GitError>;
     readonly headSha: (dir: string) => Effect.Effect<Sha, GitError>;
     /**
      * Every path a session worktree holds right now — tracked plus untracked,
@@ -1100,6 +1204,48 @@ export class Store extends Context.Service<
         return parseNameStatus(names, parseNumstat(counts));
       });
 
+      const diffFileFactsBounded = Effect.fn("Store.diffFileFactsBounded")(function* (
+        dir: string,
+        a: string,
+        b: string,
+        options: DiffFileFactsOptions,
+      ) {
+        const listing = (format: string) => {
+          const args = options.paths === undefined ? [] : ["--literal-pathspecs"];
+          args.push("diff", format, "-z", "--find-renames");
+          if (options.ignoreWhitespace === true) args.push("--ignore-all-space");
+          args.push(a, b);
+          if (options.paths !== undefined) args.push("--", ...options.paths);
+          return gitCapped(args, dir, options.maxBytes, options.deadlineMs);
+        };
+        const [names, counts] = yield* Effect.all(
+          [listing("--name-status"), listing("--numstat")],
+          {
+            concurrency: 2,
+          },
+        );
+        const records = nameStatusRecords(names.stdout);
+        const numbers = numstatRecords(counts.stdout);
+        // Both listings are git's, in the same order: joined record by record while they agree.
+        const facts: Array<DiffFileFact> = [];
+        for (const [index, record] of records.entries()) {
+          const count = numbers[index];
+          if (count === undefined || count.path !== (record.newPath ?? record.oldPath)) break;
+          facts.push({
+            oldPath: record.oldPath,
+            newPath: record.newPath,
+            status: record.status,
+            additions: count.additions,
+            deletions: count.deletions,
+            binary: count.binary,
+          });
+        }
+        return {
+          facts,
+          cut: names.cut || counts.cut || facts.length < records.length,
+        } satisfies DiffFileFactsListing;
+      });
+
       const listWorktreeFiles = Effect.fn("Store.listWorktreeFiles")(function* (
         worktreePath: string,
         limit: number,
@@ -1259,6 +1405,7 @@ export class Store extends Context.Service<
         worktreeMatchesCommit,
         changedFiles,
         diffFileFacts,
+        diffFileFactsBounded,
         headSha,
         listWorktreeFiles,
         listTreeFiles,

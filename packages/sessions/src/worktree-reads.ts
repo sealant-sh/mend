@@ -14,6 +14,8 @@ import {
   type ChangedFile,
   decodeManifest,
   type DiffFileFact,
+  type DiffFileFactsListing,
+  type DiffFileFactsOptions,
   type DiffRangeOptions,
   type FileListing,
   type GitError,
@@ -127,6 +129,14 @@ export class WorktreeReads extends Context.Service<
       b: string,
       options?: { readonly ignoreWhitespace?: boolean },
     ) => Effect.Effect<Stamped<ReadonlyArray<DiffFileFact>>, WorktreeReadError>;
+    /** `diffFileFacts` within a budget (`Store.diffFileFactsBounded`): a cut listing, never a failure for size. */
+    readonly diffFileFactsBounded: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+      a: string,
+      b: string,
+      options: DiffFileFactsOptions,
+    ) => Effect.Effect<Stamped<DiffFileFactsListing>, WorktreeReadError>;
     /** Whether the worktree's tree equals `commit`'s tree. */
     readonly worktreeMatchesCommit: (
       projectId: ProjectId,
@@ -188,6 +198,11 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
       diffFileFacts: (projectId, worktreeId, a, b, options) =>
         pathOf(projectId, worktreeId).pipe(
           Effect.flatMap((dir) => store.diffFileFacts(dir, a, b, options)),
+          Effect.map(stamped),
+        ),
+      diffFileFactsBounded: (projectId, worktreeId, a, b, options) =>
+        pathOf(projectId, worktreeId).pipe(
+          Effect.flatMap((dir) => store.diffFileFactsBounded(dir, a, b, options)),
           Effect.map(stamped),
         ),
       worktreeMatchesCommit: (projectId, worktreeId, commit) =>
@@ -347,6 +362,14 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
           Effect.flatMap((ready) =>
             runner
               .diffFileFacts(ready.cache, a, b, options)
+              .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
+          ),
+        ),
+      diffFileFactsBounded: (projectId, worktreeId, a, b, options) =>
+        prepared(projectId, worktreeId).pipe(
+          Effect.flatMap((ready) =>
+            runner
+              .diffFileFactsBounded(ready.cache, a, b, options)
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
           ),
         ),

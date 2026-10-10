@@ -34,6 +34,21 @@ const LARGE_LINES = 3_000;
 let reads = 0;
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.orDie(effect));
 const stamped = <A>(value: A) => ({ value, stamp: WORKTREE_STAMP });
+/** A checkpoint of `owner`'s chain at `sha`. */
+const checkpoint = (ordinal: number, sha: string, owner: string = WORKTREE, id?: string) =>
+  new Checkpoint({
+    id: CheckpointId.make(id ?? `checkpoint-${ordinal}`),
+    worktreeId: WorktreeId.make(owner),
+    sessionId: null,
+    ordinal,
+    ref: `refs/mend/checkpoints/${WORKTREE}/${ordinal}`,
+    sha: Sha.make(sha),
+    sealantRunId: null,
+    seq: SequenceNumber.make(BigInt(ordinal)),
+    trigger: "turn-boundary",
+    createdAt: new Date(),
+  });
+
 let tmp = "";
 let api: TenancyApi;
 
@@ -78,19 +93,6 @@ beforeAll(async () => {
   }
   const three = await run(store.checkpoint(worktree.path, "test", 3, two.sha));
 
-  const checkpoint = (ordinal: number, sha: string, owner: string = WORKTREE, id?: string) =>
-    new Checkpoint({
-      id: CheckpointId.make(id ?? `checkpoint-${ordinal}`),
-      worktreeId: WorktreeId.make(owner),
-      sessionId: null,
-      ordinal,
-      ref: `refs/mend/checkpoints/${WORKTREE}/${ordinal}`,
-      sha: Sha.make(sha),
-      sealantRunId: null,
-      seq: SequenceNumber.make(BigInt(ordinal)),
-      trigger: "turn-boundary",
-      createdAt: new Date(),
-    });
   const chains = new Map<string, ReadonlyArray<Checkpoint>>([
     [
       WORKTREE,
@@ -127,10 +129,12 @@ beforeAll(async () => {
               reads += 1;
               return store.diffRange(worktree.path, a, b, options).pipe(Effect.map(stamped));
             }),
-          diffFileFacts: (_project, _worktree, a, b, options) =>
+          diffFileFactsBounded: (_project, _worktree, a, b, options) =>
             Effect.suspend(() => {
               reads += 1;
-              return store.diffFileFacts(worktree.path, a, b, options).pipe(Effect.map(stamped));
+              return store
+                .diffFileFactsBounded(worktree.path, a, b, options)
+                .pipe(Effect.map(stamped));
             }),
         },
       },
@@ -218,11 +222,14 @@ describe("a slice of a worktree's checkpoint chain", () => {
 
     const missing = await slice("alice", "from=checkpoint-2&to=checkpoint-3&path=nowhere.ts");
     expect(missing.status).toBe(404);
+    // Every file of the slice was listed: only patches were left out.
+    expect(body.listingCut).toBe(false);
   });
 
   it("says nothing was cut when nothing was", async () => {
     const body = await (await slice("alice", "from=checkpoint-1&to=checkpoint-2")).json();
     expect(body.truncated).toBe(false);
+    expect(body.listingCut).toBe(false);
     expect(body.omitted).toEqual([]);
   });
 
@@ -242,4 +249,104 @@ describe("a slice of a worktree's checkpoint chain", () => {
     );
     expect(p90).toBeLessThan(1_000);
   });
+});
+
+/** A 200-character file name of the wide slice. */
+const leafName = (index: number) => `f${String(index).padStart(4, "0")}${"x".repeat(195)}`;
+
+describe("a slice too wide to list whole (601-R2-1)", () => {
+  it(
+    "answers its first files, cut, and any one file by path: never 422",
+    { timeout: 120_000 },
+    async () => {
+      // 400,000 tiny files with 200-character names, made of git objects alone (no checkout): the
+      // listing alone is past any buffer. Before, the metadata pass failed with maxBuffer, 422.
+      const root = mkdtempSync(join(tmpdir(), "mend-wide-slice-"));
+      const plumbing = (args: ReadonlyArray<string>, input = "") =>
+        execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@localhost", ...args], {
+          cwd: root,
+          input,
+          stdio: ["pipe", "pipe", "pipe"],
+          maxBuffer: 64 * 1024 * 1024,
+        })
+          .toString()
+          .trim();
+      let wide: TenancyApi | undefined;
+      try {
+        plumbing(["init", "-q", "-b", "main"]);
+        const base = plumbing(["commit-tree", plumbing(["mktree"]), "-m", "base"]);
+        const blob = plumbing(["hash-object", "-w", "--stdin"], "one\n");
+        const leaf = plumbing(
+          ["mktree"],
+          Array.from({ length: 500 }, (_, i) => `100644 blob ${blob}\t${leafName(i)}\n`).join(""),
+        );
+        const tree = plumbing(
+          ["mktree"],
+          Array.from(
+            { length: 800 },
+            (_, i) => `040000 tree ${leaf}\td${String(i).padStart(4, "0")}\n`,
+          ).join(""),
+        );
+        const top = plumbing(["commit-tree", tree, "-p", base, "-m", "wide"]);
+        const store = await Effect.runPromise(
+          Effect.gen(function* () {
+            return yield* Store;
+          }).pipe(Effect.provide(Store.layer.pipe(Layer.provide(StoreConfig.layerFor(root))))),
+        );
+        const chain = [
+          checkpoint(0, base, WORKTREE, "wide-0"),
+          checkpoint(1, top, WORKTREE, "wide-1"),
+        ];
+        wide = await createTenancyApi(
+          {},
+          {
+            implement: {
+              checkpoints: { listForWorktree: () => Effect.succeed(chain) },
+              reads: {
+                diffRange: (_p, _w, a, b, options) =>
+                  store.diffRange(root, a, b, options).pipe(Effect.map(stamped)),
+                diffFileFactsBounded: (_p, _w, a, b, options) =>
+                  store.diffFileFactsBounded(root, a, b, options).pipe(Effect.map(stamped)),
+              },
+            },
+          },
+        );
+        const started = performance.now();
+        const response = await wide.request(
+          "alice",
+          "GET",
+          `/api/worktrees/${WORKTREE}/diff?from=wide-0&to=wide-1`,
+        );
+        const elapsed = performance.now() - started;
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.listingCut).toBe(true);
+        expect(body.truncated).toBe(true);
+        expect(body.files.length).toBeGreaterThan(200);
+        expect(body.files.length).toBeLessThan(400_000);
+        expect(body.files[0].newPath).toBe(`d0000/${leafName(0)}`);
+        expect(body.diff.match(/^diff --git /gm)?.length).toBe(200);
+        console.log(
+          `wide slice · ${body.files.length} of 400000 files listed · ${elapsed.toFixed(0)} ms`,
+        );
+        expect(elapsed).toBeLessThan(25_000);
+
+        // A file far past the listing, asked for by path: git lists that file alone.
+        const far = `d0799/${leafName(499)}`;
+        const one = await wide.request(
+          "alice",
+          "GET",
+          `/api/worktrees/${WORKTREE}/diff?from=wide-0&to=wide-1&path=${encodeURIComponent(far)}`,
+        );
+        expect(one.status).toBe(200);
+        const alone = await one.json();
+        expect(alone.listingCut).toBe(false);
+        expect(alone.files.map((file: { newPath: string }) => file.newPath)).toEqual([far]);
+        expect(alone.diff).toContain(`b/${far}`);
+      } finally {
+        await wide?.dispose();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -272,14 +272,16 @@ export interface CappedOutput {
 }
 
 /**
- * Run git and keep at most `maxBytes` of its stdout: past them git is stopped and the output so
- * far answers, marked `cut`. For output whose size the caller cannot know beforehand (a diff), so
- * a large one is a bounded answer rather than Node's output-buffer failure.
+ * Run git and keep at most `maxBytes` of its stdout: past them, or past `deadlineMs` when given,
+ * git is stopped and the output so far answers, marked `cut`. For output whose size the caller
+ * cannot know beforehand (a diff, a search), so a large or slow one is a bounded answer rather
+ * than Node's output-buffer failure or a request left running.
  */
 export const gitCapped = (
   args: ReadonlyArray<string>,
   cwd: string,
   maxBytes: number,
+  deadlineMs?: number,
 ): Effect.Effect<CappedOutput, GitError> =>
   Effect.callback<CappedOutput, GitError>((resume) => {
     const chunks: Array<Buffer> = [];
@@ -297,6 +299,13 @@ export const gitCapped = (
       env: gitProcessEnv(undefined),
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const deadline =
+      deadlineMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            cut = true;
+            child.kill();
+          }, deadlineMs);
     child.stdout.on("data", (chunk: Buffer) => {
       if (cut) return;
       const room = maxBytes - kept;
@@ -328,6 +337,7 @@ export const gitCapped = (
       ),
     );
     child.on("close", (exitCode, signal) => {
+      if (deadline !== undefined) clearTimeout(deadline);
       const stdout = Buffer.concat(chunks).toString("utf8");
       if (cut) {
         settle(Effect.succeed({ stdout, cut: true }));
