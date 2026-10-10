@@ -669,7 +669,14 @@ test(
     // Only what no process can observe may be declared: an observable item is read, not stated.
     const observable = render(...base, "--set", "exposure.declared={budgets}");
     assert.notEqual(observable.status, 0);
-    assert.match(observable.stderr, /exposure\.declared takes only core-private and edge-tls/);
+    assert.match(
+      observable.stderr,
+      /exposure\.declared takes only core-private, edge-tls and t3code-gateway/,
+    );
+    // The t3code gateway's item, as the docs say it can be declared (review 645-1).
+    const gateway = render(...base, "--set", "exposure.declared={t3code-gateway}");
+    assert.equal(gateway.status, 0, gateway.stderr);
+    assert.match(gateway.stdout, /name: MEND_EXPOSURE_DECLARED, value: "t3code-gateway"/);
 
     const unset = render(...base);
     assert.equal(unset.status, 0, unset.stderr);

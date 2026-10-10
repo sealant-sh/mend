@@ -199,15 +199,21 @@ describe("the public exposure gate", () => {
     expect(exposureRefusal("public", evaluateExposureGate(stated))).toBeNull();
   });
 
-  it("lists the t3code gateway only while it runs, open until the operator states who reaches it", () => {
+  it("lists the t3code gateway only while it is enabled, open until the operator states who reaches it", () => {
     expect(evaluateExposureGate(closed).some((outcome) => outcome.id === "t3code-gateway")).toBe(
       false,
     );
     const on = evaluateExposureGate({ ...closed, t3Gateway: true });
     const item = on.find((outcome) => outcome.id === "t3code-gateway");
     expect(item?.established).toBe("open");
+    // Unobservable and never blocking a start, unlike workspace-ssh (mend#620), which blocks one.
     expect(item?.blocksStart).toBe(false);
+    expect(item?.observable).toBe(false);
     expect(item?.detail).toContain("cannot observe who reaches that port");
+    // A configuration fact, read once: it says enabled, never that the gateway runs (645-2).
+    expect(item?.detail).toContain("the t3code gateway is enabled (MEND_T3_GATEWAY_ENABLED)");
+    expect(item?.detail).toContain("nor whether the gateway is listening there");
+    expect(item?.detail).not.toMatch(/\bruns\b/);
     expect(item?.fix).toContain("then add t3code-gateway to MEND_EXPOSURE_DECLARED");
     // It never refuses a start: no build can observe it.
     expect(exposureRefusal("public", on)).toBe(

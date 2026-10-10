@@ -215,13 +215,13 @@ published in front of its Pods, so `mend operator exposure` reports what it obse
 declared, and `public` refuses to start while an item of the public exposure gate that Mend can
 observe is open. The related values:
 
-| Value                        | Renders                    | Meaning                                                                                                                                                                   |
-| ---------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `exposure.mode`              | `MEND_EXPOSURE`            | `loopback`, `private` or `public`                                                                                                                                         |
-| `exposure.executorNetwork`   | `MEND_EXECUTOR_NETWORK`    | Empty or `private`; see step 3                                                                                                                                            |
-| `exposure.refuseUrlBearers`  | `MEND_URL_BEARERS=refuse`  | Refuse a session or device bearer in a URL; `public` needs it on                                                                                                          |
-| `exposure.declared`          | `MEND_EXPOSURE_DECLARED`   | `core-private`, `edge-tls` and, while the t3code gateway runs, `t3code-gateway`: the gate items only you can verify from outside; reported as declared, never as observed |
-| `exposure.reassessedVersion` | `MEND_EXPOSURE_REASSESSED` | The version you recorded an independent security reassessment of; it counts only while it equals the running version                                                      |
+| Value                        | Renders                    | Meaning                                                                                                                                                                         |
+| ---------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `exposure.mode`              | `MEND_EXPOSURE`            | `loopback`, `private` or `public`                                                                                                                                               |
+| `exposure.executorNetwork`   | `MEND_EXECUTOR_NETWORK`    | Empty or `private`; see step 3                                                                                                                                                  |
+| `exposure.refuseUrlBearers`  | `MEND_URL_BEARERS=refuse`  | Refuse a session or device bearer in a URL; `public` needs it on                                                                                                                |
+| `exposure.declared`          | `MEND_EXPOSURE_DECLARED`   | `core-private`, `edge-tls` and, while the t3code gateway is enabled, `t3code-gateway`: the gate items only you can verify from outside; reported as declared, never as observed |
+| `exposure.reassessedVersion` | `MEND_EXPOSURE_REASSESSED` | The version you recorded an independent security reassessment of; it counts only while it equals the running version                                                            |
 
 `ingress.enabled: true` renders one Ingress: one host, TLS, and the web Service only. The API,
 Sealant, the session channel and supervised Services are never routed. The chart renders the Ingress
