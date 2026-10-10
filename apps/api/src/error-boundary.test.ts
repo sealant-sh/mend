@@ -1,10 +1,21 @@
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { DiscardUnsavedRequest } from "@mend/api-contracts";
+import {
+  HOST_USER_NAMESPACE_SYSCTL_FILE,
+  hostUserNamespacesFix,
+  hostUserNamespacesRefusal,
+  hostUserNamespacesRefusalParts,
+} from "@mend/domain/host-user-namespaces";
 import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { errorBoundary, redactErrorBody } from "./error-boundary.ts";
+import { errorBoundary, redactErrorBody, redactKeepingHostFix } from "./error-boundary.ts";
 
 /** MEND-11 (docs/adr/0004, "Errors and browser headers"): what error text may leave the API. */
 const disposers: Array<() => Promise<void>> = [];
@@ -13,6 +24,7 @@ afterEach(async () => {
 });
 
 const STORE_PATH = "/var/lib/mend/store/prj_9f2/repo.git";
+const USERNS_SETTING = "kernel.apparmor_restrict_unprivileged_userns = 0";
 
 const serve = (mode: "redacted" | "verbose") => {
   const routes = HttpRouter.use((router) =>
@@ -48,6 +60,15 @@ const serve = (mode: "redacted" | "verbose") => {
           HttpServerResponse.jsonUnsafe({ stack: `Error\n    at ${STORE_PATH}` }, { status: 500 }),
         ),
       );
+      // What a launch on a host that refuses user namespaces fails with (sessions engine).
+      yield* router.add("GET", "/api/host-refusal", () =>
+        Effect.succeed(
+          HttpServerResponse.jsonUnsafe(
+            { _tag: "LaunchRefused", message: hostUserNamespacesRefusal(USERNS_SETTING) },
+            { status: 409 },
+          ),
+        ),
+      );
       yield* router.add("GET", "/api/ok", () =>
         Effect.succeed(HttpServerResponse.jsonUnsafe({ message: `kept: ${STORE_PATH}` })),
       );
@@ -58,7 +79,7 @@ const serve = (mode: "redacted" | "verbose") => {
   );
   const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true });
   disposers.push(dispose);
-  return (path: string) => handler(new Request(`http://api.internal${path}`));
+  return (route: string) => handler(new Request(`http://api.internal${route}`));
 };
 
 describe("the error boundary", () => {
@@ -117,6 +138,48 @@ describe("the error boundary", () => {
     });
     // A defect has no body written for anyone: it is a reference in either mode.
     expect(await (await api("/api/defect")).json()).toMatchObject({ _tag: "InternalError" });
+  });
+
+  it("keeps the host refusal's command whole, so the line the CLI prints runs when pasted (RC 761)", async () => {
+    const response = await serve("redacted")("/api/host-refusal");
+    expect(response.status).toBe(409);
+    const body: unknown = await response.json();
+    expect(body).toEqual({
+      _tag: "LaunchRefused",
+      message: hostUserNamespacesRefusal(USERNS_SETTING),
+    });
+    const message =
+      typeof body === "object" && body !== null && "message" in body ? String(body.message) : "";
+    // The CLI prints a refused launch as `mend: <message>`; a person pastes the command out of it.
+    const command = hostUserNamespacesRefusalParts(`mend: ${message}`)?.command ?? "";
+    expect(command).toBe(hostUserNamespacesFix(USERNS_SETTING));
+    expect(command).not.toContain("<path>");
+    // Run it, with a sudo that records what it was asked instead of doing it.
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "mend-host-fix-"));
+    disposers.push(async () => fs.rmSync(bin, { recursive: true, force: true }));
+    const log = path.join(bin, "sudo.log");
+    fs.writeFileSync(
+      path.join(bin, "sudo"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\n[ "$1" = tee ] && cat > '${path.join(bin, "written")}'\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    execFileSync("sh", ["-c", command], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    });
+    expect(fs.readFileSync(log, "utf8").trim().split("\n")).toEqual([
+      `tee ${HOST_USER_NAMESPACE_SYSCTL_FILE}`,
+      "sysctl --system",
+    ]);
+    expect(fs.readFileSync(path.join(bin, "written"), "utf8")).toBe(`${USERNS_SETTING}\n`);
+  });
+
+  it("keeps only Mend's own command: any other in its place, and the words around it, are scrubbed", () => {
+    const refusal = hostUserNamespacesRefusal(USERNS_SETTING);
+    expect(redactKeepingHostFix(`${refusal} · saved at ${STORE_PATH}`)).toBe(
+      `${refusal} · saved at <path>/repo.git`,
+    );
+    const tampered = refusal.replace(HOST_USER_NAMESPACE_SYSCTL_FILE, `${STORE_PATH}/x.conf`);
+    expect(redactKeepingHostFix(tampered)).not.toContain(STORE_PATH);
   });
 
   it("scrubs detail fields at any depth and nothing else", () => {

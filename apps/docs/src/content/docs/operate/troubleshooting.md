@@ -182,8 +182,8 @@ launch failed: the server's host refuses user namespaces · no workspace can sta
 
 Each workspace runs its own rootless Docker, and Ubuntu refuses the unprivileged user namespaces it
 needs (`kernel.apparmor_restrict_unprivileged_userns=1`). `mend server setup` asks to allow them
-before it pulls anything; `mend doctor` reports it on the `workspaces` line, and the web on the Now
-page. A server older than 0.36 fails later instead, while the workspace starts, with
+before its other questions; `mend doctor` reports it on the `workspaces` line, and the web on the
+Now page. A server older than 0.36 fails later instead, while the workspace starts, with
 `Workspace Docker service 'sealant-…-docker' did not become ready … container … is not running`.
 Allow them on the server's host; no restart is needed:
 

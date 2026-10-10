@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  HOST_USER_NAMESPACE_FIXES,
   hostUserNamespacesFix,
   hostUserNamespacesOf,
   hostUserNamespacesRefusal,
@@ -58,6 +59,19 @@ describe("hostUserNamespacesOf", () => {
     expect(hostUserNamespacesOf({ ...none, unprivilegedUsernsClone: "1" })).toEqual({
       allowed: true,
     });
+  });
+});
+
+describe("HOST_USER_NAMESPACE_FIXES", () => {
+  it("is the command for each setting hostUserNamespacesOf can ask for, and nothing else", () => {
+    const settings = [
+      { ...none, apparmorRestrictUnprivilegedUserns: "1" },
+      { ...none, unprivilegedUsernsClone: "0" },
+    ].flatMap((readings) => {
+      const verdict = hostUserNamespacesOf(readings);
+      return verdict.allowed ? [] : [verdict.setting];
+    });
+    expect(HOST_USER_NAMESPACE_FIXES).toEqual(settings.map(hostUserNamespacesFix));
   });
 });
 

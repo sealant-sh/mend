@@ -1,5 +1,9 @@
 import { randomBytes } from "node:crypto";
 
+import {
+  HOST_USER_NAMESPACE_FIXES,
+  hostUserNamespacesRefusalParts,
+} from "@mend/domain/host-user-namespaces";
 import { redactDetail } from "@mend/network";
 import { Cause, Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -61,6 +65,20 @@ const DETAIL_FIELDS: ReadonlySet<string> = new Set([
   "url",
 ]);
 
+/**
+ * Scrub a detail, but keep the command a host refusal carries as Mend wrote it: it names
+ * /etc/sysctl.d, which the path scrubber turns into `<path>`, and a person pastes it into a shell
+ * (RC 0.36.0-next.761). Only a command that is exactly one of Mend's own passes; the words around
+ * it are scrubbed as any other.
+ */
+export const redactKeepingHostFix = (detail: string): string => {
+  const parts = hostUserNamespacesRefusalParts(detail);
+  if (parts === null || !HOST_USER_NAMESPACE_FIXES.includes(parts.command)) {
+    return redactDetail(detail);
+  }
+  return `${redactDetail(parts.lead)}${parts.command}${redactDetail(parts.rest)}`;
+};
+
 /** Scrub every detail-bearing string in an error body, at any depth. Other values are untouched. */
 export const redactErrorBody = (body: unknown): unknown => {
   if (Array.isArray(body)) return body.map(redactErrorBody);
@@ -69,7 +87,7 @@ export const redactErrorBody = (body: unknown): unknown => {
     Object.entries(body).map(([key, value]) => [
       key,
       typeof value === "string" && DETAIL_FIELDS.has(key)
-        ? redactDetail(value)
+        ? redactKeepingHostFix(value)
         : redactErrorBody(value),
     ]),
   );
@@ -144,7 +162,7 @@ export const redactErrorResponse = (
       return HttpServerResponse.jsonUnsafe(redactErrorBody(parsed), kept(response));
     }
     if (contentType.includes("text/plain")) {
-      return HttpServerResponse.text(redactDetail(text), kept(response));
+      return HttpServerResponse.text(redactKeepingHostFix(text), kept(response));
     }
     return response;
   });

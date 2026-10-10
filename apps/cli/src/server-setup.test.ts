@@ -10,6 +10,7 @@ import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
 import { type HostFile, parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import {
+  HOST_HELPER_IMAGE,
   instanceIdOf,
   nodeServerRuntime,
   reachableAddressesOf,
@@ -334,10 +335,10 @@ const makeRuntime = (
 
 /**
  * Image work for the install itself. Setup's look at the Docker host's kernel comes first, through
- * postgres:17-alpine, an image every install pulls anyway.
+ * the busybox every install preloads anyway (HOST_HELPER_IMAGE).
  */
 const installImageWork = (args: ReadonlyArray<string>): boolean =>
-  args[2] === "image" && !args.includes("postgres:17-alpine");
+  args[2] === "image" && !args.includes(HOST_HELPER_IMAGE);
 
 const readEnv = (file: string): ReadonlyMap<string, string> => {
   const values = new Map<string, string>();
@@ -371,6 +372,10 @@ const UBUNTU_ALLOWS = "0\n|Y\n|1\n|";
 const USERNS_FIX =
   "echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system";
 const USERNS_REMINDER = `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: ${USERNS_FIX}`;
+/** With no one asked, --allow-userns leads: the file setup writes carries the marker uninstall reads. */
+const USERNS_RERUN =
+  "Re-run mend server setup with --allow-userns to let setup write it (and let mend uninstall undo it). Or, on the host, run:";
+const USERNS_UNASKED_REMINDER = `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. ${USERNS_RERUN} ${USERNS_FIX}`;
 const privilegedRuns = (control: RuntimeControl) =>
   control.commands.filter(([, args]) => args.includes("--privileged"));
 const asking = (control: RuntimeControl, answer: string | null) => {
@@ -902,19 +907,20 @@ describe("mend server setup", () => {
       readEnv(activeFile(control.runtime.configDir, "server.env")).get("DOCKER_SOCKET_PATH"),
     ).toBe("/var/run/docker.sock");
   });
-  it("on a host that refuses user namespaces (Ubuntu 24.04) and no one to ask: the command, before anything is pulled, and again last", async () => {
+  it("on a host that refuses user namespaces (Ubuntu 24.04) and no one to ask: --allow-userns first, the command as the other way, before anything is pulled, and again last", async () => {
     const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
     expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     expect(privilegedRuns(control)).toEqual([]);
+    // The command written by hand has no marker, so mend uninstall would leave it (RC 761).
     const said = control.lines.indexOf(
-      `Setup changes the host's kernel only when asked: answer the question on a terminal, or pass --allow-userns. On the host, run: ${USERNS_FIX}`,
+      `Setup changes the host's kernel only when asked. ${USERNS_RERUN} ${USERNS_FIX}`,
     );
     expect(said).toBeGreaterThan(0);
     expect(control.lines[said - 1]).toBe(
       "Sessions cannot start on this host yet: Ubuntu blocks the unprivileged user namespaces each workspace's Docker service needs.",
     );
     expect(said).toBeLessThan(control.lines.indexOf("Downloading release assets for Mend 0.23.0"));
-    expect(control.lines.at(-1)).toBe(USERNS_REMINDER);
+    expect(control.lines.at(-1)).toBe(USERNS_UNASKED_REMINDER);
     const probe = control.commands.find(([, args]) => args.includes("--entrypoint"));
     expect(probe?.[1].slice(0, 9)).toEqual([
       "--context",
@@ -925,7 +931,7 @@ describe("mend server setup", () => {
       "none",
       "--entrypoint",
       "sh",
-      "postgres:17-alpine",
+      HOST_HELPER_IMAGE,
     ]);
   });
 
@@ -961,7 +967,7 @@ describe("mend server setup", () => {
         "/proc/sys:/host/proc-sys",
         "--entrypoint",
         "sh",
-        "postgres:17-alpine",
+        HOST_HELPER_IMAGE,
         "-c",
         `file="$1"; value="$2"; shift 2; printf '%s\\n' "$@" > /host/sysctl.d/60-mend-rootless-docker.conf && printf '%s\\n' "$value" > "/host/proc-sys/$file"`,
         "mend-allow-userns",
@@ -1286,7 +1292,7 @@ describe("mend server setup", () => {
     ]);
     expect(repointed).toEqual(["http://10.0.0.52:3105"]);
     expect(moved.lines).toContain(
-      "Mend's URL changed from http://localhost:3105 to http://10.0.0.52:3105. Browsers open http://10.0.0.52:3105. A CLI signed in at the old URL (another account on this machine, another machine) moves with: mend login --url http://10.0.0.52:3105",
+      "Mend's URL changed from http://localhost:3105 to http://10.0.0.52:3105. Browsers open http://10.0.0.52:3105. A CLI signed in at the old URL (another account on this machine, another machine) signs in again with mend login --url http://10.0.0.52:3105, which asks for a new browser authorization.",
     );
     expect(moved.lines.at(-1)).toBe(
       "This machine's CLI now points at http://10.0.0.52:3105; its sign-in carried over.",
@@ -2397,6 +2403,43 @@ describe("mend server setup, guided and unasked", () => {
     expect(control.lines).toContain("Mend 0.23.0 is reachable at http://localhost:3105");
     expect(control.lines).not.toContain("This run changes:");
     expect(transcript.at(-1)).toBe("Apply? [Y/n] ");
+  });
+
+  it("asks about the host's user namespaces before the guide's first question, pulling only the helper, and not again (RC 761)", async () => {
+    const control = makeRuntime({ hostKernel: UBUNTU_REFUSES, hostKernelAllowed: UBUNTU_ALLOWS });
+    const transcript: Array<string> = [];
+    const scripted = scriptedPrompter(["", "1", "", "", "", ""], transcript);
+    let imageWorkBeforeQuestion: ReadonlyArray<ReadonlyArray<string>> | null = null;
+    const result = await serverCommand(["setup"], {
+      ...control.runtime,
+      // allow · reach: this machine · T3: no · mirrors: keep · one organization · apply
+      prompter: async (prompt) => {
+        if (prompt === "Allow them now? [Y/n] ") {
+          imageWorkBeforeQuestion = control.commands
+            .map(([, args]) => args)
+            .filter((args) => args[2] === "image" || args[2] === "pull" || args[2] === "run");
+        }
+        return scripted(prompt);
+      },
+    });
+    expect(result).toEqual({ _tag: "ok" });
+    expect(transcript[0]).toBe("Allow them now? [Y/n] ");
+    expect(transcript[1]).toContain("1-3 [1]: 1");
+    expect(transcript.filter((line) => line.startsWith("Allow them now?"))).toHaveLength(1);
+    expect(transcript.at(-1)).toBe("Apply? [Y/n] ");
+    // Before the question: the helper image and its probe, nothing of the release.
+    expect(imageWorkBeforeQuestion).not.toBeNull();
+    for (const args of imageWorkBeforeQuestion ?? []) expect(args).toContain(HOST_HELPER_IMAGE);
+    expect(privilegedRuns(control)).toHaveLength(1);
+    expect(control.lines).not.toContain(USERNS_REMINDER);
+  });
+
+  it("probes the host's kernel through the guard image the Mend image names, so it pulls nothing extra", () => {
+    const dockerfile = fs.readFileSync(
+      path.join(import.meta.dirname, "..", "..", "..", "Dockerfile"),
+      "utf8",
+    );
+    expect(/^ARG MEND_NETWORK_GUARD_IMAGE=(\S+)$/m.exec(dockerfile)?.[1]).toBe(HOST_HELPER_IMAGE);
   });
 
   it("guides a rerun: shows what is saved, changes one thing, keeps the rest and every declaration", async () => {

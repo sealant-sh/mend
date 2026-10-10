@@ -133,7 +133,10 @@ if (
 ) {
   const image = args.at(-1);
   const version = image.split(":").at(-1);
-  if (!state.images[version]) fail();
+  if (!state.images[version]) {
+    process.stderr.write(`Error response from daemon: No such image: ${image}\n`);
+    process.exit(1);
+  }
   delete state.images[version];
   save();
   out(`Untagged: ${image}`);
@@ -244,7 +247,10 @@ else if (args.includes("image")) {
     out(sized(`sha256:${image}`));
   else {
     const version = image.split(":").at(-1);
-    if (!state.images[version]) fail();
+    if (!state.images[version]) {
+      process.stderr.write(`Error: No such image: ${image}\n`);
+      process.exit(1);
+    }
     // The image the worker runs to guard each workspace's network, named by its label.
     if (args.some((arg) => arg.includes("dev.sealant.mend.network-guard-image"))) {
       out(state.guardImage ?? "");
@@ -308,9 +314,17 @@ else if (args.includes("image")) {
   out('{"uri":"/a/-/a-1.0.0.tgz","cache":"HIT"}\n{"uri":"/b/-/b-1.0.0.tgz","cache":"MISS"}');
 } else if (command[0] === "logs") out("bounded fixture log");
 else if (command[0] === "down") {
-  // Compose removes its project's networks and volumes, all but those a container still holds.
+  // Compose removes its project's containers (a mirror attached to a workspace's network among
+  // them), then its networks and volumes, all but those a container still holds.
   if (fs.existsSync(protocolFile)) {
     const daemonState = JSON.parse(fs.readFileSync(protocolFile, "utf8"));
+    const composed = new Set(
+      (daemonState.containers ?? [])
+        .filter(([, labels]) => labels?.["com.docker.compose.project"] === "mend")
+        .map(([name]) => name),
+    );
+    daemonState.containers = (daemonState.containers ?? []).filter(([name]) => !composed.has(name));
+    daemonState.facts = (daemonState.facts ?? []).filter(([name]) => !composed.has(name));
     const held = (kind) =>
       new Set((daemonState.facts ?? []).flatMap(([, facts]) => facts[kind] ?? []));
     for (const [kind, holder] of [

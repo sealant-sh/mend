@@ -83,6 +83,14 @@ export const hostUserNamespacesOf = (readings: HostUserNamespaceReadings): HostU
 export const hostUserNamespacesFix = (setting: string): string =>
   `echo '${setting}' | sudo tee ${HOST_USER_NAMESPACE_SYSCTL_FILE} && sudo sysctl --system`;
 
+/**
+ * Every command Mend writes out to allow them, one per setting. Mend's own words, naming only a
+ * fixed system path: what may cross a scrubber that would otherwise take the path out of a pasted
+ * command (`sudo tee <path>/…`, RC 0.36.0-next.761).
+ */
+export const HOST_USER_NAMESPACE_FIXES: ReadonlyArray<string> =
+  Object.keys(PREVIOUS_SETTINGS).map(hostUserNamespacesFix);
+
 /** What a refusing host means for Mend, in the words doctor, a failed launch and the web share. */
 export const HOST_USER_NAMESPACES_REFUSED =
   "the server's host refuses user namespaces · no workspace can start";
