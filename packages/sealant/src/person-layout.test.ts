@@ -680,12 +680,16 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
         asked.push(sshUser);
       },
     };
-    await Effect.runPromise((await platformReporting(reporting)).setSshUser(settable, null));
+    expect(
+      await Effect.runPromise((await platformReporting(reporting)).setSshUser(settable, null)),
+    ).toBe(true);
     expect(asked).toEqual([null]);
-    // A control plane that does not take it is not asked.
-    await Effect.runPromise((await platformReporting(EVERY_FEATURE)).setSshUser(settable, null));
+    // A control plane that does not take it is not asked: there is nothing to set.
+    expect(
+      await Effect.runPromise((await platformReporting(EVERY_FEATURE)).setSshUser(settable, null)),
+    ).toBe(true);
     expect(asked).toEqual([null]);
-    // A refusal is logged, not a failed launch; an SDK without the method is not asked.
+    // A refusal is an answer of no, for the caller to try again; never a failure.
     const failing = {
       ...workspaceRecording([], []),
       setSshUser: async () => {
@@ -693,7 +697,31 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
       },
     };
     const platform = await platformReporting(reporting);
-    await Effect.runPromise(platform.setSshUser(failing, null));
-    await Effect.runPromise(platform.setSshUser(workspaceRecording([], []), null));
+    expect(await Effect.runPromise(platform.setSshUser(failing, null))).toBe(false);
+    // An SDK without the method made no create with a user either.
+    expect(await Effect.runPromise(platform.setSshUser(workspaceRecording([], []), null))).toBe(
+      true,
+    );
   });
+
+  effectIt.effect("gives up on an attempt Core does not answer within 5 s, as a no", () =>
+    Effect.gen(function* () {
+      const platform = yield* PersonLayoutPlatform.pipe(
+        Effect.provide(
+          PersonLayoutPlatformLive.pipe(
+            Layer.provide(
+              clientsLayer([], inspection("supported"), () => Effect.succeed(reporting)),
+            ),
+          ),
+        ),
+      );
+      const silent = {
+        ...workspaceRecording([], []),
+        setSshUser: () => new Promise<void>(() => {}),
+      };
+      const fiber = yield* Effect.forkChild(platform.setSshUser(silent, null));
+      yield* TestClock.adjust("5 seconds");
+      expect(yield* Fiber.join(fiber)).toBe(false);
+    }),
+  );
 });

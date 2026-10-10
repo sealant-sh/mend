@@ -342,6 +342,7 @@ import {
   type StandbyLayout,
   type PersonHome,
   type PrepareOutcome,
+  REMOTE_SSH_RESET_PENDING_WORDS,
   SHARED_AS_BEFORE,
   isAuthenticationFailure,
   layoutRefused,
@@ -10501,6 +10502,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspace,
                   stdout,
                   fallback: input.layout.fallback,
+                  // Remote-SSH is down while the fallback's SSH reset has not reached Core: said
+                  // on the line (kept there across retries) and taken off once it has.
+                  onSshReset: (resolved) =>
+                    resolved
+                      ? dropLaunchWords(sessionId, REMOTE_SSH_RESET_PENDING_WORDS)
+                      : replaceLaunchWords(
+                          sessionId,
+                          REMOTE_SSH_RESET_PENDING_WORDS,
+                          REMOTE_SSH_RESET_PENDING_WORDS,
+                        ).pipe(Effect.ignore),
                 })
                 .pipe(Effect.tapError((error) => stop(error.message)));
         // In the person layout the people exist before the setup commands, which run as the
@@ -10983,8 +10994,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 gid: MEND_GROUP.gid,
               }
             : undefined;
-        // The launcher's Remote-SSH runs as them too (decision 10): Core's gateway admits only the
-        // workspace's owner, the launcher, and runs the session as the user named here, which
+        // Remote-SSH is the launcher's (decision 10): the person whose launch started this
+        // workspace, this create's (after it stops, whoever launches the next one; not the
+        // worktree's first session's owner). The create is made as their Sealant user, so Core's
+        // gateway admits them and nobody else, and runs the session as the user named here, which
         // prepare makes. A fallback to one shared home sets it back to root (`settlePrepare`).
         const sshUser =
           launchLayout.layout === "person" && (yield* personPlatform.sshUser)
@@ -18091,6 +18104,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           current.summary === null ? words : `${current.summary} · ${words}`,
         );
       });
+
+      /** `words` taken off the session line, wherever they are in it; nothing when absent. */
+      const dropLaunchWords = (sessionId: SessionId, words: string): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const summary = (yield* sessions.byId(sessionId)).summary;
+          if (summary === null || !summary.includes(words)) return;
+          const kept = summary
+            .split(` · ${words}`)
+            .join("")
+            .split(`${words} · `)
+            .join("")
+            .split(words)
+            .join("");
+          yield* sessions.setSummary(sessionId, kept.length === 0 ? null : kept);
+        }).pipe(Effect.ignore);
 
       /** `from` on the session line becomes `to`; said at the end when `from` is gone. */
       const replaceLaunchWords = Effect.fn("SessionEngine.replaceLaunchWords")(function* (

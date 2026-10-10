@@ -583,7 +583,8 @@ export interface WorkspaceCreateLaunch {
   /**
    * `sshUser` (docs/adr/0016, decision 10; sealant#348): the Linux user Core's SSH gateway runs
    * the workspace's SSH sessions as, VS Code Remote-SSH included, for a person-layout launch: the
-   * launcher's login name. Their user does not exist at create; until prepare makes it, the
+   * login name of its launcher, the person whose launch this create is (after the workspace stops,
+   * whoever launches the next one). Their user does not exist at create; until prepare makes it, the
    * gateway refuses a session rather than run it as root. Sent only where Core reports
    * `workspaceSshUser` (`PersonLayoutPlatform.sshUser`).
    */

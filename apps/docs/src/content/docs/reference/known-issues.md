@@ -345,10 +345,12 @@ is used by the other person's `git push`.
 - **`docker exec` runs as root, with no login.** So does anything else Mend did not start, such as a
   custom image's own entrypoint work: no person's login, no Mend token, and what it writes under
   `/root` is not saved.
-- **VS Code Remote-SSH reaches only workspaces you launched,** as your user, in your home. You
-  cannot open Remote-SSH into a workspace someone else launched. Your user is made when the
-  workspace starts; until then the workspace refuses SSH rather than open it as root. A workspace
-  that fell back to one shared home runs Remote-SSH as root, as before. So does every workspace on a
+- **VS Code Remote-SSH reaches only workspaces you launched,** as your user, in your home: you are
+  the launcher of a workspace your launch started, and of the next one when you launch it after the
+  last one stopped. You cannot open Remote-SSH into a workspace someone else launched. Your user is
+  made when the workspace starts; until then the workspace refuses SSH rather than open it as root.
+  A workspace that fell back to one shared home runs Remote-SSH as root, as before; until Sealant
+  has taken that change the session says `Remote-SSH unavailable`. So does every workspace on a
   Sealant control plane that does not report `workspaceSshUser`.
 - **SFTP is refused in a per-person workspace,** and with it `sftp` and `scp` (which speaks SFTP).
   The pinned sealantd runs an SFTP bridge only as root. Copy a file with

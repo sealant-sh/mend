@@ -276,7 +276,11 @@ import {
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
 import { installScript } from "../src/dependency-cache.ts";
-import { HarnessLayoutConfig, HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
+import {
+  HarnessLayoutConfig,
+  HarnessLayoutConfigShared,
+  REMOTE_SSH_RESET_PENDING_WORDS,
+} from "../src/harness-layout-steps.ts";
 import {
   HARNESS_UPDATES_OFF_ENV,
   NO_PAGER_ENV,
@@ -24119,6 +24123,23 @@ describe("SessionEngine a session and its run settle together (2026-10-03)", () 
  * workspace `unknown` here, as it does on the box. Every lookup's principal lands in `seen`
  * (`none`, or the user id), so a test can say whose the calls were.
  */
+/** Records whose principal each create is made under (`none`, or the user id). */
+const createPrincipals = (
+  inner: Layer.Layer<SealantClient>,
+  seen: Array<string>,
+): Layer.Layer<SealantClient> =>
+  Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => ({
+      ...client,
+      createWorkspace: (options, launch, watch) =>
+        Effect.flatMap(SealantPrincipal, (principal) => {
+          seen.push(principal.kind === "none" ? "none" : principal.userId);
+          return client.createWorkspace(options, launch, watch);
+        }),
+    })),
+  ).pipe(Layer.provide(inner));
+
 const principalRequired = (
   inner: Layer.Layer<SealantClient>,
   seen: Array<string>,
@@ -24464,13 +24485,19 @@ const personPlatform = (
   controlPlane?: () => string | null,
   /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
   sshUserReported = true,
+  /** Core's answer to each `setSshUser`: taken unless said. */
+  sshUserTaken: () => boolean = () => true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.sync(() => controlPlane?.() ?? null),
     sshUser: Effect.succeed(sshUserReported),
-    setSshUser: (_workspace, user) => Effect.sync(() => calls.push(`ssh-user:${user ?? "root"}`)),
+    setSshUser: (_workspace, user) =>
+      Effect.sync(() => {
+        calls.push(`ssh-user:${user ?? "root"}`);
+        return sshUserTaken();
+      }),
     workspaceProcessUser: () => Effect.succeed("supported"),
     // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
@@ -24712,6 +24739,67 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     }
     expect(state.launches.size).toBe(0);
     expect(state.identities.size).toBe(0);
+  });
+
+  it("Remote-SSH is the launcher's: whoever launches the executor, and after it stops, whoever launches the next one", async () => {
+    // Alice launches and stops; Maria, a member, then launches the worktree's next executor. Its
+    // create names Maria's user and is made as Maria's Sealant user, so Core's gateway, which
+    // admits only the workspace's owner, admits Maria and refuses Alice (docs/adr/0016, decision
+    // 10: the launcher of the workspace, not the worktree's first-session owner).
+    const sshUsers: Array<string | undefined> = [];
+    const principals: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const first = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "remote-ssh-launcher",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(first.id, ["claude"]);
+          yield* engine.stop(first.id);
+          const next = yield* engine.provisionSessionIn(first.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: MARIA,
+          });
+          yield* engine.launch(next.id, ["claude"]);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        sealantLayer: createPrincipals(
+          sealantLaunchLayer(
+            [],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              createSshUsers: sshUsers,
+              exec: answerLayout(
+                `mend-layout probed\nmend-layout made ${LAUNCHER}\nmend-layout made ${JOINER}\nmend-layout ready\n`,
+              ),
+            },
+          ),
+          principals,
+        ),
+        harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
+      },
+    );
+    expect(sshUsers).toEqual([LAUNCHER, JOINER]);
+    expect(principals).toEqual(["user-fixture", MARIA]);
   });
 
   it("a person launch names no SSH user where Core does not run SSH sessions as one", async () => {
@@ -25132,7 +25220,10 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ) => { exitCode: number; stdout: string; stderr: string } | undefined;
     readonly before?: (worktreeId: string) => void;
     readonly harnessLayout?: HarnessLayout;
+    /** Read the session line this long after the launch (what work beside it said). */
+    readonly summaryAfter?: Duration.Input;
   }) => {
+    let summary: string | null = null;
     const created: Array<CreateOptions> = [];
     const opened: Array<PersonSessionOptions> = [];
     const execCalls: Array<ReadonlyArray<string>> = [];
@@ -25160,6 +25251,10 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           options.before?.(session.worktreeId);
           const launched = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
           if (launched._tag === "Failure") failure = launched.failure.message;
+          if (options.summaryAfter !== undefined) {
+            yield* Effect.sleep(options.summaryAfter);
+            summary = world.sessions.get(session.id)?.summary ?? null;
+          }
         }),
       {
         captured: makeMemoryCaptureStore(),
@@ -25184,7 +25279,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         harnessLayout: { flag: options.flag, state: options.state, platform: options.platform },
       },
     );
-    return { created, opened, execCalls, stops, failure, worktreeId, order };
+    return { created, opened, execCalls, stops, failure, worktreeId, order, summary };
   };
 
   it("refuses a person worktree before create when its image is known not to run it", async () => {
@@ -25296,8 +25391,12 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
     });
     expect(run.failure).toBeNull();
-    // The launcher's SSH sessions go back to root with the executor (decision 10).
-    expect(calls).toEqual([`delete:/home/${LAUNCHER}`, "ssh-user:root", "post:user-fixture:/root"]);
+    // The launcher's SSH sessions go back to root with the executor (decision 10), off the
+    // launch path: nothing above waited on it.
+    expect(calls.filter((call) => !call.startsWith("ssh-user:"))).toEqual([
+      `delete:/home/${LAUNCHER}`,
+      "post:user-fixture:/root",
+    ]);
     // The agent starts as root, after its login is written.
     expect(run.order).toContain("open");
     expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
@@ -25306,6 +25405,30 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ]);
     expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false, missing: ["no setfacl"] });
     expect(state.worktrees.get(run.worktreeId ?? "")?.layout ?? null).toBeNull();
+  });
+
+  it("a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down", async () => {
+    const calls: Array<string> = [];
+    const run = await launchPersonOnce({
+      flag: "person",
+      state: makeHarnessLayoutsMemoryState(),
+      platform: personPlatform(
+        calls,
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        () => false,
+      ),
+      exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
+      summaryAfter: "200 millis",
+    });
+    expect(run.failure).toBeNull();
+    expect(run.order).toContain("open");
+    expect(calls).toContain("ssh-user:root");
+    expect(run.summary).toContain(REMOTE_SSH_RESET_PENDING_WORDS);
   });
 
   it("with the flag off, a start interrupted once its operator's person request is written still makes the worktree's next launch person", async () => {

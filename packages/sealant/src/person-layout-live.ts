@@ -39,6 +39,9 @@ const call = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: 
 const CREDENTIALS_CALL_TIMEOUT = Duration.seconds(30);
 
 /** `call`, bounded by `CREDENTIALS_CALL_TIMEOUT`, failing with words when Core does not answer. */
+/** How long one `setSshUser` may take before it counts as not done (and is tried again). */
+export const SSH_USER_CALL_TIMEOUT = Duration.seconds(5);
+
 const boundedCall = <A>(what: string, home: string, run: () => Promise<A>) =>
   call(run).pipe(
     Effect.timeoutOrElse({
@@ -289,11 +292,26 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         // from before it has no such method, and its creates never sent one.
         setSshUser: (workspace, user) =>
           Effect.gen(function* () {
-            if (!(yield* controlPlaneAnswer).sshUser || !setsSshUser(workspace)) return;
-            yield* call(() => workspace.setSshUser(user)).pipe(
+            // Nothing to set: the create named no user either.
+            if (!(yield* controlPlaneAnswer).sshUser || !setsSshUser(workspace)) return true;
+            return yield* call(() => workspace.setSshUser(user)).pipe(
+              Effect.timeoutOrElse({
+                duration: SSH_USER_CALL_TIMEOUT,
+                orElse: () =>
+                  Effect.fail(
+                    new SealantPlatformError({
+                      code: "ssh_user_timeout",
+                      status: null,
+                      message: "Sealant did not answer within 5 s",
+                      cause: null,
+                    }),
+                  ),
+              }),
+              Effect.as(true),
               Effect.catch((error) =>
                 Effect.logWarning("person layout: the workspace's SSH user was not set").pipe(
                   Effect.annotateLogs({ workspaceId: workspace.id, user, message: error.message }),
+                  Effect.as(false),
                 ),
               ),
             );
