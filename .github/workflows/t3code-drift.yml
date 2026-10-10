@@ -33,9 +33,23 @@ jobs:
           node packages/t3-contracts/scripts/drift.ts --out "$RUNNER_TEMP/drift.md" | tee "$RUNNER_TEMP/drift.txt"
           code=${PIPESTATUS[0]}
           set -e
-          if [ "$code" = 2 ]; then exit 1; fi
-          echo "drift=$([ "$code" = 1 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "tag=$(grep -oE 'v[0-9.]+-nightly\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/drift.txt" | tail -1)" >> "$GITHUB_OUTPUT"
+          # 0 is no drift and 1 is drift; anything else (2 for a check that could not tell, or a
+          # crash or kill) compared nothing, and fails the job rather than passing as no drift.
+          case "$code" in
+            0) drift=false ;;
+            1) drift=true ;;
+            *)
+              echo "::error::the drift check ended with status $code and compared nothing"
+              exit 1
+              ;;
+          esac
+          tag=$(grep -oE 'v[0-9.]+-nightly\.[0-9]+\.[0-9]+' "$RUNNER_TEMP/drift.txt" | tail -1 || true)
+          if [ -z "$tag" ] || [ ! -s "$RUNNER_TEMP/drift.md" ]; then
+            echo "::error::the drift check ended with status $code but named no tag or wrote no report"
+            exit 1
+          fi
+          echo "drift=$drift" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Open or update the drift issue
         if: steps.drift.outputs.drift == 'true'
         env:
