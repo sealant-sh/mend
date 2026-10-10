@@ -2719,7 +2719,7 @@ describe.skipIf(!reachable)("0120 hot workspace layout", () => {
   });
 });
 
-describe.skipIf(!reachable)("0121 repository URL credentials", () => {
+describe.skipIf(!reachable)("0123 repository URL credentials", () => {
   const DB = `${SCRATCH_DB}_url_credentials`;
   const layer = (() => {
     const url = new URL(ADMIN_URL);
@@ -2750,7 +2750,7 @@ describe.skipIf(!reachable)("0121 repository URL credentials", () => {
     const result = await withDb(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* upTo("0120_hot_workspace_layout");
+        yield* upTo("0122_checkpoint_source");
         const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
         const org = organization?.id ?? "";
         yield* sql`
@@ -2784,7 +2784,7 @@ describe.skipIf(!reachable)("0121 repository URL credentials", () => {
             (id, project_id, worktree_id, harness, worktree, branch, base_sha, status, dotfiles)
           VALUES ('s-1', 'p-clean', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running',
                   ${JSON.stringify({ repository: { url: "https://anna:TOKEN-SECRET@github.com/anna/dots.git", ref: "main" }, snapshotSha: null })}::jsonb)`;
-        yield* migrations["0121_repository_url_credentials"];
+        yield* migrations["0123_repository_url_credentials"];
         const projects = yield* sql<{ readonly id: string; readonly url: string | null }>`
           SELECT id, origin_url AS url FROM projects ORDER BY id`;
         const [reference] = yield* sql<{ readonly url: string }>`

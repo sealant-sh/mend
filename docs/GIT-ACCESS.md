@@ -141,7 +141,7 @@ CLI's `--json`) is redacted one string at a time.
 - **Never logged.** `GitError` is built with its args and stderr redacted (a failed clone's message
   carries the whole command line), `ReferenceCloneError.source` likewise, and the server's console
   strips URL credentials from every log line (`RedactingConsoleLive`).
-- **Existing data.** Migration 0121 strips project and reference origins and both dotfiles columns.
+- **Existing data.** Migration 0123 strips project and reference origins and both dotfiles columns.
   At each worker start `RemoteCredentialScrubLive` rewrites any remote URL (`url`, `pushurl`) in a
   project store or reference clone that still carries one. Each repository is reported the moment
   its outcome is known, never after the others: a cleaned one with a warning naming it and an entry

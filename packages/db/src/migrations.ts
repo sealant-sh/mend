@@ -3561,10 +3561,11 @@ export const migrations = {
   "0118_pre_release_executors": preReleaseExecutorsMigration,
   "0119_image_layout_confirmed": imageLayoutConfirmedMigration,
   "0120_hot_workspace_layout": hotWorkspaceLayoutMigration,
-  "0121_repository_url_credentials": repositoryUrlCredentialsMigration,
-  // 0121 is taken by the repository URL credentials work in flight (fix/origin-url-credentials).
+  // 0121 is unused: it was held for the repository URL credentials work, which landed after 0122
+  // as 0123. The migrator applies only ids above the latest applied, so nothing may take it now.
   "0122_checkpoint_source": checkpointSourceMigration,
   "0123_hot_workspace_remote_ssh": hotWorkspaceRemoteSshMigration,
   // 0124 is unused: mend#640 (repository URL credentials) moved to 0126.
   "0125_ssh_key_revocations": sshKeyRevocationsMigration,
+  "0123_repository_url_credentials": repositoryUrlCredentialsMigration,
 };

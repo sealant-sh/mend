@@ -25,7 +25,7 @@ interface SweptRepository {
  * Take a login or token out of the git remotes Mend already holds (docs/GIT-ACCESS.md,
  * "Credentials in repository URLs"). Servers before 0.36 cloned an adopted URL as typed, so a
  * project's bare store and a reference clone could keep `https://oauth2:TOKEN@host/…` in their git
- * config, where a co-located workspace reads it. Migration 0121 strips the rows; this strips the
+ * config, where a co-located workspace reads it. Migration 0123 strips the rows; this strips the
  * repositories, once per start, in the background. Idempotent: a clean config is left as it is.
  *
  * Each repository is its own: its outcome is reported the moment it is known, never after the
