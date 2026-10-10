@@ -22,7 +22,10 @@ Postgres, Garage and the workspaces' Docker service ran `arm64`. Arch is Mend's 
   image build took about 2 minutes, and installs, builds and test runs in the session are slower.
 - **Needed:** an `arm64` Arch workspace on Docker and Kubernetes, as MicroVM has, or a documented
   `platform` on the image plan so Mend can say which architecture a workspace runs and pick a native
-  family on ARM hosts. Mend's docs now say Arch workspaces run under emulation on ARM.
+  family on ARM hosts.
+- **In progress:** a Core change for 0.36 builds the Arch family natively on arm64 Docker and
+  Kubernetes hosts from the MicroVM recipe's Arch Linux ARM base. Mend's Mac guide keeps its
+  "natively" sentence on that basis.
 
 ## 2026-10-10 · 0.39.0-next.720 · The SSH gateway closes silently on an unknown workspace
 
