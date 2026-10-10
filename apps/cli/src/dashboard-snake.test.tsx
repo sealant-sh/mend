@@ -325,7 +325,9 @@ describe("snake in the session pane", () => {
     });
     let frame = await press("h");
     const worktreeKeys = footer(frame);
-    expect(worktreeKeys).toContain("⇧D remove worktree");
+    // Only the worktree column says "stop all"; the footer keeps `? keys` at its end, so the
+    // hints after it drop first at this width.
+    expect(worktreeKeys).toContain("⇧K stop all");
     await press("n");
     frame = await press("return");
     expect(footer(frame)).toBe(SNAKE_KEYS);
