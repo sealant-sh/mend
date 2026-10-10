@@ -30,6 +30,20 @@ describe("the mirrors overlay", () => {
     expect(NPM_MIRROR_CONF).toBe(
       fs.readFileSync(new URL("../../../deploy/docker/npm-mirror.conf", import.meta.url), "utf8"),
     );
+    // The chart's npm mirror runs the same configuration.
+    expect(NPM_MIRROR_CONF).toBe(
+      fs.readFileSync(
+        new URL("../../../deploy/helm/mend/files/npm-mirror.conf", import.meta.url),
+        "utf8",
+      ),
+    );
+    // The chart's Docker mirror runs the same guard.
+    expect(DOCKER_MIRROR_GUARD).toBe(
+      fs.readFileSync(
+        new URL("../../../deploy/helm/mend/files/docker-mirror-guard.sh", import.meta.url),
+        "utf8",
+      ),
+    );
     // scripts/mirrors-runtime.test.mjs runs this copy in the registry image.
     expect(DOCKER_MIRROR_GUARD).toBe(
       fs.readFileSync(

@@ -125,6 +125,16 @@ spec:
             # The machine git key (`mend keys init`) must survive Pod replacement: it lives on
             # the store claim, mounted at its own path so it never sits inside the store tree.
             - { name: MEND_KEYS_ROOT, value: /var/lib/mend/keys }
+            {{- if .Values.mirrors.npm.enabled }}
+            # The npm mirror (templates/mirrors.yaml): each session's dependency install goes
+            # through it when the project names no registry of its own.
+            - { name: MEND_NPM_MIRROR_URL, value: "http://{{ .Release.Name }}-npm-mirror.{{ .Release.Namespace }}.svc:4873/" }
+            {{- end }}
+            {{- if .Values.mirrors.docker.enabled }}
+            # Named for the public exposure gate's core-private item; the SEALANT chart's worker is
+            # what points workspace Docker daemons at it.
+            - { name: SEALANT_DOCKER_REGISTRY_MIRRORS, value: "http://{{ .Release.Name }}-docker-mirror.{{ .Release.Namespace }}.svc:5000" }
+            {{- end }}
             {{- if .Values.serviceHost.bindAddresses }}
             {{- if has "podIP" .Values.serviceHost.bindAddresses }}
             # The bind policy refuses wildcards and requires assigned addresses; the Pod's own
