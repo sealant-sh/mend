@@ -188,11 +188,19 @@ terminal attach and stop is recorded with the account that did it.
 
 Whose login a steered turn spends depends on the workspace:
 
-- **In a workspace that shares one home** (the default), every act spends the owner's provider
-  logins and Git access, and the agent keeps the owner's memory and instructions.
-- **In a [per-person workspace](/operate/per-person-workspaces/)**, each turn runs on its sender's
-  login, as the switch says. A sender with no login for the session's provider is refused
-  (`Connect Claude to steer this session.`).
+- **In a [per-person workspace](/operate/per-person-workspaces/)**, the default, each turn runs on
+  its sender's own login, as the switch says. A sender with no login for the session's provider is
+  refused (`Connect Claude to steer this session.`).
+- **In a workspace that shares one home**, every act spends the owner's provider logins and Git
+  access, and the agent keeps the owner's memory and instructions. Each turn the owner paid for
+  someone else says so (`billed to Alice's default`). A workspace shares one home when:
+  - it is the first workspace on a new image, before Mend knows whether the image can run per
+    person;
+  - the operator set `MEND_HARNESS_LAYOUT=shared`;
+  - it runs a custom base without `sudo`;
+  - its runtime is Kubernetes.
+
+  See [What a workspace needs](/operate/per-person-workspaces/#what-a-workspace-needs).
 
 ### Steering in a per-person workspace
 

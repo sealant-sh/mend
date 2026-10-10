@@ -137,10 +137,11 @@ remove an account that is not connected.
 Connected accounts belong to your Mend user, not the machine-wide settings document. Other users
 must connect their own accounts.
 
-In a workspace that shares one home, the default, Mend resolves them when it creates a workspace for
-a session you own, and every process in that workspace runs on them, including the processes of
-someone who joins your worktree. When you turn on shared control there, others who can see the
-project steer the session with your provider logins and Git access.
+In a workspace that shares one home (the operator opted out, or the workspace
+[cannot run per person](/operate/per-person-workspaces/#what-a-workspace-needs)), Mend resolves them
+when it creates a workspace for a session you own, and every process in that workspace runs on them,
+including the processes of someone who joins your worktree. When you turn on shared control there,
+others who can see the project steer the session with your provider logins and Git access.
 
 In a [per-person workspace](/operate/per-person-workspaces/) each person's processes run on their
 own logins, written into their own home in the workspace:

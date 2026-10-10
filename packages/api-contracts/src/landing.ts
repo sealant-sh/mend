@@ -179,7 +179,10 @@ export const ChangeBundleBytes = Schema.Uint8Array.pipe(
 
 /** Response headers the bundle carries, so `mend pull` needs no second request. */
 export const BUNDLE_HEADERS = {
+  /** The branch as it is, sent only when a header can carry it (no character above U+00FF). */
   branch: "x-mend-bundle-branch",
+  /** The branch percent-encoded as UTF-8, always sent; read first. */
+  branchEncoded: "x-mend-bundle-branch-encoded",
   base: "x-mend-bundle-base",
   tip: "x-mend-bundle-tip",
   /** Commits the bundle carries: only the new ones when it builds on an earlier pull. */

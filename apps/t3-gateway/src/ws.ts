@@ -114,7 +114,8 @@ export const WebSocketRouteLive: Layer.Layer<
 
     /**
      * As t3code reads an upgrade: a ticket when the URL carries one, else the request's own
-     * bearer. Either way the session must still be live.
+     * bearer. Either way the session must still be live, and Mend must still pair its device: a
+     * warm hub would otherwise answer a revoked device from memory until the next periodic check.
      */
     const authenticateUpgrade = (
       request: HttpServerRequest.HttpServerRequest,
@@ -122,17 +123,24 @@ export const WebSocketRouteLive: Layer.Layer<
     ): Effect.Effect<AuthenticatedBearer, EnvironmentAuthInvalidError | EnvironmentInternalError> =>
       Effect.gen(function* () {
         const ticket = url.searchParams.get(WEBSOCKET_TICKET_QUERY_PARAM)?.trim() ?? "";
+        let bearer: AuthenticatedBearer;
         if (ticket.length === 0) {
-          return yield* auth.authenticate(request.headers["authorization"]);
+          bearer = yield* auth.authenticate(request.headers["authorization"]);
+        } else {
+          const sessionId = yield* tickets.consume(ticket);
+          if (Option.isNone(sessionId)) return yield* authInvalid("invalid_credential");
+          bearer = yield* auth.authenticateSession(sessionId.value);
         }
-        const sessionId = yield* tickets.consume(ticket);
-        if (Option.isNone(sessionId)) return yield* authInvalid("invalid_credential");
-        return yield* auth.authenticateSession(sessionId.value);
+        // A ticket's issue asked Mend a moment ago, so this is answered from that; a header's
+        // bearer is asked here (review 0.36, T1).
+        yield* auth.confirmDevice(bearer);
+        return bearer;
       }).pipe(
         Effect.catchTags({
           GatewayCredentialMissing: () => authInvalid("missing_credential"),
           GatewayCredentialInvalid: (error) =>
             authInvalid("invalid_credential", error.dpopFailureReason),
+          GatewayDeviceUnconfirmed: (error) => internal("internal_error", error),
           GatewayStateError: (error) => internal("internal_error", error),
         }),
       );

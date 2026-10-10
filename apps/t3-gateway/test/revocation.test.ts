@@ -25,7 +25,7 @@ import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
 import { startMendProxy } from "./support/mend-proxy.ts";
-import { pairAndConnect } from "./support/rpc.ts";
+import { pairAndConnect, socketUrl } from "./support/rpc.ts";
 
 /**
  * A device revoked in Mend ends the gateway bearers that stand for it (the box check, 2026-10-10):
@@ -90,6 +90,22 @@ const warmHubWithTablet = (mend: FakeMend) =>
     const client = yield* t3Client;
     const tablet = yield* client.auth.token(tokenRequest("TABLET"));
     return { client, tablet: tablet.access_token, laptop: laptop.access.access_token };
+  });
+
+/** `GET /ws` with the bearer in the request's own header, no ticket: as a hand-built client asks. */
+const upgradeWithHeader = (accessToken: string) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    const url = new URL(yield* socketUrl(null));
+    const response = yield* http.execute(
+      HttpClientRequest.get(`${url.pathname}${url.search}`).pipe(
+        HttpClientRequest.setHeaders(bearer(accessToken)),
+      ),
+    );
+    return {
+      status: response.status,
+      body: yield* response.json.pipe(Effect.orElseSucceed(() => null)),
+    };
   });
 
 const shellRead = (accessToken: string) =>
@@ -220,6 +236,25 @@ describe("a device revoked in Mend", () => {
         assert.strictEqual((yield* ticketRequest(tablet)).status, 401);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
     }),
+  );
+
+  it.live(
+    "is not let into a socket by its bearer header while the hub is warm (review 0.36, T1)",
+    () =>
+      Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        yield* Effect.gen(function* () {
+          const { tablet, laptop } = yield* warmHubWithTablet(mend);
+          // Revoked with no pointer from Mend: the upgrade asks Mend, and refuses it before any
+          // socket opens, where the periodic check would have found it up to 15 s later.
+          mend.revoke(mend.claims[1]?.token ?? "");
+          // The device still paired gets past authentication to the upgrade itself.
+          assert.notStrictEqual((yield* upgradeWithHeader(laptop)).status, 401);
+          const refused = yield* upgradeWithHeader(tablet);
+          assert.strictEqual(refused.status, 401);
+          assert.strictEqual((yield* decodeAuthInvalid(refused.body)).reason, "invalid_credential");
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+      }),
   );
 
   it.live("gets nothing while Mend cannot say, and is told to retry (review 660, SF2)", () =>
