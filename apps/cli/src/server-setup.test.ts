@@ -1636,6 +1636,65 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(2);
   });
 
+  it("--t3-gateway writes its loopback overlay, runs it every time, keeps it, and --no-t3-gateway takes it away", async () => {
+    const control = makeRuntime();
+    expect(await serverCommand(["setup", "--t3-gateway"], control.runtime)).toEqual({ _tag: "ok" });
+    const { configDir } = control.runtime;
+    const generation = activeDirectory(configDir);
+    expect(fs.readdirSync(generation)).toContain("compose.t3.yaml");
+    expect(modeOf(path.join(generation, "compose.t3.yaml"))).toBe(0o600);
+    const overlay = fs.readFileSync(path.join(generation, "compose.t3.yaml"), "utf8");
+    // Its own listener, on loopback only, and the switch the bundle starts it by.
+    expect(overlay).toContain('MEND_T3_GATEWAY_ENABLED: "true"');
+    expect(overlay).toContain(
+      '- "127.0.0.1:${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:3120"',
+    );
+    expect(overlay).not.toMatch(/0\.0\.0\.0/);
+    expect(readEnv(path.join(generation, "server.env")).get("MEND_T3_GATEWAY_PORT")).toBe("3120");
+    expect(JSON.parse(fs.readFileSync(path.join(generation, "server.json"), "utf8"))).toMatchObject(
+      { t3GatewayPort: 3120 },
+    );
+    const up = control.commands.find(([, args]) => args.includes("up"));
+    expect(up?.[1]).toContain(path.join(generation, "compose.t3.yaml"));
+    expect(
+      control.lines.some((line) =>
+        line.startsWith("The t3code gateway listens on 127.0.0.1:3120, on this machine only."),
+      ),
+    ).toBe(true);
+    for (const line of control.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
+    // A rerun keeps it; another port moves it; --no-t3-gateway takes the overlay away.
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(activeDirectory(configDir)).toBe(generation);
+    expect(await serverCommand(["setup", "--t3-gateway-port", "3121"], control.runtime)).toEqual({
+      _tag: "ok",
+    });
+    const moved = activeDirectory(configDir);
+    expect(readEnv(path.join(moved, "server.env")).get("MEND_T3_GATEWAY_PORT")).toBe("3121");
+    expect(await serverCommand(["setup", "--no-t3-gateway"], control.runtime)).toEqual({
+      _tag: "ok",
+    });
+    const off = activeDirectory(configDir);
+    expect(fs.readdirSync(off)).not.toContain("compose.t3.yaml");
+    expect(readEnv(path.join(off, "server.env")).has("MEND_T3_GATEWAY_PORT")).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(off, "server.json"), "utf8"))).not.toHaveProperty(
+      "t3GatewayPort",
+    );
+    expect(control.lines.some((line) => line.startsWith("The t3code gateway is off."))).toBe(true);
+  });
+
+  it.each([
+    [["--t3-gateway", "--no-t3-gateway"], "contradicts"],
+    [["--t3-gateway-port", "3105"], "Mend's own --port or --ssh-port"],
+    [["--t3-gateway-port", "70000"], "--t3-gateway-port"],
+  ])("refuses a t3code gateway that cannot hold: %j", async (flags, reason) => {
+    const control = makeRuntime();
+    expect(await serverCommand(["setup", ...flags], control.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining(reason),
+    });
+    expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
+  });
+
   it("does not report the advertised URL reachable when every health request fails", async () => {
     const control = makeRuntime({ healthStatus: 503 });
 

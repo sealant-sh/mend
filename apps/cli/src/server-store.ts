@@ -16,7 +16,7 @@ export type ServerStoreResult<T> =
 /**
  * Complete deployment files, committed together. Only postgresInit and the Caddyfile are public;
  * identity never changes. The optional files exist when the config declares a posture, an edge or
- * mirrors: a generation from before them has none, and reads as it did.
+ * mirrors and the t3code gateway: a generation from before them has none, and reads as it did.
  */
 export interface ServerFiles {
   readonly identity: string;
@@ -36,6 +36,8 @@ export interface ServerFiles {
   readonly npmMirrorConf?: string;
   /** docker-mirror-guard.sh: the Docker mirror's entrypoint, which bounds its cache. */
   readonly dockerMirrorGuard?: string;
+  /** compose.t3.yaml: the t3code gateway turned on, its port on loopback. */
+  readonly t3Gateway?: string;
 }
 
 /** An immutable deployment snapshot. Use this directory, not the active symlink, for Compose. */
@@ -207,6 +209,7 @@ const optionalFileKeys = [
   "mirrors",
   "npmMirrorConf",
   "dockerMirrorGuard",
+  "t3Gateway",
 ] as const;
 const fileNames = {
   identity: "identity.env",
@@ -220,6 +223,7 @@ const fileNames = {
   mirrors: "compose.mirrors.yaml",
   npmMirrorConf: "npm-mirror.conf",
   dockerMirrorGuard: "docker-mirror-guard.sh",
+  t3Gateway: "compose.t3.yaml",
 } as const;
 /**
  * The bind-mounted files another UID reads: Postgres's init (UID 70), Caddy's configuration and
@@ -237,6 +241,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   mirrors: 0o600,
   npmMirrorConf: 0o644,
   dockerMirrorGuard: 0o644,
+  t3Gateway: 0o600,
 };
 
 /** Every file a generation may hold, in a fixed order, with its content or undefined. */
@@ -376,6 +381,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const mirrors = optional("mirrors");
   const npmMirrorConf = optional("npmMirrorConf");
   const dockerMirrorGuard = optional("dockerMirrorGuard");
+  const t3Gateway = optional("t3Gateway");
   const files: ServerFiles = {
     identity: fs.readFileSync(path.join(directory, fileNames.identity), "utf8"),
     config: fs.readFileSync(path.join(directory, fileNames.config), "utf8"),
@@ -388,6 +394,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
     ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
+    ...(t3Gateway === undefined ? {} : { t3Gateway }),
   };
   if (readIdentity(paths) !== files.identity) {
     throw new ServerStoreError(

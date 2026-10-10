@@ -32,6 +32,11 @@ export const EDGE_IMAGE = "caddy:2.10-alpine";
 export const EDGE_COMPOSE_FILE = "compose.edge.yaml";
 export const EDGE_CADDYFILE_NAME = "Caddyfile";
 export const POSTURE_COMPOSE_FILE = "compose.posture.yaml";
+export const T3_GATEWAY_COMPOSE_FILE = "compose.t3.yaml";
+/** The t3code gateway's port in the `mend` container (`scripts/bundle-supervisor.mjs`). */
+export const T3_GATEWAY_CONTAINER_PORT = 3120;
+/** The host port `--t3-gateway` publishes it on unless `--t3-gateway-port` names another. */
+export const DEFAULT_T3_GATEWAY_PORT = 3120;
 
 export { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY };
 
@@ -57,6 +62,11 @@ export interface ServerPosture {
   readonly sshPort?: number;
   /** The gate items the operator states they verified from outside (`--declare`). */
   readonly declared?: ReadonlyArray<DeclarableItem>;
+  /**
+   * The t3code gateway's host port (docs/adr/0012), published on loopback only; absent, the
+   * gateway does not run.
+   */
+  readonly t3GatewayPort?: number;
 }
 
 /** `<address>:<port>` as Compose and the gate read it: IPv6 in brackets. */
@@ -117,6 +127,7 @@ export const postureEnvironment = (
 /** The `KEY=value` lines the posture and the edge add to `server.env`. */
 export const postureEnvLines = (posture: ServerPosture): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined ? [] : [`MEND_EDGE_HOST=${posture.edgeHost}`]),
+  ...(posture.t3GatewayPort === undefined ? [] : [`MEND_T3_GATEWAY_PORT=${posture.t3GatewayPort}`]),
   ...postureEnvironment(posture).map(([key, value]) => `${key}=${value}`),
 ];
 
@@ -143,6 +154,28 @@ export const renderPostureOverlay = (posture: ServerPosture): string | undefined
   ].join("\n");
 };
 
+/**
+ * `compose.t3.yaml`: the t3code gateway (docs/adr/0012, phase 4), when the operator turned it on.
+ * It turns the gateway on in the `mend` container and publishes its port on 127.0.0.1 only, its own
+ * listener and origin beside Mend's: from anywhere else it is not there until the operator puts
+ * something in front of it, which is an exposure of its own (ADR 0004). Absent when it is off.
+ */
+export const renderT3GatewayOverlay = (posture: ServerPosture): string | undefined => {
+  if (posture.t3GatewayPort === undefined) return undefined;
+  return [
+    "# Written by mend server setup --t3-gateway: the t3code gateway (docs/adr/0012), its own",
+    "# listener beside Mend's, published on loopback only. Reaching it from elsewhere is an",
+    "# exposure the operator declares (docs/adr/0004). mend server setup --no-t3-gateway removes it.",
+    "services:",
+    "  mend:",
+    "    environment:",
+    '      MEND_T3_GATEWAY_ENABLED: "true"',
+    "    ports:",
+    `      - "127.0.0.1:\${MEND_T3_GATEWAY_PORT:?set MEND_T3_GATEWAY_PORT in server.env}:${T3_GATEWAY_CONTAINER_PORT}"`,
+    "",
+  ].join("\n");
+};
+
 /** The overlay files a generation holds beside `compose.yaml`, in the order Compose merges them. */
 export const composeOverlays = (
   posture: ServerPosture & { readonly mirrors?: ServerMirrors },
@@ -150,6 +183,7 @@ export const composeOverlays = (
   ...(posture.edgeHost === undefined ? [] : [EDGE_COMPOSE_FILE]),
   ...(renderPostureOverlay(posture) === undefined ? [] : [POSTURE_COMPOSE_FILE]),
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
+  ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
 ];
 
 // ── what `mend server status` says ─────────────────────────────────────────
@@ -208,6 +242,11 @@ export const declaredPostureLines = (posture: ServerPosture): ReadonlyArray<stri
   ...(posture.edgeHost === undefined
     ? []
     : [`edge · ${posture.edgeHost} · ${EDGE_IMAGE} on 80 and 443 · Mend's own port on loopback`]),
+  ...(posture.t3GatewayPort === undefined
+    ? []
+    : [
+        `t3code gateway · on · 127.0.0.1:${posture.t3GatewayPort} · loopback only · reaching it from elsewhere is an exposure you declare`,
+      ]),
   `exposure · declared ${posture.exposure ?? "private"}${posture.exposure === undefined ? " · the default, not set on this install" : ""}`,
   `tenancy · declared ${posture.tenancy ?? "single"}${posture.tenancy === undefined ? " · the default, not set on this install" : ""}`,
   ...(posture.sshBind === undefined || posture.sshPort === undefined

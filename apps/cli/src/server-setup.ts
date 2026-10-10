@@ -28,6 +28,7 @@ import {
 import {
   composeOverlays,
   declaredPostureLines,
+  DEFAULT_T3_GATEWAY_PORT,
   EDGE_CADDYFILE,
   EDGE_COMPOSE_OVERLAY,
   type EdgeCertificate,
@@ -45,6 +46,7 @@ import {
   postureEnvLines,
   publishedAddress,
   renderPostureOverlay,
+  renderT3GatewayOverlay,
   type Tenancy,
   TENANCIES,
 } from "./server-edge.ts";
@@ -222,6 +224,12 @@ interface SetupOptions {
   readonly dockerHubTokenStdin: boolean;
   /** `--no-docker-hub-login`: the Docker mirror pulls anonymously again. */
   readonly noDockerHubLogin: boolean;
+  /** `--t3-gateway`: run the t3code gateway (docs/adr/0012). Omitted keeps the saved choice. */
+  readonly t3Gateway: boolean;
+  /** `--t3-gateway-port <port>`: its loopback port; implies `--t3-gateway`. */
+  readonly t3GatewayPort: number | undefined;
+  /** `--no-t3-gateway`: turn it off. */
+  readonly noT3Gateway: boolean;
 }
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
@@ -273,6 +281,11 @@ export interface ServerConfig {
    * them: setup and upgrade then write the default, both on.
    */
   readonly mirrors?: ServerMirrors;
+  /**
+   * The t3code gateway's port on 127.0.0.1 (docs/adr/0012), when the operator turned it on with
+   * `--t3-gateway`; absent, it does not run.
+   */
+  readonly t3GatewayPort?: number;
 }
 
 /** The Garage image the bundle pins; `checkLocalImages` preloads it like Postgres's. */
@@ -403,6 +416,9 @@ const SETUP_FLAGS = new Set([
   "--docker-hub-token-stdin",
   "--docker-hub-public-only",
   "--no-docker-hub-login",
+  "--t3-gateway",
+  "--t3-gateway-port",
+  "--no-t3-gateway",
 ]);
 
 /** Setup flags that take no value. */
@@ -416,6 +432,8 @@ const SWITCHES: ReadonlySet<string> = new Set([
   "--docker-hub-token-stdin",
   "--docker-hub-public-only",
   "--no-docker-hub-login",
+  "--t3-gateway",
+  "--no-t3-gateway",
 ]);
 
 const parseExposure = (value: string): Exposure => {
@@ -535,6 +553,13 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     throw setupError(
       `--docker-hub-username and ${noDockerHubLogin ? "--no-docker-hub-login" : "--no-docker-mirror"} contradict each other.`,
     );
+  const t3GatewayPort = flagValue("--t3-gateway-port");
+  if (
+    values.has("--no-t3-gateway") &&
+    (values.has("--t3-gateway") || t3GatewayPort !== undefined)
+  ) {
+    throw setupError("--no-t3-gateway contradicts --t3-gateway and --t3-gateway-port.");
+  }
   return {
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
@@ -559,6 +584,10 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     dockerHubUsername,
     dockerHubTokenStdin,
     noDockerHubLogin,
+    t3Gateway: values.has("--t3-gateway"),
+    t3GatewayPort:
+      t3GatewayPort === undefined ? undefined : parsePort(t3GatewayPort, "--t3-gateway-port"),
+    noT3Gateway: values.has("--no-t3-gateway"),
   };
 };
 
@@ -796,6 +825,7 @@ const validateExposure = (
   | "exposure"
   | "tenancy"
   | "declared"
+  | "t3GatewayPort"
 > => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
@@ -821,6 +851,20 @@ const validateExposure = (
   const edgeHost = options.noEdge ? undefined : (options.edge ?? existing?.edgeHost);
   const exposure = options.exposure ?? existing?.exposure;
   const tenancy = options.tenancy ?? existing?.tenancy;
+  // The t3code gateway, like the edge, is kept across reruns and upgrades until a flag changes it.
+  const t3GatewayPort = options.noT3Gateway
+    ? undefined
+    : (options.t3GatewayPort ??
+      existing?.t3GatewayPort ??
+      (options.t3Gateway ? DEFAULT_T3_GATEWAY_PORT : undefined));
+  if (t3GatewayPort !== undefined && [appPort, sshPort].includes(t3GatewayPort)) {
+    throw setupError(
+      `--t3-gateway-port ${t3GatewayPort} is Mend's own --port or --ssh-port: the gateway needs a port of its own.`,
+    );
+  }
+  if (t3GatewayPort !== undefined && edgeHost !== undefined && [80, 443].includes(t3GatewayPort)) {
+    throw setupError("With an edge, --t3-gateway-port must not be 80 or 443: the edge has them.");
+  }
   const declared = options.declared ?? existing?.declared ?? [];
   checkPosture(bind, sshBind ?? bind, { appPort, sshPort }, edgeHost, exposure, declared);
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
@@ -844,6 +888,7 @@ const validateExposure = (
     ...(exposure === undefined ? {} : { exposure }),
     ...(tenancy === undefined ? {} : { tenancy }),
     ...(declared.length === 0 ? {} : { declared }),
+    ...(t3GatewayPort === undefined ? {} : { t3GatewayPort }),
   };
 };
 
@@ -896,6 +941,9 @@ const parseServerConfig = (raw: string): ServerConfig => {
   const declared = Array.isArray(declaredField)
     ? declaredField.filter((item): item is DeclarableItem => isDeclarableItem(String(item)))
     : [];
+  const t3GatewayPort = fields.has("t3GatewayPort")
+    ? requiredInteger(fields, "t3GatewayPort")
+    : undefined;
   const config: ServerConfig = {
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
@@ -921,6 +969,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ...(tenancy === undefined ? {} : { tenancy }),
     ...(declared.length === 0 ? {} : { declared }),
     ...(fields.has("mirrors") ? { mirrors: parseMirrorsField(fields.get("mirrors")) } : {}),
+    ...(t3GatewayPort === undefined ? {} : { t3GatewayPort }),
   };
   if (
     config.schemaVersion !== CONFIG_SCHEMA_VERSION ||
@@ -934,6 +983,8 @@ const parseServerConfig = (raw: string): ServerConfig => {
   parsePort(String(config.sshPort), "Server config sshPort");
   if (config.registryPort !== undefined)
     parsePort(String(config.registryPort), "Server config registryPort");
+  if (config.t3GatewayPort !== undefined)
+    parsePort(String(config.t3GatewayPort), "Server config t3GatewayPort");
   validateExposure(null, {
     context: undefined,
     version: undefined,
@@ -958,6 +1009,9 @@ const parseServerConfig = (raw: string): ServerConfig => {
     dockerHubUsername: undefined,
     dockerHubTokenStdin: false,
     noDockerHubLogin: false,
+    t3Gateway: false,
+    t3GatewayPort: config.t3GatewayPort,
+    noT3Gateway: false,
   });
   return config;
 };
@@ -1498,11 +1552,30 @@ const validateOverlays = (
   }
   for (const line of postureEnvLines(config)) {
     const key = line.slice(0, line.indexOf("="));
-    if (key !== "MEND_EDGE_HOST" && !(files.posture ?? "").includes(`      ${key}: \${${key}`)) {
+    // The edge's host and the gateway's port are read by their own overlays.
+    if (
+      key !== "MEND_EDGE_HOST" &&
+      key !== "MEND_T3_GATEWAY_PORT" &&
+      !(files.posture ?? "").includes(`      ${key}: \${${key}`)
+    ) {
       throw setupError(
         `Server generation is corrupt: compose.posture.yaml does not hand ${key} to Mend.`,
       );
     }
+  }
+  if ((config.t3GatewayPort === undefined) !== (files.t3Gateway === undefined)) {
+    throw setupError(
+      "Server generation is corrupt: compose.t3.yaml does not match the persisted server config.",
+    );
+  }
+  if (
+    files.t3Gateway !== undefined &&
+    (!files.t3Gateway.includes('MEND_T3_GATEWAY_ENABLED: "true"') ||
+      !files.t3Gateway.includes('"127.0.0.1:${MEND_T3_GATEWAY_PORT'))
+  ) {
+    throw setupError(
+      "Server generation is corrupt: compose.t3.yaml is not the gateway overlay on loopback.",
+    );
   }
   if (
     (config.edgeHost === undefined) !== (files.edge === undefined) ||
@@ -1684,6 +1757,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.dockerMirrorGuard === undefined
             ? []
             : [{ name: DOCKER_MIRROR_GUARD_NAME, content: generation.files.dockerMirrorGuard }]),
+          ...(generation.files.t3Gateway === undefined
+            ? []
+            : [{ name: "compose.t3.yaml", content: generation.files.t3Gateway }]),
         ],
         envKeys: envKeyNames(generation.files.env),
       };
@@ -1707,12 +1783,14 @@ const generationFiles = (
 ): ServerFiles => {
   const posture = renderPostureOverlay(config);
   const mirrors = renderMirrorsOverlay(config.mirrors);
+  const t3Gateway = renderT3GatewayOverlay(config);
   return {
     identity,
     config: `${JSON.stringify(config, null, 2)}\n`,
     env: renderSecrets(secrets, config),
     ...assets,
     ...(posture === undefined ? {} : { posture }),
+    ...(t3Gateway === undefined ? {} : { t3Gateway }),
     ...(config.edgeHost === undefined
       ? {}
       : { edge: EDGE_COMPOSE_OVERLAY, caddyfile: EDGE_CADDYFILE }),
@@ -2430,6 +2508,16 @@ const setupServer = async (
   if (edgeStarted !== null) runtime.writeLine(edgeStarted);
   const sshPublication = await sshPublicationLine(runtime, config);
   if (sshPublication !== null) runtime.writeLine(sshPublication);
+  if (config.t3GatewayPort !== undefined) {
+    runtime.writeLine(
+      `The t3code gateway listens on 127.0.0.1:${config.t3GatewayPort}, on this machine only. In t3code, add it as an environment at http://127.0.0.1:${config.t3GatewayPort} and pair with a code from mend pair; reaching it from elsewhere is an exposure you put in front of it and declare (docs/adr/0004).`,
+    );
+  }
+  if (existing?.config.t3GatewayPort !== undefined && config.t3GatewayPort === undefined) {
+    runtime.writeLine(
+      "The t3code gateway is off. Its state (pairings, queued messages) stays in the config volume, and comes back if you turn it on again.",
+    );
+  }
   if (existing?.config.edgeHost !== undefined && config.edgeHost === undefined) {
     runtime.writeLine(
       `The edge for ${existing.config.edgeHost} is gone. Its certificate volumes stay until you remove them: docker --context ${config.dockerContext} volume rm mend_mend-edge-data mend_mend-edge-config`,
@@ -3280,6 +3368,17 @@ const serverStatus = async (
   }
   for (const line of await mirrorStatusLines(runtime, installation, runningServices))
     runtime.writeLine(line);
+  if (config.t3GatewayPort !== undefined && runningServices.includes("mend")) {
+    const gateway = await runtime.fetchText(
+      `http://127.0.0.1:${config.t3GatewayPort}/.well-known/t3/environment`,
+      2_000,
+    );
+    runtime.writeLine(
+      gateway.error === undefined && gateway.status === 200
+        ? `t3code gateway · observed answering at 127.0.0.1:${config.t3GatewayPort} from this machine`
+        : `t3code gateway · not observed at 127.0.0.1:${config.t3GatewayPort} from this machine · mend server logs shows what it said`,
+    );
+  }
   if (!runningServices.includes("mend")) {
     runtime.writeLine("Mend is stopped. No health claim was made.");
     return;

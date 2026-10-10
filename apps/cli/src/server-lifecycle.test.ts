@@ -1559,6 +1559,53 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(f.state().edgeRunning).toBe(true);
   });
 
+  it("the t3code gateway's overlay runs with every start, and status says what this machine observed at its port", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    let answering = true;
+    const gatewayProbes: Array<string> = [];
+    const runtime = {
+      ...f.runtime,
+      fetchText: async (
+        url: string,
+        timeout: number,
+        headers?: Readonly<Record<string, string>>,
+      ) => {
+        if (url.startsWith("http://127.0.0.1:3120/")) {
+          gatewayProbes.push(url);
+          return answering
+            ? { status: 200, body: '{"environmentId":"e"}' }
+            : { status: 0, body: "", error: "connect ECONNREFUSED" };
+        }
+        return f.runtime.fetchText(url, timeout, headers);
+      },
+    };
+    expect(await serverCommand(["setup", "--offline", "--t3-gateway"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.t3.yaml"]);
+    for (const command of [["restart"], ["stop"], ["start", "--offline"]]) {
+      expect(await serverCommand(command, runtime)).toEqual({ _tag: "ok" });
+      expect(f.state().upFiles).toEqual(["compose.yaml", "compose.t3.yaml"]);
+    }
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "t3code gateway · on · 127.0.0.1:3120 · loopback only · reaching it from elsewhere is an exposure you declare",
+    );
+    expect(f.lines).toContain(
+      "t3code gateway · observed answering at 127.0.0.1:3120 from this machine",
+    );
+    expect(gatewayProbes).toEqual(["http://127.0.0.1:3120/.well-known/t3/environment"]);
+    answering = false;
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain(
+      "t3code gateway · not observed at 127.0.0.1:3120 from this machine · mend server logs shows what it said",
+    );
+    for (const line of f.lines) expect(line).not.toMatch(/\bsafe\b|gate passed/i);
+  });
+
   it("status says what was declared beside what was observed, and never a verdict", async () => {
     const f = await fixture();
     expect(await f.setupEdge(host, "--exposure", "private")).toEqual({ _tag: "ok" });
