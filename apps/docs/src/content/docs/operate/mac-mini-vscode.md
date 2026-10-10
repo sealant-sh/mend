@@ -200,26 +200,32 @@ loaded at setup. The gateway's host key is accepted on first connection
 lives in a Docker volume on the mini, so reinstalling Docker or removing Mend's volumes changes it.
 
 With per-person workspaces (the default), each person's processes run as their own Linux user, and
-Remote-SSH opens a workspace only for the person who launched it. Opening someone else's session
-says so and offers its terminal instead, read-only unless the session is yours. The Remote-SSH login
-itself runs as root inside the workspace until Sealant's gateway takes a user for it: an agent you
-start in that terminal does not use your per-person home and logins. Start agents from Mend (**+** →
-an agent) or in **Mend: Open terminal**.
+Remote-SSH opens a workspace only for the person who launched it: whoever's session started the
+running workspace, which is not always the owner of the session you open. A session started in a
+worktree where another person's session already runs joins their workspace, so it is theirs to open
+over Remote-SSH, your own session included, and starting another session there does not change that.
+To open the workspace yourself, launch it: once the running workspace stops, whoever launches the
+next one opens that one. The extension says so before Remote-SSH would refuse you. It also offers
+the session's terminal when the server would let you in: always for your own session, and for
+someone else's only while its owner has shared control on, read-only. The Remote-SSH login itself
+runs as root inside the workspace until Sealant's gateway takes a user for it: an agent you start in
+that terminal does not use your per-person home and logins. Start agents from Mend (**+** → an
+agent) or in **Mend: Open terminal**.
 
 ## Troubleshooting
 
-| What you see                                                                           | Why, and what to do                                                                                                                                       |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Cannot reach Mend at http://mac-mini:3105. connect ECONNREFUSED …`                    | Nothing listens there: setup bound loopback (no `--bind`), Docker is not running, or the port differs. On the mini: `mend server status`.                 |
-| `Cannot reach Mend at … connect EHOSTUNREACH …` or `… did not answer within 30 s`      | The mini is asleep, off the network, or the firewall drops the port. Wake it; check the firewall and `pmset`.                                             |
-| `Cannot reach Mend at … getaddrinfo ENOTFOUND mac-mini.local`                          | The name does not resolve from the laptop. Use the tailnet name or the IP, and add it with `--origin`.                                                    |
-| Signing in or approving in the browser fails; the API answers `403 Origin not allowed` | The URL the laptop uses is not `--url` or an `--origin`. Rerun setup with `--origin <that URL>`.                                                          |
-| `… Run Mend: Connect to server to sign in.`                                            | The token was revoked or belongs to another server. Connect again.                                                                                        |
-| Remote-SSH: `Connection refused` or a timeout on port 2222                             | SSH is not published beyond loopback. With an edge, add `--ssh-bind 0.0.0.0`; otherwise check `--bind` and the firewall.                                  |
-| Remote-SSH: `Permission denied (publickey)`                                            | The key in the managed block is not registered, or the workspace was launched by someone else. Run **Mend: Set up workspace SSH**; open your own session. |
-| Remote-SSH: `REMOTE HOST IDENTIFICATION HAS CHANGED`                                   | The gateway's host key changed (volumes removed, reinstall). Verify it on the mini, then remove only the alias: `ssh-keygen -R mend-ws-…`.                |
-| Setup: `bind source path does not exist: …/postgres-init.sh`                           | The configuration directory is outside Docker Desktop's file sharing. See step 1.                                                                         |
-| `This Mend deployment exposes no workspace SSH gateway.`                               | The server reports no gateway; check `mend server status` and the logs.                                                                                   |
+| What you see                                                                           | Why, and what to do                                                                                                                                                                                                                     |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Cannot reach Mend at http://mac-mini:3105. connect ECONNREFUSED …`                    | Nothing listens there: setup bound loopback (no `--bind`), Docker is not running, or the port differs. On the mini: `mend server status`.                                                                                               |
+| `Cannot reach Mend at … connect EHOSTUNREACH …` or `… did not answer within 30 s`      | The mini is asleep, off the network, or the firewall drops the port. Wake it; check the firewall and `pmset`.                                                                                                                           |
+| `Cannot reach Mend at … getaddrinfo ENOTFOUND mac-mini.local`                          | The name does not resolve from the laptop. Use the tailnet name or the IP, and add it with `--origin`.                                                                                                                                  |
+| Signing in or approving in the browser fails; the API answers `403 Origin not allowed` | The URL the laptop uses is not `--url` or an `--origin`. Rerun setup with `--origin <that URL>`.                                                                                                                                        |
+| `… Run Mend: Connect to server to sign in.`                                            | The token was revoked or belongs to another server. Connect again.                                                                                                                                                                      |
+| Remote-SSH: `Connection refused` or a timeout on port 2222                             | SSH is not published beyond loopback. With an edge, add `--ssh-bind 0.0.0.0`; otherwise check `--bind` and the firewall.                                                                                                                |
+| Remote-SSH: `Permission denied (publickey)`                                            | The key in the managed block is not registered: run **Mend: Set up workspace SSH**. Or someone else launched the running workspace (your session may have joined it): only they can open it until it stops and you launch the next one. |
+| Remote-SSH: `REMOTE HOST IDENTIFICATION HAS CHANGED`                                   | The gateway's host key changed (volumes removed, reinstall). Verify it on the mini, then remove only the alias: `ssh-keygen -R mend-ws-…`.                                                                                              |
+| Setup: `bind source path does not exist: …/postgres-init.sh`                           | The configuration directory is outside Docker Desktop's file sharing. See step 1.                                                                                                                                                       |
+| `This Mend deployment exposes no workspace SSH gateway.`                               | The server reports no gateway; check `mend server status` and the logs.                                                                                                                                                                 |
 
 ## Checked, and not yet checked
 
