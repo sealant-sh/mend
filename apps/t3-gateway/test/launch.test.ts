@@ -195,23 +195,32 @@ describe("orchestration.launchThread", () => {
     ),
   );
 
-  it.live("never joins an existing worktree by name: a new worktree takes a free name", () =>
+  it.live("never joins an existing worktree by name, even when launched at once (590-R2-1)", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
         const { rpc } = yield* pairAndConnect(mend, "NAMES");
-        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
-          launchInput({ threadId: ThreadId.make("draft-one") }),
-        );
-        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
-          launchInput({ threadId: ThreadId.make("draft-two") }),
+        // Two launches of the same branch at once: both saw the name free; neither may join.
+        yield* Effect.all(
+          ["draft-one", "draft-two"].map((thread) =>
+            rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+              launchInput({ threadId: ThreadId.make(thread), initialMessage: undefined }),
+            ),
+          ),
+          { concurrency: 2 },
         );
         const names = calls(mend, "POST", "/projects/project-1/sessions").map((call) =>
           typeof call.body === "object" && call.body !== null && "name" in call.body
-            ? call.body.name
-            : undefined,
+            ? String(call.body.name)
+            : "",
         );
-        assert.deepStrictEqual(names, ["health-check", "health-check-2"]);
+        assert.strictEqual(names.length, 2);
+        for (const name of names) assert.match(name, /^health-check-[a-z0-9]{6}$/);
+        assert.notStrictEqual(names[0], names[1]);
+        const worktrees = Array.from(mend.workbench.sessions.values()).map(
+          (session) => session.worktree,
+        );
+        assert.strictEqual(new Set(worktrees).size, 2);
       }),
     ),
   );
@@ -238,14 +247,18 @@ describe("orchestration.launchThread", () => {
           // One session, in a new worktree named from the branch, on the base asked for.
           const created = calls(mend, "POST", "/projects/project-1/sessions");
           assert.strictEqual(created.length, 1);
-          assert.deepStrictEqual(created[0]?.body, {
+          const { name, ...body } =
+            typeof created[0]?.body === "object" && created[0].body !== null
+              ? { name: "", ...created[0].body }
+              : { name: "" };
+          assert.deepStrictEqual(body, {
             harness: "codex",
             // t3code asked to generate the title: the first line of the first message names it.
             label: "Add a health check",
-            name: "health-check",
             base: "main",
             mode: "protocol",
           });
+          assert.match(String(name), /^health-check-[a-z0-9]{6}$/);
           // The client opens a launched thread once the shell shows it, by its own id.
           const shown = yield* shell.next(shellThread("draft-thread-1"));
           assert.isNotNull(shown.thread.latestUserMessageAt);

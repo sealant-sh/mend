@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import {
   EventId,
@@ -93,6 +93,13 @@ export type ShellDelta = Exclude<
 
 /** Mend could not be read as the person: their devices are refused, or Mend did not answer. */
 export type HubReadError = MendDeviceRefused | MendUnavailable;
+
+/** How much of a branch's name a new worktree's name keeps, before its suffix. */
+const WORKTREE_NAME_STEM = 53;
+const SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+/** Six random characters of `[a-z0-9]`: what makes a new worktree's name its own. */
+const worktreeSuffix = (): string =>
+  Array.from(randomBytes(6), (byte) => SUFFIX_ALPHABET[byte % SUFFIX_ALPHABET.length]).join("");
 
 export interface ShellSubscription {
   /** The shell as of subscribing; every later change arrives in `changes`, sequenced after it. */
@@ -1753,13 +1760,18 @@ export const makePersonHub = (input: {
         }),
       );
 
-    /** `wanted`, or `wanted-2`, `wanted-3`, …, whichever no worktree of the project has; null when unsure. */
+    /**
+     * `wanted` with a random suffix (`health-check-k3x9qa`) no worktree of the project has; null
+     * when unsure, and Mend names it. Mend joins an existing worktree of the same name, and a
+     * lookup alone reserves nothing: two launches, or another Mend client, could take a name both
+     * saw free (review 590-R2-1). The suffix makes the name its own whoever creates at once.
+     */
     const freeWorktreeName = (token: string, projectId: string, wanted: string) =>
       mend.worktreeNames(token, projectId).pipe(
         Effect.map((names) => {
           const taken = new Set(names);
-          for (let suffix = 1; suffix <= 20; suffix++) {
-            const candidate = suffix === 1 ? wanted : `${wanted.slice(0, 60)}-${suffix}`;
+          for (let attempt = 0; attempt < 5; attempt++) {
+            const candidate = `${wanted.slice(0, WORKTREE_NAME_STEM)}-${worktreeSuffix()}`;
             if (!taken.has(candidate)) return candidate;
           }
           return null;
