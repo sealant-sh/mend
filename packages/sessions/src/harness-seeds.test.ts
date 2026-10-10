@@ -291,7 +291,8 @@ describe("claude onboarding seed, temporary names", () => {
  */
 const FAKE_CLAUDE = `#!/usr/bin/env node
 const fs=require("fs"),path=require("path"),h=require("os").homedir(),args=process.argv.slice(2);
-fs.appendFileSync(process.env.FAKE_CLAUDE_LOG,JSON.stringify({args,cwd:process.cwd(),updater:process.env.DISABLE_AUTOUPDATER??null})+"\\n");
+const said=process.env.FAKE_SEED_STDERR?fs.readFileSync(process.env.FAKE_SEED_STDERR,"utf8"):null;
+fs.appendFileSync(process.env.FAKE_CLAUDE_LOG,JSON.stringify({args,cwd:process.cwd(),updater:process.env.DISABLE_AUTOUPDATER??null,said})+"\\n");
 process.stdout.write("claude says something on stdout\\n");process.stderr.write("and on stderr\\n");
 const mode=process.env.FAKE_CLAUDE_MODE||"ok";
 if(mode==="hang"){const c=require("child_process").spawn(process.execPath,["-e","setTimeout(()=>{},30000)"],{stdio:"ignore"});fs.writeFileSync(process.env.FAKE_CLAUDE_LOG+".sleep",String(c.pid));setInterval(()=>{},1000);return}
@@ -360,8 +361,15 @@ const claudeCalls = (scene: PluginScene) =>
         .readFileSync(scene.log, "utf8")
         .trim()
         .split("\n")
-        .map((line): { args: Array<string>; cwd: string; updater: string | null } =>
-          JSON.parse(line),
+        .map(
+          (
+            line,
+          ): {
+            args: Array<string>;
+            cwd: string;
+            updater: string | null;
+            said: string | null;
+          } => JSON.parse(line),
         )
     : [];
 
@@ -395,7 +403,8 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
     // A protocol launch's stdout is Claude's alone: nothing of the step's, nor of its `claude`s.
     expect(stdout).toBe("ran 1\n");
     expect(stderr).toBe(
-      "mend: Claude plugins · installed: pstack@pstack-claude, lint@acme-tools\n",
+      `mend: installing Claude plugins · pstack@pstack-claude, lint@acme-tools …\n` +
+        "mend: Claude plugins · installed: pstack@pstack-claude, lint@acme-tools\n",
     );
     const calls = claudeCalls(scene);
     expect(calls.map((call) => call.args)).toEqual([
@@ -451,7 +460,8 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
     );
     const { stderr } = runPluginSeed(scene);
     expect(stderr).toBe(
-      "mend: Claude plugins · installed: gone@m, elsewhere@m · already installed: here@m\n",
+      `mend: installing Claude plugins · gone@m, elsewhere@m …\n` +
+        "mend: Claude plugins · installed: gone@m, elsewhere@m · already installed: here@m\n",
     );
     expect(claudeCalls(scene).map((call) => call.args)).toEqual([
       ["plugin", "install", "gone@m", "--scope", "user"],
@@ -504,7 +514,10 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
       }),
     );
     const { stderr } = runPluginSeed(scene);
-    expect(stderr).toBe("mend: Claude plugins · installed: good@private, fine@https-m\n");
+    expect(stderr).toBe(
+      `mend: installing Claude plugins · good@private, fine@https-m …\n` +
+        "mend: Claude plugins · installed: good@private, fine@https-m\n",
+    );
     const calls = claudeCalls(scene).map((call) => call.args);
     expect(calls).toEqual([
       // A source with credentials in it is not used: Claude is left to find the marketplace.
@@ -528,7 +541,8 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
     const failing = runPluginSeed(scene, { mode: "fail" });
     expect(failing.stdout).toBe("ran 1\n");
     expect(failing.stderr).toBe(
-      "mend: Claude plugins · not installed: a@m (marketplace not added: exit 1), b@m (marketplace not added: exit 1), c@n (exit 1)\n",
+      `mend: installing Claude plugins · a@m, b@m, c@n …\n` +
+        "mend: Claude plugins · not installed: a@m (marketplace not added: exit 1), b@m (marketplace not added: exit 1), c@n (exit 1)\n",
     );
     // The marketplace that could not be added is tried once.
     expect(claudeCalls(scene).map((call) => call.args)).toEqual([
@@ -544,7 +558,8 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
     const noClaude = runPluginSeed(missing, { claude: false });
     expect(noClaude.stdout).toBe("ran 1\n");
     expect(noClaude.stderr).toBe(
-      "mend: Claude plugins · not installed: a@m (claude did not start)\n",
+      `mend: installing Claude plugins · a@m …\n` +
+        "mend: Claude plugins · not installed: a@m (claude did not start)\n",
     );
   });
 
@@ -556,7 +571,10 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
     );
     const { stdout, stderr, tookMs } = runPluginSeed(scene, { mode: "hang", budgetMs: 1500 });
     expect(stdout).toBe("ran 1\n");
-    expect(stderr).toBe("mend: Claude plugins · not installed: a@m (timed out), b@m (timed out)\n");
+    expect(stderr).toBe(
+      `mend: installing Claude plugins · a@m, b@m …\n` +
+        "mend: Claude plugins · not installed: a@m (timed out), b@m (timed out)\n",
+    );
     expect(tookMs).toBeLessThan(10_000);
     // One budget for the whole step: the second plugin started no claude of its own.
     expect(claudeCalls(scene)).toHaveLength(1);
@@ -573,6 +591,50 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
     const until = Date.now() + 2000;
     while (alive() && Date.now() < until) spawnSync("sleep", ["0.05"]);
     expect(alive()).toBe(false);
+  });
+
+  it("says what it is installing before the first install starts, so a terminal is not blank", () => {
+    const scene = pluginScene();
+    write(
+      path.join(scene.repo, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { "here@m": true, "new@m": true } }),
+    );
+    const plugins = path.join(scene.home, ".claude", "plugins");
+    fs.mkdirSync(path.join(plugins, "cache", "here"), { recursive: true });
+    write(
+      path.join(plugins, "installed_plugins.json"),
+      JSON.stringify({
+        plugins: {
+          "here@m": [{ scope: "user", installPath: path.join(plugins, "cache", "here") }],
+        },
+      }),
+    );
+    // The seed's stderr goes to a file the fake `claude` reads when it starts.
+    const said = path.join(scene.root, "seed.stderr");
+    const fd = fs.openSync(said, "w");
+    const result = spawnSync(
+      "/bin/sh",
+      ["-c", claudeOnboardingSeed({ repo: scene.repo }), "sh", "/bin/sh", "-c", "echo ran"],
+      {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", fd],
+        env: {
+          PATH: scene.bin,
+          HOME: scene.home,
+          FAKE_CLAUDE_LOG: scene.log,
+          FAKE_SEED_STDERR: said,
+        },
+      },
+    );
+    fs.closeSync(fd);
+    expect(result.stdout).toBe("ran\n");
+    expect(claudeCalls(scene).map((call) => call.said)).toEqual([
+      "mend: installing Claude plugins · new@m …\n",
+    ]);
+    expect(fs.readFileSync(said, "utf8")).toBe(
+      "mend: installing Claude plugins · new@m …\n" +
+        "mend: Claude plugins · installed: new@m · already installed: here@m\n",
+    );
   });
 
   it("is what every Claude launch starts behind, protocol and terminal alike, reading /workspace/repo", () => {

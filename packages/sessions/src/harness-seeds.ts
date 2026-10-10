@@ -82,9 +82,11 @@ const CLAUDE_SEED_PROGRAM = [
  * in their executor (docs/adr/0016), root in a shared one, as Claude itself does. A plugin that
  * cannot be installed never stops the launch: the step says so and Claude starts.
  *
- * One line on stderr (fd 3, the launch's own stderr, past the seed's `2>/dev/null`) names what
- * it found: `mend: Claude plugins · installed: … · already installed: … · not installed: … (why)`.
- * Nothing is said when no plugin is enabled.
+ * Lines on stderr (fd 3, the launch's own stderr, past the seed's `2>/dev/null`): before any
+ * install starts, `mend: installing Claude plugins · a@m, b@n …`, so a terminal is not blank for
+ * the seconds it takes; at the end, one line names what it found: `mend: Claude plugins ·
+ * installed: … · already installed: … · not installed: … (why)`. Nothing is said when no plugin
+ * is enabled, and only the last line when every one is already installed.
  *
  * A person's `.claude/plugins` is not kept across executors yet (about 14 MB a person): a new
  * executor installs again. A shared executor's harness home is saved with it, as it was whenever
@@ -116,14 +118,16 @@ const CLAUDE_PLUGINS_PROGRAM = [
   `const timer=setTimeout(()=>{try{process.kill(-c.pid,"SIGKILL")}catch{}done("timed out")},left);`,
   `c.on("error",()=>{clearTimeout(timer);done("claude did not start")});`,
   `c.on("exit",(code,signal)=>{clearTimeout(timer);done(code===0?null:"exit "+(code===null?signal:code))})})}`,
-  `(async()=>{if(wanted.length===0)return;const added=[],had=[],failed=[],adds=new Map();`,
-  `for(const k of wanted){if(installed(k)){had.push(k);continue}const m=k.slice(k.indexOf("@")+1);`,
+  `function say(line){try{fs.writeSync(3,"mend: "+line+"\\n")}catch{}}`,
+  `(async()=>{if(wanted.length===0)return;const added=[],had=[],failed=[],adds=new Map(),missing=wanted.filter(k=>!installed(k));`,
+  `if(missing.length)say("installing Claude plugins · "+missing.join(", ")+" …");`,
+  `for(const k of wanted){if(!missing.includes(k)){had.push(k);continue}const m=k.slice(k.indexOf("@")+1);`,
   `if(!knows(m)&&sources.has(m)){if(!adds.has(m))adds.set(m,await claude(["plugin","marketplace","add",sources.get(m)]));`,
   `const why=adds.get(m);if(why!==null){failed.push(k+" (marketplace not added: "+why+")");continue}}`,
   `const why=await claude(["plugin","install",k,"--scope","user"]);if(why===null)added.push(k);else failed.push(k+" ("+why+")")}`,
   `const parts=["Claude plugins"];if(added.length)parts.push("installed: "+added.join(", "));`,
   `if(had.length)parts.push("already installed: "+had.join(", "));if(failed.length)parts.push("not installed: "+failed.join(", "));`,
-  `try{fs.writeSync(3,"mend: "+parts.join(" · ")+"\\n")}catch{}})().catch(()=>{});`,
+  `say(parts.join(" · "))})().catch(()=>{});`,
 ].join("");
 
 /** Where a session's repository is in its workspace, and so where its `.claude/` settings are. */
