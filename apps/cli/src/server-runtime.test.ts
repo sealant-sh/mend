@@ -289,6 +289,18 @@ it("retains private partial output on process failure and bounds captured output
   expect(bounded.error).toContain("capture limit");
 });
 
+/**
+ * A real Docker CLI call in the block below (`docker compose config`, `docker context create`)
+ * takes 0.1-0.4 s warm; the first ones on a cold, loaded CI runner ran a test of two of them and
+ * four in-process setups past vitest's 5 s default (actions run 38056299273). Each call carries
+ * its own bound, as production gives it `serverProcessDeadlines.ordinary`, so a hung Docker fails
+ * as that call timing out, and a test's bound is its calls' bounds plus room for the setups and
+ * the Node child around them.
+ */
+const dockerCallMs = 15_000;
+/** The most Docker calls one test below makes: online and offline, or a context and a config. */
+const dockerCallsPerTest = 2;
+
 const runProductionDocker = async (
   args: ReadonlyArray<string>,
   cwd: string,
@@ -296,7 +308,7 @@ const runProductionDocker = async (
 ): Promise<string> => {
   // The production factory captures the actual inherited environment of this separate process.
   const script = `import {nodeServerSetupRuntime} from ${JSON.stringify(new URL("./server-setup.ts", import.meta.url).href)};
-const result = await nodeServerSetupRuntime().run("docker", ${JSON.stringify(args)});
+const result = await nodeServerSetupRuntime().run("docker", ${JSON.stringify(args)}, { timeoutMs: ${dockerCallMs} });
 process.stdout.write(JSON.stringify(result));`;
   const child = spawn(
     process.execPath,
@@ -336,6 +348,7 @@ const composeAvailable =
   spawnSync("docker", ["compose", "version"], { stdio: "ignore" }).status === 0;
 describe.skipIf(!composeAvailable)(
   "real Docker Compose interpolation, no daemon or containers required",
+  { timeout: dockerCallsPerTest * dockerCallMs + 15_000 },
   () => {
     it.each([
       { name: "older Mend pin", image: "ghcr.io/sealant-sh/mend:0.22.0" },
@@ -398,7 +411,7 @@ describe.skipIf(!composeAvailable)(
                     "postgres-init.sh",
                   ].toSorted(),
                 );
-                return runServerProcess(command, args, process.env);
+                return runServerProcess(command, args, process.env, { timeoutMs: dockerCallMs });
               }
               if (args.includes("image")) {
                 expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
@@ -467,7 +480,7 @@ describe.skipIf(!composeAvailable)(
               target = args[args.indexOf("--project-directory") + 1];
               expect(target).toBeDefined();
               expect(fs.realpathSync(path.join(configDir, "active"))).toBe(previous);
-              return runServerProcess(command, args, process.env);
+              return runServerProcess(command, args, process.env, { timeoutMs: dockerCallMs });
             }
             if (
               args[2] === "pull" ||
@@ -533,6 +546,7 @@ describe.skipIf(!composeAvailable)(
         "docker",
         ["context", "create", "saved-context", "--docker", "host=unix:///var/run/docker.sock"],
         env,
+        { timeoutMs: dockerCallMs },
       );
       expect(context.status).toBe(0);
       const runtime = setupRuntime(configDir);
