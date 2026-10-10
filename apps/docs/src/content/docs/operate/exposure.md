@@ -120,12 +120,12 @@ open until you state otherwise, and never block a start.
 | `t3code-gateway`             | open until declared   | Listed while the t3code gateway is enabled, whether or not it is answering (`mend server status` says that). You checked from another machine that its port answers nothing, or only through what you put in front of it, and named it in `MEND_EXPOSURE_DECLARED`.                                                                                                                                                                                              |
 | `reassessment`               | open until declared   | `MEND_EXPOSURE_REASSESSED` equals the running version. An upgrade reopens it. A build with no version of its own (`dev`) stays open.                                                                                                                                                                                                                                                                                                                             |
 
-`MEND_EXPOSURE_DECLARED` takes a comma-separated list, and only `core-private`, `edge-tls` and
-`workspace-ssh`. `mend server setup --declare <item>` writes it. Any other name refuses to start,
-because every other item is read by the server or not at all:
+`MEND_EXPOSURE_DECLARED` takes a comma-separated list, and only `core-private`, `edge-tls`,
+`workspace-ssh` and `t3code-gateway`. `mend server setup --declare <item>` writes it. Any other name
+refuses to start, because every other item is read by the server or not at all:
 
 ```text
-MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh can be declared; every other item is observed by this process or not at all.
+MEND_EXPOSURE_DECLARED names budgets: only core-private, edge-tls, workspace-ssh, t3code-gateway can be declared; every other item is observed by this process or not at all.
 ```
 
 A `public` start with an observable item open fails with the list of what is open and the fix for
