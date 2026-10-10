@@ -13,7 +13,8 @@
  * real Remote-SSH extension: the owner's own story, in that window. It edits a file, runs a command
  * in the workspace's integrated terminal, forwards a port the workspace serves on its loopback and
  * opens it from this machine; then Mend's terminal into the session reads the edited file and the
- * change review lists it.
+ * change review lists it. Last, a second session in a fresh worktree must run: the image is built
+ * by then, so that executor is the first with an owner map.
  *
  *   MEND_TEST_VERSION=0.36.0-next.656 [MEND_E2E_HOST=100.101.141.6] \
  *     node scripts/vscode-remote-acceptance.mjs
@@ -465,6 +466,43 @@ const main = async () => {
     );
   }
   log("PASS the editor suite against the non-loopback server");
+
+  // A second session in a fresh worktree. The suite's first launch came before the custom image
+  // existed, so it ran in the shared layout; this one finds the image built, and its probe says it
+  // can run one user per person, so the executor boots with an owner map. A base without git's
+  // `safe.directory = *` failed here: sealantd's own git refused the worktree it had just given to
+  // the person ("capture materialize failed: /workspace/repo is not a git repository", fixed in
+  // sealant#354).
+  const second = await api(`/projects/${project.id}/sessions`, {
+    method: "POST",
+    body: JSON.stringify({
+      harness: "claude",
+      label: "second worktree",
+      base: null,
+      name: `st-second-${Date.now().toString(36)}`,
+    }),
+  });
+  const startedAt = Date.now();
+  await api(`/sessions/${second.id}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ harness: "shell" }),
+  });
+  for (;;) {
+    const { session } = await api(`/sessions/${second.id}`);
+    if (session.sealantWorkspaceId && ["running", "idle", "waiting"].includes(session.status))
+      break;
+    if (["failed", "stopped", "completed"].includes(session.status)) {
+      throw new Error(`the second worktree's session ended ${session.status} before it ran`);
+    }
+    if (Date.now() - startedAt > 5 * 60_000) {
+      throw new Error("the second worktree's session did not run within 5 minutes");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  await api(`/sessions/${second.id}/stop`, { method: "POST", body: "{}" }).catch(() => null);
+  log(
+    `PASS a second session in a fresh worktree runs (${((Date.now() - startedAt) / 1000).toFixed(1)} s)`,
+  );
 };
 
 try {
