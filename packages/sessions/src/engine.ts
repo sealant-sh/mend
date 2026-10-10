@@ -4703,6 +4703,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * that must wait for all of them before it releases the lease.
        */
       const stopTailsDone = new Map<SessionId, Set<Deferred.Deferred<void>>>();
+      /** Until every Stop of the session in flight has ended, its tail and later Stops' included. */
+      const stopTailsSettled = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          while (true) {
+            const tails = [...(stopTailsDone.get(sessionId) ?? [])];
+            if (tails.length === 0) return;
+            yield* Effect.forEach(tails, (tailDone) => Deferred.await(tailDone), { discard: true });
+          }
+        });
       /**
        * Sessions a discard has stopped itself, counted per discard under way: a Stop arriving now
        * is answered and starts nothing, and one discard's end never unseals another's.
@@ -6190,11 +6199,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The tail that stop forked harvests inline under a discard: waited for, so it never
           // reads under a successor once the lease below goes (Astra review, 2026-10-03).
           // Every tail, those a Stop meanwhile started included, until none is left.
-          while (true) {
-            const tails = [...(stopTailsDone.get(sessionId) ?? [])];
-            if (tails.length === 0) break;
-            yield* Effect.forEach(tails, (tailDone) => Deferred.await(tailDone), { discard: true });
-          }
+          yield* stopTailsSettled(sessionId);
           const running = drains.get(workspaceId);
           if (running !== undefined) yield* Deferred.await(running);
           // What the stop put off runs before the lease goes, on the evidence the drain kept,
@@ -22899,6 +22904,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * stop that came after the launch's last look found no agent to end, and the launch started
        * one anyway. Stopped again as the launch ends, it finds the agent's row and ends it, so the
        * session ends on the stop. A launch the gate refuses leaves the one under way its mark.
+       *
+       * Without capture, a launch starts once the session's Stops have run their tails: a tail still
+       * harvesting when a resume stops the old workspace would then settle the session and sweep the
+       * workspace the resume had just created (CI, 2026-10-10: two stops of it). A Stop arriving
+       * during the wait finds the launch under way and stands it down, as it does later. Capture
+       * mode does not wait: its relaunch is planned durably while the Stop's drain saves, and waits
+       * on that drain itself (`launchInternal`).
        */
       const oneLaunch =
         (sessionId: SessionId) =>
@@ -22907,7 +22919,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchGate.underWay(sessionId)
               ? launchGate.run(sessionId)(effect)
               : launchGate
-                  .run(sessionId)(effect)
+                  .run(sessionId)(
+                    capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect,
+                  )
                   .pipe(
                     Effect.ensuring(
                       Effect.suspend(() =>
