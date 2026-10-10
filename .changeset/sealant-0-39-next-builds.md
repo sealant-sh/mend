@@ -2,7 +2,7 @@
 "@sealant/mend": patch
 ---
 
-The bundle now runs Sealant 0.39.0-next.712, whose workspaces run sealantd 0.20.0-next.155. In a
+The bundle now runs Sealant 0.39.0-next.714, whose workspaces run sealantd 0.20.0-next.157. In a
 workspace that runs each person as their own user, a person who joins after it started now runs
 there too, where 0.20.0-next.153 refused them, and a second person's command no longer fails when
 the same telemetry event reaches the record twice. Sealant no longer stores the arguments a process
@@ -14,3 +14,7 @@ A command's arguments may now be any string: empty, starting with whitespace or 
 the program must be trimmed. A request Sealant refuses says why without quoting what was sent. A
 registry URL's user and password are sent as Basic auth and never printed, and what Sealant's API
 observes is redacted unless it is known to be safe.
+
+A workspace's SSH sessions, VS Code Remote-SSH included, can run as its owner's own Linux user, the
+person their Sealant user is bound to; SFTP runs as that user too, and the Fedora and Ubuntu
+workspace images now carry an `sftp-server`, with every sshd unit masked.

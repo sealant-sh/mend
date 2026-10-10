@@ -885,7 +885,6 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       const keyed: CreateOptions & {
         readonly idempotencyKey?: string;
         readonly launchId?: string;
-        readonly sshAsOwner?: boolean;
       } =
         launch === undefined
           ? options
@@ -1335,12 +1334,12 @@ export class SealantClients extends Context.Service<
      * Binds a Mend account's Sealant user to their person, once (`users.bindPerson`, sealant#348):
      * what Core checks `sshAsOwner` against. `bound` when Core holds exactly this binding,
      * `refused` when Core holds another (409: a different binding, or this person id or uid is
-     * another user's), `unsupported` when the SDK has no way to ask.
+     * another user's).
      */
     readonly bindPerson: (
       userId: string,
       person: PersonBindingInput,
-    ) => Effect.Effect<"bound" | "refused" | "unsupported", SealantPlatformError>;
+    ) => Effect.Effect<"bound" | "refused", SealantPlatformError>;
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -1350,14 +1349,6 @@ export interface PersonBindingInput {
   readonly uid: number;
   readonly home: string;
 }
-
-/** The SDK's `users`, where it binds a person (sealant#348; not in the SDK Mend pins yet). */
-interface PersonBindingUsers {
-  readonly bindPerson: (userId: string, person: PersonBindingInput) => Promise<unknown>;
-}
-
-const bindsPerson = (users: object): users is PersonBindingUsers =>
-  "bindPerson" in users && typeof users.bindPerson === "function";
 
 const toConnectedAccount = (wire: {
   readonly connectedAccountId: string;
@@ -1604,10 +1595,8 @@ export const SealantClientsLive: Layer.Layer<
       userId: string,
       person: PersonBindingInput,
     ) {
-      const users = admin.users;
-      if (!bindsPerson(users)) return "unsupported" as const;
       const sealantUserId = yield* sealantUserIdFor(userId);
-      return yield* wrap(() => users.bindPerson(sealantUserId, person)).pipe(
+      return yield* wrap(() => admin.users.bindPerson(sealantUserId, person)).pipe(
         Effect.as("bound" as const),
         Effect.catchIf(
           (error) => error.status === 409,

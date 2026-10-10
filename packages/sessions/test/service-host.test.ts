@@ -66,6 +66,7 @@ const fakeWorkspace: Workspace = {
   runtimeDeadline: async () => null,
   runtime: async () => null,
   processUser: async () => "supported",
+  sshAsRoot: async () => {},
   phase: async () => null,
   launch: undefined,
   recover: async () => new Promise(() => {}),

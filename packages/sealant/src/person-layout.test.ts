@@ -76,6 +76,7 @@ const workspaceRecording = (
     expire: never,
     image: never,
     processUser: never,
+    sshAsRoot: never,
     phase: never,
     dotfiles: {
       apply: async (options) => {
@@ -156,13 +157,15 @@ const inspection = (
   personLayout: { status, missing: [...missing], unknown: [], runtime: "docker", acl: "supported" },
 });
 
-/** Core 0.39.0-next.706: every feature the person layout uses. */
+/** Core 0.39.0-next.706: every feature the person layout uses, before SSH users. */
 const EVERY_FEATURE: SealantFeatures = {
   processUserRoutes: true,
   dotfilesApply: true,
   credentialsPartialPut: true,
   credentialsPiOpencode: true,
   captureOwnerMap: true,
+  workspaceSshUser: false,
+  personBinding: false,
 };
 /** A control plane from before any of them (an older Core reports every flag false). */
 const NO_FEATURE: SealantFeatures = {
@@ -171,6 +174,8 @@ const NO_FEATURE: SealantFeatures = {
   credentialsPartialPut: false,
   credentialsPiOpencode: false,
   captureOwnerMap: false,
+  workspaceSshUser: false,
+  personBinding: false,
 };
 
 const clientsLayer = (
@@ -698,8 +703,6 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
     };
     const platform = await platformReporting(reporting);
     expect(await Effect.runPromise(platform.sshAsRoot(failing))).toBe(false);
-    // An SDK without the method made no create with a user either.
-    expect(await Effect.runPromise(platform.sshAsRoot(workspaceRecording([], [])))).toBe(true);
   });
 
   effectIt.effect("gives up on an attempt Core does not answer within 5 s, as a no", () =>
@@ -761,7 +764,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
     const ALICE = { accountId: "acct_alice", uid: 40001, home: "/home/m4lice000" };
     const withBinding = (
       features: SealantFeatures,
-      bind: () => Effect.Effect<"bound" | "refused" | "unsupported", SealantPlatformError>,
+      bind: () => Effect.Effect<"bound" | "refused", SealantPlatformError>,
       calls: Array<string>,
     ) =>
       PersonLayoutPlatformLive.pipe(
