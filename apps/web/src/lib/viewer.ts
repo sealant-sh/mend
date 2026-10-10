@@ -22,13 +22,20 @@ export const viewerOf = (view: OrganizationViewDto | undefined): Viewer | null =
     ? null
     : { userId: view.userId, organizationId: view.organization.id, role: view.role };
 
-export const useViewer = (): Viewer | null => {
+/**
+ * Who is looking, keeping "not read yet" apart from "nobody": undefined while
+ * `organization.current` is in flight, so a page says nothing about whose a thing is until it
+ * knows, instead of drawing the not-the-owner view for a moment.
+ */
+export const useViewerState = (): Viewer | null | undefined => {
   const trpc = useTRPC();
   const current = useQuery(
     trpc.organization.current.queryOptions(undefined, { retry: false, staleTime: 60_000 }),
   );
-  return viewerOf(current.data);
+  return current.isPending ? undefined : viewerOf(current.data);
 };
+
+export const useViewer = (): Viewer | null => useViewerState() ?? null;
 
 /**
  * What a project on inherit follows: the viewer's organization's defaults over the instance's
@@ -91,22 +98,25 @@ const originWords = (origin: SessionOrigin): string | null =>
 /**
  * The line a session page shows beside its owner: whose credentials it runs on when they are not
  * the viewer's, where it was started from when that was not Mend (`from Slack`), and whether
- * control is shared. Null when there is nothing to say. Names come from the roster; an unknown
- * owner is "another account".
+ * control is shared. Null when there is nothing to say. `own` is the API's word for the viewer
+ * (`control.own`). Names come from the roster, undefined while it is read: then a session the
+ * viewer does not own says nothing yet, rather than "another account". An owner the roster does
+ * not name is "another account".
  */
 export const runsAsLine = (
   session: SteeringFacts & { readonly origin: SessionOrigin },
-  viewerUserId: string | null,
-  names: ReadonlyMap<string, string>,
+  own: boolean,
+  names: ReadonlyMap<string, string> | undefined,
 ): string | null => {
   const origin = originWords(session.origin);
   const shared = session.sharedControlEnabledAt === null ? null : "shared control on";
+  if (session.ownerUserId !== null && !own && names === undefined) return null;
   const owner =
     session.ownerUserId === null
       ? "no owner · nobody steers it"
-      : session.ownerUserId === viewerUserId
+      : own
         ? null
-        : `runs as ${names.get(session.ownerUserId) ?? "another account"}`;
+        : `runs as ${names?.get(session.ownerUserId) ?? "another account"}`;
   const parts = [owner, origin, session.ownerUserId === null ? null : shared].filter(
     (part) => part !== null,
   );

@@ -1,5 +1,12 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { createTRPCClient, httpBatchLink, TRPCClientError } from "@trpc/client";
+import {
+  createTRPCClient,
+  httpBatchLink,
+  httpLink,
+  splitLink,
+  TRPCClientError,
+  type TRPCLink,
+} from "@trpc/client";
 import { createTRPCContext, createTRPCOptionsProxy } from "@trpc/tanstack-react-query";
 import superjson from "superjson";
 
@@ -22,11 +29,30 @@ const trpcUrl =
     ? `http://localhost:${process.env["PORT"] ?? "3105"}/trpc`
     : "/trpc";
 
-export const trpcClient = createTRPCClient<AppRouter>({
-  // maxURLLength keeps big batched GETs (many ids on one screen) from
-  // overflowing URL limits — tRPC splits the batch instead.
-  links: [httpBatchLink({ url: trpcUrl, transformer: superjson, maxURLLength: 2083 })],
-});
+/**
+ * Calls that go out alone, never in a batch: a batch answers when its slowest call does, so one
+ * that execs into a session's workspace (`sessions.recipes` reads the worktree, seconds on a heavy
+ * one) would hold back the viewer, the roster and every other quick read beside it.
+ */
+export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes"]);
+
+type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
+
+/** The client's links: one request per unbatched call, one batch for everything else. */
+export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[] => {
+  const options = { url, transformer: superjson, ...(fetch === undefined ? {} : { fetch }) };
+  return [
+    splitLink({
+      condition: (op) => UNBATCHED_PATHS.has(op.path),
+      true: httpLink(options),
+      // maxURLLength keeps big batched GETs (many ids on one screen) from
+      // overflowing URL limits — tRPC splits the batch instead.
+      false: httpBatchLink({ ...options, maxURLLength: 2083 }),
+    }),
+  ];
+};
+
+export const trpcClient = createTRPCClient<AppRouter>({ links: trpcLinks(trpcUrl) });
 
 /** Hook-side access (components): `const trpc = useTRPC()` → queryOptions/mutationOptions. */
 export const { TRPCProvider, useTRPC } = createTRPCContext<AppRouter>();

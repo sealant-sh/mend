@@ -789,14 +789,17 @@ const platformShape = (
  * own shell. Custom images keep bash: their contract promises only a POSIX
  * sh, and dotfiles are skipped there anyway.
  */
-const interactiveShellArgv = (
-  image: WorkspaceImage | null,
-  rest: ReadonlyArray<string> = [],
-): ReadonlyArray<string> => [
-  // Flags ride along untranslated: -i/-l/-c mean the same in bash, zsh, fish.
+const interactiveShellArgv = (image: WorkspaceImage | null): ReadonlyArray<string> => [
   image !== null && image.mode === "family" ? image.shell : "bash",
-  ...rest,
 ];
+
+/**
+ * Whether a launch asked for the interactive shell: the sentinel is exactly `["bash"]`. A `bash`
+ * with arguments (`mend run -- bash -c '…'`) is the person's own program and runs as itself, its
+ * argv untouched: swapping in the login shell ran bash scripts in zsh (RC 0.36.0-next.761).
+ */
+const asksInteractiveShell = (argv: ReadonlyArray<string>): boolean =>
+  argv.length === 1 && argv[0] === "bash";
 
 /**
  * A terminal launch of a session whose saved state is its own harness's continues the
@@ -1614,7 +1617,13 @@ export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveE
 export interface CaptureDiscardResult {
   readonly session: Session;
   readonly facts: CaptureDiscardFacts;
-  readonly discardedAt: Date;
+  /**
+   * When the platform ended the workspace with what was unsaved. Null when the drain the discard
+   * waited for saved everything and ended the executor first: nothing was discarded, and the
+   * session reads what that drain recorded (RC 0.36.0-next.761: a moving save that finished 82 s
+   * after the discard read `unsaved work discarded`).
+   */
+  readonly discardedAt: Date | null;
 }
 
 export class NothingUnsavedError extends Schema.TaggedErrorClass<NothingUnsavedError>()(
@@ -4383,11 +4392,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             state,
           };
         }
+        // A drain that took its slot here and has not written its intent yet is ending it too.
         if (
           holder !== null &&
           (holder.captureDrain !== null ||
             (workspaceId !== null &&
-              (yield* workspaceFinalFlushed(session.worktreeId, workspaceId))))
+              (drains.has(workspaceId) ||
+                (yield* workspaceFinalFlushed(session.worktreeId, workspaceId)))))
         ) {
           return { kind: "ending" as const, sessionId: lease.executorId, epoch: lease.epoch };
         }
@@ -4502,8 +4513,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * `leaseWait` the last reading is answered, and the caller refuses it as before.
        */
       const awaitWorktreeHolder = Effect.fn("SessionEngine.awaitWorktreeHolder")(
-        function* (session: Session, ownLaunch: string | null) {
-          const deadline = Date.now() + Duration.toMillis(drainPolicy.leaseWait);
+        function* (
+          session: Session,
+          ownLaunch: string | null,
+          deadline: number = Date.now() + Duration.toMillis(drainPolicy.leaseWait),
+        ) {
           let said: string | null = null;
           while (true) {
             const holder = yield* leaseHolderWorkspace(session, ownLaunch);
@@ -4556,7 +4570,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.sleep(drainPolicy.leaseWaitInterval);
           }
         },
-        (effect, session, _ownLaunch) =>
+        (effect, session, _ownLaunch, _deadline) =>
           Effect.suspend(() => {
             waitingLaunches.add(session.id);
             return effect;
@@ -4645,6 +4659,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         | "discarded";
       /** One drain per workspace in this process; a second ask waits on the first. */
       const drains = new Map<SealantWorkspaceId, Deferred.Deferred<DrainOutcome>>();
+      /**
+       * Workspaces a drain saved and stopped while a discard of them was under way (`discards`):
+       * the discard then ended nothing unsaved.
+       */
+      const savedWhileDiscarding = new Set<SealantWorkspaceId>();
+      /**
+       * Joins under way into each executor, from just before the join's last look at its holder
+       * until its process row exists: they count as in use (`workspaceInUse`), so a drain that
+       * begins meanwhile yields to them instead of flushing the executor shut under them. Each
+       * side writes first and reads second (the drain its durable intent, the join this count),
+       * so one always sees the other (RC 0.36.0-next.761: a `mend run` that joined while the
+       * previous run's slow harvest still ran was refused by the final flush that followed it).
+       */
+      const joining = new Map<SealantWorkspaceId, number>();
+      const enterJoin = (workspaceId: SealantWorkspaceId) =>
+        Effect.sync(() => joining.set(workspaceId, (joining.get(workspaceId) ?? 0) + 1));
+      const leaveJoin = (workspaceId: SealantWorkspaceId) =>
+        Effect.sync(() => {
+          const left = (joining.get(workspaceId) ?? 0) - 1;
+          if (left > 0) joining.set(workspaceId, left);
+          else joining.delete(workspaceId);
+        });
       /** The last reading each running drain took of its executor (`runDeferred`). */
       const lastReadings = new Map<SealantWorkspaceId, CaptureReading>();
       /**
@@ -5435,7 +5471,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           (yield* processes.listLiveForWorkspace(workspaceId)).length +
           (yield* serviceForwards.listOpen()).filter(
             (forward) => forward.sealantWorkspaceId === workspaceId,
-          ).length
+          ).length +
+          (joining.get(workspaceId) ?? 0)
         );
       });
 
@@ -5910,6 +5947,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.sync(() => {
                   Deferred.doneUnsafe(done, exit);
                   drains.delete(workspaceId);
+                  if (
+                    Exit.isSuccess(exit) &&
+                    (exit.value === "terminated" || exit.value === "stop-requested") &&
+                    discards.has(workspaceId)
+                  ) {
+                    savedWhileDiscarding.add(workspaceId);
+                  }
                 }),
               ),
               Effect.ensuring(
@@ -6184,7 +6228,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   observedAt: session.captureObservedAt,
                 },
         };
-        let discardedAt = requestedAt;
+        let discardedAt: Date | null = requestedAt;
         discards.add(workspaceId);
         let sealed = false;
         // What is logged follows what happened (cross-repo decision 28, review 2026-09-28 (9)
@@ -6210,6 +6254,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* stopTailsSettled(sessionId);
           const running = drains.get(workspaceId);
           if (running !== undefined) yield* Deferred.await(running);
+          // A drain round already under way (the Stop's own included) finishes its flush first;
+          // one that read the executor saved and stopped it left nothing unsaved to discard.
+          const savedFirst = savedWhileDiscarding.has(workspaceId);
           // What the stop put off runs before the lease goes, on the evidence the drain kept,
           // every piece waited for: a harvest still reading when a successor registers would
           // read the successor's head (Astra review, 2026-10-03).
@@ -6253,6 +6300,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               cause: null,
             });
           }
+          if (savedFirst) {
+            discardedAt = null;
+            yield* Effect.logInfo(
+              "session engine: discard asked · the drain saved everything and ended the workspace first · nothing discarded",
+            ).pipe(Effect.annotateLogs(annotations));
+            yield* endDrain(sessionId);
+            yield* removeIfRequested(sessionId);
+            return;
+          }
           discardedAt = new Date();
           yield* Effect.logWarning(
             "session engine: unsaved captures discarded by the owner · the platform ended the workspace",
@@ -6270,6 +6326,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.ensuring(
             Effect.sync(() => {
               discards.delete(workspaceId);
+              savedWhileDiscarding.delete(workspaceId);
               if (sealed) {
                 const left = (discardSealed.get(sessionId) ?? 1) - 1;
                 if (left <= 0) discardSealed.delete(sessionId);
@@ -9344,7 +9401,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const forwardLeases = (yield* serviceForwards.listOpen()).filter(
               (forward) => forward.sealantWorkspaceId === workspaceId,
             );
-            const leaseCount = processLeases.length + forwardLeases.length;
+            const leaseCount =
+              processLeases.length + forwardLeases.length + (joining.get(workspaceId) ?? 0);
             if (leaseCount > 0) {
               yield* Effect.logInfo("session engine: workspace stop deferred by live leases").pipe(
                 Effect.annotateLogs({ sessionId, workspaceId, leases: leaseCount }),
@@ -16168,8 +16226,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // with `worktree_leased`.
         if (capture !== null && adopted === null) {
           const waitStartedAt = Date.now();
-          const holder = yield* awaitWorktreeHolder(session, reusedCreateKey);
-          if (holder.kind === "held") {
+          const waitDeadline = waitStartedAt + Duration.toMillis(drainPolicy.leaseWait);
+          let holder = yield* awaitWorktreeHolder(session, reusedCreateKey, waitDeadline);
+          // The join counts as in use first (`joining`), then looks at its holder once more: a
+          // drain that began before it was counted reads here, and the launch waits for it again,
+          // then joins what holds the worktree or runs on a fresh executor.
+          let joinedWorkspace: SealantWorkspaceId | null = null;
+          while (holder.kind === "held" && joinedWorkspace === null) {
+            const workspaceId = SealantWorkspaceId.make(holder.workspace.id);
+            yield* enterJoin(workspaceId);
+            const again = yield* leaseHolderWorkspace(session, reusedCreateKey).pipe(
+              Effect.onError(() => leaveJoin(workspaceId)),
+            );
+            if (again.kind === "held" && again.workspace.id === holder.workspace.id) {
+              joinedWorkspace = workspaceId;
+              break;
+            }
+            yield* leaveJoin(workspaceId);
+            yield* Effect.logInfo(
+              `session engine: capture mode · the lease holder is ${again.kind} at the join · the launch waits`,
+            ).pipe(Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }));
+            if (Date.now() >= waitDeadline) {
+              holder = again;
+              break;
+            }
+            holder = yield* awaitWorktreeHolder(session, reusedCreateKey, waitDeadline);
+          }
+          if (holder.kind === "held" && joinedWorkspace !== null) {
+            const joinedId = joinedWorkspace;
+            const holderSessionId = SessionId.make(holder.sessionId);
             yield* Effect.logInfo("session engine: capture mode · joining the lease holder").pipe(
               Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }),
             );
@@ -16202,15 +16287,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   }),
                 ),
               ),
+              Effect.ensuring(leaveJoin(joinedId)),
+              // A failed join may have kept a Stop from ending the holder's executor (it counted
+              // as in use): that Stop is asked again, and it drains only what nothing holds.
+              Effect.tapError(() => Effect.forkIn(stopWorkspaceIfUnleased(holderSessionId), scope)),
             );
           }
           if (holder.kind !== "free") {
             const message =
-              holder.kind === "unreachable"
-                ? `worktree leased · held by session ${holder.sessionId} under epoch ${holder.epoch} · the lease expires at ${holder.expiresAt} unless its heartbeat continues`
-                : holder.kind === "ending"
-                  ? `worktree leased · session ${holder.sessionId}'s executor is saving before it ends · start again once it has`
-                  : `worktree leased · session ${holder.sessionId}'s lease lapsed under epoch ${holder.epoch} · its executor ${holder.state === "answering" ? "still answers" : "was not answered for"} · nothing stopped · it may hold work not yet saved`;
+              holder.kind === "held"
+                ? `worktree leased · session ${holder.sessionId}'s executor is saving before it ends · start again once it has`
+                : holder.kind === "unreachable"
+                  ? `worktree leased · held by session ${holder.sessionId} under epoch ${holder.epoch} · the lease expires at ${holder.expiresAt} unless its heartbeat continues`
+                  : holder.kind === "ending"
+                    ? `worktree leased · session ${holder.sessionId}'s executor is saving before it ends · start again once it has`
+                    : `worktree leased · session ${holder.sessionId}'s lease lapsed under epoch ${holder.epoch} · its executor ${holder.state === "answering" ? "still answers" : "was not answered for"} · nothing stopped · it may hold work not yet saved`;
             const waitedMinutes = Math.round((Date.now() - waitStartedAt) / 60_000);
             const error = new SealantPlatformError({
               code: "worktree_leased",
@@ -16683,10 +16774,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The bash sentinel means "an interactive shell", not literally bash:
         // launch the image's login shell so the owner's dotfiles apply to the
         // shell they actually get.
-        const interactiveShell = argv[0] === "bash";
-        let shapedArgv = interactiveShell
-          ? interactiveShellArgv(workspaceImage, argv.slice(1))
-          : argv;
+        const interactiveShell = asksInteractiveShell(argv);
+        let shapedArgv = interactiveShell ? interactiveShellArgv(workspaceImage) : argv;
         if (manifest !== null) {
           // A live harness home already carries the state this archive would restore — and
           // newer: the harness wrote it up to the moment the last workspace ended. Boot
@@ -18665,7 +18754,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
-          const interactiveShell = argv[0] === "bash";
+          const interactiveShell = asksInteractiveShell(argv);
           // Per-person harness homes (docs/adr/0016): in a person-layout executor the session's
           // owner runs as their own user, made there at their first process (a join's one more
           // exec, and the worktree repair beside it, never awaited), and their own deliveries go
@@ -18826,9 +18915,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             }
           }
-          const shapedArgv = interactiveShell
-            ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
-            : argv;
+          const shapedArgv = interactiveShell ? interactiveShellArgv(session.workspaceImage) : argv;
           // A Codex in a home that is not the launcher's (a join) touches no thread's memory mode:
           // the home owner's selection stands. It starts with its memory off and makes no thread
           // anyone's Codex will summarise. In a person executor every home is its person's own.

@@ -3068,7 +3068,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           );
         yield* recordControl(params.id, "discard-unsaved-stop", before.sealantWorkspaceId);
         const viewer = yield* (yield* ProjectAccess).viewer();
-        if (viewer !== null) {
+        // Nothing to audit when the save under way finished first: nothing was discarded.
+        if (viewer !== null && discarded.discardedAt !== null) {
           yield* (yield* AuditEventsRepo).record({
             organizationId: viewer.organizationId,
             actorUserId: viewer.userId,

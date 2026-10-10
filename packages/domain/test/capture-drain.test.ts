@@ -6,6 +6,7 @@ import {
   captureBytesWords,
   captureCaughtUp,
   captureDiscardAuditData,
+  captureDiscardOffered,
   captureDiscardWords,
   captureDrainStep,
   CAPTURE_INCOMPLETE_REASONS,
@@ -532,6 +533,21 @@ describe("observeCaptureThroughput", () => {
     });
     expect(replaced.bytesPerSecond).toBeNull();
     expect(replaced.objectsPerSecond).toBeNull();
+  });
+});
+
+describe("captureDiscardOffered", () => {
+  it("offers the discard only once a drain is stuck, never while it saves (RC 0.36.0-next.761)", () => {
+    expect(captureDiscardOffered(facts)).toBe(false);
+    expect(captureDiscardOffered({ ...facts, captureDrain: "stop", capturePending: 0 })).toBe(
+      false,
+    );
+    expect(
+      captureDiscardOffered({ ...facts, captureDrain: "stop", captureNotSavedAt: new Date() }),
+    ).toBe(true);
+    expect(
+      captureDiscardOffered({ ...facts, captureDrain: "stop", captureOverdueStep: "snapshot" }),
+    ).toBe(true);
   });
 });
 
