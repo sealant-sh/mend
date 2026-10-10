@@ -584,23 +584,30 @@ export const firstPositional = (
 /**
  * `text` with the credentials of every URL in it taken out. Adoption accepts a clone URL with a
  * token in it (`https://oauth2:TOKEN@github.com/acme/repo.git`) and the server returns the URL as
- * stored, so anything the CLI prints, a project's origin, a server's message or a JSON field, goes
- * through this.
+ * stored, so anything the CLI prints itself, a project's origin, a server's message or a JSON
+ * field, goes through this.
  *
- * A URL's authority runs from `//` to the next `/`, `?`, `#` or whitespace, and its userinfo is
+ * A URL's authority runs from `//` to the next `/`, `?` or `#` (or a `"`, `<`, `>` or backtick,
+ * which no authority holds and which end a JSON string or a quoted URL), and its userinfo is
  * everything before the LAST `@` in it, as a URL parser reads it: `oauth2:p@tok@github.com` has the
- * userinfo `oauth2:p@tok`. An http(s) (or any other) URL loses all of it, since a token can sit in
- * the user part alone. An ssh URL keeps a plain user (`git@`), which is no secret, and loses
- * userinfo with a password or an `@` in it whole. scp-like `git@host:path` has no password to
- * lose and stays as it is.
+ * userinfo `oauth2:p@tok`. Whitespace and control characters do not end it: a URL parser drops a
+ * tab or a newline and percent-encodes a space, so `oauth2:p<TAB>tok@` is a password too (review 3
+ * of mend#611). In prose that can take a few words before a later `@` along with the URL's
+ * userinfo; text goes, a credential never stays.
+ *
+ * An http(s) (or any other) URL loses all of its userinfo, since a token can sit in the user part
+ * alone. An ssh URL keeps its user and loses only the password (`ssh://git:pw@host` reads
+ * `ssh://git@host`), unless the user itself is not a plain name. scp-like `git@host:path` has no
+ * `//` and stays as it is.
  */
 export const redactCredentials = (text: string): string =>
   text.replace(
     // Greedy up to the last `@` before the authority ends: a literal `@` in a password is userinfo.
-    /\b([a-z][a-z0-9+.-]*):\/\/([^\s/?#]*)@/giu,
+    /\b([a-z][a-z0-9+.-]*):\/\/([^/?#"<>`]*)@/giu,
     (_whole, scheme: string, userinfo: string) => {
-      if (/^(git\+)?ssh$/iu.test(scheme) && /^[^:@]+$/u.test(userinfo)) {
-        return `${scheme}://${userinfo}@`;
+      if (/^(git\+)?ssh$/iu.test(scheme)) {
+        const user = userinfo.split(":")[0] ?? "";
+        if (/^[a-z0-9._~-]+$/iu.test(user)) return `${scheme}://${user}@`;
       }
       return `${scheme}://`;
     },

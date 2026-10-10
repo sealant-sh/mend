@@ -295,9 +295,9 @@ describe("redactCredentials", () => {
         "origin https://oauth2:TOKEN@github.com/a/r.git · and https://TOKEN@h.io/x",
       ),
     ).toBe("origin https://github.com/a/r.git · and https://h.io/x");
-    // A plain ssh user is no secret and stays; userinfo with a password goes whole.
+    // An ssh user is no secret and stays; only its password goes.
     expect(redactCredentials("ssh://git:pw@host/x and ssh://git@host/y")).toBe(
-      "ssh://host/x and ssh://git@host/y",
+      "ssh://git@host/x and ssh://git@host/y",
     );
     expect(redactCredentials("git@github.com:a/r.git")).toBe("git@github.com:a/r.git");
   });
@@ -308,12 +308,32 @@ describe("redactCredentials", () => {
       "https://github.com/acme/repo.git",
     );
     expect(redactCredentials("ssh://git:p@tok@[::1]:2222/acme/repo.git")).toBe(
-      "ssh://[::1]:2222/acme/repo.git",
+      "ssh://git@[::1]:2222/acme/repo.git",
+    );
+    expect(redactCredentials("ssh://git:secret@github.com/acme/r.git")).toBe(
+      "ssh://git@github.com/acme/r.git",
+    );
+    // A user that is not a plain name could hold the secret itself: it goes too.
+    expect(redactCredentials("ssh://a b:pw@host/x")).toBe("ssh://host/x");
+    // scp-like has no `//`: nothing to take out, nothing changed.
+    expect(redactCredentials("git@github.com:acme/r.git and git@[::1]:acme/r.git")).toBe(
+      "git@github.com:acme/r.git and git@[::1]:acme/r.git",
     );
     expect(redactCredentials("ssh://a@tok@host/x")).toBe("ssh://host/x");
     expect(redactCredentials("https://u:p%40ss@h.io/x")).toBe("https://h.io/x");
     expect(redactCredentials("https://u:p@[::1]:8443/x")).toBe("https://[::1]:8443/x");
     expect(redactCredentials("ssh://git@[::1]:22/x")).toBe("ssh://git@[::1]:22/x");
+    // Whitespace and control characters do not end the userinfo: a URL parser drops a tab or a
+    // newline and encodes a space, so the rest is still the password.
+    expect(
+      redactCredentials("mend: unknown argument https://oauth2:p\tsecret@github.com/a/r"),
+    ).toBe("mend: unknown argument https://github.com/a/r");
+    expect(redactCredentials("https://oauth2:p\nsecret@github.com/a")).toBe("https://github.com/a");
+    expect(redactCredentials("https://oauth2:p secret@github.com/a")).toBe("https://github.com/a");
+    // A quote ends it: JSON stays JSON.
+    expect(redactCredentials('{"a": "https://h", "b": "x@y"}')).toBe(
+      '{"a": "https://h", "b": "x@y"}',
+    );
     // An `@` past the authority (a query, a fragment) is no userinfo.
     expect(redactCredentials("https://h.io/x?u=a@b and https://h.io#f@x")).toBe(
       "https://h.io/x?u=a@b and https://h.io#f@x",

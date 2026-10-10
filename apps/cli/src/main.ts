@@ -1364,7 +1364,7 @@ const attachTty = async (
         ReadonlyArray<{ readonly userId: string; readonly name: string }>
       >(config, "GET", "/organization/members").catch(() => []);
       process.stdout.write(
-        `\r\x1b[2K${dim(watchNotice(ownerNameOf(detail?.session.ownerUserId, members)))}\r\n` +
+        `\r\x1b[2K${dim(redactCredentials(watchNotice(ownerNameOf(detail?.session.ownerUserId, members))))}\r\n` +
           `${dim(`read-only · ${detachKeyEnabled ? "Ctrl+] or " : ""}Ctrl+C detaches`)}\r\n\r\n`,
       );
     }
@@ -3189,7 +3189,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       secret: narrowed.secret,
     }),
   );
-  process.stdout.write(`${accountLine(account)}\n`);
+  process.stdout.write(`${redactCredentials(accountLine(account))}\n`);
   const facts = claudeGrantFacts(narrowed.secret);
   if (facts !== null) {
     say(

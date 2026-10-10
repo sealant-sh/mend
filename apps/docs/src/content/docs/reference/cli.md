@@ -118,9 +118,11 @@ none. The shape is stable:
 The CLI never prints a URL's credentials in what it says itself: an origin adopted as
 `https://oauth2:TOKEN@github.com/acme/repo.git` reads as `https://github.com/acme/repo.git` in JSON,
 in tables, in messages and in the `mend service init` preview. The userinfo is everything before the
-last `@` of the URL's authority; an ssh URL keeps a plain user (`ssh://git@…`). A command's recorded
-output (`mend run`, `mend logs`, `mend attach`) and a file's contents (`mend memory show`) are
-printed as they are.
+last `@` of the URL's authority, whitespace and control characters included; an ssh URL keeps its
+user and loses only the password (`ssh://git:pw@host/…` reads `ssh://git@host/…`). A command's
+recorded output (`mend run`, `mend logs`, `mend service logs`, `mend attach`) and a file's contents
+(`mend memory show`) are printed as they are. A session's record is not its owner's alone: anyone
+who can read the project can read it, so a password a command printed reaches them too.
 
 ## Start agents and commands
 

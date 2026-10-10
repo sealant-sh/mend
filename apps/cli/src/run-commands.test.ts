@@ -84,6 +84,13 @@ const logPage = (nextFrom: string, status: string, ...texts: ReadonlyArray<strin
   telemetryNote: "",
 });
 
+/** A request's body, read to its end. */
+const bodyOf = async (request: IncomingMessage): Promise<string> => {
+  const chunks: Array<Buffer> = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString();
+};
+
 type Handler = (route: string, request: IncomingMessage, response: ServerResponse) => void;
 
 /** `host` 127.0.0.2 reads as a remote server to the CLI (`serverIsLocal`), still on loopback. */
@@ -817,6 +824,72 @@ describe("--json and --wait", spawning, () => {
       expect(JSON.parse(result.stdout).projects[0].originUrl).toBe(
         "https://github.com/acme/fixture.git",
       );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("keeps an ssh origin's user and takes out only its password", async () => {
+    const origins = [
+      "ssh://git:s3cret-token@github.com/acme/fixture.git",
+      "ssh://git:p@s3cret-token@[::1]:2222/acme/fixture.git",
+    ];
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") {
+        json(
+          response,
+          origins.map((originUrl, index) => ({ ...project, id: `p${index}`, originUrl })),
+        );
+      } else if (route === "GET /api/sessions") json(response, []);
+      else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["projects", "--json"]);
+      expect(result.stdout + result.stderr).not.toContain("s3cret-token");
+      expect(
+        JSON.parse(result.stdout).projects.map((row: { originUrl: string }) => row.originUrl),
+      ).toEqual(["ssh://git@github.com/acme/fixture.git", "ssh://git@[::1]:2222/acme/fixture.git"]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend connect --from-stdin says the account without credentials in what the server returned", async () => {
+    const fake = await startFake((route, request, response) => {
+      if (route === "POST /api/me/sealant/accounts") {
+        void bodyOf(request).then(() =>
+          json(response, {
+            id: "account-1",
+            provider: "github",
+            name: "github",
+            kind: "token",
+            status: "active",
+            metadata: { login: "https://oauth2:s3cret-token@github.com/acme" },
+            connectedAt: new Date(0).toISOString(),
+            lastUsedAt: null,
+          }),
+        );
+      } else response.writeHead(404).end();
+    });
+    try {
+      const child = spawn(
+        process.execPath,
+        ["--experimental-strip-types", entrypoint, "connect", "github", "--from-stdin"],
+        { env: cliEnv(fake.url), stdio: ["pipe", "pipe", "pipe"], cwd: os.tmpdir() },
+      );
+      // stdin is the credential, given and closed: nothing else reads it.
+      child.stdin.end("ghp_synthetic_token_for_tests\n");
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      const [code] = await once(child, "close");
+      expect(code, output).toBe(0);
+      expect(output).toContain("https://github.com/acme");
+      expect(output).not.toContain("s3cret-token");
     } finally {
       await fake.close();
     }
