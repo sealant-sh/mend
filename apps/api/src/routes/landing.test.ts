@@ -98,6 +98,8 @@ interface State {
   audited: Array<NewAuditEvent>;
   report: LandingReport | LandingNotStartedError | null;
   bundle: "ok" | BundleTooLargeError;
+  /** The branch the bundle carries. */
+  branch: string;
   landings: Array<ChangeLanding>;
   refreshed: ChangeLanding | PullRequestStepError | null;
   unseen: number;
@@ -112,6 +114,7 @@ const fresh = (): State => ({
   audited: [],
   report: null,
   bundle: "ok",
+  branch: "mend/shared-a",
   landings: [],
   refreshed: null,
   unseen: 0,
@@ -187,7 +190,7 @@ describe("landing routes", () => {
                 state.bundles.push(input);
                 return state.bundle === "ok"
                   ? Effect.succeed({
-                      branch: "mend/shared-a",
+                      branch: state.branch,
                       base: Sha.make("0123456789abcdef"),
                       tip: PUSHED,
                       commits: 2,
@@ -633,11 +636,29 @@ describe("landing routes", () => {
   describe("GET /changes/:id/bundle", () => {
     const bundle = `/api/changes/${sharedA.change}/bundle`;
 
+    it("answers a branch no header can carry as it is, named in UTF-8 with an ASCII fallback (review 0.36)", async () => {
+      state.branch = 'mend/修正-"ログイン"';
+      const response = await api.request("carol", "GET", bundle);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-disposition")).toBe(
+        `attachment; filename="mend-__-______.bundle"; filename*=UTF-8''${encodeURIComponent('mend-修正-"ログイン".bundle')}`,
+      );
+      // The plain header cannot carry it, so only the encoded one names it.
+      expect(response.headers.get("x-mend-bundle-branch")).toBeNull();
+      expect(decodeURIComponent(response.headers.get("x-mend-bundle-branch-encoded") ?? "")).toBe(
+        state.branch,
+      );
+    });
+
     it("answers the git bundle with its branch and range, under the budget's limit", async () => {
       const response = await api.request("carol", "GET", bundle);
       expect(response.status).toBe(200);
       expect(response.headers.get("content-type")).toBe("application/x-git-bundle");
       expect(response.headers.get("x-mend-bundle-branch")).toBe("mend/shared-a");
+      expect(response.headers.get("x-mend-bundle-branch-encoded")).toBe("mend%2Fshared-a");
+      expect(response.headers.get("content-disposition")).toBe(
+        `attachment; filename="mend-shared-a.bundle"; filename*=UTF-8''mend-shared-a.bundle`,
+      );
       expect(response.headers.get("x-mend-bundle-tip")).toBe(PUSHED);
       expect(response.headers.get("x-mend-bundle-commits")).toBe("2");
       expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([35, 32, 118, 50]);

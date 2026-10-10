@@ -102,6 +102,7 @@ export type Download = (route: string) => Promise<Downloaded>;
 /** Response headers the bundle carries (`BUNDLE_HEADERS` in @mend/api-contracts). */
 const BUNDLE_HEADERS = {
   branch: "x-mend-bundle-branch",
+  branchEncoded: "x-mend-bundle-branch-encoded",
   base: "x-mend-bundle-base",
   tip: "x-mend-bundle-tip",
   commits: "x-mend-bundle-commits",
@@ -724,9 +725,23 @@ export const bundleRefusal = (downloaded: Downloaded): string => {
   return noteRefusal(call, downloaded.status, failureWords(downloaded.status, body)).words;
 };
 
+/** A percent-encoded header's value; null when absent or not valid percent-encoding. */
+const decodedHeader = (value: string | null): string | null => {
+  if (value === null) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+};
+
 /** The bundle's own facts, from its headers; null when the server sent none. */
 export const bundleFactsOf = (downloaded: Downloaded): BundleFacts | null => {
-  const branch = downloaded.header(BUNDLE_HEADERS.branch);
+  // The encoded name first: it carries any branch, where the plain header cannot hold one with
+  // characters above U+00FF. A server before it sends only the plain one.
+  const branch =
+    decodedHeader(downloaded.header(BUNDLE_HEADERS.branchEncoded)) ??
+    downloaded.header(BUNDLE_HEADERS.branch);
   const base = downloaded.header(BUNDLE_HEADERS.base);
   const tip = downloaded.header(BUNDLE_HEADERS.tip);
   const commits = Number(downloaded.header(BUNDLE_HEADERS.commits));

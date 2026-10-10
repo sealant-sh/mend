@@ -188,8 +188,10 @@ terminal attach and stop is recorded with the account that did it.
 
 Whose login a steered turn spends depends on the workspace:
 
-- **In a workspace that shares one home** (the default), every act spends the owner's provider
-  logins and Git access, and the agent keeps the owner's memory and instructions.
+- **In a workspace that shares one home** (the operator opted out, or the workspace
+  [cannot run per person](/operate/per-person-workspaces/#what-a-workspace-needs)), every act spends
+  the owner's provider logins and Git access, and the agent keeps the owner's memory and
+  instructions.
 - **In a [per-person workspace](/operate/per-person-workspaces/)**, each turn runs on its sender's
   login, as the switch says. A sender with no login for the session's provider is refused
   (`Connect Claude to steer this session.`).

@@ -50,10 +50,11 @@ Your login belongs to your Mend account and is used for your work:
 Nobody else can read your credential, see its value, or choose it for their own sessions. Mend never
 spends one person's login on another person's session or request.
 
-In a workspace that shares one home, the default, one setting spends your subscription on someone
-else's action, and only when you turn it on: **shared control** lets other members of your
-organization steer a session you own, and the session keeps running on your login. Someone who joins
-your worktree there runs on your logins too: see
+In a workspace that shares one home (the operator opted out, or the workspace
+[cannot run per person](/operate/per-person-workspaces/#what-a-workspace-needs)), one setting spends
+your subscription on someone else's action, and only when you turn it on: **shared control** lets
+other members of your organization steer a session you own, and the session keeps running on your
+login. Someone who joins your worktree there runs on your logins too: see
 [Known issues](/reference/known-issues/#a-session-that-joins-someone-elses-executor-runs-on-their-logins).
 
 In a [per-person workspace](/operate/per-person-workspaces/) no person runs on anyone else's login.

@@ -349,6 +349,32 @@ describe("the bundle's answer", () => {
     expect(bundleFactsOf(answered(200, null))).toBeNull();
   });
 
+  it("reads a branch no plain header can carry from its encoded header (review 0.36)", () => {
+    const facts = {
+      "x-mend-bundle-base": "b".repeat(40),
+      "x-mend-bundle-tip": "c".repeat(40),
+      "x-mend-bundle-commits": "2",
+    };
+    expect(
+      bundleFactsOf(
+        answered(200, null, {
+          ...facts,
+          "x-mend-bundle-branch-encoded": encodeURIComponent("mend/修正-ログイン"),
+        }),
+      )?.branch,
+    ).toBe("mend/修正-ログイン");
+    // Encoded and plain both sent: the encoded one is read.
+    expect(
+      bundleFactsOf(
+        answered(200, null, {
+          ...facts,
+          "x-mend-bundle-branch": "mend/100%",
+          "x-mend-bundle-branch-encoded": encodeURIComponent("mend/100%"),
+        }),
+      )?.branch,
+    ).toBe("mend/100%");
+  });
+
   it("formats sizes in the units people read", () => {
     expect(formatBytes(512)).toBe("512 bytes");
     expect(formatBytes(1536)).toBe("1.5 KiB");

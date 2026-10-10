@@ -167,6 +167,24 @@ const landingsView = (change: Change | null, session: Session | null, probe: boo
     });
   });
 
+/** Whether a header can carry the value as it is: nothing above U+00FF and no control character. */
+const headerCarries = (value: string): boolean => /^[\x20-\x7e\x80-\xff]*$/.test(value);
+
+/**
+ * The bundle's `content-disposition` (RFC 6266): an ASCII `filename` for clients that read only
+ * that, and the branch's own name as UTF-8 in `filename*` (RFC 5987). A git branch may hold `"`
+ * and any Unicode, which a raw `filename` cannot.
+ */
+const bundleDisposition = (branch: string): string => {
+  const name = `${branch.replaceAll("/", "-")}.bundle`;
+  const fallback = name.replaceAll(/[^\x20-\x7e]|["\\]/g, "_");
+  const encoded = encodeURIComponent(name).replaceAll(
+    /['()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+};
+
 /** The session a change lands as: its own, else the newest one in its worktree. */
 const sessionOfChange = (change: Change) =>
   Effect.gen(function* () {
@@ -385,8 +403,9 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
         return HttpServerResponse.uint8Array(bundle.bytes, {
           contentType: "application/x-git-bundle",
           headers: {
-            "content-disposition": `attachment; filename="${bundle.branch.replaceAll("/", "-")}.bundle"`,
-            [BUNDLE_HEADERS.branch]: bundle.branch,
+            "content-disposition": bundleDisposition(bundle.branch),
+            ...(headerCarries(bundle.branch) ? { [BUNDLE_HEADERS.branch]: bundle.branch } : {}),
+            [BUNDLE_HEADERS.branchEncoded]: encodeURIComponent(bundle.branch),
             [BUNDLE_HEADERS.base]: bundle.base,
             [BUNDLE_HEADERS.tip]: bundle.tip,
             [BUNDLE_HEADERS.commits]: String(bundle.commits),
