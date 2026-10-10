@@ -1394,11 +1394,11 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     ).toEqual({ _tag: "ok" });
     expect(f.files()["server.env"]).toContain("MEND_DOCKER_MIRROR_MAX_SIZE=40g\n");
     expect(f.files()["docker-mirror-guard.sh"]).toContain("registry serve");
-    f.update({ mirrorGuard: "paused 3072 5120", mirrorFreeKiB: 3 * 1024 * 1024 });
+    f.update({ mirrorGuard: "paused 3072 5120 none", mirrorFreeKiB: 3 * 1024 * 1024 });
     f.lines.length = 0;
     expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
     expect(f.lines).toContain(
-      "docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · cache cleared · session Docker daemons pull from Docker Hub directly until there is room · observed",
+      "docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · no cache held · session Docker daemons pull from Docker Hub directly until there is room · observed",
     );
     // A saved login without the operator's public-only statement is refused, not rendered.
     const configFile = path.join(f.active(), "server.json");

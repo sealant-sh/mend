@@ -37,7 +37,9 @@ while :; do
       clear_cache
       echo "mend docker mirror guard: ${free} MiB free on its disk, below ${floor} MiB: cache cleared, registry paused" >&2
     fi
-    echo "paused ${free} ${floor}" >"$state"
+    # What is left, looked at again: status says what this finds, not what was attempted.
+    if [ -e "$root/docker" ] || [ -e "$root/scheduler-state.json" ]; then held=kept; else held=none; fi
+    echo "paused ${free} ${floor} ${held}" >"$state"
   else
     used=$(du -sm "$root" | cut -f1)
     if [ "$used" -gt "$cap" ]; then

@@ -185,11 +185,14 @@ describe("what status observes", () => {
       free: 1024 ** 3,
       guard: { state: "running" },
     });
-    expect(mirrorDiskOf("0\n3072\npaused 3 5120\n")?.guard).toEqual({
+    expect(mirrorDiskOf("0\n3072\npaused 3 5120 none\n")?.guard).toEqual({
       state: "paused",
       freeMiB: 3,
       floorMiB: 5120,
+      cache: "none",
     });
+    expect(mirrorDiskOf("9\n3072\npaused 3 5120 kept\n")?.guard).toMatchObject({ cache: "kept" });
+    expect(mirrorDiskOf("0\n3072\npaused 3 5120\n")?.guard).toMatchObject({ cache: null });
     expect(mirrorDiskOf("2048\n1048576\n")?.guard).toBeNull();
     expect(mirrorDiskOf("")).toBeNull();
     expect(mirrorDiskOf("du: cannot access")).toBeNull();
@@ -241,13 +244,26 @@ describe("what status observes", () => {
         disk: {
           used: 0,
           free: 3 * 1024 ** 3,
-          guard: { state: "paused", freeMiB: 3072, floorMiB: 5120 },
+          guard: { state: "paused", freeMiB: 3072, floorMiB: 5120, cache: "none" },
         },
         traffic: "",
         startedAt: null,
       }),
     ).toBe(
-      "docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · cache cleared · session Docker daemons pull from Docker Hub directly until there is room · observed",
+      "docker mirror · paused by its disk guard · 3.0 GiB free on its disk, below 5.0 GiB · no cache held · session Docker daemons pull from Docker Hub directly until there is room · observed",
     );
+    // Said only when the guard looked again and found it; a cache it could not remove is said too.
+    expect(
+      observedDockerMirrorLine(DEFAULT_MIRRORS, {
+        running: true,
+        disk: {
+          used: 9 * 1024 ** 2,
+          free: 3 * 1024 ** 3,
+          guard: { state: "paused", freeMiB: 3072, floorMiB: 5120, cache: "kept" },
+        },
+        traffic: "",
+        startedAt: null,
+      }),
+    ).toContain("· its cache could not be cleared ·");
   });
 });

@@ -321,7 +321,8 @@ server {
 /**
  * `docker-mirror-guard.sh`: the Docker mirror's entrypoint. It runs the registry and keeps its cache
  * under `DOCKER_MIRROR_MAX_SIZE` and the disk above `DOCKER_MIRROR_MIN_FREE`, checked every 30 s, and
- * writes its state where `mend server status` reads it (`running`, or `paused <free MiB> <floor MiB>`).
+ * writes its state where `mend server status` reads it: `running`, or `paused <free MiB> <floor MiB>
+ * <none|kept>`, the last word what a second look at the cache found after clearing it.
  */
 export const DOCKER_MIRROR_GUARD = `#!/bin/sh
 # Mend's Docker mirror guard (written by mend server setup): runs the registry, and keeps its cache
@@ -362,7 +363,9 @@ while :; do
       clear_cache
       echo "mend docker mirror guard: \${free} MiB free on its disk, below \${floor} MiB: cache cleared, registry paused" >&2
     fi
-    echo "paused \${free} \${floor}" >"$state"
+    # What is left, looked at again: status says what this finds, not what was attempted.
+    if [ -e "$root/docker" ] || [ -e "$root/scheduler-state.json" ]; then held=kept; else held=none; fi
+    echo "paused \${free} \${floor} \${held}" >"$state"
   else
     used=$(du -sm "$root" | cut -f1)
     if [ "$used" -gt "$cap" ]; then
@@ -413,7 +416,13 @@ export interface MirrorDisk {
   /** The Docker mirror's guard: running, or paused for want of free space; null when none. */
   readonly guard:
     | { readonly state: "running" }
-    | { readonly state: "paused"; readonly freeMiB: number; readonly floorMiB: number }
+    | {
+        readonly state: "paused";
+        readonly freeMiB: number;
+        readonly floorMiB: number;
+        /** What the guard found after clearing: no cache left, a cache it could not remove, or unsaid. */
+        readonly cache: "none" | "kept" | null;
+      }
     | null;
 }
 
@@ -426,13 +435,18 @@ export const mirrorDiskOf = (stdout: string): MirrorDisk | null => {
   const freeKiB = Number(free);
   if (used === undefined || free === undefined || used === "" || free === "") return null;
   if (!Number.isFinite(usedKiB) || !Number.isFinite(freeKiB)) return null;
-  const paused = /^paused (\d+) (\d+)$/.exec(guard);
+  const paused = /^paused (\d+) (\d+)(?: (none|kept))?$/.exec(guard);
   return {
     used: usedKiB * 1024,
     free: freeKiB * 1024,
     guard:
       paused?.[1] !== undefined && paused[2] !== undefined
-        ? { state: "paused", freeMiB: Number(paused[1]), floorMiB: Number(paused[2]) }
+        ? {
+            state: "paused",
+            freeMiB: Number(paused[1]),
+            floorMiB: Number(paused[2]),
+            cache: paused[3] === "none" || paused[3] === "kept" ? paused[3] : null,
+          }
         : guard === "running"
           ? { state: "running" }
           : null,
@@ -563,7 +577,12 @@ export const observedDockerMirrorLine = (
     return [
       "docker mirror · paused by its disk guard",
       `${formatBytes(disk.guard.freeMiB * 1024 ** 2)} free on its disk, below ${formatBytes(disk.guard.floorMiB * 1024 ** 2)}`,
-      "cache cleared · session Docker daemons pull from Docker Hub directly until there is room",
+      disk.guard.cache === "none"
+        ? "no cache held"
+        : disk.guard.cache === "kept"
+          ? "its cache could not be cleared"
+          : "the guard did not say whether its cache was cleared",
+      "session Docker daemons pull from Docker Hub directly until there is room",
       "observed",
     ].join(" · ");
   const since = observed.startedAt === null ? "since it started" : `since ${observed.startedAt}`;

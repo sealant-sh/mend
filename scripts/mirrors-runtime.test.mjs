@@ -236,7 +236,8 @@ test(
     );
     const state = () => docker("exec", name, "cat", "/tmp/mend-mirror-guard").stdout.trim();
     // One MiB free, below the hundred MiB floor: the retained cache goes, and nothing serves.
-    until("the guard to pause", () => state().startsWith("paused 1 100"));
+    // Paused, and the second look found no cache left.
+    until("the guard to pause with no cache held", () => state() === "paused 1 100 none");
     until(
       "the retained cache to be cleared",
       () =>
