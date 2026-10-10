@@ -20,8 +20,9 @@ or use none for a local server. The token is kept in VS Code's secret storage. `
 revokes a browser sign-in's token and forgets it. Remote opening requires the Microsoft Remote SSH
 extension.
 
-The end-to-end check against a server on another address is
-`MEND_TEST_VERSION=<preloaded image tag> node scripts/vscode-remote-acceptance.mjs`.
+A server on another machine (a Mac mini on the LAN or a tailnet, or behind an https edge) works the
+same way: see `apps/docs/src/content/docs/operate/mac-mini-vscode.md`. The end-to-end check of that
+shape is `MEND_TEST_VERSION=<preloaded image tag> node scripts/vscode-remote-acceptance.mjs`.
 
 The extension is not published to the Visual Studio Marketplace. Build a `.vsix` with
 `pnpm --filter mend build` followed by `pnpm --filter mend package`, and install it with
@@ -34,8 +35,11 @@ inside the workspace — its image, its environment, and the session's harness h
 that holds the harness's state and conversations, captured with the workspace and restored when the
 session launches again). A `claude` or `codex` you run there is observed by Mend: the session shows
 running, the workspace stays leased, and the conversation is recorded and natively resumable from
-any device. A settled session offers a shell resume first — the shell keeps the fresh workspace
-alive while the editor is attached.
+any device. In a per-person workspace (the 0.36 default) the Remote-SSH login is the workspace's
+launcher, as their own user, on their home and logins; where the server's Sealant cannot bind the
+person it runs as root, and the session line says `Remote-SSH: root, Core can't bind your person`. A
+settled session offers a shell resume first — the shell keeps the fresh workspace alive while the
+editor is attached.
 
 The first open offers "Set up workspace SSH?" Mend registers this client's key and adds a
 server-specific Host block at the start of `~/.ssh/config`, before wildcard defaults. Existing
@@ -69,7 +73,9 @@ reused), and a new integrated terminal runs the harness's own resume — `codex 
 `claude --resume <id>` (the most recent conversation when the id is not yet known). The shell keeps
 the same workspace, and with it the session's harness home, so that resume finds the conversation
 the agent was writing a moment ago, and Mend observes the new process under the same conversation.
-`Mend: Take over session in the editor` on a live session does the same without the question.
+`Mend: Take over session in the editor` on a live session does the same without the question. Where
+the session line says `Remote-SSH: root, Core can't bind your person`, the resume does not hold your
+conversation; use `mend attach` there.
 
 Cancelling the SSH setup or the confirmation leaves the agent running. The stop ends only the agent:
 the shell keeps the workspace open until you stop the session again.

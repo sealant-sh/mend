@@ -13,6 +13,12 @@ terminal runs in the workspace, with the workspace image, environment and harnes
 or `codex` you run in that terminal is observed by Mend: the session shows running, the workspace
 stays up, and the conversation is recorded and can be resumed from any device.
 
+In a [per-person workspace](/operate/per-person-workspaces/), the 0.36 default, the Remote-SSH login
+is the workspace's launcher, as their own Linux user, on their home and logins. Where the server's
+Sealant cannot bind the person (an older Core), it runs as root instead and the session line says
+`Remote-SSH: root, Core can't bind your person`; an agent started in that terminal then does not use
+your home and logins. Start agents from Mend (**+** → an agent) or in **Mend: Open terminal** there.
+
 The extension is not published on the Visual Studio Marketplace. Build and install it from source as
 described [below](#install-from-source).
 
@@ -129,6 +135,9 @@ and Mend observes the new process as the same conversation. Cancelling the SSH s
 confirmation leaves the agent running. The stop ends only the agent; the shell keeps the workspace
 open until you stop the session.
 
+Where the session line says `Remote-SSH: root, Core can't bind your person`, the resume runs as
+root, which does not hold your conversation; take such a session over with `mend attach` instead.
+
 Only `claude` and `codex` sessions can be taken over here. The extension says so and gives the
 `mend attach` command to use from a terminal instead.
 
@@ -181,18 +190,22 @@ origin), then how to sign in:
 - **Paste a device token**: a token minted in the web app under **Settings → Devices**.
 - **No token**: for a local server that does not require one.
 
-The URL is saved as the `mend.serverUrl` setting and the token in VS Code's secret storage (the
-macOS Keychain on a Mac). For a plain `http://` URL on another machine, the extension says so before
-you sign in: the token crosses that network unencrypted, so use a private network you control or an
-https edge. The CLI's token is used only while `mend.serverUrl` points at the same URL as the CLI's
-configuration. **Mend: Sign out** revokes a token the browser sign-in created and forgets it; a
-pasted token stays valid until you revoke it under **Settings → Devices**. Signed out stays signed
-out: the editor does not fall back to the CLI's sign-in for that server until you connect again, and
-the CLI keeps its own (`mend logout` ends it).
+The URL is saved as the `mend.serverUrl` setting and the token in VS Code's secret storage
+(encrypted, with its key in the macOS Keychain on a Mac). For a plain `http://` URL on another
+machine, the extension says so before you sign in: the token crosses that network unencrypted, so
+use a private network you control or an https edge. The CLI's token is used only while
+`mend.serverUrl` points at the same URL as the CLI's configuration. **Mend: Sign out** revokes a
+token the browser sign-in created and forgets it; a pasted token stays valid until you revoke it
+under **Settings → Devices**. Signed out stays signed out: the editor does not fall back to the
+CLI's sign-in for that server until you connect again, and the CLI keeps its own (`mend logout` ends
+it).
 
 When the server refuses the token, the error offers **Connect to server**. A request that gets no
 answer within 30 seconds (a server asleep, a network change) fails with that, and the live view
 reconnects on its own once the server answers again.
+
+Running Mend on a Mac mini and VS Code on a laptop, step by step:
+[Mac mini and VS Code](/operate/mac-mini-vscode/).
 
 ## Install from source
 
