@@ -1,0 +1,10 @@
+{
+  "extraKnownMarketplaces": {
+    "pstack-claude": {
+      "source": { "source": "github", "repo": "ypanagidis/pstack" }
+    }
+  },
+  "enabledPlugins": {
+    "pstack@pstack-claude": true
+  }
+}
