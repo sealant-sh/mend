@@ -570,12 +570,13 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
         ]),
     ...others.map((address) => ({
       label: `on this network address, ${address}`,
-      detail: `listens on ${address} only, and is published on that network`,
+      detail: `listens on ${address} only, and is published on that address`,
       value: { bind: address, host: address },
     })),
     {
       label: "on every address of this machine",
-      detail: "listens on 0.0.0.0: your firewall decides who reaches it",
+      detail:
+        "listens on 0.0.0.0, every address: who reaches it is up to your network and firewall",
       value: { bind: "0.0.0.0", host: null },
     },
   ];
@@ -604,7 +605,8 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
         return { refused: `"${input}" is not a name, an address or an http(s) origin.` };
       if (isLoopbackName(new URL(origin).hostname))
         return {
-          refused: "That address reaches this machine only; choose a name others can open.",
+          refused:
+            "That address names this machine itself; give a name or an address other machines use.",
         };
       return { value: origin };
     },
@@ -656,7 +658,7 @@ const askPublic = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
     io.write(`Observed: ${domain} resolves to ${resolved.join(", ")}, an address of this machine.`);
   else
     io.write(
-      `Observed: ${domain} resolves to ${resolved.join(", ")}; this machine's own addresses are ${own.length === 0 ? "none" : own.join(", ")}. Behind NAT or a load balancer that can still reach here: Caddy needs 80 and 443 to reach this machine from the internet.`,
+      `Observed: ${domain} resolves to ${resolved.join(", ")}; this machine's own addresses are ${own.length === 0 ? "none" : own.join(", ")}. Setup cannot see a NAT or a load balancer in front of this machine; Caddy gets its certificate once 80 and 443 on this machine answer from the internet.`,
     );
   if (settings.edgeHost === undefined) {
     const taken = [];
@@ -716,7 +718,7 @@ const askSsh = async (asked: Asked, settings: SetupSettings): Promise<SetupSetti
         ]),
     {
       label: "yes, from any network",
-      detail: `SSH on ${publishedAddress("0.0.0.0", port)}: a firewall decides who reaches it`,
+      detail: `SSH on ${publishedAddress("0.0.0.0", port)}, every address: who reaches it is up to your network and firewall`,
       value: "0.0.0.0",
     },
   ];
@@ -784,7 +786,7 @@ const offerServeOrigins = async (asked: Asked, settings: SetupSettings): Promise
       continue;
     asked.io.write("");
     asked.io.write(
-      `Observed: Tailscale Serve forwards ${route.origin} to Mend's port here${route.funnel ? "; Funnel is on for it, so it answers from the public internet, not only your tailnet" : ""}.`,
+      `Observed: Tailscale Serve forwards ${route.origin} to Mend's port here${route.funnel ? "; Tailscale's settings have Funnel on for it, which publishes it to the public internet as well as your tailnet" : ""}.`,
     );
     if (await yesNo(asked.io, `Allow ${route.origin} as a browser origin too?`, true))
       next = { ...next, allowedOrigins: [...next.allowedOrigins, route.origin] };
@@ -870,7 +872,7 @@ const askT3 = async (asked: Asked, settings: SetupSettings): Promise<SetupSettin
   const port = settings.t3GatewayPort ?? DEFAULT_T3_GATEWAY_PORT;
   asked.io.write("");
   asked.io.write(
-    `The T3 Code gateway lets t3code's desktop, mobile and web apps pair with this Mend (mend pair). It listens on 127.0.0.1:${port} only; another machine reaches it through a tunnel you run, such as ssh -L ${port}:127.0.0.1:${port} <this machine>, or tailscale serve.`,
+    `The T3 Code gateway lets t3code's desktop, mobile and web apps pair with this Mend (mend pair). It listens on 127.0.0.1:${port} only; from another machine, use a tunnel you run, such as ssh -L ${port}:127.0.0.1:${port} <this machine>, or tailscale serve.`,
   );
   const on = await yesNo(
     asked.io,
