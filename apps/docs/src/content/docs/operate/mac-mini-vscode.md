@@ -32,8 +32,14 @@ default). The extension uses the first for everything except Remote-SSH, which u
   Docker Desktop when you sign in** (Settings → General) and automatic login for the mini's user
   (System Settings → Users & Groups). After a power cut, Mend comes back when Docker does.
 - Keep the mini awake: System Settings → Energy → **Prevent automatic sleeping when the display is
-  off**, or `sudo pmset -a sleep 0 disksleep 0`. A sleeping mini drops every session's connection;
-  the extension says `Mend at … did not answer within 30 s` and the view reconnects once it answers.
+  off**, or `sudo pmset -a sleep 0 disksleep 0`. While a Mac sleeps, OrbStack and Docker Desktop
+  pause their VM. That includes a MacBook's lid-closed Maintenance Sleep, which wakes only briefly
+  for network traffic. Builds stall, every session's connection drops, and the VM's clock wakes up
+  behind (by hours, after a long sleep) until OrbStack or Docker Desktop restarts. The extension
+  says `Mend at … did not answer within 30 s` and the view reconnects once it answers. Turn on
+  **Wake for network access** in the same pane too (`sudo pmset -a womp 1`), so a laptop on the
+  tailnet can wake it. `mend doctor` on the mini says when it still sleeps on its own, and when the
+  server's clock is off from the machine running doctor.
 - Give the Docker VM room for workspaces: Settings → Resources, at least 8 GB of memory.
 - Keep `~/.config/mend` under your home directory. Setup bind-mounts a file from it into Postgres,
   and Docker Desktop shares only `/Users` (and a few system paths) with its VM by default. A
@@ -229,6 +235,7 @@ as root instead, and the session line says `Remote-SSH: root, Core can't bind yo
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Cannot reach Mend at http://mac-mini:3105. connect ECONNREFUSED …`                    | Nothing listens there: setup bound loopback (no `--bind`), Docker is not running, or the port differs. On the mini: `mend server status`.                                                                                               |
 | `Cannot reach Mend at … connect EHOSTUNREACH …` or `… did not answer within 30 s`      | The mini is asleep, off the network, or the firewall drops the port. Wake it; check the firewall and `pmset`.                                                                                                                           |
+| `mend doctor`: `this server's clock is … min behind this machine's`                    | The Docker VM slept with the Mac and its clock has not caught up. Restart OrbStack or Docker Desktop, then keep the mini awake (step 1).                                                                                                |
 | `Cannot reach Mend at … getaddrinfo ENOTFOUND mac-mini.local`                          | The name does not resolve from the laptop. Use the tailnet name or the IP, and add it with `--origin`.                                                                                                                                  |
 | Signing in or approving in the browser fails; the API answers `403 Origin not allowed` | The URL the laptop uses is not `--url` or an `--origin`. Rerun setup with `--origin <that URL>`.                                                                                                                                        |
 | `… Run Mend: Connect to server to sign in.`                                            | The token was revoked or belongs to another server. Connect again.                                                                                                                                                                      |

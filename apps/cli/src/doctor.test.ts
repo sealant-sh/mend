@@ -12,6 +12,7 @@ import { readShutdownTimeout } from "./docker-shutdown.ts";
 import {
   clockCheck,
   exposureCheck,
+  macSleepCheck,
   formatCheck,
   type LocalServerFacts,
   runChecks,
@@ -383,6 +384,64 @@ describe("the clock line", () => {
       "this server's clock is 7 min ahead of this machine's",
     );
     expect(clockCheck(-90_000)).toBeNull();
+  });
+});
+
+/** `pmset -g` as a Mac mini prints it, trimmed to the lines that matter here. */
+const pmsetOutput = (sleep: string, womp: string) =>
+  [
+    "System-wide power settings:",
+    "Currently in use:",
+    " standby              0",
+    " Sleep On Power Button 1",
+    ` womp                 ${womp}`,
+    ` sleep                ${sleep}`,
+    " disksleep            10",
+    " displaysleep         10",
+  ].join("\n");
+
+describe("the sleep line", () => {
+  it("says a Mac that sleeps on its own pauses the Docker VM, and how to stop it", () => {
+    const line = macSleepCheck(pmsetOutput("1 (sleep prevented by sharingd)", "0"));
+    expect(line?.state).toBe("todo");
+    expect(line?.detail).toContain("sleeps after 1 min idle");
+    expect(line?.detail).toContain("clock drifts");
+    expect(line?.fix).toBe(
+      "sudo pmset -a sleep 0 disksleep 0 womp 1 (System Settings → Energy → Prevent automatic sleeping when the display is off, and Wake for network access)",
+    );
+  });
+
+  it("leaves out Wake for network access when it is already on", () => {
+    expect(macSleepCheck(pmsetOutput("10", "1"))?.fix).toBe(
+      "sudo pmset -a sleep 0 disksleep 0 (System Settings → Energy → Prevent automatic sleeping when the display is off)",
+    );
+  });
+
+  it("prints nothing for a Mac that never sleeps, or settings it cannot read", () => {
+    expect(macSleepCheck(pmsetOutput("0", "1"))).toBeNull();
+    expect(macSleepCheck("pmset: command not found")).toBeNull();
+  });
+
+  it("reads the settings only where a server is installed", async () => {
+    const reads: Array<string> = [];
+    const probe = (local: LocalServerFacts | null) =>
+      runChecks(
+        { url: "http://127.0.0.1:9", token: null },
+        {
+          localCredential: () => null,
+          claudeGrant: () => null,
+          onPath: () => false,
+          localServer: async () => local,
+          macPowerSettings: () => {
+            reads.push("pmset");
+            return pmsetOutput("1", "1");
+          },
+        },
+      );
+    expect((await probe(null)).some((check) => check.label === "sleep")).toBe(false);
+    expect(reads).toEqual([]);
+    const installed = await probe(installedHere("http://localhost:3105"));
+    expect(installed.find((check) => check.label === "sleep")?.state).toBe("todo");
   });
 });
 

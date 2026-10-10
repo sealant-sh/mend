@@ -9,7 +9,10 @@ their own clock, so the request read as expired the moment it opened. The server
 `expiresIn` (seconds left, by its own clock) and clients count down from when the answer arrived.
 Against an older server they read `expiresAt` against its Date header. The server still judges
 expiry by its own clock alone. `mend doctor` says when the server's clock is more than two minutes
-off this machine's (`this server's clock is 116 min behind this machine's`), with what resets it.
+off this machine's (`this server's clock is 116 min behind this machine's`), with what resets it. On
+a Mac with a server installed, it also says when the Mac still sleeps on its own (`pmset -g`):
+OrbStack and Docker Desktop pause their VM while it sleeps. The Mac mini guide says to turn
+automatic sleep off and Wake for network access on.
 
 `mend login` over SSH, or on Linux with no display, prints the link and code and opens no browser.
 Before, it opened the page on the far machine's screen. `--open` and `--no-open` decide outright.

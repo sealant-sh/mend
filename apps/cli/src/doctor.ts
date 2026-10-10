@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -33,6 +34,36 @@ export interface DoctorConfig {
   readonly token: string | null;
 }
 
+/** One `pmset -g` setting as a number: `sleep`, `womp`; null when the output does not list it. */
+const pmsetValue = (output: string, name: string): number | null => {
+  const match = new RegExp(`^\\s*${name}\\s+(\\d+)`, "m").exec(output);
+  return match?.[1] === undefined ? null : Number(match[1]);
+};
+
+/**
+ * A Mac that serves Mend and sleeps on its own, as one doctor line; null when it does not (or the
+ * settings say nothing). OrbStack and Docker Desktop pause their VM while the Mac sleeps, the
+ * lid-closed Maintenance Sleep included: builds stall, sessions drop, and the VM's clock wakes
+ * behind. "Wake for network access" (`womp`) lets the tailnet wake it.
+ */
+export const macSleepCheck = (pmset: string): Check | null => {
+  const sleepMinutes = pmsetValue(pmset, "sleep");
+  if (sleepMinutes === null || sleepMinutes === 0) return null;
+  const wakeForNetwork = pmsetValue(pmset, "womp");
+  return {
+    label: "sleep",
+    state: "todo",
+    detail: `this Mac sleeps after ${sleepMinutes} min idle, and the Docker VM pauses while it sleeps: builds stall, sessions drop, its clock drifts`,
+    fix: `sudo pmset -a sleep 0 disksleep 0${wakeForNetwork === 0 ? " womp 1" : ""} (System Settings → Energy → Prevent automatic sleeping when the display is off${wakeForNetwork === 0 ? ", and Wake for network access" : ""})`,
+  };
+};
+
+/** `pmset -g`, bounded like every other read here; null when it fails. */
+export const readMacPowerSettings = (): string | null => {
+  const read = spawnSync("pmset", ["-g"], { encoding: "utf8", timeout: TIMEOUT_MS });
+  return read.status === 0 ? read.stdout : null;
+};
+
 /** ok: observed working · todo: not set up yet · failed: the workbench cannot run like this. */
 export type CheckState = "ok" | "todo" | "failed";
 
@@ -67,6 +98,11 @@ export interface DoctorProbes {
    * read.
    */
   readonly localServer?: () => Promise<LocalServerFacts | null>;
+  /**
+   * `pmset -g` on a Mac, read only when a server is installed on this machine: whether it sleeps
+   * on its own. Null when it could not be read. Absent (not a Mac): the line is left out.
+   */
+  readonly macPowerSettings?: () => string | null;
 }
 
 /** What doctor reads of the server `mend server setup` installed here. */
@@ -550,6 +586,12 @@ export const runChecks = async (
     checks.push(dockerShutdownCheck(probes.dockerShutdown(local?.dockerContext ?? null)));
   }
 
+  // A Mac serving Mend that sleeps on its own pauses the Docker VM with it.
+  const pmset =
+    local === null || probes.macPowerSettings === undefined ? null : probes.macPowerSettings();
+  const sleep = pmset === null ? null : macSleepCheck(pmset);
+  if (sleep !== null) checks.push(sleep);
+
   return checks;
 };
 
@@ -586,6 +628,7 @@ export const doctorCommand = async (
     onPath,
     dockerShutdown: observeHostShutdownTimeout,
     ...(localServer === undefined ? {} : { localServer }),
+    ...(process.platform === "darwin" ? { macPowerSettings: readMacPowerSettings } : {}),
   });
   for (const check of checks) {
     process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);
