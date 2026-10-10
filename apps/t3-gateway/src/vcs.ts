@@ -1,5 +1,9 @@
 import {
+  GitCommandError,
   GitManagerError,
+  type VcsListRefsInput,
+  type VcsListRefsResult,
+  type VcsRef,
   type VcsStatusInput,
   type VcsStatusLocalResult,
   type VcsStatusResult,
@@ -63,6 +67,40 @@ export const localStatusOf = (
         },
       }),
 });
+
+/**
+ * The refs Mend knows at `cwd`, for t3code's branch picker: the project's default branch, and the
+ * thread's own branch in its worktree. Mend lists no other branch of the project and no remote
+ * one, so nothing else is claimed. t3code picks the default as a new worktree's base from this.
+ */
+export const refsAt = (
+  location: CwdLocation,
+  cwd: string,
+  request: Pick<VcsListRefsInput, "query" | "refKind">,
+): ReadonlyArray<VcsRef> => {
+  if (request.refKind === "remote") return [];
+  const refs: Array<VcsRef> = [
+    {
+      name: location.defaultBranch,
+      current: location.branch === location.defaultBranch,
+      isDefault: true,
+      // The project's root is Mend's bare store, which t3code must never take for a checkout.
+      worktreePath: null,
+    },
+  ];
+  if (location.sessionId !== null && location.branch !== location.defaultBranch) {
+    refs.push({ name: location.branch, current: true, isDefault: false, worktreePath: cwd });
+  }
+  const query = request.query?.toLowerCase();
+  return refs.filter(
+    (ref) =>
+      ref.name.trim().length > 0 && (query === undefined || ref.name.toLowerCase().includes(query)),
+  );
+};
+
+/** `vcs.listRefs` fails as t3code's git commands do; Mend runs no git command for it. */
+const refsFailed = (cwd: string) => (detail: string) =>
+  new GitCommandError({ operation: "vcs.listRefs", command: "", cwd, detail });
 
 const failed = (operation: string, cwd: string) => (detail: string) =>
   new GitManagerError({ operation, cwd, detail });
@@ -158,5 +196,23 @@ export const makeVcsHandlers = (input: {
       }),
     );
 
-  return { refreshStatus, subscribeStatus };
+  const listRefs = (request: VcsListRefsInput) =>
+    Effect.gen(function* () {
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError((error) => refsFailed(request.cwd)(error.message)));
+      if (location === null) {
+        return yield* refsFailed(request.cwd)("No Mend thread or project of yours works there.");
+      }
+      const refs = refsAt(location, request.cwd, request);
+      return {
+        refs,
+        isRepo: true,
+        hasPrimaryRemote: location.hasOrigin,
+        nextCursor: null,
+        totalCount: refs.length,
+      } satisfies VcsListRefsResult;
+    });
+
+  return { listRefs, refreshStatus, subscribeStatus };
 };

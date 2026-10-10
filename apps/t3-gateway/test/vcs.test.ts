@@ -90,6 +90,46 @@ describe("VCS status", () => {
     ),
   );
 
+  it.live("lists the refs Mend knows: the default branch, and the thread's own", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "REFS");
+
+        // The project's root: its default branch, which t3code takes as a new worktree's base.
+        const root = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: STORE });
+        assert.deepStrictEqual(root.refs, [
+          { name: "main", current: true, isDefault: true, worktreePath: null },
+        ]);
+        assert.isTrue(root.isRepo);
+        assert.isNull(root.nextCursor);
+        assert.strictEqual(root.totalCount, 1);
+
+        const thread = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE });
+        assert.deepStrictEqual(thread.refs, [
+          { name: "main", current: false, isDefault: true, worktreePath: null },
+          { name: "mend/wt-session-1", current: true, isDefault: false, worktreePath: WORKTREE },
+        ]);
+        const matching = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE, query: "WT-" });
+        assert.deepStrictEqual(
+          matching.refs.map((ref) => ref.name),
+          ["mend/wt-session-1"],
+        );
+        // Mend lists no remote refs, so none is claimed.
+        const remote = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE, refKind: "remote" });
+        assert.deepStrictEqual(remote.refs, []);
+
+        const elsewhere = yield* Effect.exit(rpc[WS_METHODS.vcsListRefs]({ cwd: "/tmp" }));
+        assert.isTrue(Exit.isFailure(elsewhere));
+        if (Exit.isFailure(elsewhere)) {
+          const error = Option.getOrUndefined(Cause.findErrorOption(elsewhere.cause));
+          assert.strictEqual(error?._tag, "GitCommandError");
+        }
+      }),
+    ),
+  );
+
   it.live("follows every session in the worktree, as each adds to its one change", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

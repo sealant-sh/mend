@@ -298,6 +298,9 @@ export const projectShellOf = (project: MendProject): OrchestrationProjectShell 
   workspaceRoot: project.storePath,
   // Each session keeps the model it was started with; a project has no default of its own here.
   defaultModelSelection: null,
+  // Every Mend session works in a worktree of its own: a new thread starts in a new worktree, as
+  // a launch into the project's root is refused (`launch.ts`).
+  defaultThreadEnvMode: "worktree",
   scripts: [],
   createdAt: project.createdAt,
   updatedAt: project.updatedAt,

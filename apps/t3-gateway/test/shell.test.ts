@@ -69,6 +69,11 @@ describe("the shell", () => {
           snapshot.projects.map((project) => [project.id, project.title, project.workspaceRoot]),
           [["project-1", "mend", "/var/lib/mend/store/project-1/repo.git"]],
         );
+        // A new thread starts in a new worktree: every Mend session has one (`launch.ts`).
+        assert.strictEqual(snapshot.projects[0]?.defaultThreadEnvMode, "worktree");
+        // t3code's onboarding asks what it could import; Mend's projects are here already.
+        const scan = yield* rpc[WS_METHODS.agentSessionsScan]({});
+        assert.deepStrictEqual(scan.candidates, []);
         assert.deepStrictEqual(snapshot.threads.map((thread) => thread.id).toSorted(), [
           "session-claude",
           "session-codex",

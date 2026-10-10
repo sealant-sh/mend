@@ -36,6 +36,7 @@ socket gets its own RPC server, holding the handlers of the person who paired.
 | `subscribeServerConfig`, `server.getConfig`             | The config: the descriptor, and one provider per Mend harness from `GET /api/harnesses/models` read as the person |
 | `subscribeServerLifecycle`                              | `welcome` with `bootstrapStatus: "complete"`, then open                                                           |
 | `server.probe`                                          | `{}`                                                                                                              |
+| `agentSessions.scan`                                    | No candidates: the gateway has no agent history to scan, and Mend's projects are in the shell already             |
 | every other command or read                             | A typed failure from the method's own contract, never a defect                                                    |
 | feeds of things Mend never has (terminals, previews, …) | Open, and never emit                                                                                              |
 
@@ -80,14 +81,14 @@ Any other sequence (older than that, from another hub, or ahead of the hub) gets
 which t3code always takes as a reset. A thread stays watched for two minutes after its last
 subscriber leaves, so a client that reconnects resumes it without reloading it.
 
-| t3code                                                         | From Mend                                                                                                       |
-| -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `orchestration.subscribeShell`, `GET /api/orchestration/shell` | Every project the person sees, and every session whose current agent is a codex or claude protocol process      |
-| project                                                        | `workspaceRoot` is the store path; no default model                                                             |
-| thread                                                         | the session; title from its label, else its first message; `worktreePath` is the worktree beside the store      |
-| run                                                            | one per turn; a running turn whose agent asked something is `waiting`                                           |
-| shell status                                                   | the latest run's status, else `idle`; the newest pending request; message bodies stay out, as in t3code's shell |
-| pending background tasks                                       | what a waiting turn waits for: the previous sender's own work (ADR 0016, decision 6)                            |
+| t3code                                                         | From Mend                                                                                                                     |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `orchestration.subscribeShell`, `GET /api/orchestration/shell` | Every project the person sees, and every session whose current agent is a codex or claude protocol process                    |
+| project                                                        | `workspaceRoot` is the store path; no default model; new threads start in a new worktree (`defaultThreadEnvMode: "worktree"`) |
+| thread                                                         | the session; title from its label, else its first message; `worktreePath` is the worktree beside the store                    |
+| run                                                            | one per turn; a running turn whose agent asked something is `waiting`                                                         |
+| shell status                                                   | the latest run's status, else `idle`; the newest pending request; message bodies stay out, as in t3code's shell               |
+| pending background tasks                                       | what a waiting turn waits for: the previous sender's own work (ADR 0016, decision 6)                                          |
 
 PTY and shell sessions, and harnesses t3code has no driver for, are not threads.
 
@@ -357,6 +358,10 @@ change Mend keeps for it (`GET /api/changes/:id/stats`), read as the person.
 | `hasWorkingTreeChanges`, `workingTree` | false and empty: Mend has no read of HEAD, the index or uncommitted files, so none is claimed |
 | `hasPrimaryRemote`                     | the project was adopted from an origin                                                        |
 | the remote half                        | none: Mend tracks no upstream for a session's branch (landing is its own step)                |
+
+`vcs.listRefs` answers the refs Mend knows at a thread or project: the project's default branch,
+marked default, and the thread's own branch in its worktree. t3code takes the default as a new
+worktree's base. Mend lists no other branch and no remote one, so none is claimed.
 
 The stream sends a snapshot, then the local half again when any thread in the worktree changes in
 the shell (every session there adds to the one change) or a thread goes, and every 15 seconds
