@@ -350,9 +350,14 @@ import {
   REMOTE_SSH_RESET_PENDING_WORDS,
   remoteSshRootWords,
   SHARED_AS_BEFORE,
+  connectWay,
+  createLoginRefusal,
   isAuthenticationFailure,
   layoutRefused,
+  loginNeedOf,
   makeHarnessLayoutSteps,
+  nextCreateAttempts,
+  personCreateAttempts,
 } from "./harness-layout-steps.ts";
 import {
   gitAuthorConfigText,
@@ -721,17 +726,21 @@ const platformShape = (
 ): {
   harness: Harness;
   credentialAttempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>;
+  /** What the launch starts, which decides the logins a person launch needs (`loginNeedOf`). */
+  starts: string;
 } => {
   switch (harness) {
     case "codex":
       return {
         harness: codex(),
         credentialAttempts: withGitHubCredentialFallback({ codex: true }),
+        starts: harness,
       };
     case "claude":
       return {
         harness: claudeCode(),
         credentialAttempts: withGitHubCredentialFallback({ claude: true }),
+        starts: harness,
       };
     case "shell":
       // A shell is an open workbench: the unified image carries EVERY baked
@@ -753,14 +762,19 @@ const platformShape = (
           { github: true },
           undefined,
         ],
+        starts: harness,
       };
     case "opencode":
     case "pi":
       // Baked into the unified image with every other agent CLI (Core 0.39): the shell's shape,
       // its credential ladder included, until each brings logins of its own.
-      return platformShape("shell");
+      return { ...platformShape("shell"), starts: harness };
     default:
-      return { harness: opencode(), credentialAttempts: [{ github: true }, undefined] };
+      return {
+        harness: opencode(),
+        credentialAttempts: [{ github: true }, undefined],
+        starts: harness,
+      };
   }
 };
 
@@ -824,6 +838,16 @@ const causeWords = (cause: Cause.Cause<unknown>): string => {
   const squashed = Cause.squash(cause);
   return squashed instanceof Error ? squashed.message : String(squashed);
 };
+
+/**
+ * A launch that did not start, for its session line: refused before anything ran (a login the
+ * person has not connected, a layout Mend cannot run), in a join's words, or failed.
+ */
+const launchEndWords = (error: unknown): string =>
+  error instanceof SealantPlatformError &&
+  (error.code === "person_login_refused" || error.code === "harness_layout_refused")
+    ? `launch refused · ${error.message}`
+    : `launch failed: ${error instanceof Error ? error.message : String(error)}`;
 
 /** A steerer's refusal, in a steerer's words ("Connect Claude to steer this session."). */
 const steerWords = (message: string) =>
@@ -4144,6 +4168,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Sessions whose executor create is being asked in this process right now. */
       const creatingExecutors = new Set<SessionId>();
+
+      /**
+       * The logins each person standby's create wrote into its owner's home, by standby, for its
+       * claim (docs/adr/0016, decision 5). Forgotten by a restart: a standby claimed then takes
+       * nothing as held, and its launcher's first process asks Core for their logins.
+       */
+      const standbyLogins = new Map<string, WorkspaceCredentialsOptions | undefined>();
 
       /** Images that ran no memory delivery for want of node: said once each (`deliverAgentMemory`). */
       const nodelessImages = new Set<string>();
@@ -10524,7 +10555,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * captured (the co-located store).
          */
         readonly restoredFrom: number | null;
-        readonly onFailure: (message: string) => Effect.Effect<void>;
+        /** Told why the launch did not start: its words, and the failure itself. */
+        readonly onFailure: (message: string, failure?: unknown) => Effect.Effect<void>;
         readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
         /**
          * The harness this executor is about to start: its files are read once in the background
@@ -10539,9 +10571,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly launch: LaunchLayout;
           readonly launchId: string;
           readonly worktreeId: WorktreeId;
-          /** What decision 1's fallback re-posts to `/root` when a person prediction was wrong. */
+          /**
+           * What decision 1's fallback re-posts to `/root` when a person prediction was wrong, and
+           * what the launcher's home holds when it was right (`settlePrepare`).
+           */
           readonly fallback: {
             readonly credentials: WorkspaceCredentialsOptions | undefined;
+            readonly asked?: WorkspaceCredentialsOptions | undefined;
             readonly harness: string | null;
             readonly dotfiles: ReadonlyArray<{
               readonly data: string;
@@ -10685,7 +10721,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ["sh", "-lc", command],
                 setupUser === undefined ? undefined : { user: setupUser },
               )
-              .pipe(Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)));
+              .pipe(
+                Effect.tapError((error) =>
+                  input.onFailure(error.message, error).pipe(Effect.ignore),
+                ),
+              );
             if (result.exitCode !== 0) {
               const message = `setup command failed (exit ${result.exitCode}): ${command}`;
               yield* stop(message);
@@ -10854,7 +10894,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly socketDir: string;
         readonly shape: ReturnType<typeof platformShape>;
         readonly ownerUserId: string | null;
-        readonly onFailure: (message: string) => Effect.Effect<void>;
+        /** Told why the launch did not start: its words, and the failure itself. */
+        readonly onFailure: (message: string, failure?: unknown) => Effect.Effect<void>;
         /**
          * The platform accepted the create: from here on an executor exists. Runs before anything
          * executes in it, so the caller can make the executor addressable first.
@@ -10919,7 +10960,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           effect: Effect.Effect<A, E>,
         ): Effect.Effect<A, E> =>
           effect.pipe(
-            Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)),
+            Effect.tapError((error) => input.onFailure(error.message, error).pipe(Effect.ignore)),
           );
         // Before anything is read for the mounts: what they would hold passes the gate first.
         yield* refuseWorkspaceRepositories(project, ownerUserId).pipe(report);
@@ -11231,25 +11272,48 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
+        // The attempt the create answered: what the launcher's home holds in a person launch.
+        let createdWith: WorkspaceCredentialsOptions | undefined = undefined;
+        // The logins a person launch may not start without; a shared launch steps down past any.
+        const needed = credentialsHome === undefined ? [] : loginNeedOf(shape.starts).required;
         const createWithCredentialFallback = (
           attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
         ): Effect.Effect<Workspace, SealantPlatformError> => {
           const [credentials, ...remaining] = attempts;
           return createWorkspace(credentials).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                createdWith = credentials;
+              }),
+            ),
             Effect.catchIf(
-              (error) =>
-                error.message.toLowerCase().includes("connected account") && remaining.length > 0,
+              (error) => nextCreateAttempts(error, remaining, needed) !== null,
               (error) =>
                 Effect.logWarning("session engine: retrying with fewer connected accounts").pipe(
                   Effect.annotateLogs({ sessionId, error: error.message }),
-                  Effect.andThen(createWithCredentialFallback(remaining)),
+                  Effect.andThen(
+                    createWithCredentialFallback(
+                      nextCreateAttempts(error, remaining, needed) ?? [],
+                    ),
+                  ),
                 ),
             ),
           );
         };
         // A missing harness account must not discard a valid GitHub account (and vice versa).
-        // Try the complete identity first, then each useful subset before interactive auth.
-        const workspace = yield* createWithCredentialFallback(shape.credentialAttempts).pipe(
+        // Try the complete identity first, then each useful subset before interactive auth. A
+        // person launch never steps below its harness's own login (docs/adr/0016, decision 5):
+        // Core refusing that account refuses the launch, in a join's words, before anything runs.
+        const workspace = yield* createWithCredentialFallback(
+          credentialsHome === undefined
+            ? shape.credentialAttempts
+            : personCreateAttempts(shape.credentialAttempts, shape.starts),
+        ).pipe(
+          Effect.mapError((error) =>
+            credentialsHome === undefined
+              ? error
+              : (createLoginRefusal(error, shape.starts) ?? error),
+          ),
           // The platform's typed code IS Mend's capability check (a config flag could lie): the
           // workspace runtime refused the request synchronously — no workspace exists, no build
           // queued. Restate it naming what was refused, observationally.
@@ -11317,7 +11381,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         launchId: input.launchId,
                         worktreeId: input.layout.worktreeId,
                         fallback: {
-                          credentials: shape.credentialAttempts[0],
+                          credentials: createdWith,
+                          asked: shape.credentialAttempts[0],
                           harness: input.warmHarness ?? null,
                           dotfiles: dotfilesArchives.map((archive) => ({
                             data: archive.data,
@@ -11343,6 +11408,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
            * for its reason. Kept on a standby (`HotWorkspace.remoteSsh`) for its claim.
            */
           remoteSsh,
+          /**
+           * The logins the create wrote, the ladder's answered attempt: a person standby's claim
+           * takes them as its launcher's home's (`standbyLogins`).
+           */
+          createdWith,
           /** People whose restored opencode database prepare found (decision 8a). */
           opencodeRestored: prepared?.opencode ?? [],
           environmentManifest,
@@ -15927,7 +15997,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.tapCause((cause) =>
               Cause.hasInterruptsOnly(cause)
                 ? Effect.void
-                : settleSession(sessionId, "failed", `launch failed: ${causeWords(cause)}`).pipe(
+                : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
                     Effect.ignore,
                   ),
             ),
@@ -16279,8 +16349,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             socketDir,
             shape,
             ownerUserId,
-            onFailure: (message) =>
-              settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
+            onFailure: (message, failure) =>
+              settleSession(
+                sessionId,
+                "failed",
+                launchEndWords(failure === undefined ? message : failure),
+              ).pipe(Effect.ignore),
             onCreated: (workspace) => acceptExecutor(workspace, key),
             abandon: abandonExecutor,
             launchId: key,
@@ -16446,8 +16520,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               workspaceImage: provisioned.workspaceImage,
               captured: true,
               restoredFrom: replanned.restoredFrom,
-              onFailure: (message) =>
-                settleSession(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
+              onFailure: (message, failure) =>
+                settleSession(
+                  sessionId,
+                  "failed",
+                  launchEndWords(failure === undefined ? message : failure),
+                ).pipe(Effect.ignore),
               abandon: abandonExecutor,
               warmHarness: session.harness,
               ...(launchLayout.layout === "person" ||
@@ -16458,9 +16536,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       launchId: standbyLaunch,
                       worktreeId: session.worktreeId,
                       fallback: {
-                        // What the standby's create asked for (`platformShape("shell")`).
+                        // What the standby's create wrote, and asked for (`platformShape("shell")`).
                         credentials:
                           launchLayout.layout === "person"
+                            ? standbyLogins.get(claimedEntry.id)
+                            : undefined,
+                        asked:
+                          launchLayout.layout === "person" && standbyLogins.has(claimedEntry.id)
                             ? platformShape("shell").credentialAttempts[0]
                             : undefined,
                         harness: session.harness,
@@ -16474,6 +16556,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   }
                 : {}),
             });
+            standbyLogins.delete(claimedEntry.id);
             setupSkippedFrom = prepared.setupSkippedFrom;
             if (dotfiles !== null) {
               claimedPerson = {
@@ -17931,9 +18014,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             activeLogins.set(key, now + ACTIVE_LOGIN_TTL_MS);
             return null;
           case "missing":
-            return `Connect ${name} to steer this session.`;
+            return `Connect ${name} to steer this session. ${connectWay(provider)}`;
           case "invalid":
-            return `Your ${name} login needs reconnecting. Reconnect ${name} to steer this session.`;
+            return `Your ${name} login needs reconnecting. Reconnect ${name} to steer this session. ${connectWay(provider)}`;
           case "unknown":
             // Core could not be asked: the hand-over's own write refuses a login that is not there.
             return null;
@@ -21521,6 +21604,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
         yield* hotWorkspaces.remove(entry.id);
+        standbyLogins.delete(entry.id);
         return true;
       });
 
@@ -21637,6 +21721,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               provisioned.extraMounts,
             );
           }
+          if (standbyPerson !== null) standbyLogins.set(sessionId, provisioned.createdWith);
           yield* hotWorkspaces.setReady(sessionId, {
             sealantWorkspaceId: SealantWorkspaceId.make(provisioned.workspace.id),
             workspaceImage: provisioned.workspaceImage,
