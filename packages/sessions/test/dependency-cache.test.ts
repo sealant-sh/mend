@@ -38,6 +38,9 @@ import {
   INSTALL_FETCH_TIMEOUT_MS,
   type InstallExecResult,
   installScript,
+  NPM_MIRROR_NOT_USED,
+  NPM_MIRROR_USED,
+  parseNpmMirrorUrl,
   platformKeyOf,
   promoteBulkToCache,
   readDependencyCache,
@@ -324,7 +327,11 @@ const withStandIn = async <A>(
     const repo = path.join(root, "repo");
     const bin = path.join(root, "bin");
     for (const dir of [repo, bin]) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(bin, "pnpm"), ["#!/bin/sh", ...pnpm].join("\n"), {
+    // Asked for its configuration (the mirror's check), it reports nothing set.
+    const config =
+      'if [ "$1" = config ]; then [ "$2" = get ] && echo https://registry.npmjs.org/; exit 0; fi';
+    fs.writeFileSync(path.join(bin, "npm"), ["#!/bin/sh", config].join("\n"), { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "pnpm"), ["#!/bin/sh", config, ...pnpm].join("\n"), {
       mode: 0o755,
     });
     fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -368,6 +375,7 @@ describe("runInstallCommand", () => {
           exitCode: 0,
           fetchRetries: 2,
           retriedWithDefaults: true,
+          npmMirror: "off",
           stderr: "",
         });
         expect(seen).toEqual([installScript(PNPM), PNPM]);
@@ -409,6 +417,335 @@ describe("runInstallCommand", () => {
         }),
       );
     }
+  });
+});
+
+const MIRROR = "http://npm-mirror:4873/";
+
+/**
+ * The real npm beside the node running these tests, run by that node: the mirror tests hand it
+ * `npm config …`, so what decides is npm's own reading of the configuration, quoted keys included.
+ */
+const REAL_NPM = path.join(
+  path.dirname(process.execPath),
+  "../lib/node_modules/npm/bin/npm-cli.js",
+);
+
+describe("the npm mirror in the install script", () => {
+  /**
+   * The script run by a real `sh` in a temporary repo and home, beside a stand-in `pnpm` and `npm`
+   * that record their install argv, and a stand-in `node` whose ping answers as `MIRROR_DOWN` says.
+   * Their `config` subcommands are the real npm's (pnpm 10 hands `config get` to npm too), unless
+   * `CONFIG_FAILS` makes them fail.
+   */
+  const run = (setup: {
+    readonly command?: string;
+    readonly mirror?: string | null;
+    readonly files?: Readonly<Record<string, string>>;
+    readonly home?: Readonly<Record<string, string>>;
+    readonly env?: Readonly<Record<string, string>>;
+  }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-install-mirror-"));
+    try {
+      const repo = path.join(root, "repo");
+      const home = path.join(root, "home");
+      const bin = path.join(root, "bin");
+      for (const dir of [repo, home, bin]) fs.mkdirSync(dir, { recursive: true });
+      writeFiles(repo, setup.files);
+      writeFiles(home, setup.home);
+      const out = path.join(root, "argv.out");
+      for (const tool of ["pnpm", "npm"])
+        fs.writeFileSync(
+          path.join(bin, tool),
+          [
+            "#!/bin/sh",
+            'if [ "$1" = config ]; then',
+            '  [ -n "${CONFIG_FAILS-}" ] && exit 1',
+            `  exec "${process.execPath}" "${REAL_NPM}" "$@"`,
+            "fi",
+            `printf '%s' "$*" > "${out}"`,
+          ].join("\n"),
+          { mode: 0o755 },
+        );
+      fs.writeFileSync(
+        path.join(bin, "node"),
+        '#!/bin/sh\ncase "$*" in *-/ping*) exit "${MIRROR_DOWN:-0}";; esac\nexit 0\n',
+        { mode: 0o755 },
+      );
+      const command = setup.command ?? "pnpm install --frozen-lockfile";
+      const ran = spawnSync(
+        "sh",
+        ["-c", installScript(command, setup.mirror === undefined ? MIRROR : setup.mirror)],
+        {
+          cwd: repo,
+          env: { PATH: `${bin}:/usr/bin:/bin:${process.env.PATH ?? ""}`, HOME: home, ...setup.env },
+          encoding: "utf8",
+        },
+      );
+      expect(ran.status).toBe(0);
+      return { argv: fs.readFileSync(out, "utf8"), said: ran.stderr.trim() };
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it("points a plain pnpm install at the mirror when nobody set a registry and it answers", () => {
+    const seen = run({});
+    expect(seen.argv).toBe(
+      `install --frozen-lockfile --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS} --registry=${MIRROR}`,
+    );
+    expect(seen.said).toBe(`${NPM_MIRROR_USED} · ${MIRROR}`);
+  });
+
+  it("goes to the registry itself when the mirror does not answer its ping", () => {
+    const seen = run({ env: { MIRROR_DOWN: "1" } });
+    expect(seen.argv).toBe(`install --frozen-lockfile --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}`);
+    expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · ${MIRROR} did not answer`);
+  });
+
+  it.each([
+    ["the project's .npmrc", { files: { ".npmrc": "registry=https://npm.corp.example/\n" } }],
+    [
+      "the project's pnpm-workspace.yaml",
+      { files: { "pnpm-workspace.yaml": "packages: []\nregistry: https://npm.corp.example/\n" } },
+    ],
+    ["the person's ~/.npmrc", { home: { ".npmrc": " registry = https://npm.corp.example/\n" } }],
+    ["the environment", { env: { npm_config_registry: "https://npm.corp.example/" } }],
+    ["pnpm's environment", { env: { PNPM_CONFIG_REGISTRY: "https://npm.corp.example/" } }],
+  ])("leaves a registry set in %s alone", (_where, setup) => {
+    const seen = run(setup);
+    expect(seen.argv).not.toContain("--registry");
+    expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · a registry is set`);
+  });
+
+  it.each([
+    [
+      "a token for registry.npmjs.org",
+      { home: { ".npmrc": "//registry.npmjs.org/:_authToken=x\n" } },
+    ],
+    ["an unscoped _auth", { files: { ".npmrc": "_auth=eDp5\n" } }],
+    ["always-auth", { files: { ".npmrc": "always-auth=true\n" } }],
+    ["a token in the environment", { env: { NPM_CONFIG__AUTHTOKEN: "x" } }],
+  ])(
+    "stays on the registry itself with %s: the mirror never sends a credential",
+    (_what, setup) => {
+      const seen = run(setup);
+      expect(seen.argv).not.toContain("--registry");
+      expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · a login for registry.npmjs.org is set`);
+    },
+  );
+
+  it.each([
+    [
+      "a double-quoted registry",
+      { files: { ".npmrc": '"registry"=https://private-registry.invalid/\n' } },
+    ],
+    [
+      "a single-quoted registry",
+      { files: { ".npmrc": "'registry'=https://private-registry.invalid/\n" } },
+    ],
+    [
+      "a quoted registry in ~/.npmrc",
+      { home: { ".npmrc": '"registry" = https://npm.corp.example/\n' } },
+    ],
+  ])("asks npm, which reads %s as the registry, and leaves it alone", (_what, setup) => {
+    for (const command of ["npm ci", "pnpm install --frozen-lockfile"]) {
+      const seen = run({ command, ...setup });
+      expect(seen.argv).not.toContain("--registry");
+      expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · a registry is set`);
+    }
+  });
+
+  it.each([
+    [
+      "a quoted token for registry.npmjs.org",
+      { files: { ".npmrc": '"//registry.npmjs.org/:_authToken"=dummy\n' } },
+    ],
+    [
+      "a single-quoted token in ~/.npmrc",
+      { home: { ".npmrc": "'//registry.npmjs.org/:_authToken'=dummy\n" } },
+    ],
+  ])("asks npm, which reads %s as a login, and stays on the registry", (_what, setup) => {
+    const seen = run({ command: "npm ci", ...setup });
+    expect(seen.argv).not.toContain("--registry");
+    expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · a login for registry.npmjs.org is set`);
+  });
+
+  it("offers no mirror when the package manager's configuration cannot be read", () => {
+    for (const command of ["npm ci", "pnpm install --frozen-lockfile"]) {
+      const seen = run({ command, env: { CONFIG_FAILS: "1" } });
+      expect(seen.argv).not.toContain("--registry");
+      expect(seen.said).toBe(
+        `${NPM_MIRROR_NOT_USED} · the configuration ${command.split(" ")[0]} reports could not be read`,
+      );
+    }
+  });
+
+  it("uses the mirror beside a scoped private registry, whose packages and login stay its own", () => {
+    const seen = run({
+      files: {
+        ".npmrc": "@corp:registry=https://npm.corp.example/\n//npm.corp.example/:_authToken=x\n",
+      },
+    });
+    expect(seen.argv).toContain(`--registry=${MIRROR}`);
+  });
+
+  it.each([
+    ["npm ci --userconfig=/etc/private.npmrc", "--userconfig=/etc/private.npmrc"],
+    ["npm ci --userconfig /etc/private.npmrc", "--userconfig"],
+    ["npm install --globalconfig=/etc/npmrc", "--globalconfig=/etc/npmrc"],
+    ["npm ci --prefix=/srv/app", "--prefix=/srv/app"],
+    ["pnpm install --dir packages/api", "--dir"],
+    [
+      "pnpm install --config.@corp:registry=https://npm.corp.example/",
+      "--config.@corp:registry=https://npm.corp.example/",
+    ],
+    ["pnpm install --frozen-lockfile -C sub", "-C"],
+  ])(
+    "leaves %s as written: the flag may choose a config the script cannot see",
+    (command, flag) => {
+      const seen = run({ command });
+      expect(seen.argv).not.toContain(MIRROR);
+      expect(seen.said).toBe(
+        `${NPM_MIRROR_NOT_USED} · the command passes ${flag}, which may choose its own config`,
+      );
+    },
+  );
+
+  it("offers the mirror to a command whose flags change neither config nor source", () => {
+    const seen = run({
+      command:
+        "pnpm install --frozen-lockfile --prefer-offline --reporter=append-only --ignore-scripts",
+    });
+    expect(seen.argv).toContain(`--registry=${MIRROR}`);
+  });
+
+  it("leaves a command that names its registry alone", () => {
+    const seen = run({ command: "pnpm install --registry=https://npm.corp.example/" });
+    expect(seen.argv).toBe(
+      `install --registry=https://npm.corp.example/ --fetch-timeout=${INSTALL_FETCH_TIMEOUT_MS}`,
+    );
+    expect(seen.said).toBe(`${NPM_MIRROR_NOT_USED} · the command names a registry`);
+  });
+
+  it("offers npm ci and npm install the mirror, with npm's own timeouts", () => {
+    expect(run({ command: "npm ci" }).argv).toBe(`ci --registry=${MIRROR}`);
+    expect(run({ command: "npm install --no-audit" }).argv).toBe(
+      `install --no-audit --registry=${MIRROR}`,
+    );
+  });
+
+  it("changes nothing without a mirror, and nothing for another package manager", () => {
+    for (const command of ["pnpm install --frozen-lockfile", "npm ci"])
+      expect(installScript(command, null)).toBe(installScript(command));
+    expect(installScript("npm ci", MIRROR)).not.toBe("npm ci");
+    for (const command of [
+      "yarn install --immutable",
+      "bun install --frozen-lockfile",
+      "npm ci && x",
+    ])
+      expect(installScript(command, MIRROR)).toBe(command);
+  });
+
+  it("reads the server's mirror URL as an origin with its slash, and nothing else", () => {
+    expect(parseNpmMirrorUrl("http://npm-mirror:4873/")).toBe(MIRROR);
+    expect(parseNpmMirrorUrl(" http://npm-mirror:4873 ")).toBe(MIRROR);
+    for (const value of [
+      "",
+      "npm-mirror:4873",
+      "ftp://x/",
+      "http://a:b@x/",
+      "http://x/path/",
+      "http://x'y/",
+    ])
+      expect(parseNpmMirrorUrl(value)).toBeNull();
+  });
+});
+
+describe("runInstallCommand with the npm mirror", () => {
+  const BAD_GATEWAY = ` ERR_PNPM_FETCH_502  GET ${MIRROR}a/-/a-1.0.0.tgz: Bad Gateway - 502`;
+
+  it("an install that failed on the mirror runs once more as written, and succeeds from the registry", async () => {
+    const PNPM = "pnpm install --frozen-lockfile";
+    await withStandIn(
+      [`case "$*" in *--registry=${MIRROR}*) printf '%s\\n' '${BAD_GATEWAY}' >&2; exit 1;; esac`],
+      (exec, seen) =>
+        Effect.gen(function* () {
+          const outcome = yield* runInstallCommand(PNPM, exec, MIRROR);
+          expect(outcome).toMatchObject({ exitCode: 0, npmMirror: "fell back" });
+          expect(seen).toEqual([installScript(PNPM, MIRROR), PNPM]);
+        }),
+    );
+  });
+
+  it("any failure through the mirror runs once more as written, never more", async () => {
+    // A project's own failure fails twice; the outcome is the second run's.
+    await withStandIn(
+      ["echo ' ERR_PNPM_LIFECYCLE  postinstall: exit 1' >&2", "exit 1"],
+      (exec, seen) =>
+        Effect.gen(function* () {
+          const outcome = yield* runInstallCommand("pnpm install", exec, MIRROR);
+          expect(outcome).toMatchObject({ exitCode: 1, npmMirror: "fell back" });
+          expect(seen).toEqual([installScript("pnpm install", MIRROR), "pnpm install"]);
+        }),
+    );
+  });
+
+  it("npm's integrity failure, its URL and its error on different lines, falls back to the registry", async () => {
+    // What npm 11 prints for a mirror that served bytes the lockfile's integrity refuses: the
+    // tarball URL on a warning, EINTEGRITY on its own lines. A stand-in npm prints it under the
+    // mirror and succeeds without it.
+    const CORRUPT = [
+      `npm warn tarball tarball data for is-number@7.0.0 (sha512-41Cif…) seems to be corrupted. Trying again.`,
+      `npm warn tarball ${MIRROR}is-number/-/is-number-7.0.0.tgz`,
+      "npm error code EINTEGRITY",
+      "npm error sha512-41Cif… integrity checksum failed when using sha512: wanted sha512-41Cif… but got sha512-z4PhNX…",
+    ];
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-install-integrity-"));
+    try {
+      const bin = path.join(root, "bin");
+      fs.mkdirSync(bin);
+      fs.writeFileSync(
+        path.join(bin, "npm"),
+        [
+          "#!/bin/sh",
+          'if [ "$1" = config ]; then [ "$2" = get ] && echo https://registry.npmjs.org/; exit 0; fi',
+          `case "$*" in *--registry=${MIRROR}*) printf '%s\\n' ${CORRUPT.map((line) => `'${line}'`).join(" ")} >&2; exit 1;; esac`,
+          "echo 'added 1 package'",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      fs.writeFileSync(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const seen: Array<string> = [];
+      const exec = (script: string) =>
+        Effect.sync(() => {
+          seen.push(script);
+          const ran = spawnSync("sh", ["-c", script], {
+            cwd: root,
+            env: { PATH: `${bin}:/usr/bin:/bin`, HOME: root },
+            encoding: "utf8",
+          });
+          return { exitCode: ran.status ?? 1, stdout: ran.stdout, stderr: ran.stderr };
+        });
+      const outcome = await Effect.runPromise(runInstallCommand("npm ci", exec, MIRROR));
+      expect(outcome).toMatchObject({ exitCode: 0, npmMirror: "fell back" });
+      expect(seen).toEqual([installScript("npm ci", MIRROR), "npm ci"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a success through the mirror says so", async () => {
+    await withStandIn(["exit 0"], (exec) =>
+      Effect.gen(function* () {
+        const outcome = yield* runInstallCommand("pnpm install", exec, MIRROR);
+        expect(outcome).toMatchObject({
+          exitCode: 0,
+          npmMirror: "used",
+          retriedWithDefaults: false,
+        });
+      }),
+    );
   });
 });
 

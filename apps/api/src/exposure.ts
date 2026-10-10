@@ -101,6 +101,12 @@ export interface ExposurePosture {
   /** `MEND_EXPOSURE_REASSESSED`: the version the operator recorded a reassessment of. */
   readonly reassessedVersion: string | undefined;
   readonly version: string;
+  /**
+   * The package and image mirrors sessions are pointed at (`MEND_NPM_MIRROR_URL`,
+   * `SEALANT_DOCKER_REGISTRY_MIRRORS`), by host and port. They publish no port of their own: like
+   * Sealant and the database they sit on the deployment's network, so `core-private` names them.
+   */
+  readonly mirrors?: ReadonlyArray<string>;
 }
 
 const observed = (id: string, ok: boolean, detail: string, fix: string): ExposureOutcome => ({
@@ -318,13 +324,20 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
           );
     })(),
     workspaceSsh(posture),
-    unobservable(
-      posture,
-      "core-private",
-      "this process cannot observe whether Sealant, its registry and the database are reachable from the Internet",
-      "the operator states Sealant, its registry and the database are not reachable from the Internet",
-      "a connection attempt to each from outside the deployment's network",
-    ),
+    ((): ExposureOutcome => {
+      const mirrors = posture.mirrors ?? [];
+      const services =
+        mirrors.length === 0
+          ? "Sealant, its registry and the database"
+          : `Sealant, its registry, the database and the package mirrors (${mirrors.join(", ")})`;
+      return unobservable(
+        posture,
+        "core-private",
+        `this process cannot observe whether ${services} are reachable from the Internet`,
+        `the operator states ${services} are not reachable from the Internet`,
+        "a connection attempt to each from outside the deployment's network",
+      );
+    })(),
     unobservable(
       posture,
       "edge-tls",
@@ -403,6 +416,18 @@ export const ExposureConfigLive: Layer.Layer<
     const version = yield* Config.string("MEND_VERSION").pipe(Config.withDefault("dev"));
     const network = yield* NetworkConfig;
     const deployment = yield* DeploymentConfig;
+    const mirrorHosts = [
+      yield* Config.string("MEND_NPM_MIRROR_URL").pipe(Config.withDefault("")),
+      ...(yield* Config.string("SEALANT_DOCKER_REGISTRY_MIRRORS").pipe(
+        Config.withDefault(""),
+      )).split(","),
+    ].flatMap((value) => {
+      try {
+        return value.trim() === "" ? [] : [new URL(value.trim()).host];
+      } catch {
+        return [];
+      }
+    });
     const gate = evaluateExposureGate({
       appUrl: network.appUrl,
       allowedOrigins: network.allowedOrigins,
@@ -421,6 +446,7 @@ export const ExposureConfigLive: Layer.Layer<
       declared: DECLARABLE.filter((id) => stated.includes(id)),
       reassessedVersion: reassessed._tag === "Some" ? reassessed.value : undefined,
       version,
+      mirrors: mirrorHosts,
     });
     const refusal = exposureRefusal(exposure, gate);
     if (refusal !== null) return yield* new ExposureRefused({ message: refusal });

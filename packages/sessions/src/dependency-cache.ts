@@ -280,6 +280,12 @@ const FETCH_SETTING_FILES = [
   "/etc/npmrc",
 ].join(" ");
 
+/**
+ * `["']?` inside a single-quoted grep pattern: npm and pnpm's ini parser take a quoted key too
+ * (`"registry"=…`). The single quote closes the pattern, is given in double quotes, and reopens it.
+ */
+const OPTIONAL_QUOTE = `["'"'"']?`;
+
 /** One setting: its `.npmrc` and `pnpm-workspace.yaml` spellings and its environment names. */
 const fetchSettingUnset = (kebab: string, camel: string): string => {
   const snake = kebab.replaceAll("-", "_");
@@ -287,7 +293,129 @@ const fetchSettingUnset = (kebab: string, camel: string): string => {
     .flatMap((name) => [name, name.toUpperCase()])
     .map((name) => `\${${name}-}`)
     .join("");
-  return `[ -z "${env}" ] && ! grep -Eqs '^[[:space:]]*(${kebab}|${camel})[[:space:]]*[=:]' ${FETCH_SETTING_FILES}`;
+  // npm and pnpm's ini parser take a quoted key too (`"fetch-timeout"=…`).
+  return `[ -z "${env}" ] && ! grep -Eqs '^[[:space:]]*${OPTIONAL_QUOTE}(${kebab}|${camel})${OPTIONAL_QUOTE}[[:space:]]*[=:]' ${FETCH_SETTING_FILES}`;
+};
+
+// ─── The npm mirror ─────────────────────────────────────────────────────────
+
+/**
+ * The server's npm mirror (`MEND_NPM_MIRROR_URL`, `mend server setup`'s npm-mirror): a read-through
+ * cache of registry.npmjs.org on the Compose network. Read as an http(s) origin with its trailing
+ * slash, the form `--registry` takes; null for anything else, and then no install uses a mirror.
+ */
+export const parseNpmMirrorUrl = (value: string): string | null => {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    !/^[a-z0-9.-]+$/.test(url.hostname)
+  ) {
+    return null;
+  }
+  return `${url.origin}/`;
+};
+
+/** An `npm ci` or `npm install` with simple arguments, on one line; anything else runs as written. */
+const NPM_INSTALL = /^npm[ \t]+(?:ci|install|i)(?:[ \t]+[\w@./=:+,-]+)*$/;
+
+/** What the script says, on stderr, about the mirror: the engine reads it back from the output. */
+export const NPM_MIRROR_USED = "mend: npm mirror · used";
+export const NPM_MIRROR_NOT_USED = "mend: npm mirror · not used";
+
+/** The public registry, exactly as npm and pnpm print it when nothing else is set. */
+const NPMJS_REGISTRY = "https://registry.npmjs.org/";
+
+/**
+ * A login for the public registry: `//registry.npmjs.org/:…` or an unscoped `_auth`, `_authToken`,
+ * `_password`, `username` or `always-auth`. Packages behind such a login are private, and the mirror
+ * never sends a credential, so the install stays on the registry itself. Matched in what
+ * `npm config list` prints (every source npm reads, quoted keys normalised, values `(protected)`),
+ * and, as a second denial, in the config files themselves, a quoted key included.
+ */
+const NPMJS_LOGIN_KEY =
+  "(//registry\\.npmjs\\.org/:|_auth|_password|username[[:space:]]*=|always-auth)";
+const NPMJS_LOGIN = [
+  `printf '%s\\n' "$mend_npm_config" | grep -Eq '^"?${NPMJS_LOGIN_KEY}'`,
+  `grep -Eqs '^[[:space:]]*${OPTIONAL_QUOTE}${NPMJS_LOGIN_KEY}' ${FETCH_SETTING_FILES}`,
+  '[ -n "${npm_config__auth-}${npm_config__authToken-}${NPM_CONFIG__AUTH-}${NPM_CONFIG__AUTHTOKEN-}" ]',
+].join(" || ");
+
+/**
+ * Ask the package manager, as the person who runs the install, in the project, what it will use:
+ * `npm config list` (every source npm reads: the environment, the project, the person, the global
+ * and builtin files, quoted keys included; secrets printed as `(protected)`), and `<pm> config get
+ * registry`, the default registry the install itself resolves. Each is bounded at 15 s; a missing
+ * `timeout`, an error or a timeout leaves `mend_config_read` empty, and then there is no mirror.
+ * The update check is off for both, so neither asks the registry anything. Measured on node 24:
+ * npm about 50 ms, pnpm 10 about 180 ms.
+ */
+const readPackageManagerConfig = (manager: "npm" | "pnpm"): string =>
+  [
+    "mend_config_read=; mend_npm_config=; mend_pm_registry=",
+    "if command -v timeout >/dev/null 2>&1 &&",
+    "  mend_npm_config=$(npm_config_update_notifier=false timeout 15 npm config list 2>/dev/null) &&",
+    `  mend_pm_registry=$(npm_config_update_notifier=false timeout 15 ${manager} config get registry 2>/dev/null); then mend_config_read=1; fi`,
+  ].join("\n");
+
+/** One line on stderr: what the install script decided about the mirror. */
+const said = (words: string) => `echo '${words}' >&2`;
+
+/**
+ * The lines that point an install at the mirror, as `$mend_registry`: only when nobody set a
+ * registry (the command, the project, the person, the image, the environment), nobody set a login
+ * for the public registry, and the mirror answers its ping within three seconds. Scoped registries
+ * (`@scope:registry=…`) are untouched: their packages never go to the default registry. Every
+ * outcome is said on one stderr line.
+ */
+/**
+ * The flags a command may pass and still be offered the mirror: ones that change neither where the
+ * package manager reads its configuration nor where it fetches from. Any other flag
+ * (`--userconfig`, `--globalconfig`, `--prefix`, `--dir`, `--config.*`, `--registry`, …) may point
+ * at a registry or a login the script cannot see, so the command runs as written. Bare words are
+ * package names or a flag's value.
+ */
+const MIRROR_SAFE_FLAG =
+  /^(?:--frozen-lockfile|--no-frozen-lockfile|--prefer-frozen-lockfile|--prefer-offline|--ignore-scripts|--prod|--production|-P|--dev|-D|--no-optional|--recursive|-r|--strict-peer-dependencies|--no-strict-peer-dependencies|--shamefully-hoist|--fix-lockfile|--silent|-s|--no-audit|--no-fund|--legacy-peer-deps|--foreground-scripts|--(?:reporter|loglevel|fetch-timeout|fetch-retries|fetch-retry-mintimeout|fetch-retry-maxtimeout|fetch-retry-factor|network-concurrency|child-concurrency|omit|include|filter)=[\w@./:+,*-]+)$/;
+
+/** The first argument after the subcommand that could change the configuration read, or null. */
+const unreadFlag = (command: string): string | null =>
+  command
+    .split(/[ \t]+/)
+    .slice(2)
+    .find((arg) => arg.startsWith("-") && !MIRROR_SAFE_FLAG.test(arg)) ?? null;
+
+const npmMirrorLines = (command: string, mirror: string): ReadonlyArray<string> => {
+  if (/--registry\b|--config\.registry\b/.test(command))
+    return ["mend_registry=", said(`${NPM_MIRROR_NOT_USED} · the command names a registry`)];
+  const flag = unreadFlag(command);
+  if (flag !== null)
+    return [
+      "mend_registry=",
+      said(`${NPM_MIRROR_NOT_USED} · the command passes ${flag}, which may choose its own config`),
+    ];
+  const ping = `node -e 'fetch(process.argv[1] + "-/ping", { signal: AbortSignal.timeout(3000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' '${mirror}' >/dev/null 2>&1`;
+  const manager = command.startsWith("pnpm") ? "pnpm" : "npm";
+  return [
+    "mend_registry=",
+    readPackageManagerConfig(manager),
+    `if [ -z "$mend_config_read" ]; then ${said(`${NPM_MIRROR_NOT_USED} · the configuration ${manager} reports could not be read`)}`,
+    // The package manager's answer decides; the file and environment checks can only add a "no"
+    // (pnpm 10's `config get` does not read pnpm-workspace.yaml, for one).
+    `elif [ "$mend_pm_registry" != "${NPMJS_REGISTRY}" ] || ! { ${fetchSettingUnset("registry", "registries")}; }; then ${said(`${NPM_MIRROR_NOT_USED} · a registry is set`)}`,
+    `elif ${NPMJS_LOGIN}; then ${said(`${NPM_MIRROR_NOT_USED} · a login for registry.npmjs.org is set`)}`,
+    `elif ${ping}; then mend_registry='--registry=${mirror}'; ${said(`${NPM_MIRROR_USED} · ${mirror}`)}`,
+    `else ${said(`${NPM_MIRROR_NOT_USED} · ${mirror} did not answer`)}; fi`,
+  ];
 };
 
 /** `if <condition>; then <then>; fi`, or nothing for a setting left to the command. */
@@ -311,9 +439,23 @@ const shellIf = (condition: string | null, then: string): ReadonlyArray<string> 
  * command-line flag for them (an unknown flag fails the install). npm is left alone: npm does not
  * retry a body that times out, so a shorter timeout would turn a stall npm survives today into a
  * failed install.
+ *
+ * With the server's npm mirror (`npmMirror`, from `MEND_NPM_MIRROR_URL`), a plain pnpm install,
+ * `npm ci` or `npm install` also gets `--registry=<mirror>`, by the rules of `npmMirrorLines`: only
+ * where nobody set a registry or a login for the public registry, and only once the mirror answers.
+ * Yarn, bun and every other command run as written.
  */
-export const installScript = (command: string): string => {
+export const installScript = (command: string, npmMirror?: string | null): string => {
   const trimmed = command.trim();
+  const mirror = npmMirror ?? null;
+  if (mirror !== null && NPM_INSTALL.test(trimmed)) {
+    // npm keeps its own timeouts (see above); only the registry changes.
+    return [
+      "mend_node=$(command -v node 2>/dev/null); mend_node_prefix=${mend_node%/bin/node}",
+      ...npmMirrorLines(trimmed, mirror),
+      `${trimmed} $mend_registry`,
+    ].join("\n");
+  }
   if (!PNPM_INSTALL.test(trimmed)) return command;
   // A setting the command itself passes (`--fetch-timeout=…`, `--config.fetch-timeout=…`) is left
   // to it.
@@ -346,7 +488,10 @@ export const installScript = (command: string): string => {
       "fetchRetryMaxtimeout",
       INSTALL_FETCH_RETRY_MAXTIMEOUT_MS,
     ),
-    `${trimmed} $mend_fetch_timeout`,
+    ...(mirror === null ? [] : npmMirrorLines(trimmed, mirror)),
+    mirror === null
+      ? `${trimmed} $mend_fetch_timeout`
+      : `${trimmed} $mend_fetch_timeout $mend_registry`,
   ].join("\n");
 };
 
@@ -381,6 +526,24 @@ export const dependencyInstallDoneLine = (exitCode: number, fetchRetries: number
 export const DEPENDENCY_INSTALL_RETRIED_LINE =
   "session engine: dependency install · retried with defaults";
 
+/** Logged, on its own line, before a run through the npm mirror that failed on it runs again. */
+export const DEPENDENCY_INSTALL_RETRIED_WITHOUT_MIRROR_LINE =
+  "session engine: dependency install · retried without the npm mirror";
+
+/**
+ * Whether the install went through the npm mirror: `used`, `not used` (the script said why on its
+ * stderr), `fell back` (it failed on the mirror and ran again without it), or `off` (no mirror on
+ * this server, or a command the mirror is not offered to).
+ */
+export type NpmMirrorUse = "used" | "not used" | "fell back" | "off";
+
+const npmMirrorUseOf = (stderr: string): NpmMirrorUse =>
+  stderr.includes(NPM_MIRROR_USED)
+    ? "used"
+    : stderr.includes(NPM_MIRROR_NOT_USED)
+      ? "not used"
+      : "off";
+
 /** What an install exec answers: the exit code and the output, which is only counted. */
 export interface InstallExecResult {
   readonly exitCode: number;
@@ -393,6 +556,7 @@ export interface InstallOutcome {
   readonly exitCode: number;
   readonly fetchRetries: number;
   readonly retriedWithDefaults: boolean;
+  readonly npmMirror: NpmMirrorUse;
   /** The last run's stderr, for the failure line; never logged whole. */
   readonly stderr: string;
 }
@@ -403,31 +567,46 @@ export interface InstallOutcome {
  * shortened timeout may be what failed it (a registry or proxy that takes longer than 15 s to
  * answer, every time), so the command runs once more exactly as written, with pnpm's defaults,
  * and the outcome is that run's. A command `installScript` leaves alone runs once.
+ *
+ * With the server's npm mirror (`npmMirror`), any run that went through the mirror and failed runs
+ * once more exactly as written, so it reaches the registry itself: a mirror that is down, that broke
+ * part-way, or that served bytes failing the lockfile's integrity (npm names the URL and the
+ * EINTEGRITY on different lines) never fails an install the registry would serve. A project's own
+ * failure then fails twice; the outcome is the second run's. Either way there is one rerun at most:
+ * the shortened-timeout retry above and this one are the same rerun.
  */
 export const runInstallCommand = <E, R>(
   command: string,
   exec: (script: string) => Effect.Effect<InstallExecResult, E, R>,
+  npmMirror?: string | null,
 ): Effect.Effect<InstallOutcome, E, R> =>
   Effect.gen(function* () {
-    const script = installScript(command);
+    const mirror = npmMirror ?? null;
+    const script = installScript(command, mirror);
     const first = yield* exec(script);
     const firstRetries = countFetchRetries(first.stdout, first.stderr);
-    if (script === command || first.exitCode === 0 || firstRetries === 0) {
+    const mirrorUse = npmMirrorUseOf(first.stderr);
+    const mirrorFailed = mirror !== null && mirrorUse === "used" && first.exitCode !== 0;
+    if (script === command || first.exitCode === 0 || (firstRetries === 0 && !mirrorFailed)) {
       return {
         exitCode: first.exitCode,
         fetchRetries: firstRetries,
         retriedWithDefaults: false,
+        npmMirror: mirrorUse,
         stderr: first.stderr,
       };
     }
-    yield* Effect.logInfo(DEPENDENCY_INSTALL_RETRIED_LINE).pipe(
-      Effect.annotateLogs({ exit: first.exitCode, fetchRetries: firstRetries }),
-    );
+    yield* Effect.logInfo(
+      mirrorFailed
+        ? DEPENDENCY_INSTALL_RETRIED_WITHOUT_MIRROR_LINE
+        : DEPENDENCY_INSTALL_RETRIED_LINE,
+    ).pipe(Effect.annotateLogs({ exit: first.exitCode, fetchRetries: firstRetries }));
     const second = yield* exec(command);
     return {
       exitCode: second.exitCode,
       fetchRetries: firstRetries + countFetchRetries(second.stdout, second.stderr),
       retriedWithDefaults: true,
+      npmMirror: mirrorUse === "used" ? "fell back" : mirrorUse,
       stderr: second.stderr,
     };
   });

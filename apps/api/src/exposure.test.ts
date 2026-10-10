@@ -137,6 +137,21 @@ describe("the public exposure gate", () => {
     ]);
   });
 
+  it("names the package mirrors among what core-private covers, when sessions are pointed at them", () => {
+    const without = evaluateExposureGate(closed).find((outcome) => outcome.id === "core-private");
+    expect(without?.detail).toContain("Sealant, its registry and the database are reachable");
+    const gate = evaluateExposureGate({
+      ...closed,
+      mirrors: ["npm-mirror:4873", "docker-mirror:5000"],
+    });
+    const item = gate.find((outcome) => outcome.id === "core-private");
+    expect(item?.detail).toBe(
+      "this process cannot observe whether Sealant, its registry, the database and the package mirrors (npm-mirror:4873, docker-mirror:5000) are reachable from the Internet",
+    );
+    expect(item?.established).toBe("open");
+    expect(item?.blocksStart).toBe(false);
+  });
+
   it("closes an unobservable item only on the operator's own statement, and says whose it is", () => {
     const gate = evaluateExposureGate({ ...closed, declared: ["core-private"] });
     const stated = gate.find((outcome) => outcome.id === "core-private");

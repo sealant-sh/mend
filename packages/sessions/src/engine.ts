@@ -324,6 +324,7 @@ import {
   detectInstallCommand,
   PLATFORM_PROBE_SCRIPT,
   platformKeyOf,
+  parseNpmMirrorUrl,
   runInstallCommand,
 } from "./dependency-cache.ts";
 import {
@@ -2782,6 +2783,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(Effect.annotateLogs({ sessionId: session.id, platform }));
             return null;
           }
+          // The server's npm mirror (`mend server setup`): the install goes through it when the
+          // project and the person set no registry of their own. Unset or unreadable: no mirror.
+          const npmMirror = parseNpmMirrorUrl(
+            yield* Config.string("MEND_NPM_MIRROR_URL").pipe(
+              Config.withDefault(""),
+              Effect.orElseSucceed(() => ""),
+            ),
+          );
           yield* Effect.logInfo("session engine: dependency install · running").pipe(
             Effect.annotateLogs({
               sessionId: session.id,
@@ -2793,11 +2802,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Counted from each exec's output and dropped: the lines carry the count, never the
           // text. A shortened install that failed on fetch retries runs once more with pnpm's
           // defaults, and says so on its own line.
-          const outcome = yield* runInstallCommand(command, (script) =>
-            sealant.exec(workspace, ["sh", "-lc", script], {
-              cwd: "/workspace/repo",
-              ...(user === undefined ? {} : { user }),
-            }),
+          const outcome = yield* runInstallCommand(
+            command,
+            (script) =>
+              sealant.exec(workspace, ["sh", "-lc", script], {
+                cwd: "/workspace/repo",
+                ...(user === undefined ? {} : { user }),
+              }),
+            npmMirror,
           ).pipe(Effect.annotateLogs({ sessionId: session.id, platform, command }));
           yield* Effect.logInfo(
             dependencyInstallDoneLine(outcome.exitCode, outcome.fetchRetries),
@@ -2808,6 +2820,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               command,
               fetchRetries: outcome.fetchRetries,
               retriedWithDefaults: outcome.retriedWithDefaults,
+              npmMirror: outcome.npmMirror,
               stderr: outcome.exitCode === 0 ? "" : outcome.stderr.slice(-400),
             }),
           );
