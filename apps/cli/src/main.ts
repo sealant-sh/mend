@@ -152,6 +152,7 @@ import {
   sessionDisplayName,
   matchProjectByCwd,
   normalizeProjectName,
+  redactCredentials,
   gitCurrentBranch,
   parseLaunchArgs,
   servicesHoldOf,
@@ -350,7 +351,7 @@ const loadConfig = (): CliConfig => {
 };
 
 const fail = (message: string): never => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
 };
 
@@ -376,7 +377,8 @@ const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");
 const cobalt = paint("34");
-const say = (line: string) => chrome.write(`${line}\n`);
+/** Everything the CLI says itself; a URL's credentials never reach a terminal or a log. */
+const say = (line: string) => chrome.write(`${redactCredentials(line)}\n`);
 const detachKeyEnabled = process.env["MEND_DETACH_KEY"] !== "none";
 const detachHint = () => (detachKeyEnabled ? ` · detach: ${dim("Ctrl+]")}` : "");
 
@@ -586,7 +588,9 @@ const withSpinner = async <T>(label: string | (() => string), work: Promise<T>):
     const seconds = Math.round((Date.now() - started) / 1000);
     const text = typeof label === "string" ? label : label();
     // Clear first: a status line that got shorter must not leave the old one's tail behind.
-    chrome.write(`\r\x1b[2K  ${frames[frame % frames.length]} ${text} ${dim(`${seconds}s`)} `);
+    chrome.write(
+      `\r\x1b[2K  ${frames[frame % frames.length]} ${redactCredentials(text)} ${dim(`${seconds}s`)} `,
+    );
     frame += 1;
   }, 120);
   try {
@@ -1360,7 +1364,7 @@ const attachTty = async (
         ReadonlyArray<{ readonly userId: string; readonly name: string }>
       >(config, "GET", "/organization/members").catch(() => []);
       process.stdout.write(
-        `\r\x1b[2K${dim(watchNotice(ownerNameOf(detail?.session.ownerUserId, members)))}\r\n` +
+        `\r\x1b[2K${dim(redactCredentials(watchNotice(ownerNameOf(detail?.session.ownerUserId, members))))}\r\n` +
           `${dim(`read-only · ${detachKeyEnabled ? "Ctrl+] or " : ""}Ctrl+C detaches`)}\r\n\r\n`,
       );
     }
@@ -2148,9 +2152,51 @@ const autoConnect = async (config: CliConfig, service: ServiceDto): Promise<void
   await tunnelServices(config, [service], null);
 };
 
+/**
+ * `--wait`: the server holds a start until the port answers, for up to a minute. With the flag the
+ * exit status says how that ended: 0 once the port answered, 1 when it did not, 124 when the server
+ * gave no answer within `SERVICE_WAIT_MS`. The Service keeps running in every case. UDP has no
+ * probe, and a recipe without a command is adopted with one probe, so neither can be waited for.
+ * A waited start opens no tunnel: it returns, and `mend service connect` reaches the port.
+ */
+const SERVICE_WAIT_MS = (() => {
+  const configured = Number(process.env["MEND_SERVICE_WAIT_MS"]);
+  return Number.isFinite(configured) && configured > 0 ? configured : 90_000;
+})();
+
+/**
+ * One step of a `--wait`: `work`, unless the wait's deadline passes first, which fails with 124.
+ * The deadline is set once, before the first request (the session lookup), so every read and the
+ * start share it (review 2 of mend#611). A null deadline (no `--wait`) waits as before.
+ */
+const withinServiceWait = async <T>(work: Promise<T>, deadline: number | null): Promise<T> => {
+  const bounded = await beforeDeadline(work, clock, deadline);
+  if (bounded.done) return bounded.value;
+  process.stderr.write(
+    `mend: no answer within ${Math.round(SERVICE_WAIT_MS / 1000)} s · the Service may still be starting · mend service list\n`,
+  );
+  return exitFlushed(WAIT_TIMED_OUT);
+};
+
+const failUnlessAnswered = (config: CliConfig, service: ServiceDto, wait: boolean): void => {
+  if (!wait) return;
+  const name = service.label ?? service.id.slice(0, 8);
+  if (service.status !== "reachable") {
+    fail(
+      `nothing answered on :${service.workspacePort} · ${service.status} · the Service keeps running · mend service logs ${name}`,
+    );
+  }
+  // A waited start returns: the tunnel a remote server would get is the next command's.
+  if (willAutoConnect(config, service, false)) {
+    say(dim(`  connect: mend service connect ${name}`));
+  }
+};
+
 const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const dashdash = args.indexOf("--");
   const usage = usageOf("service run");
+  const wait = (dashdash === -1 ? args : args.slice(0, dashdash)).includes("--wait");
+  const deadline = wait ? clock.now() + SERVICE_WAIT_MS : null;
   // No explicit command = a DECLARED Service: resolve the name against the
   // session worktree's mend.toml and start (or adopt) its recipe.
   if (dashdash === -1) {
@@ -2158,11 +2204,13 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
     const name = positionals.at(-1);
     if (name === undefined) return fail(usage);
     const prefix = positionals.length > 1 ? positionals[0] : undefined;
-    const session = await resolveLiveSession(config, prefix, "service run");
-    const recipes = await api<ReadonlyArray<ServiceRecipeDto>>(
-      config,
-      "GET",
-      `/sessions/${session.id}/recipes`,
+    const session = await withinServiceWait(
+      resolveLiveSession(config, prefix, "service run"),
+      deadline,
+    );
+    const recipes = await withinServiceWait(
+      api<ReadonlyArray<ServiceRecipeDto>>(config, "GET", `/sessions/${session.id}/recipes`),
+      deadline,
     );
     const recipe = recipes.find((entry) => entry.name === name);
     if (recipe === undefined) {
@@ -2173,20 +2221,32 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
           : `no recipe named "${name}" — declared: ${known}`,
       );
     }
+    if (wait && recipe.protocol === "udp") {
+      return fail(`--wait needs a TCP port: ${recipe.name} is UDP, which has no probe`);
+    }
+    if (wait && recipe.command === null) {
+      return fail(
+        `--wait needs a command Mend starts: ${recipe.name} declares only a port, which Mend adopts with one probe · run it without --wait, or give the recipe a command`,
+      );
+    }
     const service = await withSpinner(
       recipe.command === null
         ? `adopting ${recipe.name} on :${recipe.port}…`
         : recipe.protocol === "udp"
           ? `starting ${recipe.name} (udp :${recipe.port})…`
           : `starting ${recipe.name} — waiting for :${recipe.port} to answer…`,
-      mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
-        name: recipe.name,
-      }),
+      withinServiceWait(
+        mutateService(config, "POST", `/sessions/${session.id}/services/recipe`, {
+          name: recipe.name,
+        }),
+        deadline,
+      ),
     );
-    const tunneling = willAutoConnect(config, service, args.includes("--no-connect"));
+    const tunneling = willAutoConnect(config, service, args.includes("--no-connect") || wait);
     say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
     printServiceEndpoint(config, service, tunneling);
     say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+    failUnlessAnswered(config, service, wait);
     if (tunneling) await autoConnect(config, service);
     return;
   }
@@ -2205,27 +2265,41 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (http && https) return fail(usage);
   const browserScheme = https ? ("https" as const) : http ? ("http" as const) : null;
   if (protocol === "udp" && browserScheme !== null) return fail(usage);
+  if (protocol === "udp" && wait) {
+    return fail("--wait needs a TCP port: UDP has no probe, so nothing could be waited for");
+  }
+  // A flag absent reads -1: its "value" index must not shadow a session named first on the line.
   const prefix = head.find(
-    (a, i) => !a.startsWith("--") && i !== portFlag + 1 && i !== nameFlag + 1,
+    (a, i) =>
+      !a.startsWith("--") &&
+      (portFlag === -1 || i !== portFlag + 1) &&
+      (nameFlag === -1 || i !== nameFlag + 1),
   );
-  const session = await resolveLiveSession(config, prefix, "service run");
+  const session = await withinServiceWait(
+    resolveLiveSession(config, prefix, "service run"),
+    deadline,
+  );
 
   const service = await withSpinner(
     protocol === "udp"
       ? `starting ${name ?? argv[0]} (udp :${port})…`
       : `starting ${name ?? argv[0]} — waiting for :${port} to answer…`,
-    mutateService(config, "POST", `/sessions/${session.id}/services/run`, {
-      argv,
-      port,
-      name,
-      protocol,
-      browserScheme,
-    }),
+    withinServiceWait(
+      mutateService(config, "POST", `/sessions/${session.id}/services/run`, {
+        argv,
+        port,
+        name,
+        protocol,
+        browserScheme,
+      }),
+      deadline,
+    ),
   );
-  const tunneling = willAutoConnect(config, service, head.includes("--no-connect"));
+  const tunneling = willAutoConnect(config, service, head.includes("--no-connect") || wait);
   say(`${green("✓")} Service ${service.label ?? ""} · ${service.status}`);
   printServiceEndpoint(config, service, tunneling);
   say(dim(`  logs: mend service logs ${service.label ?? service.id.slice(0, 8)}`));
+  failUnlessAnswered(config, service, wait);
   if (tunneling) await autoConnect(config, service);
 };
 
@@ -2382,7 +2456,9 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
   const toml = renderMendToml(proposals);
   say(dim(`proposed ${target}:`));
   say("");
-  process.stdout.write(toml);
+  // The preview loses URL credentials a package script carries; the file written keeps the
+  // scripts as they are, since it is the project's own configuration.
+  process.stdout.write(redactCredentials(toml));
   say("");
   if (!args.includes("--yes")) {
     if (process.stdin.isTTY !== true) {
@@ -2456,7 +2532,7 @@ const attachTunnels = (config: CliConfig, optOut: boolean): AttachTunnels | null
     // The agent's TUI owns the screen: state it on the bottom row and put the cursor back,
     // so the TUI's own drawing stays where it left it. Its next repaint of that row wins.
     const rows = process.stdout.rows ?? 24;
-    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${line}\x1b8`);
+    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${redactCredentials(line)}\x1b8`);
   };
   const tunnels = createServiceTunnels({
     listServices: () => fetchServices(config),
@@ -2840,7 +2916,7 @@ const accountsCommand = async (config: CliConfig) => {
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
-  for (const line of lines) process.stdout.write(`${line}\n`);
+  for (const line of lines) process.stdout.write(`${redactCredentials(line)}\n`);
 };
 
 /** The Claude grant Mend keeps for itself on this machine, for `mend doctor`. */
@@ -2858,7 +2934,7 @@ const doctorBundle = (config: CliConfig, args: ReadonlyArray<string>) =>
     defaultDir: path.join(mendCliHome(), "bundles"),
     now: () => new Date(),
     say,
-    warn: (line) => process.stderr.write(`${line}\n`),
+    warn: (line) => process.stderr.write(`${redactCredentials(line)}\n`),
     collectors: (tail) =>
       bundleCollectors({
         cliVersion: cliVersion(),
@@ -3113,7 +3189,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       secret: narrowed.secret,
     }),
   );
-  process.stdout.write(`${accountLine(account)}\n`);
+  process.stdout.write(`${redactCredentials(accountLine(account))}\n`);
   const facts = claudeGrantFacts(narrowed.secret);
   if (facts !== null) {
     say(
@@ -4009,7 +4085,7 @@ const clock = { sleep: pause, now: Date.now };
 
 /** Print one JSON value on stdout, as the other --json commands do. */
 const printJson = (value: unknown): void => {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  process.stdout.write(`${redactCredentials(JSON.stringify(value, null, 2))}\n`);
 };
 
 // ─── recorded output on this terminal ───────────────────────────────────────
@@ -4091,7 +4167,7 @@ const exitFlushed = async (code: number): Promise<never> => {
 
 /** `fail`, after what was written so far has flushed. */
 const failFlushed = (message: string): Promise<never> => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   return exitFlushed(1);
 };
 
@@ -4728,23 +4804,56 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
 
 // ─── projects · sessions: the workbench at a glance ─────────────────────────
 
-const projectsCommand = async (config: CliConfig) => {
+/** What `mend projects --json` prints, stable for scripts like `mend sessions --json`. */
+interface ProjectsJson {
+  readonly version: 1;
+  readonly projects: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly originUrl: string | null;
+    readonly defaultBranch: string;
+    readonly storePath: string;
+    /** Live sessions in the project. */
+    readonly liveSessions: number;
+    /** The current directory is inside this project. */
+    readonly current: boolean;
+  }>;
+}
+
+const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const unknown = args.find((arg) => arg !== "--json");
+  if (unknown !== undefined) return fail(`unknown argument ${unknown} · ${usageOf("projects")}`);
   const [projects, active] = await Promise.all([
     api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects"),
     api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions"),
   ]);
-  if (projects.length === 0) {
-    say(dim("no adopted projects — mend adopt brings one in"));
-    return;
-  }
   const liveByProject = new Map<string, number>();
   for (const session of active) {
     liveByProject.set(session.projectId, (liveByProject.get(session.projectId) ?? 0) + 1);
   }
-  const nameWidth = Math.max(...projects.map((p) => p.name.length));
-  const branchWidth = Math.max(...projects.map((p) => p.defaultBranch.length));
   // The cwd's project is marked — the same resolution mend claude|shell use.
   const here = matchProjectByCwd(projects, cwdFacts(process.cwd()));
+  if (args.includes("--json")) {
+    printJson({
+      version: 1,
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        originUrl: project.originUrl,
+        defaultBranch: project.defaultBranch,
+        storePath: project.storePath,
+        liveSessions: liveByProject.get(project.id) ?? 0,
+        current: project.id === here?.id,
+      })),
+    } satisfies ProjectsJson);
+    return;
+  }
+  if (projects.length === 0) {
+    say(dim("no adopted projects — mend adopt brings one in"));
+    return;
+  }
+  const nameWidth = Math.max(...projects.map((p) => p.name.length));
+  const branchWidth = Math.max(...projects.map((p) => p.defaultBranch.length));
   for (const project of projects) {
     const live = liveByProject.get(project.id) ?? 0;
     const liveLabel = live > 0 ? green(`${live} live`) : dim("—");
@@ -5425,7 +5534,7 @@ const main = async () => {
     case "rejoin":
       return withAgentShare(config, () => rejoinCommand(config, rest));
     case "projects":
-      return projectsCommand(config);
+      return projectsCommand(config, rest);
     case "refresh":
       return refreshCommand(config, rest);
     case "land":

@@ -9,9 +9,9 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 
 /**
- * `mend run`, `mend logs` and `mend wait`, spawned from source against a fake server. stdin is
- * /dev/null on every run, and no assertion times the CLI: a loaded runner may leave it unscheduled
- * for seconds (mend#587).
+ * `mend run`, `mend logs`, `mend wait`, `mend projects --json` and `mend service run --wait`,
+ * spawned from source against a fake server. stdin is /dev/null on every run, and no assertion
+ * times the CLI: a loaded runner may leave it unscheduled for seconds (mend#587).
  */
 
 const spawning = { timeout: 60_000 };
@@ -84,22 +84,30 @@ const logPage = (nextFrom: string, status: string, ...texts: ReadonlyArray<strin
   telemetryNote: "",
 });
 
+/** A request's body, read to its end. */
+const bodyOf = async (request: IncomingMessage): Promise<string> => {
+  const chunks: Array<Buffer> = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString();
+};
+
 type Handler = (route: string, request: IncomingMessage, response: ServerResponse) => void;
 
-const startFake = async (handle: Handler) => {
+/** `host` 127.0.0.2 reads as a remote server to the CLI (`serverIsLocal`), still on loopback. */
+const startFake = async (handle: Handler, host = "127.0.0.1") => {
   const routes: Array<string> = [];
   const server = createServer((request, response) => {
     const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
     routes.push(route);
     handle(route, request, response);
   });
-  server.listen(0, "127.0.0.1");
+  server.listen(0, host);
   await once(server, "listening");
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("missing test port");
   return {
     routes,
-    url: `http://127.0.0.1:${address.port}`,
+    url: `http://${host}:${address.port}`,
     close: async () => {
       server.closeAllConnections();
       server.close();
@@ -118,15 +126,23 @@ const cliEnv = (url: string) => ({
   MEND_DETACH_KEY: "none",
 });
 
-const spawnCli = (url: string, args: ReadonlyArray<string>) =>
+const spawnCli = (
+  url: string,
+  args: ReadonlyArray<string>,
+  env: Readonly<Record<string, string>> = {},
+) =>
   spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
-    env: cliEnv(url),
+    env: { ...cliEnv(url), ...env },
     stdio: ["ignore", "pipe", "pipe"],
     cwd: os.tmpdir(),
   });
 
-const runCli = async (url: string, args: ReadonlyArray<string>) => {
-  const child = spawnCli(url, args);
+const runCli = async (
+  url: string,
+  args: ReadonlyArray<string>,
+  env: Readonly<Record<string, string>> = {},
+) => {
+  const child = spawnCli(url, args, env);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk: Buffer) => {
@@ -702,4 +718,349 @@ describe("review of mend#610", spawning, () => {
       }
     },
   );
+});
+
+/** An answer that starts and never finishes: headers, one byte, then nothing. */
+const stall = (response: ServerResponse) => {
+  response.writeHead(200, { "content-type": "application/json" });
+  response.write("[");
+};
+
+/** A Service's view as the server answers a start, its port observed `state`. */
+const serviceView = (state: "reachable" | "unreachable") => ({
+  service: {
+    id: "service-1",
+    sessionId,
+    name: "web",
+    workspacePort: 3000,
+    transport: "tcp",
+    browserScheme: null,
+    currentAttemptId: "attempt-1",
+  },
+  attempts: [
+    {
+      id: "attempt-1",
+      argv: ["pnpm", "dev"],
+      status: "running",
+      exitedAt: null,
+      sealantSessionId: "pty-2",
+    },
+  ],
+  currentForward: { id: "forward-1", hostPort: 41000, state: "bound" },
+  latestObservation: { forwardId: "forward-1", state },
+  workspaceExpiresAt: null,
+  workspaceTtlRenewedAt: null,
+  workspaceTtlRenewalFailedAt: null,
+  workspaceTtlRenewalError: null,
+  endpoints: [],
+});
+
+describe("--json and --wait", spawning, () => {
+  it("mend projects --json prints JSON, not the table", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === "GET /api/sessions") json(response, [session]);
+      else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["projects", "--json"]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        version: 1,
+        projects: [
+          {
+            id: project.id,
+            name: project.name,
+            originUrl: project.originUrl,
+            defaultBranch: "main",
+            storePath: project.storePath,
+            liveSessions: 1,
+            current: false,
+          },
+        ],
+      });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("never prints the credentials of a project's origin, in JSON or in the table", async () => {
+    const leaky = {
+      ...project,
+      originUrl: "https://oauth2:s3cret-token@github.com/acme/fixture.git",
+    };
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") json(response, [leaky]);
+      else if (route === "GET /api/sessions") json(response, []);
+      else response.writeHead(404).end();
+    });
+    try {
+      const asJson = await runCli(fake.url, ["projects", "--json"]);
+      expect(asJson.code, asJson.stderr).toBe(0);
+      expect(asJson.stdout).not.toContain("s3cret-token");
+      expect(JSON.parse(asJson.stdout).projects[0].originUrl).toBe(
+        "https://github.com/acme/fixture.git",
+      );
+      const table = await runCli(fake.url, ["projects"]);
+      expect(table.stdout + table.stderr).not.toContain("s3cret-token");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("never prints a token that follows a literal @ in an origin's password", async () => {
+    const leaky = {
+      ...project,
+      originUrl: "https://oauth2:p@s3cret-token@github.com/acme/fixture.git",
+    };
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") json(response, [leaky]);
+      else if (route === "GET /api/sessions") json(response, []);
+      else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["projects", "--json"]);
+      expect(result.stdout + result.stderr).not.toContain("s3cret-token");
+      expect(JSON.parse(result.stdout).projects[0].originUrl).toBe(
+        "https://github.com/acme/fixture.git",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("keeps an ssh origin's user and takes out only its password", async () => {
+    const origins = [
+      "ssh://git:s3cret-token@github.com/acme/fixture.git",
+      "ssh://git:p@s3cret-token@[::1]:2222/acme/fixture.git",
+    ];
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/projects") {
+        json(
+          response,
+          origins.map((originUrl, index) => ({ ...project, id: `p${index}`, originUrl })),
+        );
+      } else if (route === "GET /api/sessions") json(response, []);
+      else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, ["projects", "--json"]);
+      expect(result.stdout + result.stderr).not.toContain("s3cret-token");
+      expect(
+        JSON.parse(result.stdout).projects.map((row: { originUrl: string }) => row.originUrl),
+      ).toEqual(["ssh://git@github.com/acme/fixture.git", "ssh://git@[::1]:2222/acme/fixture.git"]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend connect --from-stdin says the account without credentials in what the server returned", async () => {
+    const fake = await startFake((route, request, response) => {
+      if (route === "POST /api/me/sealant/accounts") {
+        void bodyOf(request).then(() =>
+          json(response, {
+            id: "account-1",
+            provider: "github",
+            name: "github",
+            kind: "token",
+            status: "active",
+            metadata: { login: "https://oauth2:s3cret-token@github.com/acme" },
+            connectedAt: new Date(0).toISOString(),
+            lastUsedAt: null,
+          }),
+        );
+      } else response.writeHead(404).end();
+    });
+    try {
+      const child = spawn(
+        process.execPath,
+        ["--experimental-strip-types", entrypoint, "connect", "github", "--from-stdin"],
+        { env: cliEnv(fake.url), stdio: ["pipe", "pipe", "pipe"], cwd: os.tmpdir() },
+      );
+      // stdin is the credential, given and closed: nothing else reads it.
+      child.stdin.end("ghp_synthetic_token_for_tests\n");
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      const [code] = await once(child, "close");
+      expect(code, output).toBe(0);
+      expect(output).toContain("https://github.com/acme");
+      expect(output).not.toContain("s3cret-token");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait counts its deadline from the first request, the session lookup", async () => {
+    const lookup = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") stall(response);
+      else response.writeHead(404).end();
+    });
+    const recipes = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `GET /api/sessions/${sessionId}/recipes`) stall(response);
+      else response.writeHead(404).end();
+    });
+    try {
+      const env = { MEND_SERVICE_WAIT_MS: "500" };
+      const explicit = await runCli(
+        lookup.url,
+        ["service", "run", sessionId.slice(0, 8), "--port", "3000", "--wait", "--", "pnpm", "dev"],
+        env,
+      );
+      expect(explicit.code, explicit.stderr).toBe(124);
+      expect(lookup.routes.filter((route) => route.startsWith("POST "))).toEqual([]);
+      const declared = await runCli(
+        recipes.url,
+        ["service", "run", sessionId.slice(0, 8), "web", "--wait"],
+        env,
+      );
+      expect(declared.code, declared.stderr).toBe(124);
+      expect(recipes.routes.filter((route) => route.startsWith("POST "))).toEqual([]);
+    } finally {
+      await lookup.close();
+      await recipes.close();
+    }
+  });
+
+  it("mend service init shows a proposal without the credentials of URLs in package scripts", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-service-init-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          scripts: {
+            dev: "vite --port 3000 --proxy https://oauth2:s3cret-token@github.com/acme/repo.git",
+          },
+        }),
+      );
+      const child = spawn(
+        process.execPath,
+        ["--experimental-strip-types", entrypoint, "service", "init"],
+        { env: cliEnv("http://127.0.0.1:9"), stdio: ["ignore", "pipe", "pipe"], cwd: root },
+      );
+      let output = "";
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        output += chunk.toString();
+      });
+      await once(child, "close");
+      expect(output).toContain("--port 3000");
+      expect(output).toContain("https://github.com/acme/repo.git");
+      expect(output).not.toContain("s3cret-token");
+      expect(fs.existsSync(path.join(root, "mend.toml"))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("mend service run --wait exits 1 when the port did not answer, and the Service stays", async () => {
+    const view = serviceView("unreachable");
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `POST /api/sessions/${sessionId}/services/run`) json(response, view);
+      else response.writeHead(404).end();
+    });
+    try {
+      const args = ["service", "run", sessionId.slice(0, 8), "--port", "3000"];
+      const waited = await runCli(fake.url, [...args, "--wait", "--", "pnpm", "dev"]);
+      expect(waited.code).toBe(1);
+      expect(waited.stderr).toContain("nothing answered on :3000 · unreachable");
+      expect(fake.routes).not.toContain("POST /api/services/service-1/stop");
+      const unwaited = await runCli(fake.url, [...args, "--", "pnpm", "dev"]);
+      expect(unwaited.code, unwaited.stderr).toBe(0);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait against a remote server returns once it answered, with no tunnel", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `POST /api/sessions/${sessionId}/services/run`) {
+        json(response, serviceView("reachable"));
+      } else response.writeHead(404).end();
+    }, "127.0.0.2");
+    try {
+      const result = await runCli(fake.url, [
+        "service",
+        "run",
+        sessionId.slice(0, 8),
+        "--port",
+        "3000",
+        "--wait",
+        "--",
+        "pnpm",
+        "dev",
+      ]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout + result.stderr).toContain("connect: mend service connect web");
+      expect(fake.routes.some((route) => route.includes("upgrade"))).toBe(false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait refuses a recipe with no command, before anything starts", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `GET /api/sessions/${sessionId}/recipes`) {
+        json(response, [
+          {
+            name: "web",
+            command: null,
+            port: 3000,
+            protocol: "tcp",
+            browserScheme: "http",
+            shadowedBy: null,
+          },
+        ]);
+      } else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(fake.url, [
+        "service",
+        "run",
+        sessionId.slice(0, 8),
+        "web",
+        "--wait",
+      ]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(
+        "--wait needs a command Mend starts: web declares only a port",
+      );
+      expect(fake.routes.filter((route) => route.startsWith("POST "))).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("mend service run --wait gives up on a start the server never answers, with 124", async () => {
+    const fake = await startFake((route, _request, response) => {
+      if (route === "GET /api/sessions?retained=1") json(response, [session]);
+      else if (route === `POST /api/sessions/${sessionId}/services/run`) {
+        // An answer that starts and never finishes: headers, then nothing.
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write("{");
+      } else response.writeHead(404).end();
+    });
+    try {
+      const result = await runCli(
+        fake.url,
+        ["service", "run", sessionId.slice(0, 8), "--port", "3000", "--wait", "--", "pnpm", "dev"],
+        { MEND_SERVICE_WAIT_MS: "1000" },
+      );
+      expect(result.code, result.stderr).toBe(124);
+      expect(result.stderr).toContain("no answer within 1 s · the Service may still be starting");
+    } finally {
+      await fake.close();
+    }
+  });
 });

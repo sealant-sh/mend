@@ -60,6 +60,7 @@ import {
   type ServerStoreResult,
   type ServerGeneration,
 } from "./server-store.ts";
+import { redactCredentials } from "./shared.ts";
 import { cliVersion } from "./version.ts";
 
 const CONFIG_SCHEMA_VERSION = 1;
@@ -2717,7 +2718,7 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     },
     randomBytes,
     sleep: (milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
-    writeLine: (line) => process.stdout.write(`${line}\n`),
+    writeLine: (line) => process.stdout.write(`${redactCredentials(line)}\n`),
     dockerDaemonFacts: hostDockerDaemonFacts,
     readLogin: (configDir) => savedLogin(configDir, environment),
   };

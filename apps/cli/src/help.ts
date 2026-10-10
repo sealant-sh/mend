@@ -514,8 +514,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "projects",
     section: "sessions",
     summary: "adopted projects and their live sessions",
-    synopsis: [],
-    description: ["One line per project, with the sessions running in it."],
+    synopsis: ["[--json]"],
+    description: [
+      "One line per project, with the sessions running in it.",
+      '--json prints them for scripts, stable like mend sessions --json: {"version": 1, "projects": [...]}, an empty list when there are none. Each project has id, name, originUrl (a string, or null), defaultBranch, storePath, liveSessions (a number) and current (true when the current directory is inside it).',
+      "A repository URL is printed without its credentials: https://oauth2:TOKEN@github.com/acme/repo.git reads as https://github.com/acme/repo.git, here and in every line, message and JSON the CLI prints itself; an ssh URL keeps its user and loses only the password. A command's recorded output (mend run, mend logs, mend service logs, mend attach) and a file's contents (mend memory show) are printed as they are, and a session's record is readable by anyone who can read the project.",
+    ],
+    options: [{ flag: "--json", text: "the projects as JSON" }],
     see: ["adopt", "sessions"],
   },
   {
@@ -597,14 +602,19 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "services",
     summary: "start and supervise a server in the session's workspace",
     synopsis: [
-      "[session] --port <port> [--name <n>] [--udp] [--http|--https] [--no-connect] -- <command...>",
-      "[session] <name> [--no-connect]",
+      "[session] --port <port> [--name <n>] [--udp] [--http|--https] [--wait] [--no-connect] -- <command...>",
+      "[session] <name> [--wait] [--no-connect]",
     ],
     description: [
       "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's mend.toml. mend service <name> is the shorthand for that.",
+      "Mend waits up to a minute for the port to answer before it returns. --wait makes the exit status say how that ended: 0 once the port answered, 1 when it did not, and 124 when the server gave no answer within 90 seconds. The Service keeps running in every case. A waited start returns and opens no tunnel; mend service connect reaches the port. UDP has no probe, and a recipe that declares only a port is adopted with one probe, so --wait takes neither.",
       "The port is tunnelled to this machine's loopback as soon as it listens, unless --no-connect.",
     ],
     options: [
+      {
+        flag: "--wait",
+        text: "exit 1 when the port did not answer, 124 with no answer in 90 s; no tunnel",
+      },
       { flag: "--port <port>", text: "the port the command listens on inside the workspace" },
       { flag: "--name <n>", text: "the service's name. Default: the command" },
       { flag: "--udp", text: "a UDP port" },

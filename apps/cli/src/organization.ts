@@ -10,6 +10,7 @@ import {
   sharedControlConfirmLines,
   sharedControlQuestion,
 } from "./shared-workspace.ts";
+import { redactCredentials } from "./shared.ts";
 
 /**
  * The organization from a terminal (docs/adr/0003-organizations-and-tenancy.md): `mend invite`,
@@ -21,9 +22,9 @@ const paint = (code: string) => (text: string) =>
   process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
 const green = paint("32");
-const say = (line: string) => process.stdout.write(`${line}\n`);
+const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
 const fail = (message: string): never => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
 };
 

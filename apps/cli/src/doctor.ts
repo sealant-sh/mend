@@ -8,6 +8,7 @@ import {
   observeHostShutdownTimeout,
   type ShutdownTimeoutReading,
 } from "./docker-shutdown.ts";
+import { redactCredentials } from "./shared.ts";
 
 /**
  * `mend doctor`: one read-only pass over everything a first run depends on, printed
@@ -467,6 +468,8 @@ export const doctorCommand = async (
     onPath,
     dockerShutdown: observeHostShutdownTimeout,
   });
-  for (const check of checks) process.stdout.write(`${formatCheck(check, paintMark)}\n`);
+  for (const check of checks) {
+    process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);
+  }
   if (checks.some((check) => check.state === "failed")) process.exitCode = 1;
 };

@@ -1,5 +1,7 @@
 import type { QRCodeToStringOptions } from "qrcode";
 
+import { redactCredentials } from "./shared.ts";
+
 /**
  * `mend pair` and `mend qr`: hand a phone (or any second device) a token for this
  * server without typing one.
@@ -31,9 +33,9 @@ const paint = (code: string) => (text: string) =>
   process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
 const green = paint("32");
-const say = (line: string) => process.stdout.write(`${line}\n`);
+const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
 const fail = (message: string): never => {
-  process.stderr.write(`mend: ${message}\n`);
+  process.stderr.write(`mend: ${redactCredentials(message)}\n`);
   process.exit(1);
 };
 

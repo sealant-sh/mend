@@ -90,7 +90,7 @@ it installs runs as `private` and `single`.
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `mend adopt [git-url] [--name <name>] [--auth <mode>] [--private\|--shared]`                  | Clone a network Git repository into the store; with no URL, the current checkout's `origin`                  |
 | `mend refresh [project]`                                                                      | Fetch origin's branches into the store so new sessions base on current tips                                  |
-| `mend projects`                                                                               | List adopted projects and their live sessions                                                                |
+| `mend projects [--json]`                                                                      | List adopted projects and their live sessions; `--json` for scripts                                          |
 | `mend env load [file] [--secret [A,B]] [--project <name>]`                                    | Load dotenv values into project configuration and secrets                                                    |
 | `mend env show [--project <name>]`                                                            | List configuration, secret, and cluster-binding names; never secret values                                   |
 | `mend env cluster add secret\|configmap <name>`, `remove <kind>/<name>`, `sa <name>\|--clear` | Bind Kubernetes Secrets, ConfigMaps, and a service account to a project's workspaces; Mend stores names only |
@@ -101,6 +101,28 @@ your Git access mode from `mend keys mode`, which is `mend-key` until you change
 
 A project is `--private` by default: only you see it. `--shared` makes it visible to everyone in
 your organization, who can then start sessions in it. See [Organizations](/organizations/overview/).
+
+`mend projects --json` prints `{"version": 1, "projects": [...]}`, with an empty list when there are
+none. The shape is stable:
+
+| Key             | Type             | Meaning                                                 |
+| --------------- | ---------------- | ------------------------------------------------------- |
+| `id`            | string           | The project's id                                        |
+| `name`          | string           | Its name, as `--project` takes it                       |
+| `originUrl`     | string or `null` | The repository it was adopted from, without credentials |
+| `defaultBranch` | string           | The branch new worktrees start from                     |
+| `storePath`     | string           | Where the store holds it on the server                  |
+| `liveSessions`  | number           | Sessions live in it now                                 |
+| `current`       | boolean          | The current directory is inside it                      |
+
+The CLI never prints a URL's credentials in what it says itself: an origin adopted as
+`https://oauth2:TOKEN@github.com/acme/repo.git` reads as `https://github.com/acme/repo.git` in JSON,
+in tables, in messages and in the `mend service init` preview. The userinfo is everything before the
+last `@` of the URL's authority, whitespace and control characters included; an ssh URL keeps its
+user and loses only the password (`ssh://git:pw@host/…` reads `ssh://git@host/…`). A command's
+recorded output (`mend run`, `mend logs`, `mend service logs`, `mend attach`) and a file's contents
+(`mend memory show`) are printed as they are. A session's record is not its owner's alone: anyone
+who can read the project can read it, so a password a command printed reaches them too.
 
 ## Start agents and commands
 
@@ -468,7 +490,12 @@ selection and host-key verification.
 | `mend service restart <name-or-id>`                                           | Start another attempt for a supervised Service                              |
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
-`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, and `--no-connect`. On
+`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, `--wait`, and
+`--no-connect`. Mend holds the start for up to a minute until the port answers; with `--wait` the
+exit status says how that ended: `0` once it answered, `1` when it did not, and `124` when the
+server gave no answer within 90 seconds. The Service keeps running in every case. A waited start
+returns and opens no tunnel; `mend service connect` reaches the port. `--wait` takes TCP ports only
+(UDP has no probe), and not a recipe that declares only a port, which Mend adopts with one probe. On
 a server that is not this machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`, and
 the dashboard tunnel the session's live Services declared `--http` or `--https` to this machine's
 loopback while attached, on the Service's own port when it is free. One line each says where it
