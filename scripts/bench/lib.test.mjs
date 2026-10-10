@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -3121,7 +3122,7 @@ test("review 624 r4 (N11): unresolved state never names a path, never follows a 
       rid: "proof1",
       projectId: "p",
       quietUntil: 0,
-      accounts: ["owner"],
+      accounts: ["bench-1"],
       file: victim,
     }),
   );
@@ -3180,18 +3181,23 @@ test("review 624 r4 (N15, N17): unreadable state, or state of an account not giv
   missing.ctx.api2 = null;
   writeFileSync(
     path.join(missing.ctx.stateDir, "proof5.json"),
-    JSON.stringify({ rid: "proof5", projectId: "p", quietUntil: 0, accounts: ["owner", "second"] }),
+    JSON.stringify({
+      rid: "proof5",
+      projectId: "p",
+      quietUntil: 0,
+      accounts: ["bench-1", "bench-2"],
+    }),
   );
   await cleanupAll(missing.ctx, { reconcile: true });
   assert.ok(existsSync(path.join(missing.ctx.stateDir, "proof5.json")));
   assert.match(
     missing.result.errors.map((error) => error.message).join("\n"),
-    /include the second account's .*pass --second-token-file to check them; kept/,
+    /belong to account\(s\) bench-2, which no token given here is \(bench-1\).*; kept/,
   );
 });
 
 const proof6State = (quietUntil) =>
-  JSON.stringify({ rid: "proof6", projectId: "p", quietUntil, accounts: ["owner", "second"] });
+  JSON.stringify({ rid: "proof6", projectId: "p", quietUntil, accounts: ["bench-1", "bench-2"] });
 
 test("review 624 r4 (N16): reconciling cleanups take turns, and a renewed obligation is never cleared", async () => {
   const waits = { pending: 50, final: 20, grace: 100, retry: 1, quiet: 300 };
@@ -3216,22 +3222,177 @@ test("review 624 r4 (N16): reconciling cleanups take turns, and a renewed obliga
   await Promise.all([one, two]);
   assert.ok(
     order.some((line) =>
-      /^second: cleanup · another cleanup .* is reconciling: waiting/.test(line),
+      line.startsWith("second: cleanup · another cleanup is reconciling: waiting"),
     ),
   );
-  assert.ok(
-    order.some((line) => /^first: .*its unresolved state changed meanwhile; kept/.test(line)),
+  // The first found the obligation renewed under it: kept, and its cleanup fails for it.
+  assert.match(
+    first.result.errors.map((error) => error.message).join("\n"),
+    /run proof6's unresolved state was renewed meanwhile: kept/,
   );
-  // Everything the second did after waiting came after the first let go.
-  const firstKept = order.findIndex((line) => /^first: .*changed meanwhile; kept/.test(line));
-  const secondWorked = order.findIndex(
-    (line) => line.startsWith("second: ") && !/is reconciling: waiting/.test(line),
-  );
-  assert.ok(secondWorked > firstKept);
   // The second read the renewed state after the first let go, waited it out and settled it.
   assert.equal(existsSync(path.join(dir, "proof6.json")), false);
   assert.ok(order.some((line) => /^second: .*nothing more appeared/.test(line)));
-  assert.equal(existsSync(path.join(dir, ".lock")), false);
+  // The kernel lock went with them: it can be taken at once.
+  assert.equal(spawnSync("flock", ["-x", "-n", path.join(dir, ".lock"), "true"]).status, 0);
+});
+
+/** A run's unresolved state owing both bench accounts' things. */
+const owedBy = (world, rid) =>
+  writeFileSync(
+    path.join(world.ctx.stateDir, `${rid}.json`),
+    JSON.stringify({ rid, projectId: "p", quietUntil: 0, accounts: ["bench-1", "bench-2"] }),
+  );
+
+test("review 624 r5 (R5-1): a cleanup acting as other accounts never settles a run, nor leaves its worktree quietly", async () => {
+  const waits = { pending: 50, final: 20, grace: 20, retry: 1, quiet: 400 };
+  // The second token is of a third account: its memory route answers `removed: false` for the
+  // joiner's seed, which is not its own.
+  const third = cleanupWorld({ rid: "wt0001" });
+  third.ctx.cleanupWaits = waits;
+  owedBy(third, "wt0001");
+  third.ctx.api2.get = async (route) =>
+    route === "/organization" ? { userId: "bench-3" } : { files: [] };
+  third.ctx.api2.delete = async () => ({ removed: false });
+  await cleanupAll(third.ctx, { reconcile: true });
+  assert.ok(existsSync(path.join(third.ctx.stateDir, "wt0001.json")));
+  assert.match(
+    third.result.errors.map((error) => error.message).join("\n"),
+    /run wt0001's unresolved requests belong to account\(s\) bench-2, which no token given here is \(bench-1, bench-3\)/,
+  );
+  // The first token is of a fourth account: the run's own worktree is left, and that is a failure.
+  const fourth = cleanupWorld({ rid: "wt0002" });
+  fourth.ctx.cleanupWaits = waits;
+  fourth.ctx.api.get = async (route) => {
+    if (route === "/organization") return { userId: "bench-4" };
+    if (route.endsWith("/worktrees")) {
+      return { worktrees: [{ id: "w", name: "st-bench-wt0002-claude-1" }] };
+    }
+    if (route === "/worktrees/w") {
+      return { sessions: [{ id: "s", ownerUserId: "bench-1", settledAt: "x" }] };
+    }
+    return { files: [] };
+  };
+  await cleanupAll(fourth.ctx, { reconcile: true });
+  assert.match(
+    fourth.result.errors.map((error) => `${error.scenario}: ${error.message}`).join("\n"),
+    /cleanup · worktree st-bench-wt0002-claude-1: left: owned by bench-1, not a bench account; pass the tokens of the accounts that ran it/,
+  );
+  // A run records its accounts' user ids, not their roles.
+  const run = cleanupWorld({ rid: "wt0003" });
+  run.ctx.cleanupWaits = waits;
+  run.ctx.unanswered = 1;
+  await cleanupAll(run.ctx);
+  assert.deepEqual(
+    JSON.parse(readFileSync(path.join(run.ctx.stateDir, "wt0003.json"), "utf8")).accounts,
+    ["bench-1", "bench-2"],
+  );
+});
+
+test("review 624 r5 (R5-2): `cleanup --all` owes again each run whose things appear late, and the project what it cannot tell", async () => {
+  const waits = { pending: 50, final: 20, grace: 100, retry: 1, quiet: 600 };
+  const world = cleanupWorld({ rid: null });
+  world.ctx.cleanupWaits = waits;
+  world.stored.clear();
+  const dir = world.ctx.stateDir;
+  writeFileSync(
+    path.join(dir, "ren001.json"),
+    JSON.stringify({
+      rid: "ren001",
+      projectId: "p",
+      quietUntil: 0,
+      accounts: ["bench-1", "bench-2"],
+    }),
+  );
+  const seed = ".claude/projects/-workspace-repo/memory/st-bench-ren001.md";
+  const stray = ".claude/projects/-workspace-repo/memory/st-bench-stray.md";
+  // Both commit between the first sweep and the second.
+  setTimeout(() => {
+    world.stored.set(seed, { path: seed });
+    world.stored.set(stray, { path: stray });
+  }, 40);
+  await cleanupAll(world.ctx, { all: true, reconcile: true });
+  const renewed = JSON.parse(readFileSync(path.join(dir, "ren001.json"), "utf8"));
+  assert.ok(renewed.quietUntil > Date.now());
+  assert.deepEqual(renewed.accounts, ["bench-1", "bench-2"]);
+  const whole = readdirSync(dir).find((name) => /^all-[0-9a-f]{12}\.json$/.test(name));
+  assert.notEqual(whole, undefined);
+  assert.ok(!world.result.errors.some((error) => /not a run id/.test(error.message)));
+  assert.match(
+    world.result.errors.map((error) => error.message).join("\n"),
+    /2 thing\(s\) of run ren001, the project's st-bench things appeared after the first sweep/,
+  );
+  // The next `--all` waits the renewed period out before it may call anything settled; a `--run`
+  // waits the project's too, and never clears it.
+  const next = cleanupWorld({ rid: null });
+  next.ctx.cleanupWaits = waits;
+  next.ctx.stateDir = dir;
+  const started = Date.now();
+  await cleanupAll(next.ctx, { all: true, reconcile: true });
+  assert.ok(Date.now() - started >= 400);
+  assert.deepEqual(
+    readdirSync(dir).filter((name) => name.endsWith(".json")),
+    [],
+  );
+});
+
+test("review 624 r5 (nits): the lock goes with its process, a bad run id is refused offline, the state stays private, earlier merges are re-run", async () => {
+  // A cleanup killed while it holds the lock leaves nothing held.
+  const dir = mkdtempSync(path.join(tmpdir(), "st-bench-lock-"));
+  const holder = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `const fs=require("node:fs");const {spawnSync}=require("node:child_process");` +
+        `const fd=fs.openSync(${JSON.stringify(path.join(dir, ".lock"))},"a");` +
+        `const r=spawnSync("flock",["-x","-n","9"],{stdio:["ignore","ignore","ignore",0,0,0,0,0,0,fd]});` +
+        `process.stdout.write(String(r.status));process.kill(process.pid,"SIGKILL");`,
+    ],
+    { encoding: "utf8" },
+  );
+  // It took the lock, and died holding it.
+  assert.equal(holder.stdout, "0");
+  assert.equal(holder.signal, "SIGKILL");
+  assert.equal(spawnSync("flock", ["-x", "-n", path.join(dir, ".lock"), "true"]).status, 0);
+  // A run id that is not one is refused before any connection (the url answers nothing).
+  const refused = spawnSync(
+    process.execPath,
+    [
+      fileURLToPath(new URL("bench.mjs", import.meta.url)),
+      "cleanup",
+      "--run",
+      "../x",
+      "--url",
+      "http://127.0.0.1:9",
+      "--no-host",
+    ],
+    { encoding: "utf8", timeout: 20_000 },
+  );
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /--run takes a run's id .*, not \.\.\/x/);
+  assert.throws(() => parseOptions(["cleanup", "--run", "proof"]), /--run takes a run's id/);
+  // A state directory others may read or write is refused, never changed.
+  const open = cleanupWorld({ rid: "ope001" });
+  open.ctx.cleanupWaits = { pending: 50, final: 20, grace: 20, retry: 1, quiet: 400 };
+  chmodSync(open.ctx.stateDir, 0o755);
+  await cleanupAll(open.ctx, { reconcile: true }).catch(() => null);
+  assert.equal((statSync(open.ctx.stateDir).mode & 0o777).toString(8), "755");
+  assert.match(
+    open.result.errors.map((error) => error.message).join("\n"),
+    /may be read or written by others \(mode 755\)/,
+  );
+  // A record merged by a bench before series said their layout is not the gate.
+  const person = completePerson();
+  for (const measure of Object.values(person.measures)) delete measure.layout;
+  person.merged = [{ startedAt: "x", only: ["new"], measures: ["new.claude.first_output"] }];
+  const compared = compareResults(sharedBaseline(), person);
+  assert.ok(
+    compared.label.differs.some((reason) =>
+      /the person record: it was merged by an earlier bench, whose series do not say their layout/.test(
+        reason,
+      ),
+    ),
+  );
 });
 
 test("review 624 (6): memory.stat is the executor's own cgroup, v1 read from hierarchical totals only", () => {

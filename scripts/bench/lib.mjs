@@ -1634,6 +1634,16 @@ export const stampSeriesIdentity = (result) => ({
 export const seriesDisagreementsOf = (result) => {
   const reasons = [];
   const layout = layoutOf(result);
+  // A record merged by a bench before series carried their layout cannot show it was not given
+  // another layout's numbers (review 4 of mend#624, N12): re-run it rather than trust it.
+  const unstamped = Object.entries(result.measures ?? {})
+    .filter(([, measure]) => (measure.samples ?? []).length > 0 && measure.layout === undefined)
+    .map(([name]) => name);
+  if ((result.merged ?? []).length > 0 && unstamped.length > 0) {
+    reasons.push(
+      `it was merged by an earlier bench, whose series do not say their layout (${unstamped.length}, ${unstamped[0]} first): run it again`,
+    );
+  }
   const otherLayout = Object.entries(result.measures ?? {})
     .filter(([, measure]) => measure.layout !== undefined && measure.layout !== layout)
     .map(([name, measure]) => `${name} (${measure.layout})`);
@@ -3020,8 +3030,12 @@ export const parseOptions = (argv, now = Date.now()) => {
       );
     }
   }
-  if (opts.runId !== null && !/^[0-9a-z]+$/.test(opts.runId)) {
-    throw new Error(`--run takes a run's id (the one its log starts with), not ${opts.runId}`);
+  // A run's id as `run` makes it (six lower-case letters and digits): it names files of the run's
+  // unresolved state, so nothing else is taken, and that before anything is asked of a server.
+  if (opts.runId !== null && !/^[0-9a-z]{6}$/.test(opts.runId)) {
+    throw new Error(
+      `--run takes a run's id (the six lower-case letters and digits its log starts with), not ${opts.runId}`,
+    );
   }
   if (opts.command === "cleanup" && !opts.all && opts.runId === null) {
     throw new Error(

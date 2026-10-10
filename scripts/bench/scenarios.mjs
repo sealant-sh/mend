@@ -2,8 +2,8 @@
 // records samples into the result; a scenario that cannot run records why, and the rest go on.
 // Everything created is named `st-bench-…` and removed, whatever happened.
 
-import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { execFile, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants as fsConstants,
@@ -17,7 +17,6 @@ import {
   renameSync,
   rmSync,
   writeSync,
-  chmodSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -1760,7 +1759,7 @@ const withRetries = async (request, { tries = 3, delayMs = 2000 } = {}) => {
  * and the second account's when there is one. One that cannot be read fails the sweep's worktree
  * part rather than guess.
  */
-const benchAccountsOf = async (ctx) => {
+export const benchAccountsOf = async (ctx) => {
   if (ctx.benchAccounts !== undefined) return ctx.benchAccounts;
   const ids = new Set();
   for (const api of [ctx.api, ctx.api2 ?? null]) {
@@ -1832,6 +1831,14 @@ export const cleanupAll = async (ctx, { all = false, reconcile = false } = {}) =
   }
 };
 
+/** The longest a timer may wait (`setTimeout` takes 32 bits); a longer wait is taken in parts. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const sleepUntil = async (at) => {
+  for (let left = at - Date.now(); left > 0; left = at - Date.now()) {
+    await sleep(Math.min(left, MAX_TIMER_MS));
+  }
+};
+
 const cleanupHeld = async (ctx, { all, reconcile }) => {
   const waits = { ...CLEANUP_WAITS, ...ctx.cleanupWaits };
   // An earlier run of this scope left requests whose outcome nobody knows: wait them out first.
@@ -1842,7 +1849,7 @@ const cleanupHeld = async (ctx, { all, reconcile }) => {
     ctx.rec.error(
       "cleanup · unresolved state",
       new Error(
-        `run ${entry.rid}'s unresolved state cannot be read (${entry.corrupt}): what its requests left may still commit; kept, read it and remove ${entry.rid}.json by hand once its requests are settled`,
+        `${scopeWords(entry.rid)}'s unresolved state cannot be read (${entry.corrupt}): what its requests left may still commit; kept, read it and remove ${entry.file ?? "it"} by hand once its requests are settled`,
       ),
     );
   }
@@ -1852,17 +1859,27 @@ const cleanupHeld = async (ctx, { all, reconcile }) => {
     ctx.log(
       `cleanup · an interrupted run's requests may still commit until ${new Date(quietUntil).toISOString()}: waiting`,
     );
-    await sleep(quietUntil - Date.now());
+    await sleepUntil(quietUntil);
   }
-  // A run whose unresolved requests were the second account's needs that account to be checked.
+  // What an entry owes belongs to the accounts it names (user ids, `GET /organization`'s): each
+  // must be one this cleanup acts as, or what it owes cannot be checked (a token missing, or of
+  // another account), and the entry is kept.
+  let mine = null;
+  if (readable.length > 0) {
+    mine = await benchAccountsOf(ctx).catch((error) => {
+      ctx.rec.error("cleanup · unresolved state", error);
+      return null;
+    });
+  }
   const blind = readable.filter(
-    (entry) => entry.accounts.includes("second") && (ctx.api2 ?? null) === null,
+    (entry) => mine === null || entry.accounts.some((id) => !mine.has(id)),
   );
   for (const entry of blind) {
+    const missing = mine === null ? entry.accounts : entry.accounts.filter((id) => !mine.has(id));
     ctx.rec.error(
       "cleanup · unresolved state",
       new Error(
-        `run ${entry.rid}'s unresolved requests include the second account's (the joiner's memory file, its secret file): pass --second-token-file to check them; kept`,
+        `${scopeWords(entry.rid)}'s unresolved requests belong to account(s) ${missing.join(", ")}, which no token given here is (${mine === null ? "they could not be read" : [...mine].join(", ")}): pass --token-file and --second-token-file of the accounts that ran it; kept`,
       ),
     );
   }
@@ -1885,7 +1902,7 @@ const cleanupHeld = async (ctx, { all, reconcile }) => {
     ].join(" and ");
     const unknown = (ctx.unanswered ?? 0) > 0 || !late;
     const until = Date.now() + waits.quiet;
-    if (unknown) markUnresolved(ctx, until, why);
+    if (unknown) await markUnresolved(ctx, { scope: ctx.rid, quietUntil: until, why });
     ctx.rec.error(
       "cleanup",
       new Error(
@@ -1901,20 +1918,32 @@ const cleanupHeld = async (ctx, { all, reconcile }) => {
     await sleep(waits.grace);
     const late = await sweep(ctx, { all });
     const failed = (ctx.result?.errors?.length ?? 0) > errorsBefore;
-    if (late > 0) {
-      markUnresolved(
-        ctx,
-        Date.now() + waits.quiet,
-        `${late} thing(s) appeared after the first sweep`,
-      );
+    if (late.length > 0) {
+      // Each run whose things appeared late is owed again, as `--run` owes its own; what cannot be
+      // told to a run is owed by the project's whole scope.
+      const until = Date.now() + waits.quiet;
+      const scopes = [...new Set(late.map((rid) => rid ?? ALL_SCOPE))];
+      for (const scope of scopes) {
+        const earlier = readable.find((entry) => entry.rid === scope);
+        await markUnresolved(ctx, {
+          scope,
+          quietUntil: until,
+          why: "things appeared after the first sweep",
+          accounts: earlier?.accounts,
+        });
+      }
       ctx.rec.error(
         "cleanup",
         new Error(
-          `${late} thing(s) of the run appeared after the first sweep and were removed: something may still commit, so run cleanup again later`,
+          `${late.length} thing(s) of ${scopes.map(scopeWords).join(", ")} appeared after the first sweep and were removed: something may still commit, so run cleanup again after ${new Date(until).toISOString()}`,
         ),
       );
     } else if (!failed && blind.length === 0) {
-      clearUnresolved(ctx, readable);
+      // A `--run` cleanup settles its own run's entry, never the project's whole-scope one.
+      clearUnresolved(
+        ctx,
+        readable.filter((entry) => all || entry.rid !== ALL_SCOPE),
+      );
     }
   }
   remoteRefsNote(ctx);
@@ -1925,21 +1954,39 @@ const cleanupHeld = async (ctx, { all, reconcile }) => {
 /** A run id as `bench.mjs run` makes it (`Date.now().toString(36).slice(-6)`): the only names used. */
 export const RUN_ID = /^[0-9a-z]{6}$/;
 
+/**
+ * The scope of what was found late and cannot be told to a run (`cleanup --all`): owed by the
+ * whole project, waited out by every cleanup of it, cleared only by `--all`.
+ */
+const ALL_SCOPE = "all";
+
+const scopeWords = (scope) =>
+  scope === ALL_SCOPE ? "the project's st-bench things" : `run ${scope}`;
+
 /** Where a run's unresolved requests are kept between processes (`ST_BENCH_STATE_DIR`). */
 const stateDirOf = (ctx) =>
   ctx.stateDir ??
   process.env.ST_BENCH_STATE_DIR ??
   path.join(homedir(), ".cache", "st-bench", "unresolved");
 
-/** A state entry's file: only ever from a checked run id, never from what a file says. */
-const stateFileOf = (dir, rid) => {
-  if (!RUN_ID.test(String(rid))) throw new Error(`not a run id: ${JSON.stringify(rid)}`);
-  return path.join(dir, `${rid}.json`);
+/** The whole-scope entry's name: the project's, by a digest of its id. */
+const allScopeName = (projectId) =>
+  `all-${createHash("sha256").update(String(projectId)).digest("hex").slice(0, 12)}`;
+
+/**
+ * A state entry's file: only ever from a checked run id (or the project's whole scope), never
+ * from what a file says.
+ */
+const stateFileOf = (dir, scope, projectId) => {
+  if (scope === ALL_SCOPE) return path.join(dir, `${allScopeName(projectId)}.json`);
+  if (!RUN_ID.test(String(scope))) throw new Error(`not a run id: ${JSON.stringify(scope)}`);
+  return path.join(dir, `${scope}.json`);
 };
 
 /**
- * The state directory, made private (0700) and checked to be a directory of this user's, not a
- * link; anything else is refused, since what is read from it decides what cleanup removes.
+ * The state directory, made private (0700) and checked to be a directory of this user's that no
+ * one else may read or write, not a link; anything else is refused, never changed, since what is
+ * read from it decides what cleanup removes.
  */
 const privateStateDir = (ctx) => {
   const dir = stateDirOf(ctx);
@@ -1951,25 +1998,31 @@ const privateStateDir = (ctx) => {
   if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
     throw new Error(`${dir} is not this user's`);
   }
-  if ((stat.mode & 0o777) !== 0o700) chmodSync(dir, 0o700);
+  if ((stat.mode & 0o077) !== 0) {
+    throw new Error(
+      `${dir} may be read or written by others (mode ${(stat.mode & 0o777).toString(8)}): make it 0700 or point ST_BENCH_STATE_DIR elsewhere`,
+    );
+  }
   return dir;
 };
 
 /**
- * Records that a run's requests may still commit after its cleanup: its run id, project, when a
- * later cleanup may call it clean, and whose artifacts they may leave. Written whole and private
- * (a new 0600 file renamed over the old, never through a link), and kept until a cleanup waits it
- * out and its last sweep finds nothing (`cleanupAll`).
+ * Records that a run's requests (or, `scope: "all"`, the project's st-bench things) may still
+ * commit after a cleanup: the scope, project, when a later cleanup may call it clean, and the
+ * user ids of the accounts whose artifacts they may leave. Written whole and private (a new 0600
+ * file renamed over the old, never through a link), and kept until a cleanup that acts as those
+ * accounts waits it out and its last sweep finds nothing (`cleanupAll`).
  */
-const markUnresolved = (ctx, quietUntil, why) => {
+const markUnresolved = async (ctx, { scope, quietUntil, why, accounts }) => {
   try {
     const dir = privateStateDir(ctx);
-    const file = stateFileOf(dir, ctx.rid);
-    const accounts = ["owner", ...((ctx.api2 ?? null) === null ? [] : ["second"])];
-    const text = `${JSON.stringify({ rid: ctx.rid, projectId: ctx.project.id, quietUntil, why, accounts })}\n`;
+    const file = stateFileOf(dir, scope, ctx.project.id);
+    // An entry renewed keeps the accounts it named; a new one names this cleanup's.
+    const ids = accounts ?? [...(await benchAccountsOf(ctx))];
+    const text = `${JSON.stringify({ rid: scope, projectId: ctx.project.id, quietUntil, why, accounts: ids })}\n`;
     const temporary = path.join(
       dir,
-      `.${ctx.rid}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
+      `.${path.basename(file, ".json")}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
     );
     const fd = openSync(
       temporary,
@@ -2004,10 +2057,10 @@ const readStateFile = (file) => {
 };
 
 /**
- * The unresolved entries of this cleanup's scope: its run's, or with `all` every run's of this
- * project. One that cannot be read or does not hold what a run writes is returned as `corrupt`,
- * with its run id from its file name: unknown, never nothing. No directory is no entry; one that
- * cannot be read is one unknown entry.
+ * The unresolved entries of this cleanup's scope: its run's and its project's whole-scope one, or
+ * with `all` every run's of this project too. One that cannot be read or does not hold what a run
+ * writes is returned as `corrupt`, with its scope from its file name: unknown, never nothing. No
+ * directory is no entry; one that cannot be read is one unknown entry.
  */
 const unresolvedOf = (ctx, { all }) => {
   const dir = stateDirOf(ctx);
@@ -2018,140 +2071,145 @@ const unresolvedOf = (ctx, { all }) => {
     if (error?.code === "ENOENT") return [];
     return [{ rid: "?", corrupt: `${dir} cannot be read: ${errorText(error)}` }];
   }
+  const allName = `${allScopeName(ctx.project.id)}.json`;
   const entries = [];
   for (const name of names) {
-    const match = /^([0-9a-z]{6})\.json$/.exec(name);
-    if (match === null) continue;
-    const rid = match[1];
-    if (!all && rid !== ctx.rid) continue;
+    const run = /^([0-9a-z]{6})\.json$/.exec(name);
+    const scope = name === allName ? ALL_SCOPE : run === null ? null : run[1];
+    if (scope === null) continue;
+    if (scope !== ALL_SCOPE && !all && scope !== ctx.rid) continue;
+    const file = stateFileOf(dir, scope, ctx.project.id);
     let raw;
     try {
-      raw = readStateFile(stateFileOf(dir, rid));
+      raw = readStateFile(file);
     } catch (error) {
-      entries.push({ rid, corrupt: errorText(error) });
+      entries.push({ rid: scope, file, corrupt: errorText(error) });
       continue;
     }
     let entry;
     try {
       entry = JSON.parse(raw);
     } catch {
-      entries.push({ rid, corrupt: "it is not whole JSON" });
+      entries.push({ rid: scope, file, corrupt: "it is not whole JSON" });
       continue;
     }
     const valid =
       entry !== null &&
       typeof entry === "object" &&
-      entry.rid === rid &&
+      entry.rid === scope &&
       typeof entry.projectId === "string" &&
       Number.isFinite(entry.quietUntil) &&
-      Array.isArray(entry.accounts);
+      Array.isArray(entry.accounts) &&
+      entry.accounts.length > 0 &&
+      entry.accounts.every((id) => typeof id === "string" && id !== "");
     if (!valid) {
-      entries.push({ rid, corrupt: "it does not hold what a run writes" });
+      entries.push({ rid: scope, file, corrupt: "it does not hold what a run writes" });
       continue;
     }
     if (entry.projectId !== ctx.project.id) continue;
-    entries.push({
-      rid,
-      quietUntil: entry.quietUntil,
-      accounts: entry.accounts.map(String),
-      raw,
-    });
+    entries.push({ rid: scope, file, quietUntil: entry.quietUntil, accounts: entry.accounts, raw });
   }
   return entries;
 };
 
-/** Clears what was read, only if it is still what was read: a renewed obligation stays. */
+/**
+ * Clears what was read, only if it is still what was read. One renewed meanwhile is kept, and that
+ * fails the cleanup: something may still commit.
+ */
 const clearUnresolved = (ctx, owed) => {
-  const dir = stateDirOf(ctx);
   for (const entry of owed) {
-    const file = stateFileOf(dir, entry.rid);
     let now;
     try {
-      now = readStateFile(file);
+      now = readStateFile(entry.file);
     } catch {
       continue;
     }
     if (now !== entry.raw) {
-      ctx.log(`cleanup · run ${entry.rid}: its unresolved state changed meanwhile; kept`);
+      ctx.rec.error(
+        "cleanup · unresolved state",
+        new Error(
+          `${scopeWords(entry.rid)}'s unresolved state was renewed meanwhile: kept, run cleanup again later`,
+        ),
+      );
       continue;
     }
-    rmSync(file, { force: true });
+    rmSync(entry.file, { force: true });
     ctx.log(
-      `cleanup · run ${entry.rid}: nothing more appeared, its unresolved requests are settled`,
+      `cleanup · ${scopeWords(entry.rid)}: nothing more appeared, its unresolved requests are settled`,
     );
   }
 };
 
-/** How long a reconciling cleanup waits for another to finish before it gives up. */
-const LOCK_WAIT_MS = 30 * 60_000;
+/** How long a reconciling cleanup waits for another to finish before it gives up, in seconds. */
+const LOCK_WAIT_S = 30 * 60;
+
+/** flock(1) on the descriptor this process passes it as fd 9; its exit code. */
+const flockOn = (fd, args) =>
+  new Promise((resolve) => {
+    const stdio = ["ignore", "ignore", "pipe"];
+    while (stdio.length < 9) stdio.push("ignore");
+    stdio[9] = fd;
+    const child = spawn("flock", [...args, "9"], { stdio });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => resolve({ code: null, stderr: errorText(error) }));
+    child.on("exit", (code) => resolve({ code, stderr: stderr.trim() }));
+  });
 
 /**
- * The state directory's lock, held by one reconciling cleanup at a time: a `.lock` file made
- * exclusively, holding its process's id; one left by a process that is gone is taken over.
- * Returns its release.
+ * The state directory's lock, held by one reconciling cleanup at a time: flock(2), through
+ * util-linux `flock` on a descriptor of `.lock` this process keeps open. The lock belongs to that
+ * open file, which the kernel closes, and so releases, however the process ends (a Ctrl-C leaves
+ * nothing held). Returns its release.
  */
 const lockState = async (ctx) => {
-  let dir;
+  let fd;
   try {
-    dir = privateStateDir(ctx);
+    const dir = privateStateDir(ctx);
+    fd = openSync(
+      path.join(dir, ".lock"),
+      fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`${dir}/.lock is not a regular file`);
   } catch (error) {
+    if (fd !== undefined) closeSync(fd);
     ctx.rec.error("cleanup · unresolved state", error);
-    return () => {};
+    throw error;
   }
-  const lock = path.join(dir, ".lock");
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  let said = false;
-  for (;;) {
-    try {
-      const fd = openSync(
-        lock,
-        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
-        0o600,
-      );
-      writeSync(fd, `${process.pid}\n`);
-      closeSync(fd);
-      return () => rmSync(lock, { force: true });
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-    }
-    let holder = null;
-    try {
-      holder = Number.parseInt(readStateFile(lock), 10);
-    } catch {
-      holder = null;
-    }
-    const alive = (() => {
-      if (!Number.isSafeInteger(holder) || holder <= 0) return false;
-      try {
-        process.kill(holder, 0);
-        return true;
-      } catch (error) {
-        return error?.code === "EPERM";
-      }
-    })();
-    if (!alive && holder !== null) {
-      rmSync(lock, { force: true });
-      continue;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`another cleanup has held ${lock} for ${LOCK_WAIT_MS / 60_000} min`);
-    }
-    if (!said) {
-      ctx.log(
-        `cleanup · another cleanup (process ${holder ?? "?"}) is reconciling: waiting for it`,
-      );
-      said = true;
-    }
-    await sleep(500);
+  let taken = await flockOn(fd, ["-x", "-n"]);
+  if (taken.code === 1) {
+    ctx.log("cleanup · another cleanup is reconciling: waiting for it");
+    taken = await flockOn(fd, ["-x", "-w", String(LOCK_WAIT_S)]);
   }
+  if (taken.code !== 0) {
+    closeSync(fd);
+    throw new Error(
+      taken.code === null
+        ? `cleanup needs flock(1) (util-linux) to hold its lock: ${taken.stderr}`
+        : `another cleanup held the state directory's lock for ${LOCK_WAIT_S / 60} min${taken.stderr === "" ? "" : `: ${taken.stderr}`}`,
+    );
+  }
+  return () => closeSync(fd);
 };
+
+/** The run a thing of the bench belongs to, from its name (`st-bench-<run id>…`), or null. */
+const runOfName = (name) => /st-bench-([0-9a-z]{6})(?:[-.]|$)/.exec(name)?.[1] ?? null;
+const runOfSecret = (secretPath) =>
+  new RegExp(`^${SECRET_PREFIX.replaceAll(".", "\\.")}-([0-9a-z]{6})$`).exec(secretPath)?.[1] ??
+  null;
 
 /**
  * One pass over what a run leaves (`cleanupAll`): its worktrees, its secret files, the joiner's
- * memory file. Each part on its own: one that fails is recorded and the others still run.
+ * memory file. Each part on its own: one that fails is recorded and the others still run. Returns
+ * the run of each thing it removed (null where its name tells none).
  */
 const sweep = async (ctx, { all }) => {
-  let found = 0;
+  const found = [];
+  const runOf = (name) => (all ? runOfName(name) : ctx.rid);
   // Each part on its own: one that fails is recorded (cleanup then fails) and the others still run.
   try {
     // Only what the bench's own accounts own is stopped or removed, whatever its name says.
@@ -2161,14 +2219,25 @@ const sweep = async (ctx, { all }) => {
       if (!inCleanupScope(worktree.name, ctx.rid, all)) continue;
       try {
         const outcome = await removeWorktree(ctx, worktree.id, accounts);
-        if (outcome === "removed") found += 1;
-        ctx.log(
-          outcome === "gone"
-            ? `cleanup · worktree ${worktree.name} was gone already`
-            : outcome.startsWith("foreign")
-              ? `cleanup · worktree ${worktree.name} left alone: ${outcome.slice("foreign ".length)}`
+        if (outcome === "removed") found.push(runOf(worktree.name));
+        if (outcome.startsWith("foreign")) {
+          const why = outcome.slice("foreign ".length);
+          // Another's worktree under `--all` is theirs to keep; this run's own one left behind
+          // (the tokens are of other accounts) is a cleanup not done.
+          if (all) ctx.log(`cleanup · worktree ${worktree.name} left alone: ${why}`);
+          else {
+            ctx.rec.error(
+              `cleanup · worktree ${worktree.name}`,
+              new Error(`left: ${why}; pass the tokens of the accounts that ran it`),
+            );
+          }
+        } else {
+          ctx.log(
+            outcome === "gone"
+              ? `cleanup · worktree ${worktree.name} was gone already`
               : `cleanup · removed worktree ${worktree.name}`,
-        );
+          );
+        }
       } catch (error) {
         ctx.rec.error(`cleanup · worktree ${worktree.name}`, error);
       }
@@ -2193,7 +2262,7 @@ const sweep = async (ctx, { all }) => {
           await api
             .delete(`/me/secret-files?path=${encodeURIComponent(file.path)}`)
             .then(() => {
-              found += 1;
+              found.push(all ? runOfSecret(file.path) : ctx.rid);
               return ctx.log(`cleanup · removed secret file ${file.path}${who}`);
             })
             .catch((error) => ctx.rec.error("cleanup · secret file", error));
@@ -2203,23 +2272,24 @@ const sweep = async (ctx, { all }) => {
       ctx.rec.error(`cleanup · secret files${who}`, error);
     }
   }
-  found += await removeJoinerMemory(ctx, { all });
+  found.push(...(await removeJoinerMemory(ctx, { all })));
   return found;
 };
 
 /**
  * The joiner's memory file: this run's by its path, which needs no listing (gone already, a 404 or
- * `removed: false`, is fine), or with `all` every run's in the project. Returns how many it removed. A failure is recorded, so cleanup fails and
- * says so; it never passes over a seed it could not see.
+ * `removed: false`, is fine), or with `all` every run's in the project. Returns the run of each it
+ * removed. A failure is recorded, so cleanup fails and says so; it never passes over a seed it
+ * could not see.
  */
 const removeJoinerMemory = async (ctx, { all }) => {
   if ((ctx.api2 ?? null) === null) {
     ctx.log(
       "cleanup · the joiner's memory file is the second account's: pass --second-token-file to remove it",
     );
-    return 0;
+    return [];
   }
-  let removed = 0;
+  const removed = [];
   const remove = (memoryPath) =>
     ctx.api2
       .delete(`/projects/${ctx.project.id}/memory/file?path=${encodeURIComponent(memoryPath)}`)
@@ -2227,7 +2297,7 @@ const removeJoinerMemory = async (ctx, { all }) => {
         (answer) => {
           // The route answers whether there was a file to remove (`AgentMemoryRemoved`).
           if (answer?.removed === false) return null;
-          removed += 1;
+          removed.push(all ? runOfName(memoryPath) : ctx.rid);
           return ctx.log(`cleanup · removed the joiner's memory file ${memoryPath}`);
         },
         (error) => {

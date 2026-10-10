@@ -132,16 +132,27 @@
 //   WORKLOAD), and a record or companion holding a series its label does not stand for (another
 //   layout, another version) is not the gate.
 // - A run whose requests may still commit after its cleanup records that on disk
-//   (`~/.cache/st-bench/unresolved/<run id>.json`, or `ST_BENCH_STATE_DIR`): a private (0700)
-//   directory, files named only by a checked run id, written whole (0600, renamed into place) and
-//   read without following links; whatever a file says is never a path. `cleanup` holds the
-//   directory's lock while it reconciles, waits that run's quiet period (5 min) out, sweeps, sweeps
-//   again a while later, and only then, finding nothing more and the file unchanged since it read
-//   it, clears it. A state file it cannot read, or one owing the second account's artifacts when no
-//   second token was given, is kept and fails the cleanup.
+//   (`~/.cache/st-bench/unresolved/<run id>.json`, or `ST_BENCH_STATE_DIR`), with the user ids of
+//   the accounts it acted as (`GET /organization`, read when the run starts): a private (0700)
+//   directory of this user's (one others may read or write is refused, never changed), files named
+//   only by a checked run id, written whole (0600, renamed into place) and read without following
+//   links; whatever a file says is never a path. `cleanup` holds the directory's lock while it
+//   reconciles (flock(2) through util-linux `flock` on a descriptor it keeps: released however the
+//   process ends), waits the entry's quiet period (5 min) out, sweeps, sweeps again a while later,
+//   and only then, finding nothing more and the file unchanged since it read it, clears it. An entry
+//   it cannot read, one renewed meanwhile, or one owed by accounts no token given here is (a token
+//   missing, or of another account), is kept and fails the cleanup. Under `--all`, each run whose
+//   things appear late is owed again, and what cannot be told to a run is owed by the project's
+//   whole scope (`all-<digest>.json`), which every cleanup of the project waits out and only
+//   `--all` clears.
+// - A record merged by a bench before series carried their layout is not the gate: run it again.
 // - Cleanup stops and removes only worktrees whose sessions are all owned by the bench's own
-//   accounts (`GET /organization`'s user id); an st-bench- worktree of anyone else's is left alone,
-//   and one whose owner cannot be told fails the cleanup.
+//   accounts (`GET /organization`'s user id); an st-bench- worktree of anyone else's is left alone
+//   under `--all`, and under `--run` (the run's own, the tokens of other accounts) fails the
+//   cleanup, as one whose owner cannot be told does. Sessions that hold a worktree as a repository
+//   beside their own (ADR 0010) are not in the worktree's detail and cannot be listed by it, so
+//   they are not checked; the server still refuses removal while one is live, and the bench never
+//   makes one.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -165,7 +176,7 @@ import {
   stampSeriesIdentity,
   withCompanion,
 } from "./lib.mjs";
-import { HARNESSES, RUN_ID, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
+import { HARNESSES, benchAccountsOf, cleanupAll, makeRecorder, runAll } from "./scenarios.mjs";
 
 const USAGE = `usage: node scripts/bench/bench.mjs <run|table|compare|merge|companion|cleanup|help> [args] [options]
 
@@ -467,6 +478,9 @@ const runBench = async (opts) => {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   try {
+    // Whose things this run leaves: the accounts' user ids, recorded with what may still commit,
+    // so only a cleanup acting as them may call it settled.
+    await benchAccountsOf(ctx);
     await runAll(ctx);
   } catch (error) {
     ctx.rec.error("run", error);
@@ -629,13 +643,7 @@ const main = async () => {
           secretFile: false,
         },
       };
-      if (opts.runId !== null && opts.runId !== undefined && !RUN_ID.test(opts.runId)) {
-        log(
-          `not a run id: ${opts.runId} (six lower-case letters and digits, its log's "bench <id>")`,
-        );
-        process.exitCode = 2;
-        return;
-      }
+
       // A cleanup asked for by hand waits out an interrupted run's unresolved requests and calls it
       // clean only when a second sweep a while later finds nothing more.
       await cleanupAll(ctx, { all: opts.all, reconcile: true });
