@@ -38,10 +38,11 @@
 //     `mend service`, `mend claude|codex|opencode|pi` pass that to the workspace, not to the CLI);
 //   - the command acts on this machine's own Mend installation (`mend server …`,
 //     `mend uninstall`), except their help pages: those recipes run on a disposable host;
-//   - the real CLI is a Mend session's in-workspace helper (/run/mend/bin/mend, linked to
-//     /usr/local/bin/mend in every workspace), or a script that starts it: the helper ignores the
-//     config and acts on the session it runs in. Inside a session (a MEND_SESSION_* variable, or
-//     /run/mend) the real CLI must be named with MEND_VERIFY_REAL_MEND; PATH is not searched.
+//   - MEND_VERIFY_REAL_MEND names a Mend session's in-workspace helper (/run/mend/bin/mend, linked
+//     to /usr/local/bin/mend in every workspace), or a script that starts it: the helper ignores the
+//     config and acts on the session it runs in.
+// The real CLI is $MEND_VERIFY_REAL_MEND, else this checkout's apps/cli from source; PATH is never
+// searched, since inside a session the next `mend` on it is that helper.
 // `mend login` is covered by the same rules: it signs in to its `--url`, else to the config's URL.
 //
 // The real CLI then runs with this machine left out of its environment: XDG_CONFIG_HOME pinned to
@@ -56,7 +57,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { delimiter, dirname, isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export class Refused extends Error {}
@@ -275,10 +276,6 @@ export const checkCli = (argv, env, homes = machineHomes()) => {
 const HELPER_ROOT = "/run/mend";
 const HELPER_MARKS = ["mend — the in-workspace helper", `"${HELPER_ROOT}/mend.sock"`];
 
-/** A Mend session's workspace: its helper's variables, or its helper's directory. */
-export const inSession = (env, root = HELPER_ROOT) =>
-  Object.keys(env).some((name) => name.startsWith("MEND_SESSION_")) || existsSync(root);
-
 const textOf = (path) => {
   try {
     return statSync(path).size <= 4 * 1024 * 1024 ? readFileSync(path, "utf8") : "";
@@ -304,32 +301,23 @@ const isHelper = (path, root = HELPER_ROOT) => {
   });
 };
 
-/** The real CLI: $MEND_VERIFY_REAL_MEND, or (outside a session) the next mend on PATH. */
+/**
+ * The real CLI, as a program and the arguments before mend's own: $MEND_VERIFY_REAL_MEND, else this
+ * checkout's own apps/cli from source (`node apps/cli/src/main.ts`). PATH is never searched: inside a
+ * Mend session the next `mend` on it is the session's in-workspace helper, which ignores the config
+ * and acts on that session, not on the run's stack.
+ */
 export const realCli = (env, guardDir, root = HELPER_ROOT) => {
   const named = env.MEND_VERIFY_REAL_MEND ?? "";
-  let found = null;
-  if (named !== "") {
-    if (!isAbsolute(named)) refuse(`MEND_VERIFY_REAL_MEND (${named}) is relative`);
-    found = named;
-  } else if (inSession(env, root)) {
-    refuse(
-      "inside a Mend session the next mend on PATH is the session's own helper; name the CLI the run built with MEND_VERIFY_REAL_MEND",
-    );
-  } else {
-    const here = real(guardDir);
-    for (const dir of (env.PATH ?? "").split(delimiter)) {
-      if (dir === "" || real(dir) === here) continue;
-      const candidate = join(dir, "mend");
-      if (existsSync(candidate) && statSync(candidate).isFile()) {
-        found = candidate;
-        break;
-      }
-    }
-    if (found === null) refuse("no mend on PATH after the guard");
+  if (named === "") {
+    const main = join(guardDir, "..", "..", "..", "..", "..", "apps", "cli", "src", "main.ts");
+    if (!existsSync(main)) refuse(`no CLI at ${main}; name one with MEND_VERIFY_REAL_MEND`);
+    return { file: process.execPath, args: [real(main) ?? main] };
   }
-  if (isHelper(found, root))
-    refuse(`${found} is a Mend session's in-workspace helper, which acts on that session`);
-  return found;
+  if (!isAbsolute(named)) refuse(`MEND_VERIFY_REAL_MEND (${named}) is relative`);
+  if (isHelper(named, root))
+    refuse(`${named} is a Mend session's in-workspace helper, which acts on that session`);
+  return { file: named, args: [] };
 };
 
 // ─── the real CLI's environment ─────────────────────────────────────────────
@@ -374,7 +362,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const argv = rest.slice(1);
       const configHome = checkCli(argv, process.env);
       const cli = realCli(process.env, dirname(fileURLToPath(import.meta.url)));
-      process.execve(cli, [cli, ...argv], childEnv(process.env, configHome));
+      process.execve(cli.file, [cli.file, ...cli.args, ...argv], childEnv(process.env, configHome));
     } else if (mode === "target" && rest.length === 1) checkTarget(rest[0], process.env);
     else {
       process.stderr.write("usage: policy.mjs exec -- <mend argv...> | target <url>\n");

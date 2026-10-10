@@ -25,7 +25,7 @@ import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { Refused, checkCli, checkTarget, identityOf, runHome } from "./guard/policy.mjs";
+import { Refused, checkCli, checkTarget, identityOf, realCli, runHome } from "./guard/policy.mjs";
 
 /** A tunnel record as tunnel.mjs leaves a bound one: held by a live process (this test's). */
 const tunnelTo = (dir, port, extra = {}) =>
@@ -98,6 +98,8 @@ const run = (w, args = ["projects"], env = {}, cwd = w.home) => {
       HOME: w.home,
       XDG_CONFIG_HOME: w.xdg,
       MEND_VERIFY_PRIVATE: w.P,
+      // The CLI the guard runs: this world's fake, never a mend on PATH.
+      MEND_VERIFY_REAL_MEND: join(w.bin, "mend"),
       ...env,
     },
   });
@@ -142,7 +144,7 @@ test("the guard refuses when the CLI would read the legacy ~/.mend", () => {
   );
 });
 
-test("the guard runs the next mend on PATH for the declared outer server", () => {
+test("the guard runs the CLI it was given for the declared outer server", () => {
   within({ xdgUrl: `${outer}/` }, (w) => {
     const result = run(w, ["projects"], { MEND_VERIFY_OUTER_URL: outer });
     assert.equal(result.status, 0, result.stderr);
@@ -582,7 +584,6 @@ test("inside a session the guard never runs the session's helper, and the sessio
       PATH: `${guardDir}:${helperDir}:${process.env.PATH}`,
     };
     for (const args of [["stop"], ["service", "list"], ["land"]]) {
-      refused(run(w, args, session), /inside a Mend session/);
       refused(
         run(w, args, { ...session, MEND_VERIFY_REAL_MEND: join(helperDir, "mend") }),
         /in-workspace helper/,
@@ -592,11 +593,12 @@ test("inside a session the guard never runs the session's helper, and the sessio
         /in-workspace helper/,
       );
     }
-    // Outside a session, the helper first on PATH is refused all the same.
-    refused(
-      run(w, ["stop"], { MEND_VERIFY_OUTER_URL: outer, PATH: session.PATH }),
-      /in-workspace helper/,
-    );
+    // With no CLI named, the guard runs this checkout's own apps/cli, never the helper first on
+    // PATH (resolved here, not run).
+    assert.deepEqual(realCli({ PATH: session.PATH }, guardDir), {
+      file: process.execPath,
+      args: [realpathSync(join(repoRoot, "apps", "cli", "src", "main.ts"))],
+    });
     // The CLI the run names runs, with no session variable in its environment.
     writeFileSync(
       join(w.bin, "env-mend"),

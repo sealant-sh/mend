@@ -22,16 +22,10 @@ verdicts. They never appear in a report.
 ## What you need
 
 - A `mend` CLI signed in to the **outer** server where the stack will run (the box, or a local one),
-  first on `PATH` under the name `mend`, with `mend run --detach --json`, `mend service run --wait`,
-  `mend wait` and `mend logs`: Mend main since 430b2fd (mend#609 to #611), in the first
-  `0.36.0-next` release after it. Until your installed CLI has them, put a wrapper for a checkout of
-  main first on `PATH`:
-
-  ```sh
-  mkdir -p ~/.cache/mend-verify/bin && printf '#!/bin/sh\nexec node "%s/apps/cli/src/main.ts" "$@"\n' \
-    "<path to a checkout of Mend main>" > ~/.cache/mend-verify/bin/mend && chmod +x ~/.cache/mend-verify/bin/mend
-  export PATH=~/.cache/mend-verify/bin:$PATH
-  ```
+  with `mend run --detach --json`, `mend service run --wait`, `mend wait` and `mend logs`: Mend main
+  since 430b2fd (mend#609 to #611). The guard (Launch) runs this checkout's own `apps/cli` from
+  source (`node apps/cli/src/main.ts`, after `pnpm install`), or the CLI `MEND_VERIFY_REAL_MEND`
+  names; it never takes a `mend` from `PATH`.
 
   Run the steps in a script (`bash`): an interactive shell's `mend` alias outranks `PATH`.
 
@@ -112,8 +106,7 @@ mkdir -p "$(dirname "$E")" && mkdir "$E" && mkdir "$E/launch"   # refuses a run 
 skill=$PWD/.claude/skills/verify              # absolute, so a later cd cannot lose it
 export PATH=$skill/scripts/guard:$PATH         # every mend below, the helpers' too, passes the guard
 [ -n "${MEND_VERIFY_MACHINE_XDG+set}" ] || export MEND_VERIFY_MACHINE_XDG=${XDG_CONFIG_HOME:-}   # this machine's own, before the run's
-# Inside a Mend session, the next mend on PATH is the session's own helper: name the CLI you built.
-# export MEND_VERIFY_REAL_MEND=<absolute path to a `mend` that runs a Mend checkout's apps/cli>
+# The guard runs this checkout's apps/cli; to run another build: export MEND_VERIFY_REAL_MEND=<absolute path>
 export MEND_VERIFY_OUTER_URL=<the outer server's URL, as its CLI config names it>   # local-outer.sh: http://127.0.0.1:23105
 [ "$(command -v mend)" = "$skill/scripts/guard/mend" ] || { echo "mend does not resolve to the guard: unalias mend, or run this in a bash script" >&2; exit 1; }
 ```
@@ -142,22 +135,20 @@ request) when:
   `mend claude|codex|opencode|pi`) are left alone: they run in the workspace;
 - the command acts on this machine's own Mend installation (`mend server …`, `mend uninstall`),
   except its help page: those recipes run on a disposable host;
-- the real CLI would be a Mend session's in-workspace helper (`/run/mend/bin/mend`, which every
-  workspace links to `/usr/local/bin/mend`), or a script that starts it: the helper ignores the
-  config and acts on the session it runs in (`stop`, `land`, `service`). Inside a session (a
-  `MEND_SESSION_*` variable, or `/run/mend`) the guard does not search `PATH`:
-  `MEND_VERIFY_REAL_MEND` must name the CLI the run built.
+- `MEND_VERIFY_REAL_MEND` names a Mend session's in-workspace helper (`/run/mend/bin/mend`, which
+  every workspace links to `/usr/local/bin/mend`), or a script that starts it: the helper ignores
+  the config and acts on the session it runs in, not on the run's stack.
 
-Then it becomes the real CLI (`$MEND_VERIFY_REAL_MEND`, else the next `mend` on `PATH`) with
-`XDG_CONFIG_HOME` pinned to the absolute, resolved directory it checked, so no change of directory
-or of `HOME` downstream makes the CLI read another config. The CLI gets a home of the run's own
-(`~/.cache/mend-verify/home/<digest>`, with `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and `GH_CONFIG_DIR` in
-it) and none of this machine's session, SSH agent, GitHub or provider variables (`GH_TOKEN`,
-`ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*`, …): `mend connect github`, `--use-my-login`, `memory import`,
-`dotfiles sync`, `skills push` and `ssh setup` see an empty home, never the owner's logins or files.
-A recipe that needs a login supplies a test one, through the secret registry and `--from-stdin`. A
-shared shim (`~/.cache/mend-verify/bin/mend` is any process's to rewrite) cannot point the run
-anywhere else. The drivers hold to the same policy: `drive-tui.sh` puts the guard first on its
+Then it becomes the real CLI (`$MEND_VERIFY_REAL_MEND`, else this checkout's `apps/cli` from source;
+never a `mend` from `PATH`, which inside a session is that helper), with no `MEND_SESSION_*`
+variable, and with `XDG_CONFIG_HOME` pinned to the absolute, resolved directory it checked, so no
+change of directory or of `HOME` downstream makes the CLI read another config. The CLI gets a home
+of the run's own (`~/.cache/mend-verify/home/<digest>`, with `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and
+`GH_CONFIG_DIR` in it) and none of this machine's session, SSH agent, GitHub or provider variables
+(`GH_TOKEN`, `ANTHROPIC_*`, `OPENAI_*`, `CLAUDE_*`, …): `mend connect github`, `--use-my-login`,
+`memory import`, `dotfiles sync`, `skills push` and `ssh setup` see an empty home, never the owner's
+logins or files. A recipe that needs a login supplies a test one, through the secret registry and
+`--from-stdin`. The drivers hold to the same policy: `drive-tui.sh` puts the guard first on its
 terminal's `PATH` and its bundled CLI behind it, and `drive-tui.sh`, `drive-desktop.sh`,
 `drive-web.mjs` and `drive-mobile.mjs` refuse a `<web>` that is not the run's tunnel. The box is an
 outer server only when its operator says so: then declare its URL. An alias or a shell function

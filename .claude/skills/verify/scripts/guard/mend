@@ -4,9 +4,9 @@
 # Put this directory first on PATH (`export PATH=<skill>/scripts/guard:$PATH`), give the run a CLI
 # config of its own (`export XDG_CONFIG_HOME=<an absolute directory holding mend/cli.json>`) and
 # declare the outer server the run uses (`export MEND_VERIFY_OUTER_URL=<its URL, as that config
-# names it>`). Inside a Mend session, also name the CLI the run built
-# (`export MEND_VERIFY_REAL_MEND=<its absolute path>`): the next mend on PATH there is the session's
-# own helper. Every `mend` the skill runs, its helpers' and drivers' included, then passes through
+# names it>`). The real CLI is `$MEND_VERIFY_REAL_MEND`, else this checkout's own apps/cli from
+# source (`node apps/cli/src/main.ts`, after `pnpm install`); PATH is never searched: inside a Mend
+# session the next mend on it is the session's in-workspace helper, not the CLI. Every`mend` the skill runs, its helpers' and drivers' included, then passes through
 # here.
 #
 # policy.mjs (beside this file) decides, and then becomes the real CLI (execve: same process, same
