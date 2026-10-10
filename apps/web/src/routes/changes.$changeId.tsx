@@ -1,4 +1,8 @@
-import { canRelaunchSession, terminalOwnerOnlyLine } from "@mend/domain/workbench";
+import {
+  canRelaunchSession,
+  checkpointSourceWords,
+  terminalOwnerOnlyLine,
+} from "@mend/domain/workbench";
 import { queryOptions, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -271,6 +275,7 @@ function ChangeReview({
             session
           </Link>
           {" · "}
+          <CheckpointSourceStamp checkpoint={review.checkpointB} />
           <ObservedStamp observation={review.observation} />
         </p>
         {review.outsideGit == null ? null : (
@@ -435,6 +440,26 @@ const agoLabel = (iso: string, now: number): string => {
  * and how far behind the executor that is — a fact in the recorder's voice, never a verdict.
  * "partial" names an `auto` capture, not atomic across files; the next capture corrects it.
  */
+/**
+ * A review whose checkpoint was taken during a Stop, from the Stop's own flush (mend#649): that
+ * reading and when Mend received it. The checkpoint's own time is when it was recorded, never
+ * when the disk was read, so it is not shown as an observation.
+ */
+function CheckpointSourceStamp({
+  checkpoint,
+}: {
+  readonly checkpoint: ReviewDiffDto["checkpointB"];
+}) {
+  const source = checkpoint.source;
+  if (source === undefined) return null;
+  return (
+    <span title={`checkpoint ${checkpoint.ordinal} recorded ${checkpoint.createdAt.toISOString()}`}>
+      {checkpointSourceWords(source, agoLabel(source.observedAt.toISOString(), Date.now()))}
+      {" · "}
+    </span>
+  );
+}
+
 function ObservedStamp({ observation }: { readonly observation: ReviewDiffDto["observation"] }) {
   if (observation === undefined) return null;
   if (observation.source !== "capture") return <span>observed on the worktree</span>;

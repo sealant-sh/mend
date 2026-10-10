@@ -1,10 +1,11 @@
 import { ReviewSliceId, type ChangeId, type CheckpointId } from "@mend/domain";
 import { ReviewSlice, type DiffDigest } from "@mend/domain/workbench";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { Cause, Effect, Layer, Result } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
+import { ReviewChangeBusyError } from "../errors.ts";
 import { reviewSlices } from "../schema/workbench.ts";
 
 export interface NewReviewSlice {
@@ -14,6 +15,27 @@ export interface NewReviewSlice {
   readonly diffDigest: DiffDigest;
   readonly idempotencyKey: string;
 }
+
+/**
+ * How long a request waits for another's hold on a change's Review lock. Postgres gives up the
+ * wait itself (`lock_timeout`), so a request that times out above it never stays queued on it.
+ */
+const REVIEW_LOCK_TIMEOUT_SECONDS = 20;
+
+/**
+ * Postgres's `lock_not_available` (55P03) anywhere in an error's causes: the query error wraps an
+ * Effect `Cause`, whose `SqlError` names it (`LockTimeoutError`) over the driver's own error.
+ */
+const lockNotAvailable = (error: unknown): boolean => {
+  for (let at: unknown = error, depth = 0; depth < 8; depth += 1) {
+    if (Cause.isCause(at)) at = Cause.squash(at);
+    if (typeof at !== "object" || at === null) return false;
+    if ("code" in at && at.code === "55P03") return true;
+    if ("_tag" in at && at._tag === "LockTimeoutError") return true;
+    at = "cause" in at ? at.cause : undefined;
+  }
+  return false;
+};
 
 class ReviewLockBodyError<E> {
   readonly error: E;
@@ -28,11 +50,15 @@ export class ReviewSlicesRepo extends Context.Service<
   ReviewSlicesRepo,
   {
     readonly create: (slice: NewReviewSlice) => Effect.Effect<ReviewSlice>;
-    /** Serialize checkpoint creation for one change across every Mend server process. */
+    /**
+     * Serialize checkpoint creation for one change across every Mend server process. A lock
+     * another request holds for longer than `REVIEW_LOCK_TIMEOUT_SECONDS` is refused
+     * (`ReviewChangeBusyError`), never waited on without end.
+     */
     readonly withChangeLock: <A, E, R>(
       changeId: ChangeId,
       effect: Effect.Effect<A, E, R>,
-    ) => Effect.Effect<A, E, R>;
+    ) => Effect.Effect<A, E | ReviewChangeBusyError, R>;
     readonly byId: (id: ReviewSliceId) => Effect.Effect<ReviewSlice | null>;
     readonly byIdempotencyKey: (
       changeId: ChangeId,
@@ -60,14 +86,31 @@ export const ReviewSlicesRepoLive: Layer.Layer<ReviewSlicesRepo, never, MendDB> 
     const withChangeLock = <A, E, R>(
       changeId: ChangeId,
       effect: Effect.Effect<A, E, R>,
-    ): Effect.Effect<A, E, R> =>
+    ): Effect.Effect<A, E | ReviewChangeBusyError, R> =>
       db
         .transaction((tx) =>
           Effect.gen(function* () {
             yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${`mend:review:${changeId}`}))`,
+              sql.raw(`SET LOCAL lock_timeout = '${REVIEW_LOCK_TIMEOUT_SECONDS}s'`),
             );
-            return yield* effect.pipe(Effect.mapError((error) => new ReviewLockBodyError(error)));
+            const locked = yield* tx
+              .execute(sql`select pg_advisory_xact_lock(hashtext(${`mend:review:${changeId}`}))`)
+              .pipe(Effect.result);
+            if (Result.isFailure(locked)) {
+              if (!lockNotAvailable(locked.failure)) return yield* locked.failure;
+              return yield* Effect.fail(
+                new ReviewLockBodyError<E | ReviewChangeBusyError>(
+                  new ReviewChangeBusyError({
+                    changeId,
+                    lockTimeoutSeconds: REVIEW_LOCK_TIMEOUT_SECONDS,
+                  }),
+                ),
+              );
+            }
+            yield* tx.execute(sql`SET LOCAL lock_timeout TO DEFAULT`);
+            return yield* effect.pipe(
+              Effect.mapError((error) => new ReviewLockBodyError<E | ReviewChangeBusyError>(error)),
+            );
           }),
         )
         .pipe(

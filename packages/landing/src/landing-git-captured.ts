@@ -87,7 +87,9 @@ export const LandingGitCapturedLive: Layer.Layer<
                     error._tag === "GitError"
                       ? gitWords(error, null)
                       : error._tag === "CapturesBehindError"
-                        ? `the workspace's captures have not caught up · asked ${error.attempts} times · nothing landed · try again`
+                        ? error.stopping
+                          ? "the session is stopping · nothing landed · land after it settles"
+                          : `the workspace's captures have not caught up · asked ${error.attempts} times · nothing landed · try again`
                         : `${error._tag} · checkpoint`,
                   ),
                 ),

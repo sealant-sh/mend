@@ -13,6 +13,42 @@ export const CheckpointTrigger = Schema.Literals([
 ]);
 export type CheckpointTrigger = typeof CheckpointTrigger.Type;
 
+/** Which of a Stop's own readings a checkpoint taken during that Stop came from. */
+export const CheckpointSourceKind = Schema.Literals(["stop-final", "stop-reading"]);
+export type CheckpointSourceKind = typeof CheckpointSourceKind.Type;
+
+/**
+ * Where a checkpoint's view of the executor came from when it was not observed for the checkpoint
+ * itself (mend#649). A review or a mark asked while a Stop was ending the executor is taken from
+ * the Stop's own flush instead of asking the executor again: `stop-final`, the Stop's final save;
+ * `stop-reading`, a reading the Stop took that did not save. `captureN` is the head that flush
+ * reported (null: none reported, as when the store's seal stood for a lost answer), and
+ * `observedAt` when Mend received it. The checkpoint's own `createdAt` is later: it says when the
+ * snapshot was recorded, never when the disk was read.
+ */
+export class CheckpointSource extends Schema.Class<CheckpointSource>("CheckpointSource")({
+  kind: CheckpointSourceKind,
+  captureN: Schema.NullOr(Schema.Int),
+  observedAt: Timestamp,
+}) {}
+
+/**
+ * How a checkpoint's source reads, with `at` its `observedAt` as the client formats it:
+ * `from the Stop's final save · capture 12 · 10:18`. Evidence of where the snapshot came from,
+ * never a fresh observation.
+ */
+export const checkpointSourceWords = (
+  source: { readonly kind: CheckpointSourceKind; readonly captureN: number | null },
+  at: string,
+): string =>
+  [
+    source.kind === "stop-final"
+      ? "from the Stop's final save"
+      : "from a Stop reading that did not save",
+    ...(source.captureN === null ? [] : [`capture ${source.captureN}`]),
+    at,
+  ].join(" · ");
+
 /**
  * A cheap snapshot of the worktree — a commit on a hidden ref that never
  * touches the visible branch — stamped with the exact record pointer current when it was
@@ -44,4 +80,6 @@ export class Checkpoint extends Schema.Class<Checkpoint>("Checkpoint")({
   seq: SequenceNumber,
   trigger: CheckpointTrigger,
   createdAt: Timestamp,
+  /** Absent when the checkpoint observed the executor itself (`CheckpointSource`). */
+  source: Schema.optionalKey(CheckpointSource),
 }) {}

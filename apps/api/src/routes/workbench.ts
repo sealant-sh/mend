@@ -175,7 +175,7 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Effect, Option, Result, Schema } from "effect";
+import { Context, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
@@ -3171,6 +3171,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           Effect.catchTag("GitError", (error) =>
             Effect.fail(new StoreFailure({ message: error.stderr })),
           ),
+          withinCheckpointLimit("The checkpoint"),
         );
       }),
     )
@@ -3391,6 +3392,37 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
 const toFailure = (error: { readonly stderr: string }) =>
   new StoreFailure({ message: error.stderr });
 
+/**
+ * How long a request that takes a checkpoint (a flush of the executor, then the snapshot derived
+ * from the registered head) may run before it answers that it did not finish. Every wait inside
+ * is bounded on its own; this bounds the whole request, its locks included, so none hangs for
+ * minutes. A reference so a test can shorten it.
+ */
+export const CheckpointRequestLimit: Context.Reference<Duration.Duration> =
+  Context.Reference<Duration.Duration>("@mend/api/CheckpointRequestLimit", {
+    defaultValue: () => Duration.seconds(90),
+  });
+
+/**
+ * A request that takes a checkpoint, refused honestly once `CheckpointRequestLimit` passes. What
+ * it held is let go as it is interrupted: a transaction rolls back and its lock goes with it.
+ */
+export const withinCheckpointLimit =
+  (what: string) =>
+  <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E | StoreFailure, R> =>
+    Effect.gen(function* () {
+      const limit = yield* CheckpointRequestLimit;
+      return yield* self.pipe(
+        Effect.timeoutOrElse({
+          duration: limit,
+          orElse: () =>
+            Effect.fail(
+              new StoreFailure({ message: `${what} did not finish in ${Duration.format(limit)}.` }),
+            ),
+        }),
+      );
+    });
+
 const openReviewResult = Effect.fn("SessionChanges.openReviewResult")(function* (
   slice: ReviewSlice,
   reused: boolean,
@@ -3454,26 +3486,33 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     .handle("openReview", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).change(params.id);
+        const key = payload.idempotencyKey.trim();
+        if (key === "" || key.length > 200) {
+          return yield* new StoreFailure({
+            message: "Review idempotency keys must contain between 1 and 200 characters.",
+          });
+        }
         const slices = yield* ReviewSlicesRepo;
-        return yield* slices.withChangeLock(
+        const checkpoints = yield* CheckpointsRepo;
+        const reads = yield* WorktreeReads;
+        const engine = yield* SessionEngine;
+        // Under the change's lock: a slice this key already opened, or one that still spans the
+        // worktree as it stands, answers at once. Otherwise the lock is let go before the
+        // checkpoint: the engine's checkpoint flushes the executor and publishes its answer, and
+        // inside this transaction that answer's fence was invisible to the drain, its rows held
+        // until the review committed (packaged acceptance, arm64, 2026-10-10).
+        const prepared = yield* slices.withChangeLock(
           params.id,
           Effect.gen(function* () {
-            const key = payload.idempotencyKey.trim();
-            if (key === "" || key.length > 200) {
-              return yield* new StoreFailure({
-                message: "Review idempotency keys must contain between 1 and 200 characters.",
-              });
-            }
             const changes = yield* WorktreeChangesRepo;
             const projects = yield* ProjectsRepo;
-            const checkpoints = yield* CheckpointsRepo;
-            const reads = yield* WorktreeReads;
-            const engine = yield* SessionEngine;
             const change = yield* changes
               .byId(params.id)
               .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
             const existing = yield* slices.byIdempotencyKey(params.id, key);
-            if (existing !== null) return yield* openReviewResult(existing, true);
+            if (existing !== null) {
+              return { opened: yield* openReviewResult(existing, true) } as const;
+            }
 
             const worktrees = yield* WorktreesRepo;
             const worktreeRow = yield* worktrees
@@ -3507,7 +3546,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                     diffDigest: latest.diffDigest,
                     idempotencyKey: key,
                   });
-                  return yield* openReviewResult(reused, true);
+                  return { opened: yield* openReviewResult(reused, true) } as const;
                 }
               }
             }
@@ -3530,7 +3569,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                   diffDigest: DiffDigest.make(digestReviewPatch(patch)),
                   idempotencyKey: key,
                 });
-                return yield* openReviewResult(recovered, true);
+                return { opened: yield* openReviewResult(recovered, true) } as const;
               }
             }
 
@@ -3544,16 +3583,35 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 message: "No conversation has inhabited this worktree yet — nothing to review.",
               });
             }
-            const checkpointB = yield* engine.checkpointNow(viaSessionId, "review-open").pipe(
-              Effect.catchTags({
-                SessionNotFoundError: () => Effect.fail(new NotFound({ id: viaSessionId })),
-                ProjectNotFoundError: () => Effect.fail(new NotFound({ id: project.id })),
-                GitError: (error) => Effect.fail(toFailure(error)),
-              }),
-            );
-            const patch = (yield* reads
-              .diffRange(project.id, worktreeRow.id, checkpointA.sha, checkpointB.sha)
-              .pipe(Effect.mapError(readFailure))).value;
+            return {
+              opened: null,
+              projectId: project.id,
+              worktreeId: worktreeRow.id,
+              checkpointA,
+              viaSessionId,
+            } as const;
+          }),
+        );
+        if (prepared.opened !== null) return prepared.opened;
+        const { projectId, worktreeId, checkpointA, viaSessionId } = prepared;
+        // A checkpoint taken here and never sliced (the request gave up, or lost the race below)
+        // is the orphan a later open recovers.
+        const checkpointB = yield* engine.checkpointNow(viaSessionId, "review-open").pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: viaSessionId })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: projectId })),
+            GitError: (error) => Effect.fail(toFailure(error)),
+          }),
+        );
+        const patch = (yield* reads
+          .diffRange(projectId, worktreeId, checkpointA.sha, checkpointB.sha)
+          .pipe(Effect.mapError(readFailure))).value;
+        return yield* slices.withChangeLock(
+          params.id,
+          Effect.gen(function* () {
+            // Another open with this key answered while the checkpoint was taken: its slice.
+            const existing = yield* slices.byIdempotencyKey(params.id, key);
+            if (existing !== null) return yield* openReviewResult(existing, true);
             const slice = yield* slices.create({
               changeId: params.id,
               checkpointAId: checkpointA.id,
@@ -3564,7 +3622,16 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             return yield* openReviewResult(slice, false);
           }),
         );
-      }),
+      }).pipe(
+        Effect.catchTag("ReviewChangeBusyError", (busy) =>
+          Effect.fail(
+            new StoreFailure({
+              message: `Review did not open: another Review open on this change held its lock for ${busy.lockTimeoutSeconds} s. Nothing was opened; try again.`,
+            }),
+          ),
+        ),
+        withinCheckpointLimit("Review did not open: the request"),
+      ),
     )
     .handle("reviewDiff", ({ params, query }) =>
       Effect.gen(function* () {

@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
+import { CheckpointSource } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import * as Str from "effect/String";
 import { SqlClient } from "effect/unstable/sql";
@@ -154,5 +155,27 @@ describe.skipIf(!reachable)("checkpoints repo", () => {
     expect(outcome.second.ordinal).toBe(0);
     expect(outcome.second.existing.id).toBe(outcome.first.id);
     expect(outcome.second.existing.sha).toBe(sha("b"));
+  });
+
+  // mend#649 round 2: a checkpoint taken from a Stop's own flush keeps where it came from.
+  it("create: a checkpoint's Stop source is kept and read back; one observed for itself has none", async () => {
+    const observedAt = new Date("2026-10-10T08:00:00.000Z");
+    const read = await run(
+      Effect.gen(function* () {
+        const repo = yield* CheckpointsRepo;
+        const worktreeId = yield* freshWorktree;
+        const own = yield* repo.create(rowAt(worktreeId, 0, "b"));
+        const fromStop = yield* repo.create({
+          ...rowAt(worktreeId, 1, "c"),
+          trigger: "review-open",
+          source: new CheckpointSource({ kind: "stop-final", captureN: 12, observedAt }),
+        });
+        return { own, fromStop, again: yield* repo.byId(fromStop.id) };
+      }),
+    );
+    expect(read.own.source).toBeUndefined();
+    expect(read.fromStop.source?.kind).toBe("stop-final");
+    expect(read.again?.source?.captureN).toBe(12);
+    expect(read.again?.source?.observedAt.getTime()).toBe(observedAt.getTime());
   });
 });

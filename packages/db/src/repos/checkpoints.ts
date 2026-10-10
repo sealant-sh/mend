@@ -5,7 +5,7 @@ import {
   type Sha,
   type WorktreeId,
 } from "@mend/domain";
-import { Checkpoint, type CheckpointTrigger } from "@mend/domain/workbench";
+import { Checkpoint, CheckpointSource, type CheckpointTrigger } from "@mend/domain/workbench";
 import { and, asc, count, desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -25,6 +25,8 @@ export interface NewCheckpoint {
   readonly trigger: CheckpointTrigger;
   /** Capture mode (ADR-0002): the registered capture this checkpoint came from. */
   readonly captureId?: string | null;
+  /** Taken during a Stop from the Stop's own flush; absent when observed for itself. */
+  readonly source?: CheckpointSource | null;
 }
 
 /**
@@ -88,7 +90,24 @@ export class CheckpointsRepo extends Context.Service<
   }
 >()("@mend/db/CheckpointsRepo") {}
 
-const toCheckpoint = (row: typeof checkpoints.$inferSelect): Checkpoint => new Checkpoint(row);
+const toCheckpoint = ({
+  sourceKind,
+  sourceCaptureN,
+  sourceObservedAt,
+  ...row
+}: typeof checkpoints.$inferSelect): Checkpoint =>
+  new Checkpoint({
+    ...row,
+    ...(sourceKind === null || sourceObservedAt === null
+      ? {}
+      : {
+          source: new CheckpointSource({
+            kind: sourceKind,
+            captureN: sourceCaptureN,
+            observedAt: sourceObservedAt,
+          }),
+        }),
+  });
 
 export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = Layer.effect(
   CheckpointsRepo,
@@ -123,8 +142,18 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
         .insert(checkpoints)
         .values({
           id: CheckpointId.make(crypto.randomUUID()),
-          ...checkpoint,
+          worktreeId: checkpoint.worktreeId,
+          sessionId: checkpoint.sessionId,
+          ordinal: checkpoint.ordinal,
+          ref: checkpoint.ref,
+          sha: checkpoint.sha,
+          sealantRunId: checkpoint.sealantRunId,
+          seq: checkpoint.seq,
+          trigger: checkpoint.trigger,
           captureId: checkpoint.captureId ?? null,
+          sourceKind: checkpoint.source?.kind ?? null,
+          sourceCaptureN: checkpoint.source?.captureN ?? null,
+          sourceObservedAt: checkpoint.source?.observedAt ?? null,
         })
         .onConflictDoNothing({ target: [checkpoints.worktreeId, checkpoints.ordinal] })
         .returning()

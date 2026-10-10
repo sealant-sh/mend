@@ -85,6 +85,7 @@ import type {
   AgentTurnUsage,
   AutomationChoice,
   CaptureDrainReason,
+  CheckpointSourceKind,
   CheckpointTrigger,
   ClusterBindingKind,
   ContextItem,
@@ -2016,6 +2017,13 @@ export const checkpoints = pgTable(
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** Capture mode: the registered capture this checkpoint came from (ADR-0002); NULL co-located. */
     captureId: text().references(() => captures.id, { onDelete: "set null" }),
+    /**
+     * Taken during a Stop from the Stop's own flush (`CheckpointSource`, 0122): which reading, the
+     * capture it reported and when Mend received it. NULL: observed for the checkpoint itself.
+     */
+    sourceKind: text().$type<CheckpointSourceKind>(),
+    sourceCaptureN: integer(),
+    sourceObservedAt: timestamp({ mode: "date", withTimezone: true }),
   },
   (table) => [
     uniqueIndex("checkpoints_worktree_ordinal_idx").on(table.worktreeId, table.ordinal),

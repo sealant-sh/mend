@@ -77,6 +77,17 @@ describe("the body never dresses a failure as an empty change", () => {
     expect(emptySliceLine(checkpoint(3), at)).not.toMatch(/matches its base|nothing to review/);
   });
 
+  it("a checkpoint taken from a Stop's final save says so, with that save's time, not its own", () => {
+    const fromStop: CheckpointDto = {
+      ...checkpoint(3),
+      source: { kind: "stop-final", captureN: 12, observedAt: "2026-09-27T09:58:00.000Z" },
+    };
+    expect(emptySliceLine(fromStop, at)).toBe(
+      "no files changed · checkpoint 3 · from the Stop's final save · capture 12 · 09:58",
+    );
+    expect(emptySliceLine(fromStop, at)).not.toContain("observed");
+  });
+
   it("a slice with files renders the diff", () => {
     expect(
       changeBody({ open: ok, diff: ok, slice: { fileCount: 2, checkpointB: checkpoint(3) } }),
