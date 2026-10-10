@@ -188,12 +188,19 @@ export interface PickupChannel {
    * the workspace's own token and the Unix socket, which name nobody.
    */
   readonly accountId: string | null;
+  /**
+   * A one-off write's token (`issueWrite`; mend#615 review 4): it redeems a write's own files
+   * (`workspace-files`) and no ticket that mints anything, an identity or another write's token.
+   */
+  readonly writeOnly?: boolean;
 }
 
 /** What `grant` the network channel hands `pickupAs`: the token's launch and person. */
 export interface PickupGrant {
   readonly launchId: string;
   readonly accountId: string | null;
+  /** A one-off write's token: a write's own files only (`PickupChannel.writeOnly`). */
+  readonly writeOnly?: boolean;
 }
 
 /**
@@ -211,6 +218,9 @@ export const pickupChannelMatch = (
   | { readonly kind: "no"; readonly reason: string } => {
   if (channel.accountId !== null && channel.accountId !== binding.personId) {
     return { kind: "no", reason: "this pickup ticket is another person's" };
+  }
+  if (channel.writeOnly === true && binding.purpose !== "workspace-files") {
+    return { kind: "no", reason: "this token redeems a write's own files only" };
   }
   if (binding.launchId !== null && channel.launchId !== null) {
     return binding.launchId === channel.launchId

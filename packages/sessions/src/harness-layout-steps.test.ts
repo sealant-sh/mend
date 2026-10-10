@@ -2220,7 +2220,7 @@ describe("homeForWrite", () => {
         const scopeB = yield* Scope.make();
         const a = yield* w.steps.homeForWrite(homeInput).pipe(Scope.provide(scopeA));
         const b = yield* w.steps.homeForWrite(homeInput).pipe(Scope.provide(scopeB));
-        expect(a?.tokenFile).toMatch(/^\/run\/mend\/write-tokens\/[0-9a-f]{32}$/);
+        expect(a?.tokenFile).toMatch(/^\/run\/mend\/write-tokens\/[0-9]{13}-[0-9a-f]{32}$/);
         expect(b?.tokenFile).not.toBe(a?.tokenFile);
         expect(w.minted).toHaveLength(2);
         const [tokenA, tokenB] = w.minted;
@@ -2310,7 +2310,7 @@ describe("homeForWrite", () => {
         });
         const scope = yield* Scope.make();
         const home = yield* w.steps.homeForWrite(homeInput).pipe(Scope.provide(scope));
-        expect(home?.tokenFile).toMatch(/^\/run\/mend\/write-tokens\/[0-9a-f]{32}$/);
+        expect(home?.tokenFile).toMatch(/^\/run\/mend\/write-tokens\/[0-9]{13}-[0-9a-f]{32}$/);
         expect(w.minted).toHaveLength(1);
         // Her process ends and the idle check releases her: her tokens go in bulk, the open
         // paste's stays until its own write ends. (A moment later, so the bulk revocation's

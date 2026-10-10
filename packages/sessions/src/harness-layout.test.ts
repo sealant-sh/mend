@@ -24,7 +24,9 @@ import {
   gitAuthorConfigText,
   identityFilesOf,
   identityPickupScript,
+  homeForWriteScript,
   writeTokenFileOf,
+  writeTokenNameOf,
   writeTokenPickupScript,
   personPrepareScript,
   personProcessEnv,
@@ -1160,16 +1162,19 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     const { dir: scratch, home } = homeOf(null);
     const dir = path.join(scratch, "run-mend", "write-tokens");
     const opened = await channel();
-    const nonce = "0123456789abcdef".repeat(2);
-    const file = writeTokenFileOf(nonce, dir);
+    const file = writeTokenFileOf(writeTokenNameOf(Date.now(), "0123456789abcdef".repeat(2)), dir);
     const ticket = opened.mint([{ path: file, bytes: new TextEncoder().encode(TOKEN) }]);
     const argv = ["sh", "-c", writeTokenPickupScript(alice, ticket, file, dir)];
     for (const arg of argv) expect(arg).not.toContain(TOKEN);
-    // A lapsed token file of an earlier write is removed on the way.
+    // A lapsed token file of an earlier write is removed on the way, by the time its name says
+    // Mend issued it: a far-future time on the file keeps nothing, and an old one takes nothing.
     fs.mkdirSync(dir, { recursive: true });
-    const stale = path.join(dir, "f".repeat(32));
+    const stale = path.join(dir, writeTokenNameOf(1_000_000_000_000, "f".repeat(32)));
     fs.writeFileSync(stale, "lapsed");
-    fs.utimesSync(stale, new Date(0), new Date(0));
+    fs.utimesSync(stale, new Date("2099-01-01"), new Date("2099-01-01"));
+    const live = path.join(dir, writeTokenNameOf(Date.now(), "e".repeat(32)));
+    fs.writeFileSync(live, "live");
+    fs.utimesSync(live, new Date(0), new Date(0));
     const run = await runExec(argv, opened.env);
     expect(run.stderr).toBe("");
     expect(run.status).toBe(0);
@@ -1177,6 +1182,7 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     expect(fs.statSync(file).mode & 0o777).toBe(0o400);
     expect(fs.statSync(dir).mode & 0o777).toBe(0o711);
     expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(live)).toBe(true);
     // Nothing of the person's is touched: no token in their home.
     expect(fs.existsSync(path.join(home, ".mend/session-token"))).toBe(false);
     // Spent: a second run is refused, and says so.
@@ -1189,6 +1195,40 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     ).toThrow();
   });
 
+  it("writes the token on every paste of one person, the first making their home and the second finding it (mend#615 review 4)", async () => {
+    const dir = tempDir("mend-home-for-write-");
+    const harnessHome = path.join(dir, "harness-home");
+    const home = path.join(dir, "home", alice.name);
+    fs.mkdirSync(harnessHome, { recursive: true });
+    const tokens = path.join(dir, "run-mend", "write-tokens");
+    const opened = await channel();
+    const paste = async (nonce: string, token: string) => {
+      const file = writeTokenFileOf(writeTokenNameOf(Date.now(), nonce), tokens);
+      const ticket = opened.mint([{ path: file, bytes: new TextEncoder().encode(token) }]);
+      // The exec homeForWrite runs, whole: the ensure and the token, as one script.
+      const script = homeForWriteScript(alice, ticket, file, {
+        harnessHome,
+        home,
+        tmpRoot: path.join(dir, "tmp"),
+        runRoot: path.join(dir, "run"),
+        dir: tokens,
+      });
+      const run = await runExec(["sh", "-c", script], opened.env);
+      return { run, file };
+    };
+    const first = await paste("1".repeat(32), "first-token-".padEnd(43, "a"));
+    expect(first.run.stderr).toBe("");
+    expect(first.run.status).toBe(0);
+    expect(fs.statSync(home).isDirectory()).toBe(true);
+    expect(fs.readFileSync(first.file, "utf8")).toBe("first-token-".padEnd(43, "a"));
+    // Their home is there now: the ensure ends early, and the token is written all the same.
+    const second = await paste("2".repeat(32), "second-token-".padEnd(43, "b"));
+    expect(second.run.stderr).toBe("");
+    expect(second.run.status).toBe(0);
+    expect(fs.readFileSync(second.file, "utf8")).toBe("second-token-".padEnd(43, "b"));
+    expect(fs.statSync(second.file).mode & 0o777).toBe(0o400);
+  });
+
   it("refuses a write-token directory that is a link, writing nothing through it", async () => {
     const { dir: scratch } = homeOf(null);
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-write-token-elsewhere-"));
@@ -1197,7 +1237,7 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     const dir = path.join(parent, "write-tokens");
     fs.symlinkSync(elsewhere, dir);
     const opened = await channel();
-    const file = writeTokenFileOf("0123456789abcdef".repeat(2), dir);
+    const file = writeTokenFileOf(writeTokenNameOf(Date.now(), "0123456789abcdef".repeat(2)), dir);
     const ticket = opened.mint([{ path: file, bytes: new TextEncoder().encode(TOKEN) }]);
     const run = await runExec(
       ["sh", "-c", writeTokenPickupScript(alice, ticket, file, dir)],

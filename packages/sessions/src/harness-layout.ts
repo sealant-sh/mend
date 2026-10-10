@@ -1116,9 +1116,18 @@ const IDENTITY_COMMAND = `node -e ${shellQuote(IDENTITY_PROGRAM)} --`;
  */
 export const WRITE_TOKENS_DIR = "/run/mend/write-tokens";
 
-/** A one-off write's own token file: a name of its own in `WRITE_TOKENS_DIR`. */
-export const writeTokenFileOf = (nonce: string, dir: string = WRITE_TOKENS_DIR): string =>
-  `${dir}/${nonce}`;
+/**
+ * A one-off write's own token file in `WRITE_TOKENS_DIR`: a name of its own, which says when Mend
+ * issued it (`<ms>-<32 hex>`), so the cleanup of lapsed files reads Mend's time, never a time its
+ * person could set on the file (mend#615 review 4).
+ */
+export const writeTokenFileOf = (name: string, dir: string = WRITE_TOKENS_DIR): string =>
+  `${dir}/${name}`;
+
+/** A write token file's name: when it was issued, and a nonce. */
+export const writeTokenNameOf = (issuedAtMs: number, nonce: string): string =>
+  `${String(Math.floor(issuedAtMs)).padStart(13, "0")}-${nonce}`;
+const WRITE_TOKEN_NAME = /^[0-9]{13}-[0-9a-f]{32}$/;
 
 /** How long a token file is kept before a later write's exec removes it (it has lapsed by then). */
 const WRITE_TOKEN_FILE_KEPT_MS = 30 * 60_000;
@@ -1143,9 +1152,12 @@ const own = (path, mode) => {
 };
 own(dir.slice(0, dir.lastIndexOf("/")), 0o755);
 own(dir, 0o711);
-// Token files left by earlier writes have lapsed: removed from root's own directory.
+// Token files left by earlier writes have lapsed: removed from root's own directory, by the time
+// their names say Mend issued them, never a time on the file.
 for (const entry of fs.readdirSync(dir)) {
-  try { if (Date.now() - fs.lstatSync(dir + "/" + entry).mtimeMs > ${WRITE_TOKEN_FILE_KEPT_MS}) fs.unlinkSync(dir + "/" + entry); } catch {}
+  if (!${WRITE_TOKEN_NAME}.test(entry)) continue;
+  if (Date.now() - Number(entry.slice(0, 13)) <= ${WRITE_TOKEN_FILE_KEPT_MS}) continue;
+  try { fs.unlinkSync(dir + "/" + entry); } catch {}
 }
 const passing = (reason) => !reason.startsWith("the pickup was refused: this pickup ticket");
 const written = (reason, files) => {
@@ -1193,7 +1205,7 @@ export const writeTokenPickupScript = (
   assertScriptSafe(person);
   if (!SAFE_TICKET.test(ticket)) throw new Error("a pickup ticket is 43 base64url characters");
   const nonce = file.slice(dir.length + 1);
-  if (!file.startsWith(`${dir}/`) || !/^[0-9a-f]{32}$/.test(nonce)) {
+  if (!file.startsWith(`${dir}/`) || !WRITE_TOKEN_NAME.test(nonce)) {
     throw new Error("a write token goes in the write tokens directory, under a name of its own");
   }
   return [
@@ -1201,6 +1213,30 @@ export const writeTokenPickupScript = (
     ...[ticket, person.name, String(person.uid), dir, nonce].map(shellQuote),
   ].join(" ");
 };
+
+/**
+ * `HarnessLayoutSteps.homeForWrite`'s one root exec: the person's user and home ensured
+ * (`personHomeEnsureScript`), then the write's own token written (`writeTokenPickupScript`). The
+ * ensure runs in a subshell, so its `exit 0` for a home already made ends only that part and the
+ * token is written every time, a person's second paste included (mend#615 review 4); its failure
+ * fails the exec before any token is minted.
+ */
+export const homeForWriteScript = (
+  person: LinuxIdentity,
+  ticket: string,
+  file: string,
+  options: PersonHomeOptions & {
+    readonly home?: string;
+    /** `WRITE_TOKENS_DIR` unless a test names another. */
+    readonly dir?: string;
+  },
+): string =>
+  [
+    "(",
+    personHomeEnsureScript(person, options),
+    ") || exit 1",
+    writeTokenPickupScript(person, ticket, file, options.dir),
+  ].join("\n");
 
 /**
  * What prepare runs in a person-layout executor beside the helper install, as root and in the

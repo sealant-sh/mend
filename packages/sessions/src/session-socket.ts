@@ -154,6 +154,8 @@ export interface SessionSocketApi {
     | ((scope: {
         readonly launchId: string;
         readonly accountId: string | null;
+        /** A one-off write's token: its own files' pickups only (mend#615 review 4). */
+        readonly writeOnly?: boolean;
       }) => Effect.Effect<ChannelGrant>)
     | undefined;
 }

@@ -125,6 +125,7 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
       sessionId: "s-legacy",
       launchId: "s-legacy",
       accountId: null,
+      writeOnly: false,
     });
     expect(result.verified).toBe("s-legacy");
     expect(result.launches).toEqual([
@@ -157,9 +158,9 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
       }),
     );
     expect(result.before).toEqual([
-      { sessionId: "s-new", launchId: "launch:s-new:1:a", accountId: null },
-      { sessionId: "s-new", launchId: "launch:s-new:1:a", accountId: null },
-      { sessionId: "s-new", launchId: "launch:s-new:2:b", accountId: null },
+      { sessionId: "s-new", launchId: "launch:s-new:1:a", accountId: null, writeOnly: false },
+      { sessionId: "s-new", launchId: "launch:s-new:1:a", accountId: null, writeOnly: false },
+      { sessionId: "s-new", launchId: "launch:s-new:2:b", accountId: null, writeOnly: false },
     ]);
     expect(result.after).toEqual([null, null, "launch:s-new:2:b", null]);
     expect(result.revoked).toBeNull();
@@ -186,8 +187,14 @@ describe.skipIf(!reachable)("launch identity (0083), in Postgres", () => {
         sessionId: "person:user-maria",
         launchId: "launch:s-person:1:a",
         accountId: "user-maria",
+        writeOnly: false,
       },
-      own: { sessionId: "s-person", launchId: "launch:s-person:1:a", accountId: null },
+      own: {
+        sessionId: "s-person",
+        launchId: "launch:s-person:1:a",
+        accountId: null,
+        writeOnly: false,
+      },
       verified: null,
     });
     expect(result.after).toBeNull();

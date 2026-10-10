@@ -20439,7 +20439,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         pickup: (ticket) => redeemPickup({ sessionId, launchId: null, accountId: actor }, ticket),
         pickupAs: (grant) => (ticket) =>
           redeemPickup(
-            { sessionId, launchId: grant.launchId, accountId: actor ?? grant.accountId },
+            {
+              sessionId,
+              launchId: grant.launchId,
+              accountId: actor ?? grant.accountId,
+              ...(grant.writeOnly === true ? { writeOnly: true } : {}),
+            },
             ticket,
           ),
         ...(capture === null || actor !== null
@@ -20683,7 +20688,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const channelGrant = Effect.fn("SessionEngine.channelGrant")(function* (
         sessionId: SessionId,
         base: SessionSocketApi,
-        grant: { readonly launchId: string; readonly accountId: string | null },
+        grant: {
+          readonly launchId: string;
+          readonly accountId: string | null;
+          readonly writeOnly?: boolean;
+        },
       ) {
         const layout = yield* layoutSteps.layoutOfLaunch(grant.launchId);
         const launchCapture = base.captureAs?.(grant.launchId);
@@ -20736,6 +20745,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const pickup = closures.pickupAs?.({
           launchId: grant.launchId,
           accountId: grant.accountId,
+          ...(grant.writeOnly === true ? { writeOnly: true } : {}),
         });
         // Their session's process has not started in this launch's executor yet (a join, whose row
         // names the executor once its process opens), and the executor holds the session's
@@ -20745,6 +20755,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const lease = capture === null ? null : yield* capture.repo.leaseOf(session.worktreeId);
           return pickup === undefined || lease?.launchId !== grant.launchId
             ? { ok: false as const, status: 409, message: CHANNEL_NOT_LIVE_HERE }
+            : { ok: true as const, api: pickupOnly(pickup) };
+        }
+        // A one-off write's token: its own files' pickups, and nothing else of the session.
+        if (grant.writeOnly === true) {
+          return pickup === undefined
+            ? { ok: false as const, status: 403, message: CHANNEL_MAY_NOT_ACT }
             : { ok: true as const, api: pickupOnly(pickup) };
         }
         return {

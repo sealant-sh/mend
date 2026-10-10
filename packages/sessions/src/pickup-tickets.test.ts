@@ -88,6 +88,19 @@ describe("who may redeem", () => {
     ).toEqual({ kind: "no", reason: "this pickup ticket is another person's" });
   });
 
+  it("a one-off write's token only for a write's own files: never a ticket that mints (mend#615 review 4)", () => {
+    const writeOnly = channel({ launchId: "launch-1", accountId: "alice", writeOnly: true });
+    expect(pickupChannelMatch({ ...binding, purpose: "workspace-files" }, writeOnly)).toEqual({
+      kind: "yes",
+    });
+    for (const purpose of ["session-token", "write-token", "secret-files", "pi-profile"] as const) {
+      expect(pickupChannelMatch({ ...binding, purpose }, writeOnly)).toEqual({
+        kind: "no",
+        reason: "this token redeems a write's own files only",
+      });
+    }
+  });
+
   it("over the socket, the ticket's own session; another session is asked about", () => {
     expect(pickupChannelMatch(binding, channel({}))).toEqual({ kind: "yes" });
     expect(pickupChannelMatch(binding, channel({ sessionId: "sess-sibling" }))).toEqual({

@@ -45,7 +45,8 @@ import {
   decideHarnessLayout,
   identityPickupScript,
   writeTokenFileOf,
-  writeTokenPickupScript,
+  writeTokenNameOf,
+  homeForWriteScript,
   imageLayoutKeyOf,
   identityRefusal,
   layoutProbeScript,
@@ -1491,7 +1492,9 @@ export const makeHarnessLayoutSteps = (deps: {
     const workspaceId = input.workspace.id;
     // Every write its own token, a person already made here included: the token their processes
     // hold is theirs to lose to an idle release meanwhile (mend#615 review 3, 615-r3-2).
-    const tokenFile = writeTokenFileOf(randomBytes(16).toString("hex"));
+    const tokenFile = writeTokenFileOf(
+      writeTokenNameOf(yield* Clock.currentTimeMillis, randomBytes(16).toString("hex")),
+    );
     // The ticket and its end together, before anything can redeem it: whatever happens after,
     // the token it mints is revoked when the scope closes, and none is minted once it has.
     const ticket = yield* Effect.acquireRelease(
@@ -1511,8 +1514,7 @@ export const makeHarnessLayoutSteps = (deps: {
       sealant.exec(input.workspace, [
         "sh",
         "-c",
-        `${personHomeEnsureScript(identity, { harnessHome: deps.harnessHome })}\n` +
-          writeTokenPickupScript(identity, ticket, tokenFile),
+        homeForWriteScript(identity, ticket, tokenFile, { harnessHome: deps.harnessHome }),
       ]),
     );
     if (result.exitCode !== 0) {

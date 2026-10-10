@@ -28484,7 +28484,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         expect(homes).toHaveLength(1);
         const [write] = after.execs.filter((argv) => named(argv, "mend-write"));
         const file = tokenFileNamed(write ?? []);
-        expect(file).toMatch(/^\/run\/mend\/write-tokens\/[0-9a-f]{32}$/);
+        expect(file).toMatch(/^\/run\/mend\/write-tokens\/[0-9]{13}-[0-9a-f]{32}$/);
         expect(homes[0]?.[2]).toContain(`'${file?.slice("/run/mend/write-tokens/".length)}'`);
         // One token minted for Maria, and exactly that one revoked; nobody's else, and no bulk
         // revocation of hers.

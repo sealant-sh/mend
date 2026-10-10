@@ -457,7 +457,11 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           message: "session channel: this session is not live on this Mend instance",
         };
       }
-      const scope = { launchId: resolved.launchId, accountId: resolved.accountId };
+      const scope = {
+        launchId: resolved.launchId,
+        accountId: resolved.accountId,
+        ...(resolved.writeOnly ? { writeOnly: true } : {}),
+      };
       if (api.channelFor !== undefined) {
         const grant = await Effect.runPromise(api.channelFor(scope));
         return grant.ok ? { ok: true, api: grant.api, pickupOnly: resolved.writeOnly } : grant;
