@@ -1,0 +1,264 @@
+# Publishes the VS Code extension (apps/vscode, sealant-sh.mend) to the Visual Studio Marketplace and
+# Open VSX, and attaches its .vsix to a GitHub release. docs/operations/vscode-extension.md has the
+# one-time setup and the release steps.
+#
+# - A vscode-vX.Y.Z tag publishes that version; the tag must equal apps/vscode/package.json's version.
+# - A dispatch from main publishes package.json's version and tags its commit vscode-vX.Y.Z; a
+#   dispatch from an existing vscode-v tag retries that version.
+# - A pull request that touches the extension packages it and checks the .vsix; nothing publishes.
+#
+# The publish job runs in the vscode-marketplace environment, which needs an approval and holds
+# VSCE_PAT and OVSX_PAT. It is idempotent: a version a registry already has is skipped there, and a
+# release asset that exists is kept.
+name: Publish VS Code extension
+
+on:
+  push:
+    tags:
+      - "vscode-v*"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - apps/vscode/**
+      - .github/workflows/publish-vscode.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-vscode-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: false
+
+jobs:
+  # Builds and packages with no credential in reach: nothing the dependencies run can see a token.
+  package:
+    name: Package the extension
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Reads the vscode-marketplace environment's protection rules.
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      # No pnpm store cache: other jobs, running unowned code, write that cache.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+
+      # package.json is the version authority: the version bump and its CHANGELOG section land in a
+      # pull request, and the tag (or the dispatch) publishes what main says.
+      - name: Read the version and check the ref
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./apps/vscode/package.json").version')
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::apps/vscode/package.json carries $version; the Marketplace takes X.Y.Z only."
+            exit 1
+          fi
+          if ! grep -qx "## $version" apps/vscode/CHANGELOG.md; then
+            echo "::error::apps/vscode/CHANGELOG.md has no '## $version' section."
+            exit 1
+          fi
+          tag="vscode-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ $GITHUB_EVENT_NAME == pull_request ]]; then exit 0; fi
+
+          if [[ $GITHUB_EVENT_NAME == push && $GITHUB_REF_NAME != "$tag" ]]; then
+            echo "::error::The tag is $GITHUB_REF_NAME, but apps/vscode/package.json carries $version. Bump it in a pull request, then tag the merged commit $tag."
+            exit 1
+          fi
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF != refs/heads/main && $GITHUB_REF != "refs/tags/$tag" ]]; then
+            echo "::error::Dispatch from main or from $tag, not $GITHUB_REF."
+            exit 1
+          fi
+          # A version is published from one commit. An annotated tag's peeled line names its commit.
+          remote=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")
+          tagged=$(awk -v ref="refs/tags/$tag^{}" '$2 == ref { print $1 }' <<<"$remote")
+          if [[ -z $tagged ]]; then tagged=$(awk '{ print $1 }' <<<"$remote"); fi
+          if [[ -n $tagged && $tagged != "$GITHUB_SHA" ]]; then
+            echo "::error::$tag already names $tagged, not $GITHUB_SHA. Bump the version to publish this commit."
+            exit 1
+          fi
+          # main...<commit> is "identical" or "behind" exactly when main contains the commit.
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)
+          if [[ $status != identical && $status != behind ]]; then
+            echo "::error::$GITHUB_SHA is not on main ($status). Publish from main's history only."
+            exit 1
+          fi
+
+      # Without required reviewers the environment would let any run on main publish, and GitHub
+      # creates an environment a job names, unprotected, when it does not exist yet.
+      - name: Check the vscode-marketplace environment needs an approval
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! rules=$(gh api "repos/$GITHUB_REPOSITORY/environments/vscode-marketplace" --jq '[.protection_rules[].type] | join(" ")'); then
+            echo "::error::The vscode-marketplace environment could not be read; it may not exist yet. Create it with a required reviewer first (docs/operations/vscode-extension.md)."
+            exit 1
+          fi
+          if [[ " $rules " != *" required_reviewers "* ]]; then
+            echo "::error::The vscode-marketplace environment has no required reviewer. Add one before publishing."
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          pnpm --filter mend run build
+          mkdir -p "$RUNNER_TEMP/vsix"
+          (cd apps/vscode && pnpm exec vsce package --no-dependencies --out "$RUNNER_TEMP/vsix/mend-${{ steps.version.outputs.version }}.vsix")
+
+      # The .vsix carries the bundle, its resources, the README, CHANGELOG and LICENSE: no source,
+      # tests, source maps or node_modules.
+      - name: Check what the .vsix carries
+        run: |
+          set -euo pipefail
+          vsix="$RUNNER_TEMP/vsix/mend-${{ steps.version.outputs.version }}.vsix"
+          entries=$(unzip -Z1 "$vsix")
+          echo "$entries"
+          allowed='^(extension\.vsixmanifest|\[Content_Types\]\.xml|extension/(package\.json|readme\.md|changelog\.md|LICENSE\.txt|dist/extension\.js|resources/[^/]+))$'
+          extra=$(grep -vE "$allowed" <<<"$entries" || true)
+          if [[ -n $extra ]]; then
+            echo "::error::The .vsix carries files outside the allowlist: $(tr '\n' ' ' <<<"$extra")"
+            exit 1
+          fi
+          for required in extension/package.json extension/readme.md extension/changelog.md extension/LICENSE.txt extension/dist/extension.js extension/resources/icon.png; do
+            grep -qxF "$required" <<<"$entries" || { echo "::error::The .vsix lacks $required."; exit 1; }
+          done
+          size=$(stat -c %s "$vsix")
+          echo "The .vsix is $size bytes."
+          if (( size > 1048576 )); then
+            echo "::error::The .vsix is $size bytes, over the 1 MiB budget."
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vsix
+          path: ${{ runner.temp }}/vsix/*.vsix
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 30 }}
+
+  # Holds the registry tokens. It installs vsce and ovsx from the lockfile with no install scripts,
+  # and builds nothing: what it publishes is the package job's .vsix.
+  publish:
+    name: Publish to the Marketplace and Open VSX
+    needs: package
+    if: github.event_name != 'pull_request'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    environment: vscode-marketplace
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - run: pnpm install --frozen-lockfile --ignore-scripts --filter mend
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vsix
+          path: ${{ runner.temp }}/vsix
+
+      # --skip-duplicate: a version the registry already has is done, so a re-run after a partial
+      # failure publishes only what is missing. Each tool runs from an empty directory.
+      - name: Publish to the Visual Studio Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          VSIX: ${{ runner.temp }}/vsix/mend-${{ needs.package.outputs.version }}.vsix
+        run: |
+          set -euo pipefail
+          if [[ -z $VSCE_PAT ]]; then
+            echo "::error::VSCE_PAT is not set in the vscode-marketplace environment."
+            exit 1
+          fi
+          vsce="$GITHUB_WORKSPACE/apps/vscode/node_modules/.bin/vsce"
+          cd "$(mktemp -d)"
+          "$vsce" publish --packagePath "$VSIX" --skip-duplicate
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+          VSIX: ${{ runner.temp }}/vsix/mend-${{ needs.package.outputs.version }}.vsix
+        run: |
+          set -euo pipefail
+          if [[ -z $OVSX_PAT ]]; then
+            echo "::error::OVSX_PAT is not set in the vscode-marketplace environment."
+            exit 1
+          fi
+          ovsx="$GITHUB_WORKSPACE/apps/vscode/node_modules/.bin/ovsx"
+          cd "$(mktemp -d)"
+          "$ovsx" publish "$VSIX" --skip-duplicate
+
+  github-release:
+    name: Attach the .vsix to the GitHub release
+    needs: [package, publish]
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: vsix
+          path: ${{ runner.temp }}/vsix
+      # Not marked latest: the repository's latest release is Mend's.
+      - name: Create the release, or add a missing asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.package.outputs.version }}
+          TAG: ${{ needs.package.outputs.tag }}
+        run: |
+          set -euo pipefail
+          vsix="$RUNNER_TEMP/vsix/mend-$VERSION.vsix"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            if grep -Fqx "mend-$VERSION.vsix" <<<"$existing"; then
+              echo "$TAG already carries mend-$VERSION.vsix."
+            else
+              gh release upload "$TAG" "$vsix" --repo "$GITHUB_REPOSITORY"
+            fi
+            exit 0
+          fi
+          awk -v version="$VERSION" '
+            $0 == "## " version { grab = 1; next }
+            grab && /^## / { exit }
+            grab { print }
+          ' apps/vscode/CHANGELOG.md > release-notes.md
+          cat >> release-notes.md <<NOTES
+
+          ---
+
+          - Visual Studio Marketplace: [sealant-sh.mend](https://marketplace.visualstudio.com/items?itemName=sealant-sh.mend)
+          - Open VSX: [sealant-sh/mend](https://open-vsx.org/extension/sealant-sh/mend)
+          - Or install the attached \`mend-$VERSION.vsix\` with \`code --install-extension mend-$VERSION.vsix\`.
+          NOTES
+          # On a dispatch from main this creates the tag at the commit that was published.
+          gh release create "$TAG" "$vsix" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Mend for VS Code $VERSION" \
+            --notes-file release-notes.md \
+            --latest=false

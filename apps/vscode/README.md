@@ -1,89 +1,112 @@
 # Mend for VS Code
 
-Use VS Code as a quiet front door to Mend projects and coding-agent sessions.
+[Mend](https://mend.run) is a local-first workbench for people who work with coding agents. It runs
+your own agent (Claude Code, Codex, or any command) in a recorded git worktree on a Mend server, and
+shows the change it made with the evidence behind it.
 
-The core loop: click **+** in the Mend view → pick **Workbench** (a fresh worktree that opens in VS
-Code — run `claude` or `codex` yourself in the terminal, Mend observes and records it) or a
-**Claude/Codex agent** on a prompt. Either way a window opens inside the session's workspace. Click
-any existing session to open it the same way.
+This extension lists your Mend projects and sessions in VS Code and opens a session inside its
+workspace over Remote-SSH. The editor's files are the session's worktree, and the integrated
+terminal runs in the workspace: its image, its environment, and the session's harness home. A
+`claude` or `codex` you start in that terminal is observed by Mend. The session shows running, the
+workspace stays up, and the conversation is recorded and can be resumed from any device.
 
-- Browse projects and sessions from the Mend Activity Bar view, updated live.
-- Open a session's workspace over SSH, through the Mend server's workspace gateway.
-- Open a session's terminal in a VS Code terminal tab, over Mend's terminal connection (no SSH).
-- Start Claude or Codex sessions without building harness arguments in the extension.
-- Open the session's change in Mend's review, and the session itself in Mend.
+## Requirements
 
-The extension reads the same `~/.config/mend/cli.json` connection used by the Mend CLI. Run
-`Mend: Connect to server` to override it: enter the server URL as this machine reaches it, then sign
-in with the browser (the `mend login` walk; approve at `<server>/authorize`), paste a device token,
-or use none for a local server. The token is kept in VS Code's secret storage. `Mend: Sign out`
-revokes a browser sign-in's token and forgets it. Remote opening requires the Microsoft Remote SSH
-extension.
+- A Mend server, version 0.36 or newer, with a workspace SSH gateway. Install one with
+  `npm install --global @sealant/mend` and `mend server setup`; see
+  [Install](https://docs.mend.run/getting-started/install/).
+- VS Code 1.100 or newer.
+- Microsoft's
+  [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
+  extension, to open a session's workspace. Without it, opening a session offers to install it, or
+  copies the `code --remote …` command that opens the same folder.
 
-A server on another machine (a Mac mini on the LAN or a tailnet, or behind an https edge) works the
-same way: see `apps/docs/src/content/docs/operate/mac-mini-vscode.md`. The end-to-end check of that
-shape is `MEND_TEST_VERSION=<preloaded image tag> node scripts/vscode-remote-acceptance.mjs`.
+## Sign in
 
-The extension is not published to the Visual Studio Marketplace. Build a `.vsix` with
-`pnpm --filter mend build` followed by `pnpm --filter mend package`, and install it with
-**Extensions: Install from VSIX…**.
+If you ran `mend login` on this machine, there is nothing to set up: the extension reads the CLI's
+connection from `~/.config/mend/cli.json`. With nothing configured, it uses `http://localhost:3105`.
 
-## Opening the workspace (recommended)
+Otherwise run **Mend: Connect to server** and enter the server URL as this machine reaches it, then
+pick how to sign in:
 
-Opening a session opens its workspace: the same worktree files, but the integrated terminal runs
-inside the workspace — its image, its environment, and the session's harness home (the directory
-that holds the harness's state and conversations, captured with the workspace and restored when the
-session launches again). A `claude` or `codex` you run there is observed by Mend: the session shows
-running, the workspace stays leased, and the conversation is recorded and natively resumable from
-any device. In a per-person workspace (the 0.36 default) the Remote-SSH login is the workspace's
-launcher, as their own user, on their home and logins; where the server's Sealant cannot bind the
-person it runs as root, and the session line says `Remote-SSH: root, Core can't bind your person`. A
-settled session offers a shell resume first — the shell keeps the fresh workspace alive while the
-editor is attached.
+- **Sign in with the browser**: the browser opens `<server>/authorize`. Approve there when it shows
+  the same code as VS Code. The editor gets its own device token, listed under **Settings →
+  Devices** as `VS Code on <machine>`.
+- **Paste a device token** minted in the web app under **Settings → Devices**.
+- **No token**, for a local server that does not require one.
 
-The first open offers "Set up workspace SSH?" Mend registers this client's key and adds a
-server-specific Host block at the start of `~/.ssh/config`, before wildcard defaults. Existing
-hand-written configuration is preserved. Setup reuses the selected key on later runs. On first setup
-it can save an agent public-key selector or create a dedicated key under `~/.config/mend/ssh`. An
-encrypted or missing private key requires that exact identity in an unlocked agent, not just any
-agent key. Setup never prompts for a passphrase.
+The token is kept in VS Code's secret storage. For a plain `http://` URL on another machine the
+extension says so before you sign in: the token would cross that network unencrypted. **Mend: Sign
+out** revokes a browser sign-in's token and forgets it.
 
-Re-run with `Mend: Set up workspace SSH` or `mend ssh setup`. The SSH hostname comes from the
-configured Mend URL; the server publishes the port. `mend.workspaceSshHost` overrides the hostname
-for unusual networks.
+## Open a session over Remote-SSH
 
-Setup reports configuration and client-key registration only. It does not test a connection or
-verify the gateway's host key. OpenSSH accepts a previously unknown host key on first connection and
-rejects changed keys. Mend never clears `known_hosts`. For a host-key mismatch, follow the
-[fingerprint verification and manual rotation procedure](../cli/README.md#gateway-host-key-rotation)
-before removing only this server's HostKeyAlias entry.
+The Mend icon in the Activity Bar opens **Projects and sessions**: sessions waiting for you under
+**Needs you**, then each project with its sessions and their status. Click a session to open it.
 
-There is no host-path fallback. A missing gateway, a failed discovery, or an authentication error
-stops the open with a message instead of opening a folder on the host, where a terminal would run
-outside Mend's observation. `Mend: Copy worktree path` still copies the server-side path for your
-own use.
+The first open asks **Set up workspace SSH?**. Setup registers this machine's SSH public key with
+Mend and adds one `Host` block for this server at the start of `~/.ssh/config`. It keeps your own
+configuration. It uses a key from your SSH agent or creates one under `~/.config/mend/ssh`, and
+never asks for a passphrase. Run **Mend: Set up workspace SSH**, or `mend ssh setup`, to redo it.
 
-## Taking over a running session
+In a per-person workspace, the 0.36 default, the Remote-SSH login is the workspace's launcher, as
+their own Linux user, on their home and logins. Only the launcher can open that workspace over
+Remote-SSH.
 
-Opening a session whose agent Mend is running elsewhere — a `mend codex` in a terminal, a pickup
-from the phone — asks whether to open **alongside** it or **take it over in the editor**. The editor
-has no terminal client for Mend's PTY, so a takeover goes the observed route: a shell holds the
-workspace lease, the running agent is stopped, the workspace opens (or the current window is
-reused), and a new integrated terminal runs the harness's own resume — `codex resume <id>` or
-`claude --resume <id>` (the most recent conversation when the id is not yet known). The shell keeps
-the same workspace, and with it the session's harness home, so that resume finds the conversation
-the agent was writing a moment ago, and Mend observes the new process under the same conversation.
-`Mend: Take over session in the editor` on a live session does the same without the question. Where
-the session line says `Remote-SSH: root, Core can't bind your person`, the resume does not hold your
-conversation; use `mend attach` there.
+The extension never opens the worktree's path on the Mend host instead. A terminal there would run
+outside the workspace, where Mend does not see it. When the server has no workspace SSH gateway, the
+open stops with a message.
 
-Cancelling the SSH setup or the confirmation leaves the agent running. The stop ends only the agent:
-the shell keeps the workspace open until you stop the session again.
+## Start a session
 
-## Another session in the same worktree
+Click **+** in the view, or run **Mend: New Session…**:
 
-`Mend: New session in this worktree…` on a session starts a second session inside the same worktree
-— the same files and branch, a new conversation. Each session owns its own harness state, so a
-sibling does not see the first session's conversation; to continue that one, take it over instead.
+- **Workbench**: a fresh worktree held open by a shell. VS Code opens in it, and you run `claude` or
+  `codex` yourself in the terminal.
+- **Claude agent** or **Codex agent**: Mend starts the agent on your prompt, and the workspace opens
+  beside it.
+- **Agent with options…**: harness, model, thinking level, permissions and base branch.
 
-Deep links: `vscode://sealant-sh.mend/open?session=<session-id>`
+**Mend: New session in this worktree…** starts another session on the same files and branch, with a
+new conversation.
+
+## Take over a running session
+
+Opening a session whose agent runs elsewhere (a `mend codex` in a terminal, a session picked up on
+the phone) asks whether to **Open alongside** it or **Take over in the editor**. A takeover stops
+the running agent, keeps the workspace up with a shell, opens it, and runs the harness's own resume
+in a new terminal: `codex resume <id>` or `claude --resume <id>`. The conversation continues in the
+editor, and Mend records it as the same conversation.
+
+## Other commands
+
+| Command                         | What it does                                                  |
+| ------------------------------- | ------------------------------------------------------------- |
+| **Mend: Open terminal**         | The session's terminal in a VS Code terminal tab, without SSH |
+| **Mend: Review change**         | The session's change in Mend's review, in your browser        |
+| **Mend: Open in Mend**          | The session or project in Mend's web app                      |
+| **Mend: Stop session**          | Stop a live session; the worktree and its change remain       |
+| **Mend: Adopt a project…**      | Adopt a repository from its clone URL                         |
+| **Mend: Show project sessions** | Pick a session of the current project, or start something new |
+| **Mend: Copy worktree path**    | Copy the worktree's path on the server                        |
+
+A link of the form `vscode://sealant-sh.mend/open?session=<session-id>` opens that session.
+
+## Settings
+
+- `mend.serverUrl`: the Mend server URL. Empty uses the CLI's configuration, then
+  `http://localhost:3105`.
+- `mend.workspaceSshHost`: another SSH hostname for the server, for networks where the URL's
+  hostname does not reach the SSH port.
+
+## More
+
+- Full guide: [VS Code extension](https://docs.mend.run/clients/vscode/)
+- A server on another machine, step by step:
+  [Mac mini and VS Code](https://docs.mend.run/operate/mac-mini-vscode/)
+- Issues: [github.com/sealant-sh/Mend/issues](https://github.com/sealant-sh/Mend/issues)
+- Source: [apps/vscode](https://github.com/sealant-sh/Mend/tree/main/apps/vscode), Apache-2.0
+
+To build the extension from source, run `pnpm install`, then `pnpm --filter mend build` and
+`pnpm --filter mend package` in a checkout, and install the `.vsix` with **Extensions: Install from
+VSIX…**.

@@ -1,31 +1,41 @@
 {
   "name": "mend",
   "displayName": "Mend",
-  "version": "0.1.0",
+  "version": "0.36.0",
   "private": true,
   "description": "Open and steer Mend coding-agent sessions from VS Code.",
   "categories": [
-    "Other",
-    "SCM Providers"
+    "AI",
+    "Other"
   ],
   "keywords": [
     "agents",
     "claude",
     "codex",
+    "coding-agent",
     "mend",
+    "remote-ssh",
+    "review",
+    "sessions",
     "worktrees"
   ],
+  "homepage": "https://docs.mend.run/clients/vscode/",
+  "bugs": {
+    "url": "https://github.com/sealant-sh/Mend/issues"
+  },
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/sealant-sh/Mend.git",
     "directory": "apps/vscode"
   },
+  "qna": false,
   "publisher": "sealant-sh",
   "files": [
     "dist/extension.js",
     "resources",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "main": "./dist/extension.js",
@@ -47,6 +57,7 @@
     "@types/vscode": "^1.100.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "catalog:",
+    "ovsx": "^1.2.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
@@ -261,7 +272,13 @@
     "ui",
     "workspace"
   ],
+  "icon": "resources/icon.png",
+  "galleryBanner": {
+    "color": "#faf9f7",
+    "theme": "light"
+  },
   "engines": {
     "vscode": "^1.100.0"
-  }
+  },
+  "pricing": "Free"
 }
