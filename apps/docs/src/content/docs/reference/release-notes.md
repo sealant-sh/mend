@@ -58,6 +58,10 @@ native phone app are not.
   s. A Stop on Garage no longer waits 10 minutes for its upload links to expire.
 - **Images.** Workspaces carry `bun` and `unzip` (each project's image rebuilds once, about +80 MB)
   and pin their harness versions. Claude Code no longer updates itself in a workspace.
+- **Native Arch on arm64.** On Apple silicon and ARM servers, Arch workspaces build for `aarch64`
+  instead of running `x86_64` under emulation. Reinstall native dependencies in existing worktrees
+  (`node_modules`, `.venv`, `target/`); each Arch image's first build downloads the Arch Linux ARM
+  rootfs (about 300 MB) from `os.archlinuxarm.org`, outside the mirrors.
 - **Shallow repositories are refused** at adoption and at a session's start.
 
 ### CLI, dashboard and phone
