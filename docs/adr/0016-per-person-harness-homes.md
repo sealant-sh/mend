@@ -154,15 +154,15 @@ process uses, by default and by every path Mend controls.
   `runtime.getCapabilities` reports `personCapabilities` and `personCapabilitiesWithheld` with the
   reason, which Mend surfaces on the executor.
 
-| Process                                                                                      | Runs as                                                                                                                                             |
-| -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent Mend starts (cold, claimed standby, join, resume, follow-up, retained run, handoff) | the person whose turn it runs: the session owner, or a steerer (decision 6)                                                                         |
-| A shell                                                                                      | the person who opened it                                                                                                                            |
-| A Service                                                                                    | the person who started it, across restarts; a `mend.toml` service started at launch, the launcher                                                   |
-| Dependency install and setup commands                                                        | the launcher                                                                                                                                        |
-| Mend's own execs for a person (deliveries, read-backs)                                       | that person                                                                                                                                         |
-| VS Code Remote-SSH                                                                           | the launcher's user: Core's gateway admits only the workspace's owner and runs their session as the user Mend names for the workspace (Core change) |
-| `docker exec` and anything else Mend did not start                                           | root, which is nobody: no login, no Mend token, nothing saved (Known limits)                                                                        |
+| Process                                                                                      | Runs as                                                                                                                                   |
+| -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent Mend starts (cold, claimed standby, join, resume, follow-up, retained run, handoff) | the person whose turn it runs: the session owner, or a steerer (decision 6)                                                               |
+| A shell                                                                                      | the person who opened it                                                                                                                  |
+| A Service                                                                                    | the person who started it, across restarts; a `mend.toml` service started at launch, the launcher                                         |
+| Dependency install and setup commands                                                        | the launcher                                                                                                                              |
+| Mend's own execs for a person (deliveries, read-backs)                                       | that person                                                                                                                               |
+| VS Code Remote-SSH, `ssh`                                                                    | the launcher's user: Core's gateway admits only the workspace's owner and runs their session as the user Mend names at create (`sshUser`) |
+| `docker exec` and anything else Mend did not start                                           | root, which is nobody: no login, no Mend token, nothing saved (Known limits)                                                              |
 
 A terminal attach starts no process. The person a process runs as is recorded on the process when it
 starts. A person's live process, Services included, keeps their user's logins held (decision 5).
@@ -682,10 +682,18 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
 
 - **VS Code Remote-SSH runs as the launcher's user.** Core's gateway admits only the workspace's
   owner, the launcher, and runs the session as the user Mend names for the workspace at create
-  (`sshUser`, new in Core). The extension, its terminals and the Claude Code extension then run on
-  the launcher's logins, save into their `P`, and find their tools in their home. A joiner cannot
-  open Remote-SSH into an executor someone else launched. sealantd's `openSftp` takes no user yet,
-  so an SFTP bridge runs as root; it gains one with Core's `sshUser` (Follow-ups).
+  (`sshUser`, sealant#348): every shell and command, the Remote-SSH bootstrap's `ssh -T host bash`
+  included, starts as that user with `HOME` and the rest from passwd. The extension, its terminals
+  and the Claude Code extension then run on the launcher's logins, save into their `P`, and find
+  their tools in their home. A joiner cannot open Remote-SSH into an executor someone else launched.
+  The user does not exist at create; until prepare makes it, sealantd refuses the session, never
+  runs it as root. Mend names the user only where Core reports `workspaceSshUser`; an older control
+  plane's gateway runs the session as root, as before. A prepare that falls back to one shared home
+  sets the user back to root (`PUT .../ssh-user`, beside the release of the create-time home), so
+  the launcher's Remote-SSH works there as before. The gateway runs a session as a user only on a
+  sealantd that reports `exec.user`, and the API names the user only to a gateway that says it runs
+  sessions as one. SFTP is refused for such a workspace: sealantd's `openSftp` takes a user from
+  sealantd#155, and Core passes it once it pins that sealantd (Follow-ups).
 - **Anything else** (`docker exec`, a custom image's own entrypoint work) runs as root, which is no
   person: `/root` holds no login and no Mend token, and nothing written under `/root` is saved.
 
@@ -1004,7 +1012,8 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **Provider session ids pinned at launch** (Claude and pi `--session-id`).
 - **Claiming uncredited memory** from before 0.36.
 - **sealantd scrubbing opencode's login tables.**
-- **An SFTP bridge as the workspace's user:** `openSftp` with a user, set from Core's `sshUser`.
+- **An SFTP bridge as the workspace's user:** sealantd#155 adds `openSftp { user }`; Core passes the
+  workspace's `sshUser` once it pins that sealantd, and stops refusing SFTP there.
 
 ## Delivery
 

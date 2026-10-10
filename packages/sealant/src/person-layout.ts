@@ -167,6 +167,21 @@ export class PersonLayoutPlatform extends Context.Service<
      */
     readonly controlPlaneObstacle: Effect.Effect<string | null>;
     /**
+     * Whether Core runs a workspace's SSH sessions (VS Code Remote-SSH, `ssh`) as the Linux user
+     * its create names (`sshUser`, `features.workspaceSshUser`, sealant#348): read with
+     * `controlPlaneObstacle`'s answer and kept as long. False when Core does not say so or cannot
+     * be asked; a person launch then sends no user and its SSH sessions run as root, as before.
+     */
+    readonly sshUser: Effect.Effect<boolean>;
+    /**
+     * Who Core's gateway runs the workspace's SSH sessions as from the next session on: `null`,
+     * root, for a person launch whose prepare fell back to one shared home (decision 1), so the
+     * launcher's Remote-SSH works there as it did before. Never fails: what Core could not be told
+     * is logged, and the gateway then refuses the launcher's SSH sessions rather than run them as
+     * root.
+     */
+    readonly setSshUser: (workspace: Workspace, user: string | null) => Effect.Effect<void>;
+    /**
      * The workspace's own answer to whether its processes can start as a person
      * (`workspace.processUser()`, sealant#343): `supported` only when the sealantd of the image it
      * booted reports `exec.user`. A person launch runs only on `supported` (decision 1).
@@ -278,6 +293,8 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
     processUser: false,
     dotfilesUser: false,
     controlPlaneObstacle: Effect.succeed(null),
+    sshUser: Effect.succeed(false),
+    setSshUser: () => Effect.void,
     workspaceProcessUser: () => Effect.succeed("unsupported"),
     withOwnerMap: (options) => options,
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),

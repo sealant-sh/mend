@@ -14,6 +14,7 @@ import type {
   WorkspaceImageInspection,
   WorkspaceImagePersonLayout,
   SealantFeatures,
+  Workspace,
   WorkspaceProcessUserCapability,
 } from "@sealant/sdk";
 import { Clock, Duration, Effect, Layer, Option } from "effect";
@@ -157,6 +158,22 @@ export const controlPlaneObstacleOf = (features: SealantFeatures): string | null
     : `the Sealant control plane lacks what per-person users need (it does not report ${missing.join(", ")})`;
 };
 
+/**
+ * Core runs a workspace's SSH sessions as the user its create names (`features.workspaceSshUser`,
+ * sealant#348). Read by name: the SDK Mend pins may not declare it yet, and a control plane from
+ * before it does not report it.
+ */
+export const runsSshAsUser = (features: SealantFeatures): boolean =>
+  "workspaceSshUser" in features && features.workspaceSshUser === true;
+
+/** A workspace handle whose SDK sets its SSH user (`workspace.setSshUser`, sealant#348). */
+interface SshUserSettable {
+  readonly setSshUser: (user: string | null) => Promise<void>;
+}
+
+const setsSshUser = (workspace: Workspace): workspace is Workspace & SshUserSettable =>
+  "setSshUser" in workspace && typeof workspace.setSshUser === "function";
+
 /** The workspace's own answer (`workspace.processUser()`), as a prepare's missing words. */
 export const workspaceProcessUserObstacleOf = (
   capability: WorkspaceProcessUserCapability,
@@ -231,13 +248,18 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         return report;
       });
 
-      let controlPlane: { readonly obstacle: string | null; readonly until: number } | null = null;
-      const controlPlaneObstacle = Effect.gen(function* () {
+      let controlPlane: {
+        readonly obstacle: string | null;
+        readonly sshUser: boolean;
+        readonly until: number;
+      } | null = null;
+      const controlPlaneAnswer = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        if (controlPlane !== null && now < controlPlane.until) return controlPlane.obstacle;
+        if (controlPlane !== null && now < controlPlane.until) return controlPlane;
         const answer = yield* clients.controlPlaneFeatures().pipe(
           Effect.map((features) => ({
             obstacle: controlPlaneObstacleOf(features),
+            sshUser: runsSshAsUser(features),
             until: now + CONTROL_PLANE_ANSWER_MS,
           })),
           Effect.catch((error) =>
@@ -245,18 +267,37 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               Effect.annotateLogs({ message: error.message }),
               Effect.as({
                 obstacle: CONTROL_PLANE_UNREADABLE,
+                sshUser: false,
                 until: now + CONTROL_PLANE_FAILURE_MS,
               }),
             ),
           ),
         );
         controlPlane = answer;
-        return answer.obstacle;
-      }).pipe(Effect.withSpan("PersonLayoutPlatform.controlPlaneObstacle"));
+        return answer;
+      });
+      const controlPlaneObstacle = controlPlaneAnswer.pipe(
+        Effect.map((answer) => answer.obstacle),
+        Effect.withSpan("PersonLayoutPlatform.controlPlaneObstacle"),
+      );
 
       return {
         processUser: true,
         controlPlaneObstacle,
+        sshUser: controlPlaneAnswer.pipe(Effect.map((answer) => answer.sshUser)),
+        // `workspace.setSshUser` (sealant#348), only where Core said it takes a user; an SDK
+        // from before it has no such method, and its creates never sent one.
+        setSshUser: (workspace, user) =>
+          Effect.gen(function* () {
+            if (!(yield* controlPlaneAnswer).sshUser || !setsSshUser(workspace)) return;
+            yield* call(() => workspace.setSshUser(user)).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("person layout: the workspace's SSH user was not set").pipe(
+                  Effect.annotateLogs({ workspaceId: workspace.id, user, message: error.message }),
+                ),
+              ),
+            );
+          }).pipe(Effect.withSpan("PersonLayoutPlatform.setSshUser")),
         // Filled in by `ready()` on the handle the create made; asked of Core otherwise (a handle
         // from `get()`). Unreadable is unknown, which is not a yes.
         workspaceProcessUser: (workspace) =>

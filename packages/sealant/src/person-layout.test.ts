@@ -20,6 +20,7 @@ import { SealantPlatformError } from "./errors.ts";
 import {
   CONTROL_PLANE_UNREADABLE,
   controlPlaneObstacleOf,
+  runsSshAsUser,
   PersonLayoutPlatformLive,
   imageLayoutReportOf,
 } from "./person-layout-live.ts";
@@ -652,5 +653,47 @@ describe("a platform with none of the person layout", () => {
       const exit = await Effect.runPromiseExit(call);
       expect(Exit.isFailure(exit)).toBe(true);
     }
+  });
+});
+
+describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", () => {
+  const reporting = { ...EVERY_FEATURE, workspaceSshUser: true };
+  const platformReporting = (features: SealantFeatures) =>
+    platformWith(
+      PersonLayoutPlatformLive.pipe(
+        Layer.provide(clientsLayer([], inspection("supported"), () => Effect.succeed(features))),
+      ),
+    );
+
+  it("is named only where Core says its gateway runs SSH sessions as one", async () => {
+    expect(runsSshAsUser(reporting)).toBe(true);
+    expect(runsSshAsUser(EVERY_FEATURE)).toBe(false);
+    expect(await Effect.runPromise((await platformReporting(reporting)).sshUser)).toBe(true);
+    expect(await Effect.runPromise((await platformReporting(EVERY_FEATURE)).sshUser)).toBe(false);
+  });
+
+  it("is set back to root through the handle, only where Core takes it, and never fails", async () => {
+    const asked: Array<string | null> = [];
+    const settable = {
+      ...workspaceRecording([], []),
+      setSshUser: async (sshUser: string | null) => {
+        asked.push(sshUser);
+      },
+    };
+    await Effect.runPromise((await platformReporting(reporting)).setSshUser(settable, null));
+    expect(asked).toEqual([null]);
+    // A control plane that does not take it is not asked.
+    await Effect.runPromise((await platformReporting(EVERY_FEATURE)).setSshUser(settable, null));
+    expect(asked).toEqual([null]);
+    // A refusal is logged, not a failed launch; an SDK without the method is not asked.
+    const failing = {
+      ...workspaceRecording([], []),
+      setSshUser: async () => {
+        throw new Error("down");
+      },
+    };
+    const platform = await platformReporting(reporting);
+    await Effect.runPromise(platform.setSshUser(failing, null));
+    await Effect.runPromise(platform.setSshUser(workspaceRecording([], []), null));
   });
 });

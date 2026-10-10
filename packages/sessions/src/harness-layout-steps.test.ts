@@ -162,6 +162,11 @@ const platformOf = (
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: can.dotfilesUser ?? true,
+    sshUser: Effect.succeed(true),
+    setSshUser: (_workspace, user) =>
+      Effect.sync(() => {
+        core.calls.push(`ssh-user:${user ?? "root"}`);
+      }),
     workspaceProcessUser: () => Effect.succeed(can.workspaceProcessUser ?? "supported"),
     controlPlaneObstacle: Effect.sync(() => {
       core.controlPlaneReads++;
@@ -1916,7 +1921,12 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     });
     expect(outcome.layout).toBe("shared");
     // The create-time home released, the logins at /root (a partial put), no apply as root.
-    expect(core.calls).toEqual([`delete:/home/${outcome.alice.name}`, "post:user-alice:/root"]);
+    // The launcher's SSH sessions go back to root with the rest, beside the release.
+    expect(core.calls).toEqual([
+      `delete:/home/${outcome.alice.name}`,
+      "ssh-user:root",
+      "post:user-alice:/root",
+    ]);
     expect(core.posts.map((post) => [post.logins, post.partial])).toEqual([
       [{ claude: true, github: true }, true],
     ]);

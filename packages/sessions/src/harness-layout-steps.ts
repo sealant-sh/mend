@@ -1229,7 +1229,15 @@ export const makeHarnessLayoutSteps = (deps: {
     // not applied. The image's answer is recorded below, so the next launch on it decides shared
     // before create and its dotfiles apply at boot, as before.
     const home = linuxHomeOf(layout.launcher);
-    yield* platform.deleteCredentials(input.workspace, { home });
+    // The launcher's SSH sessions go back to root with the rest of the executor (decision 10):
+    // the create named their user, which this prepare may not have made. Beside the release.
+    yield* Effect.all(
+      [
+        platform.deleteCredentials(input.workspace, { home }),
+        platform.setSshUser(input.workspace, null),
+      ],
+      { concurrency: "unbounded", discard: true },
+    );
     const rootLogins = homeLoginsOf(input.fallback.credentials);
     if (Object.keys(rootLogins).length > 0) {
       // Partial, as a start's (sealant#337): a provider disconnected since the create is left

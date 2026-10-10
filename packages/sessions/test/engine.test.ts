@@ -482,6 +482,8 @@ const sealantLaunchLayer = (
     readonly createLaunches?: Array<string | undefined>;
     /** Every create's `credentialsHome` (docs/adr/0016), as Mend sent it (`undefined`: none). */
     readonly createHomes?: Array<string | undefined>;
+    /** Every create's `sshUser` (docs/adr/0016, decision 10), as Mend sent it (`undefined`: none). */
+    readonly createSshUsers?: Array<string | undefined>;
     /** Every exec's user (docs/adr/0016): the login name it ran as, null for root. */
     readonly execUsers?: Array<string | null>;
     /** While true, a create's answer is lost (503) as if the control plane never answered. */
@@ -654,6 +656,7 @@ const sealantLaunchLayer = (
         created.push(options);
         captureOps?.createKeys?.push(launch?.idempotencyKey);
         captureOps?.createLaunches?.push(launch?.launchId);
+        captureOps?.createSshUsers?.push(launch?.sshUser);
         captureOps?.createHomes?.push(
           launch?.credentialsHome === undefined
             ? undefined
@@ -24459,11 +24462,15 @@ const personPlatform = (
   postFails?: (onBehalfOf: string, home: string) => boolean,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
   controlPlane?: () => string | null,
+  /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
+  sshUserReported = true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
     processUser: true,
     dotfilesUser: dotfiles !== undefined,
     controlPlaneObstacle: Effect.sync(() => controlPlane?.() ?? null),
+    sshUser: Effect.succeed(sshUserReported),
+    setSshUser: (_workspace, user) => Effect.sync(() => calls.push(`ssh-user:${user ?? "root"}`)),
     workspaceProcessUser: () => Effect.succeed("supported"),
     // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
@@ -24529,6 +24536,7 @@ interface Scenario {
   readonly resume: number;
   readonly created: number;
   readonly homes: ReadonlyArray<string | undefined>;
+  readonly sshUsers: ReadonlyArray<string | undefined>;
   readonly opened: ReadonlyArray<PersonSessionOptions>;
   readonly users: ReadonlyArray<string | null>;
   readonly execs: ReadonlyArray<ReadonlyArray<string>>;
@@ -24556,6 +24564,7 @@ const coldJoinResume = async (options: {
   const opened: Array<PersonSessionOptions> = [];
   const users: Array<string | null> = [];
   const homes: Array<string | undefined> = [];
+  const sshUsers: Array<string | undefined> = [];
   const memory = makeMemoryCaptureStore();
   let result: Scenario | null = null;
   await withEngine(
@@ -24619,6 +24628,7 @@ const coldJoinResume = async (options: {
           resume: execCalls.length - beforeResume,
           created: created.length,
           homes,
+          sshUsers,
           opened,
           users,
           execs: execCalls,
@@ -24643,6 +24653,7 @@ const coldJoinResume = async (options: {
         {
           execUsers: users,
           createHomes: homes,
+          createSshUsers: sshUsers,
           ...(options.exec === undefined ? {} : { exec: options.exec }),
         },
       ),
@@ -24692,6 +24703,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect([other.cold, other.join]).toEqual([BUDGET.cold, BUDGET.otherJoin]);
     for (const run of [same, other]) {
       expect(run.homes.every((home) => home === undefined)).toBe(true);
+      // A shared executor's SSH sessions run as root, as before: no user is named.
+      expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
       expect(run.users.every((user) => user === null)).toBe(true);
       expect(run.opened.some((options) => options.user !== undefined)).toBe(false);
       expect(run.joinRepairs + run.joinPersonHomes).toBe(0);
@@ -24699,6 +24712,29 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     }
     expect(state.launches.size).toBe(0);
     expect(state.identities.size).toBe(0);
+  });
+
+  it("a person launch names no SSH user where Core does not run SSH sessions as one", async () => {
+    // A control plane from before `workspaceSshUser` (sealant#348): its gateway runs every SSH
+    // session as root, so the create names nobody, and nothing is set later.
+    const calls: Array<string> = [];
+    const run = await coldJoinResume({
+      flag: "person",
+      joiner: "user-fixture",
+      platform: personPlatform(
+        calls,
+        { person: true },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        false,
+      ),
+      exec: answerLayout(LAYOUT_READY),
+    });
+    expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+    expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
+    expect(calls.some((call) => call.startsWith("ssh-user:"))).toBe(false);
   });
 
   it("a person launch runs as the launcher's own user, in no more execs than its budget", async () => {
@@ -24716,6 +24752,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(run.resume).toBeLessThanOrEqual(PERSON_BUDGET.resume);
     // The create commits to the layout: the launcher's logins into their own home.
     expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+    // And their Remote-SSH: Core's gateway runs the owner's SSH sessions as their user.
+    expect(run.sshUsers[0]).toBe(LAUNCHER);
     // Users and homes are made in the executor's first exec, beside the helper install.
     const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
     expect(first?.[2]).toContain(`useradd -u "$p_u" -g mend`);
@@ -25258,7 +25296,8 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       exec: answerLayout("mend-layout missing no setfacl\nmend-layout probed\n"),
     });
     expect(run.failure).toBeNull();
-    expect(calls).toEqual([`delete:/home/${LAUNCHER}`, "post:user-fixture:/root"]);
+    // The launcher's SSH sessions go back to root with the executor (decision 10).
+    expect(calls).toEqual([`delete:/home/${LAUNCHER}`, "ssh-user:root", "post:user-fixture:/root"]);
     // The agent starts as root, after its login is written.
     expect(run.order).toContain("open");
     expect(run.opened.some((options) => options.user !== undefined)).toBe(false);

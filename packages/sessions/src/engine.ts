@@ -10983,6 +10983,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 gid: MEND_GROUP.gid,
               }
             : undefined;
+        // The launcher's Remote-SSH runs as them too (decision 10): Core's gateway admits only the
+        // workspace's owner, the launcher, and runs the session as the user named here, which
+        // prepare makes. A fallback to one shared home sets it back to root (`settlePrepare`).
+        const sshUser =
+          launchLayout.layout === "person" && (yield* personPlatform.sshUser)
+            ? launchLayout.launcher.name
+            : undefined;
         if (credentialsHome !== undefined && input.createKey === undefined) {
           return yield* layoutRefused(
             "This launch runs each person as their own user and has no create key to send the launcher's home with, so nothing was created.",
@@ -11059,6 +11066,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       idempotencyKey: input.createKey.key,
                       launchId: input.launchId,
                       ...(credentialsHome === undefined ? {} : { credentialsHome }),
+                      ...(sshUser === undefined ? {} : { sshUser }),
                     },
                 input.watchCreate,
               ),
