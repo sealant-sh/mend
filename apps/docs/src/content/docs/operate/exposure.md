@@ -207,9 +207,11 @@ The CLI carries a copy of the two files and writes them into the installation's 
 `restart` and `upgrade` runs the overlay with `compose.yaml`, so an upgrade never drops it.
 `mend server setup --no-edge` takes it away again, and removes the edge's container. Setup refuses
 `--bind` on anything but loopback with an edge, a `--url` that is not exactly `https://<host>`,
-`--port` or `--ssh-port` on 80 or 443, and `--edge` on a fresh install: until the first account
-exists, registration is open to whoever reaches the origin first, so the account is created on
-localhost before the edge is added.
+`--port` or `--ssh-port` on 80 or 443, and `--edge` or a public `--bind` address on a fresh install:
+until the first account exists, registration is open to whoever reaches the origin first, so the
+account is created on localhost before the edge is added. On an existing install, a run that
+publishes Mend's port or workspace SSH on a public address without the edge says so beside the
+declared exposure.
 
 For a certificate to be issued, the name's DNS must point at the machine and ports 80 and 443 must
 reach it from the Internet. `mend server status` says whether the edge's container runs and whether

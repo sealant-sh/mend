@@ -37,8 +37,11 @@ mend server setup
 
 Setup asks how people reach the server. For a server your devices reach over a tailnet, a LAN or a
 VPN, answer "my private network or Tailscale". When Tailscale runs on the server, setup offers its
-MagicDNS name and tailnet address, so Mend is published on the tailnet only. Setup ends with the
-same command with flags. A script passes the flags itself:
+MagicDNS name and tailnet address, so Mend is published on the tailnet only. Setup never offers a
+public address as a private network: on a VPS whose only address is public, it says so and installs
+on this machine, so join the VPS to a tailnet, use a tunnel, or choose public HTTPS. A fresh install
+refuses `--bind` on a public address for the same reason as `--edge` below. Setup ends with the same
+command with flags. A script passes the flags itself:
 
 ```sh
 mend server setup --bind 0.0.0.0 --url http://your-vps:3105 \

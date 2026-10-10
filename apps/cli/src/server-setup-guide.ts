@@ -1,5 +1,7 @@
 import * as net from "node:net";
 
+import { type AddressKind, addressKindOf } from "@mend/network/address-kind";
+
 import {
   DECLARABLE_ITEMS,
   DEFAULT_T3_GATEWAY_PORT,
@@ -53,6 +55,23 @@ const LOOPBACK = "127.0.0.1";
 
 export const isLoopbackAddress = (address: string): boolean =>
   address === "::1" || address.startsWith("127.");
+
+/** The kind of network a literal address belongs to (ADR 0004: an observation, nothing more). */
+export const kindOfAddress = (address: string): AddressKind =>
+  addressKindOf(address, net.isIPv6(address) ? "IPv6" : "IPv4");
+
+/**
+ * A literal address on the public internet. Every address (0.0.0.0, ::) is not one address, so it
+ * is never one here; what it includes is the machine's own addresses.
+ */
+export const isPublicAddress = (address: string): boolean =>
+  address !== "0.0.0.0" && address !== "::" && kindOfAddress(address) === "public";
+
+/** An address on a network someone controls who joins: a LAN or VPN (RFC 1918, ULA), or CGNAT space. */
+const isPrivateNetworkAddress = (address: string): boolean => {
+  const kind = kindOfAddress(address);
+  return kind === "private" || kind === "cgnat";
+};
 
 const isLoopbackName = (hostname: string): boolean =>
   hostname === "localhost" || hostname === "[::1]" || isLoopbackAddress(hostname);
@@ -399,7 +418,8 @@ const choose = async <T>(
   choices.forEach((choice, index) =>
     io.write(`  ${index + 1}. ${choice.label}${choice.detail === "" ? "" : ` · ${choice.detail}`}`),
   );
-  const range = choices.length === 2 ? "1 or 2" : `1-${choices.length}`;
+  const range =
+    choices.length === 1 ? "1" : choices.length === 2 ? "1 or 2" : `1-${choices.length}`;
   const fallback = choices[preferred] ?? choices[0];
   for (;;) {
     const given = await answer(io, `  ${range} [${preferred + 1}]: `);
@@ -525,7 +545,24 @@ const toThisMachine = (settings: SetupSettings): SetupSettings => ({
   declared: without(settings.declared, "workspace-ssh"),
 });
 
-const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
+/** This machine's own IPv4 addresses that are public: published there, Mend answers the internet. */
+const publicAddressesHere = (asked: Asked): ReadonlyArray<string> =>
+  asked.context.observe
+    .localAddresses()
+    .filter((address) => net.isIPv4(address) && isPublicAddress(address));
+
+const listed = (addresses: ReadonlyArray<string>): string =>
+  addresses.length === 1
+    ? `${addresses[0]} is a public address`
+    : `${addresses.join(", ")} are public addresses`;
+
+/**
+ * Where a network install listens. Offered are only addresses of a network someone controls who
+ * joins: the tailnet, a LAN or VPN address, carrier-grade NAT space. A public address never is:
+ * published there, Mend answers the internet whatever is declared, and a fresh install's
+ * registration is open to whoever arrives first. Null when this machine has none to offer.
+ */
+const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings | null> => {
   const { io } = asked;
   const tailscale = await asked.tailscale();
   io.write("");
@@ -539,16 +576,28 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
   const tailnet = tailnetAddress(tailscale);
   const others = asked.context.observe
     .localAddresses()
-    .filter((address) => net.isIPv4(address) && address !== tailnet);
+    .filter(
+      (address) => net.isIPv4(address) && address !== tailnet && isPrivateNetworkAddress(address),
+    );
+  const exposed = publicAddressesHere(asked);
+  if (exposed.length > 0)
+    io.write(
+      `Observed: ${listed(exposed)}. Published there, Mend answers the internet, not a network you control who joins, so setup does not offer ${exposed.length === 1 ? "it" : "them"} here.`,
+    );
   const port = settings.appPort;
-  // Where a network install listens now stays a choice, whatever this machine's addresses are.
+  // Where a network install listens now stays a choice, whatever this machine's addresses are,
+  // unless it is a public address.
   const listening =
     reachModeOf(settings) === "network" &&
     settings.bind !== "0.0.0.0" &&
     settings.bind !== tailnet &&
-    !others.includes(settings.bind)
+    !others.includes(settings.bind) &&
+    !isPublicAddress(settings.bind)
       ? settings.bind
       : null;
+  // Every address includes the public ones: offered where this machine holds none, or kept where
+  // it listens now, said as what it includes.
+  const everyAddress = exposed.length === 0 || settings.bind === "0.0.0.0";
   const choices: ReadonlyArray<Choice<{ readonly bind: string; readonly host: string | null }>> = [
     ...(listening === null
       ? []
@@ -573,13 +622,20 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
       detail: `listens on ${address} only, and is published on that address`,
       value: { bind: address, host: address },
     })),
-    {
-      label: "on every address of this machine",
-      detail:
-        "listens on 0.0.0.0, every address: who reaches it is up to your network and firewall",
-      value: { bind: "0.0.0.0", host: null },
-    },
+    ...(everyAddress
+      ? [
+          {
+            label: "on every address of this machine",
+            detail:
+              exposed.length === 0
+                ? "listens on 0.0.0.0, every address: who reaches it is up to your network and firewall"
+                : `listens on 0.0.0.0, every address, and that includes ${exposed.join(", ")}, which the internet reaches`,
+            value: { bind: "0.0.0.0", host: null },
+          },
+        ]
+      : []),
   ];
+  if (choices.length === 0) return null;
   const current = choices.findIndex((choice) => choice.value.bind === settings.bind);
   const picked = await choose(
     io,
@@ -626,6 +682,15 @@ const askNetwork = async (asked: Asked, settings: SetupSettings): Promise<SetupS
     exposure: "private",
   });
 };
+
+/** Said when "my private network" finds no address of one here. */
+const noPrivateNetwork = (port: number): ReadonlyArray<string> => [
+  "This machine has no address on a private network: no tailnet, no LAN or VPN address. Mend can",
+  "still be reached from other machines without publishing it to the internet:",
+  `  - keep it on this machine and reach it through a tunnel you run, such as ssh -L ${port}:127.0.0.1:${port} <this machine>;`,
+  "  - join this machine to a tailnet (tailscale up), then run mend server setup again;",
+  "  - or choose the public internet, with HTTPS: the edge serves it on your domain, behind the public exposure gate.",
+];
 
 const FRESH_PUBLIC = [
   "A fresh install starts on this machine first. Until the first account exists, whoever reaches",
@@ -687,9 +752,14 @@ const askPublic = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
  * the web's address, on the tailnet or on every address. On a public install, publishing it beyond
  * loopback needs a statement Mend cannot check.
  */
-const askSsh = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
+const askSsh = async (
+  asked: Asked,
+  settings: SetupSettings,
+  publishedBefore: string = sshAt(settings),
+): Promise<SetupSettings> => {
   const { io } = asked;
   const tailnet = tailnetAddress(await asked.tailscale());
+  const exposed = publicAddressesHere(asked);
   const port = settings.sshPort;
   const web = isLoopbackAddress(settings.bind) ? null : settings.bind;
   const candidates: ReadonlyArray<Choice<string>> = [
@@ -718,12 +788,16 @@ const askSsh = async (asked: Asked, settings: SetupSettings): Promise<SetupSetti
         ]),
     {
       label: "yes, from any network",
-      detail: `SSH on ${publishedAddress("0.0.0.0", port)}, every address: who reaches it is up to your network and firewall`,
+      detail:
+        exposed.length === 0
+          ? `SSH on ${publishedAddress("0.0.0.0", port)}, every address: who reaches it is up to your network and firewall`
+          : `SSH on ${publishedAddress("0.0.0.0", port)}, every address, and that includes ${exposed.join(", ")}, which the internet reaches`,
       value: "0.0.0.0",
     },
   ];
-  // Published somewhere none of these name (a saved --ssh-bind): that stays a choice.
-  const at = sshAt(settings);
+  // Where SSH was published before this run's answers is the default, so moving the web does not
+  // move SSH with it unasked; published somewhere none of these name, that stays a choice.
+  const at = publishedBefore;
   const choices: ReadonlyArray<Choice<string>> =
     isLoopbackAddress(at) || candidates.some((choice) => choice.value === at)
       ? candidates
@@ -773,7 +847,11 @@ const askSsh = async (asked: Asked, settings: SetupSettings): Promise<SetupSetti
     : onLoopback();
 };
 
-/** Origins Tailscale Serve forwards to Mend's port here, offered as extra browser origins. */
+/**
+ * Origins Tailscale Serve forwards to Mend's port here, offered as extra browser origins. A Funnel
+ * route is public: it is offered with No as the answer, said as public, and not at all on a fresh
+ * install, whose registration is open to whoever reaches it first.
+ */
 const offerServeOrigins = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   const tailscale = await asked.tailscale();
   let next = settings;
@@ -785,10 +863,27 @@ const offerServeOrigins = async (asked: Asked, settings: SetupSettings): Promise
     )
       continue;
     asked.io.write("");
+    if (!route.funnel) {
+      asked.io.write(`Observed: Tailscale Serve forwards ${route.origin} to Mend's port here.`);
+      if (await yesNo(asked.io, `Allow ${route.origin} as a browser origin too?`, true))
+        next = { ...next, allowedOrigins: [...next.allowedOrigins, route.origin] };
+      continue;
+    }
     asked.io.write(
-      `Observed: Tailscale Serve forwards ${route.origin} to Mend's port here${route.funnel ? "; Tailscale's settings have Funnel on for it, which publishes it to the public internet as well as your tailnet" : ""}.`,
+      `Observed: Tailscale Serve forwards ${route.origin} to Mend's port here, and Tailscale's settings have Funnel on for it: it is public, reached from the internet as well as your tailnet.`,
     );
-    if (await yesNo(asked.io, `Allow ${route.origin} as a browser origin too?`, true))
+    if (asked.fresh) {
+      asked.io.write(
+        "Setup does not add a public origin to a fresh install: until the first account exists, whoever reaches it first can register it. Create the first account on this machine, then run mend server setup again.",
+      );
+      continue;
+    }
+    asked.io.write(
+      `As a browser origin, Mend is used from the internet through it while the exposure is declared ${next.exposure ?? "private"}, and the public exposure gate is not evaluated. For public use, choose the public internet, with HTTPS.`,
+    );
+    if (
+      await yesNo(asked.io, `Allow ${route.origin}, a public origin, as a browser origin?`, false)
+    )
       next = { ...next, allowedOrigins: [...next.allowedOrigins, route.origin] };
   }
   return next;
@@ -823,8 +918,26 @@ const askReach = async (asked: Asked, settings: SetupSettings): Promise<SetupSet
     for (const line of FRESH_PUBLIC) asked.io.write(line);
     next = toThisMachine(settings);
   } else if (reach === "public") next = await askPublic(asked, settings);
-  else if (reach === "network") next = await askSsh(asked, await askNetwork(asked, settings));
-  else next = toThisMachine(settings);
+  else if (reach === "network") {
+    const network = await askNetwork(asked, settings);
+    if (network === null) {
+      asked.io.write("");
+      for (const line of noPrivateNetwork(settings.appPort)) asked.io.write(line);
+      asked.io.write(
+        asked.fresh
+          ? "Setup installs Mend on this machine now."
+          : "How Mend is reached stays as it is.",
+      );
+      next = asked.fresh ? toThisMachine(settings) : settings;
+    } else
+      next = await askSsh(
+        asked,
+        network,
+        // A network install's SSH stays where it was published; it does not follow a new web
+        // address unasked. From this machine, it starts on the web's new address.
+        reachModeOf(settings) === "network" ? sshAt(settings) : sshAt(network),
+      );
+  } else next = toThisMachine(settings);
   return settled(await offerServeOrigins(asked, settled(next)));
 };
 

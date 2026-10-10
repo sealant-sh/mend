@@ -1,4 +1,5 @@
 import { Timestamp } from "@mend/domain";
+import { ADDRESS_KINDS } from "@mend/network";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
@@ -46,13 +47,7 @@ export const instanceGroup = HttpApiGroup.make("instance").add(
 );
 
 /** What kind of network an address belongs to. An observation about the address, nothing more. */
-export const AddressKind = Schema.Literals([
-  "loopback",
-  "private",
-  "cgnat",
-  "link-local",
-  "public",
-]);
+export const AddressKind = Schema.Literals(ADDRESS_KINDS);
 export type AddressKind = typeof AddressKind.Type;
 
 /**
