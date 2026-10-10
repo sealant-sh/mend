@@ -141,7 +141,7 @@ CLI's `--json`) is redacted one string at a time.
 - **Never logged.** `GitError` is built with its args and stderr redacted (a failed clone's message
   carries the whole command line), `ReferenceCloneError.source` likewise, and the server's console
   strips URL credentials from every log line (`RedactingConsoleLive`).
-- **Existing data.** Migration 0124 strips project and reference origins and both dotfiles columns.
+- **Existing data.** Migration 0126 strips project and reference origins and both dotfiles columns.
   Mend does not rewrite a store's git config (review 4 of mend#640: four rounds of rewriting it in
   place kept finding ways to lose or reorder a remote). A store or reference clone whose config has
   a remote URL with a login or token in it, a `url.<base>.insteadOf` whose base holds one, or any
