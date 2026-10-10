@@ -62,10 +62,12 @@ them, deliberately.
    server's own machine, and enter the code.
 
 Pairing claims the code through Mend, so Mend lists the client among your devices as
-`t3code · <client>`. Revoking that device in Mend signs the client out of the gateway: within a
-minute if it is connected, and at its next connect otherwise. t3code then shows the environment as
-failed ("The environment credential is invalid.") and stops reconnecting; pair it again with a new
-code. A gateway that was not running when the device was revoked finds it when it starts.
+`t3code · <client>`. Revoking that device in Mend signs the client out of the gateway: within five
+seconds for a new request or connect, and within 15 seconds for a socket it already holds. t3code
+then shows the environment as failed ("The environment credential is invalid.") and stops
+reconnecting; pair it again with a new code. A gateway that was not running when the device was
+revoked finds it when it starts. While Mend cannot be reached, the gateway serves no new connection
+or snapshot, since it cannot confirm the device; t3code retries until Mend answers.
 
 ## Who you are in t3code
 

@@ -492,6 +492,13 @@ const readJson = (
 /** The body of a command that is a `DELETE`: it has none. */
 const DELETE: unique symbol = Symbol("DELETE");
 
+/**
+ * How long a call waits for Mend's response to begin. Generous: starting a session's workspace can
+ * take tens of seconds. The event stream's response begins at once and is then read for as long as
+ * it lasts.
+ */
+export const MEND_RESPONSE_DEADLINE = "2 minutes";
+
 /** Speaks to the configured Mend through whatever `HttpClient` it is given. */
 export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | HttpClient.HttpClient> =
   Layer.effect(
@@ -502,11 +509,21 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
       const url = (path: string) => new URL(path, config.mendUrl);
 
       const send = (operation: string, request: HttpClientRequest.HttpClientRequest) =>
-        http
-          .execute(request)
-          .pipe(
-            Effect.mapError((cause) => new MendUnavailable({ operation, status: null, cause })),
-          );
+        http.execute(request).pipe(
+          Effect.mapError((cause) => new MendUnavailable({ operation, status: null, cause })),
+          // A Mend that takes the connection and never answers is Mend not answering.
+          Effect.timeoutOrElse({
+            duration: MEND_RESPONSE_DEADLINE,
+            orElse: () =>
+              Effect.fail(
+                new MendUnavailable({
+                  operation,
+                  status: null,
+                  cause: `no response within ${MEND_RESPONSE_DEADLINE}`,
+                }),
+              ),
+          }),
+        );
 
       const claimPairing = Effect.fn("MendClient.claimPairing")(function* ({
         forwardedFor,
