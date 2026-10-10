@@ -25,12 +25,24 @@ mend service run --port 3305 --http --name stack -- \
 
 `serve` builds, installs, runs the check below, then holds while the Service runs. The stack goes
 when `serve` goes, however it goes: stopped as a Service (`mend service stop stack`, the web's Stop:
-a hang-up, then SIGKILL two seconds later), killed, or failed. A watchdog started in a session of
-its own waits for the `serve` process to end and runs `down`; a start that fails removes what it
-made before it exits (`--keep` leaves it for a look). Images stay, so the next start reuses every
-image whose source did not change. `up` builds and starts without holding (and without a watchdog);
-`down` removes the stack. What outlives a `serve` that ends: only a stack whose watchdog was killed
-too, which `down --force` sweeps; a session's whole Docker service goes with its workspace anyway.
+a hang-up, then SIGKILL two seconds later), killed, or failed.
+
+- Each start claims the daemon with a container named `verify-stack-owner`, labelled with a claim id
+  made for that start alone.
+- `serve` starts a watchdog in a session of its own **before** it claims, so there is no moment at
+  which a claim exists and nothing would remove it. When `serve` ends, the watchdog takes the stack
+  down only if the daemon's owner still carries its claim id. A refused start, or one replaced
+  since, finds another id and touches nothing.
+- A lookup that fails is retried with backoff, never read as "no claim". A claim whose create was
+  still in flight when `serve` died is waited for (a minute) and then removed.
+- A start that ends holding no claim stops its watchdog. A start that fails after claiming removes
+  its own stack before it exits (`--keep` leaves it for a look).
+
+Images stay, so the next start reuses every image whose source did not change. `up` builds and
+starts without holding (and without a watchdog); `down` removes whatever stack the daemon holds.
+What can outlive a `serve`: only a stack whose watchdog was killed too, which `down` removes; a
+session's whole Docker service goes with its workspace anyway. `lifecycle.test.mjs` and
+`lifecycle.e2e.test.mjs` (real processes against a fake Docker) hold each of these cases.
 
 On your machine, bring the web here and open it:
 
@@ -88,9 +100,9 @@ against the stack: `mend adopt https://github.com/sealant-sh/mend.git`, `mend ru
 ## One stack per daemon, and how many per machine
 
 `up` claims the daemon before it resolves or builds anything: it creates a container named
-`verify-stack-owner`, and Docker refuses a second container of that name, so of two starts at once
-one goes on and the other is refused. Each fetched ref goes into a ref of its own in the bare cache,
-so two starts never read each other's commit.
+`verify-stack-owner`, labelled with its claim id, and Docker refuses a second container of that
+name, so of two starts at once one goes on and the other is refused. Each fetched ref goes into a
+ref of its own in the bare cache, so two starts never read each other's commit.
 
 How many stacks one machine runs at once (the box: 12 vCPUs, 40 GB) is not something this script can
 see or enforce: each session has its own Docker daemon. It is an operator's decision, taken from the

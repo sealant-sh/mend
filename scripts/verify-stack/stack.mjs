@@ -26,7 +26,7 @@
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,7 +48,6 @@ import {
   SESSION_REPOS,
   STACK_LABEL,
   STATE_VOLUME,
-  OWNER_CONTAINER,
   beyondRetention,
   composeImages,
   defaultSpec,
@@ -66,6 +65,7 @@ import {
   parseSource,
   relayEndpoint,
 } from "./lib.mjs";
+import { claim, currentClaim, watch } from "./lifecycle.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const mendRoot = resolve(here, "../..");
@@ -518,33 +518,22 @@ async function assertDaemonIsFree() {
 }
 
 /**
- * Claim the daemon before anything is built: a container under a name Docker keeps unique. Of two
- * starts at once, one creates it and the other is refused, so they never share names or state.
+ * Claim the daemon for this start before anything is built (lifecycle.mjs): of two starts at once,
+ * one holds the claim and the other is refused, so they never share names or state.
  */
-async function claimDaemon(runId) {
-  const claimed = await docker([
-    "create",
-    "--name",
-    OWNER_CONTAINER,
-    "--label",
-    `${STACK_LABEL}=1`,
-    "--label",
-    `${STACK_LABEL}.run=${runId}`,
-    "--network",
-    "none",
-    FIXTURE_BASE_IMAGE,
-    "true",
-  ]).then(
-    () => true,
-    () => false,
-  );
-  if (!claimed)
+async function claimDaemon(claimId) {
+  if (!(await claim(dockerOut, { claimId, image: FIXTURE_BASE_IMAGE })))
     throw new Error(
       "a verify stack is already starting or up on this daemon: `report` reads it, `down` removes it",
     );
 }
 
-async function up(args) {
+/**
+ * Build, install and check a stack. `claimId` names this start's claim; `serve` passes the one its
+ * watchdog guards. Everything that can fail after the claim runs inside the cleanup below, which
+ * removes this start's stack and nobody else's (`--keep` leaves it for a look).
+ */
+async function up(args, { claimId = randomUUID() } = {}) {
   const { flags, sources: specs } = parseFlags(args);
   if (insideCaptureRoot(cacheDir))
     throw new Error(
@@ -557,7 +546,6 @@ async function up(args) {
   const phases = {};
   const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const logs = join(cacheDir, "logs", runId);
-  await mkdir(logs, { recursive: true });
 
   await docker(["version", "--format", "{{.Server.Version}}"]).catch(() => {
     throw new Error(
@@ -567,15 +555,17 @@ async function up(args) {
   await assertDaemonIsFree();
   // The base of the fixture's sessions, and the image the claim and the socket probe run.
   await docker(["pull", "--quiet", FIXTURE_BASE_IMAGE], { timeout: 15 * 60_000 });
-  await claimDaemon(runId);
+  // Before the claim, so a trim that trips cannot strand one.
   await trimCaches();
+  await mkdir(logs, { recursive: true });
+  await claimDaemon(claimId);
   try {
     return await upClaimed(flags, specs, { started, phases, logs });
   } catch (error) {
     if (flags.keep) throw error;
     say("verify stack · up failed; removing what it made (--keep keeps it for a look)");
-    await down(["--force"]).catch((cleanup) =>
-      say(`verify stack · down failed: ${cleanup.message}`),
+    await removeStack({ claimId }).catch((cleanup) =>
+      say(`verify stack · removing it failed: ${cleanup.message}`),
     );
     throw error;
   }
@@ -1099,45 +1089,48 @@ async function report(args) {
 
 async function down(args) {
   const { flags } = parseFlags(args);
+  const owner = await currentClaim(dockerOut);
   const volumes = (await dockerOut(["volume", "ls", "--quiet"])).split("\n").filter(Boolean);
-  const owner = await dockerOut([
-    "ps",
-    "--all",
-    "--quiet",
-    "--no-trunc",
-    "--filter",
-    `name=^${OWNER_CONTAINER}$`,
-  ]);
-  const present = owner !== "" || volumes.includes(STATE_VOLUME);
+  const present = owner.state === "present" || volumes.includes(STATE_VOLUME);
   if (!present && !flags.force && !flags.purge)
     throw new Error("no verify stack on this daemon (--force sweeps what one left anyway)");
-  let ids = [];
-  let owned = [];
-  if (present || flags.force) {
-    // The claim goes last: until everything else is gone, a new start is still refused.
-    ids = await stackContainers();
-    const others = ids.filter((id) => id !== owner);
-    if (others.length > 0) await docker(["rm", "--force", "--volumes", ...others]);
-    owned = [
-      STATE_VOLUME,
-      FIXTURE_VOLUME,
-      "mend-store",
-      "mend-control",
-      "mend-garage",
-      ...volumes.filter((name) => name.startsWith(`${COMPOSE_PROJECT}_`)),
-    ].filter((name) => volumes.includes(name));
-    if (owned.length > 0) await docker(["volume", "rm", "--force", ...owned]);
-    const networks = (await dockerOut(["network", "ls", "--format", "{{.Name}}"]))
-      .split("\n")
-      .filter((name) => name === COMPOSE_NETWORK || /^sealant-[0-9a-f-]+-network$/i.test(name));
-    for (const network of networks) await docker(["network", "rm", network]).catch(() => undefined);
-    await docker(["rm", "--force", OWNER_CONTAINER]).catch(() => undefined);
-    await rm(stateFile, { force: true });
-  }
+  let removed = { containers: 0, volumes: 0 };
+  if (present || flags.force) removed = await removeStack();
   if (flags.purge) await purgeCaches();
   say(
-    `verify stack · removed ${ids.length} container(s), ${owned.length} volume(s)${flags.purge ? "; images, build cache and every cache directory purged" : "; images kept for the next up"}`,
+    `verify stack · removed ${removed.containers} container(s), ${removed.volumes} volume(s)${flags.purge ? "; images, build cache and every cache directory purged" : "; images kept for the next up"}`,
   );
+}
+
+/**
+ * Remove the stack on this daemon. With `claimId`, only when the daemon's current owner carries
+ * that claim, and null (nothing touched) when it does not: a start or a watchdog removes its own
+ * stack and never another's. The owner container goes last, by its id, so until everything else is
+ * gone a new start is still refused.
+ */
+async function removeStack({ claimId = null } = {}) {
+  const owner = await currentClaim(dockerOut);
+  if (claimId !== null && (owner.state !== "present" || owner.claim !== claimId)) return null;
+  const ownerId = owner.state === "present" ? owner.id : null;
+  const ids = (await stackContainers()).filter((id) => id !== ownerId);
+  if (ids.length > 0) await docker(["rm", "--force", "--volumes", ...ids]);
+  const volumes = (await dockerOut(["volume", "ls", "--quiet"])).split("\n").filter(Boolean);
+  const owned = [
+    STATE_VOLUME,
+    FIXTURE_VOLUME,
+    "mend-store",
+    "mend-control",
+    "mend-garage",
+    ...volumes.filter((name) => name.startsWith(`${COMPOSE_PROJECT}_`)),
+  ].filter((name) => volumes.includes(name));
+  if (owned.length > 0) await docker(["volume", "rm", "--force", ...owned]);
+  const networks = (await dockerOut(["network", "ls", "--format", "{{.Name}}"]))
+    .split("\n")
+    .filter((name) => name === COMPOSE_NETWORK || /^sealant-[0-9a-f-]+-network$/i.test(name));
+  for (const network of networks) await docker(["network", "rm", network]).catch(() => undefined);
+  if (ownerId !== null) await docker(["rm", "--force", ownerId]);
+  await rm(stateFile, { force: true });
+  return { containers: ids.length + (ownerId === null ? 0 : 1), volumes: owned.length };
 }
 
 /**
@@ -1163,12 +1156,16 @@ const RETENTION = { contexts: 6, packages: 6, logs: 10 };
 async function trimCaches() {
   for (const [dir, keep] of Object.entries(RETENTION)) {
     const root = join(cacheDir, dir);
-    const names = await readdir(root).catch(() => []);
-    const entries = await Promise.all(
-      names.map(async (name) => ({ name, mtimeMs: (await stat(join(root, name))).mtimeMs })),
-    );
+    const entries = [];
+    for (const name of await readdir(root).catch(() => [])) {
+      // An entry that vanished or cannot be read is skipped, not fatal: trimming is housekeeping.
+      const info = await lstat(join(root, name)).catch(() => null);
+      if (info !== null) entries.push({ name, mtimeMs: info.mtimeMs });
+    }
     for (const name of beyondRetention(entries, keep))
-      await rm(join(root, name), { recursive: true, force: true });
+      await rm(join(root, name), { recursive: true, force: true }).catch((error) =>
+        say(`verify stack · could not trim ${dir}/${name}: ${error.message}`),
+      );
   }
 }
 
@@ -1181,13 +1178,33 @@ async function trimCaches() {
  * The stack goes when this process goes, however it goes. Mend stops a Service by hanging up its
  * terminal (SIGHUP to the process group, SIGKILL two seconds later, sealantd `sealant-pty` close),
  * a verifier may be killed outright, and `up` may fail. So the teardown does not run here: a
- * watchdog in a session of its own, out of the group's reach, waits for this process to end and
- * then runs `down`. A failed `up` also removes what it made before it exits.
+ * watchdog in a session of its own, out of the group's reach, guards this start's claim
+ * (lifecycle.mjs `watch`). It starts before the claim, so no moment exists in which a claim is
+ * made and nobody would remove it; it waits for this process to end, and then removes the stack
+ * only if the daemon's owner is still this start's claim. A start that ends holding no claim stops
+ * its watchdog.
  */
 async function serve(args) {
-  startWatchdog();
+  const claimId = randomUUID();
+  const watcher = startWatchdog(claimId);
   for (const signal of ["SIGHUP", "SIGTERM", "SIGINT"]) process.on(signal, () => process.exit(0));
-  const state = await up(args);
+  let state;
+  try {
+    state = await up(args, { claimId });
+  } catch (error) {
+    // A start that holds no claim now (refused, or its own cleanup removed it) has nothing for a
+    // watchdog to guard: it goes too. One that may still hold one, or whose lookup failed, keeps
+    // it, and it finishes the job.
+    const owner = await currentClaim(dockerOut).catch(() => null);
+    if (owner !== null && !(owner.state === "present" && owner.claim === claimId)) {
+      try {
+        process.kill(watcher.pid, "SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    }
+    throw error;
+  }
   say(
     `verify stack · on your machine: mend service connect stack --port ${state.relay.port}, then open ${state.url}`,
   );
@@ -1223,36 +1240,48 @@ const startTimeOf = (pid) => {
   }
 };
 
-function startWatchdog() {
+function startWatchdog(claimId) {
   const log = join(cacheDir, "logs", "watchdog.log");
   mkdirSync(dirname(log), { recursive: true });
   const out = openSync(log, "a");
   const started = startTimeOf(process.pid) ?? "";
-  spawn(
+  const child = spawn(
     process.execPath,
-    [fileURLToPath(import.meta.url), "watchdog", String(process.pid), started],
+    [fileURLToPath(import.meta.url), "watchdog", String(process.pid), started, claimId],
     { detached: true, stdio: ["ignore", out, out], env: process.env },
-  ).unref();
+  );
+  child.unref();
   say(`verify stack · watchdog holds the stack to this process (log: ${log})`);
+  return child;
 }
 
-/** `watchdog <pid> <start time>`: wait for that process to end, then take the stack down. */
-async function watchdog([pid, started]) {
-  const alive = () => {
-    const now = startTimeOf(pid);
-    return now !== null && (started === "" || started === undefined || now === started);
-  };
-  while (alive()) await pause(2000);
-  say(`${new Date().toISOString()} verify stack · ${pid} ended; taking the stack down`);
-  const claimed = await dockerOut([
-    "ps",
-    "--all",
-    "--quiet",
-    "--filter",
-    `name=^${OWNER_CONTAINER}$`,
-  ]).catch(() => "");
-  if (claimed === "") return say("nothing to take down");
-  await down(["--force"]);
+/** `watchdog <pid> <start time> <claim id>`: lifecycle.mjs `watch` for that process and claim. */
+async function watchdog([pid, started, claimId]) {
+  if (!claimId) throw new Error("watchdog needs the claim id it guards");
+  const log = (line) => say(`${new Date().toISOString()} verify stack · ${pid} · ${line}`);
+  const outcome = await watch({
+    docker: dockerOut,
+    alive: () => {
+      const now = startTimeOf(pid);
+      return now !== null && (started === "" || now === started);
+    },
+    claimId,
+    takeDown: async () => {
+      const removed = await removeStack({ claimId });
+      if (removed !== null)
+        log(`removed ${removed.containers} container(s), ${removed.volumes} volume(s)`);
+    },
+    pause,
+    now: Date.now,
+    log,
+  });
+  log(
+    {
+      "taken-down": "the stack is down",
+      "not-ours": "the daemon's claim is another start's; nothing touched",
+      "never-claimed": "this start never held a claim; nothing touched",
+    }[outcome],
+  );
 }
 
 // ─── main ───────────────────────────────────────────────────────────────────
