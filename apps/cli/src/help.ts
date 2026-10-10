@@ -349,7 +349,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     description: [
       "The same worktree, record, and review as mend codex, with a command of your own in place of a harness. Everything after -- is the command.",
-      "The command's output is printed as the record has it, and mend run exits with the command's exit code. It runs in a terminal, so stdout and stderr arrive together, on stdout. What Mend says itself goes to stderr, so out=$(mend run -- git log -1) holds the command's output and nothing else. Ctrl+C stops watching, exits 130 and puts the terminal back; the command keeps running, and mend logs and mend wait pick it up again.",
+      "The command's output is printed as the record has it, and mend run exits with the command's exit code. It runs in a terminal, so stdout and stderr arrive together, on stdout. What Mend says itself goes to stderr, so out=$(mend run -- git log -1) holds the command's output and nothing else. Ctrl+C stops watching and puts the terminal back; the command keeps running, and mend logs and mend wait pick it up again. A signal exits 128 + its number: 130 for SIGINT (Ctrl+C), 129 for SIGHUP, 143 for SIGTERM. A second signal exits at once, and an exit waits at most 5 seconds for a reader that takes nothing, then says the output may be incomplete.",
       "Output this terminal could not be given in full (a read the server refused, a reader that went away) fails mend run with exit 1 even when the command succeeded, and the command's own code is said on stderr: a script never takes cut output for the whole of it.",
       "The platform takes at most 64 words, none empty and none starting or ending with whitespace (a script that starts with a newline, for example). Such a command is refused before anything is created; trim the word and run it again.",
       "With --detach, mend run returns once the command runs. With --json, stdout carries one JSON object in place of the output: the session id, the process id, the worktree, the branch, and the process's status and exit code as last observed, which is how it ended without --detach (and with it, when the command ended first).",
@@ -378,7 +378,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "print a session's recorded terminal output",
     synopsis: ["[session] [--follow] [--from <sequence>] [--process <id>]"],
     description: [
-      "Prints what the session's command (or agent) wrote to its terminal, as the record holds it, on stdout. Settled sessions count: the record outlives the process and the workspace. --follow keeps printing until the process ends.",
+      "Prints what the session's command (or agent) wrote to its terminal, as the record holds it, on stdout. Settled sessions count: the record outlives the process and the workspace. --follow keeps printing until the process ends. A signal stops it and puts the terminal back, exiting 128 + its number: 130 for SIGINT (Ctrl+C), 129 for SIGHUP, 143 for SIGTERM.",
       "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken. --process reads another process of the session, a shell or a Service attempt, by a prefix of its id.",
     ],
     options: [
@@ -396,7 +396,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[session] [--timeout <seconds>] [--process <id>] [--json]"],
     description: [
       "Returns once the session's command (or agent) has ended, with its exit code: the code the platform reported, or 1 when it reported none. A command that already ended answers at once. While a launch or a resume is starting, the previous process's end does not count. --process waits for one process by its id, the processId mend run --json prints.",
-      "When --timeout passes first, mend wait exits 124, as timeout(1) does, and the command keeps running. The timeout covers everything: finding the session, every read and every retry. --json then prints the last state read, and nothing more is asked of the server.",
+      "When --timeout passes first, mend wait exits 124, as timeout(1) does, and the command keeps running. Stopped by a signal, it exits 128 + its number (130 for Ctrl+C), and the command keeps running. The timeout covers everything: finding the session, every read and every retry. --json then prints the last state read, and nothing more is asked of the server.",
       "<session> is the session id, a prefix of it, or the worktree's name. With none, the one live session is taken.",
     ],
     options: [

@@ -175,10 +175,15 @@ the command's output alone:
 out=$(mend run --project api -- git log -1 --format=%H)
 ```
 
-`Ctrl+C` stops watching, exits `130` and puts back the terminal modes the command's output set
-(alternate screen, hidden cursor, mouse, keyboard); the command keeps running. Output that could not
-be given in full, because the server refused a read or the reader went away, fails `mend run` with
-exit `1` even when the command succeeded, and stderr says the command's own code.
+`Ctrl+C` stops watching and puts back the terminal modes the command's output set (alternate screen,
+hidden cursor, mouse, keyboard); the command keeps running. Output that could not be given in full,
+because the server refused a read or the reader went away, fails `mend run` with exit `1` even when
+the command succeeded, and stderr says the command's own code.
+
+Stopped by a signal, `mend run`, `mend logs` and `mend wait` exit 128 + its number: `130` for
+`SIGINT` (`Ctrl+C`), `129` for `SIGHUP`, `143` for `SIGTERM`. `mend run` and `mend logs` put the
+terminal back first. A second signal exits at once, and an exit waits at most 5 seconds for a reader
+that takes nothing, then says the output may be incomplete and fails.
 
 `--detach` returns as soon as the command runs. `--json` prints one JSON object on stdout in place
 of the output: `sessionId`, `processId`, `worktree`, `branch`, `url`, and the process's `status` and

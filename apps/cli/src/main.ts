@@ -4017,6 +4017,8 @@ const printJson = (value: unknown): void => {
 /** Whether recorded bytes reached this terminal, which may have set its modes. */
 let outputOnTerminal = false;
 let stdoutErrorsHandled = false;
+/** A signal asked this CLI to stop: no more recorded output is written. */
+let outputStopped = false;
 
 /**
  * Put the terminal back once recorded output may have changed its modes, as an attach does on
@@ -4036,6 +4038,7 @@ process.once("exit", restoreTerminal);
  * rejects.
  */
 const writeOutput = (bytes: Uint8Array): Promise<void> => {
+  if (outputStopped) return Promise.reject(new Error("stopped by a signal"));
   if (process.stdout.isTTY === true) outputOnTerminal = true;
   // A closed pipe also arrives as an `error` event; the write's callback already reports it.
   if (!stdoutErrorsHandled) {
@@ -4058,12 +4061,31 @@ const flushed = (stream: NodeJS.WriteStream): Promise<void> =>
   });
 
 /**
+ * How long an exit waits for stdout and stderr to flush. Recorded output was already handed on
+ * page by page, so what is left is Mend's own last lines; a reader that takes none of it for this
+ * long is stuck, and an exit must not wait on it for ever (review 2 of mend#610).
+ */
+const EXIT_FLUSH_GRACE_MS = 5_000;
+
+/**
  * Exit once stdout and stderr have flushed: `process.exit` drops whatever a pipe has not taken
- * yet, which cut 4 MiB of output to 64 KiB under a slow reader (review of mend#610).
+ * yet, which cut 4 MiB of output to 64 KiB under a slow reader (review of mend#610). Bounded by
+ * `EXIT_FLUSH_GRACE_MS`: past it the exit goes ahead, says the output may be incomplete, and fails
+ * (1, or the code it was already failing with).
  */
 const exitFlushed = async (code: number): Promise<never> => {
   restoreTerminal();
-  await Promise.all([flushed(process.stdout), flushed(process.stderr)]);
+  const flush = await beforeDeadline(
+    Promise.all([flushed(process.stdout), flushed(process.stderr)]),
+    clock,
+    clock.now() + EXIT_FLUSH_GRACE_MS,
+  );
+  if (!flush.done) {
+    process.stderr.write(
+      `mend: output may be incomplete · the reader took none of it for ${EXIT_FLUSH_GRACE_MS / 1000} s\n`,
+    );
+    process.exit(code === 0 ? 1 : code);
+  }
   process.exit(code);
 };
 
@@ -4074,10 +4096,12 @@ const failFlushed = (message: string): Promise<never> => {
 };
 
 /**
- * While output streams to this CLI, a signal stops watching: the terminal is put back, the line
- * says the command keeps running, and the CLI exits 128 + the signal. Returns the undo.
+ * While recorded output can reach this terminal, a signal stops it: no more output is written, the
+ * terminal is put back, `line` says what goes on without this CLI, and the CLI exits 128 + the
+ * signal (129 SIGHUP, 130 SIGINT, 143 SIGTERM) once its last lines flush, within
+ * `EXIT_FLUSH_GRACE_MS`. A second signal exits at once. Returns the undo.
  */
-const stopWatchingOnSignal = (sessionId: string): (() => void) => {
+const stopOutputOnSignal = (line: string): (() => void) => {
   const signals: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
     ["SIGHUP", 129],
     ["SIGINT", 130],
@@ -4085,10 +4109,13 @@ const stopWatchingOnSignal = (sessionId: string): (() => void) => {
   ];
   const handlers = signals.map(([signal, code]) => {
     const handler = () => {
+      if (outputStopped) {
+        restoreTerminal();
+        process.exit(code);
+      }
+      outputStopped = true;
       say("");
-      say(
-        `${amber("·")} stopped watching · the command keeps running · mend logs ${sessionId.slice(0, 8)} --follow`,
-      );
+      say(`${amber("·")} ${line}`);
       void exitFlushed(code);
     };
     process.on(signal, handler);
@@ -4265,7 +4292,9 @@ const supervisedRun = async (
   );
   say("");
   let undelivered: string | null = null;
-  if (!options.json) stopWatchingOnSignal(session.id);
+  if (!options.json) {
+    stopOutputOnSignal(`stopped watching · the command keeps running · mend logs ${id8} --follow`);
+  }
   if (processId !== null && !options.json) {
     try {
       await writeProcessLogs(config, processId, "0", true);
@@ -4326,7 +4355,11 @@ const logsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
       `session ${session.id.slice(0, 8)} · this process has no recorded terminal (an adopted port, or a server older than process ids)`,
     );
   }
-  if (follow) stopWatchingOnSignal(session.id);
+  stopOutputOnSignal(
+    follow
+      ? `stopped watching · the process keeps running · mend logs ${session.id.slice(0, 8)} --follow`
+      : "stopped reading the record",
+  );
   try {
     const last = await writeProcessLogs(config, target.id, from, follow);
     restoreTerminal();

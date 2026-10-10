@@ -17,6 +17,8 @@ New: `mend logs <session> [--follow]` prints any session's recorded terminal out
 timeout).
 
 `mend run` and `mend logs` give stdout no more than a slow reader takes and exit only once it has
-all of it. Ctrl+C stops watching with exit 130 and puts the terminal's modes back. Output that could
-not be delivered in full fails the run (exit 1). `mend wait --timeout` bounds every read and retry,
-never counts a previous process's end while a resume starts, and takes `--process <id>`.
+all of it, waiting at most 5 seconds at exit for a reader that takes nothing. A signal stops
+watching with exit 128 + its number (130 for Ctrl+C) and puts the terminal's modes back, for
+`mend logs` too. Output that could not be delivered in full fails the run (exit 1).
+`mend wait --timeout` bounds every read and retry, never counts a previous process's end while a
+resume starts, and takes `--process <id>`.

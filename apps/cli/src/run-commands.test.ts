@@ -356,6 +356,105 @@ describe("mend logs and mend wait", spawning, () => {
 /** 16 KiB of one letter per page, so a lost or reordered page shows. */
 const chunkOf = (index: number) => Buffer.alloc(16 * 1024, 0x41 + (index % 26));
 
+/** Terminal modes a full-screen program turns on: alternate screen, hidden cursor, mouse. */
+const MODES = "\x1b[?1049h\x1b[?25l\x1b[?1000h";
+
+const python = spawnSync("python3", ["-c", "import pty"]).status === 0;
+
+/**
+ * Run the CLI on a real terminal (a pty for stdout and stderr, stdin /dev/null), send SIGINT once
+ * `MODES` reached it, and return the exit code and everything the terminal received.
+ */
+const onPty = async (
+  url: string,
+  args: ReadonlyArray<string>,
+): Promise<{ readonly code: string; readonly terminal: string }> => {
+  const driver = [
+    "import base64, os, pty, signal, subprocess, sys",
+    "master, slave = pty.openpty()",
+    "child = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave)",
+    "os.close(slave)",
+    "out = b''",
+    "sent = False",
+    "while True:",
+    "    try:",
+    "        data = os.read(master, 65536)",
+    "    except OSError:",
+    "        break",
+    "    if not data:",
+    "        break",
+    "    out += data",
+    "    if not sent and b'\\x1b[?1049h' in out:",
+    "        child.send_signal(signal.SIGINT)",
+    "        sent = True",
+    "code = child.wait()",
+    "print(code)",
+    "print(base64.b64encode(out).decode())",
+  ].join("\n");
+  const child = spawn(
+    "python3",
+    ["-c", driver, process.execPath, "--experimental-strip-types", entrypoint, ...args],
+    { env: cliEnv(url), stdio: ["ignore", "pipe", "pipe"], cwd: os.tmpdir() },
+  );
+  let printed = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    printed += chunk.toString();
+  });
+  try {
+    await once(child, "close");
+  } finally {
+    child.kill("SIGKILL");
+  }
+  const [code, encoded] = printed.trim().split("\n");
+  return { code: code ?? "", terminal: Buffer.from(encoded ?? "", "base64").toString() };
+};
+
+/** Every mode `MODES` turned on was turned off again after it. */
+const expectTerminalPutBack = (terminal: string): void => {
+  const enabled = terminal.indexOf("\x1b[?1049h");
+  expect(enabled).toBeGreaterThanOrEqual(0);
+  expect(terminal.lastIndexOf("\x1b[?1049l")).toBeGreaterThan(enabled);
+  expect(terminal.lastIndexOf("\x1b[?25h")).toBeGreaterThan(enabled);
+  expect(terminal.lastIndexOf("\x1b[?1000l")).toBeGreaterThan(enabled);
+};
+
+/**
+ * `mend run` of a command whose first page is one 4 MiB chunk, to a reader that never reads: the
+ * write that carries it can never finish. `stuck` resolves once bytes of it reached the pipe, so
+ * the write was issued and waits for good.
+ */
+const stuckReaderRun = async () => {
+  const fake = await startFake(
+    launchRoutes(
+      () => ({ session, currentAgent: command, processes: [command] }),
+      (from) =>
+        from === "0"
+          ? {
+              ...logPage("1", "running"),
+              chunks: [
+                {
+                  sequence: "0",
+                  dataBase64: Buffer.alloc(4 * 1024 * 1024, 0x41).toString("base64"),
+                },
+              ],
+            }
+          : logPage("1", "running"),
+    ),
+  );
+  const child = spawnCli(fake.url, ["run", "--project", project.name, "--", "generate"]);
+  child.stdout.pause();
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const stuck = (async () => {
+    while (child.stdout.readableLength === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  })();
+  return { fake, child, stuck, stderr: () => stderr };
+};
+
 describe("review of mend#610", spawning, () => {
   it("delivers every byte of 4 MiB of output to a slow reader, then exits with the code", async () => {
     const pages = 256;
@@ -522,74 +621,83 @@ describe("review of mend#610", spawning, () => {
     }
   });
 
-  const python = spawnSync("python3", ["-c", "import pty"]).status === 0;
+  it("a stuck reader cannot hold a signal off: SIGINT exits 130 within the flush grace", async () => {
+    const { fake, child, stuck, stderr } = await stuckReaderRun();
+    try {
+      await stuck;
+      child.kill("SIGINT");
+      const [code] = await once(child, "close");
+      expect(code, stderr()).toBe(130);
+      expect(stderr()).toContain("stopped watching · the command keeps running");
+      expect(stderr()).toContain("output may be incomplete");
+    } finally {
+      child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("a second signal exits at once, whatever the reader does", async () => {
+    const { fake, child, stuck, stderr } = await stuckReaderRun();
+    try {
+      await stuck;
+      child.kill("SIGINT");
+      while (!stderr().includes("stopped watching")) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      child.kill("SIGTERM");
+      const [code] = await once(child, "close");
+      expect(code, stderr()).toBe(143);
+      expect(stderr()).not.toContain("output may be incomplete");
+    } finally {
+      child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
   it.skipIf(!python)(
     "puts a terminal back when Ctrl+C stops watching output that set its modes",
     async () => {
-      const modes = "\x1b[?1049h\x1b[?25l\x1b[?1000h";
       const fake = await startFake(
         launchRoutes(
           () => ({ session, currentAgent: command, processes: [command] }),
-          (from) => (from === "0" ? logPage("1", "running", modes) : logPage("1", "running")),
+          (from) => (from === "0" ? logPage("1", "running", MODES) : logPage("1", "running")),
         ),
       );
-      // A real terminal: the CLI's stdout and stderr are a pty, its stdin /dev/null. SIGINT goes
-      // once the modes have reached the terminal.
-      const driver = [
-        "import base64, os, pty, signal, subprocess, sys",
-        "master, slave = pty.openpty()",
-        "child = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=slave, stderr=slave)",
-        "os.close(slave)",
-        "out = b''",
-        "sent = False",
-        "while True:",
-        "    try:",
-        "        data = os.read(master, 65536)",
-        "    except OSError:",
-        "        break",
-        "    if not data:",
-        "        break",
-        "    out += data",
-        "    if not sent and b'\\x1b[?1049h' in out:",
-        "        child.send_signal(signal.SIGINT)",
-        "        sent = True",
-        "code = child.wait()",
-        "print(code)",
-        "print(base64.b64encode(out).decode())",
-      ].join("\n");
-      const child = spawn(
-        "python3",
-        [
-          "-c",
-          driver,
-          process.execPath,
-          "--experimental-strip-types",
-          entrypoint,
+      try {
+        const { code, terminal } = await onPty(fake.url, [
           "run",
           "--project",
           project.name,
           "--",
           "top",
-        ],
-        { env: cliEnv(fake.url), stdio: ["ignore", "pipe", "pipe"], cwd: os.tmpdir() },
-      );
-      let printed = "";
-      child.stdout.on("data", (chunk: Buffer) => {
-        printed += chunk.toString();
-      });
-      try {
-        await once(child, "close");
-        const [code, encoded] = printed.trim().split("\n");
-        const terminal = Buffer.from(encoded ?? "", "base64").toString();
+        ]);
         expect(code, terminal).toBe("130");
-        const enabled = terminal.indexOf("\x1b[?1049h");
-        expect(enabled).toBeGreaterThanOrEqual(0);
-        expect(terminal.lastIndexOf("\x1b[?1049l")).toBeGreaterThan(enabled);
-        expect(terminal.lastIndexOf("\x1b[?25h")).toBeGreaterThan(enabled);
-        expect(terminal.lastIndexOf("\x1b[?1000l")).toBeGreaterThan(enabled);
+        expectTerminalPutBack(terminal);
         expect(terminal).toContain("stopped watching · the command keeps running");
       } finally {
-        child.kill("SIGKILL");
+        await fake.close();
+      }
+    },
+  );
+
+  it.skipIf(!python)(
+    "puts a terminal back when Ctrl+C stops a plain mend logs mid-read",
+    async () => {
+      const fake = await startFake((route, _request, response) => {
+        if (route === `GET /api/sessions/${sessionId}`) {
+          json(response, { session, currentAgent: command, processes: [command] });
+        } else if (route.startsWith(`GET /api/processes/${command.id}/logs?from=0&`)) {
+          json(response, logPage("1", "running", MODES));
+        } else if (route.startsWith(`GET /api/processes/${command.id}/logs?from=1&`)) {
+          // The next page never comes: the read is in flight when Ctrl+C arrives.
+          response.writeHead(200, { "content-type": "application/json" });
+        } else response.writeHead(404).end();
+      });
+      try {
+        const { code, terminal } = await onPty(fake.url, ["logs", sessionId]);
+        expect(code, terminal).toBe("130");
+        expectTerminalPutBack(terminal);
+      } finally {
         await fake.close();
       }
     },
