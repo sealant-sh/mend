@@ -5,15 +5,18 @@ index before driving Mend, find the feature in the coverage table, then use its 
 The map was written from source: the command catalog in `apps/cli/src/help.ts` and the CLI in
 `apps/cli/src`, the web routes and components in `apps/web/src`, the TUI in
 `apps/cli/src/dashboard*` and `apps/cli/src/review.tsx`, the desktop, mobile, VS Code and T3 gateway
-apps, the docs site in `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. It has not been
-driven live yet. The first live pass happens when the `verify` skill's Launch section exists, which
-waits on the 0.36 feature "Verify Mend in Mend".
+apps, the docs site in `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. It was first
+driven live on 2026-10-10, every mapped feature at least once, on local verify stacks through the
+`verify` skill ([`../SKILL.md`](../SKILL.md)); each group's PR (mend#614, #625 to #631) carries that
+pass's results and evidence paths, and its corrections are in these files.
 
 ## Baseline preconditions
 
-- The stack under test comes from the `verify` skill's Launch section, which is pending "Verify Mend
-  in Mend": the full stack from source, inside a Mend session. Until that section exists, no recipe
-  here has a supported launch, and a run reports every feature as unreachable with that reason.
+- The stack under test comes from the `verify` skill's Launch section
+  ([`../SKILL.md`](../SKILL.md)): the full stack from source (sealantd, Core and Mend), inside a
+  Mend session, its web tunnelled to this machine. The skill's Drive section maps this file's
+  placeholders to that stack and names its drivers for the web, the CLI, the terminal dashboard, the
+  desktop app and the mobile web build.
 - The instance has at least one account, and the web app answers at the URL Launch names (written
   `<web>` below; the CLI's own default is `http://localhost:3105`).
 - The `mend` CLI under test is on `PATH` and signed in to that instance: `mend login --url <web>`,
@@ -88,8 +91,7 @@ waits on the 0.36 feature "Verify Mend in Mend".
 - Mutation proof includes a second, read-only view of the stored result: a reload of the page, or a
   listing command such as `mend projects`, `mend sessions --all --json` or `mend worktrees --json`.
 - Record the feature file, sub-feature ID and entry point (web, CLI, TUI, desktop or mobile) with
-  every artifact, under the evidence directory the `verify` skill's Evidence section names (pending
-  with Launch).
+  every artifact, under the evidence directory the `verify` skill's Evidence section names.
 - Report an unreachable path with the attempted step and the unmet precondition, for example
   "provider not connected" or "origin is not on GitHub".
 - Do not report an entry point as verified through a different one. A change landed with `mend land`
