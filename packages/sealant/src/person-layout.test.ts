@@ -722,4 +722,38 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
       expect(yield* Fiber.join(fiber)).toBe(false);
     }),
   );
+
+  effectIt.effect(
+    "is not done while Core cannot be asked: an unreadable feature read keeps the reset pending (review 2 of mend#641, N2)",
+    () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        let resets = 0;
+        const features = () =>
+          ++reads === 1
+            ? Effect.succeed(reporting)
+            : Effect.fail(
+                new SealantPlatformError({ code: "x", status: 503, message: "down", cause: null }),
+              );
+        const platform = yield* PersonLayoutPlatform.pipe(
+          Effect.provide(
+            PersonLayoutPlatformLive.pipe(
+              Layer.provide(clientsLayer([], inspection("supported"), features)),
+            ),
+          ),
+        );
+        const handle = {
+          ...workspaceRecording([], []),
+          sshAsRoot: async () => {
+            resets++;
+            throw new Error("down");
+          },
+        };
+        expect(yield* platform.sshAsRoot(handle)).toBe(false);
+        // The kept answer runs out, and Core cannot be asked: still tried, still not done.
+        yield* TestClock.adjust("6 minutes");
+        expect(yield* platform.sshAsRoot(handle)).toBe(false);
+        expect({ resets, reads }).toEqual({ resets: 2, reads: 2 });
+      }),
+  );
 });

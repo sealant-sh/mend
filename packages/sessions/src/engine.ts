@@ -10502,16 +10502,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   workspace,
                   stdout,
                   fallback: input.layout.fallback,
-                  // Remote-SSH is down while the fallback's SSH reset has not reached Core: said
-                  // on the line (kept there across retries) and taken off once it has.
-                  onSshReset: (resolved) =>
-                    resolved
-                      ? dropLaunchWords(sessionId, REMOTE_SSH_RESET_PENDING_WORDS)
-                      : replaceLaunchWords(
-                          sessionId,
-                          REMOTE_SSH_RESET_PENDING_WORDS,
-                          REMOTE_SSH_RESET_PENDING_WORDS,
-                        ).pipe(Effect.ignore),
+                  onSshReset: remoteSshResetLine(sessionId),
                 })
                 .pipe(Effect.tapError((error) => stop(error.message)));
         // In the person layout the people exist before the setup commands, which run as the
@@ -13672,6 +13663,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               harness,
               live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
               homeReady,
+              onSshReset: remoteSshResetLine(session.id),
             })
             .pipe(Effect.ensuring(Deferred.succeed(homeReady, null)));
           // Only an agent's start, or a person's first process here, delivers anything.
@@ -16626,6 +16618,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   worktreeId: session.worktreeId,
                   harness: interactiveShell ? "shell" : session.harness,
                   live: peopleLiveIn(SealantWorkspaceId.make(workspace.id)),
+                  onSshReset: remoteSshResetLine(sessionId),
                 })
                 .pipe(
                   Effect.tapError((error) => abandonExecutor(workspace, error.message)),
@@ -18102,6 +18095,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           current.summary === null ? words : `${current.summary} · ${words}`,
         );
       });
+
+      /**
+       * Remote-SSH is down while a fallback's SSH reset has not reached Core: said on the session
+       * line (kept there across retries) and taken off once it has (docs/adr/0016, decision 10).
+       */
+      const remoteSshResetLine =
+        (sessionId: SessionId) =>
+        (resolved: boolean): Effect.Effect<void> =>
+          resolved
+            ? dropLaunchWords(sessionId, REMOTE_SSH_RESET_PENDING_WORDS)
+            : replaceLaunchWords(
+                sessionId,
+                REMOTE_SSH_RESET_PENDING_WORDS,
+                REMOTE_SSH_RESET_PENDING_WORDS,
+              ).pipe(Effect.ignore);
 
       /** `words` taken off the session line, wherever they are in it; nothing when absent. */
       const dropLaunchWords = (sessionId: SessionId, words: string): Effect.Effect<void> =>

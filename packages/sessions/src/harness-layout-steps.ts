@@ -530,6 +530,11 @@ export interface HarnessLayoutSteps {
      * home exec confirmed them; the caller completes it with null.
      */
     readonly homeReady?: Deferred.Deferred<PersonHome | null>;
+    /**
+     * Told, as `settlePrepare`'s is, about a fallback executor's SSH reset this start found
+     * pending after a restart (`resetSshUser`).
+     */
+    readonly onSshReset?: (resolved: boolean) => Effect.Effect<void>;
   }) => Effect.Effect<
     {
       readonly user: ProcessUser;
@@ -1173,6 +1178,13 @@ export const makeHarnessLayoutSteps = (deps: {
       Effect.withSpan("HarnessLayoutSteps.resetSshUser"),
     );
 
+  /**
+   * Launches whose fallback this process read from the store rather than settled itself (after a
+   * restart): their executor's SSH reset may never have reached Core, so the first process start
+   * there makes it pending again (`processAs`). Idempotent at Core: one call per executor.
+   */
+  const fallbacksFromStore = new Set<string>();
+
   /** Starts `resetSshUser` for a pending executor that has no attempt under way. */
   const forkSshReset = (workspaceId: string): Effect.Effect<void> =>
     Effect.suspend(() => {
@@ -1390,6 +1402,7 @@ export const makeHarnessLayoutSteps = (deps: {
     if (known !== undefined) return known;
     if (nothingRecorded()) return "shared";
     const record = yield* repo.launchLayout(launchId);
+    if (record !== null && record.source === "fallback") fallbacksFromStore.add(launchId);
     // A person record is person, confirmed or still in prepare (decide wrote it before create;
     // a fallback rewrites it as shared): the window between decide and prepare's confirm is
     // person too, so nothing in it ever reads as a shared executor (review 3 of mend#553, P2-1).
@@ -1517,7 +1530,20 @@ export const makeHarnessLayoutSteps = (deps: {
         return null;
       }
       const launchId = input.launchId;
-      if ((yield* layoutOfLaunch(launchId)) !== "person") return null;
+      if ((yield* layoutOfLaunch(launchId)) !== "person") {
+        // A fallback executor this process did not settle (a restart since): its reset to root
+        // may be pending, so it is made pending again, from the store's record (decision 10).
+        if (fallbacksFromStore.delete(launchId) && !sshResets.has(input.workspace.id)) {
+          sshResets.set(input.workspace.id, {
+            workspace: input.workspace,
+            notify: input.onSshReset ?? (() => Effect.void),
+            running: false,
+            told: false,
+          });
+          yield* forkSshReset(input.workspace.id);
+        }
+        return null;
+      }
       const identity = yield* repo
         .ensureIdentity(input.accountId)
         .pipe(Effect.mapError((error) => layoutRefused(error.message)));

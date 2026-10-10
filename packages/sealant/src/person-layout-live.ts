@@ -253,7 +253,8 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
 
       let controlPlane: {
         readonly obstacle: string | null;
-        readonly sshUser: boolean;
+        /** Core runs SSH sessions as the owner's user; null when it could not be asked. */
+        readonly sshUser: boolean | null;
         readonly until: number;
       } | null = null;
       const controlPlaneAnswer = Effect.gen(function* () {
@@ -270,7 +271,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               Effect.annotateLogs({ message: error.message }),
               Effect.as({
                 obstacle: CONTROL_PLANE_UNREADABLE,
-                sshUser: false,
+                sshUser: null,
                 until: now + CONTROL_PLANE_FAILURE_MS,
               }),
             ),
@@ -287,13 +288,17 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
       return {
         processUser: true,
         controlPlaneObstacle,
-        sshUser: controlPlaneAnswer.pipe(Effect.map((answer) => answer.sshUser)),
+        sshUser: controlPlaneAnswer.pipe(Effect.map((answer) => answer.sshUser === true)),
         // `workspace.sshAsRoot` (sealant#348), only where Core said it takes a user; an SDK
         // from before it has no such method, and its creates never asked for one.
         sshAsRoot: (workspace) =>
           Effect.gen(function* () {
-            // Nothing to set: the create named no user either.
-            if (!(yield* controlPlaneAnswer).sshUser || !setsSshRoot(workspace)) return true;
+            // Nothing to set: an SDK that cannot ask for a user never asked for one, and a Core
+            // that says it takes none never ran this workspace's sessions as anyone but root.
+            if (!setsSshRoot(workspace)) return true;
+            if ((yield* controlPlaneAnswer).sshUser === false) return true;
+            // Core takes one, or could not be asked: tried, and only Core's yes is done. An
+            // unreadable answer never clears the obligation.
             return yield* call(() => workspace.sshAsRoot()).pipe(
               Effect.timeoutOrElse({
                 duration: SSH_USER_CALL_TIMEOUT,
