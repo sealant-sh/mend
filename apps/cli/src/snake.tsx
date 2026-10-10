@@ -83,6 +83,9 @@ export const SnakeHeading = ({ play }: { readonly play: SnakePlay }) => {
 
 /** Under a board without the keyboard: how to give it the keys. */
 export const SNAKE_IDLE = "enter plays";
+/** In place of a board the terminal cannot show whole: the game never plays clipped. */
+export const snakeTooSmall = (short: boolean): string =>
+  `make the terminal ${short ? "taller" : "wider"} to play snake`;
 /** Under a board waiting on a dialog: the dialog has the keys until it closes. */
 export const SNAKE_BEHIND_DIALOG = "the countdown starts when this dialog closes";
 

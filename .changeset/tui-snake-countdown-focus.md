@@ -11,4 +11,7 @@ is the accent colour, and the arrows and `h j k l` steer it. Space or `p` pauses
 runs again before the game resumes. Esc or `q` hands the keyboard back to the list you were in. No
 other key acts on the dashboard behind the game. The keys are listed under the board and in the
 footer. A dialog that opens over the game, such as the adopt offer at the start of `mend snake`,
-keeps the keyboard until it closes, and then the countdown starts.
+keeps the keyboard until it closes, and then the countdown starts. Another session's start failing
+leaves the game you are playing alone. In a short terminal the session's facts give way to the
+board. A terminal too small for the whole board says to make it taller, and the game does not take
+the keyboard.

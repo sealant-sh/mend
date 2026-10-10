@@ -99,6 +99,8 @@ const openDashboard = async (
     readonly height?: number;
     readonly openSnake?: boolean;
     readonly cwd?: string;
+    /** Answers beyond the workbench reads; a pending promise holds a request open. */
+    readonly routes?: Readonly<Record<string, unknown>>;
   } = {},
 ): Promise<Dashboard> => {
   const onQuit = vi.fn();
@@ -107,7 +109,7 @@ const openDashboard = async (
     cwd: options.cwd ?? mkdtempSync(join(tmpdir(), "mend-snake-")),
     cwdBranch: null,
     api: async <T,>(method: string, route: string): Promise<T> => {
-      const answer = ROUTES[`${method} ${route}`];
+      const answer = { ...ROUTES, ...options.routes }[`${method} ${route}`];
       if (answer === undefined) throw new Error(`no fake for ${method} ${route}`);
       // The fake answers with the DTOs typed above; the dashboard's api is generic over them.
       return answer as T;
@@ -314,6 +316,76 @@ describe("snake in the session pane", () => {
     frame = await wait(COUNTDOWN_STEP_MS);
     expect(hasDigits(frame)).toBe(false);
     setup.renderer.destroy();
+  });
+
+  it("hands the keyboard back to the column a start came from", async () => {
+    // A start held open: its session shows as starting, and its game takes the keyboard.
+    const { setup, press } = await openDashboard({
+      routes: { "POST /worktrees/w1/sessions": new Promise(() => {}) },
+    });
+    let frame = await press("h");
+    const worktreeKeys = footer(frame);
+    expect(worktreeKeys).toContain("⇧D remove worktree");
+    await press("n");
+    frame = await press("return");
+    expect(footer(frame)).toBe(SNAKE_KEYS);
+    frame = await press("escape");
+    expect(footer(frame)).toBe(worktreeKeys);
+    setup.renderer.destroy();
+  });
+
+  it("keeps the game's keyboard when another session's start fails", async () => {
+    const start = Promise.withResolvers<never>();
+    const { setup, wait, press } = await openDashboard({
+      routes: { "POST /worktrees/w1/sessions": start.promise },
+    });
+    // Start a session (its game takes the keyboard), leave that game, then play the one in
+    // the session that was already starting.
+    await press("n");
+    let frame = await press("return");
+    expect(footer(frame)).toBe(SNAKE_KEYS);
+    await press("escape");
+    frame = await press("down");
+    expect(frame).toContain("booting · claude");
+    frame = await press("return");
+    expect(footer(frame)).toBe(SNAKE_KEYS);
+    await wait(4 * COUNTDOWN_STEP_MS + 300);
+    // The first start fails: that is not this game's request, so it keeps the keyboard.
+    await act(async () => start.reject(new Error("start refused")));
+    frame = await wait(0);
+    expect(frame).toContain("start refused");
+    expect(footer(frame)).toBe(SNAKE_KEYS);
+    setup.renderer.destroy();
+  });
+
+  it("says the terminal is too short instead of playing a game it cannot show whole", async () => {
+    const { setup, wait, press } = await openDashboard({ width: 100, height: 12 });
+    let frame = await wait(0);
+    expect(frame).toContain("make the terminal taller to play snake");
+    expect(frame).not.toContain("╭─ snake");
+    // Enter goes into the pane, but the keyboard stays the dashboard's: no game, no countdown.
+    frame = await press("return");
+    expect(footer(frame)).not.toBe(SNAKE_KEYS);
+    expect(frame).toContain("make the terminal taller to play snake");
+    // Grown tall enough, the board shows, and Enter plays.
+    await act(async () => setup.resize(100, 30));
+    frame = await press("left");
+    frame = await press("return");
+    expect(footer(frame)).toBe(SNAKE_KEYS);
+    expect(hasDigits(frame)).toBe(true);
+    setup.renderer.destroy();
+  });
+
+  it("gives way to the board in a short terminal: the whole board shows, and the facts make room", async () => {
+    for (const height of [22, 18, 16, 14]) {
+      const { setup, press } = await openDashboard({ width: 100, height });
+      const frame = await press("return");
+      expect(footer(frame), `${height} rows`).toBe(SNAKE_KEYS);
+      expect(frame, `${height} rows`).toContain("◆");
+      expect(board(frame).length, `${height} rows`).toBeGreaterThanOrEqual(4);
+      expect(frame, `${height} rows`).toMatch(/╰─{8,}╯/);
+      setup.renderer.destroy();
+    }
   });
 
   it("falls back to small digits in a short terminal", async () => {
