@@ -9,7 +9,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { readShutdownTimeout } from "./docker-shutdown.ts";
-import { exposureCheck, formatCheck, runChecks, userNamespacesCheck } from "./doctor.ts";
+import {
+  exposureCheck,
+  formatCheck,
+  type LocalServerFacts,
+  runChecks,
+  userNamespacesCheck,
+} from "./doctor.ts";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -270,7 +276,7 @@ describe("the exposure line", () => {
     for (const declared of ["private", "public"] as const) {
       expect(exposureCheck({ ...observed, declared })).toMatchObject({
         state: "todo",
-        fix: "serve it over https and set APP_URL to that origin",
+        fix: "serve it over https: on the server's machine, mend server setup --edge <domain>, or mend server setup --url https://<origin> behind HTTPS you run",
       });
     }
   });
@@ -342,25 +348,44 @@ describe("the claude grant line", () => {
   });
 });
 
-const dockerLine = async (onPath: (command: string) => boolean) => {
+const dockerLine = async (
+  onPath: (command: string) => boolean,
+  local: LocalServerFacts | null = null,
+  contexts: Array<string | null> = [],
+) => {
   const checks = await runChecks(
     { url: "http://127.0.0.1:9", token: null },
     {
       localCredential: () => null,
       claudeGrant: () => null,
       onPath,
-      dockerShutdown: () =>
-        readShutdownTimeout({
-          info: { operatingSystem: "Ubuntu 24.04.1 LTS", securityOptions: [] },
+      localServer: async () => local,
+      dockerShutdown: (context) => {
+        contexts.push(context);
+        return readShutdownTimeout({
+          info: {
+            operatingSystem: context === "orbstack" ? "OrbStack" : "Ubuntu 24.04.1 LTS",
+            securityOptions: [],
+          },
           dockerdArgv: ["/usr/bin/dockerd", "-H", "fd://"],
           readFile: () => ({ kind: "absent" }),
           home: "/home/op",
           xdgConfigHome: null,
-        }),
+        });
+      },
     },
   );
   return checks.find((check) => check.label === "docker") ?? null;
 };
+
+/** A server `mend server setup` installed on this machine. */
+const installedHere = (url: string, more: Partial<LocalServerFacts> = {}): LocalServerFacts => ({
+  url,
+  dockerContext: "default",
+  version: "0.36.0",
+  instance: "1".repeat(32),
+  ...more,
+});
 
 describe("the docker line", () => {
   it("reads this machine's daemon shutdown timeout against the capture grace when docker is here", async () => {
@@ -373,16 +398,34 @@ describe("the docker line", () => {
   it("prints no docker line where docker is not on PATH", async () => {
     expect(await dockerLine(() => false)).toBeNull();
   });
+
+  // The RC on a Mac: Docker Desktop current, the server on OrbStack. The line read Docker
+  // Desktop's daemon.json and said to restart Docker Desktop.
+  it("reads the daemon of the installed server's own context, not the current one", async () => {
+    const contexts: Array<string | null> = [];
+    const line = await dockerLine(
+      (command) => command === "docker",
+      installedHere("http://localhost:3115", { dockerContext: "orbstack" }),
+      contexts,
+    );
+    expect(contexts).toEqual(["orbstack"]);
+    expect(line?.detail).toContain("/home/op/.orbstack/config/docker.json");
+    expect(line?.fix).toContain("restart OrbStack");
+    expect(await dockerLine((command) => command === "docker", null, contexts)).not.toBeNull();
+    expect(contexts).toEqual(["orbstack", null]);
+  });
 });
 
-const serverLine = async (localServerUrl?: () => Promise<string | null>) => {
+const serverLine = async (local?: string | null, url = "http://127.0.0.1:9") => {
   const checks = await runChecks(
-    { url: "http://127.0.0.1:9", token: "token" },
+    { url, token: "token" },
     {
       localCredential: () => null,
       claudeGrant: () => null,
       onPath: () => false,
-      ...(localServerUrl === undefined ? {} : { localServerUrl }),
+      ...(local === undefined
+        ? {}
+        : { localServer: async () => (local === null ? null : installedHere(local)) }),
     },
   );
   return checks.find((check) => check.label === "server");
@@ -395,7 +438,7 @@ describe("the server line when the configured URL does not answer", () => {
       response.end(JSON.stringify({ status: "ok", version: "0.36.0" }));
     });
     try {
-      expect(await serverLine(async () => mend.url)).toEqual({
+      expect(await serverLine(mend.url)).toEqual({
         label: "server",
         state: "failed",
         detail: `cannot reach http://127.0.0.1:9 · the Mend server on this machine answers at ${mend.url}, and this CLI points at the old URL`,
@@ -414,7 +457,57 @@ describe("the server line when the configured URL does not answer", () => {
       fix: "start the Mend server (mend server start on its machine), or, if its URL changed, mend login --url <its URL>",
     };
     expect(await serverLine()).toEqual(expected);
-    expect(await serverLine(async () => null)).toEqual(expected);
-    expect(await serverLine(async () => "http://127.0.0.1:10")).toEqual(expected);
+    expect(await serverLine(null)).toEqual(expected);
+    expect(await serverLine("http://127.0.0.1:10")).toEqual(expected);
+  });
+});
+
+/** A fake Mend whose health reports this version and, when given, this instance. */
+const fakeMendAt = (version: string, instance?: string) =>
+  startFakeMend((request, response) => {
+    if (request.url !== "/api/health") {
+      response.statusCode = 404;
+      response.end();
+      return;
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ status: "ok", version, ...(instance ? { instance } : {}) }));
+  });
+
+// The RC on a Mac: no cli.json, so the CLI read http://localhost:3105, where Docker Desktop's
+// 0.27.4 answered, while setup had installed 0.36 on OrbStack at :3115.
+describe("the server line beside a server installed on this machine", () => {
+  it("says when what answers on this machine's loopback is not the server installed here", async () => {
+    const other = await fakeMendAt("0.27.4");
+    const installed = await fakeMendAt("0.36.0", "1".repeat(32));
+    try {
+      expect(await serverLine(installed.url, other.url)).toEqual({
+        label: "server",
+        state: "todo",
+        detail: `${other.url} · mend 0.27.4 · not the server installed on this machine, which answers at ${installed.url} (mend 0.36.0)`,
+        fix: `mend login --url ${installed.url}`,
+      });
+    } finally {
+      await other.close();
+      await installed.close();
+    }
+  });
+
+  it("tells two installs of one version apart by their instance", async () => {
+    const other = await fakeMendAt("0.36.0", "2".repeat(32));
+    const installed = await fakeMendAt("0.36.0", "1".repeat(32));
+    try {
+      expect((await serverLine(installed.url, other.url))?.state).toBe("todo");
+      // The installed server itself, reached on another loopback URL, is fine.
+      const same = await fakeMendAt("0.36.0", "1".repeat(32));
+      try {
+        expect(await serverLine(installed.url, same.url)).toMatchObject({ state: "ok" });
+      } finally {
+        await same.close();
+      }
+    } finally {
+      await other.close();
+      await installed.close();
+    }
   });
 });

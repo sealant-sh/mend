@@ -107,6 +107,13 @@ export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({
    */
   upgradeTickets: Schema.optional(Schema.Boolean),
   /**
+   * Which install answered: an HMAC of its Better Auth secret under a fixed label, which `mend
+   * server setup` derives from the same secret. Setup reads it to tell the server it started from
+   * another Mend on the same port (two Docker engines on one Mac). It names nothing and reveals
+   * nothing about the secret. Absent on an older server, or one with no secret configured.
+   */
+  instance: Schema.optional(Schema.String),
+  /**
    * `MEND_EXPOSURE` as declared, and the public exposure gate as evaluated at start
    * (docs/adr/0004-access-without-a-private-network.md), as two counts: the items still open,
    * and those of them that are open because no build can observe them. `/health` needs no

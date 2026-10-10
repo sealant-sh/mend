@@ -61,6 +61,8 @@ const setupRuntime = (configDir: string): ServerSetupRuntime => {
     randomBytes,
     writeLine: () => undefined,
     sleep: async () => undefined,
+    // This machine's own ports say nothing about the fixture, whose health server holds Mend's.
+    portTaken: async () => false,
     run: async (command, args, options) =>
       daemon.run(command, args, options) ?? { status: 0, stderr: "", stdout: fakeDocker(args) },
     fetchText: async (url) =>
@@ -360,7 +362,7 @@ describe.skipIf(!composeAvailable)(
       for (const offline of [false, true]) {
         const configDir = path.join(temporary(), "server");
         const initial = setupRuntime(configDir);
-        expect(await serverCommand(["setup", "--context", "default"], initial)).toEqual({
+        expect(await serverCommand(["setup", "--yes", "--context", "default"], initial)).toEqual({
           _tag: "ok",
         });
         const previous = fs.realpathSync(path.join(configDir, "active"));
@@ -462,7 +464,7 @@ describe.skipIf(!composeAvailable)(
     ])("checks missing images before activation: %j", async (scenario) => {
       const configDir = path.join(temporary(), "server");
       const initial = setupRuntime(configDir);
-      expect(await serverCommand(["setup", "--context", "default"], initial)).toEqual({
+      expect(await serverCommand(["setup", "--yes", "--context", "default"], initial)).toEqual({
         _tag: "ok",
       });
       const previous = fs.realpathSync(path.join(configDir, "active"));
@@ -557,7 +559,9 @@ describe.skipIf(!composeAvailable)(
       );
       expect(context.status).toBe(0);
       const runtime = setupRuntime(configDir);
-      expect(await serverCommand(["setup", "--context", "saved-context"], runtime)).toEqual({
+      expect(
+        await serverCommand(["setup", "--yes", "--context", "saved-context"], runtime),
+      ).toEqual({
         _tag: "ok",
       });
       const directory = fs.realpathSync(path.join(configDir, "active"));
@@ -644,7 +648,7 @@ describe.skipIf(!composeAvailable)(
       const runtime = setupRuntime(configDir);
       // The first account must exist before the edge and before `public`: the plain install
       // first, the edge and the posture on reruns.
-      expect(await serverCommand(["setup", "--context", "default"], runtime)).toEqual({
+      expect(await serverCommand(["setup", "--yes", "--context", "default"], runtime)).toEqual({
         _tag: "ok",
       });
       expect(

@@ -61,14 +61,25 @@ context.
 [Install Mend](/getting-started/install/#set-up-the-server) for the conversation. The flags below
 are the same choices for scripts and CI. On an existing install each changes only what it names, and
 the rest is kept from the saved install. With no terminal and no flags, a fresh install is refused
-rather than guessed; `--yes` takes the defaults.
+rather than guessed; `--yes` takes the defaults. `--context` and `--docker-socket` choose the Docker
+engine and answer no question: on a Mac with Docker Desktop and OrbStack,
+`mend server setup --context orbstack` still asks. A fresh install without `--context` takes
+`DOCKER_CONTEXT`, as docker does.
+
+Before anything is pulled, setup checks that Mend's web and SSH ports are free where they are to be
+published, and names what holds one that is not: another Mend with its version, or something else.
+On a terminal it offers the next free port; with flags it refuses and names `--port` or
+`--ssh-port`. After starting, it waits for health from this install (its version and the instance id
+the server reports), so another Mend answering on the same port is never taken for it. When this
+machine's CLI points at another server, or at nothing, setup offers to point it at the one it
+installed.
 
 Setup options:
 
 | Option                   | Meaning                                                                                                                                                                                                                                |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--yes`                  | No questions: a fresh install takes the defaults (this machine only, `http://localhost:3105`), an existing one keeps what is saved                                                                                                     |
-| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged                                                                                                                                                           |
+| `--context <name>`       | Local Unix-socket Docker context to persist; the global context is unchanged. Answers no question. Default: `DOCKER_CONTEXT` on a fresh install, else the saved one                                                                    |
 | `--version <v>`          | Exact Mend server version, or `latest`; a fresh setup pins the CLI's own version, and a rerun keeps the existing pin                                                                                                                   |
 | `--bind <ip>`            | Published listen address for web and SSH; default `127.0.0.1`                                                                                                                                                                          |
 | `--ssh-bind <ip>`        | Published address for workspace SSH alone, when not `--bind`; with `--edge`, Remote-SSH from another machine needs it. Kept across reruns; the `--bind` address takes it away                                                          |
