@@ -15,6 +15,7 @@ import {
   parseWaitArgs,
   pickProcess,
   pickServiceAttempt,
+  RUN_ARGV_MAX_WORD_BYTES,
   runArgvIssue,
   answeredAttemptId,
   findStartAttempt,
@@ -85,26 +86,43 @@ describe("runArgvIssue", () => {
     expect(runArgvIssue(["bash", "-lc", "set -e\necho hi"])).toBeNull();
   });
 
-  it("names a script that starts with a newline by its position, never by its text", () => {
-    const issue = runArgvIssue(["bash", "-lc", "\nexport TOKEN=hunter2\necho hi"]);
-    expect(issue).toBe(
-      "argument 2 starts with a newline · the platform refuses arguments with leading or trailing whitespace · trim it and run again",
-    );
-    expect(issue).not.toContain("hunter2");
+  it("takes arguments that are empty, whitespace-led or multi-line (Core 0.39.0-next.712)", () => {
+    expect(runArgvIssue(["bash", "-lc", "\nexport TOKEN=hunter2\necho hi"])).toBeNull();
+    expect(runArgvIssue(["echo", "hi "])).toBeNull();
+    expect(runArgvIssue(["echo", "hi\t"])).toBeNull();
+    expect(runArgvIssue(["git", "commit", "-m", ""])).toBeNull();
   });
 
-  it("names trailing whitespace, an empty argument and an untrimmed program", () => {
-    expect(runArgvIssue(["echo", "hi "])).toContain("argument 1 ends with a space");
-    expect(runArgvIssue(["echo", "hi\t"])).toContain("argument 1 ends with a tab");
-    expect(runArgvIssue(["git", "commit", "-m", ""])).toBe(
-      "argument 3 is empty · the platform refuses empty arguments",
+  it("refuses an empty or untrimmed program", () => {
+    expect(runArgvIssue([""])).toBe("the program is empty");
+    expect(runArgvIssue([" make"])).toBe("the program starts with a space · trim it and run again");
+    expect(runArgvIssue(["make\n"])).toBe(
+      "the program ends with a newline · trim it and run again",
     );
-    expect(runArgvIssue([" make"])).toContain("the program starts with a space");
+  });
+
+  it("names a NUL byte or a lone surrogate by position, never by the text", () => {
+    const issue = runArgvIssue(["sh", "-c", "TOKEN=hunter2\u0000"]);
+    expect(issue).toBe("argument 2 contains a NUL byte, which no process argument can carry");
+    expect(issue).not.toContain("hunter2");
+    expect(runArgvIssue(["echo", "\uD800"])).toBe(
+      "argument 1 is not well-formed Unicode (a lone surrogate)",
+    );
+    expect(runArgvIssue(["echo", "😀"])).toBeNull();
   });
 
   it("refuses more than 64 words", () => {
     expect(runArgvIssue(Array.from({ length: 64 }, () => "x"))).toBeNull();
     expect(runArgvIssue(Array.from({ length: 65 }, () => "x"))).toContain("65 words");
+  });
+
+  it("refuses a word over 131,071 bytes and a command over 1 MiB", () => {
+    expect(runArgvIssue(["echo", "x".repeat(RUN_ARGV_MAX_WORD_BYTES)])).toBeNull();
+    expect(runArgvIssue(["echo", "x".repeat(RUN_ARGV_MAX_WORD_BYTES + 1)])).toContain(
+      "argument 1 is 131072 bytes",
+    );
+    const nine = Array.from({ length: 9 }, () => "x".repeat(RUN_ARGV_MAX_WORD_BYTES));
+    expect(runArgvIssue(["echo", ...nine])).toContain("the command is");
   });
 });
 

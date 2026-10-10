@@ -173,8 +173,43 @@ const launchRoutes =
   };
 
 describe("mend run for scripts", spawning, () => {
-  it("refuses a script that starts with a newline before anything is created, and says so", async () => {
+  it("refuses a program with leading whitespace before anything is created, and says so", async () => {
     const fake = await startFake((_route, _request, response) => response.writeHead(404).end());
+    try {
+      const result = await runCli(fake.url, [
+        "run",
+        "--project",
+        project.name,
+        "--",
+        " make",
+        "TOKEN=hunter2",
+      ]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("the program starts with a space");
+      expect(result.stderr).toContain("nothing was created");
+      expect(result.stderr).not.toContain("hunter2");
+      // Nothing created: no project read, no session, no launch.
+      expect(fake.routes.filter((route) => !route.startsWith("GET /api/me/"))).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("launches a script that starts with a newline, as it was typed (Core 0.39.0-next.712)", async () => {
+    const script = "\nset -e\necho hi\n";
+    let launched: unknown = null;
+    const routes = launchRoutes(
+      () => ({ session, currentAgent: ended(0), processes: [ended(0)] }),
+      () => logPage("1", "exited", "hi\r\n"),
+    );
+    const fake = await startFake((route, request, response) => {
+      if (route !== `POST /api/sessions/${sessionId}/launch`)
+        return routes(route, request, response);
+      void (async () => {
+        launched = JSON.parse(await bodyOf(request));
+        routes(route, request, response);
+      })();
+    });
     try {
       const result = await runCli(fake.url, [
         "run",
@@ -183,14 +218,10 @@ describe("mend run for scripts", spawning, () => {
         "--",
         "bash",
         "-lc",
-        "\nexport TOKEN=hunter2\necho hi",
+        script,
       ]);
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("argument 2 starts with a newline");
-      expect(result.stderr).toContain("nothing was created");
-      expect(result.stderr).not.toContain("hunter2");
-      // Nothing created: no project read, no session, no launch.
-      expect(fake.routes.filter((route) => !route.startsWith("GET /api/me/"))).toEqual([]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(launched).toEqual({ argv: ["bash", "-lc", script] });
     } finally {
       await fake.close();
     }

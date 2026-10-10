@@ -250,10 +250,10 @@ everything, finding the session and every read and retry; `--json` then prints t
 Without it, `mend wait` waits as long as the command runs, as `mend run` does. Both take the session
 id, a prefix of it, or the worktree's name.
 
-The platform takes a command of at most 64 words, none of them empty and none starting or ending
-with whitespace. A script passed as `bash -lc "<script>"` that starts with a newline is such a word:
-`mend run` refuses it before anything is created and names the word by its position. Trim it and run
-again.
+The platform takes a command of at most 64 words and 1 MiB, at most 131,071 bytes a word, whose
+program has no leading or trailing whitespace and with no NUL byte in any word. An argument may be
+empty, start with a newline or span lines, so `bash -lc "<script>"` takes any script. `mend run`
+refuses a command outside that before anything is created and names the word by its position.
 
 Workspaces set `PAGER=cat`, because the workspace images carry no `less` and `git log` in a terminal
 would otherwise fail with `unable to execute pager 'less'`. A project variable named `PAGER`, a
