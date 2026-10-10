@@ -11,6 +11,6 @@ to answer, Mend runs the command once more with pnpm's defaults and logs
 `dependency install · retried with defaults`. Settings already in place take precedence: in the
 command itself, the project's `.npmrc` or `pnpm-workspace.yaml`, your user config (`~/.npmrc` or
 `NPM_CONFIG_USERCONFIG`) or pnpm config, the image's global `npmrc`, or the environment. Other
-package managers and custom commands that are more than a plain `pnpm install` run as written. The
-engine's install line now ends with the number of download retries pnpm reported:
+package managers, and custom commands that are more than a plain `pnpm install`, keep their own
+timeouts. The engine's install line now ends with the number of download retries pnpm reported:
 `dependency install · completed · exit 0 · fetch retries 2`.
