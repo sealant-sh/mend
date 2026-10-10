@@ -232,3 +232,15 @@ export const buildTree = (
     const rows = buildRows([entry], visited, {}, now, everySession);
     return { project: entry.project, rows: [...rows.active, ...rows.settled] };
   });
+
+/**
+ * What the rail and the titlebar count: every session as the tree shows it, `shell` sessions
+ * included, so a running shell is live there as it is in its project's `sessions n/m`.
+ */
+export const sessionCounts = (
+  tree: ReadonlyArray<TreeProject>,
+): { readonly live: number; readonly settled: number } => {
+  const rows = tree.flatMap((entry) => entry.rows);
+  const live = rows.filter((row) => row.section === "active").length;
+  return { live, settled: rows.length - live };
+};
