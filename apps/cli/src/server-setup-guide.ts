@@ -530,6 +530,11 @@ interface Asked {
   readonly context: GuideContext;
   readonly tailscale: () => Promise<TailscaleFacts | null>;
   readonly fresh: boolean;
+  /**
+   * Edge domains observed not to resolve from this machine while the person answered. An edge on
+   * one cannot get a certificate, so applying it is not the answer in brackets.
+   */
+  readonly unresolved: Set<string>;
 }
 
 const toThisMachine = (settings: SetupSettings): SetupSettings => ({
@@ -715,6 +720,8 @@ const askPublic = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
   });
   const resolved = await asked.context.observe.lookupHost(domain);
   const own = asked.context.observe.localAddresses();
+  if (resolved === null || resolved.length === 0) asked.unresolved.add(domain);
+  else asked.unresolved.delete(domain);
   if (resolved === null || resolved.length === 0)
     io.write(
       `Observed: ${domain} does not resolve from this machine. Caddy cannot get a certificate until its DNS points here.`,
@@ -1183,6 +1190,7 @@ export const runGuide = async (io: GuideIo, context: GuideContext): Promise<Guid
     context,
     tailscale: tailscaleOnce(context.observe),
     fresh: context.saved === null,
+    unresolved: new Set(),
   };
   try {
     let target: SetupSettings;
@@ -1240,7 +1248,19 @@ export const runGuide = async (io: GuideIo, context: GuideContext): Promise<Guid
       }
     }
     io.write(`Same as: ${setupCommandOf(flags)}`);
-    return (await yesNo(io, "Apply?", true)) ? { _tag: "apply", flags } : { _tag: "stopped" };
+    // An edge whose domain did not resolve here would start without a certificate: Enter keeps
+    // the install as it is, and the reason is said beside the question.
+    const unresolvedEdge =
+      target.edgeHost !== undefined && asked.unresolved.has(target.edgeHost)
+        ? target.edgeHost
+        : null;
+    if (unresolvedEdge !== null)
+      io.write(
+        `${unresolvedEdge} did not resolve from this machine, so the edge cannot get a certificate yet: Enter changes nothing. Point its DNS here first, or answer y to apply anyway.`,
+      );
+    return (await yesNo(io, "Apply?", unresolvedEdge === null))
+      ? { _tag: "apply", flags }
+      : { _tag: "stopped" };
   } catch (cause) {
     if (cause instanceof GuideStopped) return { _tag: "stopped" };
     throw cause;

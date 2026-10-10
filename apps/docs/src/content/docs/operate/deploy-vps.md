@@ -100,13 +100,27 @@ server reports. Workspace SSH on port 2222 stays on loopback with the edge.
 
 Each workspace runs its own rootless Docker, which needs unprivileged user namespaces. Ubuntu 23.10
 and later (24.04 LTS included) refuse them by default, and then no session can start.
-`mend server setup` says so as its last line, and `mend doctor` shows it as `workspaces`. To allow
-them, on the server:
+`mend server setup` reads the kernel before it pulls anything and asks:
+
+```text
+Sessions cannot start on this host yet: Ubuntu blocks the unprivileged user namespaces each workspace's Docker service needs.
+Allowing them writes kernel.apparmor_restrict_unprivileged_userns = 0 to /etc/sysctl.d/60-mend-rootless-docker.conf on the Docker host and applies it now. It lifts that restriction for the whole host, not only for Mend.
+Allow them now? [Y/n]
+```
+
+On a yes it applies the setting through the Docker socket it already uses and reads the kernel
+again. `--allow-userns` and `--no-allow-userns` answer for a script. On a no, or without a terminal,
+setup prints the command, and `mend doctor` shows it as `workspaces`. To allow them yourself, on the
+server:
 
 ```sh
 echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf
 sudo sysctl --system
 ```
+
+When a later `mend server setup` changes Mend's URL (from `localhost` to a private address, say), it
+offers to point this machine's CLI at the new URL; the sign-in carries over. Every other CLI signed
+in at the old URL runs `mend login --url <new>`.
 
 On your laptop, install only the CLI:
 

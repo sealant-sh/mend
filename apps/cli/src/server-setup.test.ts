@@ -99,6 +99,16 @@ const makeRuntime = (
     readonly missingImages?: ReadonlyArray<string>;
     /** Whether a `pull` of a missing image fails. */
     readonly pullFails?: boolean;
+    /** What the probe prints once the privileged helper ran; absent: what it printed before. */
+    readonly hostKernelAllowed?: string;
+    /** The privileged helper's exit status; absent: 0. */
+    readonly allowStatus?: number;
+    /** `docker info`'s SecurityOptions as JSON; absent: none. */
+    readonly securityOptions?: string;
+    /** What `GET /api/instance` answers; absent: 404, as a server that does not say. */
+    readonly instanceBody?: string;
+    /** Origins whose health does not answer from this machine. */
+    readonly unreachable?: ReadonlyArray<string>;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -112,6 +122,7 @@ const makeRuntime = (
 
   const garageCalls: ReadonlyArray<string>[] = [];
   const missing = new Set(options.missingImages ?? []);
+  let allowed = false;
   const runtime: ServerSetupRuntime = {
     configDir: options.configDir ?? temporaryDirectory(),
     platform: options.platform ?? "linux",
@@ -219,6 +230,9 @@ const makeRuntime = (
           stderr: "",
         };
       }
+      if (args.includes("info") && args.includes("{{json .SecurityOptions}}")) {
+        return { status: 0, stdout: options.securityOptions ?? "[]", stderr: "" };
+      }
       if (args.includes("info")) {
         return {
           status: 0,
@@ -226,8 +240,20 @@ const makeRuntime = (
           stderr: "",
         };
       }
+      if (args[2] === "run" && args.includes("--privileged")) {
+        if ((options.allowStatus ?? 0) === 0) allowed = true;
+        return {
+          status: options.allowStatus ?? 0,
+          stdout: "",
+          stderr: options.allowStatus === undefined ? "" : "permission denied",
+        };
+      }
       if (args[2] === "run" && args.includes("--entrypoint") && options.hostKernel !== undefined) {
-        return { status: 0, stdout: options.hostKernel, stderr: "" };
+        return {
+          status: 0,
+          stdout: allowed ? (options.hostKernelAllowed ?? options.hostKernel) : options.hostKernel,
+          stderr: "",
+        };
       }
       if (args.includes("compose") && args.includes("up")) {
         return {
@@ -244,6 +270,12 @@ const makeRuntime = (
         return options.gatewayAnswers === false
           ? { status: 0, body: "", error: "connection refused" }
           : { status: 200, body: "{}" };
+      }
+      if (options.unreachable?.some((origin) => url.startsWith(origin)) === true) {
+        return { status: 0, body: "", error: "connection refused" };
+      }
+      if (url.endsWith("/api/instance") && options.instanceBody !== undefined) {
+        return { status: 200, body: options.instanceBody };
       }
       if (url.endsWith("/api/health")) {
         return {
@@ -285,6 +317,13 @@ const makeRuntime = (
   };
 };
 
+/**
+ * Image work for the install itself. Setup's look at the Docker host's kernel comes first, through
+ * postgres:17-alpine, an image every install pulls anyway.
+ */
+const installImageWork = (args: ReadonlyArray<string>): boolean =>
+  args[2] === "image" && !args.includes("postgres:17-alpine");
+
 const readEnv = (file: string): ReadonlyMap<string, string> => {
   const values = new Map<string, string>();
   for (const line of fs.readFileSync(file, "utf8").trim().split("\n")) {
@@ -311,6 +350,25 @@ const daemonFacts = (shutdownTimeout: number | null) => (infoStdout: string | nu
   home: "/home/op",
   xdgConfigHome: null,
 });
+
+const UBUNTU_REFUSES = "1\n|Y\n|1\n|";
+const UBUNTU_ALLOWS = "0\n|Y\n|1\n|";
+const USERNS_FIX =
+  "echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system";
+const USERNS_REMINDER = `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: ${USERNS_FIX}`;
+const privilegedRuns = (control: RuntimeControl) =>
+  control.commands.filter(([, args]) => args.includes("--privileged"));
+const asking = (control: RuntimeControl, answer: string | null) => {
+  const prompts: Array<string> = [];
+  const runtime: ServerSetupRuntime = {
+    ...control.runtime,
+    prompter: async (prompt) => {
+      prompts.push(prompt);
+      return answer;
+    },
+  };
+  return { runtime, prompts };
+};
 
 describe("mend server setup", () => {
   it("persists the complete generation before claiming daemon data; retries retain identity and use fresh probes", async () => {
@@ -444,7 +502,7 @@ describe("mend server setup", () => {
       expect(daemon.volumes.size).toBe(0);
       expect(
         control.commands.some(
-          ([, args]) => args.includes("up") || args.includes("create") || args[2] === "image",
+          ([, args]) => args.includes("up") || args.includes("create") || installImageWork(args),
         ),
       ).toBe(false);
     },
@@ -471,7 +529,7 @@ describe("mend server setup", () => {
     expect([...daemon.remote]).toEqual(manifests);
     expect(
       second.commands.some(
-        ([, args]) => args.includes("up") || args.includes("create") || args[2] === "image",
+        ([, args]) => args.includes("up") || args.includes("create") || installImageWork(args),
       ),
     ).toBe(false);
     expect(second.randomSizes).toEqual([256]);
@@ -592,7 +650,7 @@ describe("mend server setup", () => {
       message: expect.stringContaining("Docker volume ownership check failed"),
     });
     expect([...control.daemon.volumes.keys()]).toEqual(["mend-store"]);
-    expect(control.commands.some(([, args]) => args.includes("up") || args[2] === "image")).toBe(
+    expect(control.commands.some(([, args]) => args.includes("up") || installImageWork(args))).toBe(
       false,
     );
     const identity = fs.readFileSync(path.join(control.runtime.configDir, "identity.env"));
@@ -649,7 +707,8 @@ describe("mend server setup", () => {
     expect(
       readEnv(activeFile(control.runtime.configDir, "server.env")).has("MEND_REGISTRY_PORT"),
     ).toBe(false);
-    expect(control.fetched.every((url) => url.endsWith("/api/health"))).toBe(true);
+    // Only the server itself is asked: its health, and whether it has accounts yet.
+    expect(control.fetched.every((url) => /\/api\/(health|instance)$/.test(url))).toBe(true);
     for (const [, args] of control.commands.filter(([, commandArgs]) =>
       commandArgs.includes("up"),
     )) {
@@ -767,7 +826,8 @@ describe("mend server setup", () => {
       control.runtime,
     );
     expect(result._tag).toBe("error");
-    expect(control.fetched.every((url) => url.endsWith("/api/health"))).toBe(true);
+    // Only the server itself is asked: its health, and whether it has accounts yet.
+    expect(control.fetched.every((url) => /\/api\/(health|instance)$/.test(url))).toBe(true);
     expect(control.lines.some((line) => line.includes("is reachable"))).toBe(false);
   });
 
@@ -810,13 +870,19 @@ describe("mend server setup", () => {
       readEnv(activeFile(control.runtime.configDir, "server.env")).get("DOCKER_SOCKET_PATH"),
     ).toBe("/var/run/docker.sock");
   });
-  it("says last, with the command, when the Docker host refuses user namespaces (Ubuntu 24.04)", async () => {
-    const control = makeRuntime({ hostKernel: "1\n|Y\n|1\n|" });
-    const result = await serverCommand(["setup", "--yes"], control.runtime);
-    expect(result).toEqual({ _tag: "ok" });
-    expect(control.lines.at(-1)).toBe(
-      "No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
+  it("on a host that refuses user namespaces (Ubuntu 24.04) and no one to ask: the command, before anything is pulled, and again last", async () => {
+    const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(privilegedRuns(control)).toEqual([]);
+    const said = control.lines.indexOf(
+      `Setup changes the host's kernel only when asked: answer the question on a terminal, or pass --allow-userns. On the host, run: ${USERNS_FIX}`,
     );
+    expect(said).toBeGreaterThan(0);
+    expect(control.lines[said - 1]).toBe(
+      "Sessions cannot start on this host yet: Ubuntu blocks the unprivileged user namespaces each workspace's Docker service needs.",
+    );
+    expect(said).toBeLessThan(control.lines.indexOf("Downloading release assets for Mend 0.23.0"));
+    expect(control.lines.at(-1)).toBe(USERNS_REMINDER);
     const probe = control.commands.find(([, args]) => args.includes("--entrypoint"));
     expect(probe?.[1].slice(0, 9)).toEqual([
       "--context",
@@ -827,8 +893,115 @@ describe("mend server setup", () => {
       "none",
       "--entrypoint",
       "sh",
-      "ghcr.io/sealant-sh/mend:0.23.0",
+      "postgres:17-alpine",
     ]);
+  });
+
+  it("asks before anything is pulled, and on a yes allows them through Docker and observes it", async () => {
+    const control = makeRuntime({ hostKernel: UBUNTU_REFUSES, hostKernelAllowed: UBUNTU_ALLOWS });
+    const { runtime, prompts } = asking(control, "");
+    expect(await serverCommand(["setup", "--exposure", "loopback"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(prompts).toEqual(["Allow them now? [Y/n] "]);
+    expect(control.lines).toContain(
+      "Allowing them writes kernel.apparmor_restrict_unprivileged_userns = 0 to /etc/sysctl.d/60-mend-rootless-docker.conf on the Docker host and applies it now. It lifts that restriction for the whole host, not only for Mend.",
+    );
+    const allowed = control.lines.indexOf(
+      "Allowed: /etc/sysctl.d/60-mend-rootless-docker.conf written on the Docker host and applied; observed: its kernel allows them now.",
+    );
+    expect(allowed).toBeGreaterThan(0);
+    expect(allowed).toBeLessThan(
+      control.lines.indexOf("Downloading release assets for Mend 0.23.0"),
+    );
+    expect(privilegedRuns(control).map(([, args]) => args)).toEqual([
+      [
+        "--context",
+        "default",
+        "run",
+        "--rm",
+        "--privileged",
+        "--network",
+        "none",
+        "--volume",
+        "/etc/sysctl.d:/host/sysctl.d",
+        "--volume",
+        "/proc/sys:/host/proc-sys",
+        "--entrypoint",
+        "sh",
+        "postgres:17-alpine",
+        "-c",
+        `printf '%s\\n' "$1" > /host/sysctl.d/60-mend-rootless-docker.conf && printf '%s\\n' "$3" > "/host/proc-sys/$2"`,
+        "mend-allow-userns",
+        "kernel.apparmor_restrict_unprivileged_userns = 0",
+        "kernel/apparmor_restrict_unprivileged_userns",
+        "0",
+      ],
+    ]);
+    expect(control.lines).not.toContain(USERNS_REMINDER);
+  });
+
+  it("on a no, changes nothing on the host and prints the command, then repeats it last", async () => {
+    const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
+    const { runtime } = asking(control, "n");
+    expect(await serverCommand(["setup", "--exposure", "loopback"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(privilegedRuns(control)).toEqual([]);
+    expect(control.lines).toContain(
+      `Left as it is (--no-allow-userns or your answer). On the host, run: ${USERNS_FIX}`,
+    );
+    expect(control.lines.at(-1)).toBe(USERNS_REMINDER);
+  });
+
+  it("--allow-userns answers for a script; --no-allow-userns leaves it, and neither is a question", async () => {
+    const yes = makeRuntime({ hostKernel: UBUNTU_REFUSES, hostKernelAllowed: UBUNTU_ALLOWS });
+    expect(await serverCommand(["setup", "--yes", "--allow-userns"], yes.runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(privilegedRuns(yes)).toHaveLength(1);
+    expect(yes.lines).not.toContain(USERNS_REMINDER);
+
+    const no = makeRuntime({ hostKernel: UBUNTU_REFUSES });
+    const { runtime, prompts } = asking(no, "y");
+    expect(
+      await serverCommand(["setup", "--exposure", "loopback", "--no-allow-userns"], runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(prompts).toEqual([]);
+    expect(privilegedRuns(no)).toEqual([]);
+    expect(no.lines.at(-1)).toBe(USERNS_REMINDER);
+  });
+
+  it("does not try through a rootless daemon, and says the command when the helper fails", async () => {
+    const rootless = makeRuntime({
+      hostKernel: UBUNTU_REFUSES,
+      securityOptions: '["name=seccomp,profile=builtin","name=rootless","name=cgroupns"]',
+    });
+    expect(await serverCommand(["setup", "--yes", "--allow-userns"], rootless.runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(privilegedRuns(rootless)).toEqual([]);
+    expect(rootless.lines).toContain(
+      `Docker here runs rootless, so setup cannot change the host's kernel through it. On the host, run: ${USERNS_FIX}`,
+    );
+
+    const failed = makeRuntime({ hostKernel: UBUNTU_REFUSES, allowStatus: 1 });
+    expect(await serverCommand(["setup", "--yes", "--allow-userns"], failed.runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(failed.lines).toContain(
+      `Setup could not apply it through Docker (permission denied). On the host, run: ${USERNS_FIX}`,
+    );
+    expect(failed.lines.at(-1)).toBe(USERNS_REMINDER);
+  });
+
+  it("a host flag alone is not an answer to how Mend is reached", async () => {
+    const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
+    expect(await serverCommand(["setup", "--allow-userns"], control.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("No terminal to ask on and no flags"),
+    });
+    expect(privilegedRuns(control)).toEqual([]);
   });
 
   it("says nothing about user namespaces on a host that allows them", async () => {
@@ -968,7 +1141,7 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--yes"], second.runtime)).toEqual({ _tag: "ok" });
 
     expect(second.randomSizes).toEqual([]);
-    expect(second.fetched.filter((url) => !url.endsWith("/api/health"))).toEqual([]);
+    expect(second.fetched.filter((url) => !/\/api\/(health|instance)$/.test(url))).toEqual([]);
     expect(activeDirectory(configDir)).toBe(generationBefore);
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(1);
     expect(fs.readFileSync(activeFile(configDir, "server.env"), "utf8")).toBe(envBefore);
@@ -1018,6 +1191,92 @@ describe("mend server setup", () => {
     expect(upgraded.fetched).toEqual([]);
     expect(upgraded.commands).toEqual([]);
     expect([...next.keys()].some((key) => key.includes("SEALANT_VERSION"))).toBe(false);
+  });
+
+  it("a re-run on an install with accounts never says to create the first account", async () => {
+    const configDir = temporaryDirectory("accounts");
+    const first = makeRuntime({
+      configDir,
+      instanceBody: '{"users":"none","registration":"open"}',
+    });
+    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
+    expect(first.lines.at(-1)).toBe(
+      "Open http://localhost:3105, create the first account, then run: mend login --url http://localhost:3105",
+    );
+
+    const some = '{"users":"some","registration":"closed"}';
+    const signedOut = makeRuntime({ configDir, daemon: first.daemon, instanceBody: some });
+    expect(await serverCommand(["setup", "--yes"], signedOut.runtime)).toEqual({ _tag: "ok" });
+    expect(signedOut.lines.some((line) => line.includes("first account"))).toBe(false);
+    expect(signedOut.lines.at(-1)).toBe(
+      "Open http://localhost:3105 to sign in. To sign in this machine's CLI, run: mend login --url http://localhost:3105",
+    );
+
+    const signedIn = makeRuntime({ configDir, daemon: first.daemon, instanceBody: some });
+    expect(
+      await serverCommand(["setup", "--yes"], {
+        ...signedIn.runtime,
+        savedCliLogin: () => ({ url: "http://localhost:3105", signedIn: true }),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(signedIn.lines.some((line) => line.includes("first account"))).toBe(false);
+    expect(signedIn.lines.some((line) => line.includes("mend login"))).toBe(false);
+  });
+
+  it("a changed URL moves this machine's CLI on a yes, keeping its sign-in, and tells everyone else", async () => {
+    const configDir = temporaryDirectory("url-change");
+    const first = makeRuntime({ configDir });
+    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
+
+    const moved = makeRuntime({
+      configDir,
+      daemon: first.daemon,
+      instanceBody: '{"users":"some","registration":"closed"}',
+      unreachable: ["http://localhost:3105"],
+    });
+    const repointed: Array<string> = [];
+    const prompts: Array<string> = [];
+    expect(
+      await serverCommand(["setup", "--bind", "10.0.0.52", "--url", "http://10.0.0.52:3105"], {
+        ...moved.runtime,
+        savedCliLogin: () => ({ url: "http://localhost:3105", signedIn: true }),
+        repointCliLogin: (_dir, url) => repointed.push(url),
+        prompter: async (prompt) => {
+          prompts.push(prompt);
+          return "";
+        },
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(prompts).toEqual([
+      "This machine's CLI is signed in at http://localhost:3105, which no longer answers. Point it at http://10.0.0.52:3105? Its sign-in carries over. [Y/n] ",
+    ]);
+    expect(repointed).toEqual(["http://10.0.0.52:3105"]);
+    expect(moved.lines).toContain(
+      "Mend's URL changed from http://localhost:3105 to http://10.0.0.52:3105. Browsers open http://10.0.0.52:3105. A CLI signed in at the old URL (another account on this machine, another machine) moves with: mend login --url http://10.0.0.52:3105",
+    );
+    expect(moved.lines.at(-1)).toBe(
+      "This machine's CLI now points at http://10.0.0.52:3105; its sign-in carried over.",
+    );
+
+    // No one to ask and no --yes: the command, not a silent change.
+    const unasked = makeRuntime({
+      configDir,
+      daemon: first.daemon,
+      instanceBody: '{"users":"some","registration":"closed"}',
+      unreachable: ["http://10.0.0.52:3105/api/health"],
+    });
+    const untouched: Array<string> = [];
+    expect(
+      await serverCommand(["setup", "--bind", "127.0.0.1", "--url", "http://localhost:3105"], {
+        ...unasked.runtime,
+        savedCliLogin: () => ({ url: "http://10.0.0.52:3105", signedIn: true }),
+        repointCliLogin: (_dir, url) => untouched.push(url),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(untouched).toEqual([]);
+    expect(unasked.lines).toContain(
+      "This machine's CLI still points at http://10.0.0.52:3105, which no longer answers. Move it with: mend login --url http://localhost:3105",
+    );
   });
 
   it("requires explicit, matching non-local bind and URL settings", async () => {

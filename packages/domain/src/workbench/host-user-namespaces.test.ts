@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { hostUserNamespacesOf } from "./host-user-namespaces.ts";
+import {
+  hostUserNamespacesFix,
+  hostUserNamespacesOf,
+  hostUserNamespacesRefusal,
+  hostUserNamespacesRefusalParts,
+} from "./host-user-namespaces.ts";
 
 const none = {
   apparmorRestrictUnprivilegedUserns: null,
@@ -52,5 +57,28 @@ describe("hostUserNamespacesOf", () => {
     expect(hostUserNamespacesOf({ ...none, unprivilegedUsernsClone: "1" })).toEqual({
       allowed: true,
     });
+  });
+});
+
+describe("hostUserNamespacesRefusal", () => {
+  const setting = "kernel.apparmor_restrict_unprivileged_userns = 0";
+
+  it("says what is refused, then where and how to allow it", () => {
+    expect(hostUserNamespacesRefusal(setting)).toBe(
+      "the server's host refuses user namespaces · no workspace can start · on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
+    );
+  });
+
+  it("splits a line that carries it around the command", () => {
+    const line = `launch failed: ${hostUserNamespacesRefusal(setting)} · saved at 07:34:21 UTC`;
+    expect(hostUserNamespacesRefusalParts(line)).toEqual({
+      lead: "launch failed: the server's host refuses user namespaces · no workspace can start · on the server's host: ",
+      command: hostUserNamespacesFix(setting),
+      rest: " · saved at 07:34:21 UTC",
+    });
+    expect(
+      hostUserNamespacesRefusalParts(`launch failed: ${hostUserNamespacesRefusal(setting)}`),
+    ).toMatchObject({ command: hostUserNamespacesFix(setting), rest: "" });
+    expect(hostUserNamespacesRefusalParts("launch failed: setup command failed")).toBeNull();
   });
 });

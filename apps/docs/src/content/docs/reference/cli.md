@@ -88,6 +88,8 @@ Setup options:
 | `--assets-dir <dir>`     | Copy `compose.v2.yaml` and `postgres-init.sh` from a local release directory; a fresh setup then requires `--version`                                                                                                                  |
 | `--offline`              | Use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls                                                                                                                                   |
 | `--docker-socket <path>` | Daemon-side socket mount override for diagnostics; retained on reruns                                                                                                                                                                  |
+| `--allow-userns`         | On a Docker host whose kernel refuses unprivileged user namespaces, allow them without asking: writes `/etc/sysctl.d/60-mend-rootless-docker.conf` on the host and applies it                                                          |
+| `--no-allow-userns`      | Leave the host's kernel as it is without asking; setup prints the command instead                                                                                                                                                      |
 
 Setup holds an exclusive lock through startup and health checks, keeps private configuration in
 immutable generations, and never deletes Docker volumes. A changed `--version` on a rerun is

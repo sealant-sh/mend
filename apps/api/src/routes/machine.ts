@@ -2,9 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { hostname, networkInterfaces, platform } from "node:os";
 
 import { MachineView, MendApi, type AddressKind } from "@mend/api-contracts";
-import { HOST_USER_NAMESPACE_FILES, hostUserNamespacesOf } from "@mend/domain/workbench";
+import {
+  HOST_USER_NAMESPACE_FILES,
+  type HostUserNamespaces,
+  hostUserNamespacesOf,
+} from "@mend/domain/workbench";
 import { addressKindOf, isTrustedHop, NetworkConfig, trustedProxyCidrs } from "@mend/network";
-import { Effect, Option } from "effect";
+import { WorkspaceHostUserNamespaces } from "@mend/sessions";
+import { Effect, Layer, Option } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -94,24 +99,39 @@ const readHostFile = (file: string): string | null => {
  * Whether workspaces' rootless Docker services can start on this host, when workspaces run on its
  * Docker: the bundle drives the host's daemon through its socket unless the deployment turned that
  * runtime off (`scripts/bundle-supervisor.mjs`). A container reads its host's kernel in /proc/sys,
- * so this answers for the host. Undefined when workspaces run elsewhere.
+ * so this answers for the host. Null when workspaces run elsewhere. Read afresh on every call: a
+ * host the operator fixed answers at once.
  */
-export const observedUserNamespaces = (
+export const observedHostUserNamespaces = (
   read: (file: string) => string | null = readHostFile,
   dockerOnThisHost: boolean = process.env.DOCKER_RUNTIME_ENABLED?.trim() !== "false" &&
     existsSync("/var/run/docker.sock"),
-): MachineView["userNamespaces"] => {
-  if (!dockerOnThisHost) return undefined;
+): HostUserNamespaces | null => {
+  if (!dockerOnThisHost) return null;
   const [restrict, apparmor, clone] = HOST_USER_NAMESPACE_FILES;
-  const observed = hostUserNamespacesOf({
+  return hostUserNamespacesOf({
     apparmorRestrictUnprivilegedUserns: read(restrict),
     apparmorEnabled: read(apparmor),
     unprivilegedUsernsClone: read(clone),
   });
+};
+
+/** `observedHostUserNamespaces` as the machine view carries it; undefined when workspaces run elsewhere. */
+export const observedUserNamespaces = (
+  ...args: Parameters<typeof observedHostUserNamespaces>
+): MachineView["userNamespaces"] => {
+  const observed = observedHostUserNamespaces(...args);
+  if (observed === null) return undefined;
   return observed.allowed
     ? { allowed: true, setting: null }
     : { allowed: false, setting: observed.setting };
 };
+
+/** The session engine's view of the same host: a launch on a refusing one fails before it builds. */
+export const WorkspaceHostUserNamespacesLive: Layer.Layer<WorkspaceHostUserNamespaces> =
+  Layer.succeed(WorkspaceHostUserNamespaces, {
+    observe: () => Effect.sync(() => observedHostUserNamespaces()),
+  });
 
 export const readMachine = (exposure: NonNullable<MachineView["exposure"]>): MachineView => {
   const address = detectTailnetAddress();

@@ -51,3 +51,42 @@ export const hostUserNamespacesOf = (readings: HostUserNamespaceReadings): HostU
 /** The command that allows them on the host, now and after a restart. */
 export const hostUserNamespacesFix = (setting: string): string =>
   `echo '${setting}' | sudo tee ${HOST_USER_NAMESPACE_SYSCTL_FILE} && sudo sysctl --system`;
+
+/** What a refusing host means for Mend, in the words doctor, a failed launch and the web share. */
+export const HOST_USER_NAMESPACES_REFUSED =
+  "the server's host refuses user namespaces · no workspace can start";
+
+/** What leads the fix wherever it is written out: the command runs on the host, not here. */
+export const HOST_USER_NAMESPACES_FIX_LEAD = "on the server's host: ";
+
+/** Where to apply the fix, then the command: doctor's fix column. */
+export const hostUserNamespacesFixLine = (setting: string): string =>
+  `${HOST_USER_NAMESPACES_FIX_LEAD}${hostUserNamespacesFix(setting)}`;
+
+/**
+ * The whole refusal as one line: what a launch on a refusing host fails with, before it builds an
+ * image or creates a workspace (`launch failed: <this>`).
+ */
+export const hostUserNamespacesRefusal = (setting: string): string =>
+  `${HOST_USER_NAMESPACES_REFUSED} · ${hostUserNamespacesFixLine(setting)}`;
+
+/**
+ * A line that carries the refusal, split around its command so a reader can set the command
+ * apart: the words up to and including the lead, the command, and anything after it (a session
+ * line may carry ` · saved at …`). Null for any other line.
+ */
+export const hostUserNamespacesRefusalParts = (
+  line: string,
+): { readonly lead: string; readonly command: string; readonly rest: string } | null => {
+  if (!line.includes(HOST_USER_NAMESPACES_REFUSED)) return null;
+  const at = line.indexOf(HOST_USER_NAMESPACES_FIX_LEAD);
+  if (at === -1) return null;
+  const start = at + HOST_USER_NAMESPACES_FIX_LEAD.length;
+  // The command ends at `sudo sysctl --system`; a session line may go on after it.
+  const end = line.indexOf(" · ", start);
+  return {
+    lead: line.slice(0, start),
+    command: end === -1 ? line.slice(start) : line.slice(start, end),
+    rest: end === -1 ? "" : line.slice(end),
+  };
+};

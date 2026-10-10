@@ -5928,7 +5928,18 @@ const main = async () => {
       return qrCommand(rest);
     case "doctor":
       if (rest.includes("--bundle")) return doctorBundle(config, rest);
-      return doctorCommand(config, localCredential, claudeGrantSecret);
+      return doctorCommand(config, localCredential, claudeGrantSecret, async () => {
+        // The server `mend server setup` installed here, when there is one; a missing store or a
+        // busy lock is nothing to say.
+        try {
+          return (
+            (await readServerInstallationFacts(nodeServerRuntime().configDir))?.config.appUrl ??
+            null
+          );
+        } catch {
+          return null;
+        }
+      });
     case "env":
       return envCommand(config, rest);
     case "ssh":
