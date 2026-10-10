@@ -31,6 +31,7 @@ export const unreachableMend: MendClient["Service"] = {
   conversationWait: () => unavailable("GET /api/sessions/:id/waiting"),
   workspaceRetirement: () => unavailable("GET /api/sessions/:id/workspace-retirement"),
   changeDiff: () => unavailable("GET /api/changes/:id/diff"),
+  projectBranches: () => unavailable("GET /api/projects/:id/branches"),
   worktreeNames: () => unavailable("GET /api/projects/:id/worktrees"),
   projectFiles: () => unavailable("GET /api/projects/:id/files"),
   changeStats: () => unavailable("GET /api/changes/:id/stats"),

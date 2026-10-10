@@ -84,6 +84,7 @@ export type WsRpcMethod = WsRpc["_tag"];
 /** The methods the gateway answers for real. */
 export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.serverProbe,
+  WS_METHODS.agentSessionsScan,
   WS_METHODS.serverGetConfig,
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
@@ -104,6 +105,7 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.projectsSearchContents,
   WS_METHODS.subscribeVcsStatus,
   WS_METHODS.vcsRefreshStatus,
+  WS_METHODS.vcsListRefs,
   WS_METHODS.terminalOpen,
   WS_METHODS.terminalAttach,
   WS_METHODS.terminalWrite,
@@ -747,7 +749,12 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.shellOpenInEditor]: (input) =>
       Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
     [WS_METHODS.filesystemBrowse]: () => refuse(WS_METHODS.filesystemBrowse, READ),
-    [WS_METHODS.agentSessionsScan]: () => refuse(WS_METHODS.agentSessionsScan, READ),
+    // Nothing to import: the gateway has no agent history of its own to scan, and Mend's projects
+    // are in the shell already. t3code's onboarding then offers none.
+    [WS_METHODS.agentSessionsScan]: () =>
+      Effect.andThen(authorize(session, READ), () =>
+        Effect.succeed({ candidates: [], scannedAt: new Date().toISOString() }),
+      ),
     [WS_METHODS.agentSessionsImport]: (input) =>
       Effect.fail(new AgentSessionImportProjectNotFoundError({ projectId: input.projectId })),
     // A message's images, kept by the gateway until the message is sent (`images.ts`); files in
@@ -806,7 +813,8 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.gitPreparePullRequestThread]: (input) =>
       Effect.fail(gitManager(WS_METHODS.gitPreparePullRequestThread, input.cwd)),
     [WS_METHODS.vcsPull]: () => refuse(WS_METHODS.vcsPull, OPERATE),
-    [WS_METHODS.vcsListRefs]: () => refuse(WS_METHODS.vcsListRefs, READ),
+    [WS_METHODS.vcsListRefs]: (input) =>
+      authorize(session, READ).pipe(Effect.andThen(vcs.listRefs(input))),
     [WS_METHODS.vcsCreateWorktree]: () => refuse(WS_METHODS.vcsCreateWorktree, OPERATE),
     [WS_METHODS.vcsRemoveWorktree]: () => refuse(WS_METHODS.vcsRemoveWorktree, OPERATE),
     [WS_METHODS.vcsCreateRef]: () => refuse(WS_METHODS.vcsCreateRef, OPERATE),

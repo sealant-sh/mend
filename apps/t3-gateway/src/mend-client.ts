@@ -75,6 +75,11 @@ const MendHarnessCatalog = Schema.Struct({
 export type MendHarnessCatalog = typeof MendHarnessCatalog.Type;
 const decodeHarnessCatalogs = Schema.decodeUnknownEffect(Schema.Array(MendHarnessCatalog));
 
+/** `ProjectBranch` in @mend/api-contracts: a branch of the project's store. */
+const MendBranch = Schema.Struct({ name: Schema.String, isDefault: Schema.Boolean });
+export type MendBranch = typeof MendBranch.Type;
+const decodeBranches = Schema.decodeUnknownEffect(Schema.Array(MendBranch));
+
 /** Mend refused the pairing code: unknown, or already claimed or expired. */
 export class MendPairingRefused extends Schema.TaggedError<MendPairingRefused>()(
   "MendPairingRefused",
@@ -264,6 +269,14 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
     ) => MendRead<MendWorkspaceRetirement | null>;
+    /**
+     * `GET /api/projects/:id/branches`: the branches the project's store holds now (no fetch), as
+     * the composer's branch picker reads them. Never a session branch.
+     */
+    readonly projectBranches: (
+      deviceToken: string,
+      projectId: string,
+    ) => MendRead<ReadonlyArray<MendBranch>>;
     /** `GET /api/projects/:id/worktrees`: the names of the project's worktrees. */
     readonly worktreeNames: (
       deviceToken: string,
@@ -670,6 +683,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeWorkspaceRetirement,
         );
 
+      const projectBranches = (deviceToken: string, projectId: string) =>
+        read(
+          "GET /api/projects/:id/branches",
+          `/api/projects/${encodeURIComponent(projectId)}/branches`,
+          deviceToken,
+          decodeBranches,
+        );
+
       const worktreeNames = (deviceToken: string, projectId: string) =>
         read(
           "GET /api/projects/:id/worktrees",
@@ -1037,6 +1058,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         conversationWait,
         workspaceRetirement,
         changeDiff,
+        projectBranches,
         worktreeNames,
         changeStats,
         worktreeCheckpoints,
