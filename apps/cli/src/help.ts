@@ -1474,9 +1474,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "ssh",
     section: "this machine",
-    summary: "workspace SSH status: gateway, registered keys, ssh config",
-    synopsis: ["[status]"],
-    description: ["Whether this machine can ssh into workspaces, and what is missing if not."],
+    summary: "workspace SSH status, or the ssh command for one session",
+    synopsis: ["[status]", "<session> [--host <hostname>]"],
+    description: [
+      "Without a session: whether this machine can ssh into workspaces, and what is missing if not.",
+      "With a session id or its prefix: the exact ssh command that reaches that session's workspace, on its own line, e.g. ssh ws-<workspace>@mend-ws-…. The user is the workspace's id, which no other command shows; a Docker container name is a different id, and the gateway closes the connection after its banner. A session with no running workspace is refused.",
+    ],
+    examples: [{ command: "mend ssh 3f2a9c1e", text: "print the ssh command for that session" }],
     see: ["ssh setup", "ssh keys"],
   },
   {

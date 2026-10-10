@@ -240,7 +240,7 @@ configuration. Read it before you attach it to an issue.
 ```sh
 mend uninstall            # asks: everything, the server only, or this machine's files only
 mend uninstall --server   # the local installation: workspaces, containers, volumes, image, configuration
-mend uninstall --home     # this machine's sign-in, workspace SSH key and ~/.ssh/config block
+mend uninstall --home     # this machine's sign-in, workspace SSH key and the signed-in server's ~/.ssh/config block
 mend uninstall --all --yes
 ```
 
@@ -267,17 +267,24 @@ at `mend uninstall --server`, which lists and removes them.
 When the sign-in is to the server being removed, its device token and workspace SSH key go with that
 server's database. Otherwise the home scope asks the signed-in server to remove this machine's key
 and revoke this terminal's device, after the local server is gone, then removes `cli.json`, the
-workspace SSH key and the managed block. Files under the configuration directory that Mend did not
-create are left in place and listed.
+workspace SSH key and the managed `~/.ssh/config` blocks of the servers going: the signed-in one, by
+the alias its URL gives, and with `--all` the local installation's, by that alias or by its gateway
+(the published SSH port on this machine or the server's host, so a block set up before setup moved
+the URL is found too). Other servers' blocks stay. The unscoped `Host mend-ws` block an older
+release wrote names no server, so it stays too, and uninstall says how to delete it by hand. A key
+directory that a block that stays still signs with stays as well. Files under the configuration
+directory that Mend did not create are left in place and listed.
 
 `--all` also offers what else Mend put on the Docker host: the images it pulled and built, selected
 by the names and labels Mend and Sealant use (the bundle's images, `sealant-workspace-*`, the
-workspaces' `docker:*-dind-rootless` service and the network guard), with their size; an image
-another container still uses stays. It removes `/etc/sysctl.d/60-mend-rootless-docker.conf` only
-when setup wrote it (its first line says so) and puts back the setting its second line says it
-replaced; a file written by hand stays, with the command that removes it. Docker's build cache is
-shared by every build on the daemon, so it gets its own question and stays under `--yes`. The CLI
-stays until `npm uninstall -g @sealant/mend`.
+workspaces' `docker:*-dind-rootless` service and the network guard), with their size. An image
+Docker refuses is asked for once more after the rest, since removing another tag often frees it; one
+still refused stays, named with Docker's reason. The server's own Compose containers mount
+`mend-control` too, and are never counted as session workspaces. It removes
+`/etc/sysctl.d/60-mend-rootless-docker.conf` only when setup wrote it (its first line says so) and
+puts back the setting its second line says it replaced; a file written by hand stays, with the
+command that removes it. Docker's build cache is shared by every build on the daemon, so it gets its
+own question and stays under `--yes`. The CLI stays until `npm uninstall -g @sealant/mend`.
 
 ## Offline setup
 

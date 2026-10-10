@@ -144,20 +144,20 @@ bundles (with sealantd#136) applies this list. An older runtime leaves out only
 | `.mend/pi-profile-kept/`               | pi          | pi profiles Mend set aside, their `mcp.json` included                                       |
 
 pi's `mcp.json` is on the list because it can carry the keys typed into its servers' headers and
-environment. The copy from your [pi profile](../guides/pi/) is written again at every launch, so
-yours is never lost. What a session changes in it, a server added with `pi mcp add`, one turned on
-or off with `/mcp`, or an edit to the delivered copy, lasts as long as that session's machine; put
-it in your pi profile to keep it. Claude Code's `file-history/` holds a copy of every file it edits,
-a secret file included, so a file edit made before a session moved to a new machine cannot be
-rewound there.
+environment. The copy from your [pi profile](/guides/pi/) is written again at every launch, so yours
+is never lost. What a session changes in it, a server added with `pi mcp add`, one turned on or off
+with `/mcp`, or an edit to the delivered copy, lasts as long as that session's machine; put it in
+your pi profile to keep it. Claude Code's `file-history/` holds a copy of every file it edits, a
+secret file included, so a file edit made before a session moved to a new machine cannot be rewound
+there.
 
 Some settings files can hold a secret you type into them, and they are saved, because they also hold
 your settings: Codex's `config.toml`, Claude Code's `settings.json` (`env`), and pi's `models.json`
 and `settings.json` (a key, or a package installed from a URL with a token in it). Name a variable
 or a command there instead of the value (Codex: `bearer_token_env_var`, `env_http_headers`,
 `env_key`; pi: `$NAME` or `!command`). Keep a value that is yours in a
-[secret file](../guides/secret-files/), which is never saved, and one the project shares in a
-[project secret](../guides/environment-variables/). opencode keeps an opencode console login and its
+[secret file](/guides/secret-files/), which is never saved, and one the project shares in a
+[project secret](/guides/environment-variables/). opencode keeps an opencode console login and its
 integration logins in its database, beside the conversations, and the database is saved: make those
 logins only in a worktree nobody else uses.
 
@@ -195,5 +195,5 @@ refreshes second is signed out, and your laptop refreshes whenever you use it. P
 
 ## See also
 
-- [Connect provider accounts](../guides/provider-accounts/) for the commands.
-- [Organizations and members](../organizations/overview/) for shared control.
+- [Connect provider accounts](/guides/provider-accounts/) for the commands.
+- [Organizations and members](/organizations/overview/) for shared control.

@@ -14,6 +14,7 @@ import {
   readWorkspaceSshConfig,
   reconcileWorkspaceSshConfig,
   stripManagedWorkspaceSshBlocks,
+  workspaceSshAlias,
   workspaceSshPublicKeyFingerprint,
   writeWorkspaceSshConfig,
 } from "../src/index.ts";
@@ -341,13 +342,15 @@ describe("managed workspace SSH config", () => {
     expect(reconciled.value).not.toContain("old-host");
   });
 
-  it("migrates the old global managed block but leaves a hand-written mend-ws host", () => {
+  it("migrates the old global managed block for this gateway but leaves a hand-written mend-ws host", () => {
     const legacy = [
       "Host mend-ws",
       "  ProxyJump bastion",
       "# >>> mend workspace ssh (managed by `mend ssh setup`) >>>",
       "Host mend-ws",
-      "  HostName old-managed-host",
+      "  HostName mend-mini",
+      "  Port 2222",
+      "  IdentityFile ~/old-managed-key",
       "# <<< mend workspace ssh <<<",
       "",
     ].join("\n");
@@ -355,8 +358,24 @@ describe("managed workspace SSH config", () => {
     const reconciled = reconcileWorkspaceSshConfig(legacy, server, null);
     if (!reconciled.ok) throw reconciled.error;
     expect(reconciled.value).toContain("Host mend-ws\n  ProxyJump bastion");
-    expect(reconciled.value).not.toContain("old-managed-host");
+    expect(reconciled.value).not.toContain("old-managed-key");
     expect(reconciled.value).toContain(`Host ${server.alias}`);
+  });
+
+  it("leaves another server's old global block where it is", () => {
+    const legacy = [
+      "# >>> mend workspace ssh (managed by `mend ssh setup`) >>>",
+      "Host mend-ws",
+      "  HostName 10.0.0.214",
+      "  Port 2222",
+      "# <<< mend workspace ssh <<<",
+      "",
+    ].join("\n");
+    const server = target("http://mend-mini:3105", 2222);
+    const reconciled = reconcileWorkspaceSshConfig(legacy, server, null);
+    if (!reconciled.ok) throw reconciled.error;
+    expect(reconciled.value).toBe(`${managedWorkspaceSshBlock(server, null)}${legacy}`);
+    expect(effectiveConfig(reconciled.value, "mend-ws")).toContain("hostname 10.0.0.214\n");
   });
 
   it("refuses to overwrite a hand-written block that uses the generated alias", () => {
@@ -675,29 +694,61 @@ describe("stripManagedWorkspaceSshBlocks", () => {
     publishedPort: 2222,
   });
   if (!server.ok || !other.ok) throw new Error("targets");
+  const legacy =
+    "# >>> mend workspace ssh (managed by `mend ssh setup`) >>>\nHost mend-ws\n  HostName 10.0.0.214\n  Port 2222\n  IdentityFile ~/.config/mend/ssh/id_ed25519\nHost *\n# <<< mend workspace ssh <<<\n";
+  const hand = "Host unrelated\n  HostName unrelated.example\n  ServerAliveInterval 13\n";
+  const thisServer = (block: { readonly alias: string }) => block.alias === server.value.alias;
 
-  it("removes every managed block, current and legacy, and keeps the rest byte for byte", () => {
-    const hand = "Host unrelated\n  HostName unrelated.example\n  ServerAliveInterval 13\n";
-    const legacy =
-      "# >>> mend workspace ssh (managed by `mend ssh setup`) >>>\nHost mend-ws\n  HostName old.example\nHost *\n# <<< mend workspace ssh <<<\n";
-    const config = `${managedWorkspaceSshBlock(server.value, null)}${managedWorkspaceSshBlock(other.value, null)}${legacy}${hand}`;
-    const stripped = stripManagedWorkspaceSshBlocks(config);
-    expect(stripped.ok).toBe(true);
-    if (!stripped.ok) return;
-    expect(stripped.value.removed).toBe(3);
-    expect(stripped.value.config).toBe(hand);
+  it("removes only the blocks it is told are this server's, and keeps the rest byte for byte", () => {
+    const config = `${managedWorkspaceSshBlock(server.value, "/k/id")}${managedWorkspaceSshBlock(other.value, null)}${legacy}${hand}`;
+    const stripped = stripManagedWorkspaceSshBlocks(config, thisServer);
+    if (!stripped.ok) throw stripped.error;
+    expect(stripped.value.removed).toEqual([
+      {
+        alias: server.value.alias,
+        legacy: false,
+        hostname: "mend.example",
+        port: 2222,
+        identityFile: "/k/id",
+      },
+    ]);
+    expect(stripped.value.kept.map((block) => block.alias)).toEqual([other.value.alias]);
+    expect(stripped.value.config).toBe(
+      `${managedWorkspaceSshBlock(other.value, null)}${legacy}${hand}`,
+    );
+  });
+
+  it("never removes the legacy block, which names no server, even when asked to", () => {
+    const stripped = stripManagedWorkspaceSshBlocks(`${legacy}${hand}`, () => true);
+    if (!stripped.ok) throw stripped.error;
+    expect(stripped.value.removed).toEqual([]);
+    expect(stripped.value.config).toBe(`${legacy}${hand}`);
+    expect(stripped.value.legacy).toEqual({
+      alias: "mend-ws",
+      legacy: true,
+      hostname: "10.0.0.214",
+      port: 2222,
+      identityFile: "~/.config/mend/ssh/id_ed25519",
+    });
   });
 
   it("leaves a config without managed blocks alone", () => {
-    const stripped = stripManagedWorkspaceSshBlocks("Host a\n  HostName a.example\n");
+    const stripped = stripManagedWorkspaceSshBlocks("Host a\n  HostName a.example\n", () => true);
     expect(stripped.ok && stripped.value).toEqual({
       config: "Host a\n  HostName a.example\n",
-      removed: 0,
+      removed: [],
+      kept: [],
+      legacy: null,
     });
   });
 
   it("refuses an unterminated block like reconciliation does", () => {
     const broken = managedWorkspaceSshBlock(server.value, null).split("# <<<")[0] ?? "";
-    expect(stripManagedWorkspaceSshBlocks(broken).ok).toBe(false);
+    expect(stripManagedWorkspaceSshBlocks(broken, () => true).ok).toBe(false);
+  });
+
+  it("names the alias mend ssh setup writes for a URL", () => {
+    expect(workspaceSshAlias("http://mend.example:3105")).toBe(server.value.alias);
+    expect(workspaceSshAlias("not a url")).toBeNull();
   });
 });

@@ -286,6 +286,11 @@ this installation's identity label. Live sessions are listed in the plan; uninst
 workspaces and removes them with their volumes and networks. If Docker is stopped, nothing is
 removed.
 
+In `~/.ssh/config`, uninstall removes only the blocks `mend ssh setup` wrote for the server it
+removes and the one this machine is signed in to. Other servers' blocks stay. So does the unscoped
+`Host mend-ws` block an older release wrote, because nothing in it says which server it is for:
+uninstall names it and how to delete it by hand.
+
 If Docker refuses to remove something, uninstall names it and keeps the `mend-store` volume and the
 identity, so running `mend uninstall` again finishes the job, and `mend server setup` can reinstall
 over it. Everything also offers Mend's images, the user-namespace sysctl file setup wrote, and, in

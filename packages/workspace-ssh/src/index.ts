@@ -273,33 +273,137 @@ const removeManagedBlock = (
   return success(`${config.slice(0, begin)}${after}`);
 };
 
+/** One block `mend ssh setup` wrote, as the config holds it now. */
+export interface ManagedWorkspaceSshBlockFacts {
+  /** The block's Host alias: `mend-ws-…` for a scoped block, `mend-ws` for the legacy one. */
+  readonly alias: string;
+  /**
+   * Written by a release before blocks named their server: one block for whichever server that
+   * machine set up last, and nothing in it says which.
+   */
+  readonly legacy: boolean;
+  readonly hostname: string | null;
+  readonly port: number | null;
+  /** The IdentityFile it names, decoded; null when the agent supplies the key. */
+  readonly identityFile: string | null;
+}
+
+const LEGACY_ALIAS = "mend-ws";
+
+const decodeIdentityFile = (value: string | undefined): string | null => {
+  if (value === undefined) return null;
+  // Our quoted representation; old unquoted blocks contained literal paths.
+  if (!value.startsWith('"')) return value;
+  if (!/^"(?:[^"\\]|\\["\\])*"$/.test(value)) return null;
+  return value
+    .slice(1, -1)
+    .replace(/\\(["\\])/g, "$1")
+    .replaceAll("%%", "%");
+};
+
+const blockFacts = (
+  body: string,
+  alias: string,
+  legacy: boolean,
+): ManagedWorkspaceSshBlockFacts => {
+  const directive = (name: string): string | undefined =>
+    new RegExp(`^\\s*${name}\\s+(.+?)\\s*$`, "im").exec(body)?.[1];
+  const port = Number(directive("Port"));
+  return {
+    alias,
+    legacy,
+    hostname: directive("HostName") ?? null,
+    port: Number.isInteger(port) && port > 0 ? port : null,
+    identityFile: decodeIdentityFile(directive("IdentityFile")),
+  };
+};
+
+const blockBody = (config: string, beginMarker: string, endMarker: string): string | null => {
+  const begin = config.indexOf(beginMarker);
+  if (begin === -1) return null;
+  const end = config.indexOf(endMarker, begin + beginMarker.length);
+  return end === -1 ? null : config.slice(begin + beginMarker.length, end);
+};
+
+/** Every block `mend ssh setup` wrote, scoped and legacy, with what each points at. */
+export const listManagedWorkspaceSshBlocks = (
+  config: string,
+): ReadonlyArray<ManagedWorkspaceSshBlockFacts> => {
+  const aliases = new Set(
+    [...config.matchAll(/^# >>> mend workspace ssh (mend-ws-[a-z0-9-]+) \(managed\) >>>$/gm)]
+      .map((match) => match[1])
+      .filter((alias): alias is string => alias !== undefined),
+  );
+  const blocks: Array<ManagedWorkspaceSshBlockFacts> = [];
+  for (const alias of aliases) {
+    const body = blockBody(config, blockBegin(alias), blockEnd(alias));
+    if (body !== null) blocks.push(blockFacts(body, alias, false));
+  }
+  const legacy = blockBody(config, LEGACY_BLOCK_BEGIN, LEGACY_BLOCK_END);
+  if (legacy !== null) blocks.push(blockFacts(legacy, LEGACY_ALIAS, true));
+  return blocks;
+};
+
+/** The Host alias `mend ssh setup` writes for the server at this URL; null for no URL. */
+export const workspaceSshAlias = (serverUrl: string): string | null => {
+  // The alias comes from the URL alone; the port only routes.
+  const target = parseWorkspaceSshTarget({ serverUrl, publishedPort: 22 });
+  return target.ok ? target.value.alias : null;
+};
+
+/** What `stripManagedWorkspaceSshBlocks` did, block by block. */
+export interface StrippedWorkspaceSshConfig {
+  readonly config: string;
+  readonly removed: ReadonlyArray<ManagedWorkspaceSshBlockFacts>;
+  /** Scoped blocks that belong to other servers, untouched. */
+  readonly kept: ReadonlyArray<ManagedWorkspaceSshBlockFacts>;
+  /** The legacy block, untouched: nothing in it says which server it is for. */
+  readonly legacy: ManagedWorkspaceSshBlockFacts | null;
+}
+
 /**
- * Remove every block `mend ssh setup` ever wrote, current form and legacy, keeping every other
- * byte. Duplicate or unterminated blocks are refused the same way reconciliation refuses them.
+ * Remove the scoped blocks `owned` claims, keeping every other byte: other servers' blocks, the
+ * person's own hosts, and the legacy block, which names no server and so is never presumed to
+ * be the one going. Duplicate or unterminated blocks are refused the same way reconciliation
+ * refuses them.
  */
 export const stripManagedWorkspaceSshBlocks = (
   existing: string,
-): WorkspaceSshResult<{ readonly config: string; readonly removed: number }> => {
+  owned: (block: ManagedWorkspaceSshBlockFacts) => boolean,
+): WorkspaceSshResult<StrippedWorkspaceSshConfig> => {
   let config = existing;
-  let removed = 0;
-  const aliases = [
-    ...config.matchAll(/^# >>> mend workspace ssh (mend-ws-[a-z0-9-]+) \(managed\) >>>$/gm),
-  ]
-    .map((match) => match[1])
-    .filter((alias): alias is string => alias !== undefined);
-  for (const alias of new Set(aliases)) {
-    const stripped = removeManagedBlock(config, blockBegin(alias), blockEnd(alias));
+  const removed: Array<ManagedWorkspaceSshBlockFacts> = [];
+  const kept: Array<ManagedWorkspaceSshBlockFacts> = [];
+  let legacy: ManagedWorkspaceSshBlockFacts | null = null;
+  for (const block of listManagedWorkspaceSshBlocks(existing)) {
+    if (block.legacy) {
+      legacy = block;
+      continue;
+    }
+    if (!owned(block)) {
+      kept.push(block);
+      continue;
+    }
+    const stripped = removeManagedBlock(config, blockBegin(block.alias), blockEnd(block.alias));
     if (!stripped.ok) return stripped;
     config = stripped.value;
-    removed += 1;
+    removed.push(block);
   }
-  if (config.includes(LEGACY_BLOCK_BEGIN)) {
-    const stripped = removeManagedBlock(config, LEGACY_BLOCK_BEGIN, LEGACY_BLOCK_END);
-    if (!stripped.ok) return stripped;
-    config = stripped.value;
-    removed += 1;
+  // A begin marker without its end is not listed: refuse it rather than leave it unexplained.
+  for (const alias of config.matchAll(
+    /^# >>> mend workspace ssh (mend-ws-[a-z0-9-]+) \(managed\) >>>$/gm,
+  )) {
+    const name = alias[1] ?? "";
+    if (blockBody(config, blockBegin(name), blockEnd(name)) === null) {
+      return failure(
+        new WorkspaceSshError(
+          "config",
+          `Managed SSH config block beginning with "${blockBegin(name)}" has no closing marker.`,
+        ),
+      );
+    }
   }
-  return success({ config, removed });
+  return success({ config, removed, kept, legacy });
 };
 
 const containsExactHost = (config: string, alias: string): boolean =>
@@ -309,9 +413,11 @@ const containsExactHost = (config: string, alias: string): boolean =>
   });
 
 /**
- * Replace this server's managed block and migrate Mend's old global block. Retain other servers and
- * every hand-written byte. Prepending wins OpenSSH's first-match policy; Host * restores the
- * original global scope. Ambiguous legacy scopes and hand-written alias collisions are refused.
+ * Replace this server's managed block, and migrate Mend's old global block when it points at this
+ * server's gateway (the same HostName and Port); one that points elsewhere is another server's
+ * and stays. Retain other servers and every hand-written byte. Prepending wins OpenSSH's
+ * first-match policy; Host * restores the original global scope. Ambiguous legacy scopes and
+ * hand-written alias collisions are refused.
  */
 export const reconcileWorkspaceSshConfig = (
   existing: string,
@@ -324,11 +430,14 @@ export const reconcileWorkspaceSshConfig = (
     blockEnd(target.alias),
   );
   if (!withoutCurrent.ok) return withoutCurrent;
-  const withoutLegacy = removeManagedBlock(
-    withoutCurrent.value,
-    LEGACY_BLOCK_BEGIN,
-    LEGACY_BLOCK_END,
-  );
+  const legacy = listManagedWorkspaceSshBlocks(withoutCurrent.value).find((block) => block.legacy);
+  const legacyIsThisServer =
+    legacy === undefined ||
+    (legacy.hostname?.toLowerCase() === target.hostname.toLowerCase() &&
+      (legacy.port ?? 22) === target.port);
+  const withoutLegacy = legacyIsThisServer
+    ? removeManagedBlock(withoutCurrent.value, LEGACY_BLOCK_BEGIN, LEGACY_BLOCK_END)
+    : withoutCurrent;
   if (!withoutLegacy.ok) return withoutLegacy;
   if (containsExactHost(withoutLegacy.value, target.alias)) {
     return failure(
@@ -394,21 +503,8 @@ export const configuredWorkspaceSshIdentityFile = (
   config: string,
   target: WorkspaceSshTarget,
 ): string | null => {
-  const begin = config.indexOf(blockBegin(target.alias));
-  if (begin === -1) return null;
-  const end = config.indexOf(blockEnd(target.alias), begin);
-  if (end === -1) return null;
-  const block = config.slice(begin, end);
-  const match = /^\s*IdentityFile\s+(.+?)\s*$/m.exec(block);
-  const value = match?.[1];
-  if (value === undefined) return null;
-  // Decode our quoted representation. Old unquoted blocks contained literal paths.
-  if (!value.startsWith('"')) return value;
-  if (!/^"(?:[^"\\]|\\["\\])*"$/.test(value)) return null;
-  return value
-    .slice(1, -1)
-    .replace(/\\(["\\])/g, "$1")
-    .replaceAll("%%", "%");
+  const body = blockBody(config, blockBegin(target.alias), blockEnd(target.alias));
+  return body === null ? null : blockFacts(body, target.alias, false).identityFile;
 };
 
 type WorkspaceSshKeyMaterial = Omit<WorkspaceSshKey, "fingerprint">;

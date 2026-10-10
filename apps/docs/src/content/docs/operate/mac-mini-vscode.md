@@ -26,7 +26,12 @@ default). The extension uses the first for everything except Remote-SSH, which u
 ## 1. Prepare the Mac mini
 
 - Install [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/) or
-  [OrbStack](https://orbstack.dev). Apple silicon runs Mend's `arm64` images natively.
+  [OrbStack](https://orbstack.dev). On Apple silicon, Mend, Postgres, Garage and each workspace's
+  Docker service run as `arm64` images. Workspaces built on Arch Linux, Mend's default OS family,
+  are `amd64`: Docker Hub's `archlinux` image is x86_64 only, so Sealant builds that family for
+  `amd64` and the workspace runs under emulation (Rosetta, in both Docker Desktop and OrbStack). The
+  first build of a workspace image takes a few minutes. The other OS families build for the host's
+  architecture.
 - Docker Desktop is an app that runs when a person is logged in. For a server, turn on **Start
   Docker Desktop when you sign in** (Settings → General) and automatic login for the mini's user
   (System Settings → Users & Groups). After a power cut, Mend comes back when Docker does.
@@ -39,7 +44,8 @@ default). The extension uses the first for everything except Remote-SSH, which u
   configuration directory elsewhere fails setup with
   `bind source path does not exist: …/generations/gen-…/postgres-init.sh`; add the path under
   Settings → Resources → File sharing, or leave `XDG_CONFIG_HOME` unset.
-- Install Node 24 or later, then the CLI: `npm install --global @sealant/mend`.
+- Install Node.js 22.13 or newer (the TUI, the dashboard `mend` opens in a terminal, needs 26 or
+  newer), then the CLI: `npm install --global @sealant/mend`.
 
 ## 2. Choose how the laptop reaches the mini
 
@@ -200,7 +206,8 @@ started from the phone or a terminal appears without a refresh.
   That is the block the acceptance run's setup wrote; on the laptop the key is
   `/Users/<you>/.config/mend/ssh/id_ed25519`. The host name is the one in your Mend URL; the server
   supplies the port. Remote-SSH then connects as `ws-<workspace id>@mend-ws-…`, and VS Code opens
-  `/workspace/repo` inside the workspace, a Linux container on the mini.
+  `/workspace/repo` inside the workspace, a Linux container on the mini. The workspace id is not the
+  container's name; `mend ssh <session>` prints the exact command for one session.
 
 The key is a dedicated `~/.config/mend/ssh/id_ed25519`, or a key from your SSH agent when one is
 loaded at setup. The gateway's host key is accepted on first connection
@@ -256,7 +263,11 @@ Remote-SSH window opened `/workspace/repo` in 19 s (its server install included)
 its terminal and forwarded a port, and Mend's review listed every file written. That server predated
 mend#641, so the login was root.
 
-No Mac took part. Docker Desktop's and OrbStack's port forwarding, file sharing and firewall prompt,
-the Keychain, Apple silicon images, and sleep are described here from their documentation; the
+On a MacBook with Apple silicon and OrbStack (0.36.0-next.754, 2026-10-10), one machine played both
+parts: setup on loopback and then on a tailnet, a shell session and `mend run`, `ssh` into a shared
+and a per-person workspace through the published port, a Remote-SSH window (its x64 server installed
+as the person's own user), and `mend uninstall --all`. The workspaces ran `x86_64` under Rosetta, as
+above. Docker Desktop's port forwarding, file sharing and firewall prompt, the Keychain, and sleep
+are described here from their documentation; the
 [macOS checklist](https://github.com/sealant-sh/Mend/blob/main/docs/MACOS-VALIDATION.md) covers
 them.

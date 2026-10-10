@@ -7,6 +7,36 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-10-10 · 0.39.0-next.720 · Arch workspaces are amd64 on ARM hosts
+
+An RC test of Mend 0.36.0-next.754 on a MacBook with Apple silicon (OrbStack) ran every session
+workspace as `x86_64` under Rosetta (`uname -m` x86_64, cpuinfo "VirtualApple"), while Mend,
+Postgres, Garage and the workspaces' Docker service ran `arm64`. Arch is Mend's default OS family.
+
+- **Today:** the Docker builder passes `--platform linux/amd64` for the `arch` family, in the build
+  and in the image probe (`packages/workspaces/src/buildkit/buildkit-builder.ts`), and the
+  Kubernetes builder sets `platform=linux/amd64` for it. Docker Hub's `archlinux` image has no arm64
+  build. The MicroVM recipe already builds Arch on ARM64 from Arch Linux ARM's signed root
+  filesystem. Every other family's base is multi-arch and builds natively.
+- **Cost:** every default session on an Apple-silicon Mac or an ARM server runs emulated: the first
+  image build took about 2 minutes, and installs, builds and test runs in the session are slower.
+- **Needed:** an `arm64` Arch workspace on Docker and Kubernetes, as MicroVM has, or a documented
+  `platform` on the image plan so Mend can say which architecture a workspace runs and pick a native
+  family on ARM hosts. Mend's docs now say Arch workspaces run under emulation on ARM.
+
+## 2026-10-10 · 0.39.0-next.720 · The SSH gateway closes silently on an unknown workspace
+
+- **Today:** a login as `ws-<id>` with an id that is not a workspace the key's owner may reach (the
+  RC tester used the Docker container's name, `sealant-91b4…`, which is a different id) passes key
+  authentication; then the session channel fails. The client sees the gateway's banner and
+  `Connection to localhost closed.` The reason, "Workspace not found", is only in the gateway's log.
+- **Needed:** the refusal in the client's terminal, before the connection closes: on stderr of the
+  session channel, or as the userauth failure's banner. For example
+  `no workspace ws-sealant-91b4… for this key · mend ssh <session> prints the right command`.
+- **What Mend does meanwhile:** `mend ssh <session>` prints the exact command with the session's
+  `sealantWorkspaceId`, and `mend ssh setup` points at it instead of a `<workspace-id>` placeholder
+  no other output fills in.
+
 ## 2026-10-10 · 0.39.0-next.707 · A removed workspace SSH key: open connections and last use
 
 Mend now lists and removes a person's workspace SSH keys (`mend ssh keys`, Settings → Workspace SSH)

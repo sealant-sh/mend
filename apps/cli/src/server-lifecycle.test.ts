@@ -5,6 +5,7 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { managedWorkspaceSshBlock, parseWorkspaceSshTarget } from "@mend/workspace-ssh";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
@@ -64,6 +65,10 @@ interface DaemonState {
   readonly prunedBuildCache?: boolean;
   /** The bundle's other images uninstall removed. */
   readonly removedImages?: ReadonlyArray<string>;
+  /** Images Docker refuses once and removes with another image of the list. */
+  readonly imagesRefusedOnce?: ReadonlyArray<string>;
+  /** Images a container outside the installation still runs. */
+  readonly imagesInUse?: ReadonlyArray<string>;
 }
 interface Call {
   readonly args: ReadonlyArray<string>;
@@ -2009,6 +2014,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       appUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
       dockerContext: "saved-local",
       edgeHost: null,
+      sshPort: 2222,
       mirrors: ["npm-mirror", "docker-mirror"],
       t3GatewayVolume: false,
       generations: 1,
@@ -2119,6 +2125,15 @@ const liveWorkspace = (f: Fixture) =>
       ["sealant-w1-network", null],
     ],
   });
+
+/** The block `mend ssh setup` writes for a server. */
+const sshBlock = (serverUrl: string, port: number) => {
+  const target = parseWorkspaceSshTarget({ serverUrl, publishedPort: port });
+  if (!target.ok) throw target.error;
+  const text = managedWorkspaceSshBlock(target.value, null);
+  if (!text.ok) throw text.error;
+  return { alias: target.value.alias, text: text.value };
+};
 
 const uninstallRuntime = (
   f: Fixture,
@@ -2318,6 +2333,27 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
     expect(removedFiles).toBeGreaterThan(revoked);
   });
 
+  it("everything removes this installation's ~/.ssh/config block, found by its gateway after a URL change, and nothing else", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    // Set up while the server answered at another URL, on the port it publishes SSH on.
+    const ours = sshBlock("http://localhost:3999", 2222);
+    const other = sshBlock("http://10.0.0.214:3105", 2222);
+    const legacy =
+      "# >>> mend workspace ssh (managed by `mend ssh setup`) >>>\nHost mend-ws\n  HostName 10.0.0.214\n  Port 2222\nHost *\n# <<< mend workspace ssh <<<\n";
+    const mine = "Host mine\n  HostName mine.example\n";
+    const runtime = uninstallRuntime(f, { signedIn: "https://elsewhere.example" });
+    fs.writeFileSync(runtime.sshConfigFile, `${ours.text}${other.text}${legacy}${mine}`);
+    const plan = await describeUninstall(runtime, "all");
+    expect(plan.home?.sshBlocks.map((entry) => entry.alias)).toEqual([ours.alias]);
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    expect(fs.readFileSync(runtime.sshConfigFile, "utf8")).toBe(`${other.text}${legacy}${mine}`);
+    expect(outcome.leftovers).toEqual([
+      expect.stringContaining("Host mend-ws → 10.0.0.214:2222 stays"),
+    ]);
+  });
+
   it("everything also removes Mend's images and the sysctl file setup wrote, restoring the default", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
@@ -2361,6 +2397,22 @@ describe("server uninstall with live sessions", { timeout: 60_000 }, () => {
         "removed 4 images (postgres:17-alpine, dxflrs/garage:v2.4.1, nginx:1.29-alpine, registry:3.1)",
       ]),
     );
+  });
+
+  it("counts an image Docker refused once and then removed with another as removed, and names one it kept", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ imagesRefusedOnce: ["postgres:17-alpine"], imagesInUse: ["registry:3.1"] });
+    const runtime = uninstallRuntime(f);
+    const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "all"));
+    expect(outcome.failures).toEqual([]);
+    expect(f.lines).toContain(
+      "removed 3 images (dxflrs/garage:v2.4.1, nginx:1.29-alpine, postgres:17-alpine)",
+    );
+    expect(outcome.leftovers).toEqual([
+      "image registry:3.1: Error response from daemon: conflict: unable to remove registry:3.1. To remove it: docker --context saved-local image rm registry:3.1",
+    ]);
+    expect(outcome.remaining).toEqual(["1 image"]);
   });
 
   it("leaves a sysctl file written by hand, naming the command that removes it", async () => {

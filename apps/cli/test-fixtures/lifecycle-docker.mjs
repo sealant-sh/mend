@@ -79,6 +79,17 @@ if (
     process.stderr.write(`Error response from daemon: conflict: unable to remove ${image}\n`);
     process.exit(1);
   }
+  // Refused while another of the list still tags it, and gone with that one: Docker removes an
+  // image whose last tag goes, so the next ask finds nothing.
+  if ((state.imagesRefusedOnce ?? []).includes(image)) {
+    state.imagesRefusedOnce = state.imagesRefusedOnce.filter((name) => name !== image);
+    state.removedImages = [...(state.removedImages ?? []), image];
+    save();
+    process.stderr.write(
+      `Error response from daemon: conflict: unable to delete ${image} (must be forced) - image is referenced in multiple repositories\n`,
+    );
+    process.exit(1);
+  }
   state.removedImages = [...(state.removedImages ?? []), image];
   save();
   out(`Untagged: ${image}`);
