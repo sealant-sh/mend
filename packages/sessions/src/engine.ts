@@ -9666,6 +9666,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Conversation processes being handed over (docs/adr/0016, decision 6): from before their
+       * stop until the next process has taken the queue, or the hand-over has ended. Their queued
+       * turns are the conversation's, so an exit seen meanwhile cancels none of them, and the
+       * session they belong to reads as live work meanwhile: a change of sender is not a settle.
+       */
+      const handingOverProcesses = new Set<string>();
+
+      /**
        * Session status is a FOLD over live processes (decided 2026-08-21), never a property of
        * one process: any agent live → `running`; no agent but shells or Services live → `idle`;
        * nothing live → settled from the last agent outcome. Idempotent — every path that ends
@@ -9679,7 +9687,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const session = yield* sessions.byId(sessionId);
         const rows = yield* processes.listForSession(sessionId);
         const hasPendingRequest = yield* conversations.hasPendingRequests(sessionId);
-        const liveness = foldSessionLiveness(rows, hasPendingRequest);
+        const folded = foldSessionLiveness(rows, hasPendingRequest);
+        // A conversation between its sender's stopped process and the next sender's is still
+        // live work: no settle, so no review prep, no Slack summary and no push for it. The
+        // hand-over reconciles once more when it ends, whichever way (review 0.36, S1).
+        const liveness =
+          (folded === "settled" || folded === "idle") &&
+          rows.some((process) => handingOverProcesses.has(process.id))
+            ? "running"
+            : folded;
         if (liveness === "waiting") {
           if (session.settledAt !== null) yield* sessions.reopen(sessionId, "running");
           if (session.status !== "waiting") yield* sessions.setStatus(sessionId, "waiting");
@@ -9964,13 +9980,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const endingAgentProcesses = new Set<string>();
 
       /**
-       * Conversation processes being handed over (docs/adr/0016, decision 6): from before their
-       * stop until the next process has taken the queue, or the hand-over has ended. Their queued
-       * turns are the conversation's, so an exit seen meanwhile cancels none of them.
-       */
-      const handingOverProcesses = new Set<string>();
-
-      /**
        * Record an agent process's end: the row, its run, and the session fold — synchronously,
        * so a caller's next read sees the new status. True when THIS call recorded it; false
        * when another observer already had. The slow tail is `finishAgentProcess`.
@@ -10005,7 +10014,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (
             session.settledAt === null &&
             (session.status === "running" || session.status === "waiting") &&
-            foldSessionLiveness(rows) === "settled"
+            foldSessionLiveness(rows) === "settled" &&
+            !handingOverProcesses.has(agentProcess.id)
           ) {
             yield* sessions.setStatus(sessionId, "stopping");
           }
@@ -17787,6 +17797,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     Effect.catchCause((cause) =>
                       Effect.gen(function* () {
                         yield* dropQueue;
+                        // Nothing runs the conversation now: the hand-over's hold ends here, so the
+                        // session settles before its line says why, and the words stay on it.
+                        handingOverProcesses.delete(agentProcess.id);
+                        yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
                         // Said on the session line, not only in a log (review 2, P3-2).
                         yield* noteLaunchWords(
                           session.id,
@@ -17827,7 +17841,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   cause: error,
                 }),
           ),
-          Effect.ensuring(Effect.sync(() => handingOverProcesses.delete(agentProcess.id))),
+          Effect.ensuring(
+            Effect.suspend(() => {
+              handingOverProcesses.delete(agentProcess.id);
+              // The fold held while the hand-over ran: now it reads the processes as they are, so a
+              // hand-over that left no process running settles here, once.
+              return reconcileSession(agentProcess.sessionId, { sweep: false }).pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning(
+                    "session engine: the session was not reconciled after a hand-over",
+                  ).pipe(
+                    Effect.annotateLogs({
+                      sessionId: agentProcess.sessionId,
+                      cause: Cause.pretty(cause),
+                    }),
+                  ),
+                ),
+              );
+            }),
+          ),
         );
 
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
