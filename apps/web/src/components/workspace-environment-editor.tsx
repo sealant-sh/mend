@@ -1,4 +1,4 @@
-import { useReducer, useState, type ReactNode } from "react";
+import { useId, useReducer, useState, type ReactNode } from "react";
 
 import type {
   HostEnvironmentSuggestionsDto,
@@ -61,6 +61,7 @@ export function WorkspaceEnvironmentEditor({
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<HostEnvironmentSuggestionsDto | null>(null);
+  const dockerLabelId = useId();
 
   const pending = form.phase === "saving";
   const parsedDraft = parsePackageDraft(form.packageDraft);
@@ -245,7 +246,9 @@ export function WorkspaceEnvironmentEditor({
       <div className="mt-6 border-t border-[var(--sw-faint-rule)] pt-5">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="font-sans text-sm font-medium text-foreground">Docker service</p>
+            <p id={dockerLabelId} className="font-sans text-sm font-medium text-foreground">
+              Docker service
+            </p>
             <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
               A disposable daemon belongs to the workspace. Mend never mounts the host Docker
               socket.
@@ -253,6 +256,9 @@ export function WorkspaceEnvironmentEditor({
           </div>
           <button
             type="button"
+            role="switch"
+            aria-checked={form.docker}
+            aria-labelledby={dockerLabelId}
             disabled={pending}
             onClick={() => dispatch({ type: "docker-toggled" })}
             className={`shrink-0 rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${

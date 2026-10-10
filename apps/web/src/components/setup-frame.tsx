@@ -6,7 +6,8 @@ import { SETUP_STEPS } from "#/lib/onboarding";
 /**
  * The one page shape for first contact — sign-in, registration, and the git
  * access step share it: the mark, one lifted card, and (while setting up) the
- * three-step strip so a visitor knows registration is a part, not the whole.
+ * three-step strip so a visitor knows registration is a part, not the whole. These pages sit
+ * outside the app shell, so the frame is their `main` landmark.
  */
 export function SetupFrame({
   step,
@@ -19,7 +20,7 @@ export function SetupFrame({
   readonly children?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-screen items-center justify-center px-6 py-12">
+    <main className="flex min-h-screen items-center justify-center px-6 py-12">
       <div className={`w-full ${width === "wide" ? "max-w-2xl" : "max-w-sm"}`}>
         <div className="mb-8 flex items-baseline gap-2.5">
           <MendMark className="size-7 self-center" aria-hidden="true" />
@@ -31,7 +32,7 @@ export function SetupFrame({
           {children}
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 
