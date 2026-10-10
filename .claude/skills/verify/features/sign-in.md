@@ -46,7 +46,9 @@ Preconditions:
 - `first-account` needs this run's own instance before any account exists. Every other step starts
   from the baseline (an account exists; the browser is signed in as `<email>` with `<password>`).
 - Run the CLI under a disposable config home so its sign-in is the run's own:
-  `export XDG_CONFIG_HOME=<tmp>/cli-home`. `mend login` writes `$XDG_CONFIG_HOME/mend/cli.json`.
+  `mkdir -p <tmp>/cli-home/mend` and `export XDG_CONFIG_HOME=<tmp>/cli-home`. The verify skill's
+  guard lets the first `mend login --url <web>` make a config only in an existing
+  `<tmp>/cli-home/mend`. `mend login` writes `$XDG_CONFIG_HOME/mend/cli.json`.
 - The desktop steps run the app with a remote debugging port (README, Driving conventions) and the
   same `XDG_CONFIG_HOME`, because the desktop and the CLI share one credential file. `app` below is
   the desktop window's page from `chromium.connectOverCDP`; `page` is the run's own browser.

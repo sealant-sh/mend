@@ -43,26 +43,30 @@ Preconditions:
 - Mend is healthy at `<web>`, the browser and the CLI are signed in as the same account. For the
   desktop step, the desktop app runs with a remote debugging port, signed in as that account (it
   shares the CLI's credential file); `app` is its window's page from `chromium.connectOverCDP`.
-- The run holds credentials it may send to this disposable instance: a GitHub token (`gh` logged in
-  on the run's machine, or `<github-token>`), and for the Claude and Codex steps a Claude setup
-  token (`claude setup-token`) and a Codex `auth.json`. The interactive `mend connect claude` and
-  `mend connect codex` flows need a person at the provider's login page; without one, report them
-  unreachable and use `--from-stdin`.
+- The run holds test credentials it may send to this disposable instance, each in a file in the
+  private directory, so the secret registry holds them and no command line does: a GitHub token in
+  `$P/github-token.secret`, and for the Claude and Codex steps a Claude setup token in
+  `$P/claude-token.secret` and a Codex `auth.json` in `$P/codex-auth.json`. Never this machine's own
+  logins: the verify skill's guard gives the CLI an empty home of the run's own and removes
+  `GH_TOKEN`, `GITHUB_TOKEN` and every provider variable, so `gh` and the providers' files have no
+  login there. The interactive `mend connect claude` and `mend connect codex` flows need a person at
+  the provider's login page; without one, report them unreachable and use `--from-stdin`.
 - Note what `mend accounts` lists first, and restore it at the end.
 
 - **List.** Run `mend accounts`. Stdout starts with `platform user <id>`, then one line each for
   `claude`, `codex` and `github`: `not connected`, or
   `connected · <account> · …<suffix> · since <day>`. Exit `0`.
-- **Connect GitHub.** Run `mend connect github`. Stdout ends with
-  `github   connected · <login> · …<suffix> · since <day>`. Exit `0`. With no `gh` login on the
-  machine it fails instead with
+- **Connect GitHub.** Run `mend connect github`. Under the guard the CLI's home has no `gh` login,
+  so it fails with the line below; record it. With a `gh` login, outside the guard, stdout ends
+  `github   connected · <login> · …<suffix> · since <day>`, exit `0`: the skill does not drive that,
+  since it would send this machine's own GitHub login. The failure reads
   ``mend: github: no credential on this machine — `gh auth login` first, or pipe a token: gh auth token | mend connect github --from-stdin``.
-- **Connect from stdin.** Run `printf '%s' "<github-token>" | mend connect github --from-stdin`. The
+- **Connect from stdin.** Run `mend connect github --from-stdin < "$P/github-token.secret"`. The
   same `github   connected …` line prints. Run `mend connect github --from-stdin < /dev/null`:
   stderr reads `mend: nothing on stdin`, exit `1`.
-- **Connect Claude and Codex.** Run `claude setup-token`'s token through
-  `mend connect claude --from-stdin`, and `mend connect codex --from-stdin < <auth.json>`. Each
-  prints its `connected` line; a Claude credential given as a JSON grant also prints
+- **Connect Claude and Codex.** Run `mend connect claude --from-stdin < "$P/claude-token.secret"`
+  and `mend connect codex --from-stdin < "$P/codex-auth.json"`. Each prints its `connected` line; a
+  Claude credential given as a JSON grant also prints
   `  access expires <time> · grant expires <time>`, and any MCP tokens in it stay on the machine
   (`  keeping <names> on this machine`).
 - **Interactive Claude grant.** With a person present, run `mend connect claude` in its own PTY. It
