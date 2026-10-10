@@ -117,7 +117,8 @@ reason. Read [Land a change](/guides/land-a-change/).
 
 Settings on the web has a Connected accounts panel that takes a pasted credential: for Claude, a
 setup token from `claude setup-token` or the contents of `~/.claude/.credentials.json`; for Codex,
-the contents of `~/.codex/auth.json`; for GitHub, the output of `gh auth token`.
+the contents of `~/.codex/auth.json`; for GitHub, the output of `gh auth token`. The same panel
+holds **Give my sessions only the selected agent's login**.
 
 ## Replace or remove an account
 
@@ -149,7 +150,8 @@ own logins, written into their own home in the workspace:
 - **Your sessions, and your joins.** A session you start in a worktree where someone else's session
   runs gets your logins, in your home, never theirs.
 - **Your steered turns.** Under shared control each turn runs on its sender's login: when you send a
-  turn to someone else's session, Mend runs it in an agent process of your user, on your login.
+  turn to someone else's session, Mend runs it in an agent process of your user, on your login. When
+  that agent runs the other CLI, it reads your own Codex or Claude login, in your home.
 - **Refused, not borrowed.** When the harness's provider is not connected, the start is refused
   before anything runs, with `Connect Claude to start a session here.` (or Codex). A login that
   needs reconnecting says
@@ -166,11 +168,22 @@ A running workspace gets each refreshed copy of your login as it is made, withou
 reconnect applies to new sessions at once; a session already running picks the new login up at its
 next scheduled refresh, so restart it if it is failing on the old one.
 
+## Your other agent's login
+
+A Claude session also gets your Codex login, and a Codex session your Claude login, when you have
+connected it, so the agent can run `codex` or `claude` on your own login. Only your own logins are
+ever given: a session never gets anyone else's, whoever's workspace it runs in. To give each session
+its own agent's login only, turn on **Give my sessions only the selected agent's login** in Settings
+→ Connected accounts, or run `mend agent-logins selected`. Read
+[Only the selected agent's login](../../concepts/provider-logins/#only-the-selected-agents-login).
+
 ## When an account is missing
 
-A missing connected account does not block every launch. Mend first requests the harness account and
-GitHub together, then retries with useful subsets when the platform reports that an account is
-missing. The harness may open its own login flow when no connected provider credential is available.
+A missing connected account does not block every launch. Mend first requests the harness account,
+your other agent's account and GitHub together, then retries with useful subsets when the platform
+reports that an account is missing. An account other than the harness's own that needs reconnecting
+is left out the same way, so a Codex login that needs reconnecting never stops a Claude session. The
+harness may open its own login flow when no connected provider credential is available.
 
 `mend doctor` reports missing provider accounts as setup tasks rather than machine failures. Connect
 the account explicitly when sessions must start non-interactively.

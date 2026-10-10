@@ -84,6 +84,9 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "accounts.identity",
   "accounts.connect",
   "accounts.disconnect",
+  // The caller's own setting only (agent-logins-routes.test.ts).
+  "accounts.agentLogins",
+  "accounts.setAgentLogins",
   "organization.current",
   "organization.members",
   "organization.invitations",

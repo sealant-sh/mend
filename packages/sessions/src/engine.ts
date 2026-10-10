@@ -44,6 +44,7 @@ import {
   SecretFilesRepo,
   SettingsRepo,
   SkillsRepo,
+  UserAgentLoginsRepo,
   UserDotfilesRepo,
   UserGitAuthorRepo,
   SessionChannelTokensRepo,
@@ -361,6 +362,7 @@ import {
   makeHarnessLayoutSteps,
   nextCreateAttempts,
   personCreateAttempts,
+  narrowsToOwnLogin,
 } from "./harness-layout-steps.ts";
 import {
   gitAuthorConfigText,
@@ -725,8 +727,32 @@ const withGitHubCredentialFallback = (
   undefined,
 ];
 
+/**
+ * A Claude or Codex session's create ladder (docs/adr/0016, decision 5, amended 2026-10-10): its
+ * own agent's login in every rung that has one, the person's other agent login (`other`) added
+ * while it is connected, then the same tail as before. The person who launches is the only person
+ * whose accounts a create can name (the platform resolves `true` as the caller's own default), so
+ * nothing here can reach anyone else's login.
+ */
+const withOtherAgentLogin = (
+  own: "claude" | "codex",
+  other: "claude" | "codex",
+): ReadonlyArray<WorkspaceCredentialsOptions | undefined> => [
+  { [own]: true, [other]: true, github: true },
+  { [own]: true, github: true },
+  { [own]: true, [other]: true },
+  { [own]: true },
+  { github: true },
+  undefined,
+];
+
 const platformShape = (
   harness: string,
+  /**
+   * The launcher chose "Give my sessions only the selected agent's login" (`UserAgentLoginsRepo`):
+   * a Claude or Codex session's create names its own agent's login only, as before 0.36.1.
+   */
+  selectedOnly = false,
 ): {
   harness: Harness;
   credentialAttempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>;
@@ -737,13 +763,17 @@ const platformShape = (
     case "codex":
       return {
         harness: codex(),
-        credentialAttempts: withGitHubCredentialFallback({ codex: true }),
+        credentialAttempts: selectedOnly
+          ? withGitHubCredentialFallback({ codex: true })
+          : withOtherAgentLogin("codex", "claude"),
         starts: harness,
       };
     case "claude":
       return {
         harness: claudeCode(),
-        credentialAttempts: withGitHubCredentialFallback({ claude: true }),
+        credentialAttempts: selectedOnly
+          ? withGitHubCredentialFallback({ claude: true })
+          : withOtherAgentLogin("claude", "codex"),
         starts: harness,
       };
     case "shell":
@@ -2495,6 +2525,7 @@ type SessionEngineRequirements =
   | HotWorkspacesRepo
   | UserDotfilesRepo
   | UserGitAuthorRepo
+  | UserAgentLoginsRepo
   | DotfilesStore
   | DotfilesCloner
   | SkillsRepo
@@ -7211,6 +7242,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const hotWorkspaces = yield* HotWorkspacesRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
       const gitAuthors = yield* UserGitAuthorRepo;
+      const agentLogins = yield* UserAgentLoginsRepo;
+      /**
+       * Whether a person chose "Give my sessions only the selected agent's login": asked only
+       * where it decides something, a Claude or Codex start of their own.
+       */
+      const selectedOnlyOf = (accountId: string | null, harness: string) =>
+        accountId === null || !narrowsToOwnLogin(harness)
+          ? Effect.succeed(false)
+          : agentLogins.forUser(accountId).pipe(Effect.map((setting) => setting.selectedOnly));
       const gitHooks = yield* WorkspaceGitHooks;
       const dotfilesStore = yield* DotfilesStore;
       const dotfilesCloner = yield* DotfilesCloner;
@@ -7794,6 +7834,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           channelTokens.revokePerson(launchId, accountId, issuedBefore),
         writeTokenTicket: (input) => mintWriteTokenTicket(input),
         endWriteToken: (ticket) => endWriteToken(ticket),
+        selectedOnly: (accountId) =>
+          agentLogins.forUser(accountId).pipe(Effect.map((setting) => setting.selectedOnly)),
       });
       // A shared conversation's home and its restart path (docs/adr/0016, decision 6): reached
       // only for a protocol Claude or Codex session in a person-layout executor.
@@ -16003,7 +16045,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const worktree = worktreePathOf(project.storePath, session.worktree);
         // A bash launch (shell session, shell resume) is an open workbench:
         // shape by what actually launches, not the session's harness identity.
-        const shape = platformShape(argv[0] === "bash" ? "shell" : session.harness);
+        const shapedAs = argv[0] === "bash" ? "shell" : session.harness;
+        const shape = platformShape(shapedAs, yield* selectedOnlyOf(session.ownerUserId, shapedAs));
         // An explicit null skips both the read and the restore (a shell
         // resume tolerates a session that never harvested state).
         const located =
@@ -22159,6 +22202,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Only the owner's own standby serves the session, and only while they may run here.
         const ownerUserId = input.ownerUserId;
         if (ownerUserId === null) return null;
+        // A standby is made before its harness is known, with every login its owner connected
+        // (`platformShape("shell")`): it never serves a Claude or Codex session of an owner who
+        // chose that agent's login only. That launch goes cold, with the narrower create.
+        if (yield* selectedOnlyOf(ownerUserId, input.harness)) return null;
         // A standby is created before any worktree is known, in one layout (docs/adr/0016): it
         // serves a worktree with no layout yet whose launch is predicted to run in that layout,
         // which the fingerprint carries, so a standby of the other layout is never claimed. A

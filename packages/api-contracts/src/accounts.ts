@@ -1,4 +1,5 @@
 import { Issue, Run, Timestamp } from "@mend/domain";
+import { AgentLogins } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
@@ -70,6 +71,15 @@ export const accountsGroup = HttpApiGroup.make("accounts")
       params: Schema.Struct({ id: Schema.String }),
       success: ConnectedAccount,
       error: [AccountRejected, SealantUnavailable],
+    }),
+  )
+  // Which of the caller's own logins their Claude and Codex sessions receive (docs/adr/0016,
+  // decision 5): every connected one by default, or the session's own agent's only. PUT saves it.
+  .add(HttpApiEndpoint.get("agentLogins", "/me/agent-logins", { success: AgentLogins }))
+  .add(
+    HttpApiEndpoint.put("setAgentLogins", "/me/agent-logins", {
+      payload: AgentLogins,
+      success: AgentLogins,
     }),
   )
   .middleware(AuthMiddleware);

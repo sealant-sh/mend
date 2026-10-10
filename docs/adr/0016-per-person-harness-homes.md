@@ -5,10 +5,11 @@ adversarial design reviews (round 1: 7 P1, 9 P2, 12 P3; round 2: 5 P1, 9 P2, 12 
 P2, 10 P3), then revised after round 4 (4 P1, 7 P2, 15 P3) and round 5's fix check (1 P1, 5 P2, 10
 P3). The design is final; the build starts with Delivery 2. Amended 2026-10-07 with what the
 platform's builds and reviews settled (sealantd#144–#148, sealant#327–#332, mend#551–#559; see the
-decision log). Earlier drafts gave every process a `HOME` of its own inside root; this one gives
-every person a Linux user. Amends [ADR 0003](0003-organizations-and-tenancy.md) (a session runs as
-its owner), [ADR 0009](0009-agent-memory-per-person-per-project.md) (memory in capture mode, and
-under shared control), [ADR 0010](0010-secret-files.md) (where secret files go) and
+decision log), and on 2026-10-10 with a person's own other agent login (decision 5). Earlier drafts
+gave every process a `HOME` of its own inside root; this one gives every person a Linux user. Amends
+[ADR 0003](0003-organizations-and-tenancy.md) (a session runs as its owner),
+[ADR 0009](0009-agent-memory-per-person-per-project.md) (memory in capture mode, and under shared
+control), [ADR 0010](0010-secret-files.md) (where secret files go) and
 [ADR 0013](0013-whoever-sends-a-turn-pays.md) (the steering switch, which ships in 0.36). Read
 against Mend `c9b645b0b` with mend#526 (`ac3bdce06`) open, Sealant Core `bc9ec42` (SDK 0.38.1) with
 sealant#315 and sealant#316 open, and sealantd `07ada50`.
@@ -404,6 +405,57 @@ workspaces.create({ …, credentialsHome })
   back into the home, and a release removes them with the rest; the session line says when Core left
   one out. In a `shared` executor Mend's ChatGPT-login program still writes the copies at `$HOME`,
   since a create cannot name them.
+
+**Amended 2026-10-10, for 0.36.1: a person's own other agent login.** A Claude session also takes
+its person's Codex login, and a Codex session its person's Claude login, so the agent can run the
+other CLI on the same person's login: pstack's Codex seat or a Codex review from an Opus session,
+`claude` from a Codex one. The rule above stands unchanged, and nothing here reaches another person:
+this only adds the same person's own logins. The pieces:
+
+- **What a process needs** (`loginNeedOf`): Claude is
+  `{ required: [claude], optional: [codex, github] }`, Codex
+  `{ required: [codex], optional: [claude, github] }`. Optional is what it was for GitHub: written
+  when connected, left out when not (`connected-account-missing`, `-invalid` or `-unsupported`),
+  never a refusal and never a line on the session, and not asked again while the home is held.
+  Shell, pi and opencode already took every login and are unchanged. A Claude or Codex session takes
+  no pi or opencode ChatGPT login: those are files of pi's and opencode's own, which neither CLI
+  reads.
+- **The person layout.** One POST per person per executor, as before, `onBehalfOf` that person and
+  `home` theirs; the other login rides the same call. The launcher's create names it too, and the
+  providers its ladder went without are recorded as not connected, so their first process asks Core
+  for nothing a create already learned.
+- **The create** (the `shared` layout, and the launcher's create-time home in a `person` one): a
+  Claude or Codex session's ladder is the shell's shape around its own provider:
+  `{own, other, github}`, `{own, github}`, `{own, other}`, `{own}`, then the tail it had. Its steps
+  are mend#671's (`nextCreateAttempts`): a create refused for an account the launch does not need
+  (Core's stable code names its provider) is tried again without that provider, so a stale Codex
+  login never stops a Claude launch, and a person launch refused for its own agent's login is
+  refused before anything runs, in a join's words. A create names only its caller's accounts (`true`
+  is the caller's default), so the ladder cannot reach anyone else's.
+- **Steering.** Each turn still runs on its sender's logins only. The sender's process is started by
+  `processAs` with the sender's own need and the sender's own setting, so their other agent login is
+  written into their own home. The conversation home `H` keeps the conversation's agent's login
+  alone (`{ [provider]: true }`, written for the sender, released at the next change of sender): the
+  turn's tools run with the sender's home (`HOME` for a Claude process; Codex's
+  `shell_environment_policy`), and only that home's `~/.codex` or `~/.claude` is read when the agent
+  runs the other CLI. Nothing of the conversation owner's is written for a sender, or the other way
+  round.
+- **Standbys** were already made with every login their owner connected (the shell's ladder), which
+  is now what a Claude or Codex session receives anyway.
+- **An opt-out per person:** "Give my sessions only the selected agent's login"
+  (`user_agent_logins`, migration 0129; `GET`/`PUT /api/me/agent-logins`; Settings → Connected
+  accounts; `mend agent-logins all|selected`). Off by default. On, a Claude or Codex session's need
+  and create are what they were before this amendment (its own agent's login and GitHub). It is read
+  for the person whose process starts (`processAs`), whose launch creates (`platformShape`), never
+  for anyone else, and a standby (made before its harness is known, with every login) never serves a
+  Claude or Codex session of a person who turned it on: that launch goes cold. It does not narrow a
+  shell, pi or opencode, and it does not take back a login their home already holds in an executor
+  (their own shell started there first): a release at their last process does.
+- **Unchanged protections.** Every login file is Core's, 0600 and owned by its home's user; none is
+  ever captured (the paths in `HARNESS_CREDENTIALS`, and person homes outside every capture root);
+  copies cannot refresh (ADR 0008). The re-POST after an authentication failure names every provider
+  the home holds, the other agent's included, so it heals whichever login failed. The session line
+  says nothing of a left-out optional agent login, as for GitHub.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 
@@ -1598,6 +1650,12 @@ benchmark once more, before 0.36 is tagged.
 - 2026-10-10 (owner, security review 0.36 D1): shared control in an executor that shares one home
   runs a teammate's turns on the owner's logins, as a join there does. Documented in decision 7a
   with the cases it covers, not refused.
+- 2026-10-10 (owner): a Claude session gets its person's own Codex login, and a Codex session their
+  own Claude login, when connected, so pstack runs inside Mend sessions (decision 5's amendment), in
+  0.36.1. The rule that no person spends another person's login is unchanged. A person can turn it
+  off ("Give my sessions only the selected agent's login"), and a standby never serves them a Claude
+  or Codex session. The create's ladder steps past the other agent's login when Core refuses it
+  (mend#671's `nextCreateAttempts`), so a stale login of the other agent never stops a launch.
 - 2026-10-11 (owner), gate P1 on the release candidate, 0.36.0-next.754: **passed**. The run used
   one build (image `sha256:eb3fe68c6a4d`, commit `08847fc58`), `shared` against `person`, 10 rounds,
   all four harnesses for every launch scenario. The second person ran Claude only (the partial gate,

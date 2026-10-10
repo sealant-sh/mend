@@ -48,6 +48,7 @@ import {
   SecretFilesRepo,
   SkillsRepo,
   UserDotfilesRepo,
+  UserAgentLoginsRepo,
   UserGitAuthorRepo,
   type GitAccessMode,
   type CaptureObservation,
@@ -116,6 +117,7 @@ import {
   ProjectSecretsSnapshot,
   RepositoryCloneUrl,
   ResolvedGitAuthor,
+  AgentLogins,
   Service,
   ServiceForward,
   ServiceObservation,
@@ -430,7 +432,10 @@ const fakeExecRun: Run = {
 
 const sealantLaunchLayer = (
   created: Array<CreateOptions>,
-  rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
+  /** A create refused for its accounts: `true` with the old words, or Core's own refusal. */
+  rejectCredentials: (
+    credentials: CreateOptions["credentials"],
+  ) => boolean | SealantPlatformError = () => false,
   stopped?: string[],
   spawned?: ReadonlyArray<string>[],
   rejectWorkspaceLookup: () => boolean = () => false,
@@ -704,16 +709,20 @@ const sealantLaunchLayer = (
         return beforeCreate.pipe(
           Effect.andThen(
             createWorkspaceOverride === undefined
-              ? rejectCredentials(options.credentials)
-                ? Effect.fail(
-                    new SealantPlatformError({
-                      code: "connected-account-not-found",
-                      status: 400,
-                      message: "connected account was not found",
-                      cause: null,
-                    }),
-                  )
-                : Effect.succeed(workspace)
+              ? Effect.suspend(() => {
+                  const rejected = rejectCredentials(options.credentials);
+                  if (rejected === false) return Effect.succeed(workspace);
+                  return Effect.fail(
+                    rejected === true
+                      ? new SealantPlatformError({
+                          code: "connected-account-not-found",
+                          status: 400,
+                          message: "connected account was not found",
+                          cause: null,
+                        })
+                      : rejected,
+                  );
+                })
               : createWorkspaceOverride(options),
           ),
         );
@@ -1126,6 +1135,13 @@ const gitAuthorStubLayer = Layer.succeed(UserGitAuthorRepo, {
   set: () => Effect.void,
   clear: () => Effect.void,
 });
+/** Which of their own logins each person's sessions get: every one, unless a test says. */
+const agentLoginsLayerOf = (selectedOnly: ReadonlySet<string> = new Set()) =>
+  Layer.succeed(UserAgentLoginsRepo, {
+    forUser: (userId) =>
+      Effect.succeed(new AgentLogins({ selectedOnly: selectedOnly.has(userId) })),
+    set: (_userId, setting) => Effect.succeed(setting),
+  });
 const userDotfilesStubLayer = Layer.succeed(UserDotfilesRepo, {
   repository: () => Effect.succeed(null),
   setRepository: (_userId: string, value: DotfilesRepository | null) => Effect.succeed(value),
@@ -3205,6 +3221,8 @@ const withEngine = <A, E>(
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
     /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
     readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
+    /** The people who chose their selected agent's login only; nobody unless a test says. */
+    readonly selectedOnly?: ReadonlySet<string>;
     /** Who hears about pushes and ended agents; nobody unless a test says. */
     readonly gitHooksLayer?: Layer.Layer<WorkspaceGitHooks>;
     readonly dotfilesStoreLayer?: Layer.Layer<DotfilesStore>;
@@ -3414,6 +3432,7 @@ const withEngine = <A, E>(
         secretCipherStubLayer,
         options.userDotfilesLayer ?? userDotfilesStubLayer,
         options.gitAuthorLayer ?? gitAuthorStubLayer,
+        agentLoginsLayerOf(options.selectedOnly),
         options.gitHooksLayer ?? WorkspaceGitHooksLive,
         options.dotfilesStoreLayer ?? dotfilesStoreStubLayer,
         options.dotfilesClonerLayer ?? dotfilesClonerLayer(),
@@ -3476,6 +3495,16 @@ const withEngine = <A, E>(
   );
 };
 
+/** Core's refusal of a named account that needs reconnecting (`connected-account-invalid`). */
+const invalidAccount = (provider: "claude" | "codex") =>
+  new SealantPlatformError({
+    code: "connected-account-invalid",
+    status: 409,
+    message: `Connected ${provider} account "default" is invalid — reconnect it.`,
+    provider,
+    cause: null,
+  });
+
 describe("SessionEngine", () => {
   it("launches with the configured image and the user's GitHub token", async () => {
     const created: CreateOptions[] = [];
@@ -3499,7 +3528,8 @@ describe("SessionEngine", () => {
           expect(created[0]?.os).toBe("nix");
           expect(created[0]?.packages).toEqual(["bat", "lazygit"]);
           expect(created[0]?.services).toEqual({ docker: true });
-          expect(created[0]?.credentials).toEqual({ codex: true, github: true });
+          // The owner's own Claude login rides along, so the agent can run `claude` on it.
+          expect(created[0]?.credentials).toEqual({ codex: true, claude: true, github: true });
         }),
       {
         sealantLayer: sealantLaunchLayer(created),
@@ -5382,7 +5412,9 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
 
           expect(created.map((options) => options.credentials)).toEqual([
+            { codex: true, claude: true, github: true },
             { codex: true, github: true },
+            { codex: true, claude: true },
             { codex: true },
             { github: true },
           ]);
@@ -5391,6 +5423,90 @@ describe("SessionEngine", () => {
         sealantLayer: sealantLaunchLayer(created, (credentials) => credentials?.codex === true),
       },
     );
+  });
+
+  describe("the same person's other agent login (docs/adr/0016, decision 5, amended 2026-10-10)", () => {
+    const launchOnce = (
+      harness: "claude" | "codex",
+      options: {
+        readonly reject?: (
+          credentials: CreateOptions["credentials"],
+        ) => boolean | SealantPlatformError;
+        readonly selectedOnly?: ReadonlySet<string>;
+      } = {},
+    ) => {
+      const created: CreateOptions[] = [];
+      return withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const launched = yield* engine.launch(session.id, [harness]).pipe(Effect.result);
+            return { created, launched, session: world.sessions.get(session.id) };
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created, options.reject ?? (() => false)),
+          ...(options.selectedOnly === undefined ? {} : { selectedOnly: options.selectedOnly }),
+        },
+      );
+    };
+
+    it("a Claude session's create names its owner's Codex login too, and starts without it when Codex is not connected", async () => {
+      const result = await launchOnce("claude", {
+        reject: (credentials) => credentials?.codex === true,
+      });
+      expect(result.launched._tag).toBe("Success");
+      expect(result.created.map((options) => options.credentials)).toEqual([
+        { claude: true, codex: true, github: true },
+        { claude: true, github: true },
+      ]);
+    });
+
+    it("a stale login never stops a shared launch: Core's refusal names it, and no later try names it again", async () => {
+      const other = await launchOnce("claude", {
+        reject: (credentials) =>
+          credentials?.codex === undefined ? false : invalidAccount("codex"),
+      });
+      expect(other.launched._tag).toBe("Success");
+      expect(other.created.map((options) => options.credentials)).toEqual([
+        { claude: true, codex: true, github: true },
+        { claude: true, github: true },
+      ]);
+      // A shared launch steps past its own refused login too (mend#671): no try names Claude
+      // again, and no try names the other agent's login without it.
+      const own = await launchOnce("claude", {
+        reject: (credentials) =>
+          credentials?.claude === undefined ? false : invalidAccount("claude"),
+      });
+      expect(own.created.map((options) => options.credentials)).toEqual([
+        { claude: true, codex: true, github: true },
+        { github: true },
+      ]);
+    });
+
+    it("an owner who chose the selected agent's login only gets a create naming that one and GitHub, as before 0.36.1", async () => {
+      const claude = await launchOnce("claude", { selectedOnly: new Set(["user-fixture"]) });
+      expect(claude.created.map((options) => options.credentials)).toEqual([
+        { claude: true, github: true },
+      ]);
+      const codex = await launchOnce("codex", { selectedOnly: new Set(["user-fixture"]) });
+      expect(codex.created.map((options) => options.credentials)).toEqual([
+        { codex: true, github: true },
+      ]);
+      // Someone else's choice is not the owner's.
+      const other = await launchOnce("codex", { selectedOnly: new Set(["user-other"]) });
+      expect(other.created.map((options) => options.credentials)).toEqual([
+        { codex: true, claude: true, github: true },
+      ]);
+    });
   });
 
   it("gives a shell session the codex account when only codex is connected", async () => {
@@ -7627,6 +7743,7 @@ describe("SessionEngine", () => {
           settingsLayer(),
           userDotfilesStubLayer,
           gitAuthorStubLayer,
+          agentLoginsLayerOf(),
           WorkspaceGitHooksLive,
           dotfilesStoreStubLayer,
           dotfilesClonerLayer(),
@@ -8329,6 +8446,70 @@ describe("SessionEngine hot sessions", () => {
           execCalls,
         ),
         hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
+
+  it("never serves a Claude or Codex session of an owner who chose the selected agent's login only from a standby: it goes cold with the narrower create", async () => {
+    const created: CreateOptions[] = [];
+    const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const skeletonId = SessionId.make(crypto.randomUUID());
+          // Made with every login its owner connected (`platformShape("shell")`).
+          pool.entries.push(
+            new HotWorkspace({
+              id: skeletonId,
+              projectId: project.id,
+              worktreeId: null,
+              ownerUserId: "user-fixture",
+              status: "ready",
+              error: null,
+              fingerprint: "match-simulated-by-the-fake-claim",
+              remoteSsh: "not-taken",
+              harnessLayout: "shared",
+              worktree: null,
+              branch: null,
+              baseSha: null,
+              sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+              workspaceImage: defaultSettings.workspaceImage,
+              dotfiles: { repository: null, snapshotSha: null, notApplied: [] },
+              environment: {
+                environmentRevision: 0,
+                environmentVariableNames: [],
+                secretRevision: 0,
+                secretNames: [],
+              },
+              referenceMounts: [],
+              extraMounts: [],
+              createdAt: now(),
+              updatedAt: now(),
+            }),
+          );
+
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).not.toBe(skeletonId);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created.map((options) => options.credentials)).toEqual([
+            { codex: true, github: true },
+          ]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: hotPoolLayer(pool),
+        selectedOnly: new Set(["user-fixture"]),
       },
     );
   });
@@ -25932,8 +26113,11 @@ describe("per-person harness homes (docs/adr/0016)", () => {
       "launch refused · Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
     );
     // The ladder never stepped below Claude: no create without it, so no agent started signed out.
+    // Her own Codex rode every try that could hold it.
     expect(created.map((options) => options.credentials)).toEqual([
+      { claude: true, codex: true, github: true },
       { claude: true, github: true },
+      { claude: true, codex: true },
       { claude: true },
     ]);
     expect(opened).toEqual([]);
@@ -30784,6 +30968,63 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
     ]);
   });
 
+  it("two people's agents in one executor each get their own person's other agent login, into their own home only; a person's choice of their selected agent's login only narrows theirs", async () => {
+    const run = async (selectedOnly: ReadonlySet<string>) => {
+      const posts: Array<{
+        readonly onBehalfOf: string;
+        readonly home: string;
+        readonly logins: HomeLogins;
+      }> = [];
+      const launched = await launchAndJoin({
+        holderHarness: "claude",
+        join: "codex",
+        layers: { selectedOnly },
+        platform: (calls) =>
+          Layer.effect(
+            PersonLayoutPlatform,
+            Effect.map(PersonLayoutPlatform, (inner) => ({
+              ...inner,
+              postCredentials: (
+                workspace: Workspace,
+                input: Parameters<typeof inner.postCredentials>[1],
+              ) => {
+                posts.push({
+                  onBehalfOf: input.onBehalfOf,
+                  home: input.home,
+                  logins: input.logins,
+                });
+                return inner.postCredentials(workspace, input);
+              },
+            })),
+          ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+      });
+      return { posts, created: launched.created };
+    };
+
+    const everyone = await run(new Set());
+    // Alice's create, made as her: her Claude, her own Codex and GitHub, into her home.
+    expect(everyone.created.map((options) => options.credentials)).toEqual([
+      { claude: true, codex: true, github: true },
+    ]);
+    // Maria's one call: her Codex, her own Claude and GitHub, into her home, as her. Nothing of
+    // Alice's is written for her, and nothing of hers into Alice's home.
+    expect(everyone.posts).toEqual([
+      {
+        onBehalfOf: MARIA,
+        home: `/home/${JOINER}`,
+        logins: { codex: true, claude: true, github: true },
+      },
+    ]);
+
+    const narrowed = await run(new Set([MARIA]));
+    expect(narrowed.created.map((options) => options.credentials)).toEqual([
+      { claude: true, codex: true, github: true },
+    ]);
+    expect(narrowed.posts).toEqual([
+      { onBehalfOf: MARIA, home: `/home/${JOINER}`, logins: { codex: true, github: true } },
+    ]);
+  });
+
   it("a joiner's dotfiles Core refuses are recorded not applied in Mend's words, and their agent starts (sealant#334)", async () => {
     let recorded: SessionDotfiles | null = null;
     const refusal = new SealantPlatformError({
@@ -32192,6 +32433,11 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       readonly resumePath: string | null;
     }> = [];
     const stops: Array<string> = [];
+    const posts: Array<{
+      readonly onBehalfOf: string;
+      readonly home: string;
+      readonly logins: HomeLogins;
+    }> = [];
     const state = makeHarnessLayoutsMemoryState();
     const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     let sessionId: SessionId | null = null;
@@ -32324,9 +32570,45 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           { exec },
         ),
         protocolHostLayer: steeringHost(attached, stops),
-        harnessLayout: { flag: "person", state, platform: personPlatform(calls, { person: true }) },
+        harnessLayout: {
+          flag: "person",
+          state,
+          platform: Layer.effect(
+            PersonLayoutPlatform,
+            Effect.map(PersonLayoutPlatform, (inner) => ({
+              ...inner,
+              postCredentials: (
+                workspace: Workspace,
+                input: Parameters<typeof inner.postCredentials>[1],
+              ) => {
+                posts.push({
+                  onBehalfOf: input.onBehalfOf,
+                  home: input.home,
+                  logins: input.logins,
+                });
+                return inner.postCredentials(workspace, input);
+              },
+            })),
+          ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
+        },
       },
     );
+    // Shared steering spends each sender's own logins only (amendment of 2026-10-10): Maria's
+    // other agent login goes into her own home, which her turn's tools run with, and the
+    // conversation's home holds the conversation's agent's login of whoever sends.
+    const home = `/run/mend/conv/${sessionId ?? ""}`;
+    expect(posts.filter((post) => post.home === home)).toEqual([
+      { onBehalfOf: "user-fixture", home, logins: { claude: true } },
+      { onBehalfOf: MARIA, home, logins: { claude: true } },
+      { onBehalfOf: "user-fixture", home, logins: { claude: true } },
+    ]);
+    expect(posts.filter((post) => post.home !== home)).toEqual([
+      {
+        onBehalfOf: MARIA,
+        home: `/home/${linuxLoginNameOf(MARIA)}`,
+        logins: { claude: true, codex: true, github: true },
+      },
+    ]);
   }, 30_000);
 
   /**

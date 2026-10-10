@@ -1,4 +1,5 @@
 import { ConnectAccountInput } from "@mend/api-contracts";
+import { AgentLogins } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -19,6 +20,13 @@ export const platformRouter = router({
     .input(input(Schema.Struct({ id: Schema.String })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.accounts.disconnect({ params: { id: i.id } })),
+    ),
+  /** Which of the caller's own logins their Claude and Codex sessions receive. */
+  agentLogins: procedure.query(({ ctx }) => run(ctx, (api) => api.accounts.agentLogins())),
+  setAgentLogins: procedure
+    .input(input(AgentLogins))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.accounts.setAgentLogins({ payload })),
     ),
   /** The gateway and the caller's own workspace SSH keys (docs/WORKSPACE-SSH.md). */
   workspaceSsh: procedure.query(({ ctx }) => run(ctx, (api) => api.workspaceSsh.get())),

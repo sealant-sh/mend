@@ -41,6 +41,7 @@ export * from "./repos/sealant-identities.ts";
 export * from "./repos/projects.ts";
 export * from "./repos/push-devices.ts";
 export * from "./repos/notification-settings.ts";
+export * from "./repos/user-agent-logins.ts";
 export * from "./repos/pi-profiles.ts";
 export * from "./repos/agent-memory.ts";
 export * from "./repos/secret-files.ts";

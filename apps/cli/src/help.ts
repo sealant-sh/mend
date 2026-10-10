@@ -124,6 +124,21 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["accounts", "connect pi"],
   },
   {
+    name: "agent-logins",
+    section: "start",
+    summary: "which of your own logins your Claude and Codex sessions get",
+    synopsis: ["[all|selected]"],
+    description: [
+      "With all, the default, a Claude session also gets your Codex login and a Codex session your Claude login, when you have connected it, so the agent can run codex or claude on your own login: a Codex review from a Claude session, for example. With selected, a session gets its own agent's login only. Without arguments, prints the setting.",
+      "Only ever your own logins: no session gets anyone else's, whoever's workspace it runs in. GitHub is given either way, and shells, pi and opencode get every login you connected either way. Sessions started after a change follow it; a running session keeps what it has.",
+    ],
+    examples: [
+      { command: "mend agent-logins", text: "" },
+      { command: "mend agent-logins selected", text: "the session's own agent's login only" },
+    ],
+    see: ["connect", "accounts"],
+  },
+  {
     name: "connect pi",
     section: "start",
     summary: "send your pi setup to every pi session of yours",
